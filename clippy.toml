@@ -17,7 +17,7 @@ type-complexity-threshold = 250
 single-char-binding-names-threshold = 4
 
 # Enforce MSRV
-msrv = "1.75"
+msrv = "1.96"
 
 # Disallowed names
 disallowed-names = ["foo", "bar", "baz", "tmp", "temp", "test", "data"]

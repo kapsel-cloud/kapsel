@@ -9,7 +9,7 @@ edition = "2021"
 authors = ["Kapsel Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/mitander/kapsel"
-rust-version = "1.75"
+rust-version = "1.96"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
