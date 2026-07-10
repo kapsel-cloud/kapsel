@@ -161,9 +161,10 @@ pub async fn ingest_webhook(
         Ok(tenant_id) => tenant_id,
         Err(e) => {
             warn!(error = %e, "Endpoint not found");
-            return create_error_response(StatusCode::NOT_FOUND, &KapselError::InvalidEndpoint {
-                id: endpoint_id,
-            });
+            return create_error_response(
+                StatusCode::NOT_FOUND,
+                &KapselError::InvalidEndpoint { id: endpoint_id },
+            );
         },
     };
 

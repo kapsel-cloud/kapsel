@@ -778,35 +778,47 @@ async fn endpoint_find_with_open_circuits() {
     // Set circuit breaker states
     storage
         .endpoints
-        .update_circuit_state_in_tx(&mut tx, endpoint1_id, CircuitStateUpdate {
-            state: CircuitState::Open,
-            failure_count: 0,
-            success_count: 0,
-            last_failure_at: None,
-            half_open_at: None,
-        })
+        .update_circuit_state_in_tx(
+            &mut tx,
+            endpoint1_id,
+            CircuitStateUpdate {
+                state: CircuitState::Open,
+                failure_count: 0,
+                success_count: 0,
+                last_failure_at: None,
+                half_open_at: None,
+            },
+        )
         .await
         .unwrap();
     storage
         .endpoints
-        .update_circuit_state_in_tx(&mut tx, endpoint2_id, CircuitStateUpdate {
-            state: CircuitState::Closed,
-            failure_count: 0,
-            success_count: 0,
-            last_failure_at: None,
-            half_open_at: None,
-        })
+        .update_circuit_state_in_tx(
+            &mut tx,
+            endpoint2_id,
+            CircuitStateUpdate {
+                state: CircuitState::Closed,
+                failure_count: 0,
+                success_count: 0,
+                last_failure_at: None,
+                half_open_at: None,
+            },
+        )
         .await
         .unwrap();
     storage
         .endpoints
-        .update_circuit_state_in_tx(&mut tx, endpoint3_id, CircuitStateUpdate {
-            state: CircuitState::Open,
-            failure_count: 0,
-            success_count: 0,
-            last_failure_at: None,
-            half_open_at: None,
-        })
+        .update_circuit_state_in_tx(
+            &mut tx,
+            endpoint3_id,
+            CircuitStateUpdate {
+                state: CircuitState::Open,
+                failure_count: 0,
+                success_count: 0,
+                last_failure_at: None,
+                half_open_at: None,
+            },
+        )
         .await
         .unwrap();
 

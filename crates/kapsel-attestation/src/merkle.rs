@@ -340,16 +340,19 @@ impl MerkleService {
     ) -> Result<()> {
         self.storage
             .merkle_leaves
-            .insert_leaf_from_attempt_in_tx(&mut **tx, MerkleLeafInsert {
-                leaf_hash: &leaf_hash[..],
-                delivery_attempt_id: leaf.delivery_attempt_id,
-                endpoint_url: &leaf.endpoint_url,
-                payload_hash: &leaf.payload_hash[..],
-                attempt_number: leaf.attempt_number,
-                attempted_at: leaf.attempted_at,
-                tree_index: Some(tree_index),
-                batch_id: Some(batch_id),
-            })
+            .insert_leaf_from_attempt_in_tx(
+                &mut **tx,
+                MerkleLeafInsert {
+                    leaf_hash: &leaf_hash[..],
+                    delivery_attempt_id: leaf.delivery_attempt_id,
+                    endpoint_url: &leaf.endpoint_url,
+                    payload_hash: &leaf.payload_hash[..],
+                    attempt_number: leaf.attempt_number,
+                    attempted_at: leaf.attempted_at,
+                    tree_index: Some(tree_index),
+                    batch_id: Some(batch_id),
+                },
+            )
             .await
             .map_err(|e| {
                 AttestationError::batch_commit_failed(format!("failed to insert leaves: {e}"))

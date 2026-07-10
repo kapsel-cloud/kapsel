@@ -201,7 +201,7 @@ pub fn batch_processing_policy() -> RetryPolicy {
     RetryPolicy {
         max_attempts: 15,
         base_delay: Duration::from_secs(5),
-        max_delay: Duration::from_secs(3600), // 1 hour
+        max_delay: Duration::from_hours(1),
         jitter_factor: 0.5,
         backoff_strategy: BackoffStrategy::Exponential,
     }

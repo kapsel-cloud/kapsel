@@ -610,7 +610,7 @@ impl TestEnv {
         let env_build_duration = env_build_start.elapsed();
 
         let setup_duration = start_time.elapsed();
-        if setup_duration > Duration::from_millis(1000) {
+        if setup_duration > Duration::from_secs(1) {
             warn!(
                 "Isolated test setup took {}ms (admin pool: {}ms, DB create: {}ms, env build: {}ms) for {}",
                 setup_duration.as_millis(),

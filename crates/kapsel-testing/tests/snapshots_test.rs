@@ -44,10 +44,13 @@ async fn snapshot_delivery_attempts_works() -> Result<()> {
         let endpoint_id = env.create_endpoint(tenant_id, &env.http_mock.url()).await?;
 
         env.http_mock
-            .mock_simple("/", MockResponse::Success {
-                status: reqwest::StatusCode::OK,
-                body: bytes::Bytes::from_static(b"OK"),
-            })
+            .mock_simple(
+                "/",
+                MockResponse::Success {
+                    status: reqwest::StatusCode::OK,
+                    body: bytes::Bytes::from_static(b"OK"),
+                },
+            )
             .await;
 
         let webhook = WebhookBuilder::new()
@@ -161,10 +164,13 @@ async fn validation_first_snapshot_test() -> Result<()> {
 
         // Setup HTTP behavior
         env.http_mock
-            .mock_simple("/", MockResponse::Success {
-                status: reqwest::StatusCode::OK,
-                body: bytes::Bytes::from_static(b"OK"),
-            })
+            .mock_simple(
+                "/",
+                MockResponse::Success {
+                    status: reqwest::StatusCode::OK,
+                    body: bytes::Bytes::from_static(b"OK"),
+                },
+            )
             .await;
 
         let webhook = WebhookBuilder::new()
@@ -217,10 +223,13 @@ async fn snapshot_with_multiple_tenants() -> Result<()> {
 
         // Setup HTTP mock for success
         env.http_mock
-            .mock_simple("/", MockResponse::Success {
-                status: reqwest::StatusCode::OK,
-                body: bytes::Bytes::from_static(b"OK"),
-            })
+            .mock_simple(
+                "/",
+                MockResponse::Success {
+                    status: reqwest::StatusCode::OK,
+                    body: bytes::Bytes::from_static(b"OK"),
+                },
+            )
             .await;
 
         // Create webhooks for both tenants

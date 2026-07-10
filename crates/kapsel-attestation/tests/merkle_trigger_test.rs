@@ -32,10 +32,10 @@ async fn merkle_service_initialization() -> Result<()> {
 
         // Configure successful delivery mock
         env.http_mock
-            .mock_simple("/webhook", MockResponse::Success {
-                status: StatusCode::OK,
-                body: vec![].into(),
-            })
+            .mock_simple(
+                "/webhook",
+                MockResponse::Success { status: StatusCode::OK, body: vec![].into() },
+            )
             .await;
 
         // Inject a webhook event for processing
@@ -76,10 +76,10 @@ async fn merkle_tree_time_based_processing() -> Result<()> {
 
         // Configure successful delivery
         env.http_mock
-            .mock_simple("/webhook", MockResponse::Success {
-                status: StatusCode::OK,
-                body: vec![].into(),
-            })
+            .mock_simple(
+                "/webhook",
+                MockResponse::Success { status: StatusCode::OK, body: vec![].into() },
+            )
             .await;
 
         // Add events over time intervals
@@ -138,10 +138,10 @@ async fn merkle_tree_event_count_processing() -> Result<()> {
 
         // Configure successful delivery
         env.http_mock
-            .mock_simple("/webhook", MockResponse::Success {
-                status: StatusCode::OK,
-                body: vec![].into(),
-            })
+            .mock_simple(
+                "/webhook",
+                MockResponse::Success { status: StatusCode::OK, body: vec![].into() },
+            )
             .await;
 
         // Add multiple events for batch processing
@@ -209,10 +209,10 @@ async fn merkle_tree_mixed_processing_patterns() -> Result<()> {
 
         // Configure successful delivery
         env.http_mock
-            .mock_simple("/webhook", MockResponse::Success {
-                status: StatusCode::OK,
-                body: vec![].into(),
-            })
+            .mock_simple(
+                "/webhook",
+                MockResponse::Success { status: StatusCode::OK, body: vec![].into() },
+            )
             .await;
 
         // Phase 1: Rapid event creation (count-based scenario)
@@ -305,10 +305,10 @@ async fn merkle_tree_error_handling() -> Result<()> {
 
         // Phase 2: Switch to successful responses for recovery
         env.http_mock
-            .mock_simple("/webhook", MockResponse::Success {
-                status: StatusCode::OK,
-                body: vec![].into(),
-            })
+            .mock_simple(
+                "/webhook",
+                MockResponse::Success { status: StatusCode::OK, body: vec![].into() },
+            )
             .await;
 
         // Add recovery events

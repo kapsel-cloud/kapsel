@@ -96,10 +96,13 @@ async fn scenario_builder_snapshot_integration() -> Result<()> {
 
         // Setup HTTP mock for success
         env.http_mock
-            .mock_simple("/", MockResponse::Success {
-                status: reqwest::StatusCode::OK,
-                body: bytes::Bytes::from_static(b"OK"),
-            })
+            .mock_simple(
+                "/",
+                MockResponse::Success {
+                    status: reqwest::StatusCode::OK,
+                    body: bytes::Bytes::from_static(b"OK"),
+                },
+            )
             .await;
 
         let webhook = WebhookBuilder::new()
@@ -140,10 +143,13 @@ async fn scenario_builder_snapshot_integration_comprehensive() -> Result<()> {
 
         // Setup HTTP mock for success
         env.http_mock
-            .mock_simple("/", MockResponse::Success {
-                status: reqwest::StatusCode::OK,
-                body: bytes::Bytes::from_static(b"OK"),
-            })
+            .mock_simple(
+                "/",
+                MockResponse::Success {
+                    status: reqwest::StatusCode::OK,
+                    body: bytes::Bytes::from_static(b"OK"),
+                },
+            )
             .await;
 
         let webhook = WebhookBuilder::new()

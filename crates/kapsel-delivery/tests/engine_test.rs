@@ -25,10 +25,10 @@ async fn delivery_engine_processes_pending_events() -> Result<()> {
 
         // Mock expects webhook delivery
         env.http_mock
-            .mock_simple("/", MockResponse::Success {
-                status: StatusCode::OK,
-                body: Bytes::from_static(b"OK"),
-            })
+            .mock_simple(
+                "/",
+                MockResponse::Success { status: StatusCode::OK, body: Bytes::from_static(b"OK") },
+            )
             .await;
 
         let webhook_data = kapsel_testing::fixtures::WebhookBuilder::new()

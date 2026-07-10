@@ -169,10 +169,10 @@ async fn circuit_breaker_recovery() -> Result<()> {
 
         // Phase 2: Configure success responses for recovery
         env.http_mock
-            .mock_simple("/webhook", MockResponse::Success {
-                status: StatusCode::OK,
-                body: vec![].into(),
-            })
+            .mock_simple(
+                "/webhook",
+                MockResponse::Success { status: StatusCode::OK, body: vec![].into() },
+            )
             .await;
 
         // Send recovery events
@@ -281,17 +281,17 @@ async fn http_status_code_retry_behavior() -> Result<()> {
             // Configure mock response for this status code
             if status_code.is_success() {
                 env.http_mock
-                    .mock_simple("/webhook", MockResponse::Success {
-                        status: status_code,
-                        body: vec![].into(),
-                    })
+                    .mock_simple(
+                        "/webhook",
+                        MockResponse::Success { status: status_code, body: vec![].into() },
+                    )
                     .await;
             } else {
                 env.http_mock
-                    .mock_simple("/webhook", MockResponse::ServerError {
-                        status: status_code.as_u16(),
-                        body: vec![],
-                    })
+                    .mock_simple(
+                        "/webhook",
+                        MockResponse::ServerError { status: status_code.as_u16(), body: vec![] },
+                    )
                     .await;
             }
 
