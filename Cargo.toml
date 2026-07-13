@@ -1,13 +1,12 @@
 [workspace]
-members = ["crates/*"]
-exclude = ["fuzz"]
+members = ["crates/kapsel-dev", "crates/kapsel-kubernetes-effect-gateway"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 authors = ["Kapsel Contributors"]
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 repository = "https://github.com/mitander/kapsel"
 rust-version = "1.96"
 
@@ -52,9 +51,6 @@ opt-level = 0
 debug = true
 incremental = true
 
-[profile.dev.package."*"]
-opt-level = 3
-
 [profile.test]
 opt-level = 0
 debug = true
@@ -66,132 +62,3 @@ debug = false
 strip = true
 codegen-units = 1
 panic = "abort"
-
-[profile.bench]
-inherits = "release"
-
-[workspace.dependencies]
-# Async runtime
-tokio = { version = "1.35", features = ["full", "tracing"] }
-tokio-util = "0.7"
-tokio-test = "0.4"
-
-# Web frameworks
-axum = { version = "0.8", features = ["macros", "ws"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "timeout", "limit"] }
-tower = "0.5"
-hyper = "1.0"
-
-# Database drivers
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
-
-# Serialization
-serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-bytes = "1.5"
-
-# Configuration
-figment = { version = "0.10", features = ["env", "toml", "json"] }
-
-# Error handling
-thiserror = "2.0"
-anyhow = "1.0"
-
-# Observability
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.31"
-prometheus = "0.14"
-
-# Utilities
-uuid = { version = "1.7", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-url = "2.5"
-base64 = "0.22"
-sha2 = "0.10"
-hmac = "0.12"
-hex = "0.4"
-rand = "0.9"
-tempfile = "3.9"
-async-trait = "0.1"
-futures = "0.3"
-once_cell = "1.19"
-
-# HTTP client
-http = "1.0"
-reqwest = { version = "0.12", features = ["json"] }
-
-# Testing infrastructure
-wiremock = "0.6"
-proptest = "1.4"
-arbitrary = { version = "1.3", features = ["derive"] }
-criterion = { version = "0.7", features = ["async_tokio"] }
-insta = { version = "1.34", features = ["yaml", "json"] }
-
-[package]
-name = "kapsel-workspace"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[[bin]]
-name = "kapsel"
-path = "src/main.rs"
-
-[[bench]]
-name = "webhook_performance"
-path = "benches/webhook_performance.rs"
-harness = false
-
-[dependencies]
-anyhow = { workspace = true }
-tokio = { workspace = true }
-sqlx = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-kapsel-api = { path = "crates/kapsel-api" }
-kapsel-delivery = { path = "crates/kapsel-delivery" }
-kapsel-core = { path = "crates/kapsel-core" }
-
-[dev-dependencies]
-# Kapsel crates
-kapsel-testing = { path = "crates/kapsel-testing" }
-kapsel-attestation = { path = "crates/kapsel-attestation" }
-kapsel-api = { path = "crates/kapsel-api" }
-kapsel-core = { path = "crates/kapsel-core" }
-kapsel-delivery = { path = "crates/kapsel-delivery" }
-
-# Testing dependencies
-criterion = { workspace = true }
-proptest = { workspace = true }
-insta = { workspace = true }
-wiremock = { workspace = true }
-
-# HTTP and networking
-axum = { workspace = true }
-http = { workspace = true }
-reqwest = { workspace = true }
-tokio-util = { workspace = true }
-
-# Data and serialization
-bytes = { workspace = true }
-uuid = { workspace = true }
-serde_json = { workspace = true }
-sqlx = { workspace = true }
-
-# Cryptography
-hmac = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-
-# Utilities
-rand = { workspace = true }
-chrono = { workspace = true }
-futures = "0.3.31"
-
-# Development tools
-cargo-husky = { version = "1.5", default-features = false, features = ["user-hooks"] }
-base64.workspace = true

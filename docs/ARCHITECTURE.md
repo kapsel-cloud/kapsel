@@ -1,232 +1,89 @@
-# System Architecture
+# Architecture
 
-Kapsel provides webhook reliability through guaranteed at-least-once delivery with cryptographic attestation. This document describes the system design, components, and operational characteristics.
+Status: active experiment design.
 
-## Problem Statement
+Kind: design. Authority: active module ownership, dependency direction, and composition status.
 
-Webhook failures cause silent data loss. Network timeouts, server errors, and rate limits lead to missed events without visibility. Traditional solutions retry delivery but provide no proof that delivery occurred.
+Owns: The active experiment's modules, seams, and compile-time dependency direction.
 
-Kapsel solves this by combining persistent delivery guarantees with cryptographic proof through Merkle tree attestation and Ed25519 signatures.
+Does not own: Exact lifecycle/result semantics, Kubernetes truth, exact receipt bytes, or MCP
+protocol semantics.
 
-## Core Components
+## Short answer
 
-```
-┌─────────────┐       ┌───────────────┐       ┌────────────┐
-│   Webhook   │──────▶│ HTTP Receiver │──────▶│ PostgreSQL │
-│   Sources   │       │  + Validator  │       │ Durability │
-└─────────────┘       └───────────────┘       └────────────┘
-                             │                      │
-                             ▼                      ▼
-                      ┌───────────────┐       ┌────────────┐
-                      │  Worker Pool  │◄──────│   Event    │
-                      │ Distribution  │       │   Queue    │
-                      └───────────────┘       └────────────┘
-                             │
-                             ▼
-                      ┌───────────────┐       ┌────────────┐
-                      │ HTTP Delivery │◄──────│  Circuit   │
-                      │ + Retry Logic │       │  Breakers  │
-                      └───────────────┘       └────────────┘
-                             │
-                    ┌────────┴────────┐
-                    ▼                 ▼
-            ┌─────────────┐    ┌─────────────┐
-            │ Destination │    │   Merkle    │
-            │  Endpoints  │    │ Attestation │
-            └─────────────┘    └─────────────┘
-                                      │
-                                      ▼
-                               ┌─────────────┐
-                               │ Signed Tree │
-                               │ Heads (STH) │
-                               └─────────────┘
+KAP-0038 is one deep Rust module for one bounded Kubernetes Deployment image operation. Its
+implementation owns validation, journaling, conditional mutation, reconciliation, receiver
+classification, receipt construction, immutable publication, and offline inspection.
+
+```text
+bounded request + signed exact grant + application-configured trust
+  -> Kubernetes effect-gateway module
+       -> bounded grant verification
+       -> SQLite journal
+       -> concrete Kubernetes adapter
+       -> receiver-fact classification
+       -> durable receipt preparation and immutable publication
+
+receipt bytes + explicit trust + time + limits
+  -> offline inspector
 ```
 
-## Data Flow
+There is no public application command or MCP entrypoint yet.
 
-### Phase 1: Ingestion
+## Implemented modules
 
-Webhooks arrive at `/ingest/:endpoint_id` and are immediately persisted to PostgreSQL. The service returns 200 OK only after database commit, guaranteeing zero data loss. HMAC signature validation prevents spoofed webhooks.
+| Module                              | Owns                                                                                             | Refuses to own                                                        |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Kubernetes effect gateway           | One request grammar, signed exact-grant verification, lifecycle, recovery, and finalization      | Another capability, generic runtime, or policy language               |
+| SQLite journal                      | FULL-synchronous rollback journal, bounded operations, guarded transitions, frozen receipt bytes | Generic storage interface or distributed scheduling                   |
+| Kubernetes Deployment image adapter | Safe target reads, one conditional strategic merge patch, and bounded rollout observation        | Generic Kubernetes abstraction or arbitrary manifests/patches         |
+| Receiver-fact module                | Bounded Kubernetes facts and `SUCCEEDED`/`FAILED`/`UNKNOWN` classification                       | Provider truth, causation, or complete cluster health                 |
+| Receipt module                      | Classifier-complete prototype bytes, signing, parsing, recomputation, trust/time/limits          | Stable package format, generic verifier, ambient trust, or `VERIFIED` |
+| Publication module                  | Unix descriptor-relative, owner-private, collision-safe frozen-byte installation                 | Generic blob storage or hosted publication                            |
 
-Database-enforced idempotency detects duplicates using configurable strategies:
+The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
+[KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 
-- Customer-provided key (X-Idempotency-Key header)
-- Content hash (SHA256 of payload)
-- Source event ID (JSONPath extraction)
+## Planned adapters
 
-### Phase 2: Delivery
+Application composition will eventually supply owner-controlled configuration, Kubernetes authority,
+signing material, journal path, and receipt directory. A later MCP adapter may convert one bounded
+tool call into the same experiment request.
 
-Worker pool claims pending events using PostgreSQL `FOR UPDATE SKIP LOCKED`, enabling lock-free work distribution across multiple instances. HTTP delivery client handles timeouts and errors.
+Both are planned. Neither is present in the current runnable command surface. They must remain thin,
+compile-time-composed adapters; they must not sequence durable states or expose credentials.
 
-Exponential backoff with jitter schedules retries: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s. Maximum attempts configurable per endpoint.
+## Dependency direction
 
-Circuit breakers protect against cascade failures with three states:
+```text
+planned CLI or MCP adapter
+  -> KAP-0038 effect-gateway module
+       -> private concrete implementation modules
+```
 
-- **Closed**: Normal operation
-- **Open**: Fast-fail after threshold (5 consecutive failures or 50% over 10 requests)
-- **Half-Open**: Limited probes after 30s timeout
+The private Kubernetes adapter seam exists to prove provider call counts and crash recovery with a
+deterministic fake. One production adapter does not establish a reusable provider model.
 
-### Phase 3: Attestation
+## Failure structure
 
-Every delivery attempt becomes a Merkle tree leaf containing:
+- Invalid request or grant bytes, untrusted signatures, and tuple mismatches fail before persistence
+  or Kubernetes calls.
+- Application-configured trust is supplied out of band; agent input cannot select it.
+- Safe target validation precedes either a terminal `not_attempted` rejection or an atomic
+  target-identity plus mutation-attempt transition.
+- Transient target-read errors are durably deferred with fair retry ordering so they cannot block
+  later authorized operations.
+- The journal distinguishes a mutation attempt from provider acceptance and receiver observation.
+- Recovery after the durable mutation marker observes; it never blindly issues a second patch.
+- Incomplete receiver facts become `UNKNOWN`.
+- Receipt preparation uses only frozen facts; publication and recovery use durably frozen exact
+  bytes.
+- Offline inspection receives trust, evaluation time, and limits explicitly and performs no network
+  or ambient lookup.
 
-- Delivery attempt ID
-- Endpoint URL
-- Payload hash (SHA-256)
-- Timestamp
-- HTTP status code
-- Response hash
+## Decisions
 
-Batch processing commits leaves every 10 seconds or 100 events. Ed25519 signature on Merkle root provides cryptographic proof. Clients can independently verify delivery using inclusion proofs without trusting Kapsel.
-
-## Technology Stack
-
-| Component     | Technology                         | Rationale                              |
-| ------------- | ---------------------------------- | -------------------------------------- |
-| Language      | Rust 1.75+                         | Memory safety, zero-cost abstractions  |
-| Web Framework | Axum 0.7+                          | Type-safe async HTTP                   |
-| Database      | PostgreSQL 14+                     | ACID compliance, SKIP LOCKED           |
-| Async Runtime | Tokio 1.35+                        | Production-grade async                 |
-| Cryptography  | Ed25519-dalek 2.1+, rs-merkle 1.5+ | Fast signatures, RFC 6962 Merkle trees |
-| Testing       | proptest, testcontainers           | Property-based + integration testing   |
-
-## Performance Characteristics
-
-| Metric                  | Target         | Design Basis                                  |
-| ----------------------- | -------------- | --------------------------------------------- |
-| Ingestion latency (p99) | < 50ms         | PostgreSQL write performance                  |
-| Delivery latency (p50)  | < 100ms        | HTTP client + retry logic                     |
-| Throughput              | 10K events/sec | Connection pool + async workers               |
-| Attestation batch       | < 100ms        | rs-merkle batch processing                    |
-| Proof generation (p99)  | < 50ms         | In-memory tree + caching                      |
-| Availability            | 99.95%         | PostgreSQL reliability + graceful degradation |
-
-## Reliability Guarantees
-
-### At-Least-Once Delivery
-
-Every accepted webhook will be delivered at least once or marked permanently failed after exhausting retries. Guaranteed through:
-
-- PostgreSQL ACID compliance
-- Worker pool with claim-based processing
-- Exponential backoff retry logic
-- Reconciliation loops for crash recovery
-
-### Exactly-Once Processing
-
-Database-enforced idempotency prevents duplicate processing even when sources retry. Deduplication window: 24 hours minimum.
-
-### Cryptographic Attestation
-
-Merkle tree with Ed25519 signatures provides tamper-proof proof of delivery:
-
-- **Inclusion proofs** verify specific delivery attempts exist in log
-- **Consistency proofs** verify append-only property (no history modification)
-- **Client verification** enables independent validation without trusting Kapsel
-
-## Failure Modes
-
-| Failure           | Detection                  | Response                     | Attestation              |
-| ----------------- | -------------------------- | ---------------------------- | ------------------------ |
-| Network partition | Connection timeout         | Exponential backoff + jitter | Failed attempt recorded  |
-| Endpoint overload | 5xx responses              | Circuit breaker activation   | Status in Merkle leaf    |
-| Malformed payload | Parse error                | Dead letter queue            | Error in attestation     |
-| Database failure  | Connection pool exhaustion | Graceful degradation         | Batch commit on recovery |
-| System overload   | Channel saturation         | Backpressure, 503 to sources | Delayed but guaranteed   |
-
-## Security Model
-
-**Input Validation**
-
-- HMAC-SHA256 signature validation
-- Payload size limits (10MB)
-- Header sanitization
-- SQL injection prevention (parameterized queries)
-
-**Data Protection**
-
-- TLS 1.3+ for external communication
-- Secrets excluded from logs and errors
-- Row-level tenant isolation
-- Merkle tree tamper evidence
-
-**Cryptographic Integrity**
-
-- Ed25519 key management (HSM/KMS in production)
-- Public key distribution for verification
-- Append-only log guarantees
-- Non-repudiation through asymmetric signatures
-
-## Observability
-
-**Structured Logging**
-
-- JSON format with correlation IDs
-- Request/response tracing
-- Error context preservation
-- Configurable log levels
-
-**Metrics** (Prometheus)
-
-- RED method (Rate, Errors, Duration)
-- Database connection pool utilization
-- Circuit breaker state transitions
-- Attestation batch sizes
-
-**Distributed Tracing**
-
-- OpenTelemetry integration
-- Full request lifecycle visibility
-- Cross-service correlation
-
-## Operational Design
-
-**Graceful Shutdown**
-
-1. Stop accepting new webhooks
-2. Drain in-flight deliveries (30s timeout)
-3. Flush attestation batches
-4. Close database connections
-5. Exit with status 0
-
-**Health Checks**
-
-- `/health/live`: Process alive (Kubernetes liveness)
-- `/health/ready`: Database connected (Kubernetes readiness)
-- `/health/startup`: Initialization complete
-
-**Configuration**
-All configuration via environment variables:
-
-- `DATABASE_URL`: PostgreSQL connection string
-- `WORKER_POOL_SIZE`: Concurrent delivery workers
-- `CHANNEL_CAPACITY`: Bounded channel size
-- `LOG_LEVEL`: trace|debug|info|warn|error
-
-## Deployment Constraints
-
-**Stateless Application Tier**
-
-- No local state (all in PostgreSQL)
-- Horizontal scaling support
-- Rolling deployments safe
-
-**Database Requirements**
-
-- PostgreSQL 14+ with pgcrypto
-- Connection pooling (recommended: PgBouncer)
-- Multi-zone replication for HA
-- Point-in-time recovery enabled
-
-**Resource Limits**
-
-- Memory: < 2GB at 10K events/sec
-- CPU: < 4 cores at 10K events/sec
-- Database connections: ≤ 100 per instance
-
-## Related Documentation
-
-- [Technical Specification](SPECIFICATION.md) - Detailed requirements
-- [Attestation Architecture](ATTESTATION.md) - Cryptographic proof system
-- [Testing Strategy](TESTING_STRATEGY.md) - Quality assurance approach
-- [Current Status](STATUS.md) - Implementation progress
+- [ADR 0008](decisions/0008-use-one-kubernetes-effect-gateway-canary.md) selects one Kubernetes
+  operation as the effect-gateway canary.
+- [ADR 0009](decisions/0009-use-conditional-kubernetes-image-patch.md) selects the conditional
+  strategic merge patch for this one operation.

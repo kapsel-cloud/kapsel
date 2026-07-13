@@ -87,13 +87,6 @@ disallowed-methods = [
     { path = "std::boxed::Box::leak", reason = "Leaking memory is almost never correct" },
 ]
 
-# Types that should be avoided
-disallowed-types = [
-    { path = "std::sync::Mutex", reason = "Use tokio::sync::Mutex in async code" },
-    { path = "std::sync::RwLock", reason = "Use tokio::sync::RwLock in async code" },
-    { path = "std::sync::Condvar", reason = "Use tokio::sync::Notify in async code" },
-]
-
 # Macros that should be avoided
 disallowed-macros = [
     { path = "std::print", reason = "Use tracing instead" },

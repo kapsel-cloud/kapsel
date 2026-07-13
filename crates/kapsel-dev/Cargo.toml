@@ -1,0 +1,16 @@
+[package]
+name = "kapsel-dev"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "kapsel-hooks"
+path = "src/hooks.rs"
+
+[lints]
+workspace = true

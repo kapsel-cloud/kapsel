@@ -1,228 +1,106 @@
-# Kapsel Development Tasks
-# Usage: cargo make <task>
+# Optional cargo-make aliases. The canonical gate is scripts/ci-local.sh.
 
 [config]
 default_to_workspace = false
 skip_core_tasks = false
 
-[env]
-CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
-RUST_BACKTRACE = "short"
-DATABASE_URL = { value = "postgresql://postgres:postgres@localhost:5433/kapsel_test", condition = { env_not_set = ["DATABASE_URL"] } }
-
-# Core Development Tasks
-
-[tasks.setup]
-description = "Setup development environment"
-script = '''
-echo "Setting up Kapsel development environment..."
-cargo install cargo-watch cargo-nextest cargo-llvm-cov cargo-machete cargo-audit
-cargo install sqlx-cli --version=0.8.6 --features=rustls,postgres --no-default-features
-echo "Setup complete! Run 'cargo make help' for available commands."
-'''
-
-[tasks.test]
-description = "Run all tests (fast, full concurrency)"
-command = "cargo"
-args = ["nextest", "run", "--workspace"]
-env = { CLEAN_TEST_DB = "1" }
-
 [tasks.check]
-description = "Run all checks (format, lint, test, audit)"
-dependencies = ["format-check", "lint", "test", "audit"]
+description = "Run the deterministic containerless default gate"
+command = "./scripts/ci-local.sh"
+
+[tasks.ci]
+alias = "check"
 
 [tasks.build]
-description = "Build in release mode"
+description = "Build the workspace"
 command = "cargo"
-args = ["build", "--release", "--workspace"]
+args = ["build", "--locked", "--workspace"]
 
-[tasks.dev]
-description = "Run in watch mode for development"
+[tasks.test]
+description = "Run workspace library and documentation tests"
+dependencies = ["test-unit", "test-doc"]
+
+[tasks.test-unit]
+description = "Run containerless library tests"
 command = "cargo"
-args = ["watch", "-x", "check"]
+args = ["test", "--locked", "--lib", "--bins", "--workspace"]
 
-# Code Quality
+[tasks.test-doc]
+description = "Run documentation tests"
+command = "cargo"
+args = ["test", "--locked", "--doc", "--workspace"]
 
-[tasks.format]
-description = "Format all code"
+[tasks.fmt]
+clear = true
+description = "Format Rust and Markdown sources"
+dependencies = ["fmt-rust", "fmt-markdown"]
+
+[tasks.fmt-rust]
+description = "Format Rust sources"
 command = "cargo"
 args = ["fmt", "--all"]
 
-[tasks.format-check]
-description = "Check code formatting"
+[tasks.fmt-markdown]
+description = "Format Markdown sources and expand tables"
+command = "prettier"
+args = ["--write", "--no-config", "--ignore-path", ".gitignore", "--print-width", "100", "--prose-wrap", "always", "--tab-width", "2", "**/*.md"]
+
+[tasks.fmt-check]
+clear = true
+description = "Check Rust and Markdown formatting"
+dependencies = ["fmt-check-rust", "fmt-check-markdown"]
+
+[tasks.fmt-check-rust]
+description = "Check Rust formatting and line width"
+dependencies = ["fmt-check-rustfmt", "fmt-check-rust-width"]
+
+[tasks.fmt-check-rustfmt]
+description = "Check Rust formatting"
 command = "cargo"
 args = ["fmt", "--all", "--check"]
 
-[tasks.lint]
-description = "Run clippy lints"
-command = "cargo"
-args = ["clippy", "--all-targets", "--all-features", "--workspace", "--", "-D", "warnings"]
+[tasks.fmt-check-rust-width]
+description = "Check the strict 100-byte Rust source width"
+command = "./scripts/check-rust-width.sh"
 
-[tasks.audit]
-description = "Security audit"
+[tasks.fmt-check-markdown]
+description = "Check Markdown formatting"
+command = "prettier"
+args = ["--check", "--no-config", "--ignore-path", ".gitignore", "--print-width", "100", "--prose-wrap", "always", "--tab-width", "2", "**/*.md"]
+
+[tasks.hooks-install]
+description = "Install the repository pre-commit hook"
 command = "cargo"
-args = ["audit"]
+args = ["run", "--quiet", "--locked", "-p", "kapsel-dev", "--bin", "kapsel-hooks", "--", "install"]
+
+[tasks.hooks-uninstall]
+description = "Uninstall the repository pre-commit hook"
+command = "cargo"
+args = ["run", "--quiet", "--locked", "-p", "kapsel-dev", "--bin", "kapsel-hooks", "--", "uninstall"]
+
+[tasks.lint]
+description = "Run production-target clippy lints"
+command = "cargo"
+args = ["clippy", "--locked", "--workspace", "--lib", "--bins", "--all-features", "--", "-D", "warnings"]
 
 [tasks.clean]
-description = "Clean build artifacts"
+description = "Remove build artifacts"
 command = "cargo"
 args = ["clean"]
 
-# Database Management
-
-[tasks.db-start]
-description = "Start postgres-test database"
-script = '''
-echo "Starting postgres-test database..."
-docker compose up -d postgres-test
-echo "Waiting for database..."
-timeout 30 sh -c 'until docker exec kapsel-postgres-test pg_isready -U postgres; do sleep 1; done'
-echo "Running migrations..."
-echo "Database ready: $DATABASE_URL"
-'''
-
-[tasks.db-stop]
-description = "Stop postgres-test database"
-command = "docker compose"
-args = ["stop", "postgres-test"]
-
-[tasks.db-reset]
-description = "Reset postgres-test database"
-script = '''
-echo "Resetting database..."
-docker compose stop postgres-test
-docker compose rm -f postgres-test
-docker compose up -d postgres-test
-timeout 30 sh -c 'until docker exec kapsel-postgres-test pg_isready -U postgres; do sleep 1; done'
-sqlx migrate run
-echo "Database reset complete"
-'''
-
-[tasks.db-status]
-description = "Check database status"
-script = '''
-if docker ps --format "table {{.Names}}\t{{.Status}}" | grep -q "kapsel-postgres-test.*Up"; then
-    if docker exec kapsel-postgres-test pg_isready -U postgres >/dev/null 2>&1; then
-        echo "Database running and ready"
-    else
-        echo " Database container running but not ready"
-    fi
-else
-    echo "Database not running - use 'cargo make db-start'"
-fi
-'''
-
-[tasks.db-inspect]
-description = "Inspect database state for proliferation monitoring"
-script = '''
-echo "Inspecting PostgreSQL database state..."
-./scripts/inspect-database-state.sh "$@"
-'''
-
-[tasks.test-fresh-container]
-description = "Create fresh container and run tests with database proliferation monitoring"
-script = '''
-echo "Creating fresh PostgreSQL container and monitoring database proliferation..."
-./scripts/test-fresh-container.sh
-'''
-
-# CI/CD
-
-[tasks.ci]
-description = "Full CI pipeline"
-dependencies = ["format-check", "lint", "test", "audit", "build"]
-
-# Specialized Tasks
-
-[tasks.test-unit]
-description = "Run only unit tests"
-command = "cargo"
-args = ["nextest", "run", "--lib", "--workspace"]
-
-[tasks.test-integration]
-description = "Run only integration tests"
-command = "cargo"
-args = ["nextest", "run", "--test", "*", "--workspace"]
-
-[tasks.test-watch]
-description = "Watch mode for tests"
-command = "cargo"
-args = ["watch", "-x", "nextest run"]
-
-[tasks.coverage]
-description = "Generate test coverage report"
-script = '''
-cargo llvm-cov clean --workspace
-cargo llvm-cov nextest --workspace --html
-echo "Coverage report: target/llvm-cov/html/index.html"
-'''
-
 [tasks.docs]
-description = "Generate and open documentation"
+description = "Build workspace documentation"
 command = "cargo"
-args = ["doc", "--workspace", "--open"]
+args = ["doc", "--locked", "--workspace"]
 
-[tasks.deps-unused]
-description = "Find unused dependencies"
-command = "cargo"
-args = ["machete"]
+[tasks.docs-links-test]
+description = "Test the Markdown path and heading-anchor checker"
+command = "./scripts/test-check-markdown-links.py"
 
-# Database Migrations
-
-[tasks.migrate]
-description = "Run database migrations"
-command = "sqlx"
-args = ["migrate", "run"]
-
-[tasks.migrate-add]
-description = "Create new migration (usage: cargo make migrate-add -- migration_name)"
-command = "sqlx"
-args = ["migrate", "add"]
-
-[tasks.migrate-revert]
-description = "Revert last migration"
-command = "sqlx"
-args = ["migrate", "revert"]
-
-# Help
-
-[tasks.help]
-description = "Show available tasks"
-script = '''
-echo "Kapsel Development Commands"
-echo "=========================="
-echo ""
-echo "Development:"
-echo "  setup           - Setup development environment"
-echo "  test            - Run all tests (full speed)"
-echo "  check           - Run all checks (format, lint, test, audit)"
-echo "  build           - Build release version"
-echo "  dev             - Watch mode for development"
-echo ""
-echo "Code Quality:"
-echo "  format          - Format code"
-echo "  format-check    - Check formatting"
-echo "  lint            - Run lints"
-echo "  audit           - Security audit"
-echo "  coverage        - Generate test coverage"
-echo ""
-echo " Database:"
-echo "  db-start        - Start test database"
-echo "  db-stop         - Stop test database"
-echo "  db-reset        - Reset test database"
-echo "  db-status       - Check database status"
-echo "  db-inspect      - Inspect database state (usage: cargo make db-inspect [watch|cleanup|full])"
-echo "  test-fresh-container - Create fresh container and test with proliferation monitoring"
-echo ""
-echo "CI/CD:"
-echo "  ci              - Full CI pipeline"
-echo ""
-echo "Other:"
-echo "  docs            - Generate documentation"
-echo "  clean           - Clean build artifacts"
-echo "  deps-unused     - Find unused dependencies"
-echo ""
-'''
+[tasks.docs-links]
+description = "Check tracked Markdown paths and heading anchors"
+dependencies = ["docs-links-test"]
+command = "./scripts/check-markdown-links.py"
 
 [tasks.default]
-alias = "help"
+alias = "check"
