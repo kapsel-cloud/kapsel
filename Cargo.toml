@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kapsel-dev", "crates/kapsel-kubernetes-effect-gateway"]
+members = ["crates/kapsel-dev", "crates/kapsel-gateway"]
 resolver = "2"
 
 [workspace.package]

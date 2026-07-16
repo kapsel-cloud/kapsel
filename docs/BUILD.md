@@ -40,8 +40,8 @@ cargo make fmt-check
 The narrow deterministic gate for KAP-0038 is:
 
 ```sh
-cargo test --locked -p kapsel-kubernetes-effect-gateway
-cargo clippy --locked -p kapsel-kubernetes-effect-gateway --all-targets -- -D warnings
+cargo test --locked -p kapsel-gateway
+cargo clippy --locked -p kapsel-gateway --all-targets -- -D warnings
 ```
 
 Signed-grant trust, classifier-complete receipts, inspection, durable publication, migration, and

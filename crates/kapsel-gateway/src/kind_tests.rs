@@ -18,9 +18,8 @@ use kube::{
 
 use crate::{
     inspect_receipt, kubernetes_adapter::KubernetesDeploymentImageAdapter, DeploymentImageAdapter,
-    ExactAuthorization, FaultPoint, GatewayError, InspectionLimits, InspectionStatus,
-    KubernetesEffectGateway, OperationResult, OperationState, ReceiptSettings, ReceiptTrust,
-    SetDeploymentImageRequest,
+    ExactAuthorization, FaultPoint, Gateway, GatewayError, InspectionLimits, InspectionStatus,
+    OperationResult, OperationState, ReceiptSettings, ReceiptTrust, SetDeploymentImageRequest,
 };
 
 const NAMESPACE: &str = "kapsel-kap0038";
@@ -189,7 +188,7 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
     };
     let directory = private_test_directory_for("success");
     let database = directory.join("journal.sqlite3");
-    let mut gateway = KubernetesEffectGateway::open_for_test(&database)?;
+    let mut gateway = Gateway::open_for_test(&database)?;
     gateway.submit_exact_for_test(&request, &authorization)?;
     let mut adapter = KubernetesDeploymentImageAdapter::new(client.clone());
     match gateway
@@ -205,7 +204,7 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
         Some(OperationState::ApplyStarted)
     );
     drop(gateway);
-    let mut gateway = KubernetesEffectGateway::open_for_test(&database)?;
+    let mut gateway = Gateway::open_for_test(&database)?;
 
     let state = gateway.run_once_with_client(client).await?;
 
@@ -270,7 +269,7 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
     fs::create_dir(&receipt_directory)?;
     fs::set_permissions(&receipt_directory, fs::Permissions::from_mode(0o700))?;
     let database = directory.join("journal.sqlite3");
-    let mut gateway = KubernetesEffectGateway::open_for_test(&database)?;
+    let mut gateway = Gateway::open_for_test(&database)?;
     gateway.submit_exact_for_test(&request, &authorization)?;
     let mut first_adapter = CountingAdapter::new(client.clone());
     match gateway
@@ -284,7 +283,7 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
     assert_eq!(first_adapter.apply_calls, 1);
     drop(gateway);
 
-    let mut gateway = KubernetesEffectGateway::open_for_test(&database)?;
+    let mut gateway = Gateway::open_for_test(&database)?;
     let mut recovery_adapter = CountingAdapter::new(client);
     assert_eq!(
         gateway

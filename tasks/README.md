@@ -7,8 +7,8 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-Only the first unfinished packet is active. Later packets remain blocked so transport, packaging, or
-release work cannot outrun the deep gateway and application interface.
+KAP-0040 is the active packet. Later packets remain blocked so transport, packaging, or release work
+cannot outrun the deep gateway and application interface.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |

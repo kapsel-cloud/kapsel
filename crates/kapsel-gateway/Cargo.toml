@@ -1,5 +1,5 @@
 [package]
-name = "kapsel-kubernetes-effect-gateway"
+name = "kapsel-gateway"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

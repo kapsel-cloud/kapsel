@@ -11,9 +11,11 @@ protocol semantics.
 
 ## Short answer
 
-KAP-0038 is one deep Rust module for one bounded Kubernetes Deployment image operation. Its
-implementation owns validation, journaling, conditional mutation, reconciliation, receiver
-classification, receipt construction, immutable publication, and offline inspection.
+KAP-0038 is one deep Rust package, `kapsel-gateway`, for one bounded Kubernetes Deployment image
+operation. Its `Gateway` entry type owns validation, journaling, conditional mutation,
+reconciliation, receiver classification, receipt construction, immutable publication, and offline
+inspection. Concrete operation names, including `SetDeploymentImageRequest`, keep the Kubernetes
+scope visible at the interface.
 
 ```text
 bounded request + signed exact grant + application-configured trust
@@ -34,7 +36,7 @@ There is no public application command or MCP entrypoint yet.
 
 | Module                              | Owns                                                                                             | Refuses to own                                                        |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| Kubernetes effect gateway           | One request grammar, signed exact-grant verification, lifecycle, recovery, and finalization      | Another capability, generic runtime, or policy language               |
+| `kapsel-gateway` / `Gateway`        | One request grammar, signed exact-grant verification, lifecycle, recovery, and finalization      | Another capability, generic runtime, or policy language               |
 | SQLite journal                      | FULL-synchronous rollback journal, bounded operations, guarded transitions, frozen receipt bytes | Generic storage interface or distributed scheduling                   |
 | Kubernetes Deployment image adapter | Safe target reads, one conditional strategic merge patch, and bounded rollout observation        | Generic Kubernetes abstraction or arbitrary manifests/patches         |
 | Receiver-fact module                | Bounded Kubernetes facts and `SUCCEEDED`/`FAILED`/`UNKNOWN` classification                       | Provider truth, causation, or complete cluster health                 |
@@ -62,7 +64,9 @@ planned CLI or MCP adapter
 ```
 
 The private Kubernetes adapter seam exists to prove provider call counts and crash recovery with a
-deterministic fake. One production adapter does not establish a reusable provider model.
+deterministic fake. One production adapter does not establish a reusable provider model. The
+repository-only `kapsel-dev` package owns development automation such as hook installation and
+future tidy checks; it is tooling, not part of the gateway interface or dependency path.
 
 ## Failure structure
 

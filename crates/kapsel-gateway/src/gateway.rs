@@ -1,7 +1,7 @@
-//! Prototype-scoped gateway for one authorized Kubernetes Deployment image change.
+//! Deep implementation of the one authorized Kubernetes Deployment image operation.
 //!
-//! This crate owns the KAP-0038 request, exact authorization, durable lifecycle, Kubernetes
-//! interaction, and recovery. It deliberately exposes no generic capability or provider contract.
+//! This module owns orchestration and its private test seams. The crate root remains a compact map
+//! of the caller-visible interface and concrete internal owners.
 
 use std::{
     error::Error,
@@ -10,26 +10,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod authorization;
-mod journal;
 #[cfg(test)]
-mod kind_tests;
-mod kubernetes_adapter;
-mod kubernetes_facts;
-mod publication;
-mod receipt;
-
-pub use authorization::{sign_authorization_grant, AuthorizationTrust};
-pub use receipt::{
-    inspect_receipt, InspectionLimits, InspectionReport, InspectionStatus, ReceiptError,
-    ReceiptStatement, ReceiptTrust,
+use crate::authorization::sign_authorization_grant;
+use crate::{
+    authorization::{verify_authorization_grant, AuthorizationTrust},
+    journal::Journal,
+    kubernetes_adapter::KubernetesDeploymentImageAdapter,
+    kubernetes_facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
+    publication,
+    receipt::{self, sign_statement},
 };
-
-use authorization::verify_authorization_grant;
-use journal::Journal;
-use kubernetes_adapter::KubernetesDeploymentImageAdapter;
-use kubernetes_facts::{ApplyOutcome, ReceiverObservation, TargetIdentity};
-use receipt::sign_statement;
 
 /// The one bounded Kubernetes effect accepted by the experiment.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,7 +64,7 @@ pub struct ExactAuthorization {
 }
 
 impl ExactAuthorization {
-    fn validate(&self) -> Result<(), GatewayError> {
+    pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         validate_identity(InputField::AuthorizationId, &self.authorization_id)?;
         validate_identity(InputField::OperationId, &self.operation_id)?;
         validate_dns_label(InputField::Namespace, &self.namespace)?;
@@ -134,7 +124,7 @@ pub enum TargetRejection {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TargetReadError {
+pub enum TargetReadError {
     Transient,
     Permanent(TargetRejection),
 }
@@ -150,9 +140,9 @@ pub enum OperationResult {
     Unknown,
 }
 
-const WRITE_STRATEGY: &str = "conditional-strategic-merge-patch";
+pub const WRITE_STRATEGY: &str = "conditional-strategic-merge-patch";
 
-trait DeploymentImageAdapter {
+pub trait DeploymentImageAdapter {
     fn identify(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -171,7 +161,7 @@ trait DeploymentImageAdapter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FaultPoint {
+pub enum FaultPoint {
     RequestedCommitted,
     AuthorizedCommitted,
     TargetRejectedCommitted,
@@ -206,21 +196,21 @@ pub struct ReceiptReference {
     pub digest: String,
 }
 
-struct FrozenReceipt {
-    operation_id: String,
-    bytes: Vec<u8>,
-    digest: String,
-    path: PathBuf,
-    key_id: String,
+pub struct FrozenReceipt {
+    pub operation_id: String,
+    pub bytes: Vec<u8>,
+    pub digest: String,
+    pub path: PathBuf,
+    pub key_id: String,
 }
 
 /// SQLite-backed entry point for the one experiment operation.
-pub struct KubernetesEffectGateway {
+pub struct Gateway {
     journal: Journal,
     authorization_trust: AuthorizationTrust,
 }
 
-impl KubernetesEffectGateway {
+impl Gateway {
     /// Opens or creates the prototype journal.
     pub fn open(
         path: impl AsRef<Path>,
@@ -277,7 +267,7 @@ impl KubernetesEffectGateway {
     }
 
     #[cfg(test)]
-    fn open_for_test(path: impl AsRef<Path>) -> Result<Self, GatewayError> {
+    pub(crate) fn open_for_test(path: impl AsRef<Path>) -> Result<Self, GatewayError> {
         use ed25519_dalek::SigningKey;
 
         let seed = [7_u8; 32];
@@ -291,7 +281,7 @@ impl KubernetesEffectGateway {
     }
 
     #[cfg(test)]
-    fn submit_exact_for_test(
+    pub(crate) fn submit_exact_for_test(
         &self,
         request: &SetDeploymentImageRequest,
         authorization: &ExactAuthorization,
@@ -453,7 +443,7 @@ impl KubernetesEffectGateway {
     // Application composition will supply explicit Kubernetes authority in the CLI slice. Keeping
     // this concrete path private avoids exposing the one-adapter proof seam as a generic interface.
     #[allow(dead_code)]
-    async fn run_once_with_client(
+    pub(crate) async fn run_once_with_client(
         &mut self,
         client: kube::Client,
     ) -> Result<Option<OperationState>, GatewayError> {
@@ -463,7 +453,7 @@ impl KubernetesEffectGateway {
 
     // The exclusive borrow prevents overlapping journal transitions while provider I/O is pending.
     #[allow(clippy::needless_pass_by_ref_mut, dead_code)]
-    async fn run_once_with_adapter<A: DeploymentImageAdapter + Send>(
+    pub(crate) async fn run_once_with_adapter<A: DeploymentImageAdapter + Send>(
         &mut self,
         adapter: &mut A,
         fault: Option<FaultPoint>,
@@ -662,7 +652,7 @@ impl Error for GatewayError {
     }
 }
 
-fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayError> {
+pub fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayError> {
     if value.is_empty()
         || value.len() > 128
         || !value
@@ -674,7 +664,7 @@ fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayError>
     Ok(())
 }
 
-fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayError> {
+pub fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayError> {
     let bytes = value.as_bytes();
     if bytes.is_empty()
         || bytes.len() > 63
@@ -690,7 +680,7 @@ fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayError
     Ok(())
 }
 
-fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), GatewayError> {
+pub fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), GatewayError> {
     if value.is_empty()
         || value.len() > 253
         || value
@@ -702,7 +692,7 @@ fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), GatewayE
     Ok(())
 }
 
-fn validate_immutable_image(value: &str) -> Result<(), GatewayError> {
+pub fn validate_immutable_image(value: &str) -> Result<(), GatewayError> {
     if value.is_empty() || value.len() > 512 || !value.is_ascii() {
         return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
     }
@@ -752,6 +742,7 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use super::*;
+    use crate::{journal, kubernetes_facts, *};
 
     fn database_path(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -772,7 +763,7 @@ mod tests {
     #[test]
     fn journal_uses_full_synchronous_rollback_durability() {
         let path = database_path("sqlite-durability");
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         let journal_mode = gateway
             .journal
             .connection
@@ -1038,7 +1029,7 @@ mod tests {
         if scenario == "mutation" {
             let patch_count =
                 PathBuf::from(std::env::var_os("KAPSEL_PROCESS_PATCH_COUNT").unwrap());
-            let mut gateway = KubernetesEffectGateway::open_for_test(&database).unwrap();
+            let mut gateway = Gateway::open_for_test(&database).unwrap();
             let mut adapter = ProcessMutationAdapter {
                 ready_path: ready,
                 patch_count_path: patch_count,
@@ -1053,7 +1044,7 @@ mod tests {
         }
         assert_eq!(scenario, "receipt");
         let output = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_OUTPUT").unwrap());
-        let gateway = KubernetesEffectGateway::open_for_test(&database).unwrap();
+        let gateway = Gateway::open_for_test(&database).unwrap();
         assert!(matches!(
             gateway.finalize_receipt_once_with_fault(
                 &ReceiptSettings {
@@ -1083,7 +1074,7 @@ mod tests {
             .args([
                 "--ignored",
                 "--exact",
-                "tests::process_kill_child",
+                "gateway::tests::process_kill_child",
                 "--nocapture",
                 "--test-threads=1",
             ])
@@ -1126,7 +1117,7 @@ mod tests {
     #[test]
     fn mutable_image_is_rejected_before_persistence() {
         let path = database_path("mutable-image");
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         let mut request = request();
         request.immutable_image_digest = "registry.example/example/agent-api:latest".into();
         let authorization = authorization(&request);
@@ -1142,7 +1133,7 @@ mod tests {
     #[test]
     fn exact_authorization_is_required_before_persistence() {
         let path = database_path("authorization-mismatch");
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         let request = request();
         let mut authorization = authorization(&request);
         authorization.container = "other".into();
@@ -1158,7 +1149,7 @@ mod tests {
     #[test]
     fn self_signed_or_malformed_grant_fails_before_persistence() {
         let path = database_path("untrusted-grant");
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         let request = request();
         let self_signed = sign_authorization_grant(
             &authorization(&request),
@@ -1182,7 +1173,7 @@ mod tests {
     #[test]
     fn exact_submission_is_idempotent_but_changed_identity_facts_conflict() {
         let path = database_path("identity");
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         let request = request();
         let exact_authorization = authorization(&request);
 
@@ -1244,7 +1235,7 @@ mod tests {
             },
         ];
         for invalid in invalid_requests {
-            let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let gateway = Gateway::open_for_test(&path).unwrap();
             let authorization = authorization(&invalid);
             assert!(matches!(
                 gateway.submit_exact_for_test(&invalid, &authorization),
@@ -1272,7 +1263,7 @@ mod tests {
         maximum.immutable_image_digest = format!("{}@sha256:{}", "i".repeat(440), "0".repeat(64));
         let mut maximum_authorization = authorization(&maximum);
         maximum_authorization.authorization_id = "a".repeat(128);
-        let maximum_gateway = KubernetesEffectGateway::open_for_test(&maximum_path).unwrap();
+        let maximum_gateway = Gateway::open_for_test(&maximum_path).unwrap();
         assert_eq!(
             maximum_gateway
                 .submit_exact_for_test(&maximum, &maximum_authorization)
@@ -1283,7 +1274,7 @@ mod tests {
         fs::remove_dir_all(maximum_path.parent().unwrap()).unwrap();
 
         let invalid_path = database_path("above-maxima");
-        let invalid_gateway = KubernetesEffectGateway::open_for_test(&invalid_path).unwrap();
+        let invalid_gateway = Gateway::open_for_test(&invalid_path).unwrap();
         let invalid_requests = [
             {
                 let mut value = request();
@@ -1338,7 +1329,7 @@ mod tests {
     #[test]
     fn full_journal_preserves_existing_idempotency_and_rejects_new_identity() {
         let path = database_path("journal-capacity");
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         {
             let mut existing = request();
             existing.operation_id = "op-0".into();
@@ -1408,7 +1399,7 @@ mod tests {
         let request = request();
         let authorization = authorization(&request);
         {
-            let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let gateway = Gateway::open_for_test(&path).unwrap();
             assert!(matches!(
                 gateway.submit_exact_with_fault_for_test(
                     &request,
@@ -1422,7 +1413,7 @@ mod tests {
                 Some(OperationState::Requested)
             );
         }
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         let mut mismatch = authorization.clone();
         mismatch.container = "other".into();
         assert!(matches!(
@@ -1452,7 +1443,7 @@ mod tests {
         let path = database_path("authorized-recovery");
         let request = request();
         {
-            let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let gateway = Gateway::open_for_test(&path).unwrap();
             assert!(matches!(
                 gateway.submit_exact_with_fault_for_test(
                     &request,
@@ -1466,7 +1457,7 @@ mod tests {
                 Some(OperationState::Authorized)
             );
         }
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         let mut adapter = failed_adapter(&path, &request);
         assert_eq!(
             gateway
@@ -1490,7 +1481,7 @@ mod tests {
         let mut later = request();
         later.operation_id = "op-b".into();
         {
-            let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&rejected, &authorization(&rejected))
                 .unwrap();
@@ -1503,7 +1494,7 @@ mod tests {
             TargetRejection::ContainerNotFound,
         );
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             assert!(matches!(
                 gateway
                     .run_once_with_adapter(&mut adapter, Some(FaultPoint::TargetRejectedCommitted),)
@@ -1524,7 +1515,7 @@ mod tests {
                 None
             );
         }
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
                 .run_once_with_adapter(&mut adapter, None)
@@ -1550,7 +1541,7 @@ mod tests {
         deferred.operation_id = "op-a".into();
         let mut later = request();
         later.operation_id = "op-b".into();
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
             .submit_exact_for_test(&deferred, &authorization(&deferred))
             .unwrap();
@@ -1594,7 +1585,7 @@ mod tests {
         let request = request();
         let mut adapter = failed_adapter(&path, &request);
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -1611,7 +1602,7 @@ mod tests {
             assert_eq!(adapter.identify_calls, 1);
             assert_eq!(adapter.apply_calls, 0);
         }
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
                 .run_once_with_adapter(&mut adapter, None)
@@ -1630,7 +1621,7 @@ mod tests {
         let path = database_path("process-kill-mutation");
         let request = request();
         {
-            let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -1642,7 +1633,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&patch_count).unwrap(), "1");
         kill_child(&mut child);
 
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway.get(&request.operation_id).unwrap(),
             Some(OperationState::ApplyStarted)
@@ -1671,12 +1662,12 @@ mod tests {
     async fn worker_lock_prevents_overlapping_provider_activity() {
         let path = database_path("worker-lock");
         let request = request();
-        let first_gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let first_gateway = Gateway::open_for_test(&path).unwrap();
         first_gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
         let worker_lock = first_gateway.journal.try_lock_worker().unwrap().unwrap();
-        let mut second_gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut second_gateway = Gateway::open_for_test(&path).unwrap();
         let mut adapter = failed_adapter(&path, &request);
 
         assert_eq!(
@@ -1709,7 +1700,7 @@ mod tests {
         let request = request();
         let mut adapter = failed_adapter(&path, &request);
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -1724,7 +1715,7 @@ mod tests {
                 Some(OperationState::ApplyStarted)
             );
         }
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
 
         assert_eq!(
             gateway
@@ -1763,7 +1754,7 @@ mod tests {
         let mut adapter = failed_adapter(&path, &request);
         adapter.observation = ReceiverObservation::unknown();
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -1774,7 +1765,7 @@ mod tests {
                 Err(GatewayError::InjectedFault)
             ));
         }
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
             .run_once_with_adapter(&mut adapter, None)
             .await
@@ -1819,7 +1810,7 @@ mod tests {
             let request = request();
             let mut adapter = failed_adapter(&path, &request);
             {
-                let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+                let mut gateway = Gateway::open_for_test(&path).unwrap();
                 gateway
                     .submit_exact_for_test(&request, &authorization(&request))
                     .unwrap();
@@ -1830,7 +1821,7 @@ mod tests {
                     Err(GatewayError::InjectedFault)
                 ));
             }
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             let state = gateway.get(&request.operation_id).unwrap().unwrap();
             if matches!(
                 state,
@@ -1867,7 +1858,7 @@ mod tests {
     async fn receipt_statement_retains_exact_available_condition_reason() {
         let path = database_path("receipt-available-reason");
         let request = request();
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
@@ -1901,7 +1892,7 @@ mod tests {
     async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
         let path = database_path("receipt-first-tracer");
         let request = request();
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
@@ -2050,7 +2041,7 @@ mod tests {
         let seed = [11_u8; 32];
         let request = request();
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -2076,7 +2067,7 @@ mod tests {
                 Some(OperationState::ReceiptWritten)
             );
         }
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
                 .finalize_receipt_once(&ReceiptSettings {
@@ -2115,7 +2106,7 @@ mod tests {
         let output_directory = fs::canonicalize(output_directory).unwrap();
         let request = request();
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -2140,7 +2131,7 @@ mod tests {
             );
             assert_eq!(fs::read_dir(&output_directory).unwrap().count(), 0);
         }
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
                 .finalize_receipt_once(&ReceiptSettings {
@@ -2169,7 +2160,7 @@ mod tests {
         let output_directory = fs::canonicalize(output_directory).unwrap();
         let request = request();
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -2194,7 +2185,7 @@ mod tests {
         let rotated_directory = path.parent().unwrap().join("rotated-receipts");
         private_directory(&rotated_directory);
         let rotated_directory = fs::canonicalize(rotated_directory).unwrap();
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway.get(&request.operation_id).unwrap(),
             Some(OperationState::ReceiptPrepared)
@@ -2244,7 +2235,7 @@ mod tests {
         let seed = [13_u8; 32];
         let request = request();
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -2272,7 +2263,7 @@ mod tests {
         let rotated_directory = path.parent().unwrap().join("rotated-receipts");
         private_directory(&rotated_directory);
         let rotated_directory = fs::canonicalize(rotated_directory).unwrap();
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
                 .finalize_receipt_once(&ReceiptSettings {
@@ -2303,7 +2294,7 @@ mod tests {
         let seed = [14_u8; 32];
         let request = request();
         {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -2324,7 +2315,7 @@ mod tests {
                 Err(GatewayError::InjectedFault)
             ));
         }
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway.get(&request.operation_id).unwrap(),
             Some(OperationState::Finalized)
@@ -2349,7 +2340,7 @@ mod tests {
         let output_directory = path.parent().unwrap().join("receipts");
         let seed = [12_u8; 32];
         let request = request();
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
@@ -2400,7 +2391,7 @@ mod tests {
         let output_directory = fs::canonicalize(output_directory).unwrap();
         let seed = [21_u8; 32];
         let request = request();
-        let mut first = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut first = Gateway::open_for_test(&path).unwrap();
         first
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
@@ -2409,7 +2400,7 @@ mod tests {
             .await
             .unwrap();
         let worker_lock = first.journal.try_lock_worker().unwrap().unwrap();
-        let contender = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let contender = Gateway::open_for_test(&path).unwrap();
 
         assert_eq!(
             contender
@@ -2504,8 +2495,8 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        drop(KubernetesEffectGateway::open_for_test(&path).unwrap());
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        drop(Gateway::open_for_test(&path).unwrap());
+        let gateway = Gateway::open_for_test(&path).unwrap();
         assert!(matches!(
             gateway.journal.receipt_statement(&request.operation_id),
             Err(GatewayError::InvalidPersistedState)
@@ -2539,7 +2530,7 @@ mod tests {
         let seed = [23_u8; 32];
         let request = request();
         let reference = {
-            let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .submit_exact_for_test(&request, &authorization(&request))
                 .unwrap();
@@ -2565,7 +2556,7 @@ mod tests {
         };
         let exact = publication::read_receipt(&reference.path).unwrap();
         fs::remove_file(&reference.path).unwrap();
-        let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
                 .finalize_receipt_once(&ReceiptSettings {
@@ -2592,7 +2583,7 @@ mod tests {
             .unwrap()
             .join(OsString::from_vec(b"receipts-\xff".to_vec()));
         let request = request();
-        let mut gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
@@ -2749,7 +2740,7 @@ mod tests {
             ),
         ];
         for image in invalid_images {
-            let gateway = KubernetesEffectGateway::open_for_test(&path).unwrap();
+            let gateway = Gateway::open_for_test(&path).unwrap();
             let mut request = request();
             request.operation_id = format!("op-{}", image.len());
             request.immutable_image_digest = image.into();

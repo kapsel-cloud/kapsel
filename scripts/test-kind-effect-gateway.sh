@@ -51,7 +51,7 @@ if grep -Fqx "$cluster_name" <<<"$existing_clusters"; then
   printf 'refusing to use existing kind cluster: %s\n' "$cluster_name" >&2
   exit 1
 fi
-cargo test --locked -p kapsel-kubernetes-effect-gateway --no-run
+cargo test --locked -p kapsel-gateway --no-run
 cluster_owned=1
 kind create cluster \
   --name "$cluster_name" \
@@ -62,7 +62,7 @@ docker exec "${cluster_name}-control-plane" crictl pull "$fixture_image"
 docker exec "${cluster_name}-control-plane" crictl pull "$target_image"
 
 KAPSEL_KIND_TEST=1 cargo test --locked \
-  -p kapsel-kubernetes-effect-gateway \
+  -p kapsel-gateway \
   kind_tests::kind_changes_exactly_one_container_through_the_gateway \
   -- \
   --ignored \
@@ -70,7 +70,7 @@ KAPSEL_KIND_TEST=1 cargo test --locked \
   --nocapture
 
 KAPSEL_KIND_TEST=1 cargo test --locked \
-  -p kapsel-kubernetes-effect-gateway \
+  -p kapsel-gateway \
   kind_tests::kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt \
   -- \
   --ignored \
