@@ -5,7 +5,8 @@ Read this file first. It routes work; current technical truth lives in the linke
 ## Start here
 
 1. Read [`README.md`](README.md) and [`docs/V1.md`](docs/V1.md).
-2. Read the active packet, [`tasks/KAP-0038.md`](tasks/KAP-0038.md).
+2. Read the [technical task route](tasks/README.md) and active packet,
+   [`tasks/KAP-0039.md`](tasks/KAP-0039.md).
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.

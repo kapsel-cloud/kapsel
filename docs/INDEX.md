@@ -18,7 +18,7 @@ Owns: Question-to-owner routing and document authority order.
 | What do current terms mean?                  | [Glossary](GLOSSARY.md)                                                                 |
 | How should Rust be shaped?                   | [Style](STYLE.md)                                                                       |
 | How is a change reviewed?                    | [Review](REVIEW.md)                                                                     |
-| What work remains?                           | [KAP-0038](../tasks/KAP-0038.md)                                                        |
+| What work remains?                           | [Technical task route](../tasks/README.md)                                              |
 | Why were current durable choices made?       | [Decisions](decisions/README.md)                                                        |
 | How do I report a vulnerability?             | [Security policy](../SECURITY.md)                                                       |
 
