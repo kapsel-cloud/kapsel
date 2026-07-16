@@ -34,10 +34,27 @@ class LinkTarget:
 def tracked_markdown() -> list[Path]:
     """Return tracked Markdown paths under the repository root."""
 
-    output = subprocess.check_output(
-        ["git", "ls-files", "*.md"], cwd=ROOT, text=True
+    try:
+        output = subprocess.check_output(
+            ["git", "ls-files", "*.md"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return sorted(
+            path
+            for path in ROOT.rglob("*.md")
+            if "target" not in path.relative_to(ROOT).parts
+        )
+    paths = [ROOT / line for line in output.splitlines() if line]
+    if paths:
+        return paths
+    return sorted(
+        path
+        for path in ROOT.rglob("*.md")
+        if "target" not in path.relative_to(ROOT).parts
     )
-    return [ROOT / line for line in output.splitlines() if line]
 
 
 def markdown_without_fences(path: Path) -> list[str]:

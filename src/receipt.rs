@@ -867,7 +867,7 @@ fn bounded(input: &[u8], maximum_bytes: usize) -> Result<(), ReceiptError> {
     }
 }
 
-fn validate_key_id(value: &str) -> Result<(), ReceiptError> {
+pub fn validate_key_id(value: &str) -> Result<(), ReceiptError> {
     validate_identity(InputField::AuthorizationId, value).map_err(|_| ReceiptError::InvalidValue)
 }
 

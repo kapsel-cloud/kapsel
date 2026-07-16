@@ -651,12 +651,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "kapsel-dev"
-version = "0.1.0"
-
-[[package]]
-name = "kapsel-gateway"
-version = "0.1.0"
+name = "kapsel"
+version = "0.1.0-alpha.1"
 dependencies = [
  "ed25519-dalek",
  "http",
@@ -669,6 +665,10 @@ dependencies = [
  "tokio",
  "tower-test",
 ]
+
+[[package]]
+name = "kapsel-dev"
+version = "0.1.0-alpha.1"
 
 [[package]]
 name = "kube"

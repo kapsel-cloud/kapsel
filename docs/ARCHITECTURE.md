@@ -11,8 +11,8 @@ protocol semantics.
 
 ## Short answer
 
-KAP-0038 is one deep Rust package, `kapsel-gateway`, for one bounded Kubernetes Deployment image
-operation. Its `Gateway` entry type owns validation, journaling, conditional mutation,
+KAP-0038 is one deep Rust product package, `kapsel`, for one bounded Kubernetes Deployment image
+operation. Its `Gateway` module entry type owns validation, journaling, conditional mutation,
 reconciliation, receiver classification, receipt construction, immutable publication, and offline
 inspection. Concrete operation names, including `SetDeploymentImageRequest`, keep the Kubernetes
 scope visible at the interface.
@@ -36,7 +36,7 @@ There is no public application command or MCP entrypoint yet.
 
 | Module                              | Owns                                                                                             | Refuses to own                                                        |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| `kapsel-gateway` / `Gateway`        | One request grammar, signed exact-grant verification, lifecycle, recovery, and finalization      | Another capability, generic runtime, or policy language               |
+| `kapsel` / `Gateway`                | One request grammar, signed exact-grant verification, lifecycle, recovery, and finalization      | Another capability, generic runtime, or policy language               |
 | SQLite journal                      | FULL-synchronous rollback journal, bounded operations, guarded transitions, frozen receipt bytes | Generic storage interface or distributed scheduling                   |
 | Kubernetes Deployment image adapter | Safe target reads, one conditional strategic merge patch, and bounded rollout observation        | Generic Kubernetes abstraction or arbitrary manifests/patches         |
 | Receiver-fact module                | Bounded Kubernetes facts and `SUCCEEDED`/`FAILED`/`UNKNOWN` classification                       | Provider truth, causation, or complete cluster health                 |
@@ -46,27 +46,47 @@ There is no public application command or MCP entrypoint yet.
 The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 
-## Planned adapters
+## Application composition
 
-Application composition will eventually supply owner-controlled configuration, Kubernetes authority,
-signing material, journal path, and receipt directory. A later MCP adapter may convert one bounded
-tool call into the same experiment request.
+The root `kapsel` package exposes one compile-time `Application` composition root. Its
+`OperatorConfiguration` supplies one owner-signed exact grant, application-configured grant trust, a
+concrete Kubernetes client, receipt signing material, journal path, and receipt directory. The
+configuration type deliberately has no `Debug` implementation. Grant trust and canonical bytes,
+receipt key identity, the private receipt directory, and an absolute journal path beneath a private
+non-symlink directory are validated before the journal is opened. Journal and worker-lock files are
+owner-private.
 
-Both are planned. Neither is present in the current runnable command surface. They must remain thin,
-compile-time-composed adapters; they must not sequence durable states or expose credentials.
+The caller submits only `AgentRequest`, an alias for the concrete `SetDeploymentImageRequest`; it
+cannot provide grants, trust, Kubernetes authority, signing material, paths, or fault controls. The
+`Application::execute` submits intent and owns all subsequent lifecycle sequencing with the
+configured Kubernetes and receipt authority. `Application::reconcile` resumes the exact configured
+operation after restart, and both return one typed `OperationReport`. Reconciliation and receipt
+finalization select that exact operation identity even if the journal contains another operation.
+Exact grant provisioning is a separate operator function requiring signing material.
+
+This is a Rust application interface, not a configuration-file or command grammar. There is still no
+public runnable command. Later local and MCP adapters must convert into this same application
+interface without sequencing durable states or exposing credentials.
 
 ## Dependency direction
 
 ```text
 planned CLI or MCP adapter
-  -> KAP-0038 effect-gateway module
-       -> private concrete implementation modules
+  -> `kapsel` application composition
+       -> KAP-0038 effect-gateway module
+            -> private concrete implementation modules
 ```
 
 The private Kubernetes adapter seam exists to prove provider call counts and crash recovery with a
 deterministic fake. One production adapter does not establish a reusable provider model. The
 repository-only `kapsel-dev` package owns development automation such as hook installation and
-future tidy checks; it is tooling, not part of the gateway interface or dependency path.
+future tidy checks; it is tooling, not part of the product package, gateway interface, or dependency
+path.
+
+The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
+product implementation together while allowing `crates/kapsel-dev` to remain unpublished. A
+crates.io alpha distributes the implemented experiment for Rust evaluation; it does not establish a
+stable library interface, complete the evaluator command, or satisfy V1 release acceptance.
 
 ## Failure structure
 

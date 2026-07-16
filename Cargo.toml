@@ -1,14 +1,63 @@
+[package]
+name = "kapsel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Crash-recoverable gateway for one authorized Kubernetes Deployment image operation"
+documentation = "https://docs.rs/kapsel"
+homepage = "https://github.com/mitander/kapsel"
+readme = "README.md"
+keywords = ["agents", "kubernetes", "security", "recovery", "receipts"]
+categories = ["development-tools"]
+include = [
+  "/src/**",
+  "/vectors/**",
+  "/docs/**",
+  "/tasks/**",
+  "/scripts/**",
+  "/Makefile.toml",
+  "/rust-toolchain.toml",
+  "/rustfmt.toml",
+  "/rustfmt-nightly.toml",
+  "/clippy.toml",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/SECURITY.md",
+]
+
 [workspace]
-members = ["crates/kapsel-dev", "crates/kapsel-gateway"]
+members = ["crates/kapsel-dev"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 authors = ["Kapsel Contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/mitander/kapsel"
 rust-version = "1.96"
+
+[dependencies]
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["signature", "zeroize"] }
+k8s-openapi = { version = "=0.28.0", features = ["v1_33"] }
+kube = { version = "=4.0.0", default-features = false, features = ["client", "ring", "rustls-tls"] }
+rusqlite = { version = "=0.40.1", features = ["bundled"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
+serde_json = "=1.0.150"
+sha2 = "=0.11.0"
+tokio = { version = "=1.52.3", features = ["time"] }
+
+[dev-dependencies]
+http = "=1.4.2"
+tokio = { version = "=1.52.3", features = ["macros", "rt", "time"] }
+tower-test = "=0.4.0"
+
+[lints]
+workspace = true
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

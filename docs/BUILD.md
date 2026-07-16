@@ -40,8 +40,8 @@ cargo make fmt-check
 The narrow deterministic gate for KAP-0038 is:
 
 ```sh
-cargo test --locked -p kapsel-gateway
-cargo clippy --locked -p kapsel-gateway --all-targets -- -D warnings
+cargo test --locked -p kapsel
+cargo clippy --locked -p kapsel --all-targets -- -D warnings
 ```
 
 Signed-grant trust, classifier-complete receipts, inspection, durable publication, migration, and
@@ -70,9 +70,10 @@ real process-kill/restart proof; the live tests use same-process fault injection
 
 ## Missing release commands
 
-No evaluator-facing operation CLI, offline-inspection CLI, MCP entrypoint, or versioned release
-artifact exists. Do not publish a quickstart or command syntax for them until implementation and
-tests exist.
+No evaluator-facing operation CLI, offline-inspection CLI, MCP entrypoint, or V1 install artifact
+exists. The pre-V1 crates.io alpha exposes only the implemented Rust experiment interface; it does
+not satisfy the V1 artifact, command, or platform-support contract. Do not publish a quickstart or
+command syntax for missing surfaces until implementation and tests exist.
 
 ## Toolchain
 

@@ -206,7 +206,7 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
     drop(gateway);
     let mut gateway = Gateway::open_for_test(&database)?;
 
-    let state = gateway.run_once_with_client(client).await?;
+    let state = gateway.run_once(client).await?;
 
     assert_eq!(state, Some(OperationState::ReceiverObserved));
     assert_eq!(

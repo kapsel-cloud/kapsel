@@ -4,11 +4,14 @@
 //! is not a generic repository interface and is not exposed outside the effect-gateway crate.
 
 use std::{
-    fs::{File, OpenOptions, TryLockError},
+    fs::{self, File, TryLockError},
+    io,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
+use rustix::fs::{open, Mode, OFlags};
 
 use crate::{
     authorization::VerifiedAuthorization,
@@ -26,6 +29,13 @@ pub struct Journal {
 
 pub struct WorkerLock<'a> {
     file: &'a File,
+}
+
+pub struct OperationSnapshot {
+    pub state: OperationState,
+    pub result: Option<OperationResult>,
+    pub target_rejection: Option<TargetRejection>,
+    pub receipt: Option<ReceiptReference>,
 }
 
 impl Drop for WorkerLock<'_> {
@@ -104,7 +114,12 @@ impl OperationResult {
 impl Journal {
     pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, GatewayError> {
         let path = path.as_ref();
+        let database_file = open_private_file(path).map_err(GatewayError::JournalFile)?;
+        let database_identity = database_file
+            .metadata()
+            .map_err(GatewayError::JournalFile)?;
         let mut connection = Connection::open(path).map_err(GatewayError::Database)?;
+        require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
         connection
             .pragma_update(None, "journal_mode", "DELETE")
             .map_err(GatewayError::Database)?;
@@ -120,12 +135,10 @@ impl Journal {
         if !journal_mode.eq_ignore_ascii_case("delete") || synchronous != 2 {
             return Err(GatewayError::InvalidPersistedState);
         }
-        let worker_lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(worker_lock_path(path))
+        let worker_lock_path = worker_lock_path(path);
+        let worker_lock = open_private_file(&worker_lock_path).map_err(GatewayError::WorkerLock)?;
+        let worker_lock_identity = worker_lock.metadata().map_err(GatewayError::WorkerLock)?;
+        require_named_identity(&worker_lock_path, &worker_lock_identity)
             .map_err(GatewayError::WorkerLock)?;
         connection
             .execute_batch(
@@ -310,6 +323,7 @@ impl Journal {
         changed_one(changed)
     }
 
+    #[cfg(test)]
     pub(super) fn state(&self, operation_id: &str) -> Result<Option<OperationState>, GatewayError> {
         self.connection
             .query_row(
@@ -323,6 +337,59 @@ impl Journal {
             .transpose()
     }
 
+    pub(super) fn operation_snapshot(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationSnapshot>, GatewayError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT state, result, target_rejection, receipt_path, receipt_digest
+                 FROM kubernetes_image_operations
+                 WHERE operation_id = ?1",
+                [operation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(GatewayError::Database)?;
+        let Some((state, result, rejection, receipt_path, receipt_digest)) = row else {
+            return Ok(None);
+        };
+        let state = OperationState::from_sql(&state)?;
+        let result = result
+            .map(|value| OperationResult::from_sql(&value))
+            .transpose()?;
+        let target_rejection = rejection
+            .map(|value| TargetRejection::from_sql(&value))
+            .transpose()?;
+        let receipt = if state == OperationState::Finalized {
+            match (receipt_path, receipt_digest) {
+                (Some(path), Some(digest)) => Some(ReceiptReference {
+                    path: PathBuf::from(path),
+                    digest,
+                }),
+                _ => return Err(GatewayError::InvalidPersistedState),
+            }
+        } else {
+            None
+        };
+        Ok(Some(OperationSnapshot {
+            state,
+            result,
+            target_rejection,
+            receipt,
+        }))
+    }
+
+    #[cfg(test)]
     pub(super) fn target_rejection(
         &self,
         operation_id: &str,
@@ -341,6 +408,7 @@ impl Journal {
             .transpose()
     }
 
+    #[cfg(test)]
     pub(super) fn result(
         &self,
         operation_id: &str,
@@ -434,6 +502,7 @@ impl Journal {
         changed_one(changed)
     }
 
+    #[cfg(test)]
     pub(super) fn frozen_receipt(
         &self,
         state: OperationState,
@@ -479,6 +548,50 @@ impl Journal {
         Ok(Some(receipt))
     }
 
+    pub(super) fn frozen_receipt_for(
+        &self,
+        operation_id: &str,
+        state: OperationState,
+    ) -> Result<Option<FrozenReceipt>, GatewayError> {
+        if !matches!(
+            state,
+            OperationState::ReceiptPrepared | OperationState::ReceiptWritten
+        ) {
+            return Err(GatewayError::InvalidPersistedState);
+        }
+        let receipt = self
+            .connection
+            .query_row(
+                "SELECT operation_id, receipt_path, receipt_digest, receipt_bytes,
+                        receipt_key_id
+                 FROM kubernetes_image_operations
+                 WHERE operation_id = ?1 AND state = ?2",
+                params![operation_id, state.as_sql()],
+                |row| {
+                    Ok(FrozenReceipt {
+                        operation_id: row.get(0)?,
+                        path: PathBuf::from(row.get::<_, String>(1)?),
+                        digest: row.get(2)?,
+                        bytes: row.get(3)?,
+                        key_id: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(GatewayError::Database)?;
+        let Some(receipt) = receipt else {
+            return Ok(None);
+        };
+        if receipt.bytes.len() > crate::receipt::RECEIPT_BYTES_MAX
+            || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
+        {
+            return Err(GatewayError::ReceiptDigestMismatch);
+        }
+        validate_identity(InputField::AuthorizationId, &receipt.key_id)
+            .map_err(|_| GatewayError::InvalidPersistedState)?;
+        Ok(Some(receipt))
+    }
+
     pub(super) fn mark_finalized(&self, operation_id: &str) -> Result<(), GatewayError> {
         let changed = self
             .connection
@@ -498,6 +611,7 @@ impl Journal {
         changed_one(changed)
     }
 
+    #[cfg(test)]
     pub(super) fn receipt_reference(
         &self,
         operation_id: &str,
@@ -538,6 +652,32 @@ impl Journal {
                           operation_id
                  LIMIT 1",
                 [state.as_sql()],
+                |row| {
+                    Ok(SetDeploymentImageRequest {
+                        operation_id: row.get(0)?,
+                        namespace: row.get(1)?,
+                        deployment: row.get(2)?,
+                        container: row.get(3)?,
+                        immutable_image_digest: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(GatewayError::Database)
+    }
+
+    pub(super) fn request_in_state(
+        &self,
+        operation_id: &str,
+        state: OperationState,
+    ) -> Result<Option<SetDeploymentImageRequest>, GatewayError> {
+        self.connection
+            .query_row(
+                "SELECT operation_id, namespace, deployment, container,
+                        immutable_image_digest
+                 FROM kubernetes_image_operations
+                 WHERE operation_id = ?1 AND state = ?2",
+                params![operation_id, state.as_sql()],
                 |row| {
                     Ok(SetDeploymentImageRequest {
                         operation_id: row.get(0)?,
@@ -913,6 +1053,41 @@ fn migrate_receipt_schema(connection: &mut Connection) -> Result<(), GatewayErro
         )
         .map_err(GatewayError::Database)?;
     transaction.commit().map_err(GatewayError::Database)
+}
+
+fn open_private_file(path: &Path) -> io::Result<File> {
+    let file = File::from(open(
+        path,
+        OFlags::CREATE | OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::RUSR | Mode::WUSR,
+    )?);
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode().trailing_zeros() < 6
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "journal file is not owner-private",
+        ));
+    }
+    Ok(file)
+}
+
+fn require_named_identity(path: &Path, expected: &fs::Metadata) -> io::Result<()> {
+    let actual = fs::symlink_metadata(path)?;
+    if !actual.is_file()
+        || actual.dev() != expected.dev()
+        || actual.ino() != expected.ino()
+        || actual.uid() != expected.uid()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "journal file identity changed",
+        ));
+    }
+    Ok(())
 }
 
 fn worker_lock_path(database_path: &Path) -> PathBuf {

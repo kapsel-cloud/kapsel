@@ -20,7 +20,9 @@ identify an unresolved crash window.
 
 The relevant seams are:
 
-- agent request, owner-signed exact grant, and out-of-band application-configured grant trust;
+- request-only agent intent and the application composition boundary;
+- separately provisioned owner-signed exact grant and out-of-band application-configured grant
+  trust;
 - effect-gateway journal and signing key;
 - Kubernetes credentials and API;
 - Kubernetes deployment controller and observed rollout state;
@@ -58,9 +60,11 @@ timeout into `SUCCEEDED` or `FAILED`.
 
 An agent can request destructive or broader operations or construct self-asserted authorization. The
 experiment accepts only one exact namespace, deployment, container, and immutable image digest in a
-fixed-purpose grant signed by the configured owner key. Trust is never taken from agent or grant
-contents. This reduces the gateway input surface; it does not replace Kubernetes RBAC or prevent
-credential misuse outside Kapsel.
+fixed-purpose grant signed by the configured owner key. The application receives that grant, trust,
+Kubernetes client, signing material, and paths through operator configuration; its request-only
+caller cannot select them. Trust is never taken from agent or grant contents. This reduces the
+gateway input surface; it does not replace Kubernetes RBAC or prevent credential misuse outside
+Kapsel.
 
 ### Gateway bypass
 

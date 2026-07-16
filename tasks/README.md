@@ -7,7 +7,7 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-KAP-0040 is the active packet. Later packets remain blocked so transport, packaging, or release work
+KAP-0041 is the active packet. Later packets remain blocked so transport, packaging, or release work
 cannot outrun the deep gateway and application interface.
 
 | Order | Packet                  | Outcome                                           | Depends on |

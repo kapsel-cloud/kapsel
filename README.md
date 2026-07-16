@@ -37,14 +37,37 @@ post-patch reopen. Deterministic tests kill a separate gateway process at the mu
 publication seams. Recovery reconciles receiver state without a blind second mutation and publishes
 only durably frozen receipt bytes.
 
+The Rust `Application` interface separates request-only `AgentRequest` from operator-owned grant,
+trust, Kubernetes authority, signing material, and paths. It is available as a pre-V1 alpha for Rust
+evaluation. There is no supported public command yet.
+
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
+
+## Rust alpha
+
+The crates.io alpha exposes the implemented fixed Kubernetes experiment and offline inspector:
+
+```toml
+[dependencies]
+kapsel = "=0.1.0-alpha.1"
+```
+
+Operator composition constructs `OperatorConfiguration`, including the exact signed grant, external
+trust, Kubernetes client, receipt signing material, journal path, and private receipt directory. A
+request-only caller can then use `Application::execute`; restart recovery uses
+`Application::reconcile`, and adapters consume the resulting `OperationReport` without sequencing
+internal durable states.
+
+This Unix-only alpha does not provide a CLI, configuration-file format, stable Rust API, stable
+receipt format, or production-readiness guarantee. See the
+[experiment boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before use.
 
 ## What exists today
 
 | Surface                                          | Status                                                  |
 | ------------------------------------------------ | ------------------------------------------------------- |
-| Signed exact grant and SQLite recovery lifecycle | Implemented in the experiment library                   |
+| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                      |
 | Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate |
 | Classifier-complete receipt and inspection       | Implemented in the experiment library                   |
 | Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests           |
@@ -52,7 +75,7 @@ of exactly-once mutation, causation, complete cluster health, complete capture, 
 | Evaluator demo with real process termination     | Not implemented                                         |
 | Evaluator-facing operation and inspection CLI    | Not implemented                                         |
 | MCP-compatible entrypoint                        | Not implemented                                         |
-| Versioned release artifacts                      | Not implemented                                         |
+| V1 evaluator artifacts and checksums             | Not implemented                                         |
 
 There is no quickstart yet because there is no supported public command. The current engineering
 proof is:

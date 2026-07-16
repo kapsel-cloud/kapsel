@@ -171,9 +171,13 @@ pub enum FaultPoint {
     ApplyOutcomeCommitted,
     ReceiverRead,
     ReceiverObservedCommitted,
+    #[cfg(test)]
     ReceiptPreparedCommitted,
+    #[cfg(test)]
     ReceiptPublished,
+    #[cfg(test)]
     ReceiptWrittenCommitted,
+    #[cfg(test)]
     FinalizedCommitted,
 }
 
@@ -302,16 +306,26 @@ impl Gateway {
     }
 
     /// Reads the durable public state for one local operation identity.
+    #[cfg(test)]
     pub fn get(&self, operation_id: &str) -> Result<Option<OperationState>, GatewayError> {
         self.journal.state(operation_id)
     }
 
+    pub(crate) fn operation_snapshot(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<crate::journal::OperationSnapshot>, GatewayError> {
+        self.journal.operation_snapshot(operation_id)
+    }
+
     /// Reads a frozen receiver result when observation has completed.
+    #[cfg(test)]
     pub fn result(&self, operation_id: &str) -> Result<Option<OperationResult>, GatewayError> {
         self.journal.result(operation_id)
     }
 
     /// Reads a terminal pre-attempt target rejection, distinct from receiver result.
+    #[cfg(test)]
     pub fn target_rejection(
         &self,
         operation_id: &str,
@@ -320,6 +334,7 @@ impl Gateway {
     }
 
     /// Writes or finalizes one receipt from frozen receiver facts without Kubernetes access.
+    #[cfg(test)]
     pub fn finalize_receipt_once(
         &self,
         settings: &ReceiptSettings<'_>,
@@ -327,6 +342,47 @@ impl Gateway {
         self.finalize_receipt_once_with_fault(settings, None)
     }
 
+    pub(crate) fn finalize_operation_receipt_once(
+        &self,
+        operation_id: &str,
+        settings: &ReceiptSettings<'_>,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        let Some(_worker_lock) = self.journal.try_lock_worker()? else {
+            return Ok(None);
+        };
+        if self
+            .journal
+            .request_in_state(operation_id, OperationState::ReceiverObserved)?
+            .is_some()
+        {
+            let receipt = self.build_receipt(operation_id, settings)?;
+            publication::validate_private_directory(settings.output_directory)
+                .map_err(publication_error)?;
+            self.journal.prepare_receipt(&receipt)?;
+        }
+        if let Some(receipt) = self
+            .journal
+            .frozen_receipt_for(operation_id, OperationState::ReceiptPrepared)?
+        {
+            publication::publish_receipt(&receipt.path, &receipt.bytes)
+                .map_err(publication_error)?;
+            self.journal.mark_receipt_written(operation_id)?;
+        }
+        if let Some(receipt) = self
+            .journal
+            .frozen_receipt_for(operation_id, OperationState::ReceiptWritten)?
+        {
+            if !stored_receipt_matches(&receipt.path, &receipt.bytes)? {
+                publication::publish_receipt(&receipt.path, &receipt.bytes)
+                    .map_err(publication_error)?;
+            }
+            self.journal.mark_finalized(operation_id)?;
+            return Ok(Some(OperationState::Finalized));
+        }
+        Ok(None)
+    }
+
+    #[cfg(test)]
     fn finalize_receipt_once_with_fault(
         &self,
         settings: &ReceiptSettings<'_>,
@@ -357,6 +413,7 @@ impl Gateway {
         self.finalize_written_receipt(fault)
     }
 
+    #[cfg(test)]
     fn publish_prepared_receipt(
         &self,
         fault: Option<FaultPoint>,
@@ -373,6 +430,7 @@ impl Gateway {
         self.finalize_written_operation(&receipt.operation_id, fault)
     }
 
+    #[cfg(test)]
     fn finalize_written_receipt(
         &self,
         fault: Option<FaultPoint>,
@@ -390,6 +448,7 @@ impl Gateway {
         self.finalize_written_operation(&receipt.operation_id, fault)
     }
 
+    #[cfg(test)]
     fn finalize_written_operation(
         &self,
         operation_id: &str,
@@ -433,6 +492,7 @@ impl Gateway {
     }
 
     /// Reads the terminal receipt reference for a finalized operation.
+    #[cfg(test)]
     pub fn receipt_reference(
         &self,
         operation_id: &str,
@@ -440,15 +500,37 @@ impl Gateway {
         self.journal.receipt_reference(operation_id)
     }
 
-    // Application composition will supply explicit Kubernetes authority in the CLI slice. Keeping
-    // this concrete path private avoids exposing the one-adapter proof seam as a generic interface.
-    #[allow(dead_code)]
-    pub(crate) async fn run_once_with_client(
+    /// Advances at most one operation using explicitly supplied Kubernetes authority.
+    ///
+    /// Application composition owns the client and keeps it outside request-only caller input. The
+    /// concrete client does not establish a generic provider interface.
+    #[cfg(test)]
+    pub(crate) async fn run_once(
         &mut self,
         client: kube::Client,
     ) -> Result<Option<OperationState>, GatewayError> {
         let mut adapter = KubernetesDeploymentImageAdapter::new(client);
         self.run_once_with_adapter(&mut adapter, None).await
+    }
+
+    pub(crate) async fn run_operation_once(
+        &mut self,
+        operation_id: &str,
+        client: kube::Client,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        let mut adapter = KubernetesDeploymentImageAdapter::new(client);
+        self.run_once_with_adapter_for(&mut adapter, None, Some(operation_id))
+            .await
+    }
+
+    #[cfg(test)]
+    async fn run_operation_once_with_adapter<A: DeploymentImageAdapter + Send>(
+        &mut self,
+        operation_id: &str,
+        adapter: &mut A,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        self.run_once_with_adapter_for(adapter, None, Some(operation_id))
+            .await
     }
 
     // The exclusive borrow prevents overlapping journal transitions while provider I/O is pending.
@@ -458,10 +540,20 @@ impl Gateway {
         adapter: &mut A,
         fault: Option<FaultPoint>,
     ) -> Result<Option<OperationState>, GatewayError> {
+        self.run_once_with_adapter_for(adapter, fault, None).await
+    }
+
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    async fn run_once_with_adapter_for<A: DeploymentImageAdapter + Send>(
+        &mut self,
+        adapter: &mut A,
+        fault: Option<FaultPoint>,
+        operation_id: Option<&str>,
+    ) -> Result<Option<OperationState>, GatewayError> {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        if let Some(request) = self.journal.next_request(OperationState::Authorized)? {
+        if let Some(request) = self.request_in_state(OperationState::Authorized, operation_id)? {
             let target = match adapter.identify(&request).await {
                 Ok(target) => target,
                 Err(TargetReadError::Transient) => {
@@ -511,7 +603,7 @@ impl Gateway {
             }
             return Ok(Some(OperationState::ReceiverObserved));
         }
-        if let Some(request) = self.journal.next_request(OperationState::ApplyStarted)? {
+        if let Some(request) = self.request_in_state(OperationState::ApplyStarted, operation_id)? {
             let outcome = self
                 .journal
                 .persisted_apply_outcome(&request.operation_id)?;
@@ -527,6 +619,17 @@ impl Gateway {
             return Ok(Some(OperationState::ReceiverObserved));
         }
         Ok(None)
+    }
+
+    fn request_in_state(
+        &self,
+        state: OperationState,
+        operation_id: Option<&str>,
+    ) -> Result<Option<SetDeploymentImageRequest>, GatewayError> {
+        operation_id.map_or_else(
+            || self.journal.next_request(state),
+            |operation_id| self.journal.request_in_state(operation_id, state),
+        )
     }
 }
 
@@ -565,6 +668,8 @@ pub enum InputField {
 pub enum GatewayError {
     /// SQLite rejected a journal operation.
     Database(rusqlite::Error),
+    /// The operating system rejected private journal-file protection.
+    JournalFile(std::io::Error),
     /// The operating system rejected the crash-released worker lock.
     WorkerLock(std::io::Error),
     /// Hostile or unsupported input failed its named bound.
@@ -605,6 +710,7 @@ impl fmt::Display for GatewayError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let class = match self {
             Self::Database(_) => "database",
+            Self::JournalFile(_) => "journal_file",
             Self::WorkerLock(_) => "worker_lock",
             Self::InvalidInput(_) => "invalid_input",
             Self::InvalidAuthorizationGrant => "invalid_authorization_grant",
@@ -631,7 +737,7 @@ impl Error for GatewayError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
-            Self::WorkerLock(error) => Some(error),
+            Self::JournalFile(error) | Self::WorkerLock(error) => Some(error),
             Self::Receipt(error) => Some(error),
             Self::InvalidInput(_)
             | Self::InvalidAuthorizationGrant
@@ -1575,6 +1681,97 @@ mod tests {
         assert_eq!(adapter.identify_order, ["op-a", "op-b", "op-a"]);
         assert_eq!(adapter.apply_order, ["op-b", "op-a"]);
         assert_eq!(adapter.observe_order, ["op-b", "op-a"]);
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn targeted_application_reconciliation_does_not_advance_another_operation() {
+        let path = database_path("targeted-application-operation");
+        let mut first = request();
+        first.operation_id = "op-a".into();
+        let mut configured = request();
+        configured.operation_id = "op-b".into();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway
+            .submit_exact_for_test(&first, &authorization(&first))
+            .unwrap();
+        gateway
+            .submit_exact_for_test(&configured, &authorization(&configured))
+            .unwrap();
+        let mut adapter = TargetRoutingAdapter::transient_once("never-transient");
+
+        assert_eq!(
+            gateway
+                .run_operation_once_with_adapter(&configured.operation_id, &mut adapter)
+                .await
+                .unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert_eq!(adapter.identify_order, ["op-b"]);
+        assert_eq!(adapter.apply_order, ["op-b"]);
+        assert_eq!(adapter.observe_order, ["op-b"]);
+        assert_eq!(
+            gateway.get(&first.operation_id).unwrap(),
+            Some(OperationState::Authorized)
+        );
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn targeted_application_finalization_does_not_sign_another_operation() {
+        let path = database_path("targeted-application-finalization");
+        let output = path.parent().unwrap().join("receipts");
+        private_directory(&output);
+        let output = fs::canonicalize(output).unwrap();
+        let mut first = request();
+        first.operation_id = "op-a".into();
+        let mut configured = request();
+        configured.operation_id = "op-b".into();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway
+            .submit_exact_for_test(&first, &authorization(&first))
+            .unwrap();
+        gateway
+            .submit_exact_for_test(&configured, &authorization(&configured))
+            .unwrap();
+        gateway
+            .run_operation_once_with_adapter(
+                &first.operation_id,
+                &mut failed_adapter(&path, &first),
+            )
+            .await
+            .unwrap();
+        gateway
+            .run_operation_once_with_adapter(
+                &configured.operation_id,
+                &mut failed_adapter(&path, &configured),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            gateway
+                .finalize_operation_receipt_once(
+                    &configured.operation_id,
+                    &ReceiptSettings {
+                        signing_seed: &[51_u8; 32],
+                        key_id: "targeted-receipt-key",
+                        output_directory: &output,
+                    },
+                )
+                .unwrap(),
+            Some(OperationState::Finalized)
+        );
+        assert_eq!(
+            gateway.get(&first.operation_id).unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert_eq!(
+            gateway.get(&configured.operation_id).unwrap(),
+            Some(OperationState::Finalized)
+        );
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

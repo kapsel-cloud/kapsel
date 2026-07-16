@@ -36,8 +36,8 @@ kill a subprocess at the mutation and receipt-publication seams. The explicit li
 covers healthy and unhealthy-image fault-injected journal reopen paths.
 
 No evaluator-facing operation command, inspection command, MCP entrypoint, documented public demo,
-or versioned release artifact exists yet. Implemented experiment behavior is not a supported
-production security guarantee.
+or V1 install artifact exists yet. The Unix-only crates.io alpha distributes the implemented Rust
+experiment interface; it is not a supported production security guarantee.
 
 A durable journal narrows crash ambiguity. It does not prove exactly-once provider effects,
 Kubernetes truth, authorization legitimacy, causation, complete capture, compliance, or production
