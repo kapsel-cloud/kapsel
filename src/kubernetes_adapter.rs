@@ -23,7 +23,7 @@ const OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVATION_DEADLINE: Duration = Duration::from_secs(30);
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub struct KubernetesDeploymentImageAdapter {
+pub(crate) struct KubernetesDeploymentImageAdapter {
     client: Client,
     observation_attempts: usize,
     observation_interval: Duration,
@@ -32,7 +32,7 @@ pub struct KubernetesDeploymentImageAdapter {
 }
 
 impl KubernetesDeploymentImageAdapter {
-    pub fn new(client: Client) -> Self {
+    pub(crate) fn new(client: Client) -> Self {
         Self {
             client,
             observation_attempts: OBSERVATION_ATTEMPTS_MAX,

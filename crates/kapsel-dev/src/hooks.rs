@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const PRE_COMMIT_HOOK: &str = "#!/bin/sh\nset -eu\n\ncargo make fmt-check\n";
+const PRE_COMMIT_HOOK: &str = "#!/bin/sh\nset -eu\n\ncargo make check\n";
 
 #[derive(Clone, Copy)]
 enum Mode {

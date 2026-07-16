@@ -68,6 +68,16 @@ description = "Check Markdown formatting"
 command = "prettier"
 args = ["--check", "--no-config", "--ignore-path", ".gitignore", "--print-width", "100", "--prose-wrap", "always", "--tab-width", "2", "**/*.md"]
 
+[tasks.tidy]
+description = "Run hard project-local hygiene checks"
+command = "cargo"
+args = ["run", "--quiet", "--locked", "-p", "kapsel-dev", "--bin", "kapsel-tidy", "--", "tidy"]
+
+[tasks.style-audit]
+description = "Report non-blocking project-local style prompts"
+command = "cargo"
+args = ["run", "--quiet", "--locked", "-p", "kapsel-dev", "--bin", "kapsel-tidy", "--", "style-audit"]
+
 [tasks.hooks-install]
 description = "Install the repository pre-commit hook"
 command = "cargo"
@@ -89,9 +99,10 @@ command = "cargo"
 args = ["clean"]
 
 [tasks.docs]
-description = "Build workspace documentation"
+description = "Build warning-free workspace documentation"
+env = { "RUSTDOCFLAGS" = "-D warnings" }
 command = "cargo"
-args = ["doc", "--locked", "--workspace"]
+args = ["doc", "--locked", "--workspace", "--no-deps"]
 
 [tasks.docs-links-test]
 description = "Test the Markdown path and heading-anchor checker"

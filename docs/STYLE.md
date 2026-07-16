@@ -209,6 +209,45 @@ caller-triggerable panic behavior.
 Crate/module docs state what the surface owns and refuses to own. They do not duplicate the README
 or backlog.
 
+Documentation coverage is objective at the public boundary:
+
+- every externally reachable public module, type, trait, variant, field, constant, and function has
+  rustdoc;
+- bare `pub` is reserved for that externally reachable API; crate-internal seams use explicit
+  `pub(crate)` or narrower visibility, and unreachable public items are denied;
+- every public `Result`-returning function has a meaningful `# Errors` section;
+- a public function that can panic has a `# Panics` section, though caller-triggerable panic should
+  normally be removed rather than documented;
+- intra-doc links resolve without private-item or broken-link warnings; and
+- lint exceptions are narrow, locally justified, and never used to make an undocumented public API
+  pass.
+
+The workspace denies missing public documentation, unreachable public visibility, and missing
+error/panic sections. The strict rustdoc build denies warnings. These checks belong to the canonical
+local gate and therefore to the managed pre-commit hook; documentation consistency is not left to
+reviewer taste.
+
+Rustdoc section headings are scan aids, not decoration. Kapsel uses these exact level-one headings
+in this order when applicable:
+
+1. `# Errors` for caller-observable `Result` failure conditions;
+2. `# Panics` for caller-reachable panic conditions;
+3. `# Safety` for caller obligations on unsafe APIs;
+4. `# Cancellation safety` when cancelling an async operation changes durable or external state;
+5. `# Performance` or `# Complexity` only for a meaningful caller-visible cost or bound;
+6. `# Platform-specific behavior` when supported behavior differs by platform; and
+7. `# Examples` for copyable, doctested Rust usage.
+
+Use plural `# Examples`, `# Errors`, and `# Panics`; do not invent shortened headings such as
+`# Error`, `# Panic`, or `# Perf`. A section must be non-empty. Examples use Rust doctest fences and
+avoid `unwrap()` or `expect()` so copied code keeps failure handling explicit. Safe APIs do not
+carry `# Safety`; unsafe APIs always do, though this workspace forbids unsafe code.
+
+`kapsel-dev` owns project-local tidy checks that rustfmt, rustc, rustdoc, and Clippy cannot express.
+Hard tidy rules require objective syntax, stable rule codes, and allowed/denied fixtures. Advisory
+style audit findings exit successfully and remain review input. Human review owns whether prose is
+accurate, sufficient, and worth the reader's attention.
+
 ## Private comments
 
 Comments spend scarce attention. First try a better name, smaller scope, explicit type, state enum,

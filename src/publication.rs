@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::receipt::RECEIPT_BYTES_MAX;
 
-pub fn receipt_digest_hex(receipt: &[u8]) -> String {
+pub(crate) fn receipt_digest_hex(receipt: &[u8]) -> String {
     let digest = Sha256::digest(receipt);
     let mut output = String::with_capacity(64);
     for byte in digest {
@@ -29,15 +29,15 @@ pub fn receipt_digest_hex(receipt: &[u8]) -> String {
     output
 }
 
-pub fn receipt_filename(operation_id: &str, digest: &str) -> String {
+pub(crate) fn receipt_filename(operation_id: &str, digest: &str) -> String {
     format!("kap0038-{operation_id}-{digest}.receipt")
 }
 
-pub fn validate_private_directory(path: &Path) -> Result<(), PublicationError> {
+pub(crate) fn validate_private_directory(path: &Path) -> Result<(), PublicationError> {
     open_parent(&path.join(".kap0038-directory-check")).map(|_| ())
 }
 
-pub fn publish_receipt(path: &Path, receipt: &[u8]) -> Result<(), PublicationError> {
+pub(crate) fn publish_receipt(path: &Path, receipt: &[u8]) -> Result<(), PublicationError> {
     if receipt.len() > RECEIPT_BYTES_MAX {
         return Err(PublicationError::LimitExceeded);
     }
@@ -50,7 +50,7 @@ pub fn publish_receipt(path: &Path, receipt: &[u8]) -> Result<(), PublicationErr
     directory.sync_all().map_err(PublicationError::Io)
 }
 
-pub fn read_receipt(path: &Path) -> Result<Vec<u8>, PublicationError> {
+pub(crate) fn read_receipt(path: &Path) -> Result<Vec<u8>, PublicationError> {
     let (directory, name) = open_parent(path)?;
     let file = match open_regular(&directory, &name) {
         Err(PublicationError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
@@ -251,7 +251,7 @@ fn io_error(error: rustix::io::Errno) -> PublicationError {
 }
 
 #[derive(Debug)]
-pub enum PublicationError {
+pub(crate) enum PublicationError {
     Io(io::Error),
     Collision,
     LimitExceeded,

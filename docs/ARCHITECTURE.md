@@ -79,9 +79,9 @@ planned CLI or MCP adapter
 
 The private Kubernetes adapter seam exists to prove provider call counts and crash recovery with a
 deterministic fake. One production adapter does not establish a reusable provider model. The
-repository-only `kapsel-dev` package owns development automation such as hook installation and
-future tidy checks; it is tooling, not part of the product package, gateway interface, or dependency
-path.
+repository-only `kapsel-dev` package owns development automation such as hook installation, hard
+tidy checks, and advisory style audits; it is tooling, not part of the product package, gateway
+interface, or dependency path.
 
 The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
 product implementation together while allowing `crates/kapsel-dev` to remain unpublished. A

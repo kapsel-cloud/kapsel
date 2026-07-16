@@ -34,17 +34,17 @@ impl AuthorizationTrust {
     }
 }
 
-pub struct VerifiedAuthorization {
-    pub authorization: ExactAuthorization,
-    pub signer_key_id: String,
-    pub grant_digest: String,
+pub(crate) struct VerifiedAuthorization {
+    pub(crate) authorization: ExactAuthorization,
+    pub(crate) signer_key_id: String,
+    pub(crate) grant_digest: String,
 }
 
 /// Produces canonical owner-signed bytes for one exact KAP-0038 authorization grant.
 ///
 /// Signing is exposed for owner-side composition and deterministic vectors. Possessing this
 /// function conveys no authority without the configured private signing seed.
-pub fn sign_authorization_grant(
+pub(crate) fn sign_authorization_grant(
     authorization: &ExactAuthorization,
     signing_seed: &[u8; 32],
     key_id: &str,
@@ -73,7 +73,7 @@ pub fn sign_authorization_grant(
     Ok(output)
 }
 
-pub fn verify_authorization_grant(
+pub(crate) fn verify_authorization_grant(
     bytes: &[u8],
     trust: &AuthorizationTrust,
 ) -> Result<VerifiedAuthorization, GatewayError> {

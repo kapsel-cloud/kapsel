@@ -57,6 +57,11 @@ pub struct GrantProvisioning<'a> {
 }
 
 /// Produces the canonical fixed-purpose grant supplied later through operator configuration.
+///
+/// # Errors
+///
+/// Returns [`ApplicationError::InvalidGrantProvisioning`] when the authorization tuple or signing
+/// key identity violates the bounded grant grammar.
 pub fn provision_exact_grant(
     provisioning: &GrantProvisioning<'_>,
 ) -> Result<Vec<u8>, ApplicationError> {
@@ -100,6 +105,12 @@ impl Application {
     /// Grant trust, canonical grant bytes, receipt key identity, and output-directory safety are
     /// checked before durable state is opened. Constructing the Kubernetes client and protecting
     /// its credentials remain operator responsibilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed configuration error when grant trust, receipt authority, or paths are
+    /// unsafe. Journal open, durability, migration, and filesystem failures are returned as
+    /// [`ApplicationError::Gateway`].
     pub fn open(configuration: OperatorConfiguration) -> Result<Self, ApplicationError> {
         let verified = verify_authorization_grant(
             &configuration.signed_authorization_grant,
@@ -136,6 +147,11 @@ impl Application {
     }
 
     /// Submits request-only intent under the operator-configured exact grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError::Gateway`] when intent is malformed, differs from the configured
+    /// exact grant, conflicts with durable facts, or cannot be persisted.
     pub fn submit(&self, request: &AgentRequest) -> Result<SubmissionResult, ApplicationError> {
         self.gateway
             .submit_authorized(request, &self.signed_authorization_grant)
@@ -143,6 +159,17 @@ impl Application {
     }
 
     /// Submits request-only intent and owns all subsequent lifecycle sequencing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a submission or reconciliation error, including bounded Kubernetes ambiguity,
+    /// durable-state failure, or receipt-publication failure.
+    ///
+    /// # Cancellation safety
+    ///
+    /// Cancellation may occur after request persistence or the durable mutation marker. It does not
+    /// establish that Kubernetes was untouched. Reopen the application with the same operator
+    /// configuration and call [`Application::reconcile`] to resume without a blind second mutation.
     pub async fn execute(
         &mut self,
         request: &AgentRequest,
@@ -155,6 +182,17 @@ impl Application {
 
     /// Recovers and advances the configured operation to its next externally blocked or terminal
     /// report without allowing an adapter to sequence durable states.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed gateway error when recovery cannot read or advance durable state, perform
+    /// bounded Kubernetes interaction, or publish the frozen receipt.
+    ///
+    /// # Cancellation safety
+    ///
+    /// Cancellation preserves the last committed lifecycle state. A later call with the same
+    /// operator configuration resumes that exact operation; after `apply_started`, recovery
+    /// observes rather than blindly issuing another mutation.
     pub async fn reconcile(&mut self) -> Result<Option<OperationReport>, ApplicationError> {
         loop {
             let Some(report) = self.report()? else {
@@ -210,6 +248,11 @@ impl Application {
     }
 
     /// Reports the configured operation without provider or network access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError::Gateway`] when the atomic durable snapshot cannot be read or
+    /// contains facts outside the owned lifecycle.
     pub fn report(&self) -> Result<Option<OperationReport>, ApplicationError> {
         let operation_id = &self.authorized_request.operation_id;
         let Some(snapshot) = self

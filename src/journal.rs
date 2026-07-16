@@ -20,22 +20,22 @@ use crate::{
     OperationState, ReceiptReference, ReceiptStatement, SetDeploymentImageRequest, TargetRejection,
 };
 
-pub const OPERATION_COUNT_MAX: i64 = 10_000;
+pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
 
-pub struct Journal {
-    pub connection: Connection,
+pub(crate) struct Journal {
+    pub(crate) connection: Connection,
     worker_lock: File,
 }
 
-pub struct WorkerLock<'a> {
+pub(crate) struct WorkerLock<'a> {
     file: &'a File,
 }
 
-pub struct OperationSnapshot {
-    pub state: OperationState,
-    pub result: Option<OperationResult>,
-    pub target_rejection: Option<TargetRejection>,
-    pub receipt: Option<ReceiptReference>,
+pub(crate) struct OperationSnapshot {
+    pub(crate) state: OperationState,
+    pub(crate) result: Option<OperationResult>,
+    pub(crate) target_rejection: Option<TargetRejection>,
+    pub(crate) receipt: Option<ReceiptReference>,
 }
 
 impl Drop for WorkerLock<'_> {

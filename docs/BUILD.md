@@ -17,13 +17,21 @@ Run the deterministic, containerless repository gate:
 ```
 
 It checks Rust and Markdown formatting, local Markdown links and heading anchors, Rust line width,
-Clippy, workspace unit/binary tests, and documentation tests.
+project tidy rules, Clippy, warning-free rustdoc, workspace unit/binary tests, and documentation
+tests. Missing public rustdoc, unreachable bare-`pub` items, missing `# Errors`/`# Panics` sections,
+and broken or private intra-doc links are denied.
 
 Equivalent cargo-make aliases are:
 
 ```sh
 cargo make check
 cargo make ci
+```
+
+The managed pre-commit hook runs this complete default gate rather than formatting alone:
+
+```sh
+cargo make hooks-install
 ```
 
 Format before review:
@@ -34,6 +42,28 @@ cargo make fmt-check
 ```
 
 `cargo make fmt` formats Rust and Markdown. `cargo make fmt-check` checks both without rewriting.
+
+## Tidy and style audit
+
+Run project-local hard hygiene rules with:
+
+```sh
+cargo make tidy
+```
+
+Hard findings use stable `error[rule-code]` labels, have allowed and denied fixture tests, and block
+the canonical gate. Rustdoc tidy checks exact heading vocabulary and order, non-empty sections,
+safety-section applicability, Rust doctest fences, and copied-example failure handling.
+
+Run non-blocking review prompts with:
+
+```sh
+cargo make style-audit
+```
+
+Style-audit findings use `warning[rule-code]` labels and exit successfully. They currently flag
+status language in public docs and async public APIs whose cancellation behavior may deserve an
+explicit contract. Human review decides whether an advisory requires a change.
 
 ## Active experiment library
 

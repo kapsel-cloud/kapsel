@@ -124,7 +124,7 @@ pub enum TargetRejection {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TargetReadError {
+pub(crate) enum TargetReadError {
     Transient,
     Permanent(TargetRejection),
 }
@@ -140,9 +140,9 @@ pub enum OperationResult {
     Unknown,
 }
 
-pub const WRITE_STRATEGY: &str = "conditional-strategic-merge-patch";
+pub(crate) const WRITE_STRATEGY: &str = "conditional-strategic-merge-patch";
 
-pub trait DeploymentImageAdapter {
+pub(crate) trait DeploymentImageAdapter {
     fn identify(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -161,7 +161,7 @@ pub trait DeploymentImageAdapter {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FaultPoint {
+pub(crate) enum FaultPoint {
     RequestedCommitted,
     AuthorizedCommitted,
     TargetRejectedCommitted,
@@ -182,13 +182,13 @@ pub enum FaultPoint {
 }
 
 /// Signing and output settings supplied by application composition.
-pub struct ReceiptSettings<'a> {
+pub(crate) struct ReceiptSettings<'a> {
     /// Fixed prototype signing seed owned by the application.
-    pub signing_seed: &'a [u8; 32],
+    pub(crate) signing_seed: &'a [u8; 32],
     /// External trust key identifier for the signing key.
-    pub key_id: &'a str,
+    pub(crate) key_id: &'a str,
     /// Owner-controlled output directory for immutable receipt bytes.
-    pub output_directory: &'a Path,
+    pub(crate) output_directory: &'a Path,
 }
 
 /// Immutable receipt reference stored after finalization.
@@ -200,23 +200,23 @@ pub struct ReceiptReference {
     pub digest: String,
 }
 
-pub struct FrozenReceipt {
-    pub operation_id: String,
-    pub bytes: Vec<u8>,
-    pub digest: String,
-    pub path: PathBuf,
-    pub key_id: String,
+pub(crate) struct FrozenReceipt {
+    pub(crate) operation_id: String,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) digest: String,
+    pub(crate) path: PathBuf,
+    pub(crate) key_id: String,
 }
 
 /// SQLite-backed entry point for the one experiment operation.
-pub struct Gateway {
+pub(crate) struct Gateway {
     journal: Journal,
     authorization_trust: AuthorizationTrust,
 }
 
 impl Gateway {
     /// Opens or creates the prototype journal.
-    pub fn open(
+    pub(crate) fn open(
         path: impl AsRef<Path>,
         authorization_trust: AuthorizationTrust,
     ) -> Result<Self, GatewayError> {
@@ -228,7 +228,7 @@ impl Gateway {
     }
 
     /// Submits one request under an owner-signed exact authorization grant.
-    pub fn submit_authorized(
+    pub(crate) fn submit_authorized(
         &self,
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
@@ -307,7 +307,7 @@ impl Gateway {
 
     /// Reads the durable public state for one local operation identity.
     #[cfg(test)]
-    pub fn get(&self, operation_id: &str) -> Result<Option<OperationState>, GatewayError> {
+    pub(crate) fn get(&self, operation_id: &str) -> Result<Option<OperationState>, GatewayError> {
         self.journal.state(operation_id)
     }
 
@@ -320,13 +320,16 @@ impl Gateway {
 
     /// Reads a frozen receiver result when observation has completed.
     #[cfg(test)]
-    pub fn result(&self, operation_id: &str) -> Result<Option<OperationResult>, GatewayError> {
+    pub(crate) fn result(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationResult>, GatewayError> {
         self.journal.result(operation_id)
     }
 
     /// Reads a terminal pre-attempt target rejection, distinct from receiver result.
     #[cfg(test)]
-    pub fn target_rejection(
+    pub(crate) fn target_rejection(
         &self,
         operation_id: &str,
     ) -> Result<Option<TargetRejection>, GatewayError> {
@@ -335,7 +338,7 @@ impl Gateway {
 
     /// Writes or finalizes one receipt from frozen receiver facts without Kubernetes access.
     #[cfg(test)]
-    pub fn finalize_receipt_once(
+    pub(crate) fn finalize_receipt_once(
         &self,
         settings: &ReceiptSettings<'_>,
     ) -> Result<Option<OperationState>, GatewayError> {
@@ -493,7 +496,7 @@ impl Gateway {
 
     /// Reads the terminal receipt reference for a finalized operation.
     #[cfg(test)]
-    pub fn receipt_reference(
+    pub(crate) fn receipt_reference(
         &self,
         operation_id: &str,
     ) -> Result<Option<ReceiptReference>, GatewayError> {
@@ -758,7 +761,7 @@ impl Error for GatewayError {
     }
 }
 
-pub fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayError> {
+pub(crate) fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayError> {
     if value.is_empty()
         || value.len() > 128
         || !value
@@ -770,7 +773,7 @@ pub fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayEr
     Ok(())
 }
 
-pub fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayError> {
+pub(crate) fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayError> {
     let bytes = value.as_bytes();
     if bytes.is_empty()
         || bytes.len() > 63
@@ -786,7 +789,7 @@ pub fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayE
     Ok(())
 }
 
-pub fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), GatewayError> {
+pub(crate) fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), GatewayError> {
     if value.is_empty()
         || value.len() > 253
         || value
@@ -798,7 +801,7 @@ pub fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), Gate
     Ok(())
 }
 
-pub fn validate_immutable_image(value: &str) -> Result<(), GatewayError> {
+pub(crate) fn validate_immutable_image(value: &str) -> Result<(), GatewayError> {
     if value.is_empty() || value.len() > 512 || !value.is_ascii() {
         return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
     }

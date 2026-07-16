@@ -4,31 +4,31 @@
 
 use crate::{validate_immutable_image, GatewayError, OperationResult, SetDeploymentImageRequest};
 
-pub const KUBERNETES_FACT_BYTES_MAX: usize = 128;
+pub(crate) const KUBERNETES_FACT_BYTES_MAX: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TargetIdentity {
-    pub deployment_uid: String,
-    pub resource_version: String,
+pub(crate) struct TargetIdentity {
+    pub(crate) deployment_uid: String,
+    pub(crate) resource_version: String,
 }
 
 impl TargetIdentity {
-    pub fn validate(&self) -> Result<(), GatewayError> {
+    pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         validate_required_fact(&self.deployment_uid)?;
         validate_required_fact(&self.resource_version)
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApplyOutcome {
-    pub accepted: bool,
-    pub requested_generation: Option<i64>,
-    pub deployment_uid: Option<String>,
-    pub resource_version: Option<String>,
+pub(crate) struct ApplyOutcome {
+    pub(crate) accepted: bool,
+    pub(crate) requested_generation: Option<i64>,
+    pub(crate) deployment_uid: Option<String>,
+    pub(crate) resource_version: Option<String>,
 }
 
 impl ApplyOutcome {
-    pub fn validate(&self) -> Result<(), GatewayError> {
+    pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         validate_optional_fact(self.deployment_uid.as_deref())?;
         validate_optional_fact(self.resource_version.as_deref())?;
         if self.requested_generation.is_some_and(|value| value < 0) {
@@ -39,24 +39,24 @@ impl ApplyOutcome {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReceiverObservation {
-    pub deployment_uid: Option<String>,
-    pub resource_version: Option<String>,
-    pub current_generation: Option<i64>,
-    pub observed_generation: Option<i64>,
-    pub image: Option<String>,
-    pub operation_marker: Option<String>,
-    pub desired_replicas: Option<i32>,
-    pub updated_replicas: Option<i32>,
-    pub available_replicas: Option<i32>,
-    pub unavailable_replicas: Option<i32>,
-    pub rollout_condition_type: Option<String>,
-    pub rollout_condition_status: Option<String>,
-    pub rollout_condition_reason: Option<String>,
+pub(crate) struct ReceiverObservation {
+    pub(crate) deployment_uid: Option<String>,
+    pub(crate) resource_version: Option<String>,
+    pub(crate) current_generation: Option<i64>,
+    pub(crate) observed_generation: Option<i64>,
+    pub(crate) image: Option<String>,
+    pub(crate) operation_marker: Option<String>,
+    pub(crate) desired_replicas: Option<i32>,
+    pub(crate) updated_replicas: Option<i32>,
+    pub(crate) available_replicas: Option<i32>,
+    pub(crate) unavailable_replicas: Option<i32>,
+    pub(crate) rollout_condition_type: Option<String>,
+    pub(crate) rollout_condition_status: Option<String>,
+    pub(crate) rollout_condition_reason: Option<String>,
 }
 
 impl ReceiverObservation {
-    pub fn unknown() -> Self {
+    pub(crate) fn unknown() -> Self {
         Self {
             deployment_uid: None,
             resource_version: None,
@@ -74,7 +74,7 @@ impl ReceiverObservation {
         }
     }
 
-    pub fn validate(&self) -> Result<(), GatewayError> {
+    pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         validate_optional_fact(self.deployment_uid.as_deref())?;
         validate_optional_fact(self.resource_version.as_deref())?;
         validate_optional_fact(self.operation_marker.as_deref())?;
@@ -109,7 +109,7 @@ impl ReceiverObservation {
         Ok(())
     }
 
-    pub fn has_terminal_rollout_signal(&self, request: &SetDeploymentImageRequest) -> bool {
+    pub(crate) fn has_terminal_rollout_signal(&self, request: &SetDeploymentImageRequest) -> bool {
         let operation_matches = self.operation_marker.as_deref()
             == Some(request.operation_id.as_str())
             && self.image.as_deref() == Some(request.immutable_image_digest.as_str());
@@ -127,7 +127,7 @@ impl ReceiverObservation {
                 || (replicas_available && self.available_condition()))
     }
 
-    pub fn requested_generation(
+    pub(crate) fn requested_generation(
         &self,
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
@@ -146,7 +146,7 @@ impl ReceiverObservation {
             })
     }
 
-    pub fn classify(
+    pub(crate) fn classify(
         &self,
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,

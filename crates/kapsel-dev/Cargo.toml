@@ -8,9 +8,17 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+proc-macro2 = { version = "=1.0.106", features = ["span-locations"] }
+syn = { version = "=2.0.118", features = ["full", "parsing"] }
+
 [[bin]]
 name = "kapsel-hooks"
 path = "src/hooks.rs"
+
+[[bin]]
+name = "kapsel-tidy"
+path = "src/tidy.rs"
 
 [lints]
 workspace = true

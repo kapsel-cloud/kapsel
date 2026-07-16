@@ -24,7 +24,7 @@ const NON_CLAIMS: &str = concat!(
     "no-complete-capture;no-witnessing;not-production"
 );
 
-pub const RECEIPT_BYTES_MAX: usize = 16 * 1024;
+pub(crate) const RECEIPT_BYTES_MAX: usize = 16 * 1024;
 const STATEMENT_BYTES_MAX: usize = 8 * 1024;
 const TRUST_BYTES_MAX: usize = 1024;
 const TEXT_BYTES_MAX: usize = 512;
@@ -445,6 +445,11 @@ pub struct ReceiptTrust {
 
 impl ReceiptTrust {
     /// Encodes separate trust as bounded prototype trust-document bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded receipt error when the key identity, public key, purpose, time interval,
+    /// or encoded trust document violates the prototype contract.
     pub fn encode(&self) -> Result<Vec<u8>, ReceiptError> {
         self.validate()?;
         let mut output = Vec::with_capacity(128);
@@ -493,7 +498,7 @@ impl ReceiptTrust {
     }
 }
 
-pub fn sign_statement(
+pub(crate) fn sign_statement(
     statement: &ReceiptStatement,
     seed: &[u8; 32],
     key_id: &str,
@@ -867,7 +872,7 @@ fn bounded(input: &[u8], maximum_bytes: usize) -> Result<(), ReceiptError> {
     }
 }
 
-pub fn validate_key_id(value: &str) -> Result<(), ReceiptError> {
+pub(crate) fn validate_key_id(value: &str) -> Result<(), ReceiptError> {
     validate_identity(InputField::AuthorizationId, value).map_err(|_| ReceiptError::InvalidValue)
 }
 
