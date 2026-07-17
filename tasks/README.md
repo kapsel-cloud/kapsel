@@ -1,14 +1,16 @@
 # Technical task route
 
-Status: completed 0.1.0 release sequence and conditional future technical route.
+Status: completed 0.1.0 release, active evaluator evidence cycle, and conditional future technical
+route.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or the active experiment contract.
 
 ## 0.1.0 sequence
 
-KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. There is no
-active implementation packet; KAP-0046 remains conditional on approved aggregate use evidence.
+KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. KAP-0047 is
+the active evidence packet; there is no active implementation packet. KAP-0046 remains conditional
+on approved aggregate use evidence.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
@@ -25,14 +27,24 @@ active implementation packet; KAP-0046 remains conditional on approved aggregate
 
 ## After 0.1.0
 
-[KAP-0046](KAP-0046.md) is deliberately conditional. It converts published aggregate use evidence
-and technical findings into exactly one next route:
+| Packet                  | Status      | Outcome                                                                   |
+| ----------------------- | ----------- | ------------------------------------------------------------------------- |
+| [KAP-0047](KAP-0047.md) | Active      | Bounded independent evaluator evidence without speculative implementation |
+| [KAP-0046](KAP-0046.md) | Conditional | One evidence-selected technical direction                                 |
+| [KAP-0048](KAP-0048.md) | Conditional | Explicit decision on a future crates.io distribution                      |
+
+KAP-0046 converts approved aggregate use evidence and technical findings into exactly one next
+route:
 
 1. stabilize the existing capability;
 2. specify one evidence-selected capability under a new owner;
 3. freeze at maintenance-only scope; or
 4. retire the experiment.
 
+KAP-0048 does not authorize retroactive crates.io `0.1.0` publication. It remains blocked unless
+approved evidence selects Cargo installation or Rust-library use, then requires a new patch release
+and full distribution evidence.
+
 No second capability, generic provider interface, hosted control plane, or production-readiness
-program is pre-authorized. Company observation thresholds, positioning, and commercial decisions
-remain private operations work.
+program is pre-authorized. Community outreach copy, evaluator identities, company observation
+thresholds, positioning, and commercial decisions remain private operations work.
