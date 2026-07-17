@@ -7,15 +7,16 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-KAP-0041 is the active packet. Later packets remain blocked so transport, packaging, or release work
-cannot outrun the deep gateway and application interface.
+KAP-0041 remains the active packet through evaluator-command source-locality closure. Later packets
+remain blocked so transport, packaging, or release work cannot outrun the deep product structure and
+real-process demonstration.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
 | 0     | [KAP-0038](KAP-0038.md) | V1 program acceptance and evidence index          | —          |
 | 1     | [KAP-0039](KAP-0039.md) | Short, navigable deep gateway module              | foundation |
 | 2     | [KAP-0040](KAP-0040.md) | Frozen evaluator application interface            | KAP-0039   |
-| 3     | [KAP-0041](KAP-0041.md) | Local operation and offline-inspection commands   | KAP-0040   |
+| 3     | [KAP-0041](KAP-0041.md) | Commands and navigable deep product structure     | KAP-0040   |
 | 4     | [KAP-0042](KAP-0042.md) | Public real-process crash and failed-rollout demo | KAP-0041   |
 | 5     | [KAP-0043](KAP-0043.md) | Thin fixed-schema MCP adapter                     | KAP-0042   |
 | 6     | [KAP-0044](KAP-0044.md) | Installable, documented release candidate         | KAP-0043   |

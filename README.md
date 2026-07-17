@@ -6,8 +6,8 @@ Kapsel is testing whether agents can use bounded operations instead of receiving
 provider credentials. It verifies an owner-signed exact grant, records either a pre-attempt target
 rejection or the validated target before the dangerous mutation seam, recovers without blindly
 repeating the mutation, observes the receiver, and emits an inspectable result—including `UNKNOWN`
-when reality cannot be established. The remaining release work includes evaluator commands, MCP
-composition, a release-owned process-kill demo, and versioned distribution artifacts.
+when reality cannot be established. The remaining release work includes MCP composition, a
+release-owned process-kill demo, and versioned distribution artifacts.
 
 ```text
 bounded agent intent
@@ -39,7 +39,8 @@ only durably frozen receipt bytes.
 
 The Rust `Application` interface separates request-only `AgentRequest` from operator-owned grant,
 trust, Kubernetes authority, signing material, and paths. It is available as a pre-V1 alpha for Rust
-evaluation. There is no supported public command yet.
+evaluation. A prototype local evaluator command now provisions exact grants, runs or reconciles the
+bounded operation, and inspects receipts offline.
 
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
@@ -59,8 +60,8 @@ request-only caller can then use `Application::execute`; restart recovery uses
 `Application::reconcile`, and adapters consume the resulting `OperationReport` without sequencing
 internal durable states.
 
-This Unix-only alpha does not provide a CLI, configuration-file format, stable Rust API, stable
-receipt format, or production-readiness guarantee. See the
+This Unix-only alpha does not promise a stable CLI, configuration-file format, Rust API, receipt
+format, or production readiness. See the
 [experiment boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before use.
 
 ## What exists today
@@ -73,12 +74,12 @@ receipt format, or production-readiness guarantee. See the
 | Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests           |
 | Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate              |
 | Evaluator demo with real process termination     | Not implemented                                         |
-| Evaluator-facing operation and inspection CLI    | Not implemented                                         |
+| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                |
 | MCP-compatible entrypoint                        | Not implemented                                         |
 | V1 evaluator artifacts and checksums             | Not implemented                                         |
 
-There is no quickstart yet because there is no supported public command. The current engineering
-proof is:
+The exact prototype grammar and file separation are owned by the
+[evaluator command contract](docs/COMMANDS.md). The current engineering proof is:
 
 ```sh
 ./scripts/ci-local.sh

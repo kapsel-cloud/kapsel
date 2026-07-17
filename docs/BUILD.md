@@ -1,6 +1,6 @@
 # Build
 
-Status: deterministic repository and live-kind gates implemented; public commands planned.
+Status: deterministic repository, evaluator commands, and live-kind gates implemented.
 
 Kind: guide. Authority: commands that exist and their present meaning.
 
@@ -76,9 +76,9 @@ cargo clippy --locked -p kapsel --all-targets -- -D warnings
 ```
 
 Signed-grant trust, classifier-complete receipts, inspection, durable publication, migration, and
-recovery behavior is library-only. The deterministic suite includes real subprocess kill/restart
-proofs at the mutation and receipt-publication seams. There is no public operation or inspection
-command yet.
+recovery behavior are exercised through both the library and fixed evaluator commands. The
+deterministic suite includes real subprocess kill/restart proofs at the mutation and
+receipt-publication seams.
 
 ## Robustness lanes
 
@@ -138,12 +138,38 @@ only the cluster it created. On a test failure after cluster creation, it export
 This live gate is not part of hosted deterministic CI. The separate default test suite provides the
 real process-kill/restart proof; the live tests use same-process fault injection and journal reopen.
 
-## Missing release commands
+## Evaluator commands
 
-No evaluator-facing operation CLI, offline-inspection CLI, MCP entrypoint, or V1 install artifact
-exists. The pre-V1 crates.io alpha exposes only the implemented Rust experiment interface; it does
-not satisfy the V1 artifact, command, or platform-support contract. Do not publish a quickstart or
-command syntax for missing surfaces until implementation and tests exist.
+Build the prototype Unix executable from this checkout:
+
+```sh
+cargo build --locked --bin kapsel
+```
+
+Its three fixed forms provision an exact operator grant, run or reconcile the configured operation,
+and inspect a receipt offline:
+
+```sh
+target/debug/kapsel provision-grant \
+  --authorization /absolute/authorization.json \
+  --signing-seed /absolute/owner.seed \
+  --signing-key-id owner-key \
+  --output /absolute/grant.bin
+
+target/debug/kapsel operate \
+  --request /absolute/request.json \
+  --operator-config /absolute/operator.json
+
+target/debug/kapsel inspect \
+  --receipt /absolute/result.receipt \
+  --trust /absolute/receipt.trust \
+  --evaluation-time-unix-s 150
+```
+
+See the [evaluator command contract](COMMANDS.md) for exact JSON fields, authority separation,
+limits, machine output, and exit classes. These are prototype commands, not a stable installed CLI.
+No MCP entrypoint or V1 install artifact exists; the crates.io alpha does not satisfy V1 artifact or
+platform-support acceptance.
 
 ## Toolchain
 

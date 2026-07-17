@@ -48,9 +48,10 @@ k8s-openapi = { version = "=0.28.0", features = ["v1_33"] }
 kube = { version = "=4.0.0", default-features = false, features = ["client", "ring", "rustls-tls"] }
 rusqlite = { version = "=0.40.1", features = ["bundled"] }
 rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "std"] }
+serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.11.0"
-tokio = { version = "=1.52.3", features = ["time"] }
+tokio = { version = "=1.52.3", features = ["rt", "time"] }
 
 [dev-dependencies]
 http = "=1.4.2"

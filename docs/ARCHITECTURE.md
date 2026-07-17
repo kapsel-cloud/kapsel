@@ -30,7 +30,7 @@ receipt bytes + explicit trust + time + limits
   -> offline inspector
 ```
 
-There is no public application command or MCP entrypoint yet.
+The fixed prototype evaluator command is implemented; there is no MCP entrypoint yet.
 
 ## Implemented modules
 
@@ -64,14 +64,15 @@ operation after restart, and both return one typed `OperationReport`. Reconcilia
 finalization select that exact operation identity even if the journal contains another operation.
 Exact grant provisioning is a separate operator function requiring signing material.
 
-This is a Rust application interface, not a configuration-file or command grammar. There is still no
-public runnable command. Later local and MCP adapters must convert into this same application
-interface without sequencing durable states or exposing credentials.
+This Rust application interface is not itself a configuration-file or command grammar. The
+[evaluator command contract](COMMANDS.md) owns the implemented local adapter, which converts its
+fixed files into this same interface without sequencing durable states or exposing credentials. The
+later MCP adapter must preserve that direction.
 
 ## Dependency direction
 
 ```text
-planned CLI or MCP adapter
+local evaluator command (implemented) or MCP adapter (planned)
   -> `kapsel` application composition
        -> KAP-0038 effect-gateway module
             -> private concrete implementation modules
