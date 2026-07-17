@@ -2,7 +2,7 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
-## 0.1.0 - Unreleased
+## 0.1.0 - 2026-07-17
 
 - Adds the prototype evaluator operation and offline-inspection commands.
 - Adds the thin fixed-schema MCP `2025-11-25` stdio adapter.
