@@ -4,7 +4,7 @@ Read this file first. It routes work; current technical truth lives in the linke
 
 ## Start here
 
-1. Read [`README.md`](README.md) and [`docs/V1.md`](docs/V1.md).
+1. Read [`README.md`](README.md) and [`docs/SCOPE.md`](docs/SCOPE.md).
 2. Read the [technical task route](tasks/README.md) and active packet,
    [`tasks/KAP-0045.md`](tasks/KAP-0045.md).
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
@@ -25,7 +25,7 @@ Use [`docs/INDEX.md`](docs/INDEX.md) for every other owner rather than recreatin
 When code, a task, and an owner disagree:
 
 1. Stop the conflicting edit.
-2. Compare against [`docs/V1.md`](docs/V1.md) and the direct active owner.
+2. Compare against [`docs/SCOPE.md`](docs/SCOPE.md) and the direct active owner.
 3. Record any unresolved contradiction in the active task or final report.
 4. Update the canonical owner before implementation; do not average incompatible designs.
 
@@ -42,8 +42,8 @@ explain why a route was chosen; they do not override current contract text.
 - One production adapter does not justify a public provider interface. Do not add runtime plugins, a
   generic capability SDK, policy engine, queue, hosted control plane, dashboard, or second
   capability.
-- Treat MCP as one implemented pre-V1 prototype transport adapter, not as project identity, a stable
-  API, or released V1 behavior.
+- Treat MCP as one implemented 0.1 prototype transport adapter, not as project identity, a
+  compatibility promise, or a generic API.
 - Do not promote a timeout, request acceptance, or provider ambiguity into receiver success or
   failure. Preserve explicit `UNKNOWN`.
 - Contracts state shared behavior. ADRs state rationale. Guides describe commands that exist. Tasks

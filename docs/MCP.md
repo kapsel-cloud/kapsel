@@ -1,6 +1,6 @@
 # MCP adapter
 
-Status: pre-V1 prototype contract. No compatibility promise.
+Status: 0.1 prototype contract. No compatibility promise.
 
 Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response
 semantics for KAP-0043.
@@ -45,7 +45,7 @@ the response limit. Initialization returns:
 {
   "protocolVersion": "2025-11-25",
   "capabilities": { "tools": {} },
-  "serverInfo": { "name": "kapsel", "version": "0.1.0-rc.1" }
+  "serverInfo": { "name": "kapsel", "version": "0.1.0" }
 }
 ```
 
@@ -168,10 +168,10 @@ reports, receipts, and the journal retain the existing KAP-0038 disclosure limit
 
 ## Prototype limits
 
-This is one pre-V1 transport adapter, not a generic MCP server, tool registry, SDK, plugin host,
-remote service, or compatibility commitment. It deliberately implements the fixed official wire
-surface directly with the repository's existing JSON and runtime dependencies; no MCP SDK dependency
-is required. The contract may be removed or changed before V1.
+This is one 0.1 transport adapter, not a generic MCP server, tool registry, SDK, plugin host, remote
+service, or compatibility commitment. It deliberately implements the fixed official wire surface
+directly with the repository's existing JSON and runtime dependencies; no MCP SDK dependency is
+required. The contract may be removed or changed before a future compatibility release.
 
 ## Official protocol basis
 

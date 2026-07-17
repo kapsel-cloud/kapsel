@@ -1,4 +1,4 @@
-//! Local evaluator command for the pre-V1 KAP-0038 experiment.
+//! Local evaluator command for the Kapsel 0.1 KAP-0038 experiment.
 
 mod command;
 mod mcp;

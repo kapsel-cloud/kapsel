@@ -1,6 +1,6 @@
-# Evaluate the Kapsel V1 release candidate
+# Evaluate Kapsel 0.1.0
 
-This guide evaluates one pre-V1 `x86_64-unknown-linux-gnu` artifact for the fixed
+This guide evaluates the stable `0.1.0` `x86_64-unknown-linux-gnu` artifact for the fixed
 `kubernetes.set_deployment_image` experiment. It is not production guidance or a compatibility
 promise.
 
@@ -32,8 +32,8 @@ verified release archive
 
 ## Verify and install
 
-The sole release-candidate target is x86-64 GNU/Linux, validated in Debian 12. From the directory
-containing the archive and adjacent checksum:
+The sole release target is x86-64 GNU/Linux, validated in Debian 12. From the directory containing
+the archive and adjacent checksum:
 
 ```sh
 archive=kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz
@@ -95,8 +95,8 @@ command -v kapsel
 ```
 
 Confirm that `package_version`, `rust_target`, `source_revision`, and `source_dirty` identify the
-intended release. A release candidate has `source_dirty: false`. SHA-256 detects changed bytes; it
-does not authenticate a publisher.
+intended release. A publishable artifact has `source_dirty: false`. SHA-256 detects changed bytes;
+it does not authenticate a publisher.
 
 The ordinary binary contains no demonstration pause behavior. The separate
 `libexec/kapsel-demo-harness` executable is only for the owned disposable-cluster demonstration.

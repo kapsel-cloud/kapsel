@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "k8s-openapi",

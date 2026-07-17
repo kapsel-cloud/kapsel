@@ -1,11 +1,11 @@
-//! Pre-V1 Kapsel experiment for one authorized Kubernetes Deployment image change.
+//! Kapsel 0.1 experiment for one authorized Kubernetes Deployment image change.
 //!
 //! The [`Application`] composition root separates request-only [`AgentRequest`] from operator-owned
 //! authorization, Kubernetes authority, signing material, and paths. The private deep gateway owns
 //! the KAP-0038 request, exact authorization, durable lifecycle, Kubernetes interaction, recovery,
 //! and prototype receipt. This crate exposes no generic capability or provider contract.
 //!
-//! This pre-V1 release candidate has no stable Rust or receipt-format compatibility promise and
+//! The stable 0.1 artifact has no Rust API or receipt-format compatibility promise and
 //! makes no production-readiness, exactly-once, causation, Kubernetes-truth, complete-capture, or
 //! witnessing claim.
 

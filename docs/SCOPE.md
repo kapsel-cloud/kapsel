@@ -4,9 +4,11 @@
 
 Status: active experiment.
 
-Kind: design. Authority: repository purpose, active capability, and technical non-goals.
+Kind: design. Authority: repository purpose, active capability, release maturity, and technical
+non-goals.
 
-Owns: Project identity and the scope of the Kubernetes `set_deployment_image` experiment.
+Owns: Project identity, the Kubernetes `set_deployment_image` experiment, and the distinction
+between the current 0.1 release and a future 1.0 compatibility commitment.
 
 Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details, a
 reusable provider interface, or task status.
@@ -30,14 +32,14 @@ The sole capability is `kubernetes.set_deployment_image` against a local `kind` 
 technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 
-The current milestone is a reproducible public command and failed-rollout demonstration for this one
-capability—not a broader platform or another provider.
+The current milestone is the stable `0.1.0` release target for this one experiment—not a broader
+platform, production-support promise, or second provider.
 
-## V1 completion
+## 0.1.0 release
 
-Lean V1 is complete only when a fresh evaluator can:
+`0.1.0` is defined as a non-prerelease Kapsel release. A fresh evaluator can:
 
-1. install a versioned artifact for an explicitly supported Unix target and identify its exact
+1. install a versioned artifact for the supported x86-64 GNU/Linux target and identify its exact
    source revision;
 2. provision operator-owned grant and trust inputs separately from agent intent, then submit the one
    bounded operation through a public local command;
@@ -50,10 +52,36 @@ Lean V1 is complete only when a fresh evaluator can:
 6. reproduce the release from a clean checkout using published setup, cleanup, checksums, license,
    limits, and expected output.
 
-The release artifact is distribution for this experiment. It does not establish a stable package,
-receipt, provider, or plugin contract. Pre-V1 crates.io alpha versions may distribute implemented
-Rust experiment surfaces for evaluation, but they do not satisfy this completion definition or
-reserve V1 success claims.
+“Stable” means a published `0.1.0` artifact is a named, reproducible, non-prerelease distribution.
+It does not promise production support or compatibility for the CLI, configuration, Rust API, MCP
+adapter, receipt format, or artifact layout. Those surfaces remain explicitly versioned experiment
+interfaces until a later release owns compatibility.
+
+## Future v1.0.0 requirements
+
+`v1.0.0` is not planned or implied by publishing `0.1.0`. It may be proposed only after approved
+public-use evidence and an explicit technical-direction decision. Before a `v1.0.0` tag, Kapsel
+must:
+
+1. name every compatibility surface it will support and publish versioning, deprecation, and
+   migration rules for the CLI, configuration, MCP behavior, receipt format, Rust API, and artifact
+   layout;
+2. define supported platforms, installation, upgrade, rollback, uninstallation, and support
+   lifecycles with native clean-environment evidence;
+3. authenticate release provenance beyond an adjacent checksum and define signing, attestation,
+   verification, and key-rotation procedures;
+4. complete a production-oriented security review covering credentials, Kubernetes RBAC, key and
+   secret operations, filesystem isolation, dependency response, vulnerability handling, and
+   incident boundaries;
+5. prove bounded concurrency, load, resource use, crash recovery, upgrade behavior, and operational
+   diagnostics under a documented reliability test plan;
+6. publish a stable threat model, compatibility policy, operator guide, and residual-risk report for
+   the supported use case; and
+7. pass an explicit release review showing that real evaluator evidence justifies the support and
+   compatibility promises.
+
+A second capability, generic provider interface, hosted service, or wider platform is not required
+for `v1.0.0`; each would need its own evidence and owner.
 
 ## Current claim
 

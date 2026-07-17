@@ -1,7 +1,7 @@
 # Build
 
 Status: deterministic repository, evaluator commands, thin MCP adapter, reproducible release
-candidate assembly, public crash demo, and live-kind gates implemented.
+assembly, public crash demo, and live-kind gates implemented.
 
 Kind: guide. Authority: commands that exist and their present meaning.
 
@@ -215,10 +215,10 @@ initialization, the sole fixed-schema tool, bounds, shutdown, and response vocab
 uses the same `Application` and operator-file composition as `operate`; it does not use Docker,
 `kind`, ambient Kubernetes configuration, or the demonstration feature.
 
-## Release candidate artifact
+## Release artifact
 
-The sole release-candidate target is `x86_64-unknown-linux-gnu`, validated in pinned x86-64 Debian
-12 build and smoke containers. Assemble it only from a clean checkout:
+The sole release target is `x86_64-unknown-linux-gnu`, validated in pinned x86-64 Debian 12 build
+and smoke containers. Assemble it only from a clean checkout:
 
 ```sh
 cargo make assemble-release
@@ -260,10 +260,10 @@ KAPSEL_RELEASE_ARCHIVE=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.g
 
 The source-built `cargo make demo-kind` route remains available. Both routes use the same script;
 artifact mode refuses missing, relative, symlinked, or non-executable release inputs before Docker
-or cluster inspection. See [Release candidate artifacts](RELEASE.md) and the bundled
+or cluster inspection. See [Release artifacts](RELEASE.md) and the bundled
 [evaluator guide](EVALUATOR.md) for exact layout, installation, provenance, expected output, failure
-meaning, cleanup, unsupported targets, and non-claims. The crates.io alpha does not replace this
-artifact, and no V1 release has been published.
+meaning, cleanup, unsupported targets, and non-claims. Publication and final release evidence are
+owned by KAP-0045.
 
 ## Toolchain
 

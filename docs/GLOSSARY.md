@@ -8,7 +8,7 @@ Does not own: Normative behavior, implementation, or task status.
 
 | Term                 | Meaning                                                                                                            | Owner                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| effect gateway       | Module that turns one bounded authorized intent into pre-attempt rejection or a durable effect and receipt.        | [Technical scope](V1.md)                                                     |
+| effect gateway       | Module that turns one bounded authorized intent into pre-attempt rejection or a durable effect and receipt.        | [Technical scope](SCOPE.md)                                                  |
 | signed exact grant   | Owner-signed, fixed-purpose authorization for one exact operation tuple under application-configured trust.        | [KAP-0038 owner](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) |
 | operation identity   | Stable local identity for one bounded effect attempt and its crash recovery. It does not prove provider success.   | [KAP-0038 owner](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) |
 | not attempted        | Terminal pre-attempt disposition for a permanently missing or invalid target; it is not a receiver result.         | [KAP-0038 owner](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) |

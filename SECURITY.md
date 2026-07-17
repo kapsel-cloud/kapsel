@@ -1,6 +1,6 @@
 # Security policy
 
-Status: pre-release policy.
+Status: 0.1 experiment policy.
 
 Owns: Vulnerability reporting and support posture for the public repository.
 
@@ -24,7 +24,7 @@ No response-time or remediation SLA is promised before production assurance work
 Current security claims are owned by:
 
 - [Threat model](docs/THREAT_MODEL.md)
-- [Technical scope](docs/V1.md)
+- [Technical scope](docs/SCOPE.md)
 - [KAP-0038 experiment owner](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md)
 - [Privacy boundary](docs/PRIVACY.md)
 
@@ -36,8 +36,8 @@ kill a subprocess at the mutation and receipt-publication seams. The explicit li
 covers healthy and unhealthy-image fault-injected journal reopen paths.
 
 Prototype evaluator operation and inspection commands, one thin fixed-schema MCP stdio entrypoint,
-and a documented public disposable-`kind` demo exist. They remain pre-V1 experiment surfaces, not a
-stable interface or supported production security guarantee. Release artifact availability and
+and a documented public disposable-`kind` demo exist. They are 0.1 experiment surfaces, not a
+compatibility or supported production security guarantee. Release artifact availability and
 supported targets are owned by the [release contract](docs/RELEASE.md). A SHA-256 checksum detects
 byte mismatch but does not authenticate a publisher or make the binary trustworthy.
 

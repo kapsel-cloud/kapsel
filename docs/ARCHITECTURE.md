@@ -98,16 +98,15 @@ ordinary executable remains feature-free. A separately named `libexec` executabl
 compile-time `demo-harness` fault controls and is invoked only by the bundled owned demonstration.
 Artifact metadata, checksums, installation docs, and smoke automation are distribution concerns;
 they do not add a runtime plugin, provider interface, application seam, trust source, or result
-vocabulary. [Release candidate artifacts](RELEASE.md) owns the exact distribution contract.
+vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract.
 
-The repository root is both the one published `kapsel` product package and the workspace root. This
-keeps the sole product implementation together while allowing the unpublished `crates/kapsel-dev`
-tooling package and excluded `fuzz` package. No product package named `kapsel-core`,
-`kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or `kapsel-testing` exists. Product
-code may be extracted only after an independent consumer, a one-way package dependency graph, or a
-measured dependency-isolation need proves that a package seam is real. A crates.io alpha distributes
-the implemented experiment for Rust evaluation; it does not establish a stable library interface,
-complete the evaluator command, or satisfy V1 release acceptance.
+The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
+product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package
+and excluded `fuzz` package. No product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`,
+`kapsel-adapters`, `kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only
+after an independent consumer, a one-way package dependency graph, or a measured
+dependency-isolation need proves that a package seam is real. The 0.1 release does not establish a
+stable library interface or justify another package boundary.
 
 ## Failure structure
 

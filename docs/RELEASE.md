@@ -1,20 +1,20 @@
-# Release candidate artifacts
+# Release artifacts
 
-Status: pre-V1 release-candidate contract. No compatibility promise.
+Status: 0.1 experiment release contract. No compatibility promise.
 
 Kind: contract. Authority: supported release target, archive layout, provenance, assembly, install,
 and artifact-only smoke behavior for KAP-0044.
 
-Owns: The bounded V1 release-candidate distribution format and evaluator installation route.
+Owns: The bounded 0.1 distribution format and evaluator installation route.
 
 Does not own: Capability behavior, command or MCP grammar, receipt bytes, Kubernetes semantics,
 GitHub publication, a stable package format, or production support.
 
 ## Supported target
 
-The sole V1 release-candidate target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in
-pinned x86-64 Debian 12 environments. The release makes no support claim for macOS, ARM, musl,
-Windows, other Linux distributions, or older glibc environments. Adding a target requires a native
+The sole 0.1 release target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in pinned
+x86-64 Debian 12 environments. The release makes no support claim for macOS, ARM, musl, Windows,
+other Linux distributions, or older glibc environments. Adding a target requires a native
 clean-artifact smoke lane and an owner update; it is not implied by Rust target availability.
 
 The build container is the Docker Official Image
@@ -40,8 +40,8 @@ executable and once with `demo-harness` for the separately named demonstration e
 rebuilds while packaging.
 
 A developer may pass `--allow-dirty` only to exercise assembly before commit. The metadata then
-records `source_dirty: true`; such an archive is not a release candidate and cannot satisfy KAP-0044
-or KAP-0045 evidence.
+records `source_dirty: true`; such an archive is not publishable and cannot satisfy KAP-0044 or
+KAP-0045 evidence.
 
 ## Archive and checksum
 

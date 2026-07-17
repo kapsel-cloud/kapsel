@@ -1,6 +1,6 @@
 # Evaluator commands
 
-Status: pre-V1 prototype command contract. No compatibility promise.
+Status: 0.1 prototype command contract. No compatibility promise.
 
 Kind: contract. Authority: local evaluator command grammar, operator files, output, and exit
 classes.
@@ -193,5 +193,5 @@ The `command` value is the parsed subcommand, or `kapsel` when parsing did not i
 | 4    | `operation_failure`      | Durable, Kubernetes, reconciliation, or publication failure.              |
 
 This command and every file/output shape above are prototype-scoped and may be removed or changed
-before V1. They do not establish a stable CLI, configuration format, receipt format, or
-production-support promise.
+before a future compatibility release. They do not establish a stable CLI, configuration format,
+receipt format, or production-support promise.

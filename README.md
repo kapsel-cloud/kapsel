@@ -2,12 +2,10 @@
 
 A crash-recoverable effect-gateway experiment for autonomous agents.
 
-Kapsel is testing whether agents can use bounded operations instead of receiving unrestricted
-provider credentials. It verifies an owner-signed exact grant, records either a pre-attempt target
-rejection or the validated target before the dangerous mutation seam, recovers without blindly
-repeating the mutation, observes the receiver, and emits an inspectable result—including `UNKNOWN`
-when reality cannot be established. The remaining release work is clean-checkout rehearsal and
-publication of the versioned release candidate.
+Kapsel tests a simple idea: give agents bounded operations, not provider credentials. Its current
+experiment accepts one authorized Kubernetes image change, records state before any mutation
+attempt, recovers without blindly retrying, and returns an inspectable `SUCCEEDED`, `FAILED`, or
+`UNKNOWN` result.
 
 ```text
 bounded agent intent
@@ -20,7 +18,7 @@ bounded agent intent
 
 > [!WARNING]
 >
-> Kapsel is a pre-release experiment. It is not production-ready, a generic agent runtime, or a
+> Kapsel 0.1.0 is an experiment. It is not production-ready, a generic agent runtime, or a
 > compliance product. Do not use it for consequential production changes.
 
 ## Active experiment
@@ -38,32 +36,17 @@ mutation or changed frozen receipt bytes. Deterministic tests exercise the same 
 without a container.
 
 The Rust `Application` interface separates request-only `AgentRequest` from operator-owned grant,
-trust, Kubernetes authority, signing material, and paths. It is available as a pre-V1 alpha for Rust
-evaluation. A prototype local evaluator command provisions exact grants, runs or reconciles the
-bounded operation, and inspects receipts offline. A thin stdio MCP adapter exposes the same request
-through exactly one fixed-schema tool while loading operator authority separately at startup.
+trust, Kubernetes authority, signing material, and paths. Operator composition supplies that
+authority once; callers use `Application::execute` and `Application::reconcile` without sequencing
+internal durable states. A local evaluator command and one fixed-schema stdio MCP tool expose the
+same bounded request.
 
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
 
-## Rust alpha
-
-The crates.io alpha exposes the implemented fixed Kubernetes experiment and offline inspector:
-
-```toml
-[dependencies]
-kapsel = "=0.1.0-alpha.1"
-```
-
-Operator composition constructs `OperatorConfiguration`, including the exact signed grant, external
-trust, Kubernetes client, receipt signing material, journal path, and private receipt directory. A
-request-only caller can then use `Application::execute`; restart recovery uses
-`Application::reconcile`, and adapters consume the resulting `OperationReport` without sequencing
-internal durable states.
-
-The repository now assembles a separate `0.1.0-rc.1` x86-64 GNU/Linux evaluator artifact; the
-crates.io alpha above remains the previously published Rust evaluation package. Neither promises a
-stable CLI, configuration-file format, Rust API, receipt format, or production readiness. See the
+The Kapsel `0.1.0` distribution is the stable x86-64 GNU/Linux experiment artifact. “Stable”
+identifies a named, non-prerelease artifact; it does not promise production support or compatibility
+for the CLI, configuration, Rust API, MCP adapter, receipt format, or artifact layout. See the
 [experiment boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before use.
 
 ## What exists today
@@ -78,7 +61,7 @@ stable CLI, configuration-file format, Rust API, receipt format, or production r
 | Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness    |
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests          |
-| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible release-candidate lane    |
+| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible stable release lane       |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -106,7 +89,7 @@ are outside its technical scope.
 
 ## Read next
 
-- [Technical scope](docs/V1.md)
+- [Technical scope](docs/SCOPE.md)
 - [Active experiment contract](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md)
 - [Build and proof commands](docs/BUILD.md)
 - [Architecture](docs/ARCHITECTURE.md)
