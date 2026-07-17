@@ -246,6 +246,11 @@ Verify two isolated builds produce identical archive and checksum bytes with:
 cargo make test-release-reproducibility
 ```
 
+After those lanes pass on a push, hosted CI performs one strict clean assembly and uploads the
+versioned `.tar.gz` and adjacent checksum as a workflow artifact named with the source revision. The
+GitHub-generated download wrapper is transport only; the adjacent checksum still identifies the
+inner `.tar.gz` bytes.
+
 On a supported x86-64 GNU/Linux host, run the live disposable-kind demonstration from an archive:
 
 ```sh

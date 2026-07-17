@@ -42,3 +42,16 @@ jobs:
         run: python3 scripts/test-release-artifact.py
       - name: Verify reproducible assembly
         run: python3 scripts/test-release-reproducibility.py
+      - name: Assemble downloadable artifact
+        if: github.event_name == 'push'
+        run: python3 scripts/assemble-release-artifact.py --output-directory dist
+      - name: Upload archive and checksum
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kapsel-x86_64-unknown-linux-gnu-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
