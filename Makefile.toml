@@ -45,6 +45,10 @@ args = [
   "--nocapture",
 ]
 
+[tasks.test-kind]
+description = "Run the explicit live Kubernetes gate through a disposable kind cluster"
+command = "./scripts/test-kind-effect-gateway.sh"
+
 [tasks.fuzz-check]
 description = "Compile the offline receipt-inspection fuzz target"
 cwd = "fuzz"

@@ -8,6 +8,10 @@ target_image="registry.k8s.io/pause@sha256:278fb9dbcca9518083ad1e11276933a2e96f2
 log_directory="${TMPDIR:-/tmp}/kapsel-kind-logs-$$"
 cluster_owned=0
 
+phase() {
+  printf '[kind %s/6] %s\n' "$1" "$2"
+}
+
 cleanup() {
   status=$?
   trap - EXIT INT TERM
@@ -19,10 +23,13 @@ cleanup() {
       printf 'could not export kind failure logs: %s\n' "$log_directory" >&2
     fi
   fi
-  if [[ $cluster_owned -eq 1 ]] && ! kind delete cluster --name "$cluster_name"; then
-    printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
-    if [[ $status -eq 0 ]]; then
-      status=1
+  if [[ $cluster_owned -eq 1 ]]; then
+    phase 6 "deleting owned cluster $cluster_name"
+    if ! kind delete cluster --name "$cluster_name"; then
+      printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
+      if [[ $status -eq 0 ]]; then
+        status=1
+      fi
     fi
   fi
   exit "$status"
@@ -31,6 +38,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+printf '[kind] checking Docker-compatible runtime and kind prerequisites\n'
 docker info >/dev/null
 kind_version=$(kind version)
 if [[ ! $kind_version =~ ^kind\ v([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]|$) ]]; then
@@ -51,16 +59,22 @@ if grep -Fqx "$cluster_name" <<<"$existing_clusters"; then
   printf 'refusing to use existing kind cluster: %s\n' "$cluster_name" >&2
   exit 1
 fi
+phase 1 "precompiling Kapsel tests"
 cargo test --locked -p kapsel --no-run
+phase 2 "creating disposable cluster $cluster_name"
 cluster_owned=1
 kind create cluster \
   --name "$cluster_name" \
   --image "$node_image" \
   --wait 120s
 
+phase 3 "loading two pinned fixture images"
+printf '[kind] loading %s\n' "$fixture_image"
 docker exec "${cluster_name}-control-plane" crictl pull "$fixture_image"
+printf '[kind] loading %s\n' "$target_image"
 docker exec "${cluster_name}-control-plane" crictl pull "$target_image"
 
+phase 4 "running healthy rollout proof"
 KAPSEL_KIND_TEST=1 cargo test --locked \
   -p kapsel \
   kind_tests::kind_changes_exactly_one_container_through_the_gateway \
@@ -69,6 +83,7 @@ KAPSEL_KIND_TEST=1 cargo test --locked \
   --exact \
   --nocapture
 
+phase 5 "running failed-rollout and receipt-inspection proof"
 KAPSEL_KIND_TEST=1 cargo test --locked \
   -p kapsel \
   kind_tests::kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt \

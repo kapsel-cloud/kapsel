@@ -122,8 +122,10 @@ receipt location after every case. It uses no live cluster and is separate from 
 The explicit live gate requires a working Docker daemon and `kind` 0.32 or newer:
 
 ```sh
-./scripts/test-kind-effect-gateway.sh
+cargo make test-kind
 ```
+
+The direct script equivalent is `./scripts/test-kind-effect-gateway.sh`.
 
 It precompiles the tests, creates a uniquely named disposable cluster from a pinned Kubernetes 1.33
 node-image digest, preloads the fixture images, and runs two fault-injected post-patch
