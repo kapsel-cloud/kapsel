@@ -1,5 +1,8 @@
 # kapsel
 
+[![CI](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/kapsel-cloud/kapsel?display_name=tag&sort=semver)](https://github.com/kapsel-cloud/kapsel/releases/latest)
+
 A crash-recoverable effect-gateway experiment for autonomous agents.
 
 Kapsel tests a simple idea: give agents bounded operations, not provider credentials. Its current

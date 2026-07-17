@@ -94,6 +94,15 @@ The live-kind lane remains explicit and environment-owning. It is not called a f
 simulation and is never used as evidence that a deterministic invariant holds for every crash
 window.
 
+## Coverage interpretation
+
+CI publishes source-based coverage for the deterministic Rust suite as an informational review aid.
+Coverage can reveal unexecuted branches or unexpected regressions, but its percentage is not a
+correctness, crash-safety, Kubernetes-semantics, release-integrity, or production-readiness claim.
+It does not represent the separate live-kind, artifact, shell, Python, fuzz, or long-simulation
+lanes. Repository and patch statuses therefore remain informational: no percentage target can
+replace the owner-specific assertions and explicit proof stack above.
+
 ## KAP-0043 MCP proof
 
 The thin MCP adapter is tested as a production subprocess over newline-delimited stdio. Its focused

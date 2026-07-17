@@ -28,6 +28,37 @@ jobs:
       - name: Run deterministic containerless gate
         run: ./scripts/ci-local.sh
 
+  coverage:
+    name: Rust coverage (informational)
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.1"
+          components: llvm-tools-preview
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+      - name: Generate deterministic Rust coverage
+        run: cargo llvm-cov --locked --workspace --codecov --output-path codecov.json
+      - name: Upload informational coverage
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          use_oidc: true
+          files: codecov.json
+          disable_search: true
+          fail_ci_if_error: false
+          flags: rust-deterministic
+          name: rust-deterministic
+
   release-artifact:
     name: x86-64 GNU/Linux release artifact
     needs: check
