@@ -12,9 +12,9 @@ use kube::{
 };
 use serde_json::{json, Value};
 
-use crate::{
-    kubernetes_facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
-    DeploymentImageAdapter, SetDeploymentImageRequest, TargetReadError, TargetRejection,
+use super::{
+    super::{DeploymentImageAdapter, SetDeploymentImageRequest, TargetReadError, TargetRejection},
+    facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
 };
 
 const OPERATION_ANNOTATION: &str = "kapsel.dev/kap0038-operation-id";

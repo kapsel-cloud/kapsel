@@ -17,9 +17,9 @@ use kube::{
 };
 
 use crate::{
-    inspect_receipt, kubernetes_adapter::KubernetesDeploymentImageAdapter, DeploymentImageAdapter,
-    ExactAuthorization, FaultPoint, Gateway, GatewayError, InspectionLimits, InspectionStatus,
-    OperationResult, OperationState, ReceiptSettings, ReceiptTrust, SetDeploymentImageRequest,
+    inspect_receipt, DeploymentImageAdapter, ExactAuthorization, FaultPoint, Gateway, GatewayError,
+    InspectionLimits, InspectionStatus, KubernetesDeploymentImageAdapter, OperationResult,
+    OperationState, ReceiptSettings, ReceiptTrust, SetDeploymentImageRequest,
 };
 
 const NAMESPACE: &str = "kapsel-kap0038";
@@ -54,15 +54,15 @@ impl DeploymentImageAdapter for CountingAdapter {
     async fn identify(
         &mut self,
         request: &SetDeploymentImageRequest,
-    ) -> Result<crate::kubernetes_facts::TargetIdentity, crate::TargetReadError> {
+    ) -> Result<crate::TargetIdentity, crate::TargetReadError> {
         self.inner.identify(request).await
     }
 
     async fn apply(
         &mut self,
         request: &SetDeploymentImageRequest,
-        target: &crate::kubernetes_facts::TargetIdentity,
-    ) -> Result<crate::kubernetes_facts::ApplyOutcome, ()> {
+        target: &crate::TargetIdentity,
+    ) -> Result<crate::ApplyOutcome, ()> {
         self.apply_calls += 1;
         self.inner.apply(request, target).await
     }
@@ -70,7 +70,7 @@ impl DeploymentImageAdapter for CountingAdapter {
     async fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
-    ) -> Result<crate::kubernetes_facts::ReceiverObservation, ()> {
+    ) -> Result<crate::ReceiverObservation, ()> {
         self.inner.observe(request).await
     }
 }

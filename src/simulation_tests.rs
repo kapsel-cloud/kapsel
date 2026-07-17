@@ -3,9 +3,9 @@
 use std::{error::Error, fs, io, os::unix::fs::PermissionsExt, path::Path};
 
 use crate::{
-    kubernetes_facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
-    DeploymentImageAdapter, ExactAuthorization, FaultPoint, Gateway, GatewayError, OperationResult,
-    OperationState, ReceiptSettings, SetDeploymentImageRequest, TargetReadError,
+    ApplyOutcome, DeploymentImageAdapter, ExactAuthorization, FaultPoint, Gateway, GatewayError,
+    OperationResult, OperationState, ReceiptSettings, ReceiverObservation,
+    SetDeploymentImageRequest, TargetIdentity, TargetReadError,
 };
 
 const DEFAULT_SEED: u64 = 0x004b_4150_3030_3338;

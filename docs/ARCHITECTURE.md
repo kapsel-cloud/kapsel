@@ -43,6 +43,14 @@ The fixed prototype evaluator command is implemented; there is no MCP entrypoint
 | Receipt module                      | Classifier-complete prototype bytes, signing, parsing, recomputation, trust/time/limits          | Stable package format, generic verifier, ambient trust, or `VERIFIED` |
 | Publication module                  | Unix descriptor-relative, owner-private, collision-safe frozen-byte installation                 | Generic blob storage or hosted publication                            |
 
+The source tree keeps these owners local. `lib.rs` is a compact exported-interface map;
+`application` owns the shared deep application interface and sequencing; `command` owns bounded
+input, operator-file composition, deterministic rendering, and exit classes; and `main.rs` owns only
+process arguments, streams, and exit handling. Authorization, lifecycle, journal/schema, concrete
+Kubernetes I/O and classification, receipt encoding/inspection, publication, and their private seam
+tests live beneath the private `gateway` module. A concern earns another file only when it owns
+policy or a durable fact behind a smaller internal interface.
+
 The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 
@@ -84,10 +92,14 @@ repository-only `kapsel-dev` package owns development automation such as hook in
 tidy checks, and advisory style audits; it is tooling, not part of the product package, gateway
 interface, or dependency path.
 
-The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
-product implementation together while allowing `crates/kapsel-dev` to remain unpublished. A
-crates.io alpha distributes the implemented experiment for Rust evaluation; it does not establish a
-stable library interface, complete the evaluator command, or satisfy V1 release acceptance.
+The repository root is both the one published `kapsel` product package and the workspace root. This
+keeps the sole product implementation together while allowing the unpublished `crates/kapsel-dev`
+tooling package and excluded `fuzz` package. No product package named `kapsel-core`,
+`kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or `kapsel-testing` exists. Product
+code may be extracted only after an independent consumer, a one-way package dependency graph, or a
+measured dependency-isolation need proves that a package seam is real. A crates.io alpha distributes
+the implemented experiment for Rust evaluation; it does not establish a stable library interface,
+complete the evaluator command, or satisfy V1 release acceptance.
 
 ## Failure structure
 

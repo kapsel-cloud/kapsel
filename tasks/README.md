@@ -7,9 +7,8 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-KAP-0041 remains the active packet through evaluator-command source-locality closure. Later packets
-remain blocked so transport, packaging, or release work cannot outrun the deep product structure and
-real-process demonstration.
+KAP-0042 is the active packet for the public real-process crash and failed-rollout demonstration.
+Later packets remain blocked so transport, packaging, or release work cannot outrun that proof.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |

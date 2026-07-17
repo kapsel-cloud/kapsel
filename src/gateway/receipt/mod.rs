@@ -9,8 +9,10 @@ use std::{error::Error, fmt};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
-use crate::{
-    kubernetes_facts::{ApplyOutcome, ReceiverObservation, KUBERNETES_FACT_BYTES_MAX},
+pub(in crate::gateway) mod publication;
+
+use super::{
+    kubernetes::facts::{ApplyOutcome, ReceiverObservation, KUBERNETES_FACT_BYTES_MAX},
     validate_dns_label, validate_dns_subdomain, validate_identity, validate_immutable_image,
     InputField, OperationResult, SetDeploymentImageRequest, WRITE_STRATEGY,
 };
@@ -32,32 +34,32 @@ const TEXT_BYTES_MAX: usize = 512;
 /// Read-only classifier inputs authenticated by a successfully parsed receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptStatement {
-    pub(super) operation_id: String,
-    pub(super) authorization_id: String,
-    pub(super) authorization_signer_key_id: String,
-    pub(super) authorization_grant_digest: String,
-    pub(super) namespace: String,
-    pub(super) deployment: String,
-    pub(super) container: String,
-    pub(super) immutable_image_digest: String,
-    pub(super) write_strategy: String,
-    pub(super) target_uid: String,
-    pub(super) target_resource_version: String,
-    pub(super) receiver_uid: Option<String>,
-    pub(super) observed_image: Option<String>,
-    pub(super) observed_operation_marker: Option<String>,
-    pub(super) current_generation: Option<i64>,
-    pub(super) requested_generation: Option<i64>,
-    pub(super) observed_generation: Option<i64>,
-    pub(super) observed_resource_version: Option<String>,
-    pub(super) desired_replicas: Option<i32>,
-    pub(super) updated_replicas: Option<i32>,
-    pub(super) available_replicas: Option<i32>,
-    pub(super) unavailable_replicas: Option<i32>,
-    pub(super) rollout_condition_type: Option<String>,
-    pub(super) rollout_condition_status: Option<String>,
-    pub(super) rollout_condition_reason: Option<String>,
-    pub(super) result: OperationResult,
+    pub(in crate::gateway) operation_id: String,
+    pub(in crate::gateway) authorization_id: String,
+    pub(in crate::gateway) authorization_signer_key_id: String,
+    pub(in crate::gateway) authorization_grant_digest: String,
+    pub(in crate::gateway) namespace: String,
+    pub(in crate::gateway) deployment: String,
+    pub(in crate::gateway) container: String,
+    pub(in crate::gateway) immutable_image_digest: String,
+    pub(in crate::gateway) write_strategy: String,
+    pub(in crate::gateway) target_uid: String,
+    pub(in crate::gateway) target_resource_version: String,
+    pub(in crate::gateway) receiver_uid: Option<String>,
+    pub(in crate::gateway) observed_image: Option<String>,
+    pub(in crate::gateway) observed_operation_marker: Option<String>,
+    pub(in crate::gateway) current_generation: Option<i64>,
+    pub(in crate::gateway) requested_generation: Option<i64>,
+    pub(in crate::gateway) observed_generation: Option<i64>,
+    pub(in crate::gateway) observed_resource_version: Option<String>,
+    pub(in crate::gateway) desired_replicas: Option<i32>,
+    pub(in crate::gateway) updated_replicas: Option<i32>,
+    pub(in crate::gateway) available_replicas: Option<i32>,
+    pub(in crate::gateway) unavailable_replicas: Option<i32>,
+    pub(in crate::gateway) rollout_condition_type: Option<String>,
+    pub(in crate::gateway) rollout_condition_status: Option<String>,
+    pub(in crate::gateway) rollout_condition_reason: Option<String>,
+    pub(in crate::gateway) result: OperationResult,
 }
 
 impl ReceiptStatement {
@@ -1200,19 +1202,19 @@ mod tests {
         // Fixed independently reviewable vector snapshots are populated with exact encoded bytes.
         assert_eq!(
             hex(&statement_bytes),
-            include_str!("../vectors/kap0038-statement.hex").trim()
+            include_str!("../../../vectors/kap0038-statement.hex").trim()
         );
         assert_eq!(
             hex(&receipt_bytes),
-            include_str!("../vectors/kap0038-receipt.hex").trim()
+            include_str!("../../../vectors/kap0038-receipt.hex").trim()
         );
         assert_eq!(
             hex(&trust_bytes),
-            include_str!("../vectors/kap0038-trust.hex").trim()
+            include_str!("../../../vectors/kap0038-trust.hex").trim()
         );
         assert_eq!(
             hex(&Sha256::digest(&receipt_bytes)),
-            include_str!("../vectors/kap0038-receipt.sha256").trim()
+            include_str!("../../../vectors/kap0038-receipt.sha256").trim()
         );
     }
 

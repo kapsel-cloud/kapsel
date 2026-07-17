@@ -2,7 +2,9 @@
 //!
 //! This module is pure policy. It performs no Kubernetes calls and no durable I/O.
 
-use crate::{validate_immutable_image, GatewayError, OperationResult, SetDeploymentImageRequest};
+use super::super::{
+    validate_immutable_image, GatewayError, OperationResult, SetDeploymentImageRequest,
+};
 
 pub(crate) const KUBERNETES_FACT_BYTES_MAX: usize = 128;
 

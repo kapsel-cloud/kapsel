@@ -13,11 +13,12 @@ use std::{
 use rusqlite::{params, Connection, OptionalExtension};
 use rustix::fs::{open, Mode, OFlags};
 
-use crate::{
+use super::{
     authorization::VerifiedAuthorization,
-    kubernetes_facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
-    publication, validate_identity, FrozenReceipt, GatewayError, InputField, OperationResult,
-    OperationState, ReceiptReference, ReceiptStatement, SetDeploymentImageRequest, TargetRejection,
+    kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity},
+    receipt::{publication, ReceiptStatement, RECEIPT_BYTES_MAX},
+    validate_identity, FrozenReceipt, GatewayError, InputField, OperationResult, OperationState,
+    ReceiptReference, SetDeploymentImageRequest, TargetRejection,
 };
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
@@ -112,7 +113,7 @@ impl OperationResult {
 }
 
 impl Journal {
-    pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, GatewayError> {
+    pub(in crate::gateway) fn open(path: impl AsRef<Path>) -> Result<Self, GatewayError> {
         let path = path.as_ref();
         let database_file = open_private_file(path).map_err(GatewayError::JournalFile)?;
         let database_identity = database_file
@@ -191,7 +192,9 @@ impl Journal {
         })
     }
 
-    pub(super) fn try_lock_worker(&self) -> Result<Option<WorkerLock<'_>>, GatewayError> {
+    pub(in crate::gateway) fn try_lock_worker(
+        &self,
+    ) -> Result<Option<WorkerLock<'_>>, GatewayError> {
         match self.worker_lock.try_lock() {
             Ok(()) => Ok(Some(WorkerLock {
                 file: &self.worker_lock,
@@ -201,7 +204,7 @@ impl Journal {
         }
     }
 
-    pub(super) fn existing_submission(
+    pub(in crate::gateway) fn existing_submission(
         &self,
         request: &SetDeploymentImageRequest,
         authorization: &VerifiedAuthorization,
@@ -264,7 +267,7 @@ impl Journal {
         Ok(Some(state))
     }
 
-    pub(super) fn insert_requested(
+    pub(in crate::gateway) fn insert_requested(
         &self,
         request: &SetDeploymentImageRequest,
     ) -> Result<(), GatewayError> {
@@ -298,7 +301,7 @@ impl Journal {
         Ok(())
     }
 
-    pub(super) fn mark_authorized(
+    pub(in crate::gateway) fn mark_authorized(
         &self,
         operation_id: &str,
         authorization: &VerifiedAuthorization,
@@ -324,7 +327,10 @@ impl Journal {
     }
 
     #[cfg(test)]
-    pub(super) fn state(&self, operation_id: &str) -> Result<Option<OperationState>, GatewayError> {
+    pub(in crate::gateway) fn state(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationState>, GatewayError> {
         self.connection
             .query_row(
                 "SELECT state FROM kubernetes_image_operations WHERE operation_id = ?1",
@@ -337,7 +343,7 @@ impl Journal {
             .transpose()
     }
 
-    pub(super) fn operation_snapshot(
+    pub(in crate::gateway) fn operation_snapshot(
         &self,
         operation_id: &str,
     ) -> Result<Option<OperationSnapshot>, GatewayError> {
@@ -390,7 +396,7 @@ impl Journal {
     }
 
     #[cfg(test)]
-    pub(super) fn target_rejection(
+    pub(in crate::gateway) fn target_rejection(
         &self,
         operation_id: &str,
     ) -> Result<Option<TargetRejection>, GatewayError> {
@@ -409,7 +415,7 @@ impl Journal {
     }
 
     #[cfg(test)]
-    pub(super) fn result(
+    pub(in crate::gateway) fn result(
         &self,
         operation_id: &str,
     ) -> Result<Option<OperationResult>, GatewayError> {
@@ -426,7 +432,7 @@ impl Journal {
             .transpose()
     }
 
-    pub(super) fn receipt_statement(
+    pub(in crate::gateway) fn receipt_statement(
         &self,
         operation_id: &str,
     ) -> Result<Option<ReceiptStatement>, GatewayError> {
@@ -457,7 +463,10 @@ impl Journal {
             .transpose()
     }
 
-    pub(super) fn prepare_receipt(&self, receipt: &FrozenReceipt) -> Result<(), GatewayError> {
+    pub(in crate::gateway) fn prepare_receipt(
+        &self,
+        receipt: &FrozenReceipt,
+    ) -> Result<(), GatewayError> {
         let path = receipt
             .path
             .to_str()
@@ -483,7 +492,10 @@ impl Journal {
         changed_one(changed)
     }
 
-    pub(super) fn mark_receipt_written(&self, operation_id: &str) -> Result<(), GatewayError> {
+    pub(in crate::gateway) fn mark_receipt_written(
+        &self,
+        operation_id: &str,
+    ) -> Result<(), GatewayError> {
         let changed = self
             .connection
             .execute(
@@ -503,7 +515,7 @@ impl Journal {
     }
 
     #[cfg(test)]
-    pub(super) fn frozen_receipt(
+    pub(in crate::gateway) fn frozen_receipt(
         &self,
         state: OperationState,
     ) -> Result<Option<FrozenReceipt>, GatewayError> {
@@ -538,7 +550,7 @@ impl Journal {
         let Some(receipt) = receipt else {
             return Ok(None);
         };
-        if receipt.bytes.len() > crate::receipt::RECEIPT_BYTES_MAX
+        if receipt.bytes.len() > RECEIPT_BYTES_MAX
             || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
         {
             return Err(GatewayError::ReceiptDigestMismatch);
@@ -548,7 +560,7 @@ impl Journal {
         Ok(Some(receipt))
     }
 
-    pub(super) fn frozen_receipt_for(
+    pub(in crate::gateway) fn frozen_receipt_for(
         &self,
         operation_id: &str,
         state: OperationState,
@@ -582,7 +594,7 @@ impl Journal {
         let Some(receipt) = receipt else {
             return Ok(None);
         };
-        if receipt.bytes.len() > crate::receipt::RECEIPT_BYTES_MAX
+        if receipt.bytes.len() > RECEIPT_BYTES_MAX
             || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
         {
             return Err(GatewayError::ReceiptDigestMismatch);
@@ -592,7 +604,10 @@ impl Journal {
         Ok(Some(receipt))
     }
 
-    pub(super) fn mark_finalized(&self, operation_id: &str) -> Result<(), GatewayError> {
+    pub(in crate::gateway) fn mark_finalized(
+        &self,
+        operation_id: &str,
+    ) -> Result<(), GatewayError> {
         let changed = self
             .connection
             .execute(
@@ -612,7 +627,7 @@ impl Journal {
     }
 
     #[cfg(test)]
-    pub(super) fn receipt_reference(
+    pub(in crate::gateway) fn receipt_reference(
         &self,
         operation_id: &str,
     ) -> Result<Option<ReceiptReference>, GatewayError> {
@@ -638,7 +653,7 @@ impl Journal {
             .map_err(GatewayError::Database)
     }
 
-    pub(super) fn next_request(
+    pub(in crate::gateway) fn next_request(
         &self,
         state: OperationState,
     ) -> Result<Option<SetDeploymentImageRequest>, GatewayError> {
@@ -666,7 +681,7 @@ impl Journal {
             .map_err(GatewayError::Database)
     }
 
-    pub(super) fn request_in_state(
+    pub(in crate::gateway) fn request_in_state(
         &self,
         operation_id: &str,
         state: OperationState,
@@ -692,7 +707,10 @@ impl Journal {
             .map_err(GatewayError::Database)
     }
 
-    pub(super) fn defer_target_retry(&self, operation_id: &str) -> Result<(), GatewayError> {
+    pub(in crate::gateway) fn defer_target_retry(
+        &self,
+        operation_id: &str,
+    ) -> Result<(), GatewayError> {
         let changed = self
             .connection
             .execute(
@@ -706,7 +724,7 @@ impl Journal {
         changed_one(changed)
     }
 
-    pub(super) fn mark_not_attempted(
+    pub(in crate::gateway) fn mark_not_attempted(
         &self,
         operation_id: &str,
         rejection: TargetRejection,
@@ -728,7 +746,7 @@ impl Journal {
         changed_one(changed)
     }
 
-    pub(super) fn mark_apply_started(
+    pub(in crate::gateway) fn mark_apply_started(
         &self,
         operation_id: &str,
         write_strategy: &str,
@@ -755,7 +773,7 @@ impl Journal {
         changed_one(changed)
     }
 
-    pub(super) fn record_apply_outcome(
+    pub(in crate::gateway) fn record_apply_outcome(
         &self,
         operation_id: &str,
         outcome: &ApplyOutcome,
@@ -798,7 +816,7 @@ impl Journal {
         changed_one(changed)
     }
 
-    pub(super) fn persisted_apply_outcome(
+    pub(in crate::gateway) fn persisted_apply_outcome(
         &self,
         operation_id: &str,
     ) -> Result<ApplyOutcome, GatewayError> {
@@ -821,7 +839,7 @@ impl Journal {
             .map_err(GatewayError::Database)
     }
 
-    pub(super) fn freeze_observation(
+    pub(in crate::gateway) fn freeze_observation(
         &self,
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,

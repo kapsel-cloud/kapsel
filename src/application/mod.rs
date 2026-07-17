@@ -13,10 +13,11 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 
-use crate::{
-    authorization::verify_authorization_grant, publication, receipt, AuthorizationTrust,
-    ExactAuthorization, Gateway, GatewayError, OperationResult, OperationState, ReceiptReference,
-    ReceiptSettings, SetDeploymentImageRequest, SubmissionResult, TargetRejection,
+use crate::gateway::{
+    sign_authorization_grant, validate_key_id, validate_private_directory,
+    verify_authorization_grant, AuthorizationTrust, ExactAuthorization, Gateway, GatewayError,
+    OperationResult, OperationState, ReceiptReference, ReceiptSettings, SetDeploymentImageRequest,
+    SubmissionResult, TargetRejection,
 };
 
 /// Request-only caller input for the sole supported operation.
@@ -65,7 +66,7 @@ pub struct GrantProvisioning<'a> {
 pub fn provision_exact_grant(
     provisioning: &GrantProvisioning<'_>,
 ) -> Result<Vec<u8>, ApplicationError> {
-    crate::authorization::sign_authorization_grant(
+    sign_authorization_grant(
         provisioning.authorization,
         provisioning.signing_seed,
         provisioning.signing_key_id,
@@ -117,9 +118,9 @@ impl Application {
             &configuration.authorization_trust,
         )
         .map_err(|_| ApplicationError::InvalidAuthorizationConfiguration)?;
-        receipt::validate_key_id(&configuration.receipt_signing_key_id)
+        validate_key_id(&configuration.receipt_signing_key_id)
             .map_err(|_| ApplicationError::InvalidReceiptConfiguration)?;
-        publication::validate_private_directory(&configuration.receipt_output_directory)
+        validate_private_directory(&configuration.receipt_output_directory)
             .map_err(|_| ApplicationError::InvalidReceiptOutputDirectory)?;
         validate_journal_path(&configuration.journal_path)?;
 
@@ -277,8 +278,7 @@ fn validate_journal_path(path: &Path) -> Result<(), ApplicationError> {
         return Err(ApplicationError::InvalidJournalPath);
     }
     let parent = path.parent().ok_or(ApplicationError::InvalidJournalPath)?;
-    publication::validate_private_directory(parent)
-        .map_err(|_| ApplicationError::InvalidJournalPath)?;
+    validate_private_directory(parent).map_err(|_| ApplicationError::InvalidJournalPath)?;
     validate_private_file_or_missing(path)?;
 
     let mut worker_lock_path = path.as_os_str().to_os_string();

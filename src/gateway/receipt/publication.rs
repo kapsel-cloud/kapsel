@@ -17,7 +17,7 @@ use std::{
 use rustix::fs::{fstat, linkat, openat, statat, unlinkat, AtFlags, Mode, OFlags, CWD};
 use sha2::{Digest, Sha256};
 
-use crate::receipt::RECEIPT_BYTES_MAX;
+use super::RECEIPT_BYTES_MAX;
 
 pub(crate) fn receipt_digest_hex(receipt: &[u8]) -> String {
     let digest = Sha256::digest(receipt);

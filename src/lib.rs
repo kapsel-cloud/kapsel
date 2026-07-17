@@ -9,15 +9,9 @@
 //! readiness, exactly-once, causation, Kubernetes-truth, complete-capture, or witnessing claim.
 
 mod application;
-mod authorization;
 mod gateway;
-mod journal;
 #[cfg(test)]
 mod kind_tests;
-mod kubernetes_adapter;
-mod kubernetes_facts;
-mod publication;
-mod receipt;
 #[cfg(test)]
 mod simulation_tests;
 
@@ -25,20 +19,20 @@ pub use application::{
     provision_exact_grant, AgentRequest, Application, ApplicationError, GrantProvisioning,
     OperationReport, OperatorConfiguration,
 };
-pub use authorization::AuthorizationTrust;
 pub use gateway::{
-    ExactAuthorization, GatewayError, InputField, OperationResult, OperationState,
-    ReceiptReference, SetDeploymentImageRequest, SubmissionResult, TargetRejection,
-};
-pub use receipt::{
-    inspect_receipt, InspectionLimits, InspectionReport, InspectionStatus, ReceiptError,
-    ReceiptStatement, ReceiptTrust,
+    inspect_receipt, AuthorizationTrust, ExactAuthorization, GatewayError, InputField,
+    InspectionLimits, InspectionReport, InspectionStatus, OperationResult, OperationState,
+    ReceiptError, ReceiptReference, ReceiptStatement, ReceiptTrust, SetDeploymentImageRequest,
+    SubmissionResult, TargetRejection,
 };
 
 #[cfg(test)]
 use gateway::FaultPoint;
+#[cfg(test)]
+use gateway::{DeploymentImageAdapter, Gateway, ReceiptSettings, TargetReadError};
+#[cfg(test)]
 use gateway::{
-    validate_dns_label, validate_dns_subdomain, validate_identity, validate_immutable_image,
-    DeploymentImageAdapter, FrozenReceipt, Gateway, ReceiptSettings, TargetReadError,
-    WRITE_STRATEGY,
+    TestApplyOutcome as ApplyOutcome,
+    TestKubernetesDeploymentImageAdapter as KubernetesDeploymentImageAdapter,
+    TestReceiverObservation as ReceiverObservation, TestTargetIdentity as TargetIdentity,
 };
