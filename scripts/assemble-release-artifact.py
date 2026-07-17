@@ -65,8 +65,13 @@ def git_provenance(allow_dirty: bool) -> tuple[str, bool]:
 
 
 def build_binaries(target_directory: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    # Linux bind mounts retain container ownership. Restore the host owner before temporary cleanup.
     build_script = f"""
         set -eu
+        restore_target_ownership() {{
+            chown -R "$HOST_UID:$HOST_GID" /target
+        }}
+        trap restore_target_ownership EXIT
         cargo build --release --locked --target {TARGET} --bin kapsel
         cp /target/{TARGET}/release/kapsel /target/ordinary-kapsel
         cargo build --release --locked --target {TARGET} --bin kapsel --features demo-harness
@@ -88,6 +93,10 @@ def build_binaries(target_directory: pathlib.Path) -> tuple[pathlib.Path, pathli
         "CARGO_TARGET_DIR=/target",
         "--env",
         "RUSTFLAGS=--remap-path-prefix=/workspace=.",
+        "--env",
+        f"HOST_UID={os.getuid()}",
+        "--env",
+        f"HOST_GID={os.getgid()}",
         BUILDER_IMAGE,
         "sh",
         "-eu",
