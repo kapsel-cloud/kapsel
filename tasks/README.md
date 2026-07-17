@@ -1,15 +1,14 @@
 # Technical task route
 
-Status: current 0.1.0 release sequence and conditional future technical route.
+Status: completed 0.1.0 release sequence and conditional future technical route.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or the active experiment contract.
 
 ## 0.1.0 sequence
 
-KAP-0045 is the active packet for the clean-checkout rehearsal and publication decision. KAP-0044
-completed the installable, documented `0.1.0-rc.1` artifact and proved the whole evaluator journey
-from a clean downloaded artifact.
+KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. There is no
+active implementation packet; KAP-0046 remains conditional on approved aggregate use evidence.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
@@ -22,8 +21,7 @@ from a clean downloaded artifact.
 | 6     | [KAP-0044](KAP-0044.md) | Installable, documented 0.1.0 artifact            | KAP-0043   |
 | 7     | [KAP-0045](KAP-0045.md) | Rehearsed and published 0.1.0                     | KAP-0044   |
 
-[KAP-0038](KAP-0038.md) remains the release-level acceptance index. It is not a second active
-implementation cursor.
+[KAP-0038](KAP-0038.md) is the completed release-level acceptance and evidence index.
 
 ## After 0.1.0
 

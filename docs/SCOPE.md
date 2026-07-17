@@ -32,12 +32,12 @@ The sole capability is `kubernetes.set_deployment_image` against a local `kind` 
 technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 
-The current milestone is the stable `0.1.0` release target for this one experiment—not a broader
-platform, production-support promise, or second provider.
+The current release is the stable `0.1.0` artifact for this one experiment—not a broader platform,
+production-support promise, or second provider.
 
 ## 0.1.0 release
 
-`0.1.0` is defined as a non-prerelease Kapsel release. A fresh evaluator can:
+`0.1.0` is the current non-prerelease Kapsel release. A fresh evaluator can:
 
 1. install a versioned artifact for the supported x86-64 GNU/Linux target and identify its exact
    source revision;

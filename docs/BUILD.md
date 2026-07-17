@@ -262,8 +262,9 @@ The source-built `cargo make demo-kind` route remains available. Both routes use
 artifact mode refuses missing, relative, symlinked, or non-executable release inputs before Docker
 or cluster inspection. See [Release artifacts](RELEASE.md) and the bundled
 [evaluator guide](EVALUATOR.md) for exact layout, installation, provenance, expected output, failure
-meaning, cleanup, unsupported targets, and non-claims. Publication and final release evidence are
-owned by KAP-0045.
+meaning, cleanup, unsupported targets, and non-claims. Public `0.1.0` assets are attached to the
+[Kapsel 0.1.0 release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.0); final evidence
+is recorded in [KAP-0045](../tasks/KAP-0045.md).
 
 ## Toolchain
 
