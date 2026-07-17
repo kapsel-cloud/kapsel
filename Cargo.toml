@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Crash-recoverable gateway for one authorized Kubernetes Deployment image operation"
 documentation = "https://docs.rs/kapsel"
-homepage = "https://github.com/mitander/kapsel"
+homepage = "https://github.com/kapsel-cloud/kapsel"
 readme = "README.md"
 keywords = ["agents", "kubernetes", "security", "recovery", "receipts"]
 categories = ["development-tools"]
@@ -39,7 +39,7 @@ version = "0.1.0-alpha.1"
 edition = "2021"
 authors = ["Kapsel Contributors"]
 license = "Apache-2.0"
-repository = "https://github.com/mitander/kapsel"
+repository = "https://github.com/kapsel-cloud/kapsel"
 rust-version = "1.96"
 
 [features]
