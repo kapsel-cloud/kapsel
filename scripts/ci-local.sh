@@ -3,6 +3,9 @@ set -eu
 
 echo "==> Rust format"
 cargo fmt --all --check
+if [ -f fuzz/Cargo.toml ]; then
+  cargo fmt --manifest-path fuzz/Cargo.toml --check
+fi
 
 printf '%s\n' "==> Rust line width"
 ./scripts/check-rust-width.sh
@@ -28,13 +31,13 @@ printf '%s\n' "==> Markdown links"
 ./scripts/check-markdown-links.py
 
 echo "==> clippy"
-cargo clippy --locked --workspace --lib --bins --all-features -- -D warnings
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
 echo "==> rustdoc"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
-echo "==> unit tests"
-cargo test --locked --lib --bins --workspace
+echo "==> deterministic Rust tests"
+cargo test --locked --workspace --lib --bins --tests
 
 echo "==> documentation tests"
 cargo test --locked --doc --workspace

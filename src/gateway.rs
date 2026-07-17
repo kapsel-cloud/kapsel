@@ -386,7 +386,7 @@ impl Gateway {
     }
 
     #[cfg(test)]
-    fn finalize_receipt_once_with_fault(
+    pub(crate) fn finalize_receipt_once_with_fault(
         &self,
         settings: &ReceiptSettings<'_>,
         fault: Option<FaultPoint>,
@@ -851,7 +851,7 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use super::*;
-    use crate::{journal, kubernetes_facts, *};
+    use crate::{journal, *};
 
     fn database_path(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -867,26 +867,6 @@ mod tests {
     fn private_directory(path: &Path) {
         fs::create_dir(path).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
-
-    #[test]
-    fn journal_uses_full_synchronous_rollback_durability() {
-        let path = database_path("sqlite-durability");
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        let journal_mode = gateway
-            .journal
-            .connection
-            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
-            .unwrap();
-        let synchronous = gateway
-            .journal
-            .connection
-            .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
-            .unwrap();
-        assert_eq!(journal_mode, "delete");
-        assert_eq!(synchronous, 2);
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     fn request() -> SetDeploymentImageRequest {
@@ -2807,113 +2787,6 @@ mod tests {
         assert!(!output_directory.exists());
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn hostile_kubernetes_facts_fail_before_receiver_state_is_frozen() {
-        let request = request();
-        let mut oversized_uid = unknown_observation(&request);
-        oversized_uid.deployment_uid =
-            Some("u".repeat(kubernetes_facts::KUBERNETES_FACT_BYTES_MAX + 1));
-        assert!(matches!(
-            oversized_uid.validate(),
-            Err(GatewayError::InvalidKubernetesFact)
-        ));
-
-        let mut oversized_version = unknown_observation(&request);
-        oversized_version.resource_version =
-            Some("r".repeat(kubernetes_facts::KUBERNETES_FACT_BYTES_MAX + 1));
-        assert!(matches!(
-            oversized_version.validate(),
-            Err(GatewayError::InvalidKubernetesFact)
-        ));
-
-        let mut oversized_marker = unknown_observation(&request);
-        oversized_marker.operation_marker =
-            Some("m".repeat(kubernetes_facts::KUBERNETES_FACT_BYTES_MAX + 1));
-        assert!(matches!(
-            oversized_marker.validate(),
-            Err(GatewayError::InvalidKubernetesFact)
-        ));
-
-        let mut invalid_number = unknown_observation(&request);
-        invalid_number.updated_replicas = Some(-1);
-        assert!(matches!(
-            invalid_number.validate(),
-            Err(GatewayError::InvalidKubernetesFact)
-        ));
-
-        let mut oversized_image = unknown_observation(&request);
-        oversized_image.image = Some(format!("{}@sha256:{}", "i".repeat(441), "0".repeat(64)));
-        assert!(matches!(
-            oversized_image.validate(),
-            Err(GatewayError::InvalidKubernetesFact)
-        ));
-    }
-
-    #[test]
-    fn receiver_classification_keeps_timeout_and_replica_failure_unknown() {
-        let request = request();
-        let outcome = ApplyOutcome {
-            accepted: true,
-            requested_generation: Some(2),
-            deployment_uid: Some("deployment-uid-1".into()),
-            resource_version: Some("resource-version-1".into()),
-        };
-        let recovered_outcome = ApplyOutcome {
-            accepted: false,
-            requested_generation: None,
-            deployment_uid: Some("deployment-uid-1".into()),
-            resource_version: Some("resource-version-0".into()),
-        };
-        let mut observation = unknown_observation(&request);
-        assert_eq!(
-            observation.classify(&request, &outcome),
-            OperationResult::Unknown
-        );
-        assert_eq!(
-            observation.requested_generation(&request, &recovered_outcome),
-            Some(2)
-        );
-        let mut mismatched_uid = observation.clone();
-        mismatched_uid.deployment_uid = Some("replacement-uid".into());
-        assert_eq!(
-            mismatched_uid.requested_generation(&request, &recovered_outcome),
-            None
-        );
-        let mut missing_stored_uid = recovered_outcome.clone();
-        missing_stored_uid.deployment_uid = None;
-        assert_eq!(
-            observation.requested_generation(&request, &missing_stored_uid),
-            None
-        );
-
-        observation.updated_replicas = Some(1);
-        observation.available_replicas = Some(1);
-        observation.unavailable_replicas = Some(0);
-        observation.rollout_condition_type = Some("Available".into());
-        observation.rollout_condition_status = Some("True".into());
-        observation.rollout_condition_reason = Some("DifferentObservedReason".into());
-        assert_eq!(
-            observation.classify(&request, &outcome),
-            OperationResult::Succeeded
-        );
-        assert_eq!(
-            observation.classify(&request, &recovered_outcome),
-            OperationResult::Succeeded
-        );
-
-        observation.rollout_condition_type = Some("Progressing".into());
-        observation.rollout_condition_status = Some("False".into());
-        observation.rollout_condition_reason = Some("ProgressDeadlineExceeded".into());
-        assert_eq!(
-            observation.classify(&request, &outcome),
-            OperationResult::Failed
-        );
-        assert_eq!(
-            observation.classify(&request, &recovered_outcome),
-            OperationResult::Failed
-        );
     }
 
     #[test]

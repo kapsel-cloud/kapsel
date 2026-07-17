@@ -17,9 +17,10 @@ Run the deterministic, containerless repository gate:
 ```
 
 It checks Rust and Markdown formatting, local Markdown links and heading anchors, Rust line width,
-project tidy rules, Clippy, warning-free rustdoc, workspace unit/binary tests, and documentation
-tests. Missing public rustdoc, unreachable bare-`pub` items, missing `# Errors`/`# Panics` sections,
-and broken or private intra-doc links are denied.
+project tidy rules, Clippy across production and test targets, warning-free rustdoc, workspace unit,
+integration, and binary tests, and documentation tests. Missing public rustdoc, unreachable
+bare-`pub` items, missing `# Errors`/`# Panics` sections, and broken or private intra-doc links are
+denied.
 
 Equivalent cargo-make aliases are:
 
@@ -78,6 +79,43 @@ Signed-grant trust, classifier-complete receipts, inspection, durable publicatio
 recovery behavior is library-only. The deterministic suite includes real subprocess kill/restart
 proofs at the mutation and receipt-publication seams. There is no public operation or inspection
 command yet.
+
+## Robustness lanes
+
+Compile the offline receipt-inspection fuzz target with:
+
+```sh
+cargo make fuzz-check
+```
+
+Run its bounded smoke lane with:
+
+```sh
+cargo make test-fuzz
+```
+
+`cargo-fuzz` 0.13 or newer and an installed Rust nightly toolchain are prerequisites. For an
+unbounded session, run `cargo +nightly fuzz run inspect_receipt` from `fuzz/`. Preserve the
+generated artifact and exact replay command for every failure. Fuzzing is separate from the default
+gate.
+
+Run the ignored seeded lifecycle simulation with:
+
+```sh
+cargo make test-simulation
+```
+
+The defaults use seed `21182435914953528` and 1,000 cases. Replay or lengthen a run explicitly:
+
+```sh
+KAPSEL_SIMULATION_SEED=21182435914953528 \
+KAPSEL_SIMULATION_CASES=10000 \
+cargo make test-simulation
+```
+
+The simulation injects generated mutation and receipt-publication crash windows, reopens the same
+journal, and asserts provider-call counts, receiver classification, terminal state, and frozen
+receipt location after every case. It uses no live cluster and is separate from the default gate.
 
 ## Live Kubernetes gate
 

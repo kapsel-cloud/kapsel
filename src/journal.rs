@@ -1103,3 +1103,35 @@ fn changed_one(changed: usize) -> Result<(), GatewayError> {
         Err(GatewayError::InvalidTransition)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    use super::*;
+
+    #[test]
+    fn journal_uses_full_synchronous_rollback_durability() {
+        let directory =
+            std::env::temp_dir().join(format!("kapsel-journal-durability-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("journal.sqlite3");
+
+        let journal = Journal::open(&path).unwrap();
+        let journal_mode = journal
+            .connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+            .unwrap();
+        let synchronous = journal
+            .connection
+            .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+
+        assert_eq!(journal_mode, "delete");
+        assert_eq!(synchronous, 2);
+        drop(journal);
+        fs::remove_dir_all(directory).unwrap();
+    }
+}

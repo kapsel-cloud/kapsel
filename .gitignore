@@ -1,6 +1,7 @@
 # Generated build and interpreter artifacts
 debug
 target
+/fuzz/artifacts/
 __pycache__/
 *.py[cod]
 

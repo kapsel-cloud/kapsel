@@ -1061,6 +1061,41 @@ mod tests {
     }
 
     #[test]
+    fn caller_selected_inspection_limits_reject_lower_and_excessive_ceilings() {
+        let (receipt, trust) = signed_fixture();
+        let defaults = InspectionLimits::default();
+        let cases = [
+            InspectionLimits {
+                receipt_bytes_max: receipt.len() - 1,
+                ..defaults
+            },
+            InspectionLimits {
+                statement_bytes_max: 1,
+                ..defaults
+            },
+            InspectionLimits {
+                trust_bytes_max: trust.len() - 1,
+                ..defaults
+            },
+            InspectionLimits {
+                text_bytes_max: 1,
+                ..defaults
+            },
+            InspectionLimits {
+                receipt_bytes_max: defaults.receipt_bytes_max + 1,
+                ..defaults
+            },
+        ];
+
+        for limits in cases {
+            assert_eq!(
+                inspect_receipt(&receipt, &trust, 150, limits).status(),
+                InspectionStatus::StructureRejected
+            );
+        }
+    }
+
+    #[test]
     fn hostile_signed_statements_enforce_field_grammars_and_result_coherence() {
         let seed = [9_u8; 32];
         let trust = trust(&seed).encode().unwrap();

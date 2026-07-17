@@ -1,0 +1,19 @@
+[package]
+name = "kapsel-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+kapsel = { path = ".." }
+
+[[bin]]
+name = "inspect_receipt"
+path = "fuzz_targets/inspect_receipt.rs"
+test = false
+doc = false
+bench = false

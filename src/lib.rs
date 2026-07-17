@@ -18,6 +18,8 @@ mod kubernetes_adapter;
 mod kubernetes_facts;
 mod publication;
 mod receipt;
+#[cfg(test)]
+mod simulation_tests;
 
 pub use application::{
     provision_exact_grant, AgentRequest, Application, ApplicationError, GrantProvisioning,

@@ -209,3 +209,163 @@ fn validate_optional_fact(value: Option<&str>) -> Result<(), GatewayError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> SetDeploymentImageRequest {
+        SetDeploymentImageRequest {
+            operation_id: "op-001".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: concat!(
+                "registry.example/example/agent-api@sha256:",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .into(),
+        }
+    }
+
+    fn unknown_observation(request: &SetDeploymentImageRequest) -> ReceiverObservation {
+        ReceiverObservation {
+            deployment_uid: Some("deployment-uid-1".into()),
+            resource_version: Some("resource-version-2".into()),
+            current_generation: Some(2),
+            observed_generation: Some(2),
+            image: Some(request.immutable_image_digest.clone()),
+            operation_marker: Some(request.operation_id.clone()),
+            desired_replicas: Some(1),
+            updated_replicas: Some(0),
+            available_replicas: Some(0),
+            unavailable_replicas: Some(1),
+            rollout_condition_type: None,
+            rollout_condition_status: None,
+            rollout_condition_reason: None,
+        }
+    }
+
+    fn apply_outcome() -> ApplyOutcome {
+        ApplyOutcome {
+            accepted: true,
+            requested_generation: Some(2),
+            deployment_uid: Some("deployment-uid-1".into()),
+            resource_version: Some("resource-version-1".into()),
+        }
+    }
+
+    #[test]
+    fn hostile_facts_fail_before_receiver_state_is_frozen() {
+        let request = request();
+        let mut oversized_uid = unknown_observation(&request);
+        oversized_uid.deployment_uid = Some("u".repeat(KUBERNETES_FACT_BYTES_MAX + 1));
+        assert!(matches!(
+            oversized_uid.validate(),
+            Err(GatewayError::InvalidKubernetesFact)
+        ));
+
+        let mut oversized_version = unknown_observation(&request);
+        oversized_version.resource_version = Some("r".repeat(KUBERNETES_FACT_BYTES_MAX + 1));
+        assert!(matches!(
+            oversized_version.validate(),
+            Err(GatewayError::InvalidKubernetesFact)
+        ));
+
+        let mut oversized_marker = unknown_observation(&request);
+        oversized_marker.operation_marker = Some("m".repeat(KUBERNETES_FACT_BYTES_MAX + 1));
+        assert!(matches!(
+            oversized_marker.validate(),
+            Err(GatewayError::InvalidKubernetesFact)
+        ));
+
+        let mut invalid_number = unknown_observation(&request);
+        invalid_number.updated_replicas = Some(-1);
+        assert!(matches!(
+            invalid_number.validate(),
+            Err(GatewayError::InvalidKubernetesFact)
+        ));
+
+        let mut oversized_image = unknown_observation(&request);
+        oversized_image.image = Some(format!("{}@sha256:{}", "i".repeat(441), "0".repeat(64)));
+        assert!(matches!(
+            oversized_image.validate(),
+            Err(GatewayError::InvalidKubernetesFact)
+        ));
+    }
+
+    #[test]
+    fn receiver_classification_distinguishes_owned_terminal_facts() {
+        let request = request();
+        let outcome = apply_outcome();
+        let recovered_outcome = ApplyOutcome {
+            accepted: false,
+            requested_generation: None,
+            deployment_uid: Some("deployment-uid-1".into()),
+            resource_version: Some("resource-version-0".into()),
+        };
+        let mut observation = unknown_observation(&request);
+        assert_eq!(
+            observation.classify(&request, &outcome),
+            OperationResult::Unknown
+        );
+        assert_eq!(
+            observation.requested_generation(&request, &recovered_outcome),
+            Some(2)
+        );
+        let mut mismatched_uid = observation.clone();
+        mismatched_uid.deployment_uid = Some("replacement-uid".into());
+        assert_eq!(
+            mismatched_uid.requested_generation(&request, &recovered_outcome),
+            None
+        );
+        let mut missing_stored_uid = recovered_outcome.clone();
+        missing_stored_uid.deployment_uid = None;
+        assert_eq!(
+            observation.requested_generation(&request, &missing_stored_uid),
+            None
+        );
+
+        observation.updated_replicas = Some(1);
+        observation.available_replicas = Some(1);
+        observation.unavailable_replicas = Some(0);
+        observation.rollout_condition_type = Some("Available".into());
+        observation.rollout_condition_status = Some("True".into());
+        observation.rollout_condition_reason = Some("DifferentObservedReason".into());
+        assert_eq!(
+            observation.classify(&request, &outcome),
+            OperationResult::Succeeded
+        );
+        assert_eq!(
+            observation.classify(&request, &recovered_outcome),
+            OperationResult::Succeeded
+        );
+
+        observation.rollout_condition_type = Some("Progressing".into());
+        observation.rollout_condition_status = Some("False".into());
+        observation.rollout_condition_reason = Some("ProgressDeadlineExceeded".into());
+        assert_eq!(
+            observation.classify(&request, &outcome),
+            OperationResult::Failed
+        );
+        assert_eq!(
+            observation.classify(&request, &recovered_outcome),
+            OperationResult::Failed
+        );
+    }
+
+    #[test]
+    fn replica_failure_alone_remains_unknown() {
+        let request = request();
+        let mut observation = unknown_observation(&request);
+        observation.rollout_condition_type = Some("ReplicaFailure".into());
+        observation.rollout_condition_status = Some("True".into());
+        observation.rollout_condition_reason = Some("FailedCreate".into());
+
+        assert_eq!(
+            observation.classify(&request, &apply_outcome()),
+            OperationResult::Unknown
+        );
+        assert!(!observation.has_terminal_rollout_signal(&request));
+    }
+}

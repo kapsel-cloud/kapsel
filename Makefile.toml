@@ -17,18 +17,50 @@ command = "cargo"
 args = ["build", "--locked", "--workspace"]
 
 [tasks.test]
-description = "Run workspace library and documentation tests"
-dependencies = ["test-unit", "test-doc"]
+description = "Run workspace deterministic and documentation tests"
+dependencies = ["test-deterministic", "test-doc"]
 
-[tasks.test-unit]
-description = "Run containerless library tests"
+[tasks.test-deterministic]
+description = "Run containerless unit, integration, and binary tests"
 command = "cargo"
-args = ["test", "--locked", "--lib", "--bins", "--workspace"]
+args = ["test", "--locked", "--workspace", "--lib", "--bins", "--tests"]
 
 [tasks.test-doc]
 description = "Run documentation tests"
 command = "cargo"
 args = ["test", "--locked", "--doc", "--workspace"]
+
+[tasks.test-simulation]
+description = "Run the replayable seeded long lifecycle simulation"
+command = "cargo"
+args = [
+  "test",
+  "--locked",
+  "-p",
+  "kapsel",
+  "simulation_tests::seeded_lifecycle_crash_simulation_preserves_invariants",
+  "--",
+  "--ignored",
+  "--exact",
+  "--nocapture",
+]
+
+[tasks.fuzz-check]
+description = "Compile the offline receipt-inspection fuzz target"
+cwd = "fuzz"
+command = "rustup"
+args = ["run", "nightly", "cargo", "fuzz", "check", "inspect_receipt"]
+
+[tasks.test-fuzz]
+description = "Run a bounded receipt-inspection fuzz smoke test"
+cwd = "fuzz"
+script = '''
+set -eu
+corpus_directory=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-fuzz-corpus.XXXXXX")
+trap 'rm -rf "$corpus_directory"' EXIT HUP INT TERM
+cp corpus/inspect_receipt/canonical-receipt-and-trust "$corpus_directory/"
+rustup run nightly cargo fuzz run --dev inspect_receipt "$corpus_directory" -- -runs=10000
+'''
 
 [tasks.fmt]
 clear = true
@@ -36,9 +68,14 @@ description = "Format Rust and Markdown sources"
 dependencies = ["fmt-rust", "fmt-markdown"]
 
 [tasks.fmt-rust]
-description = "Format Rust sources"
-command = "cargo"
-args = ["fmt", "--all"]
+description = "Format workspace and fuzz-target Rust sources"
+script = '''
+set -eu
+cargo fmt --all
+if [ -f fuzz/Cargo.toml ]; then
+  cargo fmt --manifest-path fuzz/Cargo.toml
+fi
+'''
 
 [tasks.fmt-markdown]
 description = "Format Markdown sources and expand tables"
@@ -55,9 +92,14 @@ description = "Check Rust formatting and line width"
 dependencies = ["fmt-check-rustfmt", "fmt-check-rust-width"]
 
 [tasks.fmt-check-rustfmt]
-description = "Check Rust formatting"
-command = "cargo"
-args = ["fmt", "--all", "--check"]
+description = "Check workspace and fuzz-target Rust formatting"
+script = '''
+set -eu
+cargo fmt --all --check
+if [ -f fuzz/Cargo.toml ]; then
+  cargo fmt --manifest-path fuzz/Cargo.toml --check
+fi
+'''
 
 [tasks.fmt-check-rust-width]
 description = "Check the strict 100-byte Rust source width"
@@ -89,9 +131,9 @@ command = "cargo"
 args = ["run", "--quiet", "--locked", "-p", "kapsel-dev", "--bin", "kapsel-hooks", "--", "uninstall"]
 
 [tasks.lint]
-description = "Run production-target clippy lints"
+description = "Run Clippy across production and test targets"
 command = "cargo"
-args = ["clippy", "--locked", "--workspace", "--lib", "--bins", "--all-features", "--", "-D", "warnings"]
+args = ["clippy", "--locked", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 
 [tasks.clean]
 description = "Remove build artifacts"
