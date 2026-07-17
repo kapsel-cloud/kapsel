@@ -7,9 +7,9 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-KAP-0044 is the active packet for the installable, documented release candidate. KAP-0043 completed
-the thin fixed-schema MCP adapter, so packaging can now prove the whole evaluator journey from
-versioned artifacts.
+KAP-0045 is the active packet for the clean-checkout rehearsal and publication decision. KAP-0044
+completed the installable, documented `0.1.0-rc.1` candidate and proved the whole evaluator journey
+from a clean downloaded artifact.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
