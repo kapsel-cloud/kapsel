@@ -56,15 +56,15 @@ pub(crate) fn sign_authorization_grant(
     let signature = SigningKey::from_bytes(signing_seed).sign(&signature_input(&statement));
     let mut output = Vec::with_capacity(statement.len() + 192);
     output.extend_from_slice(SIGNED_GRANT_MAGIC);
-    push(
+    append_bounded_record(
         &mut output,
         1,
         GRANT_PURPOSE.as_bytes(),
         SIGNED_GRANT_BYTES_MAX,
     )?;
-    push(&mut output, 2, key_id.as_bytes(), SIGNED_GRANT_BYTES_MAX)?;
-    push(&mut output, 3, &statement, SIGNED_GRANT_BYTES_MAX)?;
-    push(
+    append_bounded_record(&mut output, 2, key_id.as_bytes(), SIGNED_GRANT_BYTES_MAX)?;
+    append_bounded_record(&mut output, 3, &statement, SIGNED_GRANT_BYTES_MAX)?;
+    append_bounded_record(
         &mut output,
         4,
         &signature.to_bytes(),
@@ -81,22 +81,22 @@ pub(crate) fn verify_authorization_grant(
     if bytes.len() > SIGNED_GRANT_BYTES_MAX {
         return Err(GatewayError::InvalidAuthorizationGrant);
     }
-    let mut records = Records::new(bytes, SIGNED_GRANT_MAGIC)?;
-    if records.take(1)? != GRANT_PURPOSE.as_bytes() {
+    let mut records = GrantRecords::new(bytes, SIGNED_GRANT_MAGIC)?;
+    if records.take_record(1)? != GRANT_PURPOSE.as_bytes() {
         return Err(GatewayError::InvalidAuthorizationGrant);
     }
-    let key_id = records.text(2)?;
+    let key_id = records.take_ascii_text(2)?;
     validate_identity(InputField::AuthorizationId, &key_id)
         .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    let statement_bytes = records.take(3)?;
+    let statement_bytes = records.take_record(3)?;
     if statement_bytes.len() > GRANT_STATEMENT_BYTES_MAX {
         return Err(GatewayError::InvalidAuthorizationGrant);
     }
     let signature_bytes: [u8; 64] = records
-        .take(4)?
+        .take_record(4)?
         .try_into()
         .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    records.finish()?;
+    records.finish_exact()?;
     let authorization = parse_statement(statement_bytes)?;
     if key_id != trust.key_id {
         return Err(GatewayError::UntrustedAuthorizationGrant);
@@ -126,7 +126,7 @@ fn encode_statement(authorization: &ExactAuthorization) -> Result<Vec<u8>, Gatew
         (5, authorization.container.as_str()),
         (6, authorization.immutable_image_digest.as_str()),
     ] {
-        push(
+        append_bounded_record(
             &mut output,
             tag,
             value.as_bytes(),
@@ -137,16 +137,16 @@ fn encode_statement(authorization: &ExactAuthorization) -> Result<Vec<u8>, Gatew
 }
 
 fn parse_statement(bytes: &[u8]) -> Result<ExactAuthorization, GatewayError> {
-    let mut records = Records::new(bytes, GRANT_STATEMENT_MAGIC)?;
+    let mut records = GrantRecords::new(bytes, GRANT_STATEMENT_MAGIC)?;
     let authorization = ExactAuthorization {
-        authorization_id: records.text(1)?,
-        operation_id: records.text(2)?,
-        namespace: records.text(3)?,
-        deployment: records.text(4)?,
-        container: records.text(5)?,
-        immutable_image_digest: records.text(6)?,
+        authorization_id: records.take_ascii_text(1)?,
+        operation_id: records.take_ascii_text(2)?,
+        namespace: records.take_ascii_text(3)?,
+        deployment: records.take_ascii_text(4)?,
+        container: records.take_ascii_text(5)?,
+        immutable_image_digest: records.take_ascii_text(6)?,
     };
-    records.finish()?;
+    records.finish_exact()?;
     authorization.validate()?;
     Ok(authorization)
 }
@@ -159,7 +159,7 @@ fn signature_input(statement: &[u8]) -> Vec<u8> {
     input
 }
 
-fn push(
+fn append_bounded_record(
     output: &mut Vec<u8>,
     tag: u8,
     value: &[u8],
@@ -180,13 +180,13 @@ fn push(
     Ok(())
 }
 
-struct Records<'a> {
+struct GrantRecords<'a> {
     bytes: &'a [u8],
     offset: usize,
     next_tag: u8,
 }
 
-impl<'a> Records<'a> {
+impl<'a> GrantRecords<'a> {
     fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, GatewayError> {
         if !bytes.starts_with(magic) {
             return Err(GatewayError::InvalidAuthorizationGrant);
@@ -198,7 +198,7 @@ impl<'a> Records<'a> {
         })
     }
 
-    fn take(&mut self, expected_tag: u8) -> Result<&'a [u8], GatewayError> {
+    fn take_record(&mut self, expected_tag: u8) -> Result<&'a [u8], GatewayError> {
         if expected_tag != self.next_tag {
             return Err(GatewayError::InvalidAuthorizationGrant);
         }
@@ -230,15 +230,15 @@ impl<'a> Records<'a> {
         Ok(&self.bytes[header_end..value_end])
     }
 
-    fn text(&mut self, expected_tag: u8) -> Result<String, GatewayError> {
-        let value = self.take(expected_tag)?;
+    fn take_ascii_text(&mut self, expected_tag: u8) -> Result<String, GatewayError> {
+        let value = self.take_record(expected_tag)?;
         if value.is_empty() || value.len() > GRANT_TEXT_BYTES_MAX || !value.is_ascii() {
             return Err(GatewayError::InvalidAuthorizationGrant);
         }
         String::from_utf8(value.to_vec()).map_err(|_| GatewayError::InvalidAuthorizationGrant)
     }
 
-    fn finish(self) -> Result<(), GatewayError> {
+    fn finish_exact(self) -> Result<(), GatewayError> {
         if self.offset == self.bytes.len() {
             Ok(())
         } else {

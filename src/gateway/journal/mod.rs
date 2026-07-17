@@ -1083,7 +1083,7 @@ fn open_private_file(path: &Path) -> io::Result<File> {
     let metadata = file.metadata()?;
     if !metadata.is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode().trailing_zeros() < 6
+        || (metadata.mode() & 0o077) != 0
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

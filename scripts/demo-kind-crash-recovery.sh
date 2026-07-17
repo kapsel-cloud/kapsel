@@ -50,15 +50,17 @@ phase() {
 }
 
 bounded_log() {
-  source=$1
-  destination=$2
+  local source=$1
+  local destination=$2
   if [[ -f $source ]]; then
     tail -c "$log_max" "$source" >"$destination"
   fi
 }
 
 cleanup() {
-  status=$?
+  local status=$?
+  local diagnostic
+  local log
   trap - EXIT INT TERM
   if [[ -n $active_child_pid ]] && kill -0 "$active_child_pid" 2>/dev/null; then
     kill -KILL "$active_child_pid" 2>/dev/null || true
@@ -127,7 +129,12 @@ require_versions() {
 }
 
 write_json_inputs() {
-  local namespace=$1 deployment=$2 operation=$3 authorization=$4 image=$5 prefix=$6
+  local namespace=$1
+  local deployment=$2
+  local operation=$3
+  local authorization=$4
+  local image=$5
+  local prefix=$6
   cat >"$workspace/$prefix-authorization.json" <<EOF
 {"authorization_id":"$authorization","operation_id":"$operation","namespace":"$namespace","deployment":"$deployment","container":"target","immutable_image_digest":"$image"}
 EOF
@@ -143,7 +150,11 @@ EOF
 }
 
 write_operator() {
-  local prefix=$1 receipts=$2 seed=$3 receipt_key=$4 output=$5
+  local prefix=$1
+  local receipts=$2
+  local seed=$3
+  local receipt_key=$4
+  local output=$5
   cat >"$output" <<EOF
 {"signed_authorization_grant":"$workspace/$prefix-grant.bin","authorization_key_id":"demo-authorization-key","authorization_public_key":"$workspace/signing.pub","kubeconfig":"$workspace/kubeconfig.yaml","journal":"$workspace/$prefix-journal.sqlite3","receipt_directory":"$receipts","receipt_signing_seed":"$seed","receipt_signing_key_id":"$receipt_key"}
 EOF
@@ -151,8 +162,10 @@ EOF
 }
 
 wait_marker() {
-  local pid=$1 marker=$2 seconds=$3
-  local deadline=$((SECONDS + seconds))
+  local pid=$1
+  local marker=$2
+  local marker_wait_seconds=$3
+  local deadline=$((SECONDS + marker_wait_seconds))
   while [[ ! -f $marker ]]; do
     if ! kill -0 "$pid" 2>/dev/null; then
       printf 'demo process exited before marker: %s\n' "$marker" >&2
@@ -167,7 +180,11 @@ wait_marker() {
 }
 
 kill_at_seam() {
-  local seam=$1 marker=$2 operator=$3 log=$4 timeout=$5
+  local seam=$1
+  local marker=$2
+  local operator=$3
+  local log=$4
+  local marker_wait_seconds=$5
   KAPSEL_DEMO_CONTROL_DIRECTORY="$workspace/control" \
     KAPSEL_DEMO_PAUSE="$seam" \
     "$demo_executable" operate \
@@ -175,7 +192,7 @@ kill_at_seam() {
       --operator-config "$operator" >"$log" 2>&1 &
   local pid=$!
   active_child_pid=$pid
-  wait_marker "$pid" "$marker" "$timeout"
+  wait_marker "$pid" "$marker" "$marker_wait_seconds"
   kill -KILL "$pid"
   if wait "$pid" 2>/dev/null; then
     printf 'demo process unexpectedly exited successfully at %s\n' "$seam" >&2

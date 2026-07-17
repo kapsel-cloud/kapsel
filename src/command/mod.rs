@@ -172,6 +172,7 @@ fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
     let request_path = take_path(&mut options, "--request", "operate")?;
     let operator_path = take_path(&mut options, "--operator-config", "operate")?;
     finish_options(&options, "operate")?;
+
     let request: RequestDocument = read_json(&request_path, "operate")?;
     let request = AgentRequest {
         operation_id: request.operation_id,
@@ -180,6 +181,7 @@ fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
         container: request.container,
         immutable_image_digest: request.immutable_image_digest,
     };
+
     let runtime = runtime("operate")?;
     let report = runtime.block_on(async {
         let mut application = open_application(&operator_path, "operate").await?;
@@ -233,26 +235,8 @@ async fn load_operator_configuration(
         command,
         ErrorClass::OperatorConfiguration,
     )?;
-    let kubeconfig_bytes = read_bounded(
-        &operator.kubeconfig,
-        JSON_BYTES_MAX,
-        command,
-        ErrorClass::OperatorConfiguration,
-    )?;
-    let kubeconfig_text =
-        std::str::from_utf8(&kubeconfig_bytes).map_err(|_| CommandError::configuration(command))?;
-    let mut kubeconfig = kube::config::Kubeconfig::from_yaml(kubeconfig_text)
-        .map_err(|_| CommandError::configuration(command))?;
-    let remove_proxy_placeholder = configure_explicit_kubeconfig(&mut kubeconfig, command)?;
-    let mut client_config =
-        Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
-            .await
-            .map_err(|_| CommandError::configuration(command))?;
-    if remove_proxy_placeholder {
-        client_config.proxy_url = None;
-    }
-    let kubernetes_client =
-        kube::Client::try_from(client_config).map_err(|_| CommandError::configuration(command))?;
+    let kubernetes_client = load_kubernetes_client(&operator.kubeconfig, command).await?;
+
     Ok(OperatorConfiguration {
         journal_path: operator.journal,
         receipt_output_directory: operator.receipt_directory,
@@ -267,10 +251,35 @@ async fn load_operator_configuration(
     })
 }
 
+async fn load_kubernetes_client(
+    kubeconfig_path: &Path,
+    command: &'static str,
+) -> Result<kube::Client, CommandError> {
+    let kubeconfig_bytes = read_bounded(
+        kubeconfig_path,
+        JSON_BYTES_MAX,
+        command,
+        ErrorClass::OperatorConfiguration,
+    )?;
+    let kubeconfig_text =
+        std::str::from_utf8(&kubeconfig_bytes).map_err(|_| CommandError::configuration(command))?;
+    let mut kubeconfig = kube::config::Kubeconfig::from_yaml(kubeconfig_text)
+        .map_err(|_| CommandError::configuration(command))?;
+    let proxy_placeholder_was_added = configure_explicit_kubeconfig(&mut kubeconfig, command)?;
+    let mut client_config =
+        Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
+            .await
+            .map_err(|_| CommandError::configuration(command))?;
+    if proxy_placeholder_was_added {
+        client_config.proxy_url = None;
+    }
+    kube::Client::try_from(client_config).map_err(|_| CommandError::configuration(command))
+}
+
 fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
     let receipt_path = take_path(&mut options, "--receipt", "inspect")?;
     let trust_path = take_path(&mut options, "--trust", "inspect")?;
-    let evaluation_time = take_text(&mut options, "--evaluation-time-unix-s", "inspect")?
+    let evaluation_time_unix_s = take_text(&mut options, "--evaluation-time-unix-s", "inspect")?
         .parse::<i64>()
         .map_err(|_| CommandError::input("inspect"))?;
     let defaults = InspectionLimits::default();
@@ -319,7 +328,12 @@ fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
         "inspect",
         ErrorClass::CommandInput,
     )?;
-    let output = render_inspection(&inspect_receipt(&receipt, &trust, evaluation_time, limits));
+    let output = render_inspection(&inspect_receipt(
+        &receipt,
+        &trust,
+        evaluation_time_unix_s,
+        limits,
+    ));
     if output
         .len()
         .checked_add(1)
@@ -528,11 +542,11 @@ pub(crate) fn runtime(command: &'static str) -> Result<tokio::runtime::Runtime, 
 }
 
 fn render_operation(report: &OperationReport) -> CommandResult {
-    let operation_id = json_string(&report.operation_id);
+    let operation_id_json = json_string(&report.operation_id);
     let state = operation_state(report.state);
-    let result = optional_json(report.result.map(operation_result));
-    let rejection = optional_json(report.target_rejection.map(target_rejection));
-    let (receipt_file, receipt_digest) = if let Some(receipt) = &report.receipt {
+    let result_json = optional_json(report.result.map(operation_result));
+    let target_rejection_json = optional_json(report.target_rejection.map(target_rejection));
+    let (receipt_file_json, receipt_digest_json) = if let Some(receipt) = &report.receipt {
         let file = receipt
             .path
             .file_name()
@@ -544,17 +558,18 @@ fn render_operation(report: &OperationReport) -> CommandResult {
     };
     Ok(format!(
         concat!(
-            "{{\"command\":\"operate\",\"operation_id\":{operation_id},",
-            "\"state\":\"{state}\",\"result\":{result},",
-            "\"target_rejection\":{rejection},\"receipt_file\":{receipt_file},",
-            "\"receipt_sha256\":{receipt_digest}}}"
+            "{{\"command\":\"operate\",\"operation_id\":{operation_id_json},",
+            "\"state\":\"{state}\",\"result\":{result_json},",
+            "\"target_rejection\":{target_rejection_json},",
+            "\"receipt_file\":{receipt_file_json},",
+            "\"receipt_sha256\":{receipt_digest_json}}}"
         ),
-        operation_id = operation_id,
+        operation_id_json = operation_id_json,
         state = state,
-        result = result,
-        rejection = rejection,
-        receipt_file = receipt_file,
-        receipt_digest = receipt_digest
+        result_json = result_json,
+        target_rejection_json = target_rejection_json,
+        receipt_file_json = receipt_file_json,
+        receipt_digest_json = receipt_digest_json
     ))
 }
 
@@ -607,6 +622,7 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
         output.push('}');
         return output;
     };
+
     let text_fields = [
         ("operation_id", Some(statement.operation_id())),
         ("authorization_id", Some(statement.authorization_id())),
@@ -641,6 +657,7 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
     for (name, value) in text_fields {
         append_json_field(&mut output, name, &optional_json(value));
     }
+
     for (name, value) in [
         ("current_generation", statement.current_generation()),
         ("requested_generation", statement.requested_generation()),
@@ -653,6 +670,7 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
         "observed_resource_version",
         &optional_json(statement.observed_resource_version()),
     );
+
     for (name, value) in [
         ("desired_replicas", statement.desired_replicas()),
         ("updated_replicas", statement.updated_replicas()),
@@ -661,6 +679,7 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
     ] {
         append_json_field(&mut output, name, &optional_number(value));
     }
+
     for (name, value) in [
         ("rollout_condition_type", statement.rollout_condition_type()),
         (
@@ -674,6 +693,7 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
     ] {
         append_json_field(&mut output, name, &optional_json(value));
     }
+
     append_json_field(
         &mut output,
         "result",
@@ -687,7 +707,8 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
 fn append_json_field(output: &mut String, name: &str, value: &str) {
     use std::fmt::Write as _;
 
-    write!(output, ",\"{name}\":{value}").unwrap_or_else(|_| unreachable!());
+    write!(output, ",\"{name}\":{value}")
+        .unwrap_or_else(|_| unreachable!("writing into String cannot fail"));
 }
 
 fn optional_number<T: std::fmt::Display>(value: Option<T>) -> String {
@@ -695,7 +716,8 @@ fn optional_number<T: std::fmt::Display>(value: Option<T>) -> String {
 }
 
 fn json_string(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| String::from("null"))
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| unreachable!("serializing a string as JSON cannot fail"))
 }
 
 fn optional_json(value: Option<&str>) -> String {

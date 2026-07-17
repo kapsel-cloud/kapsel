@@ -627,6 +627,8 @@ impl Gateway {
             }
             return Ok(Some(OperationState::ReceiverObserved));
         }
+        // ApplyStarted is the durable mutation marker. Recovery observes from this state and never
+        // issues another provider mutation.
         if let Some(request) = self.request_in_state(OperationState::ApplyStarted, operation_id)? {
             let outcome = self
                 .journal
@@ -829,24 +831,28 @@ pub(crate) fn validate_immutable_image(value: &str) -> Result<(), GatewayError> 
     let Some((name, digest)) = value.split_once("@sha256:") else {
         return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
     };
-    if name.contains('@')
-        || digest.len() != 64
-        || !digest
+    if name.contains('@') {
+        return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
+    }
+    let digest_is_lowercase_sha256 = digest.len() == 64
+        && digest
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        || name.split('/').any(|component| {
-            let bytes = component.as_bytes();
-            bytes.is_empty()
-                || !bytes.first().is_some_and(u8::is_ascii_lowercase_or_digit)
-                || !bytes.last().is_some_and(u8::is_ascii_lowercase_or_digit)
-                || !bytes.iter().copied().all(|byte| {
-                    byte.is_ascii_lowercase_or_digit() || matches!(byte, b'.' | b'_' | b'-')
-                })
-        })
-    {
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
+    if !digest_is_lowercase_sha256 || name.split('/').any(invalid_image_name_component) {
         return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
     }
     Ok(())
+}
+
+fn invalid_image_name_component(component: &str) -> bool {
+    let bytes = component.as_bytes();
+    bytes.is_empty()
+        || !bytes.first().is_some_and(u8::is_ascii_lowercase_or_digit)
+        || !bytes.last().is_some_and(u8::is_ascii_lowercase_or_digit)
+        || !bytes
+            .iter()
+            .copied()
+            .all(|byte| byte.is_ascii_lowercase_or_digit() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 trait AsciiDnsByte {

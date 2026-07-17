@@ -506,19 +506,22 @@ pub(crate) fn sign_statement(
     key_id: &str,
 ) -> Result<Vec<u8>, ReceiptError> {
     validate_key_id(key_id)?;
-    let statement = statement.encode()?;
-    Ok(sign_statement_bytes(&statement, seed, key_id))
+    let statement_bytes = statement.encode()?;
+    Ok(sign_statement_bytes(&statement_bytes, seed, key_id))
 }
 
-fn sign_statement_bytes(statement: &[u8], seed: &[u8; 32], key_id: &str) -> Vec<u8> {
-    let signature = SigningKey::from_bytes(seed).sign(&signature_input(statement));
-    let mut output = Vec::with_capacity(statement.len() + 160);
+fn sign_statement_bytes(statement_bytes: &[u8], seed: &[u8; 32], key_id: &str) -> Vec<u8> {
+    let signature = SigningKey::from_bytes(seed).sign(&signature_input(statement_bytes));
+    let mut output = Vec::with_capacity(statement_bytes.len() + 160);
     output.extend_from_slice(RECEIPT_MAGIC);
-    push(&mut output, 1, PURPOSE.as_bytes(), RECEIPT_BYTES_MAX).unwrap_or_else(|_| unreachable!());
-    push_text(&mut output, 2, key_id, RECEIPT_BYTES_MAX).unwrap_or_else(|_| unreachable!());
-    push(&mut output, 3, statement, RECEIPT_BYTES_MAX).unwrap_or_else(|_| unreachable!());
+    push(&mut output, 1, PURPOSE.as_bytes(), RECEIPT_BYTES_MAX)
+        .unwrap_or_else(|_| unreachable!("validated receipt purpose fits the receipt bound"));
+    push_text(&mut output, 2, key_id, RECEIPT_BYTES_MAX)
+        .unwrap_or_else(|_| unreachable!("validated receipt key ID fits the receipt bound"));
+    push(&mut output, 3, statement_bytes, RECEIPT_BYTES_MAX)
+        .unwrap_or_else(|_| unreachable!("validated statement fits the receipt bound"));
     push(&mut output, 4, &signature.to_bytes(), RECEIPT_BYTES_MAX)
-        .unwrap_or_else(|_| unreachable!());
+        .unwrap_or_else(|_| unreachable!("fixed signature fits the receipt bound"));
     output
 }
 
@@ -633,15 +636,18 @@ fn inspect_inner(
     let signature = Signature::from_bytes(&array(records.take(4)?)?);
     records.finish()?;
     let statement = ReceiptStatement::parse(statement_bytes, limits)?;
-    let trust = ReceiptTrust::parse(trust, limits)?;
-    let key =
-        VerifyingKey::from_bytes(&trust.public_key).map_err(|_| ReceiptError::InvalidValue)?;
-    key.verify_strict(&signature_input(statement_bytes), &signature)
+    let parsed_trust = ReceiptTrust::parse(trust, limits)?;
+
+    let verifying_key = VerifyingKey::from_bytes(&parsed_trust.public_key)
+        .map_err(|_| ReceiptError::InvalidValue)?;
+    verifying_key
+        .verify_strict(&signature_input(statement_bytes), &signature)
         .map_err(|_| ReceiptError::BadSignature)?;
-    if trust.key_id != key_id
-        || trust.accepted_purpose != receipt_purpose
-        || evaluation_time_unix_s < trust.not_before_unix_s
-        || evaluation_time_unix_s >= trust.not_after_unix_s
+
+    if parsed_trust.key_id != key_id
+        || parsed_trust.accepted_purpose != receipt_purpose
+        || evaluation_time_unix_s < parsed_trust.not_before_unix_s
+        || evaluation_time_unix_s >= parsed_trust.not_after_unix_s
     {
         return Err(ReceiptError::UntrustedSigner(Box::new(statement)));
     }

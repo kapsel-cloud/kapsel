@@ -30,16 +30,18 @@ def assemble(output: pathlib.Path) -> pathlib.Path:
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory(prefix="kapsel-reproducibility-a-") as first_temporary:
-        with tempfile.TemporaryDirectory(prefix="kapsel-reproducibility-b-") as second_temporary:
-            first = assemble(pathlib.Path(first_temporary))
-            second = assemble(pathlib.Path(second_temporary))
-            if first.read_bytes() != second.read_bytes():
-                raise RuntimeError("isolated release archives are not byte-for-byte identical")
-            first_checksum = first.with_name(first.name + ".sha256")
-            second_checksum = second.with_name(second.name + ".sha256")
-            if first_checksum.read_bytes() != second_checksum.read_bytes():
-                raise RuntimeError("isolated release checksum files are not identical")
+    with (
+        tempfile.TemporaryDirectory(prefix="kapsel-reproducibility-a-") as first_temporary,
+        tempfile.TemporaryDirectory(prefix="kapsel-reproducibility-b-") as second_temporary,
+    ):
+        first = assemble(pathlib.Path(first_temporary))
+        second = assemble(pathlib.Path(second_temporary))
+        if first.read_bytes() != second.read_bytes():
+            raise RuntimeError("isolated release archives are not byte-for-byte identical")
+        first_checksum = first.with_name(first.name + ".sha256")
+        second_checksum = second.with_name(second.name + ".sha256")
+        if first_checksum.read_bytes() != second_checksum.read_bytes():
+            raise RuntimeError("isolated release checksum files are not identical")
     print("Kapsel release reproducibility: ok")
     return 0
 

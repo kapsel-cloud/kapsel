@@ -113,7 +113,7 @@ impl Application {
     /// unsafe. Journal open, durability, migration, and filesystem failures are returned as
     /// [`ApplicationError::Gateway`].
     pub fn open(configuration: OperatorConfiguration) -> Result<Self, ApplicationError> {
-        let verified = verify_authorization_grant(
+        let verified_grant = verify_authorization_grant(
             &configuration.signed_authorization_grant,
             &configuration.authorization_trust,
         )
@@ -125,11 +125,11 @@ impl Application {
         validate_journal_path(&configuration.journal_path)?;
 
         let authorized_request = AgentRequest {
-            operation_id: verified.authorization.operation_id,
-            namespace: verified.authorization.namespace,
-            deployment: verified.authorization.deployment,
-            container: verified.authorization.container,
-            immutable_image_digest: verified.authorization.immutable_image_digest,
+            operation_id: verified_grant.authorization.operation_id,
+            namespace: verified_grant.authorization.namespace,
+            deployment: verified_grant.authorization.deployment,
+            container: verified_grant.authorization.container,
+            immutable_image_digest: verified_grant.authorization.immutable_image_digest,
         };
         let gateway = Gateway::open(
             &configuration.journal_path,
@@ -209,35 +209,34 @@ impl Application {
                         .map_err(ApplicationError::Gateway)?;
                 },
                 OperationState::Authorized | OperationState::ApplyStarted => {
-                    if self
+                    let operation_state_after_run = self
                         .gateway
                         .run_operation_once(
                             &self.authorized_request.operation_id,
                             self.kubernetes_client.clone(),
                         )
                         .await
-                        .map_err(ApplicationError::Gateway)?
-                        .is_none()
-                    {
+                        .map_err(ApplicationError::Gateway)?;
+                    if operation_state_after_run.is_none() {
                         return self.report();
                     }
                 },
                 OperationState::ReceiverObserved
                 | OperationState::ReceiptPrepared
                 | OperationState::ReceiptWritten => {
-                    if self
+                    let receipt_settings = ReceiptSettings {
+                        signing_seed: self.receipt_signing_key.as_bytes(),
+                        key_id: &self.receipt_signing_key_id,
+                        output_directory: &self.receipt_output_directory,
+                    };
+                    let receipt_state_after_finalization = self
                         .gateway
                         .finalize_operation_receipt_once(
                             &self.authorized_request.operation_id,
-                            &ReceiptSettings {
-                                signing_seed: self.receipt_signing_key.as_bytes(),
-                                key_id: &self.receipt_signing_key_id,
-                                output_directory: &self.receipt_output_directory,
-                            },
+                            &receipt_settings,
                         )
-                        .map_err(ApplicationError::Gateway)?
-                        .is_none()
-                    {
+                        .map_err(ApplicationError::Gateway)?;
+                    if receipt_state_after_finalization.is_none() {
                         return self.report();
                     }
                 },

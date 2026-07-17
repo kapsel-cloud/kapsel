@@ -19,9 +19,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         },
         Err(error) => {
-            let machine = error.machine_output();
+            let machine_output = error.machine_output();
             let diagnostic = error.diagnostic();
-            let _ = writeln!(std::io::stdout().lock(), "{machine}");
+            let _ = writeln!(std::io::stdout().lock(), "{machine_output}");
             let _ = writeln!(std::io::stderr().lock(), "{diagnostic}");
             ExitCode::from(error.exit_code())
         },

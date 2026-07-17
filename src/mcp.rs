@@ -29,7 +29,7 @@ const REQUEST_ID_BYTES_MAX: usize = 128;
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
     Uninitialized,
-    Initializing,
+    AwaitingInitializedNotification,
     Ready,
 }
 
@@ -277,7 +277,7 @@ fn dispatch(
             if *phase != Phase::Uninitialized || !valid_initialize_params(message.params.as_ref()) {
                 return Some(error_response(id, -32600, "Invalid Request"));
             }
-            *phase = Phase::Initializing;
+            *phase = Phase::AwaitingInitializedNotification;
             Some(json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -298,7 +298,7 @@ fn dispatch(
                     -32600,
                     "Invalid Request",
                 ))
-            } else if *phase != Phase::Initializing
+            } else if *phase != Phase::AwaitingInitializedNotification
                 || !metadata_only_params(message.params.as_ref())
             {
                 None
@@ -336,38 +336,7 @@ fn dispatch(
             if *phase != Phase::Ready {
                 return Some(error_response(id, -32600, "Invalid Request"));
             }
-            let Some(params) = message.params else {
-                return Some(error_response(id, -32602, "Invalid params"));
-            };
-            let Ok(call) = serde_json::from_value::<CallParams>(params) else {
-                return Some(error_response(id, -32602, "Invalid params"));
-            };
-            if call.name != "kubernetes.set_deployment_image" {
-                return Some(error_response(id, -32602, "Invalid params"));
-            }
-            let Ok(arguments) = serde_json::from_value::<ToolArguments>(call.arguments) else {
-                return Some(error_response(id, -32602, "Invalid params"));
-            };
-            let request = AgentRequest {
-                operation_id: arguments.operation_id,
-                namespace: arguments.namespace,
-                deployment: arguments.deployment,
-                container: arguments.container,
-                immutable_image_digest: arguments.immutable_image_digest,
-            };
-            Some(match runtime.block_on(application.execute(&request)) {
-                Ok(report) => call_result(id, render_report(&report), false),
-                Err(error) if request_rejected(&error) => call_result(
-                    id,
-                    String::from(r#"{"status":"ERROR","error_class":"request_rejected"}"#),
-                    true,
-                ),
-                Err(_) => call_result(
-                    id,
-                    String::from(r#"{"status":"ERROR","error_class":"operation_failure"}"#),
-                    true,
-                ),
-            })
+            Some(dispatch_tool_call(id, message.params, runtime, application))
         },
         _ if !id_present => None,
         _ => Some(error_response(
@@ -375,6 +344,47 @@ fn dispatch(
             -32601,
             "Method not found",
         )),
+    }
+}
+
+fn dispatch_tool_call(
+    id: Value,
+    params: Option<Value>,
+    runtime: &tokio::runtime::Runtime,
+    application: &mut Application,
+) -> Value {
+    let Some(params) = params else {
+        return error_response(id, -32602, "Invalid params");
+    };
+    let Ok(call) = serde_json::from_value::<CallParams>(params) else {
+        return error_response(id, -32602, "Invalid params");
+    };
+    if call.name != "kubernetes.set_deployment_image" {
+        return error_response(id, -32602, "Invalid params");
+    }
+    let Ok(arguments) = serde_json::from_value::<ToolArguments>(call.arguments) else {
+        return error_response(id, -32602, "Invalid params");
+    };
+    let request = AgentRequest {
+        operation_id: arguments.operation_id,
+        namespace: arguments.namespace,
+        deployment: arguments.deployment,
+        container: arguments.container,
+        immutable_image_digest: arguments.immutable_image_digest,
+    };
+
+    match runtime.block_on(application.execute(&request)) {
+        Ok(report) => call_result(id, render_report(&report), false),
+        Err(error) if request_rejected(&error) => call_result(
+            id,
+            String::from(r#"{"status":"ERROR","error_class":"request_rejected"}"#),
+            true,
+        ),
+        Err(_) => call_result(
+            id,
+            String::from(r#"{"status":"ERROR","error_class":"operation_failure"}"#),
+            true,
+        ),
     }
 }
 
@@ -476,16 +486,16 @@ fn call_result(id: Value, text: String, is_error: bool) -> Value {
 }
 
 fn render_report(report: &OperationReport) -> String {
-    let operation_id = json_text(&report.operation_id);
-    let result = report.result.map_or_else(
+    let operation_id_json = json_text(&report.operation_id);
+    let result_json = report.result.map_or_else(
         || String::from("null"),
         |value| json_text(operation_result(value)),
     );
-    let rejection = report.target_rejection.map_or_else(
+    let target_rejection_json = report.target_rejection.map_or_else(
         || String::from("null"),
         |value| json_text(target_rejection(value)),
     );
-    let (receipt_file, receipt_digest) = report.receipt.as_ref().map_or_else(
+    let (receipt_file_json, receipt_digest_json) = report.receipt.as_ref().map_or_else(
         || (String::from("null"), String::from("null")),
         |receipt| {
             let file = receipt
@@ -498,21 +508,23 @@ fn render_report(report: &OperationReport) -> String {
     );
     format!(
         concat!(
-            "{{\"operation_id\":{operation_id},\"state\":\"{state}\",",
-            "\"result\":{result},\"target_rejection\":{rejection},",
-            "\"receipt_file\":{receipt_file},\"receipt_sha256\":{receipt_digest}}}"
+            "{{\"operation_id\":{operation_id_json},\"state\":\"{state}\",",
+            "\"result\":{result_json},\"target_rejection\":{target_rejection_json},",
+            "\"receipt_file\":{receipt_file_json},",
+            "\"receipt_sha256\":{receipt_digest_json}}}"
         ),
-        operation_id = operation_id,
+        operation_id_json = operation_id_json,
         state = operation_state(report.state),
-        result = result,
-        rejection = rejection,
-        receipt_file = receipt_file,
-        receipt_digest = receipt_digest
+        result_json = result_json,
+        target_rejection_json = target_rejection_json,
+        receipt_file_json = receipt_file_json,
+        receipt_digest_json = receipt_digest_json
     )
 }
 
 fn json_text(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| String::from("null"))
+    serde_json::to_string(value)
+        .unwrap_or_else(|_| unreachable!("serializing a string as JSON cannot fail"))
 }
 
 const fn operation_state(state: OperationState) -> &'static str {

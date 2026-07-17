@@ -160,24 +160,26 @@ impl ReceiverObservation {
         let Some(requested_generation) = requested_generation else {
             return OperationResult::Unknown;
         };
-        let receiver_matches = operation_matches
+
+        let receiver_establishes_requested_generation = operation_matches
             && outcome.deployment_uid.is_some()
             && self.deployment_uid == outcome.deployment_uid
             && self.current_generation == Some(requested_generation)
             && self
                 .observed_generation
                 .is_some_and(|value| value >= requested_generation);
-        if !receiver_matches {
+        if !receiver_establishes_requested_generation {
             return OperationResult::Unknown;
         }
+
         if self.progress_deadline_exceeded() {
             return OperationResult::Failed;
         }
-        let replicas_available = self.desired_replicas.is_some()
+        let desired_replicas_available = self.desired_replicas.is_some()
             && self.updated_replicas == self.desired_replicas
             && self.available_replicas == self.desired_replicas
             && self.unavailable_replicas == Some(0);
-        if replicas_available && self.available_condition() {
+        if desired_replicas_available && self.available_condition() {
             OperationResult::Succeeded
         } else {
             OperationResult::Unknown

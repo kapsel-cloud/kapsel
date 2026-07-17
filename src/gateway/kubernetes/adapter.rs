@@ -83,9 +83,9 @@ impl KubernetesDeploymentImageAdapter {
         &self,
         request: &SetDeploymentImageRequest,
     ) -> ReceiverObservation {
-        let mut final_observation = ReceiverObservation::unknown();
+        let mut latest_observation = ReceiverObservation::unknown();
         for attempt in 0..self.observation_attempts {
-            final_observation = self
+            latest_observation = self
                 .deployments(&request.namespace)
                 .get(&request.deployment)
                 .await
@@ -93,14 +93,14 @@ impl KubernetesDeploymentImageAdapter {
                     |_| ReceiverObservation::unknown(),
                     |deployment| receiver_observation(request, &deployment),
                 );
-            if final_observation.has_terminal_rollout_signal(request)
+            if latest_observation.has_terminal_rollout_signal(request)
                 || attempt + 1 == self.observation_attempts
             {
                 break;
             }
             tokio::time::sleep(self.observation_interval).await;
         }
-        final_observation
+        latest_observation
     }
 }
 
@@ -117,6 +117,7 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
         .await
         .map_err(|_| TargetReadError::Transient)?
         .map_err(target_get_error)?;
+
         let container_exists = deployment
             .spec
             .as_ref()
@@ -131,6 +132,7 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
                 TargetRejection::ContainerNotFound,
             ));
         }
+
         let deployment_uid = deployment
             .metadata
             .uid
@@ -139,6 +141,7 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
             .metadata
             .resource_version
             .ok_or(TargetReadError::Permanent(TargetRejection::InvalidTarget))?;
+
         let target = TargetIdentity {
             deployment_uid,
             resource_version,
@@ -165,10 +168,12 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
         .await
         .map_err(|_| ())?
         .map_err(|_| ())?;
+
         let deployment_uid = deployment.metadata.uid.ok_or(())?;
         if deployment_uid != target.deployment_uid {
             return Err(());
         }
+
         let resource_version = deployment.metadata.resource_version.ok_or(())?;
         Ok(ApplyOutcome {
             accepted: true,
@@ -564,7 +569,7 @@ mod tests {
             let (_request, _send) = apply_handle.next_request().await.unwrap();
             pending::<()>().await;
         });
-        assert!(apply_adapter.apply(&request(), &target()).await.is_err());
+        assert_eq!(apply_adapter.apply(&request(), &target()).await, Err(()));
         apply_responder.abort();
     }
 
@@ -624,10 +629,10 @@ mod tests {
 
     #[tokio::test]
     async fn apply_response_requires_the_same_uid_and_a_resource_version() {
-        for (field, replacement) in [
-            ("uid", None),
-            ("resourceVersion", None),
-            ("uid", Some("replacement-uid")),
+        for (case, field, replacement) in [
+            ("missing deployment UID", "uid", None),
+            ("missing resource version", "resourceVersion", None),
+            ("changed deployment UID", "uid", Some("replacement-uid")),
         ] {
             let (mut adapter, mut handle) = test_adapter();
             let responder = tokio::spawn(async move {
@@ -644,7 +649,11 @@ mod tests {
                 )));
             });
 
-            assert!(adapter.apply(&request(), &target()).await.is_err());
+            assert_eq!(
+                adapter.apply(&request(), &target()).await,
+                Err(()),
+                "{case}"
+            );
             responder.await.unwrap();
         }
     }

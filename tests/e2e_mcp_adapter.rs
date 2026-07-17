@@ -48,27 +48,36 @@ fn private_file(path: &Path, bytes: &[u8]) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+#[derive(Clone, Copy)]
+enum ReceiverPlan {
+    Unavailable,
+    NotAttempted,
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
 fn fixture() -> Fixture {
-    fixture_with_receiver(None)
+    fixture_with_receiver(ReceiverPlan::Unavailable)
 }
 
 fn successful_fixture() -> Fixture {
-    fixture_with_receiver(Some("SUCCEEDED"))
+    fixture_with_receiver(ReceiverPlan::Succeeded)
 }
 
 fn not_attempted_fixture() -> Fixture {
-    fixture_with_receiver(Some("NOT_ATTEMPTED"))
+    fixture_with_receiver(ReceiverPlan::NotAttempted)
 }
 
 fn failed_fixture() -> Fixture {
-    fixture_with_receiver(Some("FAILED"))
+    fixture_with_receiver(ReceiverPlan::Failed)
 }
 
 fn unknown_fixture() -> Fixture {
-    fixture_with_receiver(Some("UNKNOWN"))
+    fixture_with_receiver(ReceiverPlan::Unknown)
 }
 
-fn fixture_with_receiver(receiver_result: Option<&'static str>) -> Fixture {
+fn fixture_with_receiver(receiver_plan: ReceiverPlan) -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "kapsel-e2e-mcp-{}-{}",
         std::process::id(),
@@ -101,15 +110,15 @@ fn fixture_with_receiver(receiver_result: Option<&'static str>) -> Fixture {
         &authorization_key.verifying_key().to_bytes(),
     );
     private_file(&root.join("receipt.seed"), &[42_u8; 32]);
-    let (address, server) = receiver_result.map_or_else(
-        || (String::from("127.0.0.1:9"), None),
-        |receiver_result| {
+    let (address, server) = match receiver_plan {
+        ReceiverPlan::Unavailable => (String::from("127.0.0.1:9"), None),
+        receiver_plan => {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();
-            let server = thread::spawn(move || serve_outcome(&listener, receiver_result));
+            let server = thread::spawn(move || serve_outcome(&listener, receiver_plan));
             (address.to_string(), Some(server))
         },
-    );
+    };
     private_file(
         &root.join("kubeconfig.yaml"),
         format!(
@@ -167,8 +176,8 @@ fn fixture_with_receiver(receiver_result: Option<&'static str>) -> Fixture {
     }
 }
 
-fn serve_outcome(listener: &TcpListener, receiver_result: &str) {
-    if receiver_result == "NOT_ATTEMPTED" {
+fn serve_outcome(listener: &TcpListener, receiver_plan: ReceiverPlan) {
+    if matches!(receiver_plan, ReceiverPlan::NotAttempted) {
         let body = serde_json::json!({
             "apiVersion": "v1", "kind": "Status", "status": "Failure",
             "reason": "NotFound", "message": "SECRET_PROVIDER_CANARY", "code": 404
@@ -193,7 +202,7 @@ fn serve_outcome(listener: &TcpListener, receiver_result: &str) {
         "registry.example/agent-api@sha256:",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
-    let failed = receiver_result == "FAILED";
+    let failed = matches!(receiver_plan, ReceiverPlan::Failed);
     let responses = [
         serde_json::json!({
             "apiVersion": "apps/v1", "kind": "Deployment",
@@ -215,7 +224,11 @@ fn serve_outcome(listener: &TcpListener, receiver_result: &str) {
         serde_json::json!({
             "apiVersion": "apps/v1", "kind": "Deployment",
             "metadata": {"name": "agent-api", "namespace": "demo",
-                "uid": if receiver_result == "UNKNOWN" { "other-uid" } else { "uid-1" },
+                "uid": if matches!(receiver_plan, ReceiverPlan::Unknown) {
+                    "other-uid"
+                } else {
+                    "uid-1"
+                },
                 "resourceVersion": "3", "generation": 2,
                 "annotations": {"kapsel.dev/kap0038-operation-id": "mcp-op-1"}},
             "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "agent-api"}},
