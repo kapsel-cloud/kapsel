@@ -93,6 +93,13 @@ repository-only `kapsel-dev` package owns development automation such as hook in
 tidy checks, and advisory style audits; it is tooling, not part of the product package, gateway
 interface, or dependency path.
 
+Release assembly packages that same compile-time product composition for one supported target. The
+ordinary executable remains feature-free. A separately named `libexec` executable contains the
+compile-time `demo-harness` fault controls and is invoked only by the bundled owned demonstration.
+Artifact metadata, checksums, installation docs, and smoke automation are distribution concerns;
+they do not add a runtime plugin, provider interface, application seam, trust source, or result
+vocabulary. [Release candidate artifacts](RELEASE.md) owns the exact distribution contract.
+
 The repository root is both the one published `kapsel` product package and the workspace root. This
 keeps the sole product implementation together while allowing the unpublished `crates/kapsel-dev`
 tooling package and excluded `fuzz` package. No product package named `kapsel-core`,

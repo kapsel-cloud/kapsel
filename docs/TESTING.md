@@ -115,6 +115,25 @@ lookup, trust lookup, clock, external service, public provider seam, or demonstr
 Protocol parser tests stay at this black-box boundary because framing, stdout purity, process exit,
 and startup authority separation are transport behavior.
 
+## KAP-0044 release artifact proof
+
+The release artifact lane crosses a fixed `x86_64-unknown-linux-gnu` archive rather than a Cargo
+test binary. Assembly runs in a pinned x86-64 Debian 12 Rust container, records exact source and
+binary provenance, normalizes archive metadata, and writes a checksum over the final downloadable
+bytes. Two isolated builds must produce byte-identical archives and checksum files.
+
+The clean smoke verifies checksum, exact entries, modes, metadata, target, revision, license, binary
+digests, and extraction safety before executing only extracted files in a pinned x86-64 Debian 12
+Python container. A deterministic HTTP Kubernetes fixture proves installed grant provisioning,
+operation and restart, offline inspection, MCP discovery and call equivalence, bounded output, and
+cleanup. The separately extracted demo executable is killed at both owned seams; recovery retains
+one provider attempt, frozen receipt bytes under rotated settings, and offline classification. This
+lane never calls Cargo, reads `target/`, or introduces a public provider seam after extraction.
+
+The live artifact demo remains an explicit environment-owning gate on the supported target. It uses
+the same bundled demo script and feature-gated executable, preserves prerequisite-before-mutation
+and owned-cleanup behavior, and is separate from deterministic artifact smoke.
+
 ## KAP-0042 demonstration proof
 
 The release demonstration has two complementary lanes. A deterministic black-box test builds the

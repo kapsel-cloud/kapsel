@@ -33,6 +33,9 @@ Potentially revealing material includes:
   themselves.
 - Public demos must use disposable local `kind` resources and synthetic image digests or clearly
   safe public images.
+- Release artifacts may contain source revision, target, builder identity, binary digests, public
+  documentation, and synthetic vectors; they must not contain evaluator grants, trust decisions,
+  credentials, seeds, kubeconfigs, journals, receipts, reports, logs, or private paths.
 
 ## Non-claims
 

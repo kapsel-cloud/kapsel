@@ -77,6 +77,16 @@ bounded protocol or typed application vocabulary. Standard output is protocol-on
 disconnect, or transport completion cannot establish that an application operation was unattempted,
 failed, rolled back, or safe; restart uses the same application reconciliation semantics.
 
+### Release substitution or provenance overclaim
+
+An archive or checksum can be replaced, built from a dirty tree, mislabeled for another target, or
+presented as authenticated because its SHA-256 matches. Release assembly records the exact source
+revision, dirty state, target, pinned builder, and binary digests; normalizes archive bytes; and
+checks the final archive digest before extraction. Clean smoke rejects unsafe entries and executes
+only extracted bytes. These controls detect mismatches and make assembly repeatable; they do not
+sign the archive, authenticate a publisher, witness build inputs, prove source review, support other
+targets, or establish production safety.
+
 ### Authorization mismatch or excessive authority
 
 An agent can request destructive or broader operations or construct self-asserted authorization. The

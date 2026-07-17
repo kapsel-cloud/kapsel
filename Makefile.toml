@@ -73,6 +73,29 @@ args = [
   "e2e_demo_recovery",
 ]
 
+[tasks.assemble-release]
+description = "Assemble the clean x86-64 GNU/Linux release artifact"
+command = "python3"
+args = ["scripts/assemble-release-artifact.py", "--output-directory", "dist"]
+
+[tasks.test-release-artifact]
+description = "Assemble and smoke-test the extracted release artifact"
+command = "python3"
+args = ["scripts/test-release-artifact.py"]
+
+[tasks.test-release-reproducibility]
+description = "Compare two isolated release assemblies byte for byte"
+command = "python3"
+args = ["scripts/test-release-reproducibility.py"]
+
+[tasks.demo-release-artifact]
+description = "Run the live kind demo from an extracted release artifact"
+script = '''
+set -eu
+: "${KAPSEL_RELEASE_ARCHIVE:?set KAPSEL_RELEASE_ARCHIVE to the release archive path}"
+python3 scripts/smoke-release-artifact.py --archive "$KAPSEL_RELEASE_ARCHIVE" --live-demo
+'''
+
 [tasks.fuzz-check]
 description = "Compile the offline receipt-inspection fuzz target"
 cwd = "fuzz"

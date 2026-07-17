@@ -6,8 +6,8 @@ Kapsel is testing whether agents can use bounded operations instead of receiving
 provider credentials. It verifies an owner-signed exact grant, records either a pre-attempt target
 rejection or the validated target before the dangerous mutation seam, recovers without blindly
 repeating the mutation, observes the receiver, and emits an inspectable result—including `UNKNOWN`
-when reality cannot be established. The remaining release work is versioned distribution,
-reproducibility, and release rehearsal.
+when reality cannot be established. The remaining release work is clean-checkout rehearsal and
+publication of the versioned release candidate.
 
 ```text
 bounded agent intent
@@ -61,8 +61,9 @@ request-only caller can then use `Application::execute`; restart recovery uses
 `Application::reconcile`, and adapters consume the resulting `OperationReport` without sequencing
 internal durable states.
 
-This Unix-only alpha does not promise a stable CLI, configuration-file format, Rust API, receipt
-format, or production readiness. See the
+The repository now assembles a separate `0.1.0-rc.1` x86-64 GNU/Linux evaluator artifact; the
+crates.io alpha above remains the previously published Rust evaluation package. Neither promises a
+stable CLI, configuration-file format, Rust API, receipt format, or production readiness. See the
 [experiment boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before use.
 
 ## What exists today
@@ -77,16 +78,19 @@ format, or production readiness. See the
 | Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness    |
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests          |
-| V1 evaluator artifacts and checksums             | Not implemented                                         |
+| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible release-candidate lane    |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
-[MCP adapter contract](docs/MCP.md). The current engineering proof is:
+[MCP adapter contract](docs/MCP.md), and distribution by the
+[release artifact contract](docs/RELEASE.md). The current engineering proof is:
 
 ```sh
 cargo test --locked --test e2e_mcp_adapter
 ./scripts/ci-local.sh
 cargo make test-demo-harness
+cargo make test-release-artifact
+cargo make test-release-reproducibility
 cargo make demo-kind  # requires Docker, kind 0.32+, and kubectl 1.30+
 ```
 

@@ -1,6 +1,18 @@
 # Changelog
 
-All notable public alpha distributions of Kapsel are recorded here.
+All notable public pre-release distributions of Kapsel are recorded here.
+
+## 0.1.0-rc.1 - Unreleased
+
+- Adds the prototype evaluator operation and offline-inspection commands.
+- Adds the thin fixed-schema MCP `2025-11-25` stdio adapter.
+- Adds the release-owned real-process crash-recovery demonstration.
+- Adds the versioned `x86_64-unknown-linux-gnu` evaluator artifact, exact source provenance,
+  checksums, clean artifact smoke tests, and installation guide.
+
+This release candidate targets the Lean V1 evaluation milestone; `V1` is not a SemVer 1.0
+compatibility claim. It has no production-readiness, stable CLI, stable Rust API, stable receipt
+format, other-platform, or compatibility claim.
 
 ## 0.1.0-alpha.1 - 2026-07-16
 

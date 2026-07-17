@@ -5,8 +5,9 @@
 //! the KAP-0038 request, exact authorization, durable lifecycle, Kubernetes interaction, recovery,
 //! and prototype receipt. This crate exposes no generic capability or provider contract.
 //!
-//! This alpha has no stable Rust or receipt-format compatibility promise and makes no production-
-//! readiness, exactly-once, causation, Kubernetes-truth, complete-capture, or witnessing claim.
+//! This pre-V1 release candidate has no stable Rust or receipt-format compatibility promise and
+//! makes no production-readiness, exactly-once, causation, Kubernetes-truth, complete-capture, or
+//! witnessing claim.
 
 mod application;
 mod gateway;

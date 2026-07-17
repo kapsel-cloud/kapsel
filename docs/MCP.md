@@ -45,7 +45,7 @@ the response limit. Initialization returns:
 {
   "protocolVersion": "2025-11-25",
   "capabilities": { "tools": {} },
-  "serverInfo": { "name": "kapsel", "version": "0.1.0-alpha.1" }
+  "serverInfo": { "name": "kapsel", "version": "0.1.0-rc.1" }
 }
 ```
 

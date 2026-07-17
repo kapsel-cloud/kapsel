@@ -37,9 +37,9 @@ covers healthy and unhealthy-image fault-injected journal reopen paths.
 
 Prototype evaluator operation and inspection commands, one thin fixed-schema MCP stdio entrypoint,
 and a documented public disposable-`kind` demo exist. They remain pre-V1 experiment surfaces, not a
-stable interface or supported production security guarantee. No V1 install artifact exists. The
-Unix-only crates.io alpha distributes the implemented Rust experiment interface; it does not satisfy
-V1 release acceptance.
+stable interface or supported production security guarantee. Release artifact availability and
+supported targets are owned by the [release contract](docs/RELEASE.md). A SHA-256 checksum detects
+byte mismatch but does not authenticate a publisher or make the binary trustworthy.
 
 A durable journal narrows crash ambiguity. It does not prove exactly-once provider effects,
 Kubernetes truth, authorization legitimacy, causation, complete capture, compliance, or production

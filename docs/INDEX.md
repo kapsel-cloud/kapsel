@@ -14,6 +14,8 @@ Owns: Question-to-owner routing and document authority order.
 | What is the evaluator command contract?      | [Evaluator commands](COMMANDS.md)                                                       |
 | What is the fixed MCP adapter contract?      | [MCP adapter](MCP.md)                                                                   |
 | What can I run?                              | [Build](BUILD.md)                                                                       |
+| What is the release artifact contract?       | [Release candidate artifacts](RELEASE.md)                                               |
+| How do I evaluate an installed artifact?     | [Evaluator guide](EVALUATOR.md)                                                         |
 | What proof is required?                      | [Testing](TESTING.md)                                                                   |
 | What may Kapsel claim?                       | [Threat model](THREAT_MODEL.md)                                                         |
 | What data can receipts and reports disclose? | [Privacy](PRIVACY.md)                                                                   |

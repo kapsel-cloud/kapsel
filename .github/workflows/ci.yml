@@ -27,3 +27,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run deterministic containerless gate
         run: ./scripts/ci-local.sh
+
+  release-artifact:
+    name: x86-64 GNU/Linux release artifact
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Smoke-test extracted artifact
+        run: python3 scripts/test-release-artifact.py
+      - name: Verify reproducible assembly
+        run: python3 scripts/test-release-reproducibility.py

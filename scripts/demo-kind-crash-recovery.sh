@@ -11,6 +11,39 @@ workspace=""
 log_directory=""
 cluster_owned=0
 active_child_pid=""
+demo_executable=""
+asset_directory=""
+source_root=""
+
+configure_demo_inputs() {
+  if [[ -z ${KAPSEL_DEMO_EXECUTABLE:-} && -z ${KAPSEL_DEMO_ASSET_DIRECTORY:-} ]]; then
+    source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+    demo_executable="$source_root/target/debug/kapsel"
+    asset_directory="$source_root/vectors"
+    return
+  fi
+  if [[ -z ${KAPSEL_DEMO_EXECUTABLE:-} || -z ${KAPSEL_DEMO_ASSET_DIRECTORY:-} ]]; then
+    printf 'artifact demo requires both executable and asset directory\n' >&2
+    return 1
+  fi
+  demo_executable=$KAPSEL_DEMO_EXECUTABLE
+  asset_directory=$KAPSEL_DEMO_ASSET_DIRECTORY
+  if [[ $demo_executable != /* || ! -f $demo_executable ||
+    ! -x $demo_executable || -L $demo_executable ]]; then
+    printf 'artifact demo executable is unsafe or unavailable\n' >&2
+    return 1
+  fi
+  if [[ $asset_directory != /* || ! -d $asset_directory ||
+    -L $asset_directory ]]; then
+    printf 'artifact demo asset directory is unsafe or unavailable\n' >&2
+    return 1
+  fi
+  if [[ ! -f $asset_directory/kap0038-trust.hex ||
+    -L $asset_directory/kap0038-trust.hex ]]; then
+    printf 'artifact demo trust vector is unsafe or unavailable\n' >&2
+    return 1
+  fi
+}
 
 phase() {
   printf '[demo %s/9] %s\n' "$1" "$2"
@@ -38,8 +71,8 @@ cleanup() {
     if [[ $cluster_owned -eq 1 ]]; then
       diagnostic="$workspace/cluster-diagnostic.log"
       {
-        kubectl --kubeconfig "$workspace/kubeconfig.yaml" get all -A || true
-        kubectl --kubeconfig "$workspace/kubeconfig.yaml" get events -A || true
+        kubectl --request-timeout=5s --kubeconfig "$workspace/kubeconfig.yaml" get all -A || true
+        kubectl --request-timeout=5s --kubeconfig "$workspace/kubeconfig.yaml" get events -A || true
       } >"$diagnostic" 2>&1
       bounded_log "$diagnostic" "$log_directory/cluster-diagnostic.log"
     fi
@@ -102,7 +135,7 @@ EOF
 {"operation_id":"$operation","namespace":"$namespace","deployment":"$deployment","container":"target","immutable_image_digest":"$image"}
 EOF
   chmod 600 "$workspace/$prefix-authorization.json" "$workspace/$prefix-request.json"
-  target/debug/kapsel provision-grant \
+  "$demo_executable" provision-grant \
     --authorization "$workspace/$prefix-authorization.json" \
     --signing-seed "$workspace/signing.seed" \
     --signing-key-id demo-authorization-key \
@@ -137,7 +170,7 @@ kill_at_seam() {
   local seam=$1 marker=$2 operator=$3 log=$4 timeout=$5
   KAPSEL_DEMO_CONTROL_DIRECTORY="$workspace/control" \
     KAPSEL_DEMO_PAUSE="$seam" \
-    target/debug/kapsel operate \
+    "$demo_executable" operate \
       --request "$workspace/failed-request.json" \
       --operator-config "$operator" >"$log" 2>&1 &
   local pid=$!
@@ -156,6 +189,7 @@ kill_at_seam() {
 }
 
 printf '[demo] checking prerequisites before mutation\n'
+configure_demo_inputs
 require_versions
 existing_clusters=$(kind get clusters)
 if [[ -n $existing_clusters && $existing_clusters != 'No kind clusters found.' ]]; then
@@ -170,11 +204,16 @@ for directory in control healthy-receipts failed-receipts rotated-receipts; do
   chmod 700 "$workspace/$directory"
 done
 
-phase 1 'building the feature-gated production executable'
-cargo build --locked --features demo-harness --bin kapsel
+if [[ -n $source_root ]]; then
+  phase 1 'building the feature-gated production executable'
+  cargo build --locked --features demo-harness --bin kapsel \
+    --manifest-path "$source_root/Cargo.toml"
+else
+  phase 1 'using the extracted feature-gated demonstration executable'
+fi
 phase 2 "creating disposable cluster $cluster_name"
-kind create cluster --name "$cluster_name" --image "$node_image" --wait 120s
 cluster_owned=1
+kind create cluster --name "$cluster_name" --image "$node_image" --wait 120s
 kind get kubeconfig --name "$cluster_name" >"$workspace/kubeconfig.yaml"
 chmod 600 "$workspace/kubeconfig.yaml"
 phase 3 'loading pinned fixture images'
@@ -233,15 +272,16 @@ kubectl --kubeconfig "$workspace/kubeconfig.yaml" -n kapsel-demo-healthy \
 kubectl --kubeconfig "$workspace/kubeconfig.yaml" -n kapsel-demo-failed \
   rollout status deployment/image-demo-failed --timeout=60s
 
-python3 - "$workspace" <<'PY'
+python3 - "$workspace" "$asset_directory/kap0038-trust.hex" <<'PY'
 import pathlib, sys
 root = pathlib.Path(sys.argv[1])
+trust_vector = pathlib.Path(sys.argv[2])
 root.joinpath("signing.seed").write_bytes(bytes([9]) * 32)
 root.joinpath("rotated.seed").write_bytes(bytes([8]) * 32)
 root.joinpath("signing.pub").write_bytes(bytes.fromhex(
     "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"))
 root.joinpath("receipt.trust").write_bytes(bytes.fromhex(
-    pathlib.Path("vectors/kap0038-trust.hex").read_text().strip()))
+    trust_vector.read_text().strip()))
 for path in ["signing.seed", "rotated.seed", "signing.pub", "receipt.trust"]:
     root.joinpath(path).chmod(0o600)
 PY
@@ -257,7 +297,7 @@ write_operator failed "$workspace/rotated-receipts" "$workspace/rotated.seed" \
   rotated-receipt-key "$workspace/rotated-operator.json"
 
 phase 4 'running healthy supported-command rollout'
-target/debug/kapsel operate \
+"$demo_executable" operate \
   --request "$workspace/healthy-request.json" \
   --operator-config "$workspace/healthy-operator.json" >"$workspace/healthy.log" 2>&1
 grep -Fq '"result":"SUCCEEDED"' "$workspace/healthy.log"
@@ -280,7 +320,7 @@ frozen_receipt=$(find "$workspace/failed-receipts" -maxdepth 1 -type f -name '*.
 frozen_digest=$(shasum -a 256 "$frozen_receipt" | awk '{print $1}')
 
 phase 7 'restarting under rotated receipt settings'
-target/debug/kapsel operate \
+"$demo_executable" operate \
   --request "$workspace/failed-request.json" \
   --operator-config "$workspace/rotated-operator.json" >"$workspace/rotated.log" 2>&1
 grep -Fq '"state":"FINALIZED"' "$workspace/rotated.log"
@@ -293,7 +333,7 @@ phase 8 'deleting the owned cluster and inspecting the frozen receipt offline'
 kind delete cluster --name "$cluster_name"
 cluster_owned=0
 KUBECONFIG=/unavailable/ambient-kubeconfig HTTPS_PROXY=http://127.0.0.1:1 \
-  target/debug/kapsel inspect \
+  "$demo_executable" inspect \
     --receipt "$frozen_receipt" \
     --trust "$workspace/receipt.trust" \
     --evaluation-time-unix-s 150 >"$workspace/inspection.log" 2>&1

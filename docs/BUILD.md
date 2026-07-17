@@ -1,7 +1,7 @@
 # Build
 
-Status: deterministic repository, evaluator commands, thin MCP adapter, public crash demo, and
-live-kind gates implemented.
+Status: deterministic repository, evaluator commands, thin MCP adapter, reproducible release
+candidate assembly, public crash demo, and live-kind gates implemented.
 
 Kind: guide. Authority: commands that exist and their present meaning.
 
@@ -213,8 +213,52 @@ target/debug/kapsel mcp --operator-config /absolute/operator.json
 The [MCP adapter contract](MCP.md) owns protocol version `2025-11-25`, newline-delimited stdio,
 initialization, the sole fixed-schema tool, bounds, shutdown, and response vocabulary. The adapter
 uses the same `Application` and operator-file composition as `operate`; it does not use Docker,
-`kind`, ambient Kubernetes configuration, or the demonstration feature. No V1 install artifact
-exists; the crates.io alpha does not satisfy V1 artifact or platform-support acceptance.
+`kind`, ambient Kubernetes configuration, or the demonstration feature.
+
+## Release candidate artifact
+
+The sole release-candidate target is `x86_64-unknown-linux-gnu`, validated in pinned x86-64 Debian
+12 build and smoke containers. Assemble it only from a clean checkout:
+
+```sh
+cargo make assemble-release
+```
+
+This emits one normalized `.tar.gz` archive and adjacent SHA-256 file under `dist/`. The archive
+contains the ordinary executable, a separately named feature-gated demo executable, the owned demo
+script and public trust vector, standalone evaluator documentation, license, changelog, and fixed
+provenance metadata. It contains no evaluator authority, credentials, journals, receipts, or
+outputs.
+
+Run the artifact-only deterministic lane with Docker:
+
+```sh
+cargo make test-release-artifact
+```
+
+It assembles and validates the archive, then exercises only extracted files in the pinned clean
+container. See the [testing strategy](TESTING.md#kap-0044-release-artifact-proof) for the exact
+proof and [release artifact contract](RELEASE.md) for the owned format and bounds.
+
+Verify two isolated builds produce identical archive and checksum bytes with:
+
+```sh
+cargo make test-release-reproducibility
+```
+
+On a supported x86-64 GNU/Linux host, run the live disposable-kind demonstration from an archive:
+
+```sh
+KAPSEL_RELEASE_ARCHIVE=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz \
+  cargo make demo-release-artifact
+```
+
+The source-built `cargo make demo-kind` route remains available. Both routes use the same script;
+artifact mode refuses missing, relative, symlinked, or non-executable release inputs before Docker
+or cluster inspection. See [Release candidate artifacts](RELEASE.md) and the bundled
+[evaluator guide](EVALUATOR.md) for exact layout, installation, provenance, expected output, failure
+meaning, cleanup, unsupported targets, and non-claims. The crates.io alpha does not replace this
+artifact, and no V1 release has been published.
 
 ## Toolchain
 

@@ -35,7 +35,7 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0-rc.1"
 edition = "2021"
 authors = ["Kapsel Contributors"]
 license = "Apache-2.0"
