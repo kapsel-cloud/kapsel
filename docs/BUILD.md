@@ -1,7 +1,7 @@
 # Build
 
-Status: deterministic repository, evaluator commands, public crash demo, and live-kind gates
-implemented.
+Status: deterministic repository, evaluator commands, thin MCP adapter, public crash demo, and
+live-kind gates implemented.
 
 Kind: guide. Authority: commands that exist and their present meaning.
 
@@ -195,8 +195,26 @@ target/debug/kapsel inspect \
 
 See the [evaluator command contract](COMMANDS.md) for exact JSON fields, authority separation,
 limits, machine output, and exit classes. These are prototype commands, not a stable installed CLI.
-No MCP entrypoint or V1 install artifact exists; the crates.io alpha does not satisfy V1 artifact or
-platform-support acceptance.
+
+## MCP adapter
+
+Run the focused deterministic black-box MCP proof with:
+
+```sh
+cargo test --locked --test e2e_mcp_adapter
+```
+
+Start the fixed stdio process with one separately provisioned operator configuration:
+
+```sh
+target/debug/kapsel mcp --operator-config /absolute/operator.json
+```
+
+The [MCP adapter contract](MCP.md) owns protocol version `2025-11-25`, newline-delimited stdio,
+initialization, the sole fixed-schema tool, bounds, shutdown, and response vocabulary. The adapter
+uses the same `Application` and operator-file composition as `operate`; it does not use Docker,
+`kind`, ambient Kubernetes configuration, or the demonstration feature. No V1 install artifact
+exists; the crates.io alpha does not satisfy V1 artifact or platform-support acceptance.
 
 ## Toolchain
 

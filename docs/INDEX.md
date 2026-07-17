@@ -12,6 +12,7 @@ Owns: Question-to-owner routing and document authority order.
 | What exactly does the capability guarantee?  | [KAP-0038 experiment owner](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) |
 | How is it composed?                          | [Architecture](ARCHITECTURE.md)                                                         |
 | What is the evaluator command contract?      | [Evaluator commands](COMMANDS.md)                                                       |
+| What is the fixed MCP adapter contract?      | [MCP adapter](MCP.md)                                                                   |
 | What can I run?                              | [Build](BUILD.md)                                                                       |
 | What proof is required?                      | [Testing](TESTING.md)                                                                   |
 | What may Kapsel claim?                       | [Threat model](THREAT_MODEL.md)                                                         |

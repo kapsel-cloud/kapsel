@@ -94,6 +94,27 @@ The live-kind lane remains explicit and environment-owning. It is not called a f
 simulation and is never used as evidence that a deterministic invariant holds for every crash
 window.
 
+## KAP-0043 MCP proof
+
+The thin MCP adapter is tested as a production subprocess over newline-delimited stdio. Its focused
+black-box target proves:
+
+- initialization, version negotiation, and exactly one five-field tool;
+- operator configuration outside tool input;
+- successful `AgentRequest` and typed-outcome equivalence with the local adapter, repeated calls
+  followed by an ordinary local-process restart, and explicit `SUCCEEDED`, `FAILED`, `UNKNOWN`, and
+  `NOT_ATTEMPTED` MCP vocabulary;
+- lifecycle ordering, string/numeric/null/invalid request IDs, ignored late cancellation without
+  disclosure, and clean EOF; and
+- incomplete, invalid UTF-8, batch, duplicate, exact-limit, and oversized frame handling, bounded
+  response lines, hostile-field rejection, and secret-free errors.
+
+The fixture uses the same explicit owner-private files and deterministic local HTTP Kubernetes
+server as the evaluator command tests. It requires no Docker, `kind`, ambient kubeconfig, credential
+lookup, trust lookup, clock, external service, public provider seam, or demonstration fault control.
+Protocol parser tests stay at this black-box boundary because framing, stdout purity, process exit,
+and startup authority separation are transport behavior.
+
 ## KAP-0042 demonstration proof
 
 The release demonstration has two complementary lanes. A deterministic black-box test builds the

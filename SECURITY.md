@@ -29,15 +29,17 @@ Current security claims are owned by:
 - [Privacy boundary](docs/PRIVACY.md)
 
 The experiment library implements owner-signed exact grants under application-configured trust, a
-FULL- synchronous SQLite recovery lifecycle, one conditional Kubernetes mutation adapter,
+`FULL`-synchronous SQLite recovery lifecycle, one conditional Kubernetes mutation adapter,
 classifier-complete signed prototype receipts, explicit offline trust evaluation, bounded
 inspection, and descriptor-relative collision-safe receipt publication on Unix. Deterministic tests
 kill a subprocess at the mutation and receipt-publication seams. The explicit live-`kind` gate
 covers healthy and unhealthy-image fault-injected journal reopen paths.
 
-No evaluator-facing operation command, inspection command, MCP entrypoint, documented public demo,
-or V1 install artifact exists yet. The Unix-only crates.io alpha distributes the implemented Rust
-experiment interface; it is not a supported production security guarantee.
+Prototype evaluator operation and inspection commands, one thin fixed-schema MCP stdio entrypoint,
+and a documented public disposable-`kind` demo exist. They remain pre-V1 experiment surfaces, not a
+stable interface or supported production security guarantee. No V1 install artifact exists. The
+Unix-only crates.io alpha distributes the implemented Rust experiment interface; it does not satisfy
+V1 release acceptance.
 
 A durable journal narrows crash ambiguity. It does not prove exactly-once provider effects,
 Kubernetes truth, authorization legitimacy, causation, complete capture, compliance, or production

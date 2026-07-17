@@ -30,7 +30,7 @@ receipt bytes + explicit trust + time + limits
   -> offline inspector
 ```
 
-The fixed prototype evaluator command is implemented; there is no MCP entrypoint yet.
+The fixed prototype evaluator command and thin fixed-schema MCP stdio adapter are implemented.
 
 ## Implemented modules
 
@@ -75,12 +75,13 @@ Exact grant provisioning is a separate operator function requiring signing mater
 This Rust application interface is not itself a configuration-file or command grammar. The
 [evaluator command contract](COMMANDS.md) owns the implemented local adapter, which converts its
 fixed files into this same interface without sequencing durable states or exposing credentials. The
-later MCP adapter must preserve that direction.
+[MCP adapter contract](MCP.md) owns the implemented stdio transport, which converts only its five
+request fields into the same `AgentRequest` and loads operator configuration out of band.
 
 ## Dependency direction
 
 ```text
-local evaluator command (implemented) or MCP adapter (planned)
+local evaluator command or thin MCP adapter (both implemented)
   -> `kapsel` application composition
        -> KAP-0038 effect-gateway module
             -> private concrete implementation modules

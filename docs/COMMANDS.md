@@ -12,7 +12,7 @@ packaging, or the KAP-0042 crash demonstration.
 
 ## Command grammar
 
-The Unix prototype executable accepts exactly these forms:
+The Unix prototype executable accepts exactly these local evaluator forms:
 
 ```text
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
@@ -21,6 +21,10 @@ kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
                [--receipt-bytes-max <usize>] [--statement-bytes-max <usize>]
                [--trust-bytes-max <usize>] [--text-bytes-max <usize>]
 ```
+
+The same executable also has one separately owned MCP process form,
+`kapsel mcp --operator-config <file>`. [MCP adapter](MCP.md) owns its protocol, lifecycle, tool,
+responses, and bounds; this document continues to own the shared operator-file grammar.
 
 Options may appear in any order, exactly once. Unknown options, duplicate options, positional
 values, missing values, and additional arguments are command-input failures. There are no

@@ -6,8 +6,8 @@ Kapsel is testing whether agents can use bounded operations instead of receiving
 provider credentials. It verifies an owner-signed exact grant, records either a pre-attempt target
 rejection or the validated target before the dangerous mutation seam, recovers without blindly
 repeating the mutation, observes the receiver, and emits an inspectable result—including `UNKNOWN`
-when reality cannot be established. The remaining release work includes MCP composition and
-versioned distribution artifacts.
+when reality cannot be established. The remaining release work is versioned distribution,
+reproducibility, and release rehearsal.
 
 ```text
 bounded agent intent
@@ -39,8 +39,9 @@ without a container.
 
 The Rust `Application` interface separates request-only `AgentRequest` from operator-owned grant,
 trust, Kubernetes authority, signing material, and paths. It is available as a pre-V1 alpha for Rust
-evaluation. A prototype local evaluator command now provisions exact grants, runs or reconciles the
-bounded operation, and inspects receipts offline.
+evaluation. A prototype local evaluator command provisions exact grants, runs or reconciles the
+bounded operation, and inspects receipts offline. A thin stdio MCP adapter exposes the same request
+through exactly one fixed-schema tool while loading operator authority separately at startup.
 
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
@@ -75,13 +76,15 @@ format, or production readiness. See the
 | Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate              |
 | Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness    |
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                |
-| MCP-compatible entrypoint                        | Not implemented                                         |
+| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests          |
 | V1 evaluator artifacts and checksums             | Not implemented                                         |
 
-The exact prototype grammar and file separation are owned by the
-[evaluator command contract](docs/COMMANDS.md). The current engineering proof is:
+The exact local evaluator grammar and file separation are owned by the
+[evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
+[MCP adapter contract](docs/MCP.md). The current engineering proof is:
 
 ```sh
+cargo test --locked --test e2e_mcp_adapter
 ./scripts/ci-local.sh
 cargo make test-demo-harness
 cargo make demo-kind  # requires Docker, kind 0.32+, and kubectl 1.30+

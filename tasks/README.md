@@ -7,8 +7,9 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-KAP-0043 is the active packet for the thin fixed-schema MCP adapter. Later packets remain blocked so
-packaging and release work cannot outrun transport equivalence.
+KAP-0044 is the active packet for the installable, documented release candidate. KAP-0043 completed
+the thin fixed-schema MCP adapter, so packaging can now prove the whole evaluator journey from
+versioned artifacts.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |

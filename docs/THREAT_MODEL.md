@@ -67,6 +67,16 @@ replace the executable or its process environment already controls that local de
 Markers and the harness-owned apply counter make no claim about Kubernetes truth or exactly-once
 real-world effects.
 
+### MCP transport confusion and hostile input
+
+The local MCP client can send malformed, duplicated, oversized, out-of-order, or unknown protocol
+messages, attempt another tool, or place operator authority in tool arguments. The fixed stdio
+adapter bounds each frame before JSON allocation, rejects duplicate and extra fields, exposes one
+five-field tool, loads operator configuration separately at process startup, and returns only
+bounded protocol or typed application vocabulary. Standard output is protocol-only. Cancellation,
+disconnect, or transport completion cannot establish that an application operation was unattempted,
+failed, rolled back, or safe; restart uses the same application reconciliation semantics.
+
 ### Authorization mismatch or excessive authority
 
 An agent can request destructive or broader operations or construct self-asserted authorization. The

@@ -180,13 +180,9 @@ fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
         container: request.container,
         immutable_image_digest: request.immutable_image_digest,
     };
-    let operator: OperatorDocument =
-        read_json_classified(&operator_path, "operate", ErrorClass::OperatorConfiguration)?;
-    let runtime = runtime()?;
+    let runtime = runtime("operate")?;
     let report = runtime.block_on(async {
-        let configuration = load_operator_configuration(operator).await?;
-        let mut application =
-            Application::open(configuration).map_err(|error| map_application_open(&error))?;
+        let mut application = open_application(&operator_path, "operate").await?;
         application
             .execute(&request)
             .await
@@ -195,8 +191,19 @@ fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
     render_operation(&report)
 }
 
+pub(crate) async fn open_application(
+    operator_path: &Path,
+    command: &'static str,
+) -> Result<Application, CommandError> {
+    let operator: OperatorDocument =
+        read_json_classified(operator_path, command, ErrorClass::OperatorConfiguration)?;
+    let configuration = load_operator_configuration(operator, command).await?;
+    Application::open(configuration).map_err(|error| map_application_open(&error, command))
+}
+
 async fn load_operator_configuration(
     operator: OperatorDocument,
+    command: &'static str,
 ) -> Result<OperatorConfiguration, CommandError> {
     for path in [
         &operator.signed_authorization_grant,
@@ -207,45 +214,45 @@ async fn load_operator_configuration(
         &operator.receipt_signing_seed,
     ] {
         if !path.is_absolute() {
-            return Err(CommandError::configuration("operate"));
+            return Err(CommandError::configuration(command));
         }
     }
     let grant = read_bounded(
         &operator.signed_authorization_grant,
         GRANT_BYTES_MAX,
-        "operate",
+        command,
         ErrorClass::OperatorConfiguration,
     )?;
     let authorization_public_key = read_exact_32(
         &operator.authorization_public_key,
-        "operate",
+        command,
         ErrorClass::OperatorConfiguration,
     )?;
     let receipt_seed = read_exact_32(
         &operator.receipt_signing_seed,
-        "operate",
+        command,
         ErrorClass::OperatorConfiguration,
     )?;
     let kubeconfig_bytes = read_bounded(
         &operator.kubeconfig,
         JSON_BYTES_MAX,
-        "operate",
+        command,
         ErrorClass::OperatorConfiguration,
     )?;
-    let kubeconfig_text = std::str::from_utf8(&kubeconfig_bytes)
-        .map_err(|_| CommandError::configuration("operate"))?;
+    let kubeconfig_text =
+        std::str::from_utf8(&kubeconfig_bytes).map_err(|_| CommandError::configuration(command))?;
     let mut kubeconfig = kube::config::Kubeconfig::from_yaml(kubeconfig_text)
-        .map_err(|_| CommandError::configuration("operate"))?;
-    let remove_proxy_placeholder = configure_explicit_kubeconfig(&mut kubeconfig)?;
+        .map_err(|_| CommandError::configuration(command))?;
+    let remove_proxy_placeholder = configure_explicit_kubeconfig(&mut kubeconfig, command)?;
     let mut client_config =
         Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
             .await
-            .map_err(|_| CommandError::configuration("operate"))?;
+            .map_err(|_| CommandError::configuration(command))?;
     if remove_proxy_placeholder {
         client_config.proxy_url = None;
     }
-    let kubernetes_client = kube::Client::try_from(client_config)
-        .map_err(|_| CommandError::configuration("operate"))?;
+    let kubernetes_client =
+        kube::Client::try_from(client_config).map_err(|_| CommandError::configuration(command))?;
     Ok(OperatorConfiguration {
         journal_path: operator.journal,
         receipt_output_directory: operator.receipt_directory,
@@ -376,17 +383,18 @@ fn read_exact_32(
 
 fn configure_explicit_kubeconfig(
     kubeconfig: &mut kube::config::Kubeconfig,
+    command: &'static str,
 ) -> Result<bool, CommandError> {
     let current = kubeconfig
         .current_context
         .as_deref()
-        .ok_or_else(|| CommandError::configuration("operate"))?;
+        .ok_or_else(|| CommandError::configuration(command))?;
     let context = kubeconfig
         .contexts
         .iter()
         .find(|context| context.name == current)
         .and_then(|context| context.context.as_ref())
-        .ok_or_else(|| CommandError::configuration("operate"))?;
+        .ok_or_else(|| CommandError::configuration(command))?;
     let cluster_name = context.cluster.clone();
     let user_name = context.user.clone();
     let cluster = kubeconfig
@@ -394,9 +402,9 @@ fn configure_explicit_kubeconfig(
         .iter_mut()
         .find(|cluster| cluster.name == cluster_name)
         .and_then(|cluster| cluster.cluster.as_mut())
-        .ok_or_else(|| CommandError::configuration("operate"))?;
+        .ok_or_else(|| CommandError::configuration(command))?;
     if cluster.certificate_authority.is_some() {
-        return Err(CommandError::configuration("operate"));
+        return Err(CommandError::configuration(command));
     }
     if let Some(user_name) = user_name {
         let user = kubeconfig
@@ -404,14 +412,14 @@ fn configure_explicit_kubeconfig(
             .iter()
             .find(|user| user.name == user_name)
             .and_then(|user| user.auth_info.as_ref())
-            .ok_or_else(|| CommandError::configuration("operate"))?;
+            .ok_or_else(|| CommandError::configuration(command))?;
         if user.token_file.is_some()
             || user.client_certificate.is_some()
             || user.client_key.is_some()
             || user.auth_provider.is_some()
             || user.exec.is_some()
         {
-            return Err(CommandError::configuration("operate"));
+            return Err(CommandError::configuration(command));
         }
     }
     if cluster.proxy_url.as_deref().is_none_or(str::is_empty) {
@@ -512,11 +520,11 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, CommandError> {
+pub(crate) fn runtime(command: &'static str) -> Result<tokio::runtime::Runtime, CommandError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|_| CommandError::operation("operate"))
+        .map_err(|_| CommandError::operation(command))
 }
 
 fn render_operation(report: &OperationReport) -> CommandResult {
@@ -732,15 +740,15 @@ const fn inspection_status(value: InspectionStatus) -> &'static str {
     }
 }
 
-fn map_application_open(error: &ApplicationError) -> CommandError {
+fn map_application_open(error: &ApplicationError, command: &'static str) -> CommandError {
     match error {
         ApplicationError::InvalidAuthorizationConfiguration
         | ApplicationError::InvalidReceiptConfiguration
         | ApplicationError::InvalidJournalPath
         | ApplicationError::InvalidReceiptOutputDirectory
-        | ApplicationError::InvalidGrantProvisioning => CommandError::configuration("operate"),
+        | ApplicationError::InvalidGrantProvisioning => CommandError::configuration(command),
         ApplicationError::Gateway(_) | ApplicationError::InvalidApplicationState => {
-            CommandError::operation("operate")
+            CommandError::operation(command)
         },
     }
 }

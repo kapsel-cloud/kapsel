@@ -6,7 +6,7 @@ Read this file first. It routes work; current technical truth lives in the linke
 
 1. Read [`README.md`](README.md) and [`docs/V1.md`](docs/V1.md).
 2. Read the [technical task route](tasks/README.md) and active packet,
-   [`tasks/KAP-0043.md`](tasks/KAP-0043.md).
+   [`tasks/KAP-0044.md`](tasks/KAP-0044.md).
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -42,7 +42,8 @@ explain why a route was chosen; they do not override current contract text.
 - One production adapter does not justify a public provider interface. Do not add runtime plugins, a
   generic capability SDK, policy engine, queue, hosted control plane, dashboard, or second
   capability.
-- Treat MCP as a planned transport adapter, not as project identity or shipped behavior.
+- Treat MCP as one implemented pre-V1 prototype transport adapter, not as project identity, a stable
+  API, or released V1 behavior.
 - Do not promote a timeout, request acceptance, or provider ambiguity into receiver success or
   failure. Preserve explicit `UNKNOWN`.
 - Contracts state shared behavior. ADRs state rationale. Guides describe commands that exist. Tasks
