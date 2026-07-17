@@ -1,6 +1,7 @@
 # Build
 
-Status: deterministic repository, evaluator commands, and live-kind gates implemented.
+Status: deterministic repository, evaluator commands, public crash demo, and live-kind gates
+implemented.
 
 Kind: guide. Authority: commands that exist and their present meaning.
 
@@ -137,6 +138,32 @@ only the cluster it created. On a test failure after cluster creation, it export
 
 This live gate is not part of hosted deterministic CI. The separate default test suite provides the
 real process-kill/restart proof; the live tests use same-process fault injection and journal reopen.
+
+## Public crash-recovery demonstration
+
+Run the complete release-owned demonstration with:
+
+```sh
+cargo make demo-kind
+```
+
+It requires Docker, `kind` 0.32 or newer, `kubectl` 1.30 or newer, and Python 3.11 or newer. It
+refuses pre-existing `kind` clusters before mutation, creates one uniquely named cluster, builds the
+same production executable with the private `demo-harness` feature, and uses the supported grant,
+operation, restart, and inspection commands. It shows a healthy rollout, kills the failed-rollout
+process after one returned mutation, kills it again after frozen receipt publication, restarts under
+rotated receipt settings, and inspects the `ProgressDeadlineExceeded` receipt offline. Cleanup
+removes only its owned cluster and host directory; bounded failure diagnostics are retained under
+`$TMPDIR`.
+
+Run its deterministic process and prerequisite proofs without Docker or `kind`:
+
+```sh
+cargo make test-demo-harness
+```
+
+The feature-gated binary is demonstration-only. Ordinary builds contain no marker or pause behavior,
+and fault control is not part of agent input, operator JSON, or the public Rust interface.
 
 ## Evaluator commands
 

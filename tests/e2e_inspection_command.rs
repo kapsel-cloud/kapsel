@@ -78,15 +78,58 @@ fn canonical_vectors_are_inspected_at_the_explicit_time() {
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(
-        stdout,
-        concat!(
-            "{\"command\":\"inspect\",\"status\":\"INSPECTED\",",
-            "\"operation_id\":\"op-001\",\"result\":\"FAILED\",",
-            "\"non_claims\":\"no-exactly-once;no-causation;no-kubernetes-truth;",
-            "no-complete-capture;no-witnessing;not-production\"}\n"
-        )
-    );
+    assert!(stdout.starts_with(
+        "{\"command\":\"inspect\",\"status\":\"INSPECTED\",\"operation_id\":\"op-001\""
+    ));
+    assert!(stdout.contains("\"authorization_id\":\"auth-001\""));
+    assert!(stdout.contains("\"immutable_image_digest\":"));
+    assert!(stdout.contains("\"observed_operation_marker\":\"op-001\""));
+    assert!(stdout.contains("\"requested_generation\":2"));
+    assert!(stdout.contains("\"rollout_condition_type\":\"Progressing\""));
+    assert!(stdout.contains("\"rollout_condition_reason\":\"ProgressDeadlineExceeded\""));
+    assert!(stdout.contains("\"result\":\"FAILED\""));
+    let mut previous_position = 0;
+    for field in [
+        "operation_id",
+        "authorization_id",
+        "authorization_signer_key_id",
+        "authorization_grant_digest",
+        "namespace",
+        "deployment",
+        "container",
+        "immutable_image_digest",
+        "write_strategy",
+        "target_uid",
+        "target_resource_version",
+        "receiver_uid",
+        "observed_image",
+        "observed_operation_marker",
+        "current_generation",
+        "requested_generation",
+        "observed_generation",
+        "observed_resource_version",
+        "desired_replicas",
+        "updated_replicas",
+        "available_replicas",
+        "unavailable_replicas",
+        "rollout_condition_type",
+        "rollout_condition_status",
+        "rollout_condition_reason",
+        "result",
+        "non_claims",
+    ] {
+        let position = stdout.find(&format!("\"{field}\":")).unwrap();
+        assert!(
+            position > previous_position,
+            "inspection field order changed at {field}"
+        );
+        previous_position = position;
+    }
+    assert!(stdout.ends_with(concat!(
+        "\"non_claims\":\"no-exactly-once;no-causation;no-kubernetes-truth;",
+        "no-complete-capture;no-witnessing;not-production\"}\n"
+    )));
+    assert!(stdout.len() < 64 * 1024);
     assert!(output.stderr.is_empty());
     assert!(!stdout.contains("VERIFIED"));
     fs::remove_dir_all(root).unwrap();

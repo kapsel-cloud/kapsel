@@ -97,8 +97,9 @@ bytes, or provider action.
 ## Output and diagnostics
 
 Each invocation writes exactly one newline-terminated JSON object to stdout and at most one
-newline-terminated diagnostic to stderr. Each stream is at most 4 KiB. JSON keys have the exact
-order shown here; optional values use JSON `null`. No output contains input bytes, key material,
+newline-terminated diagnostic to stderr. Provisioning and operation stdout and every stderr are at
+most 4 KiB; classifier-complete inspection stdout is at most 64 KiB. JSON keys have the exact order
+shown here; optional values use JSON `null`. No output contains input bytes, key material,
 Kubernetes response bodies, or ambient values.
 
 Successful grant provisioning:
@@ -125,20 +126,45 @@ States and values use the KAP-0038 vocabulary. A pre-attempt rejection reports `
 null result, and one of `DEPLOYMENT_NOT_FOUND`, `CONTAINER_NOT_FOUND`, or `INVALID_TARGET`.
 `SUCCEEDED`, `FAILED`, and `UNKNOWN` are receiver outcomes and all are successful command execution.
 
-Offline inspection reports:
+Offline inspection reports the classifier-complete signed statement in fixed field order:
 
 ```json
 {
   "command": "inspect",
   "status": "INSPECTED",
   "operation_id": "op-001",
+  "authorization_id": "auth-001",
+  "authorization_signer_key_id": "owner-key",
+  "authorization_grant_digest": "<sha256>",
+  "namespace": "demo",
+  "deployment": "agent-api",
+  "container": "api",
+  "immutable_image_digest": "registry.example/agent-api@sha256:<sha256>",
+  "write_strategy": "conditional-strategic-merge-patch",
+  "target_uid": "deployment-uid-1",
+  "target_resource_version": "resource-version-0",
+  "receiver_uid": "deployment-uid-1",
+  "observed_image": "registry.example/agent-api@sha256:<sha256>",
+  "observed_operation_marker": "op-001",
+  "current_generation": 2,
+  "requested_generation": 2,
+  "observed_generation": 2,
+  "observed_resource_version": "resource-version-2",
+  "desired_replicas": 1,
+  "updated_replicas": 0,
+  "available_replicas": 0,
+  "unavailable_replicas": 1,
+  "rollout_condition_type": "Progressing",
+  "rollout_condition_status": "False",
+  "rollout_condition_reason": "ProgressDeadlineExceeded",
   "result": "FAILED",
   "non_claims": "no-exactly-once;no-causation;no-kubernetes-truth;no-complete-capture;no-witnessing;not-production"
 }
 ```
 
-For `STRUCTURE_REJECTED` and `SIGNATURE_REJECTED`, the final three values are null. For
-`UNTRUSTED_SIGNER`, authenticated statement fields and non-claims are present. Inspection calls the
+For `STRUCTURE_REJECTED` and `SIGNATURE_REJECTED`, every statement and non-claims value is null. For
+`UNTRUSTED_SIGNER`, authenticated statement fields and non-claims are present. The complete
+maximum-sized escaped line remains within the 64 KiB inspection stdout bound. Inspection calls the
 library inspector directly with the named bytes, explicit evaluation time, and explicit limits. It
 constructs no Kubernetes client and performs no network, filesystem discovery, trust lookup,
 environment lookup, or ambient clock read. It never emits `VERIFIED`.

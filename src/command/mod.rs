@@ -13,7 +13,7 @@ use kapsel::{
     inspect_receipt, provision_exact_grant, AgentRequest, Application, ApplicationError,
     AuthorizationTrust, ExactAuthorization, GatewayError, GrantProvisioning, InspectionLimits,
     InspectionReport, InspectionStatus, OperationReport, OperationResult, OperationState,
-    OperatorConfiguration, TargetRejection,
+    OperatorConfiguration, ReceiptStatement, TargetRejection,
 };
 use kube::{config::KubeConfigOptions, Config};
 use rustix::fs::{openat, Mode, OFlags, CWD};
@@ -21,6 +21,7 @@ use serde::Deserialize;
 
 const JSON_BYTES_MAX: usize = 16 * 1024;
 const GRANT_BYTES_MAX: usize = 4 * 1024;
+const MACHINE_OUTPUT_BYTES_MAX: usize = 64 * 1024;
 const NON_CLAIMS: &str = concat!(
     "no-exactly-once;no-causation;no-kubernetes-truth;",
     "no-complete-capture;no-witnessing;not-production"
@@ -235,12 +236,12 @@ async fn load_operator_configuration(
         .map_err(|_| CommandError::configuration("operate"))?;
     let mut kubeconfig = kube::config::Kubeconfig::from_yaml(kubeconfig_text)
         .map_err(|_| CommandError::configuration("operate"))?;
-    let remove_proxy = suppress_ambient_proxy(&mut kubeconfig)?;
+    let remove_proxy_placeholder = configure_explicit_kubeconfig(&mut kubeconfig)?;
     let mut client_config =
         Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
             .await
             .map_err(|_| CommandError::configuration("operate"))?;
-    if remove_proxy {
+    if remove_proxy_placeholder {
         client_config.proxy_url = None;
     }
     let kubernetes_client = kube::Client::try_from(client_config)
@@ -281,40 +282,56 @@ fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
         text_bytes_max: take_limit(&mut options, "--text-bytes-max", defaults.text_bytes_max)?,
     };
     finish_options(&options, "inspect")?;
-    if limits.receipt_bytes_max == 0
-        || limits.receipt_bytes_max > defaults.receipt_bytes_max
-        || limits.statement_bytes_max == 0
-        || limits.statement_bytes_max > defaults.statement_bytes_max
-        || limits.trust_bytes_max == 0
-        || limits.trust_bytes_max > defaults.trust_bytes_max
-        || limits.text_bytes_max == 0
-        || limits.text_bytes_max > defaults.text_bytes_max
-    {
+    if !inspection_limits_are_valid(limits, defaults) {
         return Err(CommandError::input("inspect"));
     }
-    if file_exceeds(&receipt_path, limits.receipt_bytes_max)?
-        || file_exceeds(&trust_path, limits.trust_bytes_max)?
-    {
-        return Ok(structure_rejected_output());
-    }
-    let receipt = read_bounded(
+    let receipt_file = open_within_limit(
         &receipt_path,
         limits.receipt_bytes_max,
         "inspect",
         ErrorClass::CommandInput,
     )?;
-    let trust = read_bounded(
+    let trust_file = open_within_limit(
         &trust_path,
         limits.trust_bytes_max,
         "inspect",
         ErrorClass::CommandInput,
     )?;
-    Ok(render_inspection(&inspect_receipt(
-        &receipt,
-        &trust,
-        evaluation_time,
-        limits,
-    )))
+    let (Some(receipt_file), Some(trust_file)) = (receipt_file, trust_file) else {
+        return Ok(structure_rejected_output());
+    };
+    let receipt = read_opened_bounded(
+        receipt_file,
+        limits.receipt_bytes_max,
+        "inspect",
+        ErrorClass::CommandInput,
+    )?;
+    let trust = read_opened_bounded(
+        trust_file,
+        limits.trust_bytes_max,
+        "inspect",
+        ErrorClass::CommandInput,
+    )?;
+    let output = render_inspection(&inspect_receipt(&receipt, &trust, evaluation_time, limits));
+    if output
+        .len()
+        .checked_add(1)
+        .is_none_or(|length| length > MACHINE_OUTPUT_BYTES_MAX)
+    {
+        return Err(CommandError::operation("inspect"));
+    }
+    Ok(output)
+}
+
+fn inspection_limits_are_valid(limits: InspectionLimits, maximum: InspectionLimits) -> bool {
+    limits.receipt_bytes_max > 0
+        && limits.receipt_bytes_max <= maximum.receipt_bytes_max
+        && limits.statement_bytes_max > 0
+        && limits.statement_bytes_max <= maximum.statement_bytes_max
+        && limits.trust_bytes_max > 0
+        && limits.trust_bytes_max <= maximum.trust_bytes_max
+        && limits.text_bytes_max > 0
+        && limits.text_bytes_max <= maximum.text_bytes_max
 }
 
 fn take_limit(
@@ -357,7 +374,9 @@ fn read_exact_32(
         .map_err(|_| CommandError { command, class })
 }
 
-fn suppress_ambient_proxy(kubeconfig: &mut kube::config::Kubeconfig) -> Result<bool, CommandError> {
+fn configure_explicit_kubeconfig(
+    kubeconfig: &mut kube::config::Kubeconfig,
+) -> Result<bool, CommandError> {
     let current = kubeconfig
         .current_context
         .as_deref()
@@ -426,13 +445,25 @@ fn open_regular(
     Ok(file)
 }
 
-fn file_exceeds(path: &Path, maximum: usize) -> Result<bool, CommandError> {
-    let file = open_regular(path, "inspect", ErrorClass::CommandInput)?;
+fn open_within_limit(
+    path: &Path,
+    maximum: usize,
+    command: &'static str,
+    class: ErrorClass,
+) -> Result<Option<File>, CommandError> {
+    if maximum == 0 {
+        return Err(CommandError { command, class });
+    }
+    let file = open_regular(path, command, class)?;
     let length = file
         .metadata()
-        .map_err(|_| CommandError::input("inspect"))?
+        .map_err(|_| CommandError { command, class })?
         .len();
-    Ok(usize::try_from(length).map_or(true, |length| length > maximum))
+    if usize::try_from(length).map_or(true, |length| length > maximum) {
+        Ok(None)
+    } else {
+        Ok(Some(file))
+    }
 }
 
 fn read_bounded(
@@ -441,16 +472,17 @@ fn read_bounded(
     command: &'static str,
     class: ErrorClass,
 ) -> Result<Vec<u8>, CommandError> {
-    if maximum == 0 {
-        return Err(CommandError { command, class });
-    }
-    let file = open_regular(path, command, class)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| CommandError { command, class })?;
-    if usize::try_from(metadata.len()).map_or(true, |length| length > maximum) {
-        return Err(CommandError { command, class });
-    }
+    let file =
+        open_within_limit(path, maximum, command, class)?.ok_or(CommandError { command, class })?;
+    read_opened_bounded(file, maximum, command, class)
+}
+
+fn read_opened_bounded(
+    file: File,
+    maximum: usize,
+    command: &'static str,
+    class: ErrorClass,
+) -> Result<Vec<u8>, CommandError> {
     let capacity = maximum
         .checked_add(1)
         .ok_or(CommandError { command, class })?;
@@ -519,35 +551,139 @@ fn render_operation(report: &OperationReport) -> CommandResult {
 }
 
 fn structure_rejected_output() -> String {
-    String::from(concat!(
-        "{\"command\":\"inspect\",\"status\":\"STRUCTURE_REJECTED\",",
-        "\"operation_id\":null,\"result\":null,\"non_claims\":null}"
-    ))
+    render_inspection_fields("STRUCTURE_REJECTED", None)
 }
 
 fn render_inspection(report: &InspectionReport) -> String {
-    let status = inspection_status(report.status());
-    let (operation_id, result, non_claims) = report.statement().map_or_else(
-        || ("null".into(), "null".into(), "null".into()),
-        |statement| {
-            (
-                json_string(statement.operation_id()),
-                json_string(operation_result(statement.result())),
-                json_string(NON_CLAIMS),
-            )
-        },
-    );
-    format!(
-        concat!(
-            "{{\"command\":\"inspect\",\"status\":\"{status}\",",
-            "\"operation_id\":{operation_id},\"result\":{result},",
-            "\"non_claims\":{non_claims}}}"
+    render_inspection_fields(inspection_status(report.status()), report.statement())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixed classifier-complete machine record keeps field order explicit"
+)]
+fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) -> String {
+    let mut output = format!("{{\"command\":\"inspect\",\"status\":\"{status}\"");
+    let Some(statement) = statement else {
+        for name in [
+            "operation_id",
+            "authorization_id",
+            "authorization_signer_key_id",
+            "authorization_grant_digest",
+            "namespace",
+            "deployment",
+            "container",
+            "immutable_image_digest",
+            "write_strategy",
+            "target_uid",
+            "target_resource_version",
+            "receiver_uid",
+            "observed_image",
+            "observed_operation_marker",
+            "current_generation",
+            "requested_generation",
+            "observed_generation",
+            "observed_resource_version",
+            "desired_replicas",
+            "updated_replicas",
+            "available_replicas",
+            "unavailable_replicas",
+            "rollout_condition_type",
+            "rollout_condition_status",
+            "rollout_condition_reason",
+            "result",
+            "non_claims",
+        ] {
+            append_json_field(&mut output, name, "null");
+        }
+        output.push('}');
+        return output;
+    };
+    let text_fields = [
+        ("operation_id", Some(statement.operation_id())),
+        ("authorization_id", Some(statement.authorization_id())),
+        (
+            "authorization_signer_key_id",
+            Some(statement.authorization_signer_key_id()),
         ),
-        status = status,
-        operation_id = operation_id,
-        result = result,
-        non_claims = non_claims
-    )
+        (
+            "authorization_grant_digest",
+            Some(statement.authorization_grant_digest()),
+        ),
+        ("namespace", Some(statement.namespace())),
+        ("deployment", Some(statement.deployment())),
+        ("container", Some(statement.container())),
+        (
+            "immutable_image_digest",
+            Some(statement.immutable_image_digest()),
+        ),
+        ("write_strategy", Some(statement.write_strategy())),
+        ("target_uid", Some(statement.target_uid())),
+        (
+            "target_resource_version",
+            Some(statement.target_resource_version()),
+        ),
+        ("receiver_uid", statement.receiver_uid()),
+        ("observed_image", statement.observed_image()),
+        (
+            "observed_operation_marker",
+            statement.observed_operation_marker(),
+        ),
+    ];
+    for (name, value) in text_fields {
+        append_json_field(&mut output, name, &optional_json(value));
+    }
+    for (name, value) in [
+        ("current_generation", statement.current_generation()),
+        ("requested_generation", statement.requested_generation()),
+        ("observed_generation", statement.observed_generation()),
+    ] {
+        append_json_field(&mut output, name, &optional_number(value));
+    }
+    append_json_field(
+        &mut output,
+        "observed_resource_version",
+        &optional_json(statement.observed_resource_version()),
+    );
+    for (name, value) in [
+        ("desired_replicas", statement.desired_replicas()),
+        ("updated_replicas", statement.updated_replicas()),
+        ("available_replicas", statement.available_replicas()),
+        ("unavailable_replicas", statement.unavailable_replicas()),
+    ] {
+        append_json_field(&mut output, name, &optional_number(value));
+    }
+    for (name, value) in [
+        ("rollout_condition_type", statement.rollout_condition_type()),
+        (
+            "rollout_condition_status",
+            statement.rollout_condition_status(),
+        ),
+        (
+            "rollout_condition_reason",
+            statement.rollout_condition_reason(),
+        ),
+    ] {
+        append_json_field(&mut output, name, &optional_json(value));
+    }
+    append_json_field(
+        &mut output,
+        "result",
+        &json_string(operation_result(statement.result())),
+    );
+    append_json_field(&mut output, "non_claims", &json_string(NON_CLAIMS));
+    output.push('}');
+    output
+}
+
+fn append_json_field(output: &mut String, name: &str, value: &str) {
+    use std::fmt::Write as _;
+
+    write!(output, ",\"{name}\":{value}").unwrap_or_else(|_| unreachable!());
+}
+
+fn optional_number<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map_or_else(|| String::from("null"), |value| value.to_string())
 }
 
 fn json_string(value: &str) -> String {

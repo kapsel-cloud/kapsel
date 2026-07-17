@@ -37,6 +37,16 @@ pub(crate) fn validate_private_directory(path: &Path) -> Result<(), PublicationE
     open_parent(&path.join(".kap0038-directory-check")).map(|_| ())
 }
 
+#[cfg(feature = "demo-harness")]
+pub(in crate::gateway) fn create_private_file(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), PublicationError> {
+    let (directory, name) = open_parent(path)?;
+    create_new_file(&directory, &name, bytes)?;
+    directory.sync_all().map_err(PublicationError::Io)
+}
+
 pub(crate) fn publish_receipt(path: &Path, receipt: &[u8]) -> Result<(), PublicationError> {
     if receipt.len() > RECEIPT_BYTES_MAX {
         return Err(PublicationError::LimitExceeded);
@@ -68,7 +78,7 @@ fn create_or_recover_pending(
     name: &OsStr,
     receipt: &[u8],
 ) -> Result<File, PublicationError> {
-    match create_pending(directory, name, receipt) {
+    match create_new_file(directory, name, receipt) {
         Ok(file) => Ok(file),
         Err(PublicationError::Io(error)) if error.kind() == io::ErrorKind::AlreadyExists => {
             let stale = open_regular(directory, name)?;
@@ -79,7 +89,7 @@ fn create_or_recover_pending(
             }
             unlink_named_file(directory, name, &stale)?;
             directory.sync_all().map_err(PublicationError::Io)?;
-            create_pending(directory, name, receipt)
+            create_new_file(directory, name, receipt)
         },
         Err(error) => Err(error),
     }
@@ -157,7 +167,7 @@ fn pending_name(destination: &OsStr) -> Result<OsString, PublicationError> {
     Ok(name)
 }
 
-fn create_pending(
+fn create_new_file(
     directory: &File,
     name: &OsStr,
     receipt: &[u8],
@@ -372,7 +382,7 @@ mod tests {
         let destination_path = root.join("receipt");
         let (directory, destination) = open_parent(&destination_path).unwrap();
         let pending = pending_name(&destination).unwrap();
-        let source = create_pending(&directory, &pending, b"receipt").unwrap();
+        let source = create_new_file(&directory, &pending, b"receipt").unwrap();
         install_pending(
             &directory,
             &pending,
@@ -441,7 +451,7 @@ mod tests {
         fs::write(&target, b"receipt").unwrap();
         let (directory, destination) = open_parent(&destination_path).unwrap();
         let pending = pending_name(&destination).unwrap();
-        let source = create_pending(&directory, &pending, b"receipt").unwrap();
+        let source = create_new_file(&directory, &pending, b"receipt").unwrap();
         let pending_path = root.join(&pending);
         let result = install_pending(
             &directory,

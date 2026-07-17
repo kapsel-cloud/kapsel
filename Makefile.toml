@@ -49,6 +49,30 @@ args = [
 description = "Run the explicit live Kubernetes gate through a disposable kind cluster"
 command = "./scripts/test-kind-effect-gateway.sh"
 
+[tasks.demo-kind]
+description = "Run the public real-process crash-recovery demonstration"
+command = "./scripts/demo-kind-crash-recovery.sh"
+
+[tasks.test-demo-harness-prerequisites]
+description = "Test fail-closed demo prerequisite handling"
+command = "python3"
+args = ["scripts/test-demo-kind-crash-recovery.py"]
+
+[tasks.test-demo-harness]
+description = "Run deterministic real-process demo seam tests"
+dependencies = ["test-demo-harness-prerequisites"]
+command = "cargo"
+args = [
+  "test",
+  "--locked",
+  "-p",
+  "kapsel",
+  "--features",
+  "demo-harness",
+  "--test",
+  "e2e_demo_recovery",
+]
+
 [tasks.fuzz-check]
 description = "Compile the offline receipt-inspection fuzz target"
 cwd = "fuzz"

@@ -4,6 +4,8 @@
 //! of the caller-visible interface and concrete internal owners.
 
 mod authorization;
+#[cfg(feature = "demo-harness")]
+mod demo_control;
 mod journal;
 mod kubernetes;
 mod receipt;
@@ -383,6 +385,9 @@ impl Gateway {
         {
             publication::publish_receipt(&receipt.path, &receipt.bytes)
                 .map_err(publication_error)?;
+            #[cfg(feature = "demo-harness")]
+            demo_control::checkpoint_after_receipt_publish()
+                .map_err(|()| GatewayError::ReceiptPublication)?;
             self.journal.mark_receipt_written(operation_id)?;
         }
         if let Some(receipt) = self
@@ -598,6 +603,8 @@ impl Gateway {
                 .apply(&request, &target)
                 .await
                 .map_err(|()| GatewayError::KubernetesApply)?;
+            #[cfg(feature = "demo-harness")]
+            demo_control::checkpoint_after_apply().map_err(|()| GatewayError::KubernetesApply)?;
             if fault == Some(FaultPoint::ApplyReturned) {
                 return Err(GatewayError::InjectedFault);
             }

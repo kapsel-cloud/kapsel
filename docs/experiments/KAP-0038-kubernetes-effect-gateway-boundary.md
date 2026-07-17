@@ -170,10 +170,10 @@ classifies `FAILED`.
 The experiment accepts only a canonical signed grant for the exact operation parameters. The owner
 signs it for the fixed purpose `kapsel.kap0038.kubernetes-set-deployment-image-grant.v1`; the
 gateway verifies it against one application-configured key identity and Ed25519 verifying key. The
-future evaluator application must load this trust out of band and must not let agent input choose
-it. Grant parsing is bounded and canonical. Wrong purpose, key identity, signature, tuple, or
-grammar fails before request persistence or Kubernetes calls. The grant has these prototype-specific
-magic prefixes:
+evaluator application loads this trust out of band and does not let agent input choose it. Grant
+parsing is bounded and canonical. Wrong purpose, key identity, signature, tuple, or grammar fails
+before request persistence or Kubernetes calls. The grant has these prototype-specific magic
+prefixes:
 
 | Document        | Magic                                     |
 | --------------- | ----------------------------------------- |
@@ -320,20 +320,48 @@ installed receipt bytes, not of decoded statement facts or report text.
 
 ## Required release demonstration
 
-The planned ten-minute release demonstration must show:
+The release-owned Unix harness runs from one repository command against one uniquely named,
+disposable `kind` cluster. It uses the supported `kapsel provision-grant`, `kapsel operate`, and
+`kapsel inspect` grammar and fixed operator-owned files. It refuses unavailable Docker, `kind` older
+than 0.32, unavailable or pre-1.30 `kubectl`, an unparsable tool version, any pre-existing `kind`
+cluster, or a colliding harness directory before creating or mutating resources. It removes only the
+cluster and host directory it created. Signal and failure cleanup are ownership-safe; captured
+command and cluster logs are individually capped at 64 KiB and contain no configured seeds,
+credentials, grant bytes, or provider bodies.
 
-1. an agent submits an authorized request for one immutable image digest;
-2. Kapsel records `apply_started` and crosses the Kubernetes seam;
-3. the process is killed before it records the request outcome;
-4. restart reconciles rather than blindly patching again;
-5. the requested image fails rollout;
-6. receipt bytes are durably prepared, the process is killed after publication, and restart under a
-   rotated key and changed output-directory setting publishes or verifies only the frozen bytes; and
-7. offline inspection recomputes and reports the failed rollout from the signed classifier inputs.
+The harness demonstrates:
 
-Deterministic fault-injection tests exercise every durable transition. Separate subprocess tests
-kill the gateway at the ambiguous mutation and receipt-publication seams. The visual demo runs
-against `kind`; no live cluster behavior is presented as deterministic test evidence.
+1. an agent submits an authorized request for one immutable image digest and a healthy fixture
+   reaches `SUCCEEDED` without changing the untargeted container;
+2. a second authorized request uses one unavailable immutable image and Kapsel durably records
+   `apply_started` before crossing the Kubernetes mutation seam;
+3. the exact `kapsel operate` process is killed after the mutation returns but before its outcome is
+   recorded;
+4. restart reconciles rather than blindly patching again, the harness-owned apply counter remains
+   exactly one, and the unavailable image reaches `FAILED` only from `ProgressDeadlineExceeded`
+   receiver facts;
+5. exact receipt bytes are durably prepared and installed, then the exact `kapsel operate` process
+   is killed before `receipt_written` is recorded;
+6. restart under a rotated receipt key and changed output directory finalizes only the frozen bytes,
+   leaving the rotated directory empty and preserving the frozen receipt digest; and
+7. `kapsel inspect` runs with unavailable network and ambient Kubernetes configuration and reports
+   `INSPECTED`, `FAILED`, the signed classifier inputs exposed by the inspector, and the fixed
+   non-claims without `VERIFIED` vocabulary.
+
+Fault control is not part of the agent request, operator JSON, ordinary command grammar, public Rust
+interface, journal, or receipt. The harness builds the same `kapsel` binary with the private
+`demo-harness` compile-time feature and supplies an owner-private control directory plus exactly one
+of two fixed process-environment values: `after_apply` or `after_receipt_publish`. At the selected
+internal seam Kapsel creates one owner-private readiness marker, syncs it, and waits to be
+terminated. The mutation seam also creates a no-replace `provider-apply-count` file containing `1`;
+encountering it again fails closed. Builds without `demo-harness` do not read these variables or
+contain the pause behavior. The harness never accepts a lifecycle state, arbitrary fault point,
+marker path, shell, manifest, patch, credential, or receipt byte from agent input.
+
+Deterministic black-box tests run the feature-built production executable against a local HTTP
+fixture and kill it at both fixed seams. Existing internal tests still exercise every durable
+transition. The visual demo runs against `kind`; no live cluster behavior is presented as
+deterministic test evidence.
 
 ## Explicit exclusions
 

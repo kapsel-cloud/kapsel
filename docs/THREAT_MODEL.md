@@ -56,6 +56,17 @@ Kapsel first safely validates the target, atomically records target identity wit
 and then reconciles by observation after ambiguity. It must not blindly apply again or promote a
 timeout into `SUCCEEDED` or `FAILED`.
 
+### Demonstration fault-control misuse
+
+The release harness must stop processes at two exact crash windows without adding lifecycle control
+to agent input. Ordinary builds contain no demonstration pause behavior. The separately built
+`demo-harness` executable accepts only two fixed environment-selected seams and one owner-private
+control directory; malformed, partial, symlinked, or repeated controls fail closed. This feature is
+an evaluator mechanism, not an authorization boundary or a production-safe binary. Anyone able to
+replace the executable or its process environment already controls that local demonstration process.
+Markers and the harness-owned apply counter make no claim about Kubernetes truth or exactly-once
+real-world effects.
+
 ### Authorization mismatch or excessive authority
 
 An agent can request destructive or broader operations or construct self-asserted authorization. The

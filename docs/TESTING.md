@@ -94,6 +94,21 @@ The live-kind lane remains explicit and environment-owning. It is not called a f
 simulation and is never used as evidence that a deterministic invariant holds for every crash
 window.
 
+## KAP-0042 demonstration proof
+
+The release demonstration has two complementary lanes. A deterministic black-box test builds the
+production `kapsel` executable with the private `demo-harness` feature, drives a local HTTP
+Kubernetes fixture, kills the real process at both fixed markers, and verifies one apply, restart,
+frozen receipt bytes, rotated settings, and offline inspection. Separate prerequisite tests stub
+Docker, `kind`, and `kubectl` to prove failures occur before cluster creation.
+
+The explicit live harness then crosses the same executable and markers against its owned `kind`
+cluster. It proves healthy and `ProgressDeadlineExceeded` receiver paths, the unchanged untargeted
+container, one harness-counted apply, frozen digest and path under rotation, bounded failure logs,
+no-network inspection, and ownership-safe cleanup. The compile-time feature and its environment are
+harness control, not agent input or a public lifecycle interface. Existing internal fault tests
+remain the exhaustive transition proof; the visual demonstration does not replace them.
+
 ## Review record
 
 Meaningful changes report:

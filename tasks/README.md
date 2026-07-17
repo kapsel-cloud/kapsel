@@ -7,8 +7,8 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 
 ## V1 sequence
 
-KAP-0042 is the active packet for the public real-process crash and failed-rollout demonstration.
-Later packets remain blocked so transport, packaging, or release work cannot outrun that proof.
+KAP-0043 is the active packet for the thin fixed-schema MCP adapter. Later packets remain blocked so
+packaging and release work cannot outrun transport equivalence.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |

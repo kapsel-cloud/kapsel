@@ -448,10 +448,6 @@ fn valid_operation_mutates_and_publishes_a_secret_free_receipt() {
 }
 
 #[test]
-#[allow(
-    clippy::useless_concat,
-    reason = "split hostile input stays within repository line limits"
-)]
 fn malformed_or_mutable_agent_intent_has_a_bounded_input_exit() {
     let mutable = serde_json::json!({
         "operation_id": "command-op-1",
@@ -535,7 +531,7 @@ fn unsafe_operator_path_fails_before_journal_creation() {
 }
 
 #[test]
-fn symlinked_operator_authority_fails_before_journal_creation() {
+fn unsafe_operator_authority_files_fail_before_journal_creation() {
     let fixture = fixture();
     let key = fixture.root.join("authorization.pub");
     let target = fixture.root.join("authorization-target.pub");
@@ -557,7 +553,14 @@ fn symlinked_operator_authority_fails_before_journal_creation() {
     let special = fixture_with_receiver(false);
     let key = special.root.join("authorization.pub");
     fs::remove_file(&key).unwrap();
-    let _socket = std::os::unix::net::UnixListener::bind(&key).unwrap();
+    let short_socket = PathBuf::from(format!(
+        "/tmp/kapsel-special-{}-{}",
+        std::process::id(),
+        NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_file(&short_socket);
+    let _socket = std::os::unix::net::UnixListener::bind(&short_socket).unwrap();
+    fs::rename(&short_socket, &key).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
         .args([
             "operate",
