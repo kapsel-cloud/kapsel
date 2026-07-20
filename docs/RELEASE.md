@@ -164,7 +164,9 @@ sensitive operational metadata described by [Privacy](PRIVACY.md).
 
 The target and build behavior follow the official Rust [platform support], [GNU/Linux target],
 [`cargo build`], [locked dependency], [target selection], [release profile], and [path-remapping]
-documentation. Release publication is deferred to KAP-0045.
+documentation. The completed `0.1.0` publication evidence is owned by
+[KAP-0045](../tasks/KAP-0045.md); the prepared `0.1.1` candidate and its publication evidence are
+owned by [KAP-0049](../tasks/KAP-0049.md).
 
 [platform support]: https://doc.rust-lang.org/rustc/platform-support.html
 [GNU/Linux target]: https://doc.rust-lang.org/rustc/platform-support/x86_64-unknown-linux-gnu.html
