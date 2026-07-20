@@ -14,10 +14,40 @@ active_child_pid=""
 demo_executable=""
 asset_directory=""
 source_root=""
+demo_start_seconds=$SECONDS
+
+validate_artifact_inputs() {
+  if [[ $demo_executable != /* || ! -f $demo_executable ||
+    ! -x $demo_executable || -L $demo_executable ]]; then
+    printf 'artifact demo executable is unsafe or unavailable; extract the complete release archive again\n' >&2
+    return 1
+  fi
+  if [[ $asset_directory != /* || ! -d $asset_directory ||
+    -L $asset_directory ]]; then
+    printf 'artifact demo asset directory is unsafe or unavailable; run from the extracted release directory\n' >&2
+    return 1
+  fi
+  if [[ ! -f $asset_directory/kap0038-trust.hex ||
+    -L $asset_directory/kap0038-trust.hex ]]; then
+    printf 'artifact demo trust vector is unsafe or unavailable; extract the complete release archive again\n' >&2
+    return 1
+  fi
+}
 
 configure_demo_inputs() {
+  local script_directory
+  local release_root
+  script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
   if [[ -z ${KAPSEL_DEMO_EXECUTABLE:-} && -z ${KAPSEL_DEMO_ASSET_DIRECTORY:-} ]]; then
-    source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+    if [[ $(basename "$script_directory") == kapsel &&
+      $(basename "$(dirname "$script_directory")") == share ]]; then
+      release_root=$(cd "$script_directory/../.." && pwd -P)
+      demo_executable="$release_root/libexec/kapsel-demo-harness"
+      asset_directory=$script_directory
+      validate_artifact_inputs
+      return
+    fi
+    source_root=$(cd "$script_directory/.." && pwd -P)
     demo_executable="$source_root/target/debug/kapsel"
     asset_directory="$source_root/vectors"
     return
@@ -28,25 +58,11 @@ configure_demo_inputs() {
   fi
   demo_executable=$KAPSEL_DEMO_EXECUTABLE
   asset_directory=$KAPSEL_DEMO_ASSET_DIRECTORY
-  if [[ $demo_executable != /* || ! -f $demo_executable ||
-    ! -x $demo_executable || -L $demo_executable ]]; then
-    printf 'artifact demo executable is unsafe or unavailable\n' >&2
-    return 1
-  fi
-  if [[ $asset_directory != /* || ! -d $asset_directory ||
-    -L $asset_directory ]]; then
-    printf 'artifact demo asset directory is unsafe or unavailable\n' >&2
-    return 1
-  fi
-  if [[ ! -f $asset_directory/kap0038-trust.hex ||
-    -L $asset_directory/kap0038-trust.hex ]]; then
-    printf 'artifact demo trust vector is unsafe or unavailable\n' >&2
-    return 1
-  fi
+  validate_artifact_inputs
 }
 
 phase() {
-  printf '[demo %s/9] %s\n' "$1" "$2"
+  printf '[demo +%ss %s/9] %s\n' "$((SECONDS - demo_start_seconds))" "$1" "$2"
 }
 
 bounded_log() {
@@ -57,10 +73,22 @@ bounded_log() {
   fi
 }
 
+delete_owned_cluster() {
+  if kind delete cluster --name "$cluster_name"; then
+    cluster_owned=0
+    printf '[demo cleanup] owned kind cluster removed: %s\n' "$cluster_name"
+    return 0
+  fi
+  printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
+  printf 'retry only this owned cluster: kind delete cluster --name %s\n' "$cluster_name" >&2
+  return 1
+}
+
 cleanup() {
   local status=$?
   local diagnostic
   local log
+  local owned_workspace=$workspace
   trap - EXIT INT TERM
   if [[ -n $active_child_pid ]] && kill -0 "$active_child_pid" 2>/dev/null; then
     kill -KILL "$active_child_pid" 2>/dev/null || true
@@ -84,13 +112,18 @@ cleanup() {
     done
     printf 'bounded demo failure logs: %s\n' "$log_directory" >&2
   fi
-  if [[ $cluster_owned -eq 1 ]]; then
-    if ! kind delete cluster --name "$cluster_name"; then
-      printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
+  if [[ $cluster_owned -eq 1 ]] && ! delete_owned_cluster; then
+    [[ $status -ne 0 ]] || status=1
+  fi
+  if [[ -n $owned_workspace ]]; then
+    if rm -rf "$owned_workspace" 2>/dev/null; then
+      printf '[demo cleanup] owned workspace removed: %s\n' "$owned_workspace"
+    else
+      printf 'could not remove owned workspace: %s\n' "$owned_workspace" >&2
+      printf 'retry only this owned path: rm -rf -- %q\n' "$owned_workspace" >&2
       [[ $status -ne 0 ]] || status=1
     fi
   fi
-  [[ -z $workspace ]] || rm -rf "$workspace"
   exit "$status"
 }
 trap cleanup EXIT
@@ -98,34 +131,70 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 require_versions() {
-  docker info >/dev/null
+  if ! command -v docker >/dev/null 2>&1; then
+    printf 'Docker is required; install Docker and start its daemon\n' >&2
+    return 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    printf 'Docker daemon is unavailable; start the Docker daemon, then confirm `docker info` succeeds\n' >&2
+    return 1
+  fi
+  local docker_version
+  if ! docker_version=$(docker version --format '{{.Server.Version}}' 2>/dev/null) ||
+    [[ ! $docker_version =~ ^[0-9]+\.[0-9]+\.[0-9]+([+._~-][0-9A-Za-z._~-]+)?$ ]]; then
+    printf 'cannot parse Docker server version; confirm `docker version` reports a version\n' >&2
+    return 1
+  fi
+  printf '[demo prerequisite] Docker server %s\n' "$docker_version"
+
+  if ! command -v kind >/dev/null 2>&1; then
+    printf 'kind is required; install kind 0.32 or newer\n' >&2
+    return 1
+  fi
   local kind_version
   kind_version=$(kind version)
   if [[ ! $kind_version =~ ^kind\ v([0-9]+)\.([0-9]+)\.([0-9]+)([[:space:]]|$) ]]; then
-    printf 'cannot parse kind version: %s\n' "$kind_version" >&2
+    printf 'cannot parse kind version: %s; install kind 0.32 or newer\n' "$kind_version" >&2
     return 1
   fi
   if ((BASH_REMATCH[1] == 0 && BASH_REMATCH[2] < 32)); then
-    printf 'kind 0.32 or newer is required; found: %s\n' "$kind_version" >&2
+    printf 'install kind 0.32 or newer; found: %s\n' "$kind_version" >&2
+    return 1
+  fi
+  printf '[demo prerequisite] %s\n' "$kind_version"
+
+  if ! command -v kubectl >/dev/null 2>&1; then
+    printf 'kubectl is required; install kubectl 1.30 or newer\n' >&2
     return 1
   fi
   local kubectl_version
   kubectl_version=$(kubectl version --client -o json)
   if [[ ! $kubectl_version =~ \"major\":[[:space:]]*\"([0-9]+)\" ]]; then
-    printf 'cannot parse kubectl major version\n' >&2
+    printf 'cannot parse kubectl major version; install kubectl 1.30 or newer\n' >&2
     return 1
   fi
   local kubectl_major=${BASH_REMATCH[1]}
   if [[ ! $kubectl_version =~ \"minor\":[[:space:]]*\"([0-9]+) ]]; then
-    printf 'cannot parse kubectl minor version\n' >&2
+    printf 'cannot parse kubectl minor version; install kubectl 1.30 or newer\n' >&2
     return 1
   fi
   local kubectl_minor=${BASH_REMATCH[1]}
   if ((kubectl_major < 1 || (kubectl_major == 1 && kubectl_minor < 30))); then
-    printf 'kubectl 1.30 or newer is required\n' >&2
+    printf 'install kubectl 1.30 or newer; found %s.%s\n' "$kubectl_major" "$kubectl_minor" >&2
     return 1
   fi
-  python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+  printf '[demo prerequisite] kubectl %s.%s\n' "$kubectl_major" "$kubectl_minor"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'Python is required; install Python 3.11 or newer\n' >&2
+    return 1
+  fi
+  local python_version
+  if ! python_version=$(python3 -c 'import sys; assert sys.version_info >= (3, 11); print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null); then
+    printf 'install Python 3.11 or newer; `python3` is missing, too old, or unusable\n' >&2
+    return 1
+  fi
+  printf '[demo prerequisite] Python %s\n' "$python_version"
 }
 
 write_json_inputs() {
@@ -230,7 +299,10 @@ else
 fi
 phase 2 "creating disposable cluster $cluster_name"
 cluster_owned=1
-kind create cluster --name "$cluster_name" --image "$node_image" --wait 120s
+if ! kind create cluster --name "$cluster_name" --image "$node_image" --wait 120s; then
+  printf 'kind could not prepare its node; verify that kind supports this Docker host and inspect the bounded failure logs\n' >&2
+  exit 1
+fi
 kind get kubeconfig --name "$cluster_name" >"$workspace/kubeconfig.yaml"
 chmod 600 "$workspace/kubeconfig.yaml"
 phase 3 'loading pinned fixture images'
@@ -347,8 +419,7 @@ grep -Fq '"result":"FAILED"' "$workspace/rotated.log"
 [[ $(<"$workspace/control/provider-apply-count") == 1 ]]
 
 phase 8 'deleting the owned cluster and inspecting the frozen receipt offline'
-kind delete cluster --name "$cluster_name"
-cluster_owned=0
+delete_owned_cluster
 KUBECONFIG=/unavailable/ambient-kubeconfig HTTPS_PROXY=http://127.0.0.1:1 \
   "$demo_executable" inspect \
     --receipt "$frozen_receipt" \
@@ -364,11 +435,21 @@ if grep -Fq VERIFIED "$workspace/inspection.log"; then
   exit 1
 fi
 
-phase 9 'showing classifier-complete inspection; owned cleanup follows'
+phase 9 'showing classifier-complete inspection and lifecycle evidence'
 printf 'offline inspection report:\n'
 tail -c "$log_max" "$workspace/inspection.log"
-printf 'healthy result: SUCCEEDED\n'
-printf 'failed result: FAILED\n'
-printf 'provider apply count: 1\n'
-printf 'frozen receipt sha256: %s\n' "$frozen_digest"
-printf 'offline inspection: INSPECTED\n'
+printf 'Kapsel lifecycle evidence summary:\n'
+printf '  healthy receiver outcome: SUCCEEDED\n'
+printf '  durable attempt: apply_started recorded before provider mutation\n'
+printf '  process termination: after the returned mutation\n'
+printf '  restart behavior: reconciled without a blind second mutation\n'
+printf '  provider apply count: 1\n'
+printf '  process termination: after frozen receipt publication\n'
+printf '  frozen receipt: finalized unchanged under rotated receipt settings\n'
+printf '  frozen receipt sha256: %s\n' "$frozen_digest"
+printf '  receiver outcome: FAILED from ProgressDeadlineExceeded\n'
+printf '  offline inspection path: %s (temporary until cleanup)\n' "$frozen_receipt"
+printf '  offline inspection: INSPECTED, never VERIFIED\n'
+printf '  UNKNOWN boundary: incomplete or ambiguous bounded observation remains UNKNOWN\n'
+printf '  non-claims: no exactly-once effect, causation, Kubernetes truth, complete capture, witnessing, or production readiness\n'
+printf '  elapsed: %ss before owned workspace cleanup\n' "$((SECONDS - demo_start_seconds))"

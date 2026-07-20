@@ -681,13 +681,14 @@ dependencies = [
 
 [[package]]
 name = "kapsel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "k8s-openapi",
  "kube",
  "rusqlite",
  "rustix",
+ "serde",
  "serde_json",
  "sha2",
  "tokio",

@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "http",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel-dev"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "syn",

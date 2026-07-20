@@ -61,7 +61,9 @@ the same revision with the pinned builder must produce identical archive and che
 Kapsel may call assembly reproducible. This claim is limited to the release archive; it is not a
 general Rust reproducible-build guarantee.
 
-The archive has one top-level directory and exactly this layout:
+The archive has one top-level directory and exactly this layout. The demonstration script safely
+resolves the fixed archive relationship between `share/kapsel`, `libexec`, and its adjacent public
+trust vector, so an extracted artifact needs no internal-layout environment variables:
 
 ```text
 kapsel-<package-version>-x86_64-unknown-linux-gnu/
@@ -110,10 +112,20 @@ build environment was trustworthy.
 
 ## Installation and smoke
 
-An evaluator verifies the adjacent checksum before extraction, rejects unexpected archive entries,
-and installs `bin/kapsel` from the one top-level directory. No install step writes credentials,
-trust, configuration, journals, or receipts. A user-local installation may copy the ordinary binary
-to `$HOME/.local/bin/kapsel`; the demo executable and assets remain separate.
+An evaluator downloads the versioned archive and adjacent checksum, verifies the checksum before
+extraction, rejects unexpected archive entries, and may install `bin/kapsel` from the one top-level
+directory. No install step writes credentials, trust, configuration, journals, or receipts. A
+user-local installation may copy the ordinary binary to `$HOME/.local/bin/kapsel`; the demo
+executable and assets remain separate. Installation is not required for the primary real-kind path.
+From the safely extracted top-level directory, that path is exactly:
+
+```sh
+./share/kapsel/demo-kind-crash-recovery.sh
+```
+
+The command reports prerequisite versions before cluster inspection, elapsed phases, a bounded
+lifecycle evidence summary, the temporary offline-inspection path, and ownership-safe cleanup. A
+missing prerequisite or cleanup failure names a concrete corrective action and exits unsuccessfully.
 
 From the repository, run the deterministic artifact-only smoke with:
 

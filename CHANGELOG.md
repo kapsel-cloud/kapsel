@@ -2,6 +2,16 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
+## 0.1.1 - Unreleased
+
+- Adds a one-command real-kind front door from the extracted release archive.
+- Adds actionable prerequisite and cleanup diagnostics, elapsed phases, and a readable lifecycle
+  evidence summary with the explicit `UNKNOWN` boundary.
+- Adds a copyable generic stdio MCP client configuration and complete fixed-tool request.
+
+This patch remains the same bounded experiment and introduces no capability, authority, lifecycle,
+receipt, target, compatibility, or production-readiness expansion.
+
 ## 0.1.0 - 2026-07-17
 
 - Adds the prototype evaluator operation and offline-inspection commands.

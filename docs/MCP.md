@@ -23,6 +23,21 @@ The operator starts the process with exactly:
 kapsel mcp --operator-config <file>
 ```
 
+A generic stdio MCP client's process-launch entry may be written as the following conventional
+configuration. Client wrapper field names are not part of this protocol contract; the executable,
+arguments, and authority separation are:
+
+```json
+{
+  "mcpServers": {
+    "kapsel": {
+      "command": "/absolute/kapsel/bin/kapsel",
+      "args": ["mcp", "--operator-config", "/absolute/operator.json"]
+    }
+  }
+}
+```
+
 The operator file has the exact out-of-band grammar and bounds documented for `operate` in
 [Evaluator commands](COMMANDS.md). Kapsel loads it once, constructs the same compile-time-composed
 `Application`, and exits before reading protocol input if operator configuration is invalid. No
@@ -45,7 +60,7 @@ the response limit. Initialization returns:
 {
   "protocolVersion": "2025-11-25",
   "capabilities": { "tools": {} },
-  "serverInfo": { "name": "kapsel", "version": "0.1.0" }
+  "serverInfo": { "name": "kapsel", "version": "0.1.1" }
 }
 ```
 

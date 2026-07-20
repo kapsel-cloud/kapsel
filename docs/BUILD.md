@@ -251,14 +251,21 @@ versioned `.tar.gz` and adjacent checksum as a workflow artifact named with the 
 GitHub-generated download wrapper is transport only; the adjacent checksum still identifies the
 inner `.tar.gz` bytes.
 
-On a supported x86-64 GNU/Linux host, run the live disposable-kind demonstration from an archive:
+On a supported x86-64 GNU/Linux host, run the live disposable-kind demonstration directly from the
+safely extracted archive top-level directory:
+
+```sh
+./share/kapsel/demo-kind-crash-recovery.sh
+```
+
+A repository checkout can drive a named archive through the same live gate with:
 
 ```sh
 KAPSEL_RELEASE_ARCHIVE=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz \
   cargo make demo-release-artifact
 ```
 
-The source-built `cargo make demo-kind` route remains available. Both routes use the same script;
+The source-built `cargo make demo-kind` route remains available. All routes use the same script;
 artifact mode refuses missing, relative, symlinked, or non-executable release inputs before Docker
 or cluster inspection. See [Release artifacts](RELEASE.md) and the bundled
 [evaluator guide](EVALUATOR.md) for exact layout, installation, provenance, expected output, failure

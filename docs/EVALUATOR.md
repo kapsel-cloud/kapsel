@@ -1,8 +1,9 @@
-# Evaluate Kapsel 0.1.0
+# Evaluate Kapsel 0.1.x
 
-This guide evaluates the stable `0.1.0` `x86_64-unknown-linux-gnu` artifact for the fixed
+This guide evaluates a published stable `0.1.x` `x86_64-unknown-linux-gnu` artifact for the fixed
 `kubernetes.set_deployment_image` experiment. It is not production guidance or a compatibility
-promise.
+promise. Use an exact version attached to the project's GitHub release; release tags and assets are
+immutable.
 
 ## Limits first
 
@@ -30,13 +31,36 @@ verified release archive
        -> owned disposable-kind crash demonstration only
 ```
 
-## Verify and install
+## Short real-kind path
 
-The sole release target is x86-64 GNU/Linux, validated in Debian 12. From the directory containing
-the archive and adjacent checksum:
+With Docker, kind 0.32 or newer, kubectl 1.30 or newer, Python 3.11 or newer, and `curl` on x86-64
+GNU/Linux, the primary path is:
+
+1. download the exact archive and checksum;
+2. verify and safely extract them with the next section; then
+3. run one command from the extracted top-level directory:
 
 ```sh
-archive=kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz
+./share/kapsel/demo-kind-crash-recovery.sh
+```
+
+Expect roughly two to five minutes with ordinary network access; the first kind node-image download
+is usually the longest step. The command refuses to begin when it cannot establish prerequisites or
+exclusive ownership, reports elapsed phases, and ends with the lifecycle evidence and cleanup
+summary described below. Ten minutes without a receipt is a failed evaluation, not evidence of a
+receiver result.
+
+## Verify and install
+
+The sole release target is x86-64 GNU/Linux, validated in Debian 12. Download one exact version from
+its public GitHub release, then verify the adjacent checksum before extraction:
+
+```sh
+version="${KAPSEL_VERSION:?set KAPSEL_VERSION to an exact attached 0.1.x version}"
+base="https://github.com/kapsel-cloud/kapsel/releases/download/v$version"
+curl -fLO "$base/kapsel-$version-x86_64-unknown-linux-gnu.tar.gz"
+curl -fLO "$base/kapsel-$version-x86_64-unknown-linux-gnu.tar.gz.sha256"
+archive="kapsel-$version-x86_64-unknown-linux-gnu.tar.gz"
 sha256sum --check "$archive.sha256"
 python3 - "$archive" <<'PY'
 import pathlib, shutil, sys, tarfile
@@ -211,16 +235,44 @@ signature, and external-trust failures remain distinct as `STRUCTURE_REJECTED`,
 ## MCP
 
 Start the fixed MCP `2025-11-25` newline-delimited stdio adapter with the same out-of-band operator
-configuration:
+configuration. A conventional generic stdio client entry is copyable as:
 
-```sh
-kapsel mcp --operator-config /absolute/operator.json
+```json
+{
+  "mcpServers": {
+    "kapsel": {
+      "command": "/absolute/kapsel/bin/kapsel",
+      "args": ["mcp", "--operator-config", "/absolute/operator.json"]
+    }
+  }
+}
 ```
 
-It advertises exactly `kubernetes.set_deployment_image`. Tool input is the same five-field request
-object above. Operator authority never enters the tool schema. MCP completion, cancellation, or
-disconnect does not establish receiver success, failure, or that no mutation was attempted; restart
-with the same configuration and operation request.
+Client wrapper field names may vary; the process command and arguments do not. After MCP
+initialization, one complete request is:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "kubernetes.set_deployment_image",
+    "arguments": {
+      "operation_id": "op-001",
+      "namespace": "demo",
+      "deployment": "agent-api",
+      "container": "api",
+      "immutable_image_digest": "registry.example/agent-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  }
+}
+```
+
+It advertises exactly `kubernetes.set_deployment_image`. Operator authority, trust, signing
+material, credentials, paths, and lifecycle controls never enter tool arguments. MCP completion,
+cancellation, or disconnect does not establish receiver success, failure, or that no mutation was
+attempted; restart with the same configuration and operation request.
 
 ## Owned disposable-kind demonstration
 
@@ -231,15 +283,24 @@ removes only its own cluster and host workspace.
 From the extracted top-level directory:
 
 ```sh
-KAPSEL_DEMO_EXECUTABLE="$PWD/libexec/kapsel-demo-harness" \
-KAPSEL_DEMO_ASSET_DIRECTORY="$PWD/share/kapsel" \
-  "$PWD/share/kapsel/demo-kind-crash-recovery.sh"
+./share/kapsel/demo-kind-crash-recovery.sh
 ```
 
-The demo proves a healthy `SUCCEEDED` rollout, one failed-image mutation request, process
-termination at both owned crash seams, restart without a blind second mutation, `FAILED` only from
-`ProgressDeadlineExceeded`, frozen receipt bytes under rotated settings, offline `INSPECTED`
-classification, and ownership-safe cleanup. It does not prove exactly-once real-world effects.
+The final summary distinguishes:
+
+- `apply_started` durably recorded before the provider mutation;
+- exact process termination after the returned mutation and after frozen receipt publication;
+- restart-only reconciliation with a harness apply count of exactly one;
+- `FAILED` only from observed `ProgressDeadlineExceeded` receiver facts;
+- finalization from frozen receipt bytes despite rotated receipt settings;
+- the temporary receipt path used by offline `INSPECTED` classification; and
+- the limit that incomplete or ambiguous bounded observation remains `UNKNOWN`.
+
+The command deletes its unique owned cluster before offline inspection, then removes its private
+host workspace on exit. Successful cleanup is explicit. A failed cluster cleanup names the exact
+`kind delete cluster --name <owned-name>` retry; a failed workspace cleanup names only the uniquely
+created path. The receipt path is intentionally temporary, so copy the receipt during a modified
+private run if it must be retained. The demo does not prove exactly-once real-world effects.
 
 ## Failure classes and cleanup
 
@@ -259,7 +320,7 @@ After evaluation, remove only paths and cluster resources you created:
 ```sh
 rm -f "$HOME/.local/bin/kapsel"
 rm -rf /absolute/private/evaluation-directory
-kind delete cluster --name <owned-name>  # only if your interrupted demo left its named cluster
+kind delete cluster --name <owned-name>  # only if output says its owned cluster remains
 ```
 
 Receipts and reports may disclose namespaces, Deployment/container names, image digests, operation

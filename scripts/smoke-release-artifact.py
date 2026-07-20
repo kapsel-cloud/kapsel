@@ -729,17 +729,9 @@ def run_live_demo(archive: pathlib.Path, checksum: pathlib.Path) -> None:
     validate_archive(archive, archive_bytes)
     with tempfile.TemporaryDirectory(prefix="kapsel-live-artifact-") as temporary:
         root = extract_exact_archive(archive, archive_bytes, pathlib.Path(temporary))
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "KAPSEL_DEMO_EXECUTABLE": str(root / "libexec" / "kapsel-demo-harness"),
-                "KAPSEL_DEMO_ASSET_DIRECTORY": str(root / "share" / "kapsel"),
-            }
-        )
         subprocess.run(
             [str(root / "share" / "kapsel" / "demo-kind-crash-recovery.sh")],
             cwd=root,
-            env=environment,
             check=True,
         )
 

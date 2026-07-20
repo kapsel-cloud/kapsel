@@ -321,13 +321,28 @@ installed receipt bytes, not of decoded statement facts or report text.
 ## Required release demonstration
 
 The release-owned Unix harness runs from one repository command against one uniquely named,
-disposable `kind` cluster. It uses the supported `kapsel provision-grant`, `kapsel operate`, and
-`kapsel inspect` grammar and fixed operator-owned files. It refuses unavailable Docker, `kind` older
-than 0.32, unavailable or pre-1.30 `kubectl`, an unparsable tool version, any pre-existing `kind`
-cluster, or a colliding harness directory before creating or mutating resources. It removes only the
-cluster and host directory it created. Signal and failure cleanup are ownership-safe; captured
-command and cluster logs are individually capped at 64 KiB and contain no configured seeds,
-credentials, grant bytes, or provider bodies.
+disposable `kind` cluster. In the fixed archive layout, the script safely locates its adjacent
+public vector and the separate demonstration executable; source mode and explicit artifact overrides
+remain available for repository and packaging proofs. It uses the supported
+`kapsel provision-grant`, `kapsel operate`, and `kapsel inspect` grammar and fixed operator-owned
+files.
+
+Before creating a workspace or inspecting clusters, the harness reports the detected prerequisite
+versions and refuses an unavailable Docker daemon, `kind` older than 0.32, unavailable or pre-1.30
+`kubectl`, Python older than 3.11, an unparsable tool version, or unsafe artifact inputs with a
+concrete corrective action. It refuses any pre-existing `kind` cluster or colliding harness
+directory before creating or mutating resources. A kind node-preparation failure remains a failed
+demonstration and identifies the Docker/kind compatibility check to perform; it cannot weaken an
+ownership check or continue to mutation.
+
+Every phase reports elapsed time. The final evidence summary distinguishes the durable attempt, both
+exact process terminations, restart-only reconciliation, the exactly-one harness apply count,
+receiver disposition and its owned condition, frozen receipt identity, offline inspection path, and
+the explicit `UNKNOWN` boundary. It does not promote a phase, process exit, timeout, or provider
+response into a receiver outcome. The harness removes only the cluster and host directory it
+created, reports successful cleanup, and gives an exact owner-scoped retry action if cleanup fails.
+Signal and failure cleanup remain ownership-safe; captured command and cluster logs are individually
+capped at 64 KiB and contain no configured seeds, credentials, grant bytes, or provider bodies.
 
 The harness demonstrates:
 
