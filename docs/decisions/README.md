@@ -8,3 +8,4 @@ Accepted decisions explain durable choices. Current owner documents define behav
 - [0006 — Use Rust for the implementation](0006-use-rust-for-the-implementation.md)
 - [0008 — Use one Kubernetes effect-gateway canary](0008-use-one-kubernetes-effect-gateway-canary.md)
 - [0009 — Use a conditional Kubernetes image patch](0009-use-conditional-kubernetes-image-patch.md)
+- [0010 — Evolve through a customer-resident effect gateway](0010-evolve-through-a-resident-effect-gateway.md)

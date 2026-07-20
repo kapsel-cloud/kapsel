@@ -95,6 +95,7 @@ are outside its technical scope.
 
 - [Technical scope](docs/SCOPE.md)
 - [Active experiment contract](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md)
+- [Prospective V1 technical direction](docs/VISION.md)
 - [Build and proof commands](docs/BUILD.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Threat model](docs/THREAT_MODEL.md)

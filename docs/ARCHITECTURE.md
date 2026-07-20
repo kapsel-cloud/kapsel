@@ -2,7 +2,7 @@
 
 Status: active experiment design.
 
-Kind: design. Authority: active module ownership, dependency direction, and composition status.
+Kind: design. Authority: current module ownership, dependency direction, and composition status.
 
 Owns: The active experiment's modules, seams, and compile-time dependency direction.
 
@@ -108,6 +108,11 @@ after an independent consumer, a one-way package dependency graph, or a measured
 dependency-isolation need proves that a package seam is real. The 0.1 release does not establish a
 stable library interface or justify another package boundary.
 
+The prospective [V1 technical direction](VISION.md) records the accepted resident effect-gateway
+target, next independently deployed sandbox package, future `kapseld` trigger, and
+package-extraction rules. It does not change the current package graph or active experiment
+contracts.
+
 ## Failure structure
 
 - Invalid request or grant bytes, untrusted signatures, and tuple mismatches fail before persistence
@@ -131,3 +136,5 @@ stable library interface or justify another package boundary.
   operation as the effect-gateway canary.
 - [ADR 0009](decisions/0009-use-conditional-kubernetes-image-patch.md) selects the conditional
   strategic merge patch for this one operation.
+- [ADR 0010](decisions/0010-evolve-through-a-resident-effect-gateway.md) selects the prospective
+  customer-resident product shape and earned package seams.

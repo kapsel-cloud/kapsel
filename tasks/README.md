@@ -1,7 +1,7 @@
 # Technical task route
 
-Status: completed 0.1.0 release, active self-serve hardening, queued public sandbox and evaluator
-evidence cycle, and conditional future technical route.
+Status: active self-serve release completion, prioritized public sandbox sequence, queued evaluator
+evidence cycle, and trigger-gated resident-v1 backlog.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or the active experiment contract.
@@ -9,9 +9,10 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 ## 0.1.0 sequence
 
 KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. KAP-0049 is
-the active bounded implementation packet. KAP-0050 then proves one live public sandbox over the same
-fixed operation; KAP-0047 owns the following evaluator evidence cycle. KAP-0046 remains conditional
-on approved aggregate use evidence.
+the active bounded implementation and patch-release packet. KAP-0050 is the following sandbox
+umbrella; its backend sequence is KAP-0051 contracts, KAP-0052 service package, and KAP-0053 live
+deployment, followed by independently owned website integration acceptance. KAP-0047 owns the
+following evaluator evidence cycle. KAP-0046 remains conditional on approved aggregate use evidence.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
@@ -30,26 +31,34 @@ on approved aggregate use evidence.
 
 | Packet                  | Status      | Outcome                                                               |
 | ----------------------- | ----------- | --------------------------------------------------------------------- |
-| [KAP-0049](KAP-0049.md) | Active      | Ten-minute self-serve path over the existing CLI, MCP, and kind proof |
-| [KAP-0050](KAP-0050.md) | Queued      | One isolated public sandbox run over the same fixed operation         |
-| [KAP-0047](KAP-0047.md) | Queued      | Bounded independent evaluator evidence without capability expansion   |
-| [KAP-0046](KAP-0046.md) | Conditional | One evidence-selected technical direction                             |
-| [KAP-0048](KAP-0048.md) | Conditional | Explicit decision on a future crates.io distribution                  |
+| [KAP-0049](KAP-0049.md) | Active      | Publish the ten-minute self-serve local alpha patch                   |
+| [KAP-0051](KAP-0051.md) | Queued      | Own the fixed public sandbox contracts                                |
+| [KAP-0052](KAP-0052.md) | Queued      | Build the one-way `kapsel-sandbox -> kapsel` package seam             |
+| [KAP-0053](KAP-0053.md) | Queued      | Prove the isolated live sandbox deployment                            |
+| [KAP-0050](KAP-0050.md) | Umbrella    | Accept the backend and independent public website together            |
+| [KAP-0047](KAP-0047.md) | Queued      | Gather bounded external-use evidence without capability expansion     |
+| [KAP-0046](KAP-0046.md) | Conditional | Select one evidence-backed technical direction                        |
+| [KAP-0054](KAP-0054.md) | Conditional | Specify one real customer-resident `kapseld` pilot                    |
+| [KAP-0048](KAP-0048.md) | Conditional | Decide whether Cargo and docs.rs distribution is independently useful |
 
 KAP-0049 may harden only the existing evaluator, CLI, MCP, diagnostics, packaging, and documentation
-surfaces. KAP-0050 may add only one public sandbox service for the same fixed operation after its
-threat, privacy, API, deployment, and test contracts are owned. Neither packet authorizes a second
-capability or compatibility promise. KAP-0046 later converts approved aggregate use evidence and
-technical findings into exactly one next route:
+surfaces. KAP-0051 through KAP-0053 may add only one public sandbox for the same fixed operation and
+must preserve the package and authority rules in [V1 technical direction](../docs/VISION.md). These
+packets do not authorize a second capability or production compatibility promise. KAP-0046 later
+converts approved aggregate use evidence and technical findings into exactly one next route:
 
 1. stabilize the existing capability;
 2. specify one evidence-selected capability under a new owner;
 3. freeze at maintenance-only scope; or
 4. retire the experiment.
 
-KAP-0048 does not authorize retroactive crates.io `0.1.0` publication. It remains blocked unless
-approved evidence selects Cargo installation or Rust-library use, then requires a new patch release
-and full distribution evidence.
+KAP-0054 records the intended resident-daemon route without pre-authorizing implementation. It
+requires both the evidence-selected KAP-0046 route and one real pilot workflow. KAP-0048 remains
+blocked unless approved evidence independently selects Cargo installation or Rust-library use.
+
+Future receipt, protocol, client SDK, provider, Kubernetes, storage, and separate CLI packages are
+tracked by explicit extraction triggers in [V1 technical direction](../docs/VISION.md), not by
+placeholder implementation packets. Create a finite task only after its trigger passes.
 
 No second capability, generic provider interface, general hosted control plane, operator console, or
 production-readiness program is pre-authorized. KAP-0050's fixed public sandbox is the sole hosted

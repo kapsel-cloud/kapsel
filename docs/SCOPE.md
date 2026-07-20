@@ -59,8 +59,10 @@ interfaces until a later release owns compatibility.
 
 ## Future v1.0.0 requirements
 
-`v1.0.0` is not planned or implied by publishing `0.1.0`. It may be proposed only after approved
-public-use evidence and an explicit technical-direction decision. Before a `v1.0.0` tag, Kapsel
+`v1.0.0` is not planned or implied by publishing `0.1.0`. The accepted
+[V1 technical direction](VISION.md) describes the intended resident effect-gateway shape without
+authorizing implementation or release. A `v1.0.0` proposal still requires approved public-use
+evidence and an evidence-selected KAP-0046 implementation decision. Before a `v1.0.0` tag, Kapsel
 must:
 
 1. name every compatibility surface it will support and publish versioning, deprecation, and
