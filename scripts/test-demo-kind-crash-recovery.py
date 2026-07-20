@@ -266,6 +266,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                     "elif echo \"$*\" | grep -q 'get deployment'; then "
                     "printf registry.k8s.io/pause:3.10.1; fi; exit 0"
                 ),
+                "shasum": "exit 99",
             },
             artifact_state="ready",
             packaged=True,

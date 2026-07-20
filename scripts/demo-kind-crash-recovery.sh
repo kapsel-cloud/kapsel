@@ -73,6 +73,16 @@ bounded_log() {
   fi
 }
 
+sha256_file() {
+  python3 - "$1" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
 delete_owned_cluster() {
   if kind delete cluster --name "$cluster_name"; then
     cluster_owned=0
@@ -406,7 +416,7 @@ kill_at_seam after_receipt_publish "$workspace/control/after-receipt-publish.rea
 receipt_count=$(find "$workspace/failed-receipts" -maxdepth 1 -type f -name '*.receipt' | wc -l)
 [[ $receipt_count -eq 1 ]]
 frozen_receipt=$(find "$workspace/failed-receipts" -maxdepth 1 -type f -name '*.receipt' -print)
-frozen_digest=$(shasum -a 256 "$frozen_receipt" | awk '{print $1}')
+frozen_digest=$(sha256_file "$frozen_receipt")
 
 phase 7 'restarting under rotated receipt settings'
 "$demo_executable" operate \
@@ -415,7 +425,7 @@ phase 7 'restarting under rotated receipt settings'
 grep -Fq '"state":"FINALIZED"' "$workspace/rotated.log"
 grep -Fq '"result":"FAILED"' "$workspace/rotated.log"
 [[ $(find "$workspace/rotated-receipts" -mindepth 1 -maxdepth 1 | wc -l) -eq 0 ]]
-[[ $(shasum -a 256 "$frozen_receipt" | awk '{print $1}') == "$frozen_digest" ]]
+[[ $(sha256_file "$frozen_receipt") == "$frozen_digest" ]]
 [[ $(<"$workspace/control/provider-apply-count") == 1 ]]
 
 phase 8 'deleting the owned cluster and inspecting the frozen receipt offline'
