@@ -21,7 +21,7 @@ bounded agent intent
 
 > [!WARNING]
 >
-> Kapsel 0.1.0 is an experiment. It is not production-ready, a generic agent runtime, or a
+> Kapsel 0.1.1 is an experiment. It is not production-ready, a generic agent runtime, or a
 > compliance product. Do not use it for consequential production changes.
 
 ## Active experiment
@@ -47,7 +47,7 @@ same bounded request.
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
 
-The [Kapsel `0.1.0` release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.0) is the
+The [Kapsel `0.1.1` release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.1) is the
 stable x86-64 GNU/Linux experiment artifact. “Stable” identifies a named, non-prerelease artifact;
 it does not promise production support or compatibility for the CLI, configuration, Rust API, MCP
 adapter, receipt format, or artifact layout. See the

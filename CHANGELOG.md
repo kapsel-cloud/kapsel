@@ -2,7 +2,7 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
-## 0.1.1 - Unreleased
+## 0.1.1 - 2026-07-20
 
 - Adds a one-command real-kind front door from the extracted release archive.
 - Adds actionable prerequisite and cleanup diagnostics, elapsed phases, and a readable lifecycle
