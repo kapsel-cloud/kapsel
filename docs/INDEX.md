@@ -14,6 +14,8 @@ Owns: Question-to-owner routing and document authority order.
 | What is the intended v1 technical shape?     | [V1 technical direction](VISION.md)                                                     |
 | What is the evaluator command contract?      | [Evaluator commands](COMMANDS.md)                                                       |
 | What is the fixed MCP adapter contract?      | [MCP adapter](MCP.md)                                                                   |
+| What is the public sandbox HTTP contract?    | [Public sandbox API](SANDBOX_API.md)                                                    |
+| How must the sandbox be deployed?            | [Sandbox deployment](SANDBOX_DEPLOYMENT.md)                                             |
 | What can I run?                              | [Build](BUILD.md)                                                                       |
 | What is the release artifact contract?       | [Release artifacts](RELEASE.md)                                                         |
 | How do I evaluate an installed artifact?     | [Evaluator guide](EVALUATOR.md)                                                         |

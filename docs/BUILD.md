@@ -45,6 +45,16 @@ cargo make fmt-check
 
 `cargo make fmt` formats Rust and Markdown. `cargo make fmt-check` checks both without rewriting.
 
+Validate the demonstration-scoped public sandbox fixtures without a service or network:
+
+```sh
+cargo make test-sandbox-contract
+```
+
+The direct command is `python3 scripts/test-sandbox-contract.py`. It validates the fixed KAP-0051
+HTTP transcripts, field bounds, replay ordering, outcome separation, disclosure key set, and raw
+receipt digest. It is contract evidence, not a sandbox implementation or live deployment proof.
+
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:

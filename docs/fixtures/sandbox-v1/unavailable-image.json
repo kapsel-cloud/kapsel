@@ -1,0 +1,146 @@
+{
+  "fixture": "unavailable-image",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "unavailable-image"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "fedcba9876543210fedcba9876543210",
+          "operation_id": "sandbox-fedcba9876543210fedcba9876543210",
+          "scenario": "unavailable-image",
+          "admission_disposition": "created",
+          "admitted_at": "2026-07-21T01:00:00Z",
+          "expires_at": "2026-07-22T01:00:00Z",
+          "last_sequence": 1
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/fedcba9876543210fedcba9876543210/events?after=2&limit=64",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "fedcba9876543210fedcba9876543210",
+          "events": [
+            {
+              "sequence": 3,
+              "kind": "execution.terminal",
+              "occurred_at": "2026-07-21T01:00:31Z",
+              "execution_state": "terminal",
+              "receiver_result": "FAILED",
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 4,
+              "kind": "receipt.available",
+              "occurred_at": "2026-07-21T01:00:31Z",
+              "execution_state": "terminal",
+              "receiver_result": "FAILED",
+              "target_rejection": null,
+              "receipt_available": true,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 5,
+              "kind": "cleanup.started",
+              "occurred_at": "2026-07-21T01:00:32Z",
+              "execution_state": "terminal",
+              "receiver_result": "FAILED",
+              "target_rejection": null,
+              "receipt_available": true,
+              "cleanup_state": "running"
+            },
+            {
+              "sequence": 6,
+              "kind": "cleanup.succeeded",
+              "occurred_at": "2026-07-21T01:00:33Z",
+              "execution_state": "terminal",
+              "receiver_result": "FAILED",
+              "target_rejection": null,
+              "receipt_available": true,
+              "cleanup_state": "succeeded"
+            }
+          ],
+          "last_sequence": 6,
+          "next_after": 6
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/fedcba9876543210fedcba9876543210",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "fedcba9876543210fedcba9876543210",
+          "operation_id": "sandbox-fedcba9876543210fedcba9876543210",
+          "scenario": "unavailable-image",
+          "execution_state": "terminal",
+          "receiver_result": "FAILED",
+          "target_rejection": null,
+          "receipt_available": true,
+          "cleanup_state": "succeeded",
+          "admitted_at": "2026-07-21T01:00:00Z",
+          "expires_at": "2026-07-22T01:00:00Z",
+          "last_sequence": 6
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/fedcba9876543210fedcba9876543210/receipt",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/vnd.kapsel.kap0038.receipt",
+          "content-length": "1112",
+          "etag": "\"905fb779d9062e2bad945a6129516d02ffe18a4d0f81e5b42baab0d25c7a2f19\"",
+          "cache-control": "no-store"
+        },
+        "body_hex_file": "unavailable-image.receipt.hex"
+      }
+    }
+  ]
+}

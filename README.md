@@ -55,17 +55,18 @@ adapter, receipt format, or artifact layout. See the
 
 ## What exists today
 
-| Surface                                          | Status                                                  |
-| ------------------------------------------------ | ------------------------------------------------------- |
-| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                      |
-| Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate |
-| Classifier-complete receipt and inspection       | Implemented in the experiment library                   |
-| Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests           |
-| Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate              |
-| Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness    |
-| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                |
-| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests          |
-| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible stable release lane       |
+| Surface                                           | Status                                                    |
+| ------------------------------------------------- | --------------------------------------------------------- |
+| Signed exact grant and SQLite recovery lifecycle  | Implemented in the product package                        |
+| Conditional Deployment image mutation             | Implemented and exercised by an explicit live-kind gate   |
+| Classifier-complete receipt and inspection        | Implemented in the experiment library                     |
+| Process-kill mutation and publication recovery    | Implemented in deterministic subprocess tests             |
+| Failed-rollout live-kind test proof               | Implemented in the explicit live-kind gate                |
+| Evaluator demo with real process termination      | Implemented through an owned disposable-kind harness      |
+| Evaluator-facing operation and inspection CLI     | Implemented as a prototype local command                  |
+| Thin fixed-schema MCP stdio adapter               | Implemented with deterministic black-box tests            |
+| Versioned x86-64 Linux artifact and checksum      | Implemented as a reproducible stable release lane         |
+| Fixed public sandbox API and deployment contracts | Accepted; service and live deployment are not implemented |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -88,8 +89,9 @@ and prerequisites.
 ## Scope discipline
 
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
-a generic provider SDK, a policy language, hosted operation, a dashboard, and a second capability
-are outside its technical scope.
+a generic provider SDK, a policy language, general hosted operation, a dashboard, and a second
+capability are outside its technical scope. The sole hosted exception is an accepted contract for
+one fixed non-consequential public sandbox; no sandbox service or deployment is implemented yet.
 
 ## Read next
 
@@ -98,6 +100,8 @@ are outside its technical scope.
 - [Prospective V1 technical direction](docs/VISION.md)
 - [Build and proof commands](docs/BUILD.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Public sandbox API](docs/SANDBOX_API.md)
+- [Public sandbox deployment](docs/SANDBOX_DEPLOYMENT.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Documentation index](docs/INDEX.md)

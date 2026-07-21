@@ -1,0 +1,35 @@
+{
+  "fixture": "unavailable-service",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "healthy"
+        }
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "content-type": "application/json",
+          "retry-after": "60",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "service_unavailable",
+            "message": "The sandbox service is temporarily unavailable.",
+            "retryable": true
+          }
+        }
+      }
+    }
+  ]
+}

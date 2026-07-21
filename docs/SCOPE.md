@@ -10,8 +10,8 @@ non-goals.
 Owns: Project identity, the Kubernetes `set_deployment_image` experiment, and the distinction
 between the current 0.1 release and a future 1.0 compatibility commitment.
 
-Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details, a
-reusable provider interface, or task status.
+Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details, the
+fixed public-sandbox HTTP/deployment contracts, a reusable provider interface, or task status.
 
 ## Short answer
 
@@ -28,9 +28,14 @@ agent intent
   -> classifier-complete signed experiment receipt
 ```
 
-The sole capability is `kubernetes.set_deployment_image` against a local `kind` cluster. Its
-technical owner is the
+The sole capability is `kubernetes.set_deployment_image`. The current release demonstrates it
+against a local `kind` cluster; its technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
+The sole hosted exception is one fixed, non-consequential public sandbox composition over the same
+`Application`, lifecycle, result, and receipt semantics. The [sandbox API](SANDBOX_API.md) owns
+admission and projection, and [sandbox deployment](SANDBOX_DEPLOYMENT.md) owns isolation, capacity,
+key custody, and cleanup. These accepted contracts authorize later implementation packets, not a
+currently deployed service.
 
 The current release is the stable `0.1.1` artifact for this one experiment—not a broader platform,
 production-support promise, or second provider.
@@ -109,12 +114,12 @@ The repository does not implement:
 - arbitrary shell or `kubectl` execution;
 - a policy engine;
 - a Kubernetes operator framework;
-- a hosted service;
+- a general hosted service beyond the one fixed public demonstration sandbox;
 - an agent observability platform;
 - a compliance product;
 - a generic receipt framework;
 - runtime plugins, a generic provider SDK, or arbitrary tool execution;
-- hosted storage, a dashboard, or an external witness; or
+- hosted storage outside the fixed sandbox contract, a dashboard, or an external witness; or
 - a second capability.
 
 [ADR 0008](decisions/0008-use-one-kubernetes-effect-gateway-canary.md) records why one Kubernetes

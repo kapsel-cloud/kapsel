@@ -48,9 +48,10 @@ receipt interfaces remain prototype-scoped.
 ### Public sandbox: post-0.1 technical slice
 
 One independently deployed sandbox exposes fixed non-consequential scenarios through a narrow Rust
-service and reuses the existing `Application`. It proves hosted admission, isolation, reconnectable
-public projection, bounded scheduling, cleanup, and receipt presentation. It is a demonstration
-surface, not the production resident interface.
+service and reuses the existing `Application`. Its accepted [HTTP contract](SANDBOX_API.md) and
+[deployment contract](SANDBOX_DEPLOYMENT.md) own hosted admission, isolation, reconnectable public
+projection, bounded scheduling, cleanup, and receipt presentation before implementation. It is a
+demonstration surface, not the production resident interface.
 
 ### Production v1
 
@@ -83,10 +84,11 @@ adapter, classification, receipt construction, and publication remain private im
 kapsel-sandbox -> kapsel
 ```
 
-`kapsel-sandbox` becomes justified when accepted public sandbox contracts require an independently
-deployable consumer with a one-way dependency on `kapsel`. It owns public admission, capacity,
-scheduling, reconnectable projection, retention, and cleanup. It does not reuse the gateway journal
-as its run database or expose local receipt paths.
+The accepted public sandbox contracts now justify `kapsel-sandbox` for the following implementation
+packet as an independently deployable consumer with a one-way dependency on `kapsel`. It owns public
+admission, capacity, scheduling, reconnectable projection, retention, and cleanup. It does not reuse
+the gateway journal as its run database or expose local receipt paths. Contract acceptance does not
+create the package or authorize another dependency direction.
 
 ### Production package
 

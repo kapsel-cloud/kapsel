@@ -1,0 +1,57 @@
+{
+  "fixture": "expiry",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/0123456789abcdef0123456789abcdef",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 410,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "run_expired",
+            "message": "The run has expired.",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "unavailable-image"
+        }
+      },
+      "response": {
+        "status": 410,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "run_expired",
+            "message": "The run has expired.",
+            "retryable": false
+          }
+        }
+      }
+    }
+  ]
+}

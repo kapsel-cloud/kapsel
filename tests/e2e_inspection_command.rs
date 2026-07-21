@@ -136,6 +136,49 @@ fn canonical_vectors_are_inspected_at_the_explicit_time() {
 }
 
 #[test]
+fn sandbox_unavailable_image_fixture_is_classifier_complete() {
+    let (root, _, _) = fixture();
+    let receipt = root.join("sandbox-receipt.bin");
+    let trust = root.join("sandbox-trust.bin");
+    fs::write(
+        &receipt,
+        decode_hex(include_str!(
+            "../docs/fixtures/sandbox-v1/unavailable-image.receipt.hex"
+        )),
+    )
+    .unwrap();
+    fs::write(
+        &trust,
+        ReceiptTrust {
+            key_id: "sandbox-receipt-test-key".into(),
+            public_key: SigningKey::from_bytes(&[9_u8; 32])
+                .verifying_key()
+                .to_bytes(),
+            accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
+            not_before_unix_s: 100,
+            not_after_unix_s: 200,
+        }
+        .encode()
+        .unwrap(),
+    )
+    .unwrap();
+
+    let output = inspect(&receipt, &trust, &[]);
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("\"status\":\"INSPECTED\""));
+    assert!(stdout.contains(concat!(
+        "\"operation_id\":\"sandbox-",
+        "fedcba9876543210fedcba9876543210\""
+    )));
+    assert!(stdout.contains("\"rollout_condition_reason\":\"ProgressDeadlineExceeded\""));
+    assert!(stdout.contains("\"result\":\"FAILED\""));
+    assert!(!stdout.contains("VERIFIED"));
+    assert!(output.stderr.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn malformed_bytes_and_explicit_lower_limits_use_owned_status_vocabulary() {
     let (root, receipt, trust) = fixture();
     let malformed = root.join("malformed.bin");

@@ -6,8 +6,8 @@ Kind: design. Authority: current module ownership, dependency direction, and com
 
 Owns: The active experiment's modules, seams, and compile-time dependency direction.
 
-Does not own: Exact lifecycle/result semantics, Kubernetes truth, exact receipt bytes, or MCP
-protocol semantics.
+Does not own: Exact lifecycle/result semantics, Kubernetes truth, exact receipt bytes, MCP protocol
+semantics, or public-sandbox wire/deployment behavior.
 
 ## Short answer
 
@@ -112,6 +112,20 @@ The prospective [V1 technical direction](VISION.md) records the accepted residen
 target, next independently deployed sandbox package, future `kapseld` trigger, and
 package-extraction rules. It does not change the current package graph or active experiment
 contracts.
+
+KAP-0051 now fixes the [public sandbox API](SANDBOX_API.md) and
+[deployment composition](SANDBOX_DEPLOYMENT.md). Those contracts satisfy the design prerequisite for
+a later one-way `kapsel-sandbox -> kapsel` package, but do not add that package, an HTTP framework,
+a scheduler, a database, or a deployment. The future adapter must call the same exported
+`Application` with server-owned configuration; it owns admission, public state, and cleanup in its
+package and must not expose the gateway journal or add a public provider seam.
+
+```text
+browser -> optional edge -> future kapsel-sandbox -> kapsel Application
+                                |                     |
+                                |                     -> unchanged KAP-0038 semantics
+                                -> separate admission/projection/cleanup state
+```
 
 ## Failure structure
 

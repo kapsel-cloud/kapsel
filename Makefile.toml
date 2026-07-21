@@ -206,5 +206,9 @@ description = "Check tracked Markdown paths and heading anchors"
 dependencies = ["docs-links-test"]
 command = "./scripts/check-markdown-links.py"
 
+[tasks.test-sandbox-contract]
+description = "Validate the demonstration-scoped sandbox v1 contract fixtures"
+command = "./scripts/test-sandbox-contract.py"
+
 [tasks.default]
 alias = "check"

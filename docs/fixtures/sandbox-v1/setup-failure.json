@@ -1,0 +1,107 @@
+{
+  "fixture": "setup-failure",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/11111111111111111111111111111111/events?after=0&limit=64",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "11111111111111111111111111111111",
+          "events": [
+            {
+              "sequence": 1,
+              "kind": "admission.accepted",
+              "occurred_at": "2026-07-21T02:00:00Z",
+              "execution_state": "queued",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 2,
+              "kind": "execution.started",
+              "occurred_at": "2026-07-21T02:00:01Z",
+              "execution_state": "running",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 3,
+              "kind": "execution.service_failed",
+              "occurred_at": "2026-07-21T02:00:02Z",
+              "execution_state": "service_failed",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 4,
+              "kind": "cleanup.started",
+              "occurred_at": "2026-07-21T02:00:02Z",
+              "execution_state": "service_failed",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "running"
+            },
+            {
+              "sequence": 5,
+              "kind": "cleanup.succeeded",
+              "occurred_at": "2026-07-21T02:00:03Z",
+              "execution_state": "service_failed",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "succeeded"
+            }
+          ],
+          "last_sequence": 5,
+          "next_after": 5
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/11111111111111111111111111111111",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "11111111111111111111111111111111",
+          "operation_id": "sandbox-11111111111111111111111111111111",
+          "scenario": "healthy",
+          "execution_state": "service_failed",
+          "receiver_result": null,
+          "target_rejection": null,
+          "receipt_available": false,
+          "cleanup_state": "succeeded",
+          "admitted_at": "2026-07-21T02:00:00Z",
+          "expires_at": "2026-07-22T02:00:00Z",
+          "last_sequence": 5
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "fixture": "incompatible-version",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v2/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "dddddddddddddddddddddddddddddddd"
+        },
+        "body": {
+          "api_version": "v2",
+          "scenario": "healthy"
+        }
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "unsupported_version",
+            "message": "The API version is unsupported.",
+            "retryable": false
+          }
+        }
+      }
+    }
+  ]
+}

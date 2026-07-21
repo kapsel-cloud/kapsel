@@ -1,0 +1,134 @@
+{
+  "fixture": "errors",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/0123456789abcdef0123456789abcdef/events?after=0",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "The request is invalid.",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/00000000000000000000000000000000",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "run_not_found",
+            "message": "The run was not found.",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "unavailable-image"
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "idempotency_conflict",
+            "message": "The idempotency key names another request.",
+            "retryable": false
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/0123456789abcdef0123456789abcdef/receipt",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "content-type": "application/json",
+          "retry-after": "5",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "receipt_not_available",
+            "message": "The receipt is not available.",
+            "retryable": true
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "ffffffffffffffffffffffffffffffff"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "healthy"
+        }
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "content-type": "application/json",
+          "retry-after": "15",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "error": {
+            "code": "rate_limited",
+            "message": "The anonymous request rate is limited.",
+            "retryable": true
+          }
+        }
+      }
+    }
+  ]
+}

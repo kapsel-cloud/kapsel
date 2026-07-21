@@ -10,8 +10,8 @@ Owns: Experiment vocabulary, one operation's durable lifecycle, receiver observa
 meaning, receipt bytes, and demonstration.
 
 Does not own: A generic agent runtime, MCP protocol semantics, Kubernetes API semantics, a reusable
-provider seam, a stable package format, external witnessing, hosted operation, or production
-assurance.
+provider seam, a stable package format, external witnessing, sandbox
+admission/projection/deployment, or production assurance.
 
 ## Short answer
 
@@ -67,8 +67,18 @@ identity and Ed25519 verifying key. The gateway accepts only the fixed KAP-0038 
 persists the signer identity and SHA-256 digest of the exact signed grant bytes, and does not accept
 trust from the request or grant.
 
-The experiment uses a local `kind` cluster. It does not require a cloud account, hosted Kapsel
-service, or production credentials.
+The release-owned experiment uses a local `kind` cluster. It does not require a cloud account,
+hosted Kapsel service, or production credentials.
+
+One separately owned public sandbox may later compose the same exported `Application`,
+`AgentRequest`, `OperationReport`, lifecycle, receiver classification, and unchanged receipt bytes
+for two fixed synthetic scenarios. The [sandbox API](../SANDBOX_API.md) owns durable admission,
+idempotency, reconnectable projection, retention, and transport errors. The
+[sandbox deployment contract](../SANDBOX_DEPLOYMENT.md) owns server authority, scheduling,
+isolation, key custody, deadline, and cleanup. Neither can sequence internal gateway states,
+reinterpret a report, redact or re-sign a receipt, or make sandbox timeout, disconnect, storage,
+stream, or cleanup behavior a receiver outcome. These contracts do not change the release-owned
+local demonstration.
 
 ## Operation lifecycle
 

@@ -30,6 +30,9 @@ printf '%s\n' "==> Markdown link checker regressions"
 printf '%s\n' "==> Markdown links"
 ./scripts/check-markdown-links.py
 
+printf '%s\n' "==> Sandbox contract fixtures"
+./scripts/test-sandbox-contract.py
+
 echo "==> clippy"
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 

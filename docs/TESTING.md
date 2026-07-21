@@ -6,7 +6,8 @@ Kind: design. Authority: proof strategy for current work.
 
 Owns: Test placement, deterministic inputs, hostile-input coverage, and recovery proof expectations.
 
-Does not own: Build commands, technical scope, or exact receipt bytes.
+Does not own: Build commands, technical scope, exact receipt bytes, or public-sandbox wire and
+deployment semantics.
 
 ## Short answer
 
@@ -157,6 +158,72 @@ container, one harness-counted apply, frozen digest and path under rotation, bou
 no-network inspection, and ownership-safe cleanup. The compile-time feature and its environment are
 harness control, not agent input or a public lifecycle interface. Existing internal fault tests
 remain the exhaustive transition proof; the visual demonstration does not replace them.
+
+## KAP-0051 public sandbox contract proof
+
+The sandbox contract lane is distinct from KAP-0038 gateway tests. It must not widen the
+`Application`, expose the gateway journal, or treat a service simulation as Kubernetes/isolation
+evidence.
+
+Committed fixtures under [`docs/fixtures/sandbox-v1`](fixtures/sandbox-v1/README.md) cover healthy,
+unavailable-image, setup failure, saturation, expiry, every bounded error, incompatible version, and
+unavailable service behavior. The standard-library gate `python3 scripts/test-sandbox-contract.py`
+validates exact field sets and ordering, bounds, enum/null invariants, idempotent replay identity,
+event sequence/cursor behavior, error status and retry vocabulary, forbidden disclosure keys, and
+the raw KAP-0038 receipt digest. It uses fixed times and identities, no service, network,
+dependency, random input, or ambient clock. Fixture validity is contract evidence only; it does not
+prove a consumer or deployment.
+
+KAP-0052 must add deterministic tests through the future `kapsel-sandbox` exported/service boundary
+for:
+
+- exact JSON/header/query parsing before allocation and no caller-appointed authority;
+- one atomic admission/idempotency/capacity/event transaction, including lost-response replay and
+  same-key conflict;
+- queue and active-run saturation before dispatch, fair bounded scheduling, lease loss, and global
+  stop;
+- runner restart before `Application` invocation, during uncertain invocation, after report, and
+  around receipt-store publication;
+- the same operation identity across recovery, no blind second mutation, and unchanged
+  `OperationReport`/receipt bytes;
+- contiguous append-only projection, pagination from every cursor, concurrent append snapshots,
+  event bound, expiry, tombstone, and deletion;
+- independent deadline and cleanup transitions that never populate or alter receiver result;
+- terminal `service_failed` projection only for setup failure proven before `Application`
+  invocation;
+- unavailable admission store, receipt store, key custody, cluster, and incompatible revision
+  errors; and
+- field-level disclosure assertions over responses, durable run state, bounded diagnostics, and
+  allowlisted telemetry.
+
+Those tests use deterministic fake clock, fixed keys, temporary private storage, fake scheduler
+leases, and the existing deterministic Kubernetes fixture. They may inspect package-private sandbox
+state but cannot make that state public or reuse the KAP-0038 journal as the run database.
+
+KAP-0053 owns separate live lanes against one exact deployed revision:
+
+| Lane                     | Required evidence                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Isolation adversary      | Cross-run API, DNS, network, metadata, volume, receipt, store, and key access denied                 |
+| Policy fail-closed       | Missing namespace, account, quota, limits, network policy, runtime, or ownership proof blocks run    |
+| Restart and reconnect    | API/scheduler/runner/store restarts preserve identity, cursor ordering, report, receipt, and cleanup |
+| Saturation and stop      | Edge/service/queue/active/cluster exhaustion stays bounded; stop preserves read/recovery/cleanup     |
+| Timeout                  | Sandbox deadline remains separate from KAP-0038 observation and receiver result                      |
+| Cleanup failure          | Client loss, API outage, stuck finalizer, controller restart, retry, escalation, eventual deletion   |
+| Key and storage failure  | Permission denial, rotation, outage, backup restore, expiry, no re-signing or disclosure             |
+| Rollback                 | Incompatible service/schema/config/key revision rolls back with retained runs recoverable            |
+| Retention and disclosure | Exact public expiry/tombstone/deletion and allowlisted logs/metrics under real requests              |
+| Cost/resource ceiling    | Maximum concurrency through deadline and cleanup measures fixed and marginal resource ceilings       |
+
+The live lanes must attempt adversarial access from both the native runner boundary and the most
+compromised fixed workload posture the selected runtime permits. A passing namespace test alone is
+not called tenant isolation. Provider/runtime/CNI behavior, asynchronous deletion, key custody,
+store durability, rollback, and cost remain unproved until those lanes pass.
+
+A fresh website consumer and a fresh Grafik-boundary consumer must each implement fixture parsing,
+replay from a nonzero cursor, terminal snapshot rendering, raw receipt retrieval, expiry, and all
+retryable/non-retryable errors without reading another checkout or private owner. Consumer
+acceptance compares only to the committed fixtures; it cannot infer fields from implementation.
 
 ## Review record
 

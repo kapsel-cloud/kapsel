@@ -1,0 +1,201 @@
+{
+  "fixture": "healthy",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "healthy"
+        }
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "0123456789abcdef0123456789abcdef",
+          "operation_id": "sandbox-0123456789abcdef0123456789abcdef",
+          "scenario": "healthy",
+          "admission_disposition": "created",
+          "admitted_at": "2026-07-21T00:00:00Z",
+          "expires_at": "2026-07-22T00:00:00Z",
+          "last_sequence": 1
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/sandbox/v1/runs",
+        "headers": {
+          "content-type": "application/json",
+          "idempotency-key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "body": {
+          "api_version": "v1",
+          "scenario": "healthy"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "0123456789abcdef0123456789abcdef",
+          "operation_id": "sandbox-0123456789abcdef0123456789abcdef",
+          "scenario": "healthy",
+          "admission_disposition": "replayed",
+          "admitted_at": "2026-07-21T00:00:00Z",
+          "expires_at": "2026-07-22T00:00:00Z",
+          "last_sequence": 1
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/0123456789abcdef0123456789abcdef/events?after=0&limit=64",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "0123456789abcdef0123456789abcdef",
+          "events": [
+            {
+              "sequence": 1,
+              "kind": "admission.accepted",
+              "occurred_at": "2026-07-21T00:00:00Z",
+              "execution_state": "queued",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 2,
+              "kind": "execution.started",
+              "occurred_at": "2026-07-21T00:00:01Z",
+              "execution_state": "running",
+              "receiver_result": null,
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 3,
+              "kind": "execution.terminal",
+              "occurred_at": "2026-07-21T00:00:10Z",
+              "execution_state": "terminal",
+              "receiver_result": "SUCCEEDED",
+              "target_rejection": null,
+              "receipt_available": false,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 4,
+              "kind": "receipt.available",
+              "occurred_at": "2026-07-21T00:00:10Z",
+              "execution_state": "terminal",
+              "receiver_result": "SUCCEEDED",
+              "target_rejection": null,
+              "receipt_available": true,
+              "cleanup_state": "pending"
+            },
+            {
+              "sequence": 5,
+              "kind": "cleanup.started",
+              "occurred_at": "2026-07-21T00:00:11Z",
+              "execution_state": "terminal",
+              "receiver_result": "SUCCEEDED",
+              "target_rejection": null,
+              "receipt_available": true,
+              "cleanup_state": "running"
+            },
+            {
+              "sequence": 6,
+              "kind": "cleanup.succeeded",
+              "occurred_at": "2026-07-21T00:00:12Z",
+              "execution_state": "terminal",
+              "receiver_result": "SUCCEEDED",
+              "target_rejection": null,
+              "receipt_available": true,
+              "cleanup_state": "succeeded"
+            }
+          ],
+          "last_sequence": 6,
+          "next_after": 6
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/0123456789abcdef0123456789abcdef/events?after=64&limit=1",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "0123456789abcdef0123456789abcdef",
+          "events": [],
+          "last_sequence": 6,
+          "next_after": 64
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/sandbox/v1/runs/0123456789abcdef0123456789abcdef",
+        "headers": {},
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        "body": {
+          "api_version": "v1",
+          "run_id": "0123456789abcdef0123456789abcdef",
+          "operation_id": "sandbox-0123456789abcdef0123456789abcdef",
+          "scenario": "healthy",
+          "execution_state": "terminal",
+          "receiver_result": "SUCCEEDED",
+          "target_rejection": null,
+          "receipt_available": true,
+          "cleanup_state": "succeeded",
+          "admitted_at": "2026-07-21T00:00:00Z",
+          "expires_at": "2026-07-22T00:00:00Z",
+          "last_sequence": 6
+        }
+      }
+    }
+  ]
+}

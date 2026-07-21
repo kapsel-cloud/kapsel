@@ -59,6 +59,26 @@ docs: tighten the active capability contract
   real use?
 - Is planned MCP/application behavior still labeled planned?
 
+## Public sandbox questions
+
+- Does the caller choose only `healthy` or `unavailable-image` plus a bounded idempotency key?
+- Is durable admission still distinct from scheduler work, Kapsel submission, receiver outcome,
+  receipt availability, and cleanup?
+- Can timeout, disconnect, HTTP status, lease loss, storage failure, or cleanup populate or alter a
+  KAP-0038 result?
+- Does replay remain contiguous, bounded, retained, and independent of internal journal/fault
+  states?
+- Are raw receipt bytes unchanged, with trust appointed separately and synthetic disclosure
+  explicit?
+- Are run IDs unguessable bearer locators without becoming authentication or anonymity claims?
+- Do global stop and saturation fail before admission while retained reads/recovery/cleanup
+  continue?
+- Is every run policy-complete before dispatch, and does cleanup delete only recorded UIDs?
+- Are private runner/store/control-plane identifiers, paths, credentials, uncontrolled logs, raw
+  journal rows, and fault controls absent from every public field and fixture?
+- Did a contract choice accidentally select a provider, framework, store, generic protocol package,
+  production interface, or second capability?
+
 ## Documentation review
 
 - Current owners state what they own and refuse to own.
