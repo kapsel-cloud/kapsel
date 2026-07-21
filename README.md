@@ -47,10 +47,10 @@ same bounded request.
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
 
-The prepared Kapsel `0.1.1` release candidate is the next stable x86-64 GNU/Linux experiment
-artifact. “Stable” identifies a named, non-prerelease artifact; it does not promise production
-support or compatibility for the CLI, configuration, Rust API, MCP adapter, receipt format, or
-artifact layout. See the
+The [Kapsel `0.1.1` release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.1) is the
+stable x86-64 GNU/Linux experiment artifact. “Stable” identifies a named, non-prerelease artifact;
+it does not promise production support or compatibility for the CLI, configuration, Rust API, MCP
+adapter, receipt format, or artifact layout. See the
 [experiment boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before use.
 
 ## What exists today

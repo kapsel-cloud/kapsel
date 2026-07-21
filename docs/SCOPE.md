@@ -32,12 +32,12 @@ The sole capability is `kubernetes.set_deployment_image` against a local `kind` 
 technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 
-The prepared `0.1.1` release candidate is the next stable artifact for this one experiment—not a
-broader platform, production-support promise, or second provider.
+The current release is the stable `0.1.1` artifact for this one experiment—not a broader platform,
+production-support promise, or second provider.
 
-## 0.1.1 release candidate
+## 0.1.1 release
 
-`0.1.1` is prepared as the next non-prerelease Kapsel release. A fresh evaluator can:
+`0.1.1` is the current non-prerelease Kapsel release. A fresh evaluator can:
 
 1. install a versioned artifact for the supported x86-64 GNU/Linux target and identify its exact
    source revision;
@@ -52,7 +52,7 @@ broader platform, production-support promise, or second provider.
 6. reproduce the release from a clean checkout using published setup, cleanup, checksums, license,
    limits, and expected output.
 
-“Stable” means a published `0.1.x` artifact is a named, reproducible, non-prerelease distribution.
+“Stable” means a published `0.1.1` artifact is a named, reproducible, non-prerelease distribution.
 It does not promise production support or compatibility for the CLI, configuration, Rust API, MCP
 adapter, receipt format, or artifact layout. Those surfaces remain explicitly versioned experiment
 interfaces until a later release owns compatibility.

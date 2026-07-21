@@ -1,18 +1,18 @@
 # Technical task route
 
-Status: active self-serve release completion, prioritized public sandbox sequence, queued evaluator
-evidence cycle, and trigger-gated resident-v1 backlog.
+Status: completed self-serve release, prioritized public sandbox sequence, queued evaluator evidence
+cycle, and trigger-gated resident-v1 backlog.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or the active experiment contract.
 
 ## 0.1.0 sequence
 
-KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. KAP-0049 is
-the active bounded implementation and patch-release packet. KAP-0050 is the following sandbox
-umbrella; its backend sequence is KAP-0051 contracts, KAP-0052 service package, and KAP-0053 live
-deployment, followed by independently owned website integration acceptance. KAP-0047 owns the
-following evaluator evidence cycle. KAP-0046 remains conditional on approved aggregate use evidence.
+KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. KAP-0049
+published the bounded `v0.1.1` self-serve patch. KAP-0050 is the following sandbox umbrella; its
+backend sequence is KAP-0051 contracts, KAP-0052 service package, and KAP-0053 live deployment,
+followed by independently owned website integration acceptance. KAP-0047 owns the following
+evaluator evidence cycle. KAP-0046 remains conditional on approved aggregate use evidence.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
@@ -31,8 +31,8 @@ following evaluator evidence cycle. KAP-0046 remains conditional on approved agg
 
 | Packet                  | Status      | Outcome                                                               |
 | ----------------------- | ----------- | --------------------------------------------------------------------- |
-| [KAP-0049](KAP-0049.md) | Active      | Publish the ten-minute self-serve local alpha patch                   |
-| [KAP-0051](KAP-0051.md) | Queued      | Own the fixed public sandbox contracts                                |
+| [KAP-0049](KAP-0049.md) | Complete    | Published the ten-minute self-serve local alpha patch                 |
+| [KAP-0051](KAP-0051.md) | Next queued | Own the fixed public sandbox contracts                                |
 | [KAP-0052](KAP-0052.md) | Queued      | Build the one-way `kapsel-sandbox -> kapsel` package seam             |
 | [KAP-0053](KAP-0053.md) | Queued      | Prove the isolated live sandbox deployment                            |
 | [KAP-0050](KAP-0050.md) | Umbrella    | Accept the backend and independent public website together            |
