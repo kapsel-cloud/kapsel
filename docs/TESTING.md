@@ -174,8 +174,8 @@ the raw KAP-0038 receipt digest. It uses fixed times and identities, no service,
 dependency, random input, or ambient clock. Fixture validity is contract evidence only; it does not
 prove a consumer or deployment.
 
-KAP-0052 must add deterministic tests through the future `kapsel-sandbox` exported/service boundary
-for:
+KAP-0052 defines this deterministic matrix through the implemented `kapsel-sandbox` exported/service
+boundary:
 
 - exact JSON/header/query parsing before allocation and no caller-appointed authority;
 - one atomic admission/idempotency/capacity/event transaction, including lost-response replay and
@@ -187,7 +187,8 @@ for:
 - the same operation identity across recovery, no blind second mutation, and unchanged
   `OperationReport`/receipt bytes;
 - contiguous append-only projection, pagination from every cursor, concurrent append snapshots,
-  event bound, expiry, tombstone, and deletion;
+  rejection above the 64-event request limit without fabricating lifecycle transitions, expiry,
+  tombstone, and deletion;
 - independent deadline and cleanup transitions that never populate or alter receiver result;
 - terminal `service_failed` projection only for setup failure proven before `Application`
   invocation;
@@ -196,9 +197,42 @@ for:
 - field-level disclosure assertions over responses, durable run state, bounded diagnostics, and
   allowlisted telemetry.
 
-Those tests use deterministic fake clock, fixed keys, temporary private storage, fake scheduler
-leases, and the existing deterministic Kubernetes fixture. They may inspect package-private sandbox
-state but cannot make that state public or reuse the KAP-0038 journal as the run database.
+The implemented package tests use explicit times, fixed keys, temporary owner-private storage, and
+the existing deterministic Kubernetes transport. They prove atomic admission/replay/conflict,
+32-queued and 8-active saturation, global stop, oldest-first dispatch, durable lease exclusion and
+recovery, queued age beyond 180 seconds without head blocking, and exact oldest-first dispatch. They
+prove an admission-frozen policy revision/inventory digest, cleanup identity, and 180-second
+duration plus an exact dispatch-relative absolute deadline. Deterministic target evidence includes
+every object identity, immutable UID, owner label, and policy-content digest; missing, stale,
+permissive, duplicate-UID, and wrong-owner evidence blocks `Application` before provider traffic.
+Cross-run UID reuse is rejected. Cleanup ownership rows are append-only across repeated policy
+verification; a mismatched observation with an extra owned object remains required even after later
+exact verification. Cleanup completion consumes absence observations for every durable
+kind/namespace/name/UID/owner row and rejects missing, mismatched, or still-present objects before
+releasing capacity. This does not claim live policy enforcement. The separate confirmed-no-resource
+setup path releases capacity without inventing a UID. An explicit periodic sweep deletes expired raw
+run data without visitor traffic, and initial-time open removes due tombstones before returning a
+service. A direct first restart after both 24-hour windows proves the same transaction deletes the
+run and skips its already-due tombstone.
+
+An injected crash with only the sandbox `application_invoked` marker and no gateway journal proves
+reconciliation submits the same server-owned request; once gateway state exists, recovery remains
+reconcile-only. Cancellation after one returned mutation reopens the same operation after the
+ordinary deadline event and observes without a second patch. A deliberately failed receipt-reference
+transaction leaves durable pending ownership of the terminal report's exact immutable object;
+restart converges to one byte-identical receipt and one contiguous terminal and receipt event. A
+concurrent collector test pauses publication after final-object installation, proves open-time
+collection preserves the pending-owned exact bytes, completes availability, and safely removes a
+pending object whose run no longer exists. Existing database symlinks and permissive entries fail
+before SQLite open; a securely created file is rechecked as the same 0600 owned regular inode. Both
+fixed scenarios, pre-attempt rejection, strict hostile HTTP including POST queries and forwarding,
+tracing, and both hyphenated and `clientcert` client-certificate header families, every retained
+event cursor, a concurrent cleanup-event append snapshot, rejection of limits above 64, tombstones,
+cleanup identity/UID mismatch, and cleanup failure/retry are covered. Valid prototype transitions do
+not generate 64 events, so tests establish the endpoint bound rather than fabricating invalid
+lifecycle events. Package-private receipt tests also consume the committed classifier-complete
+receipt fixture. No test exposes sandbox state, reuses the KAP-0038 journal as its run database, or
+presents deterministic orchestration as live cluster/isolation evidence.
 
 KAP-0053 owns separate live lanes against one exact deployed revision:
 

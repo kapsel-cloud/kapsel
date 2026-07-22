@@ -69,26 +69,27 @@ concept being generic does not by itself justify a package.
 ### Current workspace
 
 ```text
-kapsel       product library plus local CLI and MCP executable
-kapsel-dev   unpublished repository tooling
-fuzz         excluded hostile-input package
+kapsel           product library plus local CLI and MCP executable
+kapsel-sandbox   unpublished fixed public-sandbox service package
+kapsel-dev       unpublished repository tooling
+fuzz             excluded hostile-input package
 ```
 
 The root `kapsel` package remains one deep product module. `Application` is the proven shared
 interface used by the CLI and MCP adapters. Authorization, SQLite lifecycle, the concrete Kubernetes
 adapter, classification, receipt construction, and publication remain private implementation.
 
-### Next earned package
+### Earned sandbox package
 
 ```text
 kapsel-sandbox -> kapsel
 ```
 
-The accepted public sandbox contracts now justify `kapsel-sandbox` for the following implementation
-packet as an independently deployable consumer with a one-way dependency on `kapsel`. It owns public
-admission, capacity, scheduling, reconnectable projection, retention, and cleanup. It does not reuse
-the gateway journal as its run database or expose local receipt paths. Contract acceptance does not
-create the package or authorize another dependency direction.
+KAP-0052 implements `kapsel-sandbox` as an independently deployable consumer with a one-way
+dependency on `kapsel`. It owns public admission, capacity, scheduling, reconnectable projection,
+retention, and cleanup. It uses a separate SQLite admission store and immutable receipt directory,
+never reuses the gateway journal as its run database, and never exposes local receipt paths. The
+package creates no reverse dependency or authorization for another package direction.
 
 ### Production package
 
@@ -184,7 +185,6 @@ adapter, and public wire-version compatibility case.
 
 | Candidate            | Trigger required before extraction                                                                     |
 | -------------------- | ------------------------------------------------------------------------------------------------------ |
-| `kapsel-sandbox`     | Accepted sandbox contracts requiring one independently deployable service                              |
 | `kapseld`            | Real pilot requiring a supported resident process                                                      |
 | Separate CLI package | Independent release cadence, installation size, or dependency-isolation evidence                       |
 | `kapsel-receipt`     | Independent verifier needing receipt logic without gateway and Kubernetes dependencies                 |

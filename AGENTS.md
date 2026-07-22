@@ -9,8 +9,9 @@ Read this file first. It routes work; current technical truth lives in the linke
 2. Read the [technical task route](tasks/README.md), completed
    [`0.1.0` release record](tasks/KAP-0045.md), completed
    [self-serve hardening packet](tasks/KAP-0049.md), completed
-   [sandbox-contract packet](tasks/KAP-0051.md), next queued
-   [sandbox-service packet](tasks/KAP-0052.md), sandbox [umbrella](tasks/KAP-0050.md), and queued
+   [sandbox-contract packet](tasks/KAP-0051.md), completed
+   [sandbox-service packet](tasks/KAP-0052.md), next queued
+   [sandbox-deployment packet](tasks/KAP-0053.md), sandbox [umbrella](tasks/KAP-0050.md), and queued
    [evaluator evidence packet](tasks/KAP-0047.md).
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.

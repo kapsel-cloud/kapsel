@@ -55,6 +55,18 @@ The direct command is `python3 scripts/test-sandbox-contract.py`. It validates t
 HTTP transcripts, field bounds, replay ordering, outcome separation, disclosure key set, and raw
 receipt digest. It is contract evidence, not a sandbox implementation or live deployment proof.
 
+Run the deterministic KAP-0052 service, fixture, dependency, and deletion-boundary proof with:
+
+```sh
+cargo make test-sandbox-service
+```
+
+The focused package test crosses strict HTTP translation, durable admission/restart, the real
+`Application` against a deterministic Kubernetes transport, exact receipt publication/retrieval,
+retention, and cleanup. The boundary script also compiles the ordinary root package from a temporary
+copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
+website, or deployment provider; KAP-0053 owns those live properties.
+
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:

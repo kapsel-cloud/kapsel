@@ -210,5 +210,15 @@ command = "./scripts/check-markdown-links.py"
 description = "Validate the demonstration-scoped sandbox v1 contract fixtures"
 command = "./scripts/test-sandbox-contract.py"
 
+[tasks.test-sandbox-service]
+description = "Run deterministic sandbox package and deletion-boundary proofs"
+dependencies = ["test-sandbox-contract", "test-sandbox-package-boundary"]
+command = "cargo"
+args = ["test", "--locked", "-p", "kapsel-sandbox"]
+
+[tasks.test-sandbox-package-boundary]
+description = "Prove the one-way sandbox dependency and deletion boundary"
+command = "./scripts/test-sandbox-package-boundary.py"
+
 [tasks.default]
 alias = "check"

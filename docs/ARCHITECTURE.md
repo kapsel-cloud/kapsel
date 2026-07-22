@@ -101,31 +101,42 @@ they do not add a runtime plugin, provider interface, application seam, trust so
 vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract.
 
 The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
-product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package
-and excluded `fuzz` package. No product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`,
-`kapsel-adapters`, `kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only
-after an independent consumer, a one-way package dependency graph, or a measured
-dependency-isolation need proves that a package seam is real. The 0.1 release does not establish a
-stable library interface or justify another package boundary.
+product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package,
+the independently deployable `crates/kapsel-sandbox` consumer, and the excluded `fuzz` package. No
+product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`,
+`kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only after an independent
+consumer, a one-way package dependency graph, or a measured dependency-isolation need proves that a
+package seam is real. The 0.1 release does not establish a stable library interface or justify
+another package boundary.
 
-The prospective [V1 technical direction](VISION.md) records the accepted resident effect-gateway
-target, next independently deployed sandbox package, future `kapseld` trigger, and
-package-extraction rules. It does not change the current package graph or active experiment
-contracts.
-
-KAP-0051 now fixes the [public sandbox API](SANDBOX_API.md) and
-[deployment composition](SANDBOX_DEPLOYMENT.md). Those contracts satisfy the design prerequisite for
-a later one-way `kapsel-sandbox -> kapsel` package, but do not add that package, an HTTP framework,
-a scheduler, a database, or a deployment. The future adapter must call the same exported
-`Application` with server-owned configuration; it owns admission, public state, and cleanup in its
-package and must not expose the gateway journal or add a public provider seam.
+KAP-0052 implements the accepted [public sandbox API](SANDBOX_API.md) and
+[deployment composition](SANDBOX_DEPLOYMENT.md) through one one-way `kapsel-sandbox -> kapsel`
+package. The package owns bounded HTTP translation, a separate SQLite admission/projection store,
+fixed-capacity scheduling and recovery leases, an admission-frozen policy inventory, cleanup
+identity, and 180-second duration, a dispatch-established absolute deadline, deterministic exact
+per-object UID/owner/content verification, immutable receipt-file publication with durable pending
+ownership serialized against orphan collection, operator-triggered and restart-before-serve
+retention sweeps, and cleanup completion gated by exact absence evidence for every row in an
+append-only per-run kind/namespace/name/UID/owner inventory (with the separate confirmed-no-resource
+path). The SQLite entry is created 0600, opened no-follow, and checked as the same owner-private
+regular inode before and after open. These are service-model checks, not proof of live Kubernetes
+enforcement. It invokes the same exported `Application` with server-owned configuration only after
+policy verification and neither reads gateway journal rows nor introduces a provider, storage, or
+public trait seam.
 
 ```text
-browser -> optional edge -> future kapsel-sandbox -> kapsel Application
-                                |                     |
-                                |                     -> unchanged KAP-0038 semantics
+browser -> optional edge -> kapsel-sandbox -> kapsel Application
+                                |                 |
+                                |                 -> unchanged KAP-0038 semantics
                                 -> separate admission/projection/cleanup state
 ```
+
+The sandbox directly pins `http` for typed in-process translation, `serde`/`serde_json` for exact
+bounded `v1` documents, `rusqlite` with bundled SQLite for one local transactional service store,
+`getrandom` for opaque 128-bit run identities, `sha2` for exact receipt and keyed tombstone digests,
+and `rustix` for owner-private Unix path checks. It reuses no transitive dependency implicitly.
+KAP-0053 still owns the native listener/runtime, transport deadlines, deployment provider, durable
+store placement, key custody, Kubernetes isolation, and live cleanup proof.
 
 ## Failure structure
 

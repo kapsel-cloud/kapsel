@@ -1,7 +1,7 @@
 # Technical task route
 
-Status: completed self-serve release and sandbox contracts, queued sandbox implementation sequence,
-evaluator evidence cycle, and trigger-gated resident-v1 backlog.
+Status: completed self-serve release, sandbox contracts, and deterministic sandbox service; queued
+live sandbox deployment, evaluator evidence cycle, and trigger-gated resident-v1 backlog.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or the active experiment contract.
@@ -33,8 +33,8 @@ evaluator evidence cycle. KAP-0046 remains conditional on approved aggregate use
 | ----------------------- | ----------- | --------------------------------------------------------------------- |
 | [KAP-0049](KAP-0049.md) | Complete    | Published the ten-minute self-serve local alpha patch                 |
 | [KAP-0051](KAP-0051.md) | Complete    | Own the fixed public sandbox contracts                                |
-| [KAP-0052](KAP-0052.md) | Next queued | Build the one-way `kapsel-sandbox -> kapsel` package seam             |
-| [KAP-0053](KAP-0053.md) | Queued      | Prove the isolated live sandbox deployment                            |
+| [KAP-0052](KAP-0052.md) | Complete    | Implemented and accepted one-way `kapsel-sandbox -> kapsel` package   |
+| [KAP-0053](KAP-0053.md) | Next queued | Prove the isolated live sandbox deployment                            |
 | [KAP-0050](KAP-0050.md) | Umbrella    | Accept the backend and independent public website together            |
 | [KAP-0047](KAP-0047.md) | Queued      | Gather bounded external-use evidence without capability expansion     |
 | [KAP-0046](KAP-0046.md) | Conditional | Select one evidence-backed technical direction                        |
