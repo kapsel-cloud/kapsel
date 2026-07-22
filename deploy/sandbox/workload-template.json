@@ -1,0 +1,166 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "name": "kapsel-sandbox",
+    "namespace": "kapsel-sandbox-system",
+    "labels": {
+      "app.kubernetes.io/name": "kapsel-sandbox",
+      "kapsel.dev/policy-revision": "sandbox-policy-v1"
+    }
+  },
+  "spec": {
+    "replicas": 1,
+    "serviceName": "kapsel-sandbox-private",
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "kapsel-sandbox"
+      }
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "kapsel-sandbox"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "serviceAccountName": "kapsel-sandbox",
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 65532,
+          "runAsGroup": 65532,
+          "fsGroup": 65532,
+          "fsGroupChangePolicy": "OnRootMismatch",
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "initContainers": [
+          {
+            "name": "initialize-durable-layout",
+            "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+            "imagePullPolicy": "IfNotPresent",
+            "args": [
+              "init",
+              "--database",
+              "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+              "--receipts",
+              "/var/lib/kapsel-sandbox/receipts",
+              "--digest-key-file",
+              "/var/run/kapsel-keys/tombstone-digest.seed"
+            ],
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsNonRoot": true
+            },
+            "volumeMounts": [
+              {
+                "name": "durable-state",
+                "mountPath": "/var/lib/kapsel-sandbox"
+              },
+              {
+                "name": "tombstone-digest-key",
+                "mountPath": "/var/run/kapsel-keys",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "containers": [
+          {
+            "name": "native-api",
+            "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+            "imagePullPolicy": "IfNotPresent",
+            "args": [
+              "serve",
+              "--database",
+              "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+              "--receipts",
+              "/var/lib/kapsel-sandbox/receipts",
+              "--digest-key-file",
+              "/var/run/kapsel-keys/tombstone-digest.seed",
+              "--origin",
+              "https://kapsel.invalid",
+              "--listen",
+              "0.0.0.0:8080"
+            ],
+            "ports": [
+              {
+                "name": "private-http1",
+                "containerPort": 8080,
+                "protocol": "TCP"
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "250m",
+                "memory": "256Mi",
+                "ephemeral-storage": "256Mi"
+              },
+              "limits": {
+                "cpu": "1",
+                "memory": "512Mi",
+                "ephemeral-storage": "512Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsNonRoot": true
+            },
+            "volumeMounts": [
+              {
+                "name": "durable-state",
+                "mountPath": "/var/lib/kapsel-sandbox"
+              },
+              {
+                "name": "tombstone-digest-key",
+                "mountPath": "/var/run/kapsel-keys",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "tombstone-digest-key",
+            "secret": {
+              "secretName": "kapsel-sandbox-tombstone-digest-key",
+              "defaultMode": 288
+            }
+          }
+        ]
+      }
+    },
+    "volumeClaimTemplates": [
+      {
+        "metadata": {
+          "name": "durable-state"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOncePod"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "20Gi"
+            }
+          },
+          "storageClassName": "${GATE2_STORAGE_CLASS}"
+        }
+      }
+    ]
+  }
+}

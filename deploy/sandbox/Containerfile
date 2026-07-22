@@ -1,0 +1,9 @@
+FROM rust@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS builder
+WORKDIR /source
+COPY . .
+RUN cargo build --locked --release -p kapsel-sandbox --bin kapsel-sandbox
+
+FROM rust@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663
+COPY --from=builder /source/target/release/kapsel-sandbox /usr/local/bin/kapsel-sandbox
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/kapsel-sandbox"]

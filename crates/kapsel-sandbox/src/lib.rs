@@ -531,12 +531,25 @@ impl Service {
     /// Returns [`ServiceError::Unavailable`] when the stop state cannot be committed.
     pub fn set_global_stop(&self, stopped: bool) -> Result<(), ServiceError> {
         let connection = self.connection()?;
-        connection
+        let changed = connection
             .execute(
                 "UPDATE service_state SET stopped = ?1 WHERE singleton = 1",
                 [stopped],
             )
             .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::Unavailable);
+        }
+        let committed: bool = connection
+            .query_row(
+                "SELECT stopped FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if committed != stopped {
+            return Err(ServiceError::Unavailable);
+        }
         Ok(())
     }
 

@@ -1,0 +1,55 @@
+{
+  "api_version": "kapsel.sandbox.gate1/v1",
+  "single_writer_fence": {
+    "required": true,
+    "primary_must_be_stopped": true,
+    "volume_access_mode": "ReadWriteOncePod",
+    "restore_requires_new_volume_identity": true,
+    "concurrent_mount_is_failure": true
+  },
+  "durable_paths": {
+    "admission_database": "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+    "receipt_directory": "/var/lib/kapsel-sandbox/receipts",
+    "journal_root": "/var/lib/kapsel-sandbox/journals",
+    "ownership_metadata": "/var/lib/kapsel-sandbox/ownership"
+  },
+  "backup_set": [
+    "admission_database",
+    "receipt_directory",
+    "journal_root",
+    "ownership_metadata"
+  ],
+  "backup_protocol": [
+    "activate_global_stop",
+    "stop_api_scheduler_runner_cleanup_writers",
+    "prove_primary_processes_absent",
+    "snapshot_one_fenced_static_volume",
+    "record_snapshot_digest_and_source_volume_identity",
+    "expire_snapshot_no_later_than_source_data",
+    "restart_primary_or_restore_to_one_new_fenced_volume"
+  ],
+  "restore_protocol": [
+    "activate_global_stop",
+    "prove_original_writer_destroyed",
+    "attach_restored_volume_to_exactly_one_writer",
+    "reapply_retention_before_readiness",
+    "recover_same_run_operation_journal_and_capacity_identity",
+    "verify_receipt_bytes_and_uid_owner_metadata",
+    "keep_global_stop_until_operator_review"
+  ],
+  "retention_seconds": {
+    "public_projection": 86400,
+    "tombstone_after_public_expiry": 86400,
+    "backup_maximum_age": 86400,
+    "operator_diagnostics_maximum_age": 86400,
+    "raw_evidence_maximum_age": 86400,
+    "terminal_journal_after_terminal_projection": 3600
+  },
+  "unproved_until_gate_2_or_3": [
+    "storage_class_support",
+    "snapshot_atomicity",
+    "primary_fencing_enforcement",
+    "restore_mount_exclusion",
+    "provider_backup_expiry"
+  ]
+}

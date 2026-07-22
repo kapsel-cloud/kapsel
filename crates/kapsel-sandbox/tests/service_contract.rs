@@ -11,11 +11,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use http::{Request, StatusCode};
 use kapsel::{
-    provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
-    OperatorConfiguration,
+    inspect_receipt, provision_exact_grant, AuthorizationTrust, ExactAuthorization,
+    GrantProvisioning, InspectionLimits, InspectionStatus, OperatorConfiguration, ReceiptTrust,
 };
 use kapsel_sandbox::{
     AdmissionDisposition, CleanupAbsenceEvidence, CleanupObjectAbsence, CleanupState,
@@ -195,6 +195,41 @@ fn application_configuration(
         },
         handle,
     )
+}
+
+#[test]
+fn raw_seed_known_answer_is_pure_ed25519() {
+    let seed = hex_bytes::<32>(
+        "9d61b19deffd5a60ba844af492ec2cc4\
+         4449c5697b326919703bac031cae7f60",
+    );
+    let signing_key = SigningKey::from_bytes(&seed);
+    assert_eq!(
+        signing_key.verifying_key().to_bytes(),
+        hex_bytes::<32>(
+            "d75a980182b10ab7d54bfed3c964073a\
+             0ee172f3daa62325af021a68f707511a"
+        )
+    );
+    assert_eq!(
+        signing_key.sign(b"").to_bytes(),
+        hex_bytes::<64>(
+            "e5564300c360ac729086e2cc806e828a\
+             84877f1eb8e5d974d873e06522490155\
+             5fb8821590a33bacc61e39701cf9b46b\
+             d25bf5f0595bbe24655141438e7a100b"
+        )
+    );
+}
+
+fn hex_bytes<const N: usize>(value: &str) -> [u8; N] {
+    let value = value.replace([' ', '\n'], "");
+    assert_eq!(value.len(), N * 2);
+    let mut output = [0_u8; N];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap();
+    }
+    output
 }
 
 #[test]
@@ -1042,10 +1077,23 @@ async fn unavailable_image_application_preserves_failed_receiver_result() {
     assert_eq!(snapshot.execution_state, ExecutionState::Terminal);
     assert_eq!(snapshot.receiver_result.as_deref(), Some("FAILED"));
     assert!(snapshot.receipt_available);
-    assert!(!service
-        .receipt(&admission.run_id, NOW + 3)
-        .unwrap()
-        .is_empty());
+    let receipt = service.receipt(&admission.run_id, NOW + 3).unwrap();
+    let receipt_seed = [42_u8; 32];
+    let trust = ReceiptTrust {
+        key_id: "sandbox-receipt-key".into(),
+        public_key: SigningKey::from_bytes(&receipt_seed)
+            .verifying_key()
+            .to_bytes(),
+        accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
+        not_before_unix_s: NOW - 1,
+        not_after_unix_s: NOW + 100,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(
+        inspect_receipt(&receipt, &trust, NOW + 3, InspectionLimits::default()).status(),
+        InspectionStatus::Inspected
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

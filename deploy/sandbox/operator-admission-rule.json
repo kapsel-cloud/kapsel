@@ -1,0 +1,23 @@
+{
+  "api_version": "kapsel.sandbox.gate1/v1",
+  "kind": "ExactDeploymentImageAdmissionRule",
+  "runner_username_template": "system:serviceaccount:{namespace}:sandbox-runner",
+  "owner_label": "kapsel.dev/sandbox-owner",
+  "operation_annotation": "kapsel.dev/kap0038-operation-id",
+  "required_preconditions": [
+    "namespace",
+    "deployment",
+    "deployment_uid",
+    "resource_version",
+    "owner",
+    "container",
+    "current_image",
+    "immutable_image_digest",
+    "operation_id"
+  ],
+  "allowed_mutations": [
+    "selected_named_container.image",
+    "metadata.annotations[kapsel.dev/kap0038-operation-id]"
+  ],
+  "deny_unknown_mutation": true
+}

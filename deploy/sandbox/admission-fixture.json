@@ -1,0 +1,104 @@
+{
+  "request_username": "system:serviceaccount:sandbox-0123456789abcdef0123456789abcdef:sandbox-runner",
+  "preconditions": {
+    "namespace": "sandbox-0123456789abcdef0123456789abcdef",
+    "deployment": "sandbox-target",
+    "deployment_uid": "8fe3dca2-44f3-4f21-bc89-75c1ff39db20",
+    "resource_version": "17",
+    "owner": "0123456789abcdef0123456789abcdef",
+    "container": "target",
+    "current_image": "registry.k8s.io/pause@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "immutable_image_digest": "registry.k8s.io/pause@sha256:8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c",
+    "operation_id": "sandbox-0123456789abcdef0123456789abcdef"
+  },
+  "old_object": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "sandbox-target",
+      "namespace": "sandbox-0123456789abcdef0123456789abcdef",
+      "uid": "8fe3dca2-44f3-4f21-bc89-75c1ff39db20",
+      "resourceVersion": "17",
+      "labels": {
+        "kapsel.dev/sandbox-owner": "0123456789abcdef0123456789abcdef"
+      },
+      "annotations": {
+        "kapsel.dev/policy-revision": "sandbox-policy-v1"
+      }
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app": "sandbox-target"
+        }
+      },
+      "template": {
+        "metadata": {
+          "labels": {
+            "app": "sandbox-target"
+          }
+        },
+        "spec": {
+          "serviceAccountName": "sandbox-target",
+          "automountServiceAccountToken": false,
+          "runtimeClassName": "gate2-required",
+          "containers": [
+            {
+              "name": "target",
+              "image": "registry.k8s.io/pause@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "resources": {
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "64Mi",
+                  "ephemeral-storage": "64Mi"
+                },
+                "limits": {
+                  "cpu": "250m",
+                  "memory": "128Mi",
+                  "ephemeral-storage": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": true,
+                "runAsNonRoot": true,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "synthetic-receiver",
+              "image": "registry.k8s.io/pause@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "resources": {
+                "requests": {
+                  "cpu": "100m",
+                  "memory": "64Mi",
+                  "ephemeral-storage": "64Mi"
+                },
+                "limits": {
+                  "cpu": "250m",
+                  "memory": "128Mi",
+                  "ephemeral-storage": "128Mi"
+                }
+              },
+              "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "readOnlyRootFilesystem": true,
+                "runAsNonRoot": true,
+                "capabilities": {
+                  "drop": [
+                    "ALL"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

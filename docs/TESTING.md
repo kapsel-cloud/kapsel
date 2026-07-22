@@ -234,6 +234,16 @@ lifecycle events. Package-private receipt tests also consume the committed class
 receipt fixture. No test exposes sandbox state, reuses the KAP-0038 journal as its run database, or
 presents deterministic orchestration as live cluster/isolation evidence.
 
+KAP-0053 Gate 1 adds a separate provider-neutral offline lane. Black-box socket/process tests cross
+the production native HTTP/1.1 executable, raw framing and body bounds, idempotent replay, and the
+non-public durable stop/clear commands. A normalized-object adversarial harness accepts only the
+selected named-container image plus required KAP-0038 operation annotation under exact frozen
+preconditions and rejects every other tested Deployment mutation. The same lane locks one
+single-writer static-volume/backup composition and verifies the RFC 8032 raw 32-byte seed known
+answer plus an `Application` receipt through the production inspector. These are implementation and
+fixture proofs only: they do not establish real Kubernetes admission, runtime/CNI denial, volume or
+snapshot fencing, restore, managed custody, provider cost, endpoint safety, or live reproducibility.
+
 KAP-0053 owns separate live lanes against one exact deployed revision:
 
 | Lane                     | Required evidence                                                                                    |
