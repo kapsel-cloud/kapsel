@@ -2,6 +2,7 @@
   "api_version": "kapsel.sandbox.gate1/v1",
   "accepted_service_base": "1726915942a95e63aca97d49d843b8d0728514da",
   "planning_revision": "fe4ca1edb68dd527bf4c6de185beecd6f540bb2d",
+  "gate1_execution_revision": "eb62a92e30cfa77863de2d3cee305b4224db2a2c",
   "fixture_bundle_sha256": "4cef8b736888689d4ffe853069e824f9edbae4de0f07d5f98405140d01cda3dd",
   "local_image_build_command": "docker build --pull=false -f deploy/sandbox/Containerfile -t kapsel-sandbox:gate1 .",
   "gate1_local_image_id": "sha256:08ced4f2100fd4eb956ec794fed6a46207b873870dab4738b542bc1b873a2675",

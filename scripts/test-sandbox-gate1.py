@@ -138,6 +138,7 @@ def prove_storage_and_lock() -> None:
     }
     assert set(storage["backup_set"]) == set(storage["durable_paths"])
     assert storage["retention_seconds"]["backup_maximum_age"] <= 86400
+    assert len(lock["gate1_execution_revision"]) == 40
     assert lock["provider"] is None and lock["region"] is None
     assert lock["public_endpoint"] is None
     assert lock["local_image_build_command"] == (
