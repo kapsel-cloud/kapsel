@@ -55,18 +55,18 @@ adapter, receipt format, or artifact layout. See the
 
 ## What exists today
 
-| Surface                                          | Status                                                                |
-| ------------------------------------------------ | --------------------------------------------------------------------- |
-| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                                    |
-| Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate               |
-| Classifier-complete receipt and inspection       | Implemented in the experiment library                                 |
-| Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests                         |
-| Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate                            |
-| Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness                  |
-| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                              |
-| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests                        |
-| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible stable release lane                     |
-| Fixed public sandbox service and Gate 1 fixture  | Offline execution prerequisites implemented; live deployment unproved |
+| Surface                                          | Status                                                    |
+| ------------------------------------------------ | --------------------------------------------------------- |
+| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                        |
+| Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate   |
+| Classifier-complete receipt and inspection       | Implemented in the experiment library                     |
+| Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests             |
+| Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate                |
+| Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness      |
+| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                  |
+| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests            |
+| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible stable release lane         |
+| Fixed public sandbox service and Gate 1 fixture  | Service implemented; Gate 1 correction pending acceptance |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -91,8 +91,9 @@ and prerequisites.
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
 a generic provider SDK, a policy language, general hosted operation, a dashboard, and a second
 capability are outside its technical scope. The sole hosted exception is one fixed non-consequential
-public sandbox. Its deterministic service package and provider-neutral Gate 1 execution fixture are
-implemented, but no provider is selected and no sandbox deployment or public traffic is approved.
+public sandbox. Its deterministic service package is implemented, while the provider-neutral Gate 1
+execution fixture is under correction and not accepted. No provider is selected and no sandbox
+deployment or public traffic is approved.
 
 ## Read next
 

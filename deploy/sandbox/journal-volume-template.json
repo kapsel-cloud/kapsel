@@ -1,0 +1,109 @@
+{
+  "api_version": "kapsel.sandbox.gate1/v1",
+  "one_claim_per_run": true,
+  "target_namespace_template": "sandbox-run-${RUN_ID}",
+  "claim": {
+    "apiVersion": "v1",
+    "kind": "PersistentVolumeClaim",
+    "metadata": {
+      "name": "journal-${RUN_ID}",
+      "namespace": "kapsel-sandbox-runners",
+      "labels": {
+        "kapsel.dev/sandbox-run-id": "${RUN_ID}",
+        "kapsel.dev/storage-purpose": "gateway-journal"
+      }
+    },
+    "spec": {
+      "accessModes": [
+        "ReadWriteOncePod"
+      ],
+      "resources": {
+        "requests": {
+          "storage": "1Gi"
+        }
+      },
+      "storageClassName": "${GATE2_STORAGE_CLASS}"
+    }
+  },
+  "runner_pod_template": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "runner-${RUN_ID}",
+      "namespace": "kapsel-sandbox-runners",
+      "labels": {
+        "kapsel.dev/sandbox-run-id": "${RUN_ID}",
+        "kapsel.dev/storage-purpose": "gateway-journal-writer"
+      }
+    },
+    "spec": {
+      "automountServiceAccountToken": false,
+      "serviceAccountName": "runner-${RUN_ID}",
+      "runtimeClassName": "${GATE2_RUNTIME_CLASS}",
+      "restartPolicy": "Never",
+      "securityContext": {
+        "runAsNonRoot": true,
+        "runAsUser": 65532,
+        "runAsGroup": 65532,
+        "fsGroup": 65532,
+        "seccompProfile": {
+          "type": "RuntimeDefault"
+        }
+      },
+      "containers": [
+        {
+          "name": "native-runner",
+          "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+          "args": [
+            "${GATE2_RUNNER_SUBCOMMAND}"
+          ],
+          "securityContext": {
+            "allowPrivilegeEscalation": false,
+            "capabilities": {
+              "drop": [
+                "ALL"
+              ]
+            },
+            "readOnlyRootFilesystem": true,
+            "runAsNonRoot": true
+          },
+          "volumeMounts": [
+            {
+              "name": "gateway-journal",
+              "mountPath": "/var/lib/kapsel-gateway/journal"
+            }
+          ]
+        }
+      ],
+      "volumes": [
+        {
+          "name": "gateway-journal",
+          "persistentVolumeClaim": {
+            "claimName": "journal-${RUN_ID}",
+            "readOnly": false
+          }
+        }
+      ]
+    }
+  },
+  "authorized_mount": {
+    "request_username": "system:serviceaccount:kapsel-sandbox-system:sandbox-scheduler",
+    "namespace": "kapsel-sandbox-runners",
+    "service_account_name_template": "runner-${RUN_ID}",
+    "principal_template": "system:serviceaccount:kapsel-sandbox-runners:runner-${RUN_ID}",
+    "mount_path": "/var/lib/kapsel-gateway/journal",
+    "read_only": false
+  },
+  "forbidden_consumers": [
+    "native-api",
+    "other-runner",
+    "target-workload"
+  ],
+  "required_live_proof": [
+    "exact_runner_identity_is_the_only_authorized_mount_consumer",
+    "second_pod_mount_is_denied_including_on_the_same_node",
+    "runner_replacement_reuses_the_same_volume_and_operation_identity",
+    "api_other_runner_and_target_workload_cannot_read_or_mount_the_volume",
+    "terminal_retention_deletes_the_claim_within_the_contract_window"
+  ]
+}

@@ -18,11 +18,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use kapsel_sandbox::Service;
+use kapsel_sandbox::{set_global_stop, Service};
 
-const USAGE: &str = "usage: kapsel-sandbox <init|serve|stop|clear-stop> \
---database <absolute-path> --receipts <absolute-directory> \
---digest-key-file <absolute-path> [--origin <https-origin>] [--listen <socket-address>]";
+const USAGE: &str = "usage: kapsel-sandbox <init|serve> --database <absolute-path> \
+--receipts <absolute-directory> --digest-key-file <absolute-path> \
+[--origin <https-origin>] [--listen <socket-address>]; or kapsel-sandbox \
+<stop|clear-stop> --database <absolute-path>";
 
 fn main() -> ExitCode {
     match run() {
@@ -36,45 +37,56 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), &'static str> {
     let configuration = Configuration::parse(env::args().skip(1))?;
-    if matches!(configuration.command, Command::Init) {
-        initialize_directory(
-            configuration
-                .database
-                .parent()
-                .ok_or("database parent is unavailable")?,
-        )?;
-        initialize_directory(&configuration.receipts)?;
-    }
-    let now = unix_time()?;
-    let digest_key = read_secret_32(&configuration.digest_key_file)?;
-    let mut service = Service::open(
-        &configuration.database,
-        &configuration.receipts,
-        digest_key,
-        now,
-    )
-    .map_err(|_| "service state is unavailable")?;
-    service
-        .set_origin(&configuration.origin)
-        .map_err(|_| "origin is invalid")?;
-
     match configuration.command {
-        Command::Init => reject_listen(configuration.listen),
-        Command::Serve => {
-            let listen = configuration.listen.ok_or("serve requires --listen")?;
-            native_listener::serve(service, listen)
+        Command::Stop | Command::ClearStop => {
+            if configuration.receipts.is_some()
+                || configuration.digest_key_file.is_some()
+                || configuration.origin.is_some()
+                || configuration.listen.is_some()
+            {
+                return Err(USAGE);
+            }
+            let stopped = matches!(configuration.command, Command::Stop);
+            set_global_stop(&configuration.database, stopped).map_err(|_| {
+                if stopped {
+                    "global stop could not be committed"
+                } else {
+                    "global stop could not be cleared"
+                }
+            })
         },
-        Command::Stop => {
-            reject_listen(configuration.listen)?;
+        Command::Init | Command::Serve => {
+            let receipts = configuration.receipts.ok_or(USAGE)?;
+            let digest_key_file = configuration.digest_key_file.ok_or(USAGE)?;
+            if matches!(configuration.command, Command::Init) {
+                initialize_directory(
+                    configuration
+                        .database
+                        .parent()
+                        .ok_or("database parent is unavailable")?,
+                )?;
+                initialize_directory(&receipts)?;
+            }
+            let digest_key = read_secret_32(&digest_key_file)?;
+            let mut service =
+                Service::open(&configuration.database, &receipts, digest_key, unix_time()?)
+                    .map_err(|_| "service state is unavailable")?;
             service
-                .set_global_stop(true)
-                .map_err(|_| "global stop could not be committed")
-        },
-        Command::ClearStop => {
-            reject_listen(configuration.listen)?;
-            service
-                .set_global_stop(false)
-                .map_err(|_| "global stop could not be cleared")
+                .set_origin(
+                    configuration
+                        .origin
+                        .as_deref()
+                        .unwrap_or("https://kapsel.invalid"),
+                )
+                .map_err(|_| "origin is invalid")?;
+            match configuration.command {
+                Command::Init => reject_listen(configuration.listen),
+                Command::Serve => {
+                    let listen = configuration.listen.ok_or("serve requires --listen")?;
+                    native_listener::serve(service, listen)
+                },
+                Command::Stop | Command::ClearStop => unreachable!(),
+            }
         },
     }
 }
@@ -97,9 +109,9 @@ enum Command {
 struct Configuration {
     command: Command,
     database: PathBuf,
-    receipts: PathBuf,
-    digest_key_file: PathBuf,
-    origin: String,
+    receipts: Option<PathBuf>,
+    digest_key_file: Option<PathBuf>,
+    origin: Option<String>,
     listen: Option<SocketAddr>,
 }
 
@@ -134,14 +146,14 @@ impl Configuration {
             }
         }
         let database = absolute(database.ok_or(USAGE)?)?;
-        let receipts = absolute(receipts.ok_or(USAGE)?)?;
-        let digest_key_file = absolute(digest_key_file.ok_or(USAGE)?)?;
+        let receipts = receipts.map(absolute).transpose()?;
+        let digest_key_file = digest_key_file.map(absolute).transpose()?;
         Ok(Self {
             command,
             database,
             receipts,
             digest_key_file,
-            origin: origin.unwrap_or_else(|| "https://kapsel.invalid".into()),
+            origin,
             listen,
         })
     }

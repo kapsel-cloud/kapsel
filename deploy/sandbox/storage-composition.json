@@ -1,40 +1,73 @@
 {
   "api_version": "kapsel.sandbox.gate1/v1",
-  "single_writer_fence": {
-    "required": true,
-    "primary_must_be_stopped": true,
+  "system_state": {
+    "volume_name": "system-state",
     "volume_access_mode": "ReadWriteOncePod",
-    "restore_requires_new_volume_identity": true,
+    "writer_identity": "system:serviceaccount:kapsel-sandbox-system:kapsel-sandbox",
+    "durable_paths": {
+      "admission_database": "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+      "receipt_directory": "/var/lib/kapsel-sandbox/receipts",
+      "ownership_metadata": "/var/lib/kapsel-sandbox/ownership"
+    },
+    "gateway_journals_forbidden": true
+  },
+  "per_run_gateway_journal": {
+    "volume_name_template": "journal-${RUN_ID}",
+    "volume_access_mode": "ReadWriteOncePod",
+    "mount_path": "/var/lib/kapsel-gateway/journal",
+    "one_volume_per_run": true,
+    "outside_target_namespace": true,
+    "writer_identity_template": "system:serviceaccount:kapsel-sandbox-runners:runner-${RUN_ID}",
+    "api_access": false,
+    "other_runner_access": false,
+    "target_workload_access": false,
+    "survives_runner_replacement": true,
+    "cloning_as_runnable_state_forbidden": true
+  },
+  "single_writer_fence": {
+    "required_for_system_state_and_each_run_journal": true,
+    "primary_must_be_stopped": true,
+    "restore_requires_new_volume_identities": true,
     "concurrent_mount_is_failure": true
   },
-  "durable_paths": {
-    "admission_database": "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
-    "receipt_directory": "/var/lib/kapsel-sandbox/receipts",
-    "journal_root": "/var/lib/kapsel-sandbox/journals",
-    "ownership_metadata": "/var/lib/kapsel-sandbox/ownership"
-  },
   "backup_set": [
-    "admission_database",
-    "receipt_directory",
-    "journal_root",
-    "ownership_metadata"
+    "system_state",
+    "active_run_gateway_journals"
   ],
   "backup_protocol": [
-    "activate_global_stop",
-    "stop_api_scheduler_runner_cleanup_writers",
-    "prove_primary_processes_absent",
-    "snapshot_one_fenced_static_volume",
-    "record_snapshot_digest_and_source_volume_identity",
-    "expire_snapshot_no_later_than_source_data",
-    "restart_primary_or_restore_to_one_new_fenced_volume"
+    "activate_global_stop_using_admission_database_only",
+    "pause_new_dispatch_and_cleanup_without_advancing_any_run_lifecycle",
+    "record_one_backup_generation_and_each_exact_lifecycle_seam_in_system_state",
+    "freeze_active_run_journal_receipt_reference_ownership_and_capacity_inventory",
+    "quiesce_api_scheduler_cleanup_and_each_exact_runner_without_execute_reconcile_or_lifecycle_advance",
+    "checkpoint_and_fsync_each_store_while_still_mounted_only_by_its_quiesced_exact_writer",
+    "prove_every_writer_acknowledged_quiescence_then_stop_all_write_capable_processes",
+    "prove_every_source_volume_detached_after_checkpoint_and_fsync",
+    "snapshot_system_state_volume_and_each_inventoried_active_run_journal_volume",
+    "record_snapshot_ids_source_volume_identities_content_digests_and_captured_lifecycle_seams",
+    "reject_incomplete_mixed_generation_or_seam_drifted_backup_sets",
+    "expire_each_snapshot_no_later_than_its_source_data",
+    "restart_only_after_the_complete_generation_is_recorded_or_keep_global_stop_for_operator_review"
+  ],
+  "fixed_backup_seams": [
+    "durable_admission_before_dispatch",
+    "after_dispatch_before_apply_started",
+    "after_apply_started_including_ambiguous_provider_window",
+    "receiver_terminal_before_immutable_receipt_publication",
+    "before_and_after_receipt_reference_publication",
+    "during_uid_safe_cleanup"
   ],
   "restore_protocol": [
-    "activate_global_stop",
-    "prove_original_writer_destroyed",
-    "attach_restored_volume_to_exactly_one_writer",
+    "activate_global_stop_using_admission_database_only",
+    "select_one_complete_backup_generation_manifest",
+    "prove_original_writers_absent_and_original_volumes_detached",
+    "restore_system_state_and_each_active_run_journal_to_distinct_new_volume_identities",
+    "bind_system_state_to_only_the_system_identity",
+    "bind_each_journal_to_only_its_recorded_exact_runner_identity",
     "reapply_retention_before_readiness",
-    "recover_same_run_operation_journal_and_capacity_identity",
+    "recover_each_same_run_operation_journal_and_capacity_identity",
     "verify_receipt_bytes_and_uid_owner_metadata",
+    "prove_no_second_mount_or_runnable_journal_clone",
     "keep_global_stop_until_operator_review"
   ],
   "retention_seconds": {
@@ -42,12 +75,44 @@
     "tombstone_after_public_expiry": 86400,
     "backup_maximum_age": 86400,
     "operator_diagnostics_maximum_age": 86400,
-    "raw_evidence_maximum_age": 86400,
-    "terminal_journal_after_terminal_projection": 3600
+    "raw_evidence_maximum_age": 86400
+  },
+  "gateway_journal_terminal_paths": {
+    "receiver_result": {
+      "delete_within_seconds_after_all": 3600,
+      "required_facts": [
+        "kapsel_finalized",
+        "public_report_projection_durable",
+        "frozen_receipt_bytes_verified_in_receipt_storage"
+      ]
+    },
+    "not_attempted": {
+      "delete_within_seconds_after_all": 3600,
+      "required_facts": [
+        "terminal_rejection_projection_durable",
+        "cleanup_ownership_handed_off"
+      ],
+      "receipt_required": false
+    },
+    "pre_application_service_failed": {
+      "delete_empty_allocated_volume_within_seconds_after_all": 3600,
+      "required_facts": [
+        "application_invocation_proven_absent",
+        "terminal_service_failed_projection_durable",
+        "cleanup_ownership_handed_off"
+      ],
+      "gateway_journal_required": false
+    },
+    "unresolved_recovery": {
+      "may_outlive_public_expiry": true,
+      "delete_before_terminal_path_forbidden": true,
+      "cleanup_completion_does_not_extend_retention": true
+    }
   },
   "unproved_until_gate_2_or_3": [
     "storage_class_support",
-    "snapshot_atomicity",
+    "snapshot_consistency_is_unproved",
+    "multi_volume_backup_generation_enforcement",
     "primary_fencing_enforcement",
     "restore_mount_exclusion",
     "provider_backup_expiry"

@@ -62,7 +62,7 @@
             },
             "volumeMounts": [
               {
-                "name": "durable-state",
+                "name": "system-state",
                 "mountPath": "/var/lib/kapsel-sandbox"
               },
               {
@@ -122,7 +122,7 @@
             },
             "volumeMounts": [
               {
-                "name": "durable-state",
+                "name": "system-state",
                 "mountPath": "/var/lib/kapsel-sandbox"
               },
               {
@@ -147,7 +147,7 @@
     "volumeClaimTemplates": [
       {
         "metadata": {
-          "name": "durable-state"
+          "name": "system-state"
         },
         "spec": {
           "accessModes": [

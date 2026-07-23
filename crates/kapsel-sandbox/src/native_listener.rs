@@ -73,9 +73,16 @@ fn handle_connection(mut stream: TcpStream, service: Arc<Service>, in_flight: Ar
         in_flight.fetch_sub(1, Ordering::AcqRel);
         let _ = sender.send(response);
     });
-    if let Ok(response) = receiver.recv_timeout(HANDLE_TIMEOUT) {
+    if let Some(response) = await_response(&receiver, HANDLE_TIMEOUT) {
         let _ = write_response(&mut stream, response);
     }
+}
+
+fn await_response(
+    receiver: &std::sync::mpsc::Receiver<Response<Vec<u8>>>,
+    timeout: Duration,
+) -> Option<Response<Vec<u8>>> {
+    receiver.recv_timeout(timeout).ok()
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<Request<Vec<u8>>, ParseFailure> {
@@ -253,8 +260,19 @@ enum ParseFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_length, find_head_end, try_acquire};
-    use std::sync::atomic::AtomicUsize;
+    use super::{
+        await_response, content_length, find_head_end, try_acquire, CONNECTIONS_MAX,
+        HANDLE_TIMEOUT, IN_FLIGHT_MAX, RECEIVE_TIMEOUT,
+    };
+    use http::Response;
+    use std::{
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        },
+        thread,
+        time::Duration,
+    };
 
     #[test]
     fn raw_bounds_helpers_fail_closed() {
@@ -273,5 +291,37 @@ mod tests {
         let counter = AtomicUsize::new(0);
         assert!(try_acquire(&counter, 1));
         assert!(!try_acquire(&counter, 1));
+    }
+
+    #[test]
+    fn counters_enforce_exact_connection_and_in_flight_maxima() {
+        assert_eq!(CONNECTIONS_MAX, 128);
+        assert_eq!(IN_FLIGHT_MAX, 64);
+        assert_eq!(RECEIVE_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(HANDLE_TIMEOUT, Duration::from_secs(30));
+        for maximum in [CONNECTIONS_MAX, IN_FLIGHT_MAX] {
+            let counter = AtomicUsize::new(0);
+            for _ in 0..maximum {
+                assert!(try_acquire(&counter, maximum));
+            }
+            assert!(!try_acquire(&counter, maximum));
+            counter.fetch_sub(1, Ordering::AcqRel);
+            assert!(try_acquire(&counter, maximum));
+        }
+    }
+
+    #[test]
+    fn response_wait_timeout_does_not_cancel_continuing_service_work() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let completed = Arc::new(AtomicBool::new(false));
+        let child_completed = Arc::clone(&completed);
+        let child = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            child_completed.store(true, Ordering::Release);
+            let _ = sender.send(Response::new(Vec::new()));
+        });
+        assert!(await_response(&receiver, Duration::from_millis(1)).is_none());
+        child.join().unwrap();
+        assert!(completed.load(Ordering::Acquire));
     }
 }

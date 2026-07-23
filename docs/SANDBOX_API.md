@@ -52,13 +52,15 @@ Unicode only where explicitly stated; identifiers and enum tokens are ASCII. Res
 ambient locale.
 
 The native service enforces these limits without relying on the optional edge: request line at most
-512 bytes; at most 16 headers and 8 KiB aggregate header bytes; each header value at most 256 bytes;
-at most 128 open connections and 64 in-flight requests; five seconds to receive request headers,
-five seconds to receive the bounded body, 30 seconds total request handling, and five seconds idle
-keep-alive. Crossing a byte/time/concurrency bound is rejected or closes the connection before
-admission and emits no reflected input. HTTP/2 limits are equivalent per connection and stream.
-These transport limits do not reserve or release scheduler capacity and cannot become receiver
-outcomes.
+512 bytes; at most 16 headers and an 8 KiB complete request head; each header value at most 256
+bytes; at most 128 open connections and 64 in-flight requests; five seconds to receive request
+headers, five seconds to receive the bounded body, 30 seconds for the native HTTP connection to
+await the service response. Crossing a byte/time/concurrency bound is rejected or closes the
+connection and emits no reflected input. A connection wait timeout does not cancel or terminate a
+service operation that already began. These transport limits do not reserve or release scheduler
+capacity and cannot become receiver outcomes. HTTP/2, if later implemented, must enforce equivalent
+limits per connection and stream; the current native listener is HTTP/1.1 and closes every
+connection after one response.
 
 ## Routes
 

@@ -428,6 +428,30 @@ pub struct Service {
     origin: String,
 }
 
+/// Commits the operator-owned admission stop using only the existing private admission database.
+///
+/// This path deliberately does not open receipt storage, load key material, run retention, or
+/// initialize/migrate service state. It therefore remains available when those dependencies fail.
+///
+/// # Errors
+///
+/// Returns [`ServiceError::Unavailable`] unless the existing owner-private database and singleton
+/// control row can be opened, updated, and read back safely.
+pub fn set_global_stop(database_path: impl AsRef<Path>, stopped: bool) -> Result<(), ServiceError> {
+    let database_path = database_path.as_ref();
+    if !database_path.is_absolute() {
+        return Err(ServiceError::Unavailable);
+    }
+    let database_name = database_path.file_name().ok_or(ServiceError::Unavailable)?;
+    let database_parent =
+        fs::canonicalize(database_path.parent().ok_or(ServiceError::Unavailable)?)
+            .map_err(|_| ServiceError::Unavailable)?;
+    validate_private_directory(&database_parent)?;
+    let database_path = database_parent.join(database_name);
+    let connection = open_database_connection(&database_path)?;
+    commit_global_stop(&connection, stopped)
+}
+
 impl Service {
     /// Opens a sandbox store separate from every KAP-0038 gateway journal.
     ///
@@ -531,26 +555,7 @@ impl Service {
     /// Returns [`ServiceError::Unavailable`] when the stop state cannot be committed.
     pub fn set_global_stop(&self, stopped: bool) -> Result<(), ServiceError> {
         let connection = self.connection()?;
-        let changed = connection
-            .execute(
-                "UPDATE service_state SET stopped = ?1 WHERE singleton = 1",
-                [stopped],
-            )
-            .map_err(storage_error)?;
-        if changed != 1 {
-            return Err(ServiceError::Unavailable);
-        }
-        let committed: bool = connection
-            .query_row(
-                "SELECT stopped FROM service_state WHERE singleton = 1",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)?;
-        if committed != stopped {
-            return Err(ServiceError::Unavailable);
-        }
-        Ok(())
+        commit_global_stop(&connection, stopped)
     }
 
     /// Returns the oldest queued run while atomically reserving active capacity and a lease.
@@ -1553,21 +1558,7 @@ impl Service {
     }
 
     fn connection(&self) -> Result<Connection, ServiceError> {
-        let before = validate_database_file(&self.database_path)?;
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let connection =
-            Connection::open_with_flags(&self.database_path, flags).map_err(storage_error)?;
-        let after = validate_database_file(&self.database_path)?;
-        if before != after {
-            return Err(ServiceError::Unavailable);
-        }
-        connection
-            .execute_batch("PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;")
-            .map_err(storage_error)?;
-        Ok(connection)
+        open_database_connection(&self.database_path)
     }
 
     #[allow(
@@ -3304,6 +3295,46 @@ fn validate_private_directory(path: &Path) -> Result<(), ServiceError> {
     } else {
         Err(ServiceError::Unavailable)
     }
+}
+
+fn open_database_connection(database_path: &Path) -> Result<Connection, ServiceError> {
+    let before = validate_database_file(database_path)?;
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
+        | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    let connection = Connection::open_with_flags(database_path, flags).map_err(storage_error)?;
+    let after = validate_database_file(database_path)?;
+    if before != after {
+        return Err(ServiceError::Unavailable);
+    }
+    connection
+        .execute_batch("PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;")
+        .map_err(storage_error)?;
+    Ok(connection)
+}
+
+fn commit_global_stop(connection: &Connection, stopped: bool) -> Result<(), ServiceError> {
+    let changed = connection
+        .execute(
+            "UPDATE service_state SET stopped = ?1 WHERE singleton = 1",
+            [stopped],
+        )
+        .map_err(storage_error)?;
+    if changed != 1 {
+        return Err(ServiceError::Unavailable);
+    }
+    let committed: bool = connection
+        .query_row(
+            "SELECT stopped FROM service_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if committed != stopped {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(())
 }
 
 fn storage_error(_: rusqlite::Error) -> ServiceError {

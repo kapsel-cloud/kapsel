@@ -1,0 +1,55 @@
+{
+  "api_version": "kapsel.sandbox.gate1/v1",
+  "request_username": "system:serviceaccount:kapsel-sandbox-system:sandbox-scheduler",
+  "matched_kind": "Pod",
+  "matched_namespace": "kapsel-sandbox-runners",
+  "required_run_label": "kapsel.dev/sandbox-run-id",
+  "required_storage_purpose": "gateway-journal-writer",
+  "exact_relationships": {
+    "pod_name": "runner-${RUN_ID}",
+    "service_account_name": "runner-${RUN_ID}",
+    "claim_name": "journal-${RUN_ID}",
+    "container_name": "native-runner",
+    "volume_name": "gateway-journal",
+    "mount_path": "/var/lib/kapsel-gateway/journal"
+  },
+  "exact_workload": {
+    "runtime_class_name": "${GATE2_RUNTIME_CLASS}",
+    "restart_policy": "Never",
+    "container_image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+    "container_arguments": [
+      "${GATE2_RUNNER_SUBCOMMAND}"
+    ],
+    "pod_security_context": {
+      "runAsNonRoot": true,
+      "runAsUser": 65532,
+      "runAsGroup": 65532,
+      "fsGroup": 65532,
+      "seccompProfile": {
+        "type": "RuntimeDefault"
+      }
+    },
+    "container_security_context": {
+      "allowPrivilegeEscalation": false,
+      "capabilities": {
+        "drop": [
+          "ALL"
+        ]
+      },
+      "readOnlyRootFilesystem": true,
+      "runAsNonRoot": true
+    }
+  },
+  "requirements": {
+    "automount_service_account_token": false,
+    "exactly_one_container": true,
+    "exactly_one_volume": true,
+    "exactly_one_volume_mount": true,
+    "claim_read_only": false,
+    "mount_read_only": false,
+    "system_state_mount_forbidden": true,
+    "target_namespace_forbidden": true,
+    "deny_unknown_journal_mount": true
+  },
+  "enforcement_status": "normalized_gate1_model_live_kubernetes_admission_unproved"
+}
