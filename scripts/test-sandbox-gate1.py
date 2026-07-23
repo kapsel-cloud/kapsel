@@ -320,9 +320,11 @@ def prove_storage_and_lock() -> None:
     assert journal["runner_pod_template"]["spec"]["serviceAccountName"] == "runner-${RUN_ID}"
     assert journal["authorized_mount"]["namespace"] != journal["target_namespace_template"]
     assert journal["forbidden_consumers"] == ["native-api", "other-runner", "target-workload"]
-    assert lock["gate1_execution_revision"] is None
-    assert lock["gate1_local_image_id"] is None
-    assert lock["correction_status"] == "uncommitted_revision_and_rebuild_required"
+    assert len(lock["gate1_execution_revision"]) == 40
+    assert lock["gate1_local_image_id"].startswith("sha256:")
+    assert len(lock["gate1_local_image_id"]) == 71
+    assert lock["local_image_platform"] in {"linux/amd64", "linux/arm64"}
+    assert lock["correction_status"] == "evidence_recorded_pending_independent_review"
     superseded = lock["superseded_gate1_evidence"]
     assert len(superseded["execution_revision"]) == 40
     assert superseded["local_image_id"].startswith("sha256:")

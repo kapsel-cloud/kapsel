@@ -23,9 +23,10 @@ Run the offline evidence lane with:
 cargo make test-sandbox-gate1
 ```
 
-The current lock intentionally leaves the correction revision and image ID null. The superseded
-revision/image remain historical evidence only; a corrected commit and rebuild are required before
-Gate 1 can be accepted again.
+The lock records correction revision `6949ebfa35fae63cd20ca4f24e9e116004d1fdbe` and the local
+`linux/arm64` image rebuilt from that clean revision. The superseded revision/image remain
+historical evidence only. This native image is not registry provenance, multi-architecture evidence,
+or Gate 1 acceptance; independent evidence review remains required.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
 `${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`, and the
