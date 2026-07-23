@@ -25,8 +25,9 @@ cargo make test-sandbox-gate1
 
 The lock records correction revision `6949ebfa35fae63cd20ca4f24e9e116004d1fdbe` and the local
 `linux/arm64` image rebuilt from that clean revision. The superseded revision/image remain
-historical evidence only. This native image is not registry provenance, multi-architecture evidence,
-or Gate 1 acceptance; independent evidence review remains required.
+historical evidence only. Independent review reproduced the clean execution-revision build with the
+same image ID and accepted the corrected Gate 1 evidence. This native image remains local build
+evidence, not registry provenance, multi-architecture evidence, or any live Gate 2/3 proof.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
 `${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`, and the

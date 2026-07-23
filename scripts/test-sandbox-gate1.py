@@ -320,11 +320,15 @@ def prove_storage_and_lock() -> None:
     assert journal["runner_pod_template"]["spec"]["serviceAccountName"] == "runner-${RUN_ID}"
     assert journal["authorized_mount"]["namespace"] != journal["target_namespace_template"]
     assert journal["forbidden_consumers"] == ["native-api", "other-runner", "target-workload"]
-    assert len(lock["gate1_execution_revision"]) == 40
-    assert lock["gate1_local_image_id"].startswith("sha256:")
-    assert len(lock["gate1_local_image_id"]) == 71
-    assert lock["local_image_platform"] in {"linux/amd64", "linux/arm64"}
-    assert lock["correction_status"] == "evidence_recorded_pending_independent_review"
+    assert lock["gate1_execution_revision"] == "6949ebfa35fae63cd20ca4f24e9e116004d1fdbe"
+    assert lock["gate1_local_image_id"] == (
+        "sha256:5e0c30bb4a73b3e3ca460c11f035c5a8d9f840d8341af4b89834629fbc49e843"
+    )
+    assert lock["local_image_platform"] == "linux/arm64"
+    assert lock["correction_status"] == "accepted_after_independent_review"
+    assert lock["independently_reviewed_evidence_revision"] == (
+        "c9cecbd108277f665126f4ceb459770b7e6cee38"
+    )
     superseded = lock["superseded_gate1_evidence"]
     assert len(superseded["execution_revision"]) == 40
     assert superseded["local_image_id"].startswith("sha256:")
@@ -335,6 +339,15 @@ def prove_storage_and_lock() -> None:
         "docker build --pull=false -f deploy/sandbox/Containerfile "
         "-t kapsel-sandbox:gate1 ."
     )
+    assert lock["gate1_non_claims"] == [
+        "no_provider_selected",
+        "no_provider_credentials_or_resources",
+        "no_managed_key_custody",
+        "no_live_isolation_or_policy_enforcement",
+        "no_backup_or_restore_enforcement",
+        "no_endpoint_or_public_traffic",
+        "no_bounded_cost",
+    ]
     assert lock["fixed_limits"] == {
         "queued_runs": 32,
         "active_runs": 8,
