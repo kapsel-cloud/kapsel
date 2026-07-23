@@ -26,8 +26,9 @@ cargo make test-sandbox-gate1
 
 The lock preserves the two superseded revision/image records and records runner-composition revision
 `bd67be9b469672b895a6214322b4dc7ff942da33` with its clean local `linux/arm64` image
-`sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480`. Independent evidence
-review remains required before Gate 1 can be accepted.
+`sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480`. Independent review of
+evidence revision `e757ce0adbc79d2f36209155149f03506f93e69b` recomputed the fixture digest, reran
+the focused gate, reproduced the exact clean image build, and accepted corrected Gate 1 evidence.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
 `${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`,

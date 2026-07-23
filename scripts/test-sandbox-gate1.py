@@ -430,8 +430,10 @@ def prove_storage_and_lock() -> None:
         "sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480"
     )
     assert lock["local_image_platform"] == "linux/arm64"
-    assert lock["correction_status"] == "evidence_recorded_pending_independent_review"
-    assert lock["independently_reviewed_evidence_revision"] is None
+    assert lock["correction_status"] == "accepted_after_independent_review"
+    assert lock["independently_reviewed_evidence_revision"] == (
+        "e757ce0adbc79d2f36209155149f03506f93e69b"
+    )
     superseded = lock["superseded_gate1_evidence"]
     assert len(superseded) == 2
     assert all(len(item["execution_revision"]) == 40 for item in superseded)
