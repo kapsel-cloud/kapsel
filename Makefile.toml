@@ -235,6 +235,10 @@ args = [
   ".",
 ]
 
+[tasks.test-sandbox-gate2-image-candidate]
+description = "Build and inspect the pre-authorization amd64 Gate 2 image candidate"
+command = "./scripts/test-sandbox-gate2-image-candidate.sh"
+
 [tasks.test-sandbox-package-boundary]
 description = "Prove the one-way sandbox dependency and deletion boundary"
 command = "./scripts/test-sandbox-package-boundary.py"

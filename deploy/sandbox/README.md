@@ -38,8 +38,13 @@ Composition evidence.
 and `GATE2` machine identifiers remain stable compatibility names. Infrastructure Enforcement Proof
 (Gate 2) must authorize and lock those values and replace the unimplemented runner placeholder
 before rendering or provisioning. The templates create no public Service or ingress. The container
-image uses the already locked repository builder image; Infrastructure Enforcement Proof must review
-runtime size and vulnerability evidence before selection.
+Authority Composition's historical image uses the already locked repository builder image. The
+separate `Containerfile.gate2-candidate` is pre-authorization source/config evidence for an exact
+`linux/amd64` Distroless runtime and does not replace the Gate 1 lock. Run
+`cargo make test-sandbox-gate2-image-candidate` to verify the runtime signature, process boundary,
+64 MiB size ceiling, and a time-bound Trivy `HIGH`/`CRITICAL` scan without provider access. The
+result is still not a registry digest, selected runtime, or Infrastructure Enforcement
+authorization.
 
 The raw signing boundary accepts only an exact 32-byte Ed25519 seed. The RFC 8032 seed/public-key/
 signature known-answer test and a production `Application` receipt inspected through

@@ -91,6 +91,21 @@ This uses the pinned builder/runtime base and no provider account. A local image
 working-tree build completed; it is not registry provenance, byte-for-byte reproducibility, a
 vulnerability result, a selected runtime, or deployment evidence.
 
+Build and inspect the separate pre-authorization `linux/amd64` Infrastructure Enforcement image
+candidate with:
+
+```sh
+cargo make test-sandbox-gate2-image-candidate
+```
+
+This Docker-only lane verifies the pinned Distroless runtime signature with Cosign, builds the
+native binary for `linux/amd64`, checks its no-argument process boundary, rejects an image larger
+than 64 MiB, and uses Trivy to reject detected `HIGH` or `CRITICAL` package vulnerabilities. It
+requires Docker, Cosign, Trivy, and their network-fetched signature/transparency and vulnerability
+data. It creates no provider resource and is not part of the deterministic default gate. A passing
+local scan is time-bound input evidence, not registry provenance, runtime compatibility, absence of
+unknown vulnerabilities, or authorization for Infrastructure Enforcement.
+
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:
