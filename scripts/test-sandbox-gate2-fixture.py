@@ -35,7 +35,8 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     status = candidate["status"]
     require(status["kind"] == "authorization_candidate", "candidate kind")
     require(status["execution_authorized"] is False, "execution must remain unauthorized")
-    require(status["fixture_revision"] is None, "fixture revision is an execution blocker")
+    require(status["fixture_revision"] == "54e9907299041f69ead69631e0d00b77f1b1de64", "fixture source revision")
+    require(candidate["reproduction_lock"]["fixture_source_digest"] == "sha256:5642204b21e10ab54441a03af6bca587743760afba2fcb4329821e221c2f6c5d", "fixture source digest")
     require(set(status["forbidden_without_later_approval"]) == {
         "provider_mutation",
         "credential_use",
@@ -337,7 +338,7 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require({"load-balancer", "public-address", "cloud-nat", "internet-egress"}.issubset(cost["forbidden_unpriced_classes"]), "unpriced class denial")
 
     blockers = set(candidate["execution_blockers"])
-    require({"fixture_revision", "registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "secret_version_identities", "one_day_configurable_log_physical_deletion_proof", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
+    require({"registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "secret_version_identities", "one_day_configurable_log_physical_deletion_proof", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
     require(candidate["reproduction_lock"]["registry_digest"] is None, "registry digest blocker")
     require("no_gate2_authorization" in candidate["non_claims"], "Gate 2 non-claim")
 

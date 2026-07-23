@@ -52,9 +52,9 @@ Enforcement authorization.
 `gate2-gke-storage-class.json` is its proposed regional Persistent Disk CSI class. Run
 `cargo make test-sandbox-gate2-fixture` to check the exact tuple, node arithmetic, placeholders,
 storage, key roles, audit/retention split, inventory, command previews, teardown coverage, costs,
-stop conditions, and non-claims without invoking a provider. Null fixture revision, registry digest,
-private approval bindings, Kubernetes audience, runner subcommand, and secret versions deliberately
-keep execution blocked.
+stop conditions, and non-claims without invoking a provider. The fixture records its reviewed source
+revision and digest; null registry digest, private approval bindings, Kubernetes audience, runner
+subcommand, and secret versions still keep execution blocked.
 
 The raw signing boundary accepts only an exact 32-byte Ed25519 seed. The RFC 8032 seed/public-key/
 signature known-answer test and a production `Application` receipt inspected through

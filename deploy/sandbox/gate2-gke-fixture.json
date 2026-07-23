@@ -3,7 +3,7 @@
   "status": {
     "kind": "authorization_candidate",
     "execution_authorized": false,
-    "fixture_revision": null,
+    "fixture_revision": "54e9907299041f69ead69631e0d00b77f1b1de64",
     "forbidden_without_later_approval": [
       "provider_mutation",
       "credential_use",
@@ -26,7 +26,8 @@
       "--short"
     ],
     "dependency_lock": "Cargo.lock",
-    "registry_digest": null
+    "registry_digest": null,
+    "fixture_source_digest": "sha256:5642204b21e10ab54441a03af6bca587743760afba2fcb4329821e221c2f6c5d"
   },
   "private_authorization_binding": {
     "account_binding_digest": null,
@@ -1634,7 +1635,6 @@
     "reject_if_repriced_gross_ceiling_exceeds_usd": 100
   },
   "execution_blockers": [
-    "fixture_revision",
     "registry_digest",
     "private_account_binding",
     "cleanup_owner_binding",
