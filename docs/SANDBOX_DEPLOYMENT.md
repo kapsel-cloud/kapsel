@@ -116,7 +116,7 @@ EKS Pods on AWS Fargate is rejected at the document screen. AWS states that Amaz
 limited to EC2 Linux nodes and does not apply to Fargate nodes, while
 [AWS Fargate for EKS](https://docs.aws.amazon.com/eks/latest/userguide/fargate.html) does not
 support alternate CNIs. It therefore cannot satisfy this contract's mandatory enforced default-deny
-NetworkPolicy and must not consume a Gate 2 experiment.
+NetworkPolicy and must not consume an Infrastructure Enforcement Proof (Gate 2) experiment.
 
 Self-operated Kata Containers or a Firecracker-class runtime is held out of this finite experiment:
 it adds node image, runtime, kernel, CNI/CSI, patch, and recovery ownership before a managed
@@ -137,13 +137,19 @@ Deployment rollback applies to the Pod template in
 The cleanup and rollback experiments below test the wider owned state rather than inferring it from
 a delete request or Deployment revision.
 
-### Authorization gates
+### Proof stages and authorization gates
 
-The phases are fail-closed and separately approved:
+Each stage has a semantic proof name and retains its `Gate 0` through `Gate 4` ordinal as a stable
+compatibility alias for existing evidence, commands, and task history. Existing machine identifiers
+such as `gate1`, `test-sandbox-gate1`, and `GATE2_*` remain unchanged compatibility names. The proof
+name states what uncertainty the stage removes; the gate records what risk may be authorized next.
+Clearing one stage never authorizes its successor.
 
-- **Gate 0 — planning:** source and official-document review only. No external authority or resource
-  is needed. This is the current KAP-0053 phase.
-- **Gate 1 — offline implementation:** a reviewed execution revision may add only the native
+The stages are fail-closed and separately approved:
+
+- **Contract Lock (Gate 0):** source and official-document review only. No external authority or
+  resource is needed. KAP-0053 completed this planning baseline before offline implementation.
+- **Authority Composition Proof (Gate 1):** a reviewed execution revision may add only the native
   listener/operator control, deployment fixture, local image build, evidence harness, durable
   store/static-volume and crash-consistent backup/restore composition, the operator-owned admission
   rule, retention/cleanup/stop configuration, and raw-seed key fixture needed by this contract. The
@@ -154,24 +160,24 @@ The phases are fail-closed and separately approved:
   UID, owner, resource version, every other annotation, every other container and image, and every
   other Pod-template or Deployment field must remain byte-identical. This operation-marker exception
   is required by the higher-authority KAP-0038 recovery contract; it authorizes no other metadata
-  mutation. Gate 1 proves this exact rule and the existing KAP-0038 known-answer path from an exact
-  32-byte exported seed through derived public key and pure Ed25519 signing input to the production
-  inspector. It proves no managed key custody. It still creates no provider resource and uses no
-  provider credential.
-- **Gate 2 — disposable provider experiment:** requires explicit approval of one candidate, account
-  and region, named cleanup owner, experiment expiration, maximum experiment spend, allowed billing
-  classes, key/data classification, and teardown command. Before candidate selection it must prove
-  the candidate's concrete grant, receipt, and tombstone key algorithms/interfaces, export format
-  where applicable, exact workload IAM, independent trust distribution, audit trail, and allowed and
-  denied access. Any exported Ed25519 material must be exactly the 32-byte seed, derive the locked
-  public key, sign the pure Ed25519 input, and verify with the production inspector. Credentials are
-  supplied only through the approved operator channel and are never committed. The cluster has no
-  public application endpoint and tests use an operator-controlled private access path.
-- **Gate 3 — destructive and restore faults:** requires confirmation that every target is synthetic
-  and disposable, backups are experiment-only, the global stop works, and the remaining approved
-  cost and cleanup window cover the fenced restore, key-outage, denial, restart, and rotation
-  matrix.
-- **Gate 4 — bounded public traffic:** is outside planning and remains blocked until the exact
+  mutation. This stage proves the exact rule and the existing KAP-0038 known-answer path from an
+  exact 32-byte exported seed through derived public key and pure Ed25519 signing input to the
+  production inspector. It proves no managed key custody. It still creates no provider resource and
+  uses no provider credential.
+- **Infrastructure Enforcement Proof (Gate 2):** requires explicit approval of one disposable
+  provider candidate, account and region, named cleanup owner, experiment expiration, maximum
+  experiment spend, allowed billing classes, key/data classification, and teardown command. Before
+  candidate selection it must prove the candidate's concrete grant, receipt, and tombstone key
+  algorithms/interfaces, export format where applicable, exact workload IAM, independent trust
+  distribution, audit trail, and allowed and denied access. Any exported Ed25519 material must be
+  exactly the 32-byte seed, derive the locked public key, sign the pure Ed25519 input, and verify
+  with the production inspector. Credentials are supplied only through the approved operator channel
+  and are never committed. The cluster has no public application endpoint and tests use an
+  operator-controlled private access path.
+- **Failure Recovery Proof (Gate 3):** requires confirmation that every target is synthetic and
+  disposable, backups are experiment-only, the global stop works, and the remaining approved cost
+  and cleanup window cover the fenced restore, key-outage, denial, restart, and rotation matrix.
+- **Bounded Public Exposure (Gate 4):** is outside planning and remains blocked until the exact
   deployment passes all lanes, committed evidence passes disclosure review, teardown/recreation
   succeeds, and an explicit residual-risk review approves one bounded endpoint revision.
 
@@ -215,20 +221,20 @@ candidate.
 
 The cost result states assumptions and raw quantities separately from rates. Budget alerts are
 observations, not synchronous admission bounds. Current rates must be captured from the selected
-provider's official pricing pages or machine-readable billing catalog at Gate 2; no planning-time
-price is treated as evidence.
+provider's official pricing pages or machine-readable billing catalog during Infrastructure
+Enforcement Proof (Gate 2); no planning-time price is treated as evidence.
 
-The existing package accepts local SQLite and receipt-directory paths, holds a private digest key in
-process memory, and composes `Application` with a raw Ed25519 receipt-signing seed. KAP-0053
-therefore still lacks a native listener binary, operator-only stop path, exact durable volume/store
-composition, backup route, operator-owned patch admission, and proven managed key-custody fit. Gate
-1 must resolve the offline composition gaps and prove only the raw-seed known-answer fixture and
-stop condition, without creating a generic storage or provider interface or claiming managed
-custody. Gates 2 and 3 must prove the candidate's concrete custody compatibility, access denials,
-outage, audit, independent trust, rotation, restart, and continuity before selection. If no
-candidate can give the existing interface a narrow export boundary, or if non-export signing
-requires changing receipt construction, work stops for contract and interface review rather than
-silently weakening custody.
+At the Contract Lock baseline, the existing package accepted local SQLite and receipt-directory
+paths, held a private digest key in process memory, and composed `Application` with a raw Ed25519
+receipt-signing seed. Authority Composition Proof later added the native listener, operator-only
+stop path, exact provider-neutral durable volume/store composition, backup route, and operator-owned
+patch admission. It proved only the raw-seed known-answer fixture and stop condition, without
+creating a generic storage or provider interface or claiming managed custody. Infrastructure
+Enforcement and Failure Recovery Proofs must prove the candidate's concrete custody compatibility,
+access denials, outage, audit, independent trust, rotation, restart, and continuity before
+selection. If no candidate can give the existing interface a narrow export boundary, or if
+non-export signing requires changing receipt construction, work stops for contract and interface
+review rather than silently weakening custody.
 
 ### Selection record and missing evidence
 
@@ -238,11 +244,11 @@ and an approved residual-risk review. The selection record states why each other
 was not needed or which mandatory criterion it failed; it publishes no private commercial or
 organizational rationale.
 
-At this planning revision there is no live evidence for runtime/CNI isolation, metadata denial,
-Kubernetes authority scope, durable volume or backup behavior, key compatibility or non-export,
-restore, deletion under finalizers, rollback, global stop under dependency loss, saturation, costs,
-or exact recreation. No provider is selected, no isolation is claimed, and no public traffic is
-unblocked.
+After accepted Authority Composition, there is still no live evidence for runtime/CNI isolation,
+metadata denial, Kubernetes authority scope, durable volume or backup behavior, key compatibility or
+non-export, restore, deletion under finalizers, rollback, global stop under dependency loss,
+saturation, costs, or exact recreation. No provider is selected, no isolation is claimed, and no
+public traffic is unblocked.
 
 ## Ownership matrix
 

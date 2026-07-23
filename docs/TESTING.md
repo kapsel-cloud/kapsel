@@ -234,26 +234,27 @@ lifecycle events. Package-private receipt tests also consume the committed class
 receipt fixture. No test exposes sandbox state, reuses the KAP-0038 journal as its run database, or
 presents deterministic orchestration as live cluster/isolation evidence.
 
-KAP-0053 Gate 1 adds a separate provider-neutral offline lane. Black-box socket/process tests cross
-the production native HTTP/1.1 executable, request-line/header/body framing bounds, receive
-timeouts, idempotent replay, and the non-public durable stop/clear commands. Exact-limit cases cover
-the request line, request head, header count/value, and body. Listener-local tests exercise exact
-connection/in-flight counters and prove that a bounded response-wait timeout does not cancel the
-continuing worker; the production path then returns and closes that connection. Stop/clear tests
-remove receipt and key availability before proving that only the existing private admission database
-and singleton control row are required. A normalized-object adversarial harness accepts only the
-selected named-container image plus required KAP-0038 operation annotation under exact frozen
-preconditions and rejects every other tested Deployment mutation. The same lane locks distinct
-system state and one owner-private `ReadWriteOncePod` gateway-state volume per active run; one
-runner identity across mount, target RoleBinding, and patch admission; exactly one
-owner/channel/path for every `OperatorConfiguration` input; and read-only projected Kubernetes,
-authorization, signing, composition, and receipt-handoff channels. The normalized mount harness
-compares the complete rendered Pod and rejects command, argument, environment, projection, security,
-volume, mount, and undeclared-field changes. It also locks the fenced multi-volume backup-generation
-protocol and verifies the RFC 8032 raw 32-byte seed known answer plus an `Application` receipt
-through the production inspector. These are implementation and fixture proofs only: they do not
-establish the runner subcommand, real Kubernetes admission, runtime/CNI denial, volume or snapshot
-fencing, restore, managed custody, handoff, provider cost, endpoint safety, or live reproducibility.
+KAP-0053 Authority Composition Proof (Gate 1) adds a separate provider-neutral offline lane.
+Black-box socket/process tests cross the production native HTTP/1.1 executable,
+request-line/header/body framing bounds, receive timeouts, idempotent replay, and the non-public
+durable stop/clear commands. Exact-limit cases cover the request line, request head, header
+count/value, and body. Listener-local tests exercise exact connection/in-flight counters and prove
+that a bounded response-wait timeout does not cancel the continuing worker; the production path then
+returns and closes that connection. Stop/clear tests remove receipt and key availability before
+proving that only the existing private admission database and singleton control row are required. A
+normalized-object adversarial harness accepts only the selected named-container image plus required
+KAP-0038 operation annotation under exact frozen preconditions and rejects every other tested
+Deployment mutation. The same lane locks distinct system state and one owner-private
+`ReadWriteOncePod` gateway-state volume per active run; one runner identity across mount, target
+RoleBinding, and patch admission; exactly one owner/channel/path for every `OperatorConfiguration`
+input; and read-only projected Kubernetes, authorization, signing, composition, and receipt-handoff
+channels. The normalized mount harness compares the complete rendered Pod and rejects command,
+argument, environment, projection, security, volume, mount, and undeclared-field changes. It also
+locks the fenced multi-volume backup-generation protocol and verifies the RFC 8032 raw 32-byte seed
+known answer plus an `Application` receipt through the production inspector. These are
+implementation and fixture proofs only: they do not establish the runner subcommand, real Kubernetes
+admission, runtime/CNI denial, volume or snapshot fencing, restore, managed custody, handoff,
+provider cost, endpoint safety, or live reproducibility.
 
 KAP-0053 owns separate live lanes against one exact deployed revision:
 

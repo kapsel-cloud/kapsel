@@ -67,7 +67,7 @@ retention, and cleanup. The boundary script also compiles the ordinary root pack
 copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
 website, or deployment provider; KAP-0053 owns those live properties.
 
-Run the KAP-0053 Gate 1 provider-neutral execution fixture with:
+Run the KAP-0053 Authority Composition Proof (Gate 1) provider-neutral execution fixture with:
 
 ```sh
 cargo make test-sandbox-gate1
@@ -75,10 +75,11 @@ cargo make test-sandbox-gate1
 
 It adds the native HTTP/1.1 process and private operator stop black-box tests, exact normalized
 Deployment-transition denial matrix, single-writer storage/backup composition lock, raw 32-byte
-Ed25519 known-answer and production-inspector path, and Gate 1 non-claim checks. It does not build
-or provision provider resources, exercise Kubernetes admission, prove snapshot fencing or managed
-key custody, publish an endpoint, or send public traffic. The image and storage-class template
-values remain intentionally blocked for Gate 2 authorization.
+Ed25519 known-answer and production-inspector path, and Authority Composition non-claim checks. It
+does not build or provision provider resources, exercise Kubernetes admission, prove snapshot
+fencing or managed key custody, publish an endpoint, or send public traffic. The image and
+storage-class template values remain intentionally blocked for Infrastructure Enforcement Proof
+(Gate 2) authorization.
 
 Build the locked local OCI image separately when Docker is available:
 

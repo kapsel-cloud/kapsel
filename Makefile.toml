@@ -217,13 +217,13 @@ command = "cargo"
 args = ["test", "--locked", "-p", "kapsel-sandbox"]
 
 [tasks.test-sandbox-gate1]
-description = "Run the provider-neutral KAP-0053 offline fixture and package proof"
+description = "Run the KAP-0053 Authority Composition Proof offline fixture"
 dependencies = ["test-sandbox-service"]
 command = "python3"
 args = ["scripts/test-sandbox-gate1.py"]
 
 [tasks.build-sandbox-gate1-image]
-description = "Build the locked local Gate 1 OCI image without provider access"
+description = "Build the locked Authority Composition OCI image without provider access"
 command = "docker"
 args = [
   "build",

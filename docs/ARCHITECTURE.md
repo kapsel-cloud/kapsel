@@ -135,11 +135,11 @@ The sandbox directly pins `http` for typed in-process translation, `httparse` fo
 HTTP/1.1 parsing without route duplication, `serde`/`serde_json` for exact bounded `v1` documents,
 `rusqlite` with bundled SQLite for one local transactional service store, `getrandom` for opaque
 128-bit run identities, `sha2` for exact receipt and keyed tombstone digests, and `rustix` for
-owner-private Unix path checks. It reuses no transitive dependency implicitly. KAP-0053 Gate 1 adds
-the package-local native process, private stop commands, provider-neutral exact-patch harness, and
-static-volume/backup composition lock. KAP-0053 still owns provider selection, live transport,
-durable-store placement and fencing, managed key custody, Kubernetes admission and isolation, and
-live cleanup proof.
+owner-private Unix path checks. It reuses no transitive dependency implicitly. KAP-0053 Authority
+Composition Proof (Gate 1) adds the package-local native process, private stop commands,
+provider-neutral exact-patch harness, and static-volume/backup composition lock. KAP-0053 still owns
+provider selection, live transport, durable-store placement and fencing, managed key custody,
+Kubernetes admission and isolation, and live cleanup proof.
 
 ## Failure structure
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the provider-neutral KAP-0053 Gate 1 fixture without infrastructure."""
+"""Validate the KAP-0053 Authority Composition Proof (Gate 1) without infrastructure."""
 
 from __future__ import annotations
 
@@ -518,7 +518,10 @@ def main() -> None:
     prove_journal_mount_rule()
     prove_operator_composition()
     prove_storage_and_lock()
-    print("sandbox Gate 1 offline fixture: ok (exact patch rule, storage lock, non-claims)")
+    print(
+        "sandbox Authority Composition Proof (Gate 1): ok "
+        "(exact patch rule, storage lock, non-claims)"
+    )
 
 
 if __name__ == "__main__":

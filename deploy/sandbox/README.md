@@ -1,4 +1,4 @@
-# KAP-0053 Gate 1 offline fixture
+# KAP-0053 Authority Composition Proof (Gate 1) fixture
 
 This provider-neutral fixture is an implementation input, not a deployment or live-proof record. It
 creates no account, credential, resource, endpoint, DNS change, spend, or traffic.
@@ -16,7 +16,8 @@ The fixture locks:
   Pod equality that rejects every undeclared field; and
 - a multi-volume backup-generation protocol that freezes the active journal inventory, quiesces and
   fences every exact writer, rejects incomplete or mixed generations, and leaves provider snapshot
-  consistency and enforcement as a Gate 2/3 experiment.
+  consistency and enforcement to Infrastructure Enforcement and Failure Recovery Proofs (Gates 2 and
+  3).
 
 Run the offline evidence lane with:
 
@@ -28,27 +29,30 @@ The lock preserves the two superseded revision/image records and records runner-
 `bd67be9b469672b895a6214322b4dc7ff942da33` with its clean local `linux/arm64` image
 `sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480`. Independent review of
 evidence revision `e757ce0adbc79d2f36209155149f03506f93e69b` recomputed the fixture digest, reran
-the focused gate, reproduced the exact clean image build, and accepted corrected Gate 1 evidence.
+the focused gate, reproduced the exact clean image build, and accepted corrected Authority
+Composition evidence.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
 `${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`,
-`${GATE2_KUBERNETES_AUDIENCE}`, and the provider-dependent runner subcommand. Gate 2 must authorize
-and lock those values and replace the unimplemented runner placeholder before rendering or
-provisioning. The templates create no public Service or ingress. The container image uses the
-already locked repository builder image; Gate 2 must review runtime size and vulnerability evidence
-before selection.
+`${GATE2_KUBERNETES_AUDIENCE}`, and the provider-dependent runner subcommand. The existing `gate1`
+and `GATE2` machine identifiers remain stable compatibility names. Infrastructure Enforcement Proof
+(Gate 2) must authorize and lock those values and replace the unimplemented runner placeholder
+before rendering or provisioning. The templates create no public Service or ingress. The container
+image uses the already locked repository builder image; Infrastructure Enforcement Proof must review
+runtime size and vulnerability evidence before selection.
 
 The raw signing boundary accepts only an exact 32-byte Ed25519 seed. The RFC 8032 seed/public-key/
 signature known-answer test and a production `Application` receipt inspected through
 `kapsel::inspect_receipt` prove the offline format path. They do not prove managed custody, workload
 IAM, audit, outage, rotation, backup, or deletion protection.
 
-The Gate 1 binary composes the native HTTP boundary and operator stop only. Stop and clear-stop open
-only the existing private admission database and its singleton row; receipt storage, tombstone-key
-availability, retention, and full service initialization are deliberately outside that emergency
-path. The binary does not yet launch the provider-dependent scheduler/runner, cleanup controller, or
-periodic retention loop; Gate 2 must compose those existing service operations with the selected
-Kubernetes, key, and storage identities before any deployment can be accepted.
+The Authority Composition binary composes the native HTTP boundary and operator stop only. Stop and
+clear-stop open only the existing private admission database and its singleton row; receipt storage,
+tombstone-key availability, retention, and full service initialization are deliberately outside that
+emergency path. The binary does not yet launch the provider-dependent scheduler/runner, cleanup
+controller, or periodic retention loop; Infrastructure Enforcement Proof must compose those existing
+service operations with the selected Kubernetes, key, and storage identities before any deployment
+can be accepted.
 
 The exact patch harness evaluates normalized Kubernetes Deployment objects. Live Kubernetes
 admission/audit enforcement, post-verification downgrade denial under the real runner identity,
