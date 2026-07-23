@@ -2,18 +2,26 @@
   "api_version": "kapsel.sandbox.gate1/v1",
   "accepted_service_base": "1726915942a95e63aca97d49d843b8d0728514da",
   "planning_revision": "fe4ca1edb68dd527bf4c6de185beecd6f540bb2d",
-  "gate1_execution_revision": "6949ebfa35fae63cd20ca4f24e9e116004d1fdbe",
-  "fixture_bundle_sha256": "0517af10df4d2af3c9e995cf8050216195a5b5440eb97dd4047c0d360f89f08e",
+  "gate1_execution_revision": null,
+  "fixture_bundle_sha256": "054dfc6c841e7635b64e82b68cf3ae1fe39c8b955cc7599bbe500d16c6fb568c",
   "local_image_build_command": "docker build --pull=false -f deploy/sandbox/Containerfile -t kapsel-sandbox:gate1 .",
-  "gate1_local_image_id": "sha256:5e0c30bb4a73b3e3ca460c11f035c5a8d9f840d8341af4b89834629fbc49e843",
-  "local_image_platform": "linux/arm64",
-  "correction_status": "accepted_after_independent_review",
-  "independently_reviewed_evidence_revision": "c9cecbd108277f665126f4ceb459770b7e6cee38",
-  "superseded_gate1_evidence": {
-    "execution_revision": "eb62a92e30cfa77863de2d3cee305b4224db2a2c",
-    "local_image_id": "sha256:08ced4f2100fd4eb956ec794fed6a46207b873870dab4738b542bc1b873a2675",
-    "reason": "shared_gateway_journal_topology_violated_deployment_contract"
-  },
+  "gate1_local_image_id": null,
+  "local_image_platform": null,
+  "correction_status": "runner_composition_correction_uncommitted",
+  "independently_reviewed_evidence_revision": null,
+  "superseded_gate1_evidence": [
+    {
+      "execution_revision": "eb62a92e30cfa77863de2d3cee305b4224db2a2c",
+      "local_image_id": "sha256:08ced4f2100fd4eb956ec794fed6a46207b873870dab4738b542bc1b873a2675",
+      "reason": "shared_gateway_journal_topology_violated_deployment_contract"
+    },
+    {
+      "execution_revision": "6949ebfa35fae63cd20ca4f24e9e116004d1fdbe",
+      "evidence_revision": "c9cecbd108277f665126f4ceb459770b7e6cee38",
+      "local_image_id": "sha256:5e0c30bb4a73b3e3ca460c11f035c5a8d9f840d8341af4b89834629fbc49e843",
+      "reason": "runner_operator_configuration_topology_incomplete"
+    }
+  ],
   "provider": null,
   "region": null,
   "kubernetes_version": null,

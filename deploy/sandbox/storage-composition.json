@@ -14,7 +14,7 @@
   "per_run_gateway_journal": {
     "volume_name_template": "journal-${RUN_ID}",
     "volume_access_mode": "ReadWriteOncePod",
-    "mount_path": "/var/lib/kapsel-gateway/journal",
+    "mount_path": "/var/lib/kapsel-runner/state",
     "one_volume_per_run": true,
     "outside_target_namespace": true,
     "writer_identity_template": "system:serviceaccount:kapsel-sandbox-runners:runner-${RUN_ID}",

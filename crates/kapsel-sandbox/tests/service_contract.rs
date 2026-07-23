@@ -342,6 +342,20 @@ fn queued_age_does_not_consume_dispatch_window_or_block_fair_order() {
     assert_eq!(admitted.1, None);
     assert!(!admitted.2.is_empty());
     assert_eq!(admitted.3.len(), 64);
+    let inventory: serde_json::Value = serde_json::from_str(&admitted.2).unwrap();
+    let identities = inventory
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|object| object["identity"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let runner_identity = format!(
+        "ServiceAccount/kapsel-sandbox-runners/runner-{}",
+        first.run_id
+    );
+    let binding_identity = format!("RoleBinding/sandbox-{}/sandbox-runner", first.run_id);
+    assert!(identities.contains(&runner_identity.as_str()));
+    assert!(identities.contains(&binding_identity.as_str()));
 
     let first_lease = service.dispatch_next(NOW + 1_000).unwrap();
     assert_eq!(first_lease.run_id, first.run_id);

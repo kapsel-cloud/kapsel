@@ -35,13 +35,14 @@ const SANDBOX_DEADLINE_SECONDS: i64 = 180;
 const SCHEDULER_LEASE_SECONDS: i64 = 30;
 const DEPLOYMENT_POLICY_REVISION: &str = "sandbox-policy-v1";
 const POLICY_NAMESPACE_TOKEN: &str = "{namespace}";
+const POLICY_RUN_ID_TOKEN: &str = "{run_id}";
 const POLICY_OBJECTS_V1: [(&str, &str); 10] = [
     (
         "Namespace/{namespace}",
         "pod-security=restricted;owner-label=required",
     ),
     (
-        "ServiceAccount/{namespace}/sandbox-runner",
+        "ServiceAccount/kapsel-sandbox-runners/runner-{run_id}",
         "automount-service-account-token=false",
     ),
     (
@@ -50,7 +51,7 @@ const POLICY_OBJECTS_V1: [(&str, &str); 10] = [
     ),
     (
         "RoleBinding/{namespace}/sandbox-runner",
-        "subject=server-owned-service-account",
+        "subject=ServiceAccount:kapsel-sandbox-runners:runner-{run_id}",
     ),
     (
         "ResourceQuota/{namespace}/sandbox-quota",
@@ -3205,9 +3206,15 @@ fn policy_inventory_v1(run_id: &str) -> Result<(String, String), ServiceError> {
     let namespace = format!("sandbox-{run_id}");
     let inventory = POLICY_OBJECTS_V1
         .iter()
-        .map(|(identity, canonical_content)| PolicyObjectRequirement {
-            identity: identity.replace(POLICY_NAMESPACE_TOKEN, &namespace),
-            content_digest: hex(&Sha256::digest(canonical_content.as_bytes())),
+        .map(|(identity, canonical_content)| {
+            let identity = identity
+                .replace(POLICY_NAMESPACE_TOKEN, &namespace)
+                .replace(POLICY_RUN_ID_TOKEN, run_id);
+            let canonical_content = canonical_content.replace(POLICY_RUN_ID_TOKEN, run_id);
+            PolicyObjectRequirement {
+                identity,
+                content_digest: hex(&Sha256::digest(canonical_content.as_bytes())),
+            }
         })
         .collect::<Vec<_>>();
     let canonical = serde_json::to_string(&inventory).map_err(|_| ServiceError::Unavailable)?;

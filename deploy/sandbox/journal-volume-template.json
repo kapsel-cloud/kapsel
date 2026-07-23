@@ -1,7 +1,7 @@
 {
   "api_version": "kapsel.sandbox.gate1/v1",
   "one_claim_per_run": true,
-  "target_namespace_template": "sandbox-run-${RUN_ID}",
+  "target_namespace_template": "sandbox-${RUN_ID}",
   "claim": {
     "apiVersion": "v1",
     "kind": "PersistentVolumeClaim",
@@ -38,6 +38,7 @@
     },
     "spec": {
       "automountServiceAccountToken": false,
+      "enableServiceLinks": false,
       "serviceAccountName": "runner-${RUN_ID}",
       "runtimeClassName": "${GATE2_RUNTIME_CLASS}",
       "restartPolicy": "Never",
@@ -54,9 +55,18 @@
         {
           "name": "native-runner",
           "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
-          "args": [
-            "${GATE2_RUNNER_SUBCOMMAND}"
+          "command": [
+            "/usr/local/bin/kapsel-sandbox"
           ],
+          "args": [
+            "${GATE2_RUNNER_SUBCOMMAND}",
+            "--operator-composition",
+            "/var/run/kapsel-runner/composition/operator-configuration.json",
+            "--receipt-handoff",
+            "/var/run/kapsel-runner/receipt-handoff"
+          ],
+          "env": [],
+          "envFrom": [],
           "securityContext": {
             "allowPrivilegeEscalation": false,
             "capabilities": {
@@ -69,18 +79,184 @@
           },
           "volumeMounts": [
             {
-              "name": "gateway-journal",
-              "mountPath": "/var/lib/kapsel-gateway/journal"
+              "name": "gateway-state",
+              "mountPath": "/var/lib/kapsel-runner/state",
+              "readOnly": false
+            },
+            {
+              "name": "operator-composition",
+              "mountPath": "/var/run/kapsel-runner/composition",
+              "readOnly": true
+            },
+            {
+              "name": "kubernetes-controller",
+              "mountPath": "/var/run/kapsel-runner/kubernetes",
+              "readOnly": true
+            },
+            {
+              "name": "authorization-inputs",
+              "mountPath": "/var/run/kapsel-runner/authorization",
+              "readOnly": true
+            },
+            {
+              "name": "receipt-signing",
+              "mountPath": "/var/run/kapsel-runner/receipt-signing",
+              "readOnly": true
+            },
+            {
+              "name": "receipt-handoff",
+              "mountPath": "/var/run/kapsel-runner/receipt-handoff",
+              "readOnly": true
             }
           ]
         }
       ],
       "volumes": [
         {
-          "name": "gateway-journal",
+          "name": "gateway-state",
           "persistentVolumeClaim": {
             "claimName": "journal-${RUN_ID}",
             "readOnly": false
+          }
+        },
+        {
+          "name": "operator-composition",
+          "configMap": {
+            "name": "runner-composition-${RUN_ID}",
+            "defaultMode": 288
+          }
+        },
+        {
+          "name": "kubernetes-controller",
+          "projected": {
+            "defaultMode": 288,
+            "sources": [
+              {
+                "serviceAccountToken": {
+                  "audience": "${GATE2_KUBERNETES_AUDIENCE}",
+                  "expirationSeconds": 600,
+                  "path": "token"
+                }
+              },
+              {
+                "configMap": {
+                  "name": "runner-kubernetes-${RUN_ID}",
+                  "items": [
+                    {
+                      "key": "api-server",
+                      "path": "api-server"
+                    }
+                  ]
+                }
+              },
+              {
+                "configMap": {
+                  "name": "kube-root-ca.crt",
+                  "items": [
+                    {
+                      "key": "ca.crt",
+                      "path": "ca.crt"
+                    }
+                  ]
+                }
+              },
+              {
+                "downwardAPI": {
+                  "items": [
+                    {
+                      "path": "namespace",
+                      "fieldRef": {
+                        "apiVersion": "v1",
+                        "fieldPath": "metadata.namespace"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "authorization-inputs",
+          "projected": {
+            "defaultMode": 288,
+            "sources": [
+              {
+                "secret": {
+                  "name": "runner-grant-${RUN_ID}",
+                  "items": [
+                    {
+                      "key": "signed-grant.json",
+                      "path": "signed-grant.json"
+                    }
+                  ]
+                }
+              },
+              {
+                "configMap": {
+                  "name": "runner-trust-${RUN_ID}",
+                  "items": [
+                    {
+                      "key": "trust.json",
+                      "path": "trust.json"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "receipt-signing",
+          "projected": {
+            "defaultMode": 288,
+            "sources": [
+              {
+                "secret": {
+                  "name": "runner-receipt-signing-${RUN_ID}",
+                  "items": [
+                    {
+                      "key": "seed",
+                      "path": "seed"
+                    },
+                    {
+                      "key": "key-id",
+                      "path": "key-id"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "receipt-handoff",
+          "projected": {
+            "defaultMode": 288,
+            "sources": [
+              {
+                "secret": {
+                  "name": "runner-receipt-handoff-${RUN_ID}",
+                  "items": [
+                    {
+                      "key": "credential",
+                      "path": "credential"
+                    }
+                  ]
+                }
+              },
+              {
+                "configMap": {
+                  "name": "runner-receipt-handoff-${RUN_ID}",
+                  "items": [
+                    {
+                      "key": "endpoint",
+                      "path": "endpoint"
+                    }
+                  ]
+                }
+              }
+            ]
           }
         }
       ]
@@ -91,19 +267,16 @@
     "namespace": "kapsel-sandbox-runners",
     "service_account_name_template": "runner-${RUN_ID}",
     "principal_template": "system:serviceaccount:kapsel-sandbox-runners:runner-${RUN_ID}",
-    "mount_path": "/var/lib/kapsel-gateway/journal",
-    "read_only": false
+    "writable_volume": "gateway-state",
+    "writable_mount_path": "/var/lib/kapsel-runner/state"
   },
-  "forbidden_consumers": [
-    "native-api",
-    "other-runner",
-    "target-workload"
-  ],
   "required_live_proof": [
     "exact_runner_identity_is_the_only_authorized_mount_consumer",
     "second_pod_mount_is_denied_including_on_the_same_node",
     "runner_replacement_reuses_the_same_volume_and_operation_identity",
     "api_other_runner_and_target_workload_cannot_read_or_mount_the_volume",
+    "projected_authority_is_bound_to_the_exact_runner_and_denied_to_every_other_identity",
+    "receipt_handoff_installs_exact_frozen_bytes_without_re_signing_or_replacement",
     "terminal_retention_deletes_the_claim_within_the_contract_window"
   ]
 }

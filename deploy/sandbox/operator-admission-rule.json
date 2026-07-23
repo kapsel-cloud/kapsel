@@ -1,10 +1,11 @@
 {
   "api_version": "kapsel.sandbox.gate1/v1",
   "kind": "ExactDeploymentImageAdmissionRule",
-  "runner_username_template": "system:serviceaccount:{namespace}:sandbox-runner",
+  "runner_username_template": "system:serviceaccount:kapsel-sandbox-runners:runner-{run_id}",
   "owner_label": "kapsel.dev/sandbox-owner",
   "operation_annotation": "kapsel.dev/kap0038-operation-id",
   "required_preconditions": [
+    "run_id",
     "namespace",
     "deployment",
     "deployment_uid",

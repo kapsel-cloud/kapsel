@@ -1,6 +1,7 @@
 {
-  "request_username": "system:serviceaccount:sandbox-0123456789abcdef0123456789abcdef:sandbox-runner",
+  "request_username": "system:serviceaccount:kapsel-sandbox-runners:runner-0123456789abcdef0123456789abcdef",
   "preconditions": {
+    "run_id": "0123456789abcdef0123456789abcdef",
     "namespace": "sandbox-0123456789abcdef0123456789abcdef",
     "deployment": "sandbox-target",
     "deployment_uid": "8fe3dca2-44f3-4f21-bc89-75c1ff39db20",

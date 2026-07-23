@@ -1,0 +1,99 @@
+{
+  "api_version": "kapsel.sandbox.gate1/v1",
+  "run_id_template": "${RUN_ID}",
+  "runner_identity": {
+    "namespace": "kapsel-sandbox-runners",
+    "service_account_name_template": "runner-${RUN_ID}",
+    "principal_template": "system:serviceaccount:kapsel-sandbox-runners:runner-${RUN_ID}"
+  },
+  "runner_service_account_template": {
+    "apiVersion": "v1",
+    "kind": "ServiceAccount",
+    "metadata": {
+      "name": "runner-${RUN_ID}",
+      "namespace": "kapsel-sandbox-runners"
+    },
+    "automountServiceAccountToken": false
+  },
+  "target_role_binding_template": {
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "RoleBinding",
+    "metadata": {
+      "name": "sandbox-runner",
+      "namespace": "sandbox-${RUN_ID}"
+    },
+    "subjects": [
+      {
+        "kind": "ServiceAccount",
+        "name": "runner-${RUN_ID}",
+        "namespace": "kapsel-sandbox-runners"
+      }
+    ],
+    "roleRef": {
+      "apiGroup": "rbac.authorization.k8s.io",
+      "kind": "Role",
+      "name": "sandbox-runner"
+    }
+  },
+  "operator_configuration": {
+    "journal_path": {
+      "owner": "exact-runner-identity",
+      "channel": "gateway-state",
+      "path": "/var/lib/kapsel-runner/state/gateway.sqlite3"
+    },
+    "receipt_output_directory": {
+      "owner": "exact-runner-identity",
+      "channel": "gateway-state",
+      "path": "/var/lib/kapsel-runner/state/receipt-outbox"
+    },
+    "authorization_trust": {
+      "owner": "sandbox-authorization-trust-owner",
+      "channel": "authorization-inputs",
+      "path": "/var/run/kapsel-runner/authorization/trust.json"
+    },
+    "signed_authorization_grant": {
+      "owner": "sandbox-authorization-grant-owner",
+      "channel": "authorization-inputs",
+      "path": "/var/run/kapsel-runner/authorization/signed-grant.json"
+    },
+    "kubernetes_client": {
+      "owner": "sandbox-kubernetes-controller-owner",
+      "channel": "kubernetes-controller",
+      "path": "/var/run/kapsel-runner/kubernetes",
+      "required_files": [
+        "api-server",
+        "ca.crt",
+        "namespace",
+        "token"
+      ]
+    },
+    "receipt_signing_seed": {
+      "owner": "sandbox-receipt-signing-owner",
+      "channel": "receipt-signing",
+      "path": "/var/run/kapsel-runner/receipt-signing/seed"
+    },
+    "receipt_signing_key_id": {
+      "owner": "sandbox-receipt-signing-owner",
+      "channel": "receipt-signing",
+      "path": "/var/run/kapsel-runner/receipt-signing/key-id"
+    }
+  },
+  "receipt_handoff": {
+    "owner": "sandbox-receipt-store-owner",
+    "channel": "receipt-handoff",
+    "path": "/var/run/kapsel-runner/receipt-handoff",
+    "required_files": [
+      "credential",
+      "endpoint"
+    ],
+    "source_directory": "/var/lib/kapsel-runner/state/receipt-outbox",
+    "authority": "install_exact_frozen_bytes_once"
+  },
+  "constraints": {
+    "agent_request_owns_no_operator_input": true,
+    "one_owner_and_one_path_per_operator_input": true,
+    "one_writable_volume": "gateway-state",
+    "all_authority_channels_read_only": true,
+    "receipt_handoff_cannot_re_sign_or_replace": true
+  }
+}

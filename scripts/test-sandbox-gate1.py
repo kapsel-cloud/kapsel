@@ -29,7 +29,11 @@ def selected_container(deployment: dict, name: str) -> dict:
 def accepted(username: str, preconditions: dict, old: dict, new: dict) -> bool:
     try:
         namespace = preconditions["namespace"]
-        if username != f"system:serviceaccount:{namespace}:sandbox-runner":
+        run_id = preconditions["run_id"]
+        if preconditions["owner"] != run_id or namespace != f"sandbox-{run_id}":
+            return False
+        expected_runner = f"system:serviceaccount:kapsel-sandbox-runners:runner-{run_id}"
+        if username != expected_runner:
             return False
         metadata = old["metadata"]
         new_metadata = new["metadata"]
@@ -98,55 +102,41 @@ def render_run_template(value: object, run_id: str) -> object:
     return value
 
 
-def accepted_journal_mount(username: str, rule: dict, pod: dict) -> bool:
+def accepted_journal_mount(
+    username: str,
+    rule: dict,
+    canonical_template: dict,
+    pod: dict,
+) -> bool:
     try:
         run_id = pod["metadata"]["labels"][rule["required_run_label"]]
-        exact = render_run_template(rule["exact_relationships"], run_id)
-        spec = pod["spec"]
+        expected = render_run_template(canonical_template, run_id)
         if username != rule["request_username"]:
             return False
         if pod["kind"] != rule["matched_kind"]:
             return False
         if pod["metadata"]["namespace"] != rule["matched_namespace"]:
             return False
-        if pod["metadata"]["name"] != exact["pod_name"]:
+        if pod != expected:
             return False
-        if pod["metadata"]["labels"]["kapsel.dev/storage-purpose"] != rule["required_storage_purpose"]:
-            return False
-        if spec["serviceAccountName"] != exact["service_account_name"]:
-            return False
-        if spec["automountServiceAccountToken"] is not False:
-            return False
-        if len(spec["containers"]) != 1 or len(spec["volumes"]) != 1:
-            return False
+        spec = pod["spec"]
         container = spec["containers"][0]
-        volume = spec["volumes"][0]
-        workload = rule["exact_workload"]
-        if container["name"] != exact["container_name"] or volume["name"] != exact["volume_name"]:
+        mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
+        volumes = {volume["name"]: volume for volume in spec["volumes"]}
+        writable = rule["writable_volume"]
+        writable_mounts = {
+            name for name, mount in mounts.items() if mount.get("readOnly", False) is False
+        }
+        if writable_mounts != {writable["name"]}:
             return False
-        if spec["runtimeClassName"] != workload["runtime_class_name"]:
+        claim = volumes[writable["name"]]["persistentVolumeClaim"]
+        if claim["claimName"] != writable["claim_name_template"].replace("${RUN_ID}", run_id):
             return False
-        if spec["restartPolicy"] != workload["restart_policy"]:
+        if claim.get("readOnly", False) is not False:
             return False
-        if spec["securityContext"] != workload["pod_security_context"]:
-            return False
-        if container["image"] != workload["container_image"]:
-            return False
-        if container["args"] != workload["container_arguments"]:
-            return False
-        if container["securityContext"] != workload["container_security_context"]:
-            return False
-        if len(container["volumeMounts"]) != 1:
-            return False
-        mount = container["volumeMounts"][0]
-        claim = volume["persistentVolumeClaim"]
-        return (
-            mount["name"] == exact["volume_name"]
-            and mount["mountPath"] == exact["mount_path"]
-            and mount.get("readOnly", False) is False
-            and claim["claimName"] == exact["claim_name"]
-            and claim.get("readOnly", False) is False
-            and exact["volume_name"] != "system-state"
+        return all(
+            mounts[name]["readOnly"] is True and "persistentVolumeClaim" not in volumes[name]
+            for name in rule["read_only_channels"]
         )
     except (KeyError, TypeError):
         return False
@@ -155,37 +145,143 @@ def accepted_journal_mount(username: str, rule: dict, pod: dict) -> bool:
 def prove_journal_mount_rule() -> None:
     fixture = load("journal-volume-template.json")
     rule = load("journal-mount-admission-rule.json")
+    template = fixture["runner_pod_template"]
     run_id = "0123456789abcdef0123456789abcdef"
-    pod = render_run_template(fixture["runner_pod_template"], run_id)
+    pod = render_run_template(template, run_id)
     assert isinstance(pod, dict)
     username = fixture["authorized_mount"]["request_username"]
-    assert accepted_journal_mount(username, rule, pod)
+    assert accepted_journal_mount(username, rule, template, pod)
 
     denied: list[tuple[str, dict]] = []
     for name, mutate in [
+        ("metadata", lambda value: value["metadata"].update({"annotations": {"x": "y"}})),
         ("pod name", lambda value: value["metadata"].update({"name": "runner-other"})),
         ("run label", lambda value: value["metadata"]["labels"].update({rule["required_run_label"]: "other"})),
-        ("storage purpose", lambda value: value["metadata"]["labels"].update({"kapsel.dev/storage-purpose": "system-state"})),
-        ("namespace", lambda value: value["metadata"].update({"namespace": f"sandbox-run-{run_id}"})),
-        ("service account", lambda value: value["spec"].update({"serviceAccountName": "kapsel-sandbox"})),
+        ("namespace", lambda value: value["metadata"].update({"namespace": f"sandbox-{run_id}"})),
+        ("service account", lambda value: value["spec"].update({"serviceAccountName": "other"})),
         ("token", lambda value: value["spec"].update({"automountServiceAccountToken": True})),
         ("runtime class", lambda value: value["spec"].update({"runtimeClassName": "runc"})),
-        ("restart policy", lambda value: value["spec"].update({"restartPolicy": "Always"})),
+        ("command", lambda value: value["spec"]["containers"][0].update({"command": ["sh"]})),
+        ("arguments", lambda value: value["spec"]["containers"][0].update({"args": ["serve"]})),
+        ("environment", lambda value: value["spec"]["containers"][0]["env"].append({"name": "SECRET", "value": "x"})),
+        ("environment from", lambda value: value["spec"]["containers"][0]["envFrom"].append({"secretRef": {"name": "other"}})),
+        ("image", lambda value: value["spec"]["containers"][0].update({"image": "attacker@sha256:" + "a" * 64})),
         ("pod security", lambda value: value["spec"].update({"securityContext": {"runAsUser": 0}})),
-        ("runner image", lambda value: value["spec"]["containers"][0].update({"image": "attacker@sha256:" + "a" * 64})),
-        ("runner arguments", lambda value: value["spec"]["containers"][0].update({"args": ["serve"]})),
-        ("runner security", lambda value: value["spec"]["containers"][0].update({"securityContext": {"privileged": True}})),
+        ("container security", lambda value: value["spec"]["containers"][0].update({"securityContext": {"privileged": True}})),
+        ("extra mount", lambda value: value["spec"]["containers"][0]["volumeMounts"].append({"name": "other", "mountPath": "/other"})),
+        ("writable authority", lambda value: value["spec"]["containers"][0]["volumeMounts"][1].update({"readOnly": False})),
         ("other claim", lambda value: value["spec"]["volumes"][0]["persistentVolumeClaim"].update({"claimName": "journal-other"})),
-        ("second volume", lambda value: value["spec"]["volumes"].append(copy.deepcopy(value["spec"]["volumes"][0]))),
+        ("secret projection", lambda value: value["spec"]["volumes"][2]["projected"]["sources"].append({"secret": {"name": "other"}})),
+        ("extra volume", lambda value: value["spec"]["volumes"].append({"name": "other", "secret": {"secretName": "other"}})),
         ("second container", lambda value: value["spec"]["containers"].append(copy.deepcopy(value["spec"]["containers"][0]))),
-        ("system state mount", lambda value: value["spec"]["containers"][0]["volumeMounts"][0].update({"name": "system-state"})),
     ]:
         candidate = copy.deepcopy(pod)
         mutate(candidate)
         denied.append((name, candidate))
     for name, candidate in denied:
-        assert not accepted_journal_mount(username, rule, candidate), name
-    assert not accepted_journal_mount("system:serviceaccount:other:scheduler", rule, pod)
+        assert not accepted_journal_mount(username, rule, template, candidate), name
+    assert not accepted_journal_mount(
+        "system:serviceaccount:other:scheduler", rule, template, pod
+    )
+
+
+def prove_operator_composition() -> None:
+    authority = load("runner-authority-composition.json")
+    journal = load("journal-volume-template.json")
+    patch_rule = load("operator-admission-rule.json")
+    admission = load("admission-fixture.json")
+    run_id = "0123456789abcdef0123456789abcdef"
+    identity = authority["runner_identity"]
+    expected_principal = identity["principal_template"]
+    assert journal["authorized_mount"]["principal_template"] == expected_principal
+    assert patch_rule["runner_username_template"].replace("{run_id}", "${RUN_ID}") == (
+        expected_principal
+    )
+    assert admission["request_username"] == expected_principal.replace("${RUN_ID}", run_id)
+
+    service_account = authority["runner_service_account_template"]
+    assert service_account == {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "name": identity["service_account_name_template"],
+            "namespace": identity["namespace"],
+        },
+        "automountServiceAccountToken": False,
+    }
+    role_binding = authority["target_role_binding_template"]
+    assert role_binding["metadata"]["namespace"] == "sandbox-${RUN_ID}"
+    assert role_binding["subjects"] == [
+        {
+            "kind": "ServiceAccount",
+            "name": identity["service_account_name_template"],
+            "namespace": identity["namespace"],
+        }
+    ]
+    pod = journal["runner_pod_template"]
+    assert pod["spec"]["serviceAccountName"] == identity["service_account_name_template"]
+    container = pod["spec"]["containers"][0]
+    assert container["command"] == ["/usr/local/bin/kapsel-sandbox"]
+    assert container["env"] == [] and container["envFrom"] == []
+
+    mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
+    volumes = {volume["name"]: volume for volume in pod["spec"]["volumes"]}
+    assert set(mounts) == set(volumes)
+    assert {name for name, mount in mounts.items() if not mount["readOnly"]} == {
+        "gateway-state"
+    }
+    for channel in [
+        "operator-composition",
+        "kubernetes-controller",
+        "authorization-inputs",
+        "receipt-signing",
+        "receipt-handoff",
+    ]:
+        assert mounts[channel]["readOnly"] is True
+        assert "persistentVolumeClaim" not in volumes[channel]
+
+    operator = authority["operator_configuration"]
+    assert set(operator) == {
+        "journal_path",
+        "receipt_output_directory",
+        "authorization_trust",
+        "signed_authorization_grant",
+        "kubernetes_client",
+        "receipt_signing_seed",
+        "receipt_signing_key_id",
+    }
+    for name, source in operator.items():
+        assert isinstance(source["owner"], str) and source["owner"]
+        assert isinstance(source["channel"], str) and source["channel"] in mounts
+        assert isinstance(source["path"], str) and source["path"].startswith("/")
+        mount_path = mounts[source["channel"]]["mountPath"]
+        assert source["path"] == mount_path or source["path"].startswith(f"{mount_path}/"), name
+
+    handoff = authority["receipt_handoff"]
+    assert isinstance(handoff["owner"], str) and handoff["owner"]
+    assert handoff["channel"] == "receipt-handoff"
+    assert handoff["path"] == mounts["receipt-handoff"]["mountPath"]
+    assert handoff["source_directory"] == operator["receipt_output_directory"]["path"]
+    assert operator["authorization_trust"]["owner"] != operator["signed_authorization_grant"]["owner"]
+    assert operator["receipt_signing_seed"]["channel"] == "receipt-signing"
+    assert operator["receipt_signing_seed"]["channel"] != operator["authorization_trust"]["channel"]
+
+    controller_sources = volumes["kubernetes-controller"]["projected"]["sources"]
+    tokens = [source["serviceAccountToken"] for source in controller_sources if "serviceAccountToken" in source]
+    assert tokens == [
+        {
+            "audience": "${GATE2_KUBERNETES_AUDIENCE}",
+            "expirationSeconds": 600,
+            "path": "token",
+        }
+    ]
+    assert authority["constraints"] == {
+        "agent_request_owns_no_operator_input": True,
+        "one_owner_and_one_path_per_operator_input": True,
+        "one_writable_volume": "gateway-state",
+        "all_authority_channels_read_only": True,
+        "receipt_handoff_cannot_re_sign_or_replace": True,
+    }
 
 
 def prove_admission_rule() -> None:
@@ -195,10 +291,14 @@ def prove_admission_rule() -> None:
     preconditions = fixture["preconditions"]
     new = accepted_object(fixture)
     assert rule["deny_unknown_mutation"] is True
+    assert rule["runner_username_template"] == (
+        "system:serviceaccount:kapsel-sandbox-runners:runner-{run_id}"
+    )
     assert set(rule["allowed_mutations"]) == {
         "selected_named_container.image",
         f"metadata.annotations[{OPERATION_ANNOTATION}]",
     }
+    assert set(rule["required_preconditions"]) == set(preconditions)
     assert accepted(fixture["request_username"], preconditions, old, new)
 
     denied: list[tuple[str, dict]] = []
@@ -222,6 +322,9 @@ def prove_admission_rule() -> None:
         denied.append((name, candidate))
     for name, candidate in denied:
         assert not accepted(fixture["request_username"], preconditions, old, candidate), name
+    wrong_run = copy.deepcopy(preconditions)
+    wrong_run["run_id"] = "ffffffffffffffffffffffffffffffff"
+    assert not accepted(fixture["request_username"], wrong_run, old, new)
     assert not accepted("system:serviceaccount:other:sandbox-runner", preconditions, old, new)
 
 
@@ -241,6 +344,7 @@ def prove_storage_and_lock() -> None:
     assert per_run["one_volume_per_run"] is True
     assert per_run["outside_target_namespace"] is True
     assert per_run["volume_access_mode"] == "ReadWriteOncePod"
+    assert per_run["mount_path"] == "/var/lib/kapsel-runner/state"
     assert per_run["api_access"] is False
     assert per_run["other_runner_access"] is False
     assert set(storage["backup_set"]) == {"system_state", "active_run_gateway_journals"}
@@ -317,22 +421,23 @@ def prove_storage_and_lock() -> None:
     assert journal["claim"]["spec"]["accessModes"] == ["ReadWriteOncePod"]
     assert journal["authorized_mount"]["principal_template"] == per_run["writer_identity_template"]
     assert journal["authorized_mount"]["request_username"] == journal_rule["request_username"]
+    assert journal_rule["comparison"] == "complete_rendered_object_equality"
+    assert journal_rule["undeclared_fields"] == "deny"
     assert journal["runner_pod_template"]["spec"]["serviceAccountName"] == "runner-${RUN_ID}"
     assert journal["authorized_mount"]["namespace"] != journal["target_namespace_template"]
-    assert journal["forbidden_consumers"] == ["native-api", "other-runner", "target-workload"]
-    assert lock["gate1_execution_revision"] == "6949ebfa35fae63cd20ca4f24e9e116004d1fdbe"
-    assert lock["gate1_local_image_id"] == (
-        "sha256:5e0c30bb4a73b3e3ca460c11f035c5a8d9f840d8341af4b89834629fbc49e843"
-    )
-    assert lock["local_image_platform"] == "linux/arm64"
-    assert lock["correction_status"] == "accepted_after_independent_review"
-    assert lock["independently_reviewed_evidence_revision"] == (
-        "c9cecbd108277f665126f4ceb459770b7e6cee38"
-    )
+    assert lock["gate1_execution_revision"] is None
+    assert lock["gate1_local_image_id"] is None
+    assert lock["local_image_platform"] is None
+    assert lock["correction_status"] == "runner_composition_correction_uncommitted"
+    assert lock["independently_reviewed_evidence_revision"] is None
     superseded = lock["superseded_gate1_evidence"]
-    assert len(superseded["execution_revision"]) == 40
-    assert superseded["local_image_id"].startswith("sha256:")
-    assert superseded["reason"] == "shared_gateway_journal_topology_violated_deployment_contract"
+    assert len(superseded) == 2
+    assert all(len(item["execution_revision"]) == 40 for item in superseded)
+    assert all(item["local_image_id"].startswith("sha256:") for item in superseded)
+    assert [item["reason"] for item in superseded] == [
+        "shared_gateway_journal_topology_violated_deployment_contract",
+        "runner_operator_configuration_topology_incomplete",
+    ]
     assert lock["provider"] is None and lock["region"] is None
     assert lock["public_endpoint"] is None
     assert lock["local_image_build_command"] == (
@@ -393,6 +498,7 @@ def prove_storage_and_lock() -> None:
         "storage-composition.json",
         "journal-volume-template.json",
         "journal-mount-admission-rule.json",
+        "runner-authority-composition.json",
         "workload-template.json",
     ]:
         body = (FIXTURE / name).read_bytes()
@@ -406,6 +512,7 @@ def prove_storage_and_lock() -> None:
 def main() -> None:
     prove_admission_rule()
     prove_journal_mount_rule()
+    prove_operator_composition()
     prove_storage_and_lock()
     print("sandbox Gate 1 offline fixture: ok (exact patch rule, storage lock, non-claims)")
 

@@ -10,9 +10,10 @@ The fixture locks:
   required operation annotation under exact UID, owner, resource-version, current-image, and
   operation preconditions;
 - one `ReadWriteOncePod` system-state volume for admission, receipts, and cleanup ownership, plus
-  one separately fenced owner-private `ReadWriteOncePod` gateway-journal volume per active run, an
-  exact runner Pod/identity template, and a normalized fail-closed mount-admission rule that forbids
-  the API, target workload, and every other runner from mounting it; and
+  one separately fenced owner-private `ReadWriteOncePod` gateway-state volume per active run; one
+  canonical runner identity across mount, RoleBinding, and patch admission; explicit read-only
+  controller, grant/trust, signing, composition, and receipt-handoff channels; and complete rendered
+  Pod equality that rejects every undeclared field; and
 - a multi-volume backup-generation protocol that freezes the active journal inventory, quiesces and
   fences every exact writer, rejects incomplete or mixed generations, and leaves provider snapshot
   consistency and enforcement as a Gate 2/3 experiment.
@@ -23,18 +24,17 @@ Run the offline evidence lane with:
 cargo make test-sandbox-gate1
 ```
 
-The lock records correction revision `6949ebfa35fae63cd20ca4f24e9e116004d1fdbe` and the local
-`linux/arm64` image rebuilt from that clean revision. The superseded revision/image remain
-historical evidence only. Independent review reproduced the clean execution-revision build with the
-same image ID and accepted the corrected Gate 1 evidence. This native image remains local build
-evidence, not registry provenance, multi-architecture evidence, or any live Gate 2/3 proof.
+The lock preserves the two superseded revision/image records but intentionally leaves the current
+execution revision, image ID, platform, and reviewed-evidence revision null. The runner-composition
+correction must be committed, rebuilt, and independently reviewed before Gate 1 can be accepted.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
-`${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`, and the
-provider-dependent runner subcommand. Gate 2 must authorize and lock those values and replace the
-unimplemented runner placeholder before rendering or provisioning. The templates create no public
-Service or ingress. The container image uses the already locked repository builder image; Gate 2
-must review runtime size and vulnerability evidence before selection.
+`${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`,
+`${GATE2_KUBERNETES_AUDIENCE}`, and the provider-dependent runner subcommand. Gate 2 must authorize
+and lock those values and replace the unimplemented runner placeholder before rendering or
+provisioning. The templates create no public Service or ingress. The container image uses the
+already locked repository builder image; Gate 2 must review runtime size and vulnerability evidence
+before selection.
 
 The raw signing boundary accepts only an exact 32-byte Ed25519 seed. The RFC 8032 seed/public-key/
 signature known-answer test and a production `Application` receipt inspected through
