@@ -103,27 +103,49 @@ candidate. Among candidates that pass all mandatory criteria and their pre-autho
 prefer the least operator-managed runtime, networking, storage, key, patching, and rollback surface.
 No provider claim or preference substitutes for measurements.
 
-The document screen leaves these candidates; it does not rank or select them:
+The current document screen leaves no managed candidate. Kubernetes documents namespace-based soft
+multi-tenancy and recommends additional isolation where stronger separation is needed in its
+[multi-tenancy guidance](https://kubernetes.io/docs/concepts/security/multi-tenancy/), but a runtime
+boundary cannot cure a provider control-plane retention mismatch.
 
-| Candidate                                       | Officially documented boundary used only to justify a test                                                                                                                                                                                         | Evidence still missing before selection                                                                                               |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Dedicated managed Kubernetes, ordinary runtime  | Kubernetes documents namespace-based soft multi-tenancy and recommends additional isolation where stronger separation is needed in its [multi-tenancy guidance](https://kubernetes.io/docs/concepts/security/multi-tenancy/).                      | Whether the exact runtime and CNI deny every owned adversarial case; kernel/runtime exposure, durable-volume fit, cleanup, and cost.  |
-| GKE Sandbox in one dedicated GKE cluster        | Google documents GKE Sandbox as gVisor-based isolation that intercepts workload system calls, with configuration differing between Standard and Autopilot in [GKE Sandbox](https://cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods). | Exact mode/region/version, fixed-image and volume compatibility, policy and metadata denial, startup, cleanup, key/storage, and cost. |
-| AKS Pod Sandboxing in one dedicated AKS cluster | Microsoft documents Kata Containers selected through `runtimeClassName: kata-vm-isolation` and a supported node pool in [AKS Pod Sandboxing](https://learn.microsoft.com/en-us/azure/aks/use-pod-sandboxing).                                      | Exact region/version/node support, fixed-image and storage compatibility, network denial, cleanup, key/storage, and cost.             |
+GKE Sandbox and ordinary GKE are rejected at the 2026-07-23 document screen. Google documents that
+Admin Activity and System Event audit logs are always written to the `_Required` bucket and cannot
+be disabled, excluded, or rerouted away from that bucket in
+[Cloud Audit Logs](https://cloud.google.com/logging/docs/audit). The
+[retention table](https://cloud.google.com/logging/quotas#logs_retention_periods) fixes `_Required`
+retention at 400 days and marks it non-configurable. Provisioning the candidate would therefore
+retain operator identity, resource identifiers, and administrative infrastructure history far beyond
+this contract's 24-hour maximum for private key/audit diagnostics. Deleting the cluster does not
+remove those immutable logs. GKE may re-enter only after a reviewed contract/privacy change; a
+runtime, region, log exclusion, or teardown experiment cannot cure this mismatch.
 
-EKS Pods on AWS Fargate is rejected at the document screen. AWS states that Amazon VPC CNI
+AKS Pod Sandboxing and ordinary AKS are rejected for the same contract reason. Microsoft documents
+that Azure Monitor automatically collects management operations, callers cannot change or delete the
+entries, and Azure retains the
+[Activity Log](https://learn.microsoft.com/en-us/azure/azure-monitor/platform/activity-log) for 90
+days. Export settings can lengthen retention but cannot reduce the built-in record to 24 hours.
+
+Ordinary Amazon EKS is also rejected on provider audit retention. AWS documents that CloudTrail is
+enabled by default and keeps an immutable
+[90-day management-event history](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html)
+that is independent of configured trails and event stores. EKS on EC2 therefore cannot cure the
+retention mismatch by changing its runtime or CNI.
+
+EKS Pods on AWS Fargate is additionally rejected at the document screen. AWS states that Amazon VPC
+CNI
 [NetworkPolicy support](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html) is
 limited to EC2 Linux nodes and does not apply to Fargate nodes, while
 [AWS Fargate for EKS](https://docs.aws.amazon.com/eks/latest/userguide/fargate.html) does not
 support alternate CNIs. It therefore cannot satisfy this contract's mandatory enforced default-deny
 NetworkPolicy and must not consume an Infrastructure Enforcement Proof (Gate 2) experiment.
 
-Self-operated Kata Containers or a Firecracker-class runtime is held out of this finite experiment:
-it adds node image, runtime, kernel, CNI/CSI, patch, and recovery ownership before a managed
-candidate has failed. It may re-enter only through a new reviewed KAP-0053 planning revision with a
-narrow measured need. A non-Kubernetes VM service or edge isolate is not a complete candidate
-because this contract requires a dedicated Kubernetes target and native Rust runner; an optional
-edge remains stateless admission only.
+The shared managed-provider failure triggers review, not automatic activation, of self-operated Kata
+Containers or a Firecracker-class runtime. Running either on Google, Azure, or AWS retains the same
+provider control-plane history, while owned hardware adds node image, runtime, kernel, CNI/CSI,
+patch, physical access, and recovery ownership. It may re-enter only through a new reviewed KAP-0053
+planning revision that resolves retention and justifies that added surface. A non-Kubernetes VM
+service or edge isolate is not a complete candidate because this contract requires a dedicated
+Kubernetes target and native Rust runner; an optional edge remains stateless admission only.
 
 Kubernetes also documents that NetworkPolicy enforcement depends on a supporting network plugin and
 that Pods are otherwise non-isolated by default in
