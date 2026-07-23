@@ -2,12 +2,12 @@
   "api_version": "kapsel.sandbox.gate1/v1",
   "accepted_service_base": "1726915942a95e63aca97d49d843b8d0728514da",
   "planning_revision": "fe4ca1edb68dd527bf4c6de185beecd6f540bb2d",
-  "gate1_execution_revision": null,
+  "gate1_execution_revision": "bd67be9b469672b895a6214322b4dc7ff942da33",
   "fixture_bundle_sha256": "054dfc6c841e7635b64e82b68cf3ae1fe39c8b955cc7599bbe500d16c6fb568c",
   "local_image_build_command": "docker build --pull=false -f deploy/sandbox/Containerfile -t kapsel-sandbox:gate1 .",
-  "gate1_local_image_id": null,
-  "local_image_platform": null,
-  "correction_status": "runner_composition_correction_uncommitted",
+  "gate1_local_image_id": "sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480",
+  "local_image_platform": "linux/arm64",
+  "correction_status": "evidence_recorded_pending_independent_review",
   "independently_reviewed_evidence_revision": null,
   "superseded_gate1_evidence": [
     {

@@ -425,10 +425,12 @@ def prove_storage_and_lock() -> None:
     assert journal_rule["undeclared_fields"] == "deny"
     assert journal["runner_pod_template"]["spec"]["serviceAccountName"] == "runner-${RUN_ID}"
     assert journal["authorized_mount"]["namespace"] != journal["target_namespace_template"]
-    assert lock["gate1_execution_revision"] is None
-    assert lock["gate1_local_image_id"] is None
-    assert lock["local_image_platform"] is None
-    assert lock["correction_status"] == "runner_composition_correction_uncommitted"
+    assert lock["gate1_execution_revision"] == "bd67be9b469672b895a6214322b4dc7ff942da33"
+    assert lock["gate1_local_image_id"] == (
+        "sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480"
+    )
+    assert lock["local_image_platform"] == "linux/arm64"
+    assert lock["correction_status"] == "evidence_recorded_pending_independent_review"
     assert lock["independently_reviewed_evidence_revision"] is None
     superseded = lock["superseded_gate1_evidence"]
     assert len(superseded) == 2

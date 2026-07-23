@@ -24,9 +24,10 @@ Run the offline evidence lane with:
 cargo make test-sandbox-gate1
 ```
 
-The lock preserves the two superseded revision/image records but intentionally leaves the current
-execution revision, image ID, platform, and reviewed-evidence revision null. The runner-composition
-correction must be committed, rebuilt, and independently reviewed before Gate 1 can be accepted.
+The lock preserves the two superseded revision/image records and records runner-composition revision
+`bd67be9b469672b895a6214322b4dc7ff942da33` with its clean local `linux/arm64` image
+`sha256:4d85515113eccf5cb56618fd5b406632111ac429a25352e385942c40733d3480`. Independent evidence
+review remains required before Gate 1 can be accepted.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
 `${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`,
