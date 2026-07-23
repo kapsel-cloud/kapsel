@@ -75,6 +75,15 @@ locators, times, scenarios, and copied receipts can correlate activity.
 - Application errors use fixed messages and no reflected input, path, stack, store key, runner
   identity, capacity count, or fault state. Operator diagnostics are access-controlled, sampled,
   bounded per event, redacted before storage, and retained at most 24 hours.
+- Unavoidable provider control-plane management records may follow a longer provider-fixed retention
+  only when they cannot be disabled, excluded, shortened, or deleted. This exception covers only
+  administrative operation, operator/service identity, provider resource identity, time, and status.
+  It never covers a visitor locator, idempotency key, sandbox request/body, public run or operation
+  identity, receipt, journal fact, key/secret payload, workload output, data-access record, or
+  application diagnostic. These records remain private, access-controlled, unexported except for the
+  bounded evidence review, and absent from committed evidence. Every selected provider retention and
+  field set must be documented before provisioning; a configurable provider record still follows the
+  24-hour rule.
 - Public run/events/receipt data and the private idempotency mapping expire exactly 24 hours after
   admission. A further 24-hour private tombstone retains exactly service-keyed run/idempotency
   digests and expiry needed to return `run_expired` and prevent key reuse. It contains no request or

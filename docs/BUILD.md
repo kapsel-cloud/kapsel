@@ -106,6 +106,20 @@ data. It creates no provider resource and is not part of the deterministic defau
 local scan is time-bound input evidence, not registry provenance, runtime compatibility, absence of
 unknown vulnerabilities, or authorization for Infrastructure Enforcement.
 
+Validate the non-executed GKE Infrastructure Enforcement authorization candidate with:
+
+```sh
+cargo make test-sandbox-gate2-fixture
+```
+
+This standard-library-only gate checks the proposed `europe-north1` cluster, four-node arithmetic,
+gVisor/Dataplane V2/private-node controls, regional `ReadWriteOncePod` storage, three separate key
+roles, narrow provider-management-log exception, 24-hour configurable-record retention, inventory,
+teardown, cost classes, private approval placeholders, unresolved execution blockers, and negative
+mutations. It runs no provider command, reads no credential, and creates no resource, registry
+object, endpoint, DNS record, spend, or traffic. Passing means only that the authorization packet is
+internally consistent; every live property and Gate 2 authorization remains absent.
+
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:

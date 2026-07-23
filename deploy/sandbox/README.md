@@ -48,6 +48,14 @@ separate `Containerfile.gate2-candidate` is pre-authorization source/config evid
 and non-claims. The result is still not a registry digest, selected runtime, or Infrastructure
 Enforcement authorization.
 
+`gate2-gke-fixture.json` is the separate non-executed `europe-north1` authorization candidate, and
+`gate2-gke-storage-class.json` is its proposed regional Persistent Disk CSI class. Run
+`cargo make test-sandbox-gate2-fixture` to check the exact tuple, node arithmetic, placeholders,
+storage, key roles, audit/retention split, inventory, command previews, teardown coverage, costs,
+stop conditions, and non-claims without invoking a provider. Null fixture revision, registry digest,
+private approval bindings, Kubernetes audience, runner subcommand, and secret versions deliberately
+keep execution blocked.
+
 The raw signing boundary accepts only an exact 32-byte Ed25519 seed. The RFC 8032 seed/public-key/
 signature known-answer test and a production `Application` receipt inspected through
 `kapsel::inspect_receipt` prove the offline format path. They do not prove managed custody, workload

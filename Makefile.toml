@@ -239,6 +239,11 @@ args = [
 description = "Build and inspect the pre-authorization amd64 Gate 2 image candidate"
 command = "./scripts/test-sandbox-gate2-image-candidate.sh"
 
+[tasks.test-sandbox-gate2-fixture]
+description = "Validate the non-executed GKE Gate 2 authorization candidate"
+command = "python3"
+args = ["scripts/test-sandbox-gate2-fixture.py"]
+
 [tasks.test-sandbox-package-boundary]
 description = "Prove the one-way sandbox dependency and deletion boundary"
 command = "./scripts/test-sandbox-package-boundary.py"

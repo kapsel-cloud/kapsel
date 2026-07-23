@@ -1,0 +1,1665 @@
+{
+  "api_version": "kapsel.sandbox.gate2-gke-fixture/v1",
+  "status": {
+    "kind": "authorization_candidate",
+    "execution_authorized": false,
+    "fixture_revision": null,
+    "forbidden_without_later_approval": [
+      "provider_mutation",
+      "credential_use",
+      "image_push",
+      "resource_creation",
+      "spend",
+      "endpoint_or_dns_change",
+      "public_traffic"
+    ]
+  },
+  "reproduction_lock": {
+    "accepted_service_base": "1726915942a95e63aca97d49d843b8d0728514da",
+    "gate1_execution_revision": "bd67be9b469672b895a6214322b4dc7ff942da33",
+    "gate1_evidence_revision": "e757ce0adbc79d2f36209155149f03506f93e69b",
+    "gate2_image_source_revision": "86680191767c550a84a9fca872a928198ec8112e",
+    "gate2_local_amd64_image_id": "sha256:7b8c2d2a2701ad5225e4536ccf80a42cf0f0d93359ae145628f898265f036680",
+    "dirty_state_command": [
+      "git",
+      "status",
+      "--short"
+    ],
+    "dependency_lock": "Cargo.lock",
+    "registry_digest": null
+  },
+  "private_authorization_binding": {
+    "account_binding_digest": null,
+    "cleanup_owner_binding_digest": null,
+    "reviewer_binding_digest": null,
+    "approved_at": null,
+    "expires_at": null,
+    "duration_seconds": 86400,
+    "maximum_gross_spend_usd": 100,
+    "cleanup_window_inside_duration": true,
+    "dedicated_experiment_project_required": true,
+    "default_sink_baseline_digest": null
+  },
+  "cluster": {
+    "provider": "google-cloud",
+    "product": "gke",
+    "mode": "standard",
+    "topology": "regional",
+    "region": "europe-north1",
+    "zones": [
+      "europe-north1-a",
+      "europe-north1-b",
+      "europe-north1-c"
+    ],
+    "release_channel": "regular",
+    "kubernetes_version": "1.35.6-gke.1127000",
+    "node_image": "COS_CONTAINERD",
+    "runtime_class": "gvisor",
+    "cni_policy_mode": "dataplane-v2-cilium-ebpf-networkpolicy-always-on",
+    "private_nodes": true,
+    "workload_identity_federation": true,
+    "pd_csi_driver": true,
+    "dns_control_plane_endpoint": true,
+    "ip_control_plane_endpoints": false,
+    "operator_authentication": "google-iam-dns-endpoint-plus-kubernetes-rbac",
+    "application_service": null,
+    "ingress": null,
+    "load_balancer": null,
+    "public_address": null,
+    "public_dns": null,
+    "network": {
+      "name": "kapsel-gate2",
+      "subnet": "kapsel-gate2-europe-north1",
+      "node_cidr": "10.72.0.0/24",
+      "pod_secondary_range_name": "kapsel-gate2-pods",
+      "pod_cidr": "10.73.0.0/20",
+      "service_secondary_range_name": "kapsel-gate2-services",
+      "service_cidr": "10.74.0.0/24",
+      "private_google_access": true,
+      "cloud_nat": false
+    },
+    "node_service_account": "kapsel-gate2-node@${PROJECT_ID}.iam.gserviceaccount.com",
+    "workload_identities": {
+      "node_gsa": "kapsel-gate2-node@${PROJECT_ID}.iam.gserviceaccount.com",
+      "operator_principal_binding_digest": null,
+      "kubernetes_rbac_binding_digest": null,
+      "ksa_to_gsa_bindings": {
+        "grant-signer": "kapsel-gate2-grant-signer@${PROJECT_ID}.iam.gserviceaccount.com",
+        "receipt-stager": "kapsel-gate2-receipt-stager@${PROJECT_ID}.iam.gserviceaccount.com",
+        "sandbox-api": "kapsel-gate2-sandbox-api@${PROJECT_ID}.iam.gserviceaccount.com",
+        "runner": "kapsel-gate2-runner@${PROJECT_ID}.iam.gserviceaccount.com",
+        "cleanup-controller": "kapsel-gate2-cleanup-controller@${PROJECT_ID}.iam.gserviceaccount.com"
+      },
+      "node_oauth_scopes": [
+        "https://www.googleapis.com/auth/cloud-platform"
+      ],
+      "node_iam_rule": "node GSA receives only documented GKE node roles; no Secret Manager access",
+      "node_project_roles": [
+        "roles/container.defaultNodeServiceAccount"
+      ],
+      "node_repository_roles": [
+        "roles/artifactregistry.reader"
+      ],
+      "operator_project_roles": [
+        "roles/container.clusterViewer"
+      ],
+      "workload_secret_permissions": [
+        "secretmanager.versions.access via roles/secretmanager.secretAccessor on one role-specific secret resource; application requests one pinned version"
+      ],
+      "forbidden_iam_bindings": [
+        "roles/owner",
+        "roles/editor",
+        "project-level roles/secretmanager.secretAccessor",
+        "project-level roles/artifactregistry.reader for workload identities",
+        "user-managed service-account keys"
+      ],
+      "allowed_binding_matrix": {
+        "node-project": "kapsel-gate2-node@${PROJECT_ID}.iam.gserviceaccount.com -> roles/container.defaultNodeServiceAccount",
+        "node-repository": "kapsel-gate2-node@${PROJECT_ID}.iam.gserviceaccount.com -> roles/artifactregistry.reader on kapsel-gate2 only",
+        "operator-project": "private approved operator -> roles/container.clusterViewer plus separately reviewed Kubernetes RBAC",
+        "grant-secret": "grant-signer KSA/GSA -> roles/secretmanager.secretAccessor on kapsel-gate2-authorization-grant only",
+        "receipt-secret": "receipt-stager KSA/GSA -> roles/secretmanager.secretAccessor on kapsel-gate2-receipt-signing only",
+        "tombstone-secret": "sandbox-api KSA/GSA -> roles/secretmanager.secretAccessor on kapsel-gate2-tombstone-digest only"
+      }
+    },
+    "logging_components": [],
+    "monitoring_components": []
+  },
+  "node_pools": [
+    {
+      "name": "default-pool",
+      "sandbox": false,
+      "machine_type": "e2-standard-2",
+      "node_locations": [
+        "europe-north1-a"
+      ],
+      "num_nodes_per_location": 1,
+      "total_nodes": 1,
+      "boot_disk_gib": 100,
+      "autoscaling": false,
+      "spot": false,
+      "role": "trusted-system-only"
+    },
+    {
+      "name": "sandbox",
+      "sandbox": true,
+      "sandbox_type": "gvisor",
+      "machine_type": "n2-standard-4",
+      "node_locations": [
+        "europe-north1-a",
+        "europe-north1-b",
+        "europe-north1-c"
+      ],
+      "num_nodes_per_location": 1,
+      "total_nodes": 3,
+      "boot_disk_gib": 100,
+      "autoscaling": false,
+      "spot": false,
+      "label": "kapsel.dev/sandbox=true",
+      "ordinary_runtime_fallback": false
+    }
+  ],
+  "template_bindings": {
+    "GATE2_RUNTIME_CLASS": "gvisor",
+    "GATE2_STORAGE_CLASS": "kapsel-gate2-regional-pd-balanced",
+    "GATE2_KUBERNETES_AUDIENCE": null,
+    "KAPSEL_SANDBOX_IMAGE_DIGEST": null,
+    "GATE2_RUNNER_SUBCOMMAND": null
+  },
+  "storage": {
+    "storage_class_file": "deploy/sandbox/gate2-gke-storage-class.json",
+    "provisioner": "pd.csi.storage.gke.io",
+    "type": "pd-balanced",
+    "replication_type": "regional-pd",
+    "access_mode": "ReadWriteOncePod",
+    "volume_binding_mode": "WaitForFirstConsumer",
+    "system_state_gib": 20,
+    "gateway_journal_gib_per_active_run": 1,
+    "maximum_active_runs": 8,
+    "snapshot_class": "pd-snapshotclass",
+    "maximum_complete_generations": 1,
+    "retention_seconds": 86400,
+    "primary_writer_must_be_destroyed_before_restore": true,
+    "concurrent_source_and_restore_mount": "reject",
+    "multi_volume_atomicity_claimed": false
+  },
+  "key_inventory": [
+    {
+      "role": "authorization-grant",
+      "algorithm": "Ed25519 raw 32-byte seed",
+      "provider_store": "Secret Manager user-managed europe-north1 replication",
+      "version_identity": null,
+      "access_identity": "grant-signer Kubernetes service account via Workload Identity Federation",
+      "allowed_action": "secretmanager.versions.access via roles/secretmanager.secretAccessor on one role-specific secret resource; application requests one pinned version",
+      "denied_subjects": [
+        "browser",
+        "target-workload",
+        "runner",
+        "cleanup-controller"
+      ],
+      "audit": "Secret Manager Data Access through bounded audit route",
+      "rotation": "new grants use new version; admitted grants retain old trust",
+      "deletion_guard": "delayed version destruction plus operator stop",
+      "backup_continuity": "no secret payload backup; pinned live version remains until dependent grants, receipts, or tombstones expire and deletion is separately approved"
+    },
+    {
+      "role": "receipt-signing",
+      "algorithm": "pure Ed25519 raw 32-byte seed",
+      "provider_store": "Secret Manager user-managed europe-north1 replication",
+      "version_identity": null,
+      "access_identity": "receipt-stager Kubernetes service account via Workload Identity Federation",
+      "allowed_action": "secretmanager.versions.access via roles/secretmanager.secretAccessor on one role-specific secret resource; application requests one pinned version",
+      "delivery": "exact bytes staged into the accepted owner-private projected receipt-signing channel",
+      "required_length_bytes": 32,
+      "required_public_key_match": "gate1-known-answer-and-selected-trust-version",
+      "denied_subjects": [
+        "browser",
+        "target-workload",
+        "cleanup-controller",
+        "other-runner"
+      ],
+      "audit": "Secret Manager Data Access through bounded audit route",
+      "rotation": "frozen receipts never re-sign; old trust survives public retention",
+      "deletion_guard": "delayed version destruction plus operator stop",
+      "backup_continuity": "no secret payload backup; pinned live version remains until dependent grants, receipts, or tombstones expire and deletion is separately approved"
+    },
+    {
+      "role": "tombstone-digest",
+      "algorithm": "32-byte service-keyed digest secret",
+      "provider_store": "Secret Manager user-managed europe-north1 replication",
+      "version_identity": null,
+      "access_identity": "sandbox-api Kubernetes service account via Workload Identity Federation",
+      "allowed_action": "secretmanager.versions.access via roles/secretmanager.secretAccessor on one role-specific secret resource; application requests one pinned version",
+      "denied_subjects": [
+        "browser",
+        "target-workload",
+        "runner",
+        "cleanup-controller"
+      ],
+      "audit": "Secret Manager Data Access through bounded audit route",
+      "rotation": "prohibited while protected tombstones remain unless compatibility is proved",
+      "deletion_guard": "delayed version destruction plus operator stop",
+      "backup_continuity": "no secret payload backup; pinned live version remains until dependent grants, receipts, or tombstones expire and deletion is separately approved"
+    }
+  ],
+  "audit_and_retention": {
+    "provider_fixed_management": {
+      "bucket": "_Required",
+      "types": [
+        "Admin Activity",
+        "System Event"
+      ],
+      "retention_days": 400,
+      "configurable": false,
+      "allowed_fields": [
+        "administrative_operation",
+        "operator_or_service_identity",
+        "provider_resource_identity",
+        "time",
+        "status"
+      ],
+      "forbidden_fields": [
+        "visitor_locator",
+        "idempotency_key",
+        "run_id",
+        "operation_id",
+        "request_or_patch_body",
+        "image_or_operation_annotation",
+        "receipt_or_journal_fact",
+        "workload_output",
+        "data_access_record",
+        "diagnostic",
+        "secret_payload"
+      ],
+      "export": "none except bounded private evidence review",
+      "actual_record_review_required": true
+    },
+    "configurable_records": {
+      "maximum_retention_seconds": 86400,
+      "types": [
+        "Secret Manager Data Access",
+        "Kubernetes Data Access",
+        "Policy Denied proof"
+      ],
+      "dedicated_bucket": "kapsel-gate2-audit",
+      "bucket_location": "europe-north1",
+      "retention_days_at_creation": 1,
+      "exclude_duplicate_default_storage": true,
+      "additional_sinks": [],
+      "physical_deletion_within_24h_unproved": true,
+      "candidate_reject_if_unproved": true,
+      "log_filter": "(log_id(\"cloudaudit.googleapis.com/data_access\") AND (protoPayload.serviceName=\"secretmanager.googleapis.com\" OR resource.type=\"k8s_cluster\")) OR log_id(\"cloudaudit.googleapis.com/policy\")",
+      "default_exclusion_name": "kapsel-gate2-no-default-duplicate",
+      "dedicated_sink": "kapsel-gate2-audit",
+      "disabled_sources": [
+        "GKE system logs",
+        "GKE workload logs",
+        "GKE API server component logs",
+        "GKE scheduler component logs",
+        "GKE controller-manager component logs",
+        "application diagnostics"
+      ]
+    },
+    "raw_evidence": {
+      "location": "owner-private out-of-repository binding",
+      "retention_seconds": 86400,
+      "contains_secrets": false,
+      "contains_private_keys": false,
+      "deletion_receipt_required": true
+    }
+  },
+  "inventory": [
+    {
+      "id": "budget",
+      "owner": "operator",
+      "create_step": 1,
+      "delete_step": 12,
+      "billing_class": "billing-observation",
+      "absence_argv": [
+        "gcloud",
+        "billing",
+        "budgets",
+        "list",
+        "--billing-account=${BILLING_ACCOUNT_ID}",
+        "--filter=displayName:kapsel-gate2"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "logging-bucket",
+      "owner": "operator",
+      "create_step": 2,
+      "delete_step": 9,
+      "billing_class": "logging-ingestion-and-retention",
+      "absence_argv": [
+        "gcloud",
+        "logging",
+        "buckets",
+        "describe",
+        "kapsel-gate2-audit",
+        "--location=europe-north1",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "logging-sink",
+      "owner": "operator",
+      "create_step": 2,
+      "delete_step": 9,
+      "billing_class": "logging-ingestion-and-retention",
+      "absence_argv": [
+        "gcloud",
+        "logging",
+        "sinks",
+        "describe",
+        "kapsel-gate2-audit",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "default-sink-exclusion",
+      "owner": "operator",
+      "create_step": 2,
+      "delete_step": 9,
+      "billing_class": "logging-ingestion-and-retention",
+      "absence_argv": [
+        "gcloud",
+        "logging",
+        "sinks",
+        "describe",
+        "_Default",
+        "--format=json(exclusions)",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "JSON must contain no exclusion named kapsel-gate2-no-default-duplicate and must match the private baseline digest"
+    },
+    {
+      "id": "audit-policy-delta",
+      "owner": "operator",
+      "create_step": 2,
+      "delete_step": 9,
+      "billing_class": "iam",
+      "absence_argv": [
+        "gcloud",
+        "projects",
+        "get-iam-policy",
+        "${PROJECT_ID}",
+        "--format=json(auditConfigs)",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "JSON must contain no fixture-added Data Access audit category"
+    },
+    {
+      "id": "vpc",
+      "owner": "operator",
+      "create_step": 3,
+      "delete_step": 11,
+      "billing_class": "vpc",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "networks",
+        "list",
+        "--filter=name:kapsel-gate2",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "subnet-and-ranges",
+      "owner": "operator",
+      "create_step": 4,
+      "delete_step": 10,
+      "billing_class": "vpc",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "networks",
+        "subnets",
+        "list",
+        "--filter=name:kapsel-gate2-europe-north1",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "artifact-repository",
+      "owner": "operator",
+      "create_step": 5,
+      "delete_step": 7,
+      "billing_class": "artifact-storage-and-transfer",
+      "absence_argv": [
+        "gcloud",
+        "artifacts",
+        "repositories",
+        "list",
+        "--location=europe-north1",
+        "--filter=name:kapsel-gate2",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "authorization-grant-secret",
+      "owner": "operator",
+      "create_step": 6,
+      "delete_step": 6,
+      "billing_class": "secret-versions-and-access",
+      "absence_argv": [
+        "gcloud",
+        "secrets",
+        "describe",
+        "kapsel-gate2-authorization-grant",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "receipt-signing-secret",
+      "owner": "operator",
+      "create_step": 6,
+      "delete_step": 6,
+      "billing_class": "secret-versions-and-access",
+      "absence_argv": [
+        "gcloud",
+        "secrets",
+        "describe",
+        "kapsel-gate2-receipt-signing",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "tombstone-digest-secret",
+      "owner": "operator",
+      "create_step": 6,
+      "delete_step": 6,
+      "billing_class": "secret-versions-and-access",
+      "absence_argv": [
+        "gcloud",
+        "secrets",
+        "describe",
+        "kapsel-gate2-tombstone-digest",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "service-accounts",
+      "owner": "operator",
+      "create_step": 7,
+      "delete_step": 8,
+      "billing_class": "iam",
+      "absence_argv": [
+        "gcloud",
+        "iam",
+        "service-accounts",
+        "list",
+        "--filter=email:kapsel-gate2-",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "iam-bindings",
+      "owner": "operator",
+      "create_step": 7,
+      "delete_step": 8,
+      "billing_class": "iam",
+      "absence_argv": [
+        "gcloud",
+        "projects",
+        "get-iam-policy",
+        "${PROJECT_ID}",
+        "--filter=bindings.members:kapsel-gate2-",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no binding member may contain kapsel-gate2-"
+    },
+    {
+      "id": "regional-cluster",
+      "owner": "operator",
+      "create_step": 8,
+      "delete_step": 5,
+      "billing_class": "gke-cluster-management",
+      "absence_argv": [
+        "gcloud",
+        "container",
+        "clusters",
+        "list",
+        "--region=europe-north1",
+        "--filter=name:kapsel-gate2",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "system-node",
+      "owner": "operator",
+      "create_step": 8,
+      "delete_step": 5,
+      "billing_class": "e2-compute-and-boot-disk",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "instances",
+        "list",
+        "--filter=(labels.goog-k8s-cluster-name=kapsel-gate2 AND name~default-pool)",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "three-sandbox-nodes",
+      "owner": "operator",
+      "create_step": 9,
+      "delete_step": 5,
+      "billing_class": "n2-compute-and-boot-disk",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "instances",
+        "list",
+        "--filter=(labels.goog-k8s-cluster-name=kapsel-gate2 AND name~sandbox)",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "kubernetes-policy-and-workloads",
+      "owner": "operator",
+      "create_step": 10,
+      "delete_step": 2,
+      "billing_class": "node-capacity",
+      "absence_argv": [
+        "kubectl",
+        "get",
+        "all,pvc,networkpolicy,resourcequota,limitrange",
+        "--all-namespaces",
+        "-l",
+        "kapsel.dev/gate2=true"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "system-state-regional-disk",
+      "owner": "operator",
+      "create_step": 10,
+      "delete_step": 4,
+      "billing_class": "regional-balanced-pd",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "disks",
+        "list",
+        "--filter=labels.goog-k8s-cluster-name=kapsel-gate2",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "eight-journal-regional-disks",
+      "owner": "operator",
+      "create_step": 11,
+      "delete_step": 4,
+      "billing_class": "regional-balanced-pd",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "disks",
+        "list",
+        "--filter=labels.goog-k8s-cluster-name=kapsel-gate2",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no owned result"
+    },
+    {
+      "id": "snapshot-generation",
+      "owner": "operator",
+      "create_step": 12,
+      "delete_step": 3,
+      "billing_class": "regional-snapshot-storage",
+      "absence_argv": [
+        "gcloud",
+        "compute",
+        "snapshots",
+        "describe",
+        "${OWNER_PRIVATE_OWNED_SNAPSHOT_NAME}",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "raw-evidence",
+      "owner": "private-reviewer",
+      "create_step": 13,
+      "delete_step": 13,
+      "billing_class": "operator-local",
+      "absence_argv": [
+        "python3",
+        "scripts/test-sandbox-gate2-fixture.py",
+        "--assert-private-evidence-deletion-receipt"
+      ],
+      "absence_postcondition": "validated deletion receipt required"
+    }
+  ],
+  "commands": {
+    "tool_versions": {
+      "gcloud": "577.0.0",
+      "kubectl": "gate2-approval-required"
+    },
+    "environment_placeholder_allowlist": [
+      "BILLING_ACCOUNT_ID",
+      "GATE2_CONFIGURABLE_AUDIT_LOG_FILTER",
+      "GATE2_RUNNER_SUBCOMMAND",
+      "KAPSEL_SANDBOX_IMAGE_DIGEST",
+      "NODE_GSA",
+      "OWNER_PRIVATE_ADD_GATE2_AUDIT_POLICY_FILE",
+      "OWNER_PRIVATE_ADD_GATE2_DELTAS_POLICY_FILE",
+      "OWNER_PRIVATE_ADD_GATE2_IAM_POLICY_FILE",
+      "OWNER_PRIVATE_AUDIT_POLICY_FILE",
+      "OWNER_PRIVATE_BUDGET_NAME",
+      "OWNER_PRIVATE_EVIDENCE_CAPTURE_TOOL",
+      "OWNER_PRIVATE_EVIDENCE_DIRECTORY",
+      "OWNER_PRIVATE_JOURNAL_DISK_1",
+      "OWNER_PRIVATE_JOURNAL_DISK_2",
+      "OWNER_PRIVATE_JOURNAL_DISK_3",
+      "OWNER_PRIVATE_JOURNAL_DISK_4",
+      "OWNER_PRIVATE_JOURNAL_DISK_5",
+      "OWNER_PRIVATE_JOURNAL_DISK_6",
+      "OWNER_PRIVATE_JOURNAL_DISK_7",
+      "OWNER_PRIVATE_JOURNAL_DISK_8",
+      "OWNER_PRIVATE_OWNED_DISK_NAMES",
+      "OWNER_PRIVATE_OWNED_SNAPSHOT_NAME",
+      "OWNER_PRIVATE_REMOVE_GATE2_DELTAS_POLICY_FILE",
+      "OWNER_PRIVATE_RENDERED_GATE2_OBJECTS",
+      "OWNER_PRIVATE_RENDERED_JOURNAL_CLAIMS",
+      "OWNER_PRIVATE_RENDERED_SNAPSHOT_OBJECT",
+      "OWNER_PRIVATE_SECRET_NAMES",
+      "OWNER_PRIVATE_SECRET_VERSION_FILES",
+      "OWNER_PRIVATE_SERVICE_ACCOUNT_NAMES",
+      "OWNER_PRIVATE_SYSTEM_DATABASE",
+      "OWNER_PRIVATE_SYSTEM_DISK_NAME",
+      "PROJECT_ID"
+    ],
+    "read_only_preflight": [
+      [
+        "gcloud",
+        "container",
+        "get-server-config",
+        "--region=europe-north1",
+        "--format=json",
+        "--project=${PROJECT_ID}"
+      ],
+      [
+        "gcloud",
+        "compute",
+        "regions",
+        "describe",
+        "europe-north1",
+        "--format=json",
+        "--project=${PROJECT_ID}"
+      ],
+      [
+        "gcloud",
+        "logging",
+        "buckets",
+        "describe",
+        "_Required",
+        "--location=global",
+        "--format=json",
+        "--project=${PROJECT_ID}"
+      ],
+      [
+        "gcloud",
+        "projects",
+        "get-iam-policy",
+        "${PROJECT_ID}",
+        "--format=json",
+        "--project=${PROJECT_ID}"
+      ]
+    ],
+    "provision_argv_preview": [
+      {
+        "sequence": 1,
+        "inventory_ids": [
+          "budget"
+        ],
+        "argv": [
+          "gcloud",
+          "billing",
+          "budgets",
+          "create",
+          "--billing-account=${BILLING_ACCOUNT_ID}",
+          "--display-name=kapsel-gate2",
+          "--budget-amount=100USD",
+          "--threshold-rule=percent=0.5",
+          "--threshold-rule=percent=0.8",
+          "--threshold-rule=percent=1.0"
+        ],
+        "rollback_inventory_sequences": {
+          "budget": 12
+        }
+      },
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "logging-bucket"
+        ],
+        "argv": [
+          "gcloud",
+          "logging",
+          "buckets",
+          "create",
+          "kapsel-gate2-audit",
+          "--location=europe-north1",
+          "--retention-days=1",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "logging-bucket": 9
+        }
+      },
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "logging-sink"
+        ],
+        "argv": [
+          "gcloud",
+          "logging",
+          "sinks",
+          "create",
+          "kapsel-gate2-audit",
+          "logging.googleapis.com/projects/${PROJECT_ID}/locations/europe-north1/buckets/kapsel-gate2-audit",
+          "--log-filter=${GATE2_CONFIGURABLE_AUDIT_LOG_FILTER}",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "logging-sink": 9
+        }
+      },
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "default-sink-exclusion"
+        ],
+        "argv": [
+          "gcloud",
+          "logging",
+          "sinks",
+          "update",
+          "_Default",
+          "--add-exclusion=name=kapsel-gate2-no-default-duplicate,filter=${GATE2_CONFIGURABLE_AUDIT_LOG_FILTER}",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "default-sink-exclusion": 9
+        }
+      },
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "audit-policy-delta"
+        ],
+        "argv": [
+          "gcloud",
+          "projects",
+          "set-iam-policy",
+          "${PROJECT_ID}",
+          "${OWNER_PRIVATE_ADD_GATE2_AUDIT_POLICY_FILE}",
+          "--format=json",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "audit-policy-delta": 9
+        }
+      },
+      {
+        "sequence": 3,
+        "inventory_ids": [
+          "vpc"
+        ],
+        "argv": [
+          "gcloud",
+          "compute",
+          "networks",
+          "create",
+          "kapsel-gate2",
+          "--subnet-mode=custom",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "vpc": 11
+        }
+      },
+      {
+        "sequence": 4,
+        "inventory_ids": [
+          "subnet-and-ranges"
+        ],
+        "argv": [
+          "gcloud",
+          "compute",
+          "networks",
+          "subnets",
+          "create",
+          "kapsel-gate2-europe-north1",
+          "--region=europe-north1",
+          "--network=kapsel-gate2",
+          "--range=10.72.0.0/24",
+          "--secondary-range=kapsel-gate2-pods=10.73.0.0/20,kapsel-gate2-services=10.74.0.0/24",
+          "--enable-private-ip-google-access",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "subnet-and-ranges": 10
+        }
+      },
+      {
+        "sequence": 5,
+        "inventory_ids": [
+          "artifact-repository"
+        ],
+        "argv": [
+          "gcloud",
+          "artifacts",
+          "repositories",
+          "create",
+          "kapsel-gate2",
+          "--location=europe-north1",
+          "--repository-format=docker",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "artifact-repository": 7
+        }
+      },
+      {
+        "sequence": 6,
+        "inventory_ids": [
+          "authorization-grant-secret"
+        ],
+        "argv": [
+          "gcloud",
+          "secrets",
+          "create",
+          "kapsel-gate2-authorization-grant",
+          "--replication-policy=user-managed",
+          "--locations=europe-north1",
+          "--labels=kapsel-gate2=true",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "authorization-grant-secret": 6
+        }
+      },
+      {
+        "sequence": 6,
+        "inventory_ids": [
+          "receipt-signing-secret"
+        ],
+        "argv": [
+          "gcloud",
+          "secrets",
+          "create",
+          "kapsel-gate2-receipt-signing",
+          "--replication-policy=user-managed",
+          "--locations=europe-north1",
+          "--labels=kapsel-gate2=true",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "receipt-signing-secret": 6
+        }
+      },
+      {
+        "sequence": 6,
+        "inventory_ids": [
+          "tombstone-digest-secret"
+        ],
+        "argv": [
+          "gcloud",
+          "secrets",
+          "create",
+          "kapsel-gate2-tombstone-digest",
+          "--replication-policy=user-managed",
+          "--locations=europe-north1",
+          "--labels=kapsel-gate2=true",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "tombstone-digest-secret": 6
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "create",
+          "kapsel-gate2-node",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "service-accounts": 8
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "create",
+          "kapsel-gate2-grant-signer",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "service-accounts": 8
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "create",
+          "kapsel-gate2-receipt-stager",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "service-accounts": 8
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "create",
+          "kapsel-gate2-sandbox-api",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "service-accounts": 8
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "create",
+          "kapsel-gate2-runner",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "service-accounts": 8
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "create",
+          "kapsel-gate2-cleanup-controller",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "service-accounts": 8
+        }
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "iam-bindings"
+        ],
+        "argv": [
+          "gcloud",
+          "projects",
+          "set-iam-policy",
+          "${PROJECT_ID}",
+          "${OWNER_PRIVATE_ADD_GATE2_IAM_POLICY_FILE}",
+          "--format=json",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "iam-bindings": 8
+        }
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "regional-cluster",
+          "system-node"
+        ],
+        "argv": [
+          "gcloud",
+          "container",
+          "clusters",
+          "create",
+          "kapsel-gate2",
+          "--region=europe-north1",
+          "--release-channel=regular",
+          "--cluster-version=1.35.6-gke.1127000",
+          "--network=kapsel-gate2",
+          "--subnetwork=kapsel-gate2-europe-north1",
+          "--cluster-secondary-range-name=kapsel-gate2-pods",
+          "--services-secondary-range-name=kapsel-gate2-services",
+          "--enable-private-nodes",
+          "--enable-ip-alias",
+          "--enable-dataplane-v2",
+          "--enable-dns-access",
+          "--no-enable-ip-access",
+          "--workload-pool=${PROJECT_ID}.svc.id.goog",
+          "--service-account=${NODE_GSA}",
+          "--workload-metadata=GKE_METADATA",
+          "--addons=GcePersistentDiskCsiDriver",
+          "--machine-type=e2-standard-2",
+          "--num-nodes=1",
+          "--node-locations=europe-north1-a",
+          "--image-type=COS_CONTAINERD",
+          "--disk-size=100",
+          "--labels=kapsel-gate2=true",
+          "--logging=NONE",
+          "--monitoring=NONE",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "regional-cluster": 5,
+          "system-node": 5
+        }
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
+          "three-sandbox-nodes"
+        ],
+        "argv": [
+          "gcloud",
+          "container",
+          "node-pools",
+          "create",
+          "sandbox",
+          "--cluster=kapsel-gate2",
+          "--region=europe-north1",
+          "--machine-type=n2-standard-4",
+          "--num-nodes=1",
+          "--node-locations=europe-north1-a,europe-north1-b,europe-north1-c",
+          "--image-type=COS_CONTAINERD",
+          "--disk-size=100",
+          "--sandbox=type=gvisor",
+          "--service-account=${NODE_GSA}",
+          "--workload-metadata=GKE_METADATA",
+          "--node-labels=kapsel.dev/sandbox=true",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "three-sandbox-nodes": 5
+        }
+      },
+      {
+        "sequence": 10,
+        "inventory_ids": [
+          "kubernetes-policy-and-workloads",
+          "system-state-regional-disk"
+        ],
+        "argv": [
+          "kubectl",
+          "create",
+          "--filename=${OWNER_PRIVATE_RENDERED_GATE2_OBJECTS}"
+        ],
+        "rollback_inventory_sequences": {
+          "kubernetes-policy-and-workloads": 2,
+          "system-state-regional-disk": 4
+        }
+      },
+      {
+        "sequence": 11,
+        "inventory_ids": [
+          "eight-journal-regional-disks"
+        ],
+        "argv": [
+          "kubectl",
+          "create",
+          "--filename=${OWNER_PRIVATE_RENDERED_JOURNAL_CLAIMS}"
+        ],
+        "rollback_inventory_sequences": {
+          "eight-journal-regional-disks": 4
+        }
+      },
+      {
+        "sequence": 12,
+        "inventory_ids": [
+          "snapshot-generation"
+        ],
+        "argv": [
+          "kubectl",
+          "create",
+          "--filename=${OWNER_PRIVATE_RENDERED_SNAPSHOT_OBJECT}"
+        ],
+        "rollback_inventory_sequences": {
+          "snapshot-generation": 3
+        }
+      },
+      {
+        "sequence": 13,
+        "inventory_ids": [
+          "raw-evidence"
+        ],
+        "argv": [
+          "python3",
+          "${OWNER_PRIVATE_EVIDENCE_CAPTURE_TOOL}",
+          "--output=${OWNER_PRIVATE_EVIDENCE_DIRECTORY}"
+        ],
+        "rollback_inventory_sequences": {
+          "raw-evidence": 13
+        }
+      }
+    ],
+    "operator_connection_argv": [
+      "gcloud",
+      "container",
+      "clusters",
+      "get-credentials",
+      "kapsel-gate2",
+      "--region=europe-north1",
+      "--dns-endpoint",
+      "--project=${PROJECT_ID}"
+    ],
+    "global_stop_argv": [
+      "kapsel-sandbox",
+      "stop",
+      "--database",
+      "${OWNER_PRIVATE_SYSTEM_DATABASE}"
+    ],
+    "teardown_argv": [
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "kubernetes-policy-and-workloads"
+        ],
+        "argv": [
+          "kubectl",
+          "delete",
+          "namespace",
+          "--selector=kapsel.dev/gate2=true",
+          "--wait=true"
+        ]
+      },
+      {
+        "sequence": 3,
+        "inventory_ids": [
+          "snapshot-generation"
+        ],
+        "argv": [
+          "gcloud",
+          "compute",
+          "snapshots",
+          "delete",
+          "${OWNER_PRIVATE_OWNED_SNAPSHOT_NAME}",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 4,
+        "inventory_ids": [
+          "system-state-regional-disk",
+          "eight-journal-regional-disks"
+        ],
+        "argv": [
+          "gcloud",
+          "compute",
+          "disks",
+          "delete",
+          "${OWNER_PRIVATE_SYSTEM_DISK_NAME}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_1}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_2}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_3}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_4}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_5}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_6}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_7}",
+          "${OWNER_PRIVATE_JOURNAL_DISK_8}",
+          "--region=europe-north1",
+          "--project=${PROJECT_ID}",
+          "--quiet"
+        ]
+      },
+      {
+        "sequence": 5,
+        "inventory_ids": [
+          "regional-cluster",
+          "system-node",
+          "three-sandbox-nodes"
+        ],
+        "argv": [
+          "gcloud",
+          "container",
+          "clusters",
+          "delete",
+          "kapsel-gate2",
+          "--region=europe-north1",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 6,
+        "inventory_ids": [
+          "authorization-grant-secret"
+        ],
+        "argv": [
+          "gcloud",
+          "secrets",
+          "delete",
+          "kapsel-gate2-authorization-grant",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 6,
+        "inventory_ids": [
+          "receipt-signing-secret"
+        ],
+        "argv": [
+          "gcloud",
+          "secrets",
+          "delete",
+          "kapsel-gate2-receipt-signing",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 6,
+        "inventory_ids": [
+          "tombstone-digest-secret"
+        ],
+        "argv": [
+          "gcloud",
+          "secrets",
+          "delete",
+          "kapsel-gate2-tombstone-digest",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 7,
+        "inventory_ids": [
+          "artifact-repository"
+        ],
+        "argv": [
+          "gcloud",
+          "artifacts",
+          "repositories",
+          "delete",
+          "kapsel-gate2",
+          "--location=europe-north1",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "iam-bindings"
+        ],
+        "argv": [
+          "gcloud",
+          "projects",
+          "set-iam-policy",
+          "${PROJECT_ID}",
+          "${OWNER_PRIVATE_REMOVE_GATE2_DELTAS_POLICY_FILE}",
+          "--format=json",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "delete",
+          "kapsel-gate2-node@${PROJECT_ID}.iam.gserviceaccount.com",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "delete",
+          "kapsel-gate2-grant-signer@${PROJECT_ID}.iam.gserviceaccount.com",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "delete",
+          "kapsel-gate2-receipt-stager@${PROJECT_ID}.iam.gserviceaccount.com",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "delete",
+          "kapsel-gate2-sandbox-api@${PROJECT_ID}.iam.gserviceaccount.com",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "delete",
+          "kapsel-gate2-runner@${PROJECT_ID}.iam.gserviceaccount.com",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 8,
+        "inventory_ids": [
+          "service-accounts"
+        ],
+        "argv": [
+          "gcloud",
+          "iam",
+          "service-accounts",
+          "delete",
+          "kapsel-gate2-cleanup-controller@${PROJECT_ID}.iam.gserviceaccount.com",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
+          "audit-policy-delta"
+        ],
+        "argv": [
+          "gcloud",
+          "projects",
+          "set-iam-policy",
+          "${PROJECT_ID}",
+          "${OWNER_PRIVATE_REMOVE_GATE2_DELTAS_POLICY_FILE}",
+          "--format=json",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
+          "default-sink-exclusion"
+        ],
+        "argv": [
+          "gcloud",
+          "logging",
+          "sinks",
+          "update",
+          "_Default",
+          "--remove-exclusions=kapsel-gate2-no-default-duplicate",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
+          "logging-sink"
+        ],
+        "argv": [
+          "gcloud",
+          "logging",
+          "sinks",
+          "delete",
+          "kapsel-gate2-audit",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
+          "logging-bucket"
+        ],
+        "argv": [
+          "gcloud",
+          "logging",
+          "buckets",
+          "delete",
+          "kapsel-gate2-audit",
+          "--location=europe-north1",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 10,
+        "inventory_ids": [
+          "subnet-and-ranges"
+        ],
+        "argv": [
+          "gcloud",
+          "compute",
+          "networks",
+          "subnets",
+          "delete",
+          "kapsel-gate2-europe-north1",
+          "--region=europe-north1",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 11,
+        "inventory_ids": [
+          "vpc"
+        ],
+        "argv": [
+          "gcloud",
+          "compute",
+          "networks",
+          "delete",
+          "kapsel-gate2",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 12,
+        "inventory_ids": [
+          "budget"
+        ],
+        "argv": [
+          "gcloud",
+          "billing",
+          "budgets",
+          "delete",
+          "${OWNER_PRIVATE_BUDGET_NAME}"
+        ]
+      },
+      {
+        "sequence": 13,
+        "inventory_ids": [
+          "raw-evidence"
+        ],
+        "argv": [
+          "python3",
+          "scripts/test-sandbox-gate2-fixture.py",
+          "--assert-private-evidence-deletion-receipt"
+        ]
+      }
+    ],
+    "partial_failure_rule": "run global stop when possible, then execute every teardown entry whose inventory ID was observed created; tolerate not-found and retain the first non-not-found failure",
+    "final_absence_rule": "run every inventory absence_argv after teardown and again after the 24-hour expiry; any owned result rejects cleanup",
+    "pre_logging_delete_absence_argv": [
+      "gcloud",
+      "logging",
+      "read",
+      "${GATE2_CONFIGURABLE_AUDIT_LOG_FILTER}",
+      "--bucket=kapsel-gate2-audit",
+      "--location=europe-north1",
+      "--view=_AllLogs",
+      "--freshness=25h",
+      "--limit=1",
+      "--project=${PROJECT_ID}"
+    ],
+    "optimistic_policy_rule": "every set-iam-policy file is rendered immediately before use from the current policy etag, adds or removes only fixture-owned IAM/audit deltas, and aborts on etag conflict",
+    "default_sink_baseline_before_argv": [
+      "gcloud",
+      "logging",
+      "sinks",
+      "describe",
+      "_Default",
+      "--format=json(exclusions)",
+      "--project=${PROJECT_ID}"
+    ],
+    "default_sink_baseline_after_argv": [
+      "gcloud",
+      "logging",
+      "sinks",
+      "describe",
+      "_Default",
+      "--format=json(exclusions)",
+      "--project=${PROJECT_ID}"
+    ],
+    "default_sink_restore_rule": "before digest must equal private authorization binding; after removing only the named fixture exclusion, after digest must equal before digest; any conflict or extra fixture exclusion rejects cleanup",
+    "project_scope_rule": "every project-scoped gcloud argv pins --project=${PROJECT_ID}; PROJECT_ID is accepted only from the approved private account-binding digest render"
+  },
+  "cost": {
+    "currency": "USD",
+    "duration_hours": 24,
+    "screened_subtotal_usd": 21.13,
+    "maximum_gross_spend_usd": 100,
+    "raw_quantities": {
+      "n2_standard_4_nodes": 3,
+      "e2_standard_2_nodes": 1,
+      "cluster_hours": 24,
+      "boot_disk_gib": 400,
+      "regional_state_disk_gib": 28,
+      "snapshot_generation_gib_upper_bound": 28,
+      "artifact_registry_gib_allowance": 1,
+      "active_secret_versions": 3
+    },
+    "allowed_billing_classes": [
+      "artifact-storage-and-transfer",
+      "billing-observation",
+      "e2-compute-and-boot-disk",
+      "gke-cluster-management",
+      "iam",
+      "logging-ingestion-and-retention",
+      "n2-compute-and-boot-disk",
+      "node-capacity",
+      "operator-local",
+      "regional-balanced-pd",
+      "regional-snapshot-storage",
+      "secret-versions-and-access",
+      "vpc"
+    ],
+    "forbidden_unpriced_classes": [
+      "load-balancer",
+      "public-address",
+      "cloud-nat",
+      "internet-egress",
+      "cross-region-transfer",
+      "backup-for-gke",
+      "extended-support",
+      "spot",
+      "commitment"
+    ],
+    "budget_alert_is_not_hard_stop": true,
+    "reject_if_repriced_gross_ceiling_exceeds_usd": 100
+  },
+  "execution_blockers": [
+    "fixture_revision",
+    "registry_digest",
+    "private_account_binding",
+    "cleanup_owner_binding",
+    "absolute_approval_and_expiry",
+    "kubernetes_token_audience",
+    "provider_runner_subcommand",
+    "secret_version_identities",
+    "one_day_configurable_log_physical_deletion_proof",
+    "actual_required_log_field_review",
+    "effective_iam_and_kubernetes_rbac_review",
+    "current_version_and_price_recheck",
+    "node_service_account_binding",
+    "workload_identity_bindings",
+    "operator_iam_and_rbac_binding",
+    "default_sink_baseline_and_restore_digest"
+  ],
+  "non_claims": [
+    "no_provider_selected_for_execution",
+    "no_provider_resource_or_credential_used_by_this_fixture",
+    "no_registry_digest",
+    "no_live_gvisor_or_networkpolicy_enforcement",
+    "no_storage_fencing_or_snapshot_atomicity",
+    "no_managed_key_custody_or_audit_proof",
+    "no_cleanup_or_cost_measurement",
+    "no_endpoint_dns_or_public_traffic",
+    "no_gate2_authorization"
+  ]
+}
