@@ -17,7 +17,7 @@
     "kubernetes-controller",
     "authorization-inputs",
     "receipt-signing",
-    "receipt-handoff"
+    "runner-handoff"
   ],
   "explicitly_denied_mutations": [
     "metadata",

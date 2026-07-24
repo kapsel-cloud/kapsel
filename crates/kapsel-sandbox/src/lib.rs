@@ -20,12 +20,25 @@ use http::{
 };
 
 use kapsel::{
-    AgentRequest, Application, ApplicationError, OperationReport, OperationResult, OperationState,
-    OperatorConfiguration, TargetRejection,
+    AgentRequest, Application, ApplicationError, OperationResult, OperatorConfiguration,
+    TargetRejection,
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod runner_handoff;
+mod runner_process;
+
+use runner_handoff::{
+    constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
+    HandoffIdentity,
+};
+pub use runner_handoff::{
+    run_application_handoff, serve_private_handoff, HandoffAssignment, HandoffError,
+    TerminalHandoffReport,
+};
+pub use runner_process::run as run_runner_process;
 
 const QUEUED_RUNS_MAX: i64 = 32;
 const ACTIVE_RUNS_MAX: i64 = 8;
@@ -79,6 +92,14 @@ const POLICY_OBJECTS_V1: [(&str, &str); 10] = [
     ),
 ];
 const RECEIPT_BYTES_MAX: usize = 16 * 1024;
+type StoredReportBinding = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Vec<u8>,
+);
+
 const FORBIDDEN_HEADERS: [&str; 17] = [
     "authorization",
     "cookie",
@@ -155,7 +176,7 @@ pub struct Admission {
 }
 
 /// Durable scheduler lease appointing one recovery owner without changing public outcome.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct DispatchLease {
     /// Public run identity whose active reservation is leased.
     pub run_id: String,
@@ -165,6 +186,21 @@ pub struct DispatchLease {
     epoch: i64,
     /// Absolute whole-second lease expiry.
     expires_at_unix_s: i64,
+    /// Raw private runner credential, never retained in system state.
+    handoff_credential: [u8; 32],
+}
+
+impl fmt::Debug for DispatchLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DispatchLease")
+            .field("run_id", &self.run_id)
+            .field("lease_id", &self.lease_id)
+            .field("epoch", &self.epoch)
+            .field("expires_at_unix_s", &self.expires_at_unix_s)
+            .field("handoff_credential", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// One exact policy object frozen at admission.
@@ -268,6 +304,7 @@ pub enum ExecutionState {
 }
 
 impl ExecutionState {
+    #[cfg(test)]
     fn token(self) -> &'static str {
         match self {
             Self::Queued => "queued",
@@ -422,6 +459,7 @@ pub enum ServiceError {
 }
 
 /// SQLite-backed fixed sandbox service.
+#[derive(Clone)]
 pub struct Service {
     database_path: PathBuf,
     receipt_directory: PathBuf,
@@ -567,6 +605,7 @@ impl Service {
     /// [`ServiceError::RunNotFound`] failure.
     pub fn dispatch_next(&self, now_unix_s: i64) -> Result<DispatchLease, ServiceError> {
         let lease_id = random_identity()?;
+        let handoff_credential = random_credential()?;
         let mut connection = self.connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -581,14 +620,15 @@ impl Service {
         if active >= ACTIVE_RUNS_MAX {
             return Err(ServiceError::ActiveSaturated);
         }
-        let (run_id, deadline_seconds): (String, i64) = transaction
+        let (run_id, operation_id, deadline_seconds): (String, String, i64) = transaction
             .query_row(
                 concat!(
-                    "SELECT run_id, deadline_seconds FROM runs WHERE execution_state = 'queued' ",
-                    "AND public_retained = 1 ORDER BY admission_order LIMIT 1"
+                    "SELECT run_id, operation_id, deadline_seconds FROM runs ",
+                    "WHERE execution_state = 'queued' AND public_retained = 1 ",
+                    "ORDER BY admission_order LIMIT 1"
                 ),
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(storage_error)?
@@ -597,14 +637,27 @@ impl Service {
             .checked_add(deadline_seconds)
             .ok_or(ServiceError::Unavailable)?;
         let lease_expires_at = lease_expiry(now_unix_s, deadline_at)?;
+        let verifier = credential_verifier(&HandoffIdentity {
+            run_id: run_id.clone(),
+            operation_id,
+            lease_id: lease_id.clone(),
+            credential: handoff_credential,
+        });
         transaction
             .execute(
                 concat!(
                     "UPDATE runs SET active = 1, execution_state = 'running', ",
                     "dispatched_at = ?2, deadline_at = ?3, lease_id = ?4, lease_epoch = 1, ",
-                    "lease_expires_at = ?5 WHERE run_id = ?1"
+                    "lease_expires_at = ?5, handoff_credential_verifier = ?6 WHERE run_id = ?1"
                 ),
-                params![run_id, now_unix_s, deadline_at, lease_id, lease_expires_at],
+                params![
+                    run_id,
+                    now_unix_s,
+                    deadline_at,
+                    lease_id,
+                    lease_expires_at,
+                    verifier.as_slice()
+                ],
             )
             .map_err(storage_error)?;
         transaction
@@ -620,6 +673,7 @@ impl Service {
             lease_id,
             epoch: 1,
             expires_at_unix_s: lease_expires_at,
+            handoff_credential,
         })
     }
 
@@ -663,6 +717,7 @@ impl Service {
     ) -> Result<DispatchLease, ServiceError> {
         bounded_hex_128(run_id)?;
         let new_lease_id = random_identity()?;
+        let handoff_credential = random_credential()?;
         let mut connection = self.connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -688,20 +743,35 @@ impl Service {
         if now_unix_s < expires_at && !previous_matches {
             return Err(ServiceError::LeaseBusy);
         }
-        let lease_id = if previous_matches {
-            stored_id
-        } else {
-            new_lease_id
-        };
+        let lease_id = new_lease_id;
         let next_epoch = epoch.checked_add(1).ok_or(ServiceError::Unavailable)?;
         let next_expiry = recovery_lease_expiry(now_unix_s)?;
+        let operation_id: String = transaction
+            .query_row(
+                "SELECT operation_id FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        let verifier = credential_verifier(&HandoffIdentity {
+            run_id: run_id.to_owned(),
+            operation_id,
+            lease_id: lease_id.clone(),
+            credential: handoff_credential,
+        });
         transaction
             .execute(
                 concat!(
-                    "UPDATE runs SET lease_id = ?2, lease_epoch = ?3, lease_expires_at = ?4 ",
-                    "WHERE run_id = ?1"
+                    "UPDATE runs SET lease_id = ?2, lease_epoch = ?3, lease_expires_at = ?4, ",
+                    "handoff_credential_verifier = ?5 WHERE run_id = ?1"
                 ),
-                params![run_id, lease_id, next_epoch, next_expiry],
+                params![
+                    run_id,
+                    lease_id,
+                    next_epoch,
+                    next_expiry,
+                    verifier.as_slice()
+                ],
             )
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)?;
@@ -710,6 +780,30 @@ impl Service {
             lease_id,
             epoch: next_epoch,
             expires_at_unix_s: next_expiry,
+            handoff_credential,
+        })
+    }
+
+    /// Builds the raw owner-private assignment for the current lease without reading it back from
+    /// durable system state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lease or identity failure when the supplied lease is not current.
+    pub fn handoff_assignment(
+        &self,
+        lease: &DispatchLease,
+        endpoint: std::net::SocketAddr,
+        now_unix_s: i64,
+    ) -> Result<HandoffAssignment, ServiceError> {
+        self.validate_lease(lease, now_unix_s)?;
+        let operation_id = self.server_owned_request(&lease.run_id)?.operation_id;
+        Ok(HandoffAssignment {
+            run_id: lease.run_id.clone(),
+            operation_id,
+            lease_id: lease.lease_id.clone(),
+            credential: lease.handoff_credential,
+            endpoint,
         })
     }
 
@@ -912,11 +1006,281 @@ impl Service {
         }
     }
 
-    /// Runs the existing Kapsel application with one server-owned request and projects its report.
+    pub(crate) fn commit_application_invoked(
+        &self,
+        identity: &HandoffIdentity,
+        now_unix_s: i64,
+    ) -> Result<(), ServiceError> {
+        timestamp(now_unix_s)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let stored: (String, String, i64, bool, Vec<u8>, String, bool, bool) = transaction
+            .query_row(
+                concat!(
+                    "SELECT operation_id, lease_id, lease_expires_at, active, ",
+                    "handoff_credential_verifier, execution_state, policy_verified, ",
+                    "application_invoked FROM runs WHERE run_id = ?1"
+                ),
+                [&identity.run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::Unavailable)?;
+        let verifier = credential_verifier(identity);
+        if stored.0 != identity.operation_id
+            || stored.1 != identity.lease_id
+            || now_unix_s >= stored.2
+            || !stored.3
+            || !constant_time_equal(&stored.4, &verifier)
+            || !stored.6
+            || (!stored.7 && stored.5 != "running")
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        if !stored.7 {
+            let changed = transaction
+                .execute(
+                    concat!(
+                        "UPDATE runs SET application_invoked = 1 WHERE run_id = ?1 ",
+                        "AND lease_id = ?2 AND handoff_credential_verifier = ?3 ",
+                        "AND active = 1 AND execution_state = 'running'"
+                    ),
+                    params![identity.run_id, identity.lease_id, verifier.as_slice()],
+                )
+                .map_err(storage_error)?;
+            if changed != 1 {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        transaction.commit().map_err(storage_error)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the transaction keeps authentication, report binding, and projection together"
+    )]
+    pub(crate) fn commit_application_report(
+        &self,
+        identity: &HandoffIdentity,
+        report: &TerminalHandoffReport,
+        now_unix_s: i64,
+    ) -> Result<(), ServiceError> {
+        timestamp(now_unix_s)?;
+        let payload_digest =
+            report_payload_digest(&identity.run_id, &identity.operation_id, report);
+        let (kind, result, rejection, receipt_digest, receipt_bytes) = match report {
+            TerminalHandoffReport::NotAttempted(rejection) => {
+                let rejection = match rejection {
+                    TargetRejection::DeploymentNotFound => "DEPLOYMENT_NOT_FOUND",
+                    TargetRejection::ContainerNotFound => "CONTAINER_NOT_FOUND",
+                    TargetRejection::InvalidTarget => "INVALID_TARGET",
+                };
+                ("not_attempted", None, Some(rejection), None, None)
+            },
+            TerminalHandoffReport::Finalized {
+                result,
+                receipt_digest,
+                receipt_bytes,
+            } => {
+                if receipt_bytes.is_empty()
+                    || receipt_bytes.len() > RECEIPT_BYTES_MAX
+                    || hex(&Sha256::digest(receipt_bytes)) != *receipt_digest
+                {
+                    return Err(ServiceError::Unavailable);
+                }
+                let result = match result {
+                    OperationResult::Succeeded => "SUCCEEDED",
+                    OperationResult::Failed => "FAILED",
+                    OperationResult::Unknown => "UNKNOWN",
+                };
+                (
+                    "finalized",
+                    Some(result),
+                    None,
+                    Some(receipt_digest.as_str()),
+                    Some(receipt_bytes.as_slice()),
+                )
+            },
+        };
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let stored: (String, String, i64, bool, Vec<u8>, String, bool, bool) = transaction
+            .query_row(
+                concat!(
+                    "SELECT operation_id, lease_id, lease_expires_at, active, ",
+                    "handoff_credential_verifier, execution_state, application_invoked, ",
+                    "public_retained FROM runs WHERE run_id = ?1"
+                ),
+                [&identity.run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::Unavailable)?;
+        let verifier = credential_verifier(identity);
+        if stored.0 != identity.operation_id
+            || stored.1 != identity.lease_id
+            || now_unix_s >= stored.2
+            || !stored.3
+            || !constant_time_equal(&stored.4, &verifier)
+            || !stored.6
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        let existing: Option<StoredReportBinding> = transaction
+            .query_row(
+                concat!(
+                    "SELECT kind, receiver_result, target_rejection, receipt_digest, ",
+                    "payload_digest FROM application_reports WHERE run_id = ?1"
+                ),
+                [&identity.run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?;
+        if let Some(existing) = existing {
+            if existing.0 != kind
+                || existing.1.as_deref() != result
+                || existing.2.as_deref() != rejection
+                || existing.3.as_deref() != receipt_digest
+                || !constant_time_equal(&existing.4, &payload_digest)
+            {
+                return Err(ServiceError::Unavailable);
+            }
+        } else {
+            if stored.5 != "running" {
+                return Err(ServiceError::Unavailable);
+            }
+            transaction
+                .execute(
+                    "INSERT INTO application_reports VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        identity.run_id,
+                        kind,
+                        result,
+                        rejection,
+                        receipt_digest,
+                        payload_digest.as_slice()
+                    ],
+                )
+                .map_err(storage_error)?;
+            let (state, event) = if kind == "not_attempted" {
+                ("not_attempted", "execution.not_attempted")
+            } else {
+                ("terminal", "execution.terminal")
+            };
+            transaction
+                .execute(
+                    concat!(
+                        "UPDATE runs SET execution_state = ?2, receiver_result = ?3, ",
+                        "target_rejection = ?4 WHERE run_id = ?1"
+                    ),
+                    params![identity.run_id, state, result, rejection],
+                )
+                .map_err(storage_error)?;
+            if stored.7 {
+                append_event(&transaction, &identity.run_id, event, now_unix_s)?;
+            }
+            if kind == "not_attempted" {
+                transaction
+                    .execute(
+                        "UPDATE cleanup_records SET eligible = 1 WHERE run_id = ?1",
+                        [&identity.run_id],
+                    )
+                    .map_err(storage_error)?;
+            }
+        }
+        if let Some(digest) = receipt_digest {
+            let object_name = format!("sandbox-{}-{digest}.receipt", identity.run_id);
+            let completed: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM receipts WHERE run_id = ?1)",
+                    [&identity.run_id],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if !completed {
+                let pending: Option<(String, String)> = transaction
+                    .query_row(
+                        "SELECT digest, object_name FROM receipt_publications WHERE run_id = ?1",
+                        [&identity.run_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(storage_error)?;
+                if let Some((pending_digest, pending_name)) = pending {
+                    if pending_digest != digest || pending_name != object_name {
+                        return Err(ServiceError::Unavailable);
+                    }
+                } else {
+                    transaction
+                        .execute(
+                            "INSERT INTO receipt_publications VALUES (?1, ?2, ?3, ?4)",
+                            params![identity.run_id, digest, object_name, now_unix_s],
+                        )
+                        .map_err(storage_error)?;
+                }
+            }
+        }
+        transaction.commit().map_err(storage_error)?;
+        if let (Some(digest), Some(bytes)) = (receipt_digest, receipt_bytes) {
+            let object_name = format!("sandbox-{}-{digest}.receipt", identity.run_id);
+            self.complete_receipt_publication(
+                &identity.run_id,
+                bytes,
+                digest,
+                &object_name,
+                now_unix_s,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Process-local deterministic compatibility adapter for package contract tests.
+    ///
+    /// Production composition uses the separate native `runner` and `handoff-serve` modes. This
+    /// hidden adapter crosses the same loopback codec and system transactions; it does not directly
+    /// mark invocation, project reports, read a system path from the application, or define another
+    /// deployment interface.
     ///
     /// # Errors
     ///
-    /// Returns bounded sandbox transition/storage errors or the unchanged application failure.
+    /// Returns bounded sandbox, application-open, or private-handoff failures.
     ///
     /// # Cancellation safety
     ///
@@ -928,64 +1292,71 @@ impl Service {
         configuration: OperatorConfiguration,
         now_unix_s: i64,
     ) -> Result<Snapshot, RunError> {
-        self.validate_application_ready(lease, now_unix_s, false)
-            .map_err(RunError::Service)?;
-        let request = self
-            .server_owned_request(&lease.run_id)
-            .map_err(RunError::Service)?;
-        let mut application = Application::open(configuration).map_err(RunError::Application)?;
-        self.mark_application_invoked(lease, now_unix_s)
-            .map_err(RunError::Service)?;
-        let report = application
-            .execute(&request)
-            .await
-            .map_err(RunError::Application)?;
-        self.record_application_report(&lease.run_id, &report, now_unix_s)
-            .map_err(RunError::Service)?;
-        self.snapshot(&lease.run_id, now_unix_s)
-            .map_err(RunError::Service)
+        self.run_application_via_handoff(lease, configuration, now_unix_s, false)
+            .await?
+            .ok_or(RunError::Service(ServiceError::RunNotFound))
     }
 
-    /// Reopens the configured application and reconciles the same operation after restart.
+    /// Process-local deterministic recovery adapter crossing the exact private handoff.
+    ///
+    /// Production composition uses the separate native modes. This method remains only so the
+    /// accepted package contract matrix can exercise deterministic Kubernetes transports.
     ///
     /// # Errors
     ///
-    /// Returns a bounded sandbox failure or unchanged application failure.
+    /// Returns bounded sandbox, application-open, or private-handoff failures.
     ///
     /// # Cancellation safety
     ///
-    /// Cancellation preserves both journals at their last committed states. Repeat this method with
-    /// the same operation identity and per-run journal.
+    /// Cancellation preserves both journals at their last committed states. Repeat with the same
+    /// operation identity and per-run journal.
     pub async fn reconcile_application(
         &self,
         lease: &DispatchLease,
         configuration: OperatorConfiguration,
         now_unix_s: i64,
     ) -> Result<Option<Snapshot>, RunError> {
-        self.validate_application_ready(lease, now_unix_s, true)
+        self.run_application_via_handoff(lease, configuration, now_unix_s, true)
+            .await
+    }
+
+    async fn run_application_via_handoff(
+        &self,
+        lease: &DispatchLease,
+        configuration: OperatorConfiguration,
+        now_unix_s: i64,
+        recovery: bool,
+    ) -> Result<Option<Snapshot>, RunError> {
+        self.validate_application_ready(lease, now_unix_s, recovery)
             .map_err(RunError::Service)?;
-        let mut application = Application::open(configuration).map_err(RunError::Application)?;
-        self.mark_application_invoked(lease, now_unix_s)
-            .map_err(RunError::Service)?;
-        let expected = self
+        let request = self
             .server_owned_request(&lease.run_id)
             .map_err(RunError::Service)?;
-        let report = match application
-            .reconcile()
-            .await
-            .map_err(RunError::Application)?
-        {
-            Some(report) => report,
-            None => application
-                .execute(&expected)
-                .await
-                .map_err(RunError::Application)?,
-        };
-        if report.operation_id != expected.operation_id {
-            return Err(RunError::Service(ServiceError::InvalidTransition));
-        }
-        self.record_application_report(&lease.run_id, &report, now_unix_s)
+        let application = Application::open(configuration).map_err(RunError::Application)?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|_| RunError::Handoff(HandoffError::Unavailable))?;
+        let endpoint = listener
+            .local_addr()
+            .map_err(|_| RunError::Handoff(HandoffError::Unavailable))?;
+        let assignment = self
+            .handoff_assignment(lease, endpoint, now_unix_s)
             .map_err(RunError::Service)?;
+        let system = self.clone();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().map_err(|_| HandoffError::Unavailable)?;
+                handle_connection_at(stream, &system, now_unix_s)?;
+            }
+            Ok::<(), HandoffError>(())
+        });
+        let result = run_application_handoff(application, &request, &assignment).await;
+        if result.is_ok() {
+            server
+                .join()
+                .map_err(|_| RunError::Handoff(HandoffError::Unavailable))?
+                .map_err(RunError::Handoff)?;
+        }
+        result.map_err(RunError::Handoff)?;
         match self.snapshot(&lease.run_id, now_unix_s) {
             Ok(snapshot) => Ok(Some(snapshot)),
             Err(ServiceError::RunExpired | ServiceError::RunNotFound) => Ok(None),
@@ -1112,7 +1483,10 @@ impl Service {
         append_event(&transaction, &lease.run_id, "cleanup.started", now_unix_s)?;
         transaction
             .execute(
-                "UPDATE runs SET cleanup_state = 'succeeded', active = 0 WHERE run_id = ?1",
+                concat!(
+                    "UPDATE runs SET cleanup_state = 'succeeded', active = 0, ",
+                    "handoff_credential_verifier = X'' WHERE run_id = ?1"
+                ),
                 [&lease.run_id],
             )
             .map_err(storage_error)?;
@@ -1461,7 +1835,8 @@ impl Service {
                    policy_verified INTEGER NOT NULL, provisioned_objects TEXT,
                    cleanup_resource_state TEXT NOT NULL, dispatched_at INTEGER,
                    namespace_uid TEXT, lease_id TEXT NOT NULL,
-                   lease_epoch INTEGER NOT NULL, lease_expires_at INTEGER NOT NULL
+                   lease_epoch INTEGER NOT NULL, lease_expires_at INTEGER NOT NULL,
+                   handoff_credential_verifier BLOB NOT NULL
                  );
                  CREATE TABLE IF NOT EXISTS cleanup_records (
                    run_id TEXT PRIMARY KEY, cleanup_identity TEXT NOT NULL,
@@ -1486,12 +1861,39 @@ impl Service {
                    run_id TEXT PRIMARY KEY, digest TEXT NOT NULL, object_name TEXT NOT NULL UNIQUE,
                    started_at INTEGER NOT NULL
                  );
+                 CREATE TABLE IF NOT EXISTS application_reports (
+                   run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, receiver_result TEXT,
+                   target_rejection TEXT, receipt_digest TEXT, payload_digest BLOB NOT NULL
+                 );
                  CREATE TABLE IF NOT EXISTS tombstones (
                    run_digest TEXT PRIMARY KEY, key_digest TEXT NOT NULL UNIQUE,
                    delete_at INTEGER NOT NULL
                  );",
             )
             .map_err(storage_error)?;
+        let has_handoff_verifier = {
+            let mut statement = connection
+                .prepare("PRAGMA table_info(runs)")
+                .map_err(storage_error)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(storage_error)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?
+                .iter()
+                .any(|name| name == "handoff_credential_verifier")
+        };
+        if !has_handoff_verifier {
+            connection
+                .execute(
+                    concat!(
+                        "ALTER TABLE runs ADD COLUMN handoff_credential_verifier ",
+                        "BLOB NOT NULL DEFAULT X''"
+                    ),
+                    [],
+                )
+                .map_err(storage_error)?;
+        }
         self.remove_orphan_receipts(&mut connection)
     }
 
@@ -1504,8 +1906,13 @@ impl Service {
                 .prepare(concat!(
                     "SELECT receipt_publications.run_id, receipt_publications.object_name FROM ",
                     "receipt_publications LEFT JOIN runs ON runs.run_id = ",
-                    "receipt_publications.run_id ",
-                    "WHERE runs.run_id IS NULL OR runs.public_retained = 0"
+                    "receipt_publications.run_id WHERE runs.run_id IS NULL OR (",
+                    "runs.public_retained = 0 AND NOT EXISTS (SELECT 1 FROM cleanup_records ",
+                    "JOIN application_reports ON application_reports.run_id = ",
+                    "cleanup_records.run_id ",
+                    "WHERE cleanup_records.run_id = receipt_publications.run_id ",
+                    "AND cleanup_records.active = 1 AND cleanup_records.eligible = 0 ",
+                    "AND application_reports.kind = 'finalized'))"
                 ))
                 .map_err(storage_error)?;
             let rows = statement
@@ -1639,9 +2046,9 @@ impl Service {
                     "public_retained, policy_revision, policy_inventory, ",
                     "policy_inventory_digest, cleanup_identity, deadline_seconds, deadline_at, ",
                     "policy_verified, cleanup_resource_state, lease_id, lease_epoch, ",
-                    "lease_expires_at) VALUES ",
+                    "lease_expires_at, handoff_credential_verifier) VALUES ",
                     "(?1, ?2, ?3, ?4, ?5, ?6, 'queued', 0, 'pending', 1, 0, 0, 0, 1, ",
-                    "?7, ?8, ?9, ?10, ?11, NULL, 0, 'unverified', '', 0, 0)"
+                    "?7, ?8, ?9, ?10, ?11, NULL, 0, 'unverified', '', 0, 0, X'')"
                 ),
                 params![
                     run_id,
@@ -1771,111 +2178,7 @@ impl Service {
         Ok(())
     }
 
-    fn mark_application_invoked(
-        &self,
-        lease: &DispatchLease,
-        now_unix_s: i64,
-    ) -> Result<(), ServiceError> {
-        self.validate_lease(lease, now_unix_s)?;
-        let connection = self.connection()?;
-        let (state, invoked, policy_verified): (String, bool, bool) = connection
-            .query_row(
-                concat!(
-                    "SELECT execution_state, application_invoked, policy_verified ",
-                    "FROM runs WHERE run_id = ?1"
-                ),
-                [&lease.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(storage_error)?
-            .ok_or(ServiceError::RunNotFound)?;
-        if !policy_verified {
-            return Err(ServiceError::PolicyMismatch);
-        }
-        if invoked {
-            return Ok(());
-        }
-        if state != "running" {
-            return Err(ServiceError::InvalidTransition);
-        }
-        connection
-            .execute(
-                "UPDATE runs SET application_invoked = 1 WHERE run_id = ?1",
-                [&lease.run_id],
-            )
-            .map_err(storage_error)?;
-        Ok(())
-    }
-
-    fn record_application_report(
-        &self,
-        run_id: &str,
-        report: &OperationReport,
-        now_unix_s: i64,
-    ) -> Result<(), ServiceError> {
-        let expected = self.server_owned_request(run_id)?;
-        if report.operation_id != expected.operation_id {
-            return Err(ServiceError::InvalidTransition);
-        }
-        match report.state {
-            OperationState::NotAttempted => {
-                let rejection = match report.target_rejection {
-                    Some(TargetRejection::DeploymentNotFound) => "DEPLOYMENT_NOT_FOUND",
-                    Some(TargetRejection::ContainerNotFound) => "CONTAINER_NOT_FOUND",
-                    Some(TargetRejection::InvalidTarget) => "INVALID_TARGET",
-                    None => return Err(ServiceError::InvalidTransition),
-                };
-                self.terminal_transition(
-                    run_id,
-                    ExecutionState::NotAttempted,
-                    None,
-                    Some(rejection),
-                    "execution.not_attempted",
-                    now_unix_s,
-                )
-            },
-            OperationState::Finalized => {
-                let result = match report.result {
-                    Some(OperationResult::Succeeded) => "SUCCEEDED",
-                    Some(OperationResult::Failed) => "FAILED",
-                    Some(OperationResult::Unknown) => "UNKNOWN",
-                    None => return Err(ServiceError::InvalidTransition),
-                };
-                let reference = report
-                    .receipt
-                    .as_ref()
-                    .ok_or(ServiceError::InvalidTransition)?;
-                let bytes = fs::read(&reference.path).map_err(|_| ServiceError::Unavailable)?;
-                if bytes.is_empty()
-                    || bytes.len() > RECEIPT_BYTES_MAX
-                    || hex(&Sha256::digest(&bytes)) != reference.digest
-                {
-                    return Err(ServiceError::Unavailable);
-                }
-                self.terminal_transition(
-                    run_id,
-                    ExecutionState::Terminal,
-                    Some(result),
-                    None,
-                    "execution.terminal",
-                    now_unix_s,
-                )?;
-                if self.is_public_retained(run_id)? {
-                    self.install_receipt(run_id, &bytes, &reference.digest, now_unix_s)
-                } else {
-                    self.mark_cleanup_eligible(run_id)
-                }
-            },
-            OperationState::Requested
-            | OperationState::Authorized
-            | OperationState::ApplyStarted
-            | OperationState::ReceiverObserved
-            | OperationState::ReceiptPrepared
-            | OperationState::ReceiptWritten => Ok(()),
-        }
-    }
-
+    #[cfg(test)]
     fn terminal_transition(
         &self,
         run_id: &str,
@@ -1933,33 +2236,7 @@ impl Service {
         transaction.commit().map_err(storage_error)
     }
 
-    fn is_public_retained(&self, run_id: &str) -> Result<bool, ServiceError> {
-        self.connection()?
-            .query_row(
-                "SELECT public_retained FROM runs WHERE run_id = ?1",
-                [run_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage_error)?
-            .ok_or(ServiceError::RunNotFound)
-    }
-
-    fn mark_cleanup_eligible(&self, run_id: &str) -> Result<(), ServiceError> {
-        let connection = self.connection()?;
-        let changed = connection
-            .execute(
-                "UPDATE cleanup_records SET eligible = 1 WHERE run_id = ?1",
-                [run_id],
-            )
-            .map_err(storage_error)?;
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(ServiceError::RunNotFound)
-        }
-    }
-
+    #[cfg(test)]
     fn install_receipt(
         &self,
         run_id: &str,
@@ -1980,6 +2257,7 @@ impl Service {
         self.complete_receipt_publication(run_id, bytes, digest, &object_name, now_unix_s)
     }
 
+    #[cfg(test)]
     fn claim_receipt_publication(
         &self,
         run_id: &str,
@@ -2047,6 +2325,10 @@ impl Service {
         Ok(true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "publication keeps public and post-expiry exact-byte completion in one protocol"
+    )]
     fn complete_receipt_publication(
         &self,
         run_id: &str,
@@ -2066,6 +2348,15 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
+        let public_retained: bool = transaction
+            .query_row(
+                "SELECT public_retained FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::RunNotFound)?;
         if let Some((existing_digest, existing_name)) = transaction
             .query_row(
                 "SELECT digest, object_name FROM receipts WHERE run_id = ?1",
@@ -2088,7 +2379,21 @@ impl Service {
                     [run_id],
                 )
                 .map_err(storage_error)?;
+            if !public_retained {
+                transaction
+                    .execute("DELETE FROM receipts WHERE run_id = ?1", [run_id])
+                    .map_err(storage_error)?;
+                transaction
+                    .execute(
+                        "UPDATE cleanup_records SET eligible = 1 WHERE run_id = ?1",
+                        [run_id],
+                    )
+                    .map_err(storage_error)?;
+            }
             transaction.commit().map_err(storage_error)?;
+            if !public_retained {
+                self.remove_receipt_object(run_id, digest, object_name)?;
+            }
             return Ok(());
         }
         let pending: Option<(String, String)> = transaction
@@ -2105,23 +2410,30 @@ impl Service {
             return Err(ServiceError::InvalidTransition);
         }
         self.install_receipt_object(object_name, bytes)?;
-        transaction
-            .execute(
-                "INSERT INTO receipts VALUES (?1, ?2, ?3)",
-                params![run_id, digest, object_name],
-            )
-            .map_err(storage_error)?;
-        let changed = transaction
-            .execute(
-                concat!(
-                    "UPDATE runs SET receipt_available = 1 WHERE run_id = ?1 ",
-                    "AND execution_state = 'terminal'"
-                ),
-                [run_id],
-            )
-            .map_err(storage_error)?;
-        if changed != 1 {
-            return Err(ServiceError::InvalidTransition);
+        let installed = self.read_receipt_object(run_id, digest, object_name)?;
+        if installed != bytes {
+            return Err(ServiceError::Unavailable);
+        }
+        if public_retained {
+            transaction
+                .execute(
+                    "INSERT INTO receipts VALUES (?1, ?2, ?3)",
+                    params![run_id, digest, object_name],
+                )
+                .map_err(storage_error)?;
+            let changed = transaction
+                .execute(
+                    concat!(
+                        "UPDATE runs SET receipt_available = 1 WHERE run_id = ?1 ",
+                        "AND execution_state = 'terminal'"
+                    ),
+                    [run_id],
+                )
+                .map_err(storage_error)?;
+            if changed != 1 {
+                return Err(ServiceError::InvalidTransition);
+            }
+            append_event(&transaction, run_id, "receipt.available", now_unix_s)?;
         }
         transaction
             .execute(
@@ -2129,18 +2441,17 @@ impl Service {
                 [run_id],
             )
             .map_err(storage_error)?;
-        append_event(&transaction, run_id, "receipt.available", now_unix_s)?;
         transaction
             .execute(
                 "DELETE FROM receipt_publications WHERE run_id = ?1",
                 [run_id],
             )
             .map_err(storage_error)?;
-        let installed = self.read_receipt_object(run_id, digest, object_name)?;
-        if installed != bytes {
-            return Err(ServiceError::Unavailable);
+        transaction.commit().map_err(storage_error)?;
+        if !public_retained {
+            self.remove_receipt_object(run_id, digest, object_name)?;
         }
-        transaction.commit().map_err(storage_error)
+        Ok(())
     }
 
     fn install_receipt_object(&self, object_name: &str, bytes: &[u8]) -> Result<(), ServiceError> {
@@ -2319,7 +2630,10 @@ impl Service {
         if stored.5 {
             transaction
                 .execute(
-                    "UPDATE runs SET cleanup_state = 'succeeded', active = 0 WHERE run_id = ?1",
+                    concat!(
+                        "UPDATE runs SET cleanup_state = 'succeeded', active = 0, ",
+                        "handoff_credential_verifier = X'' WHERE run_id = ?1"
+                    ),
                     [run_id],
                 )
                 .map_err(storage_error)?;
@@ -2470,9 +2784,7 @@ impl Service {
             if let (Some(digest), Some(object_name)) = (digest, object_name) {
                 expired_objects.push((run_id.clone(), digest, object_name));
             }
-            if let (Some(digest), Some(object_name)) = (pending_digest, pending_name) {
-                expired_objects.push((run_id.clone(), digest, object_name));
-            }
+            let pending_object = pending_digest.zip(pending_name);
             let tombstone_delete_at = expires_at
                 .checked_add(PUBLIC_RETENTION_SECONDS)
                 .ok_or(ServiceError::Unavailable)?;
@@ -2495,6 +2807,26 @@ impl Service {
                     |row| row.get(0),
                 )
                 .map_err(storage_error)?;
+            let unresolved_finalized = active
+                && pending_object.is_some()
+                && transaction
+                    .query_row(
+                        concat!(
+                            "SELECT EXISTS(SELECT 1 FROM cleanup_records JOIN application_reports ",
+                            "ON application_reports.run_id = cleanup_records.run_id ",
+                            "WHERE cleanup_records.run_id = ?1 AND cleanup_records.active = 1 ",
+                            "AND cleanup_records.eligible = 0 ",
+                            "AND application_reports.kind = 'finalized')"
+                        ),
+                        [&run_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .map_err(storage_error)?;
+            if !unresolved_finalized {
+                if let Some((digest, object_name)) = pending_object.as_ref() {
+                    expired_objects.push((run_id.clone(), digest.clone(), object_name.clone()));
+                }
+            }
             if active {
                 transaction
                     .execute(
@@ -2525,12 +2857,14 @@ impl Service {
             transaction
                 .execute("DELETE FROM receipts WHERE run_id = ?1", [&run_id])
                 .map_err(storage_error)?;
-            transaction
-                .execute(
-                    "DELETE FROM receipt_publications WHERE run_id = ?1",
-                    [&run_id],
-                )
-                .map_err(storage_error)?;
+            if !unresolved_finalized {
+                transaction
+                    .execute(
+                        "DELETE FROM receipt_publications WHERE run_id = ?1",
+                        [&run_id],
+                    )
+                    .map_err(storage_error)?;
+            }
         }
         transaction.commit().map_err(storage_error)?;
         for (run_id, digest, object_name) in expired_objects {
@@ -2978,8 +3312,10 @@ impl Error for ServiceError {}
 pub enum RunError {
     /// Sandbox admission/projection failure.
     Service(ServiceError),
-    /// KAP-0038 application failure without reinterpretation.
+    /// KAP-0038 application-open failure without reinterpretation.
     Application(ApplicationError),
+    /// Fixed private handoff or runner lifecycle failure without receiver reinterpretation.
+    Handoff(HandoffError),
 }
 
 fn append_event(
@@ -3181,6 +3517,12 @@ fn random_identity() -> Result<String, ServiceError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| ServiceError::Unavailable)?;
     Ok(hex(&bytes))
+}
+
+fn random_credential() -> Result<[u8; 32], ServiceError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|_| ServiceError::Unavailable)?;
+    Ok(bytes)
 }
 
 fn object_identity_parts(identity: &str) -> Result<(String, Option<String>, String), ServiceError> {
@@ -3479,6 +3821,17 @@ mod tests {
                 1_774_051_203,
             )
             .unwrap());
+        Service::open(&database, &receipts, [9; 32], 1_774_051_203).unwrap();
+        assert!(!receipts.join(&object_name).exists());
+        let pending_before_install: i64 = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM receipt_publications WHERE run_id = ?1",
+                [&admission.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending_before_install, 1);
         service.install_receipt_object(&object_name, bytes).unwrap();
 
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));

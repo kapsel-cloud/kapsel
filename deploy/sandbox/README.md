@@ -12,8 +12,10 @@ The fixture locks:
 - one `ReadWriteOncePod` system-state volume for admission, receipts, and cleanup ownership, plus
   one separately fenced owner-private `ReadWriteOncePod` gateway-state volume per active run; one
   canonical runner identity across mount, RoleBinding, and patch admission; explicit read-only
-  controller, grant/trust, signing, composition, and receipt-handoff channels; and complete rendered
-  Pod equality that rejects every undeclared field; and
+  controller, grant/trust, signing, composition, and authenticated runner-handoff channels; exact
+  confined Kubernetes atomic-writer symlink consumption; owner-private `run`/receipt-outbox
+  initialization on an empty gateway volume; and complete rendered Pod equality that rejects every
+  undeclared field; and
 - a multi-volume backup-generation protocol that freezes the active journal inventory, quiesces and
   fences every exact writer, rejects incomplete or mixed generations, and leaves provider snapshot
   consistency and enforcement to Infrastructure Enforcement and Failure Recovery Proofs (Gates 2 and
@@ -33,11 +35,12 @@ the focused gate, reproduced the exact clean image build, and accepted corrected
 Composition evidence.
 
 `workload-template.json` and `journal-volume-template.json` deliberately retain
-`${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`,
-`${GATE2_KUBERNETES_AUDIENCE}`, and the provider-dependent runner subcommand. The existing `gate1`
-and `GATE2` machine identifiers remain stable compatibility names. Infrastructure Enforcement Proof
-(Gate 2) must authorize and lock those values and replace the unimplemented runner placeholder
-before rendering or provisioning. The templates create no public Service or ingress.
+`${KAPSEL_SANDBOX_IMAGE_DIGEST}`, `${GATE2_STORAGE_CLASS}`, `${GATE2_RUNTIME_CLASS}`, and
+`${GATE2_KUBERNETES_AUDIENCE}` while locking the exact implemented `runner` subcommand. The existing
+`gate1` and `GATE2` machine identifiers remain stable compatibility names. Infrastructure
+Enforcement Proof (Gate 2) must authorize and lock the remaining provider-dependent values and
+compose the runner before rendering or provisioning. The templates create no public Service or
+ingress.
 
 Authority Composition's historical image uses the already locked repository builder image. The
 separate `Containerfile.gate2-candidate` is pre-authorization source/config evidence for an exact

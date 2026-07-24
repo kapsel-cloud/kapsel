@@ -343,3 +343,72 @@ fn receive_deadlines_close_partial_headers_and_bodies() {
     child.wait().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn runner_mode_rejects_system_state_arguments_before_opening_any_input() {
+    let root = std::env::temp_dir().join(format!(
+        "kapsel-sandbox-runner-boundary-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let sentinel = root.join("system-state.sqlite3");
+    fs::write(&sentinel, b"must-not-open").unwrap();
+    fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o000)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .args([
+            "runner",
+            "--database",
+            sentinel.to_str().unwrap(),
+            "--operator-composition",
+            root.join("missing.json").to_str().unwrap(),
+            "--handoff",
+            root.join("missing-handoff").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "kapsel-sandbox: runner arguments are invalid\n"
+    );
+    let composition = root.join("composition.json");
+    fs::write(
+        &composition,
+        serde_json::to_vec(&serde_json::json!({
+            "request": root.join("request.json"),
+            "signed_authorization_grant": root.join("grant.bin"),
+            "authorization_trust": root.join("trust.json"),
+            "kubernetes_api_server": root.join("api-server"),
+            "kubernetes_ca": root.join("ca.crt"),
+            "kubernetes_namespace": root.join("namespace"),
+            "kubernetes_token": root.join("token"),
+            "journal": sentinel,
+            "receipt_directory": root.join("receipt-outbox"),
+            "receipt_signing_seed": root.join("seed"),
+            "receipt_signing_key_id": root.join("key-id")
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&composition, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .args([
+            "runner",
+            "--operator-composition",
+            composition.to_str().unwrap(),
+            "--handoff",
+            root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "kapsel-sandbox: runner state paths are invalid\n"
+    );
+    fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fs::read(&sentinel).unwrap(), b"must-not-open");
+    fs::remove_dir_all(root).unwrap();
+}

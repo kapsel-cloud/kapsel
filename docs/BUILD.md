@@ -67,6 +67,20 @@ retention, and cleanup. The boundary script also compiles the ordinary root pack
 copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
 website, or deployment provider; KAP-0053 owns those live properties.
 
+Run the KAP-0055 provider-neutral private runner handoff proof with:
+
+```sh
+cargo make test-sandbox-runner-handoff
+```
+
+It crosses the exact request/grant match check, strict binary codec, per-lease credential fencing,
+durable invocation and terminal-report transactions, separate native runner and system processes,
+deployment-faithful projected-input symlinks, empty gateway-volume initialization, receipt-free and
+finalized deterministic Kubernetes fixtures, exact receipt publication/replay including public
+expiry, and the runner CLI state-path boundary. It binds only loopback fixtures and proves no
+private-cluster reachability, network isolation, provider identity, storage fencing, key custody, or
+public endpoint.
+
 Run the KAP-0053 Authority Composition Proof (Gate 1) provider-neutral execution fixture with:
 
 ```sh

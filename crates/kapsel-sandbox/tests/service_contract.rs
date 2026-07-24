@@ -651,6 +651,15 @@ async fn application_rejection_and_cleanup_remain_separate_across_restart() {
     assert_eq!(terminal.cleanup_state, CleanupState::Succeeded);
     assert!(!terminal.receipt_available);
     assert!(service.recoverable_runs().unwrap().is_empty());
+    let verifier: Vec<u8> = rusqlite::Connection::open(root.join("sandbox.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT handoff_credential_verifier FROM runs WHERE run_id = ?1",
+            [&admission.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(verifier.is_empty());
     let page = service.events(&admission.run_id, 0, 64, NOW + 5).unwrap();
     assert_eq!(page.events.len(), 6);
     assert!(page
@@ -934,7 +943,9 @@ async fn report_and_receipt_reference_crash_recovers_exact_bytes() {
         service
             .execute_application(&lease, configuration, NOW + 2)
             .await,
-        Err(kapsel_sandbox::RunError::Service(ServiceError::Unavailable))
+        Err(kapsel_sandbox::RunError::Handoff(
+            kapsel_sandbox::HandoffError::Rejected
+        ))
     ));
     responder.await.unwrap();
     fs::remove_file(&receipt_directory).unwrap();
@@ -957,7 +968,9 @@ async fn report_and_receipt_reference_crash_recovers_exact_bytes() {
         service
             .reconcile_application(&lease, configuration, NOW + 3)
             .await,
-        Err(kapsel_sandbox::RunError::Service(ServiceError::Unavailable))
+        Err(kapsel_sandbox::RunError::Handoff(
+            kapsel_sandbox::HandoffError::Rejected
+        ))
     ));
     let receipt_path = fs::read_dir(&receipt_directory)
         .unwrap()
@@ -1104,10 +1117,22 @@ async fn unavailable_image_application_preserves_failed_receiver_result() {
     }
     .encode()
     .unwrap();
+    let inspection = inspect_receipt(&receipt, &trust, NOW + 3, InspectionLimits::default());
+    assert_eq!(inspection.status(), InspectionStatus::Inspected);
     assert_eq!(
-        inspect_receipt(&receipt, &trust, NOW + 3, InspectionLimits::default()).status(),
-        InspectionStatus::Inspected
+        inspection.statement().unwrap().result(),
+        kapsel::OperationResult::Failed
     );
+    let gateway_receipt = fs::read(
+        fs::read_dir(root.join(&admission.run_id).join("gateway-receipts"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+    assert_eq!(gateway_receipt, receipt);
     fs::remove_dir_all(root).unwrap();
 }
 

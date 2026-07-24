@@ -166,6 +166,51 @@ async fn request_only_submission_uses_operator_configured_grant() {
 }
 
 #[tokio::test]
+async fn request_match_validation_exposes_only_exact_grant_match_without_mutation() {
+    let root = std::env::temp_dir().join(format!(
+        "kapsel-application-request-match-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    private_directory(&root);
+    let application = Application::open(configuration(&root)).unwrap();
+    let exact = request();
+    assert!(application.request_matches_authorized_grant(&exact));
+
+    for mismatched in [
+        AgentRequest {
+            operation_id: "other".into(),
+            ..exact.clone()
+        },
+        AgentRequest {
+            namespace: "other".into(),
+            ..exact.clone()
+        },
+        AgentRequest {
+            deployment: "other".into(),
+            ..exact.clone()
+        },
+        AgentRequest {
+            container: "other".into(),
+            ..exact.clone()
+        },
+        AgentRequest {
+            immutable_image_digest: concat!(
+                "registry.k8s.io/pause@sha256:",
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            )
+            .into(),
+            ..exact
+        },
+    ] {
+        assert!(!application.request_matches_authorized_grant(&mismatched));
+    }
+    assert_eq!(application.report().unwrap(), None);
+    drop(application);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn invalid_operator_configuration_precedes_journal_creation() {
     let root = std::env::temp_dir().join(format!(
         "kapsel-application-configuration-{}",

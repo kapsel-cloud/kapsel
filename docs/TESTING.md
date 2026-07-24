@@ -234,6 +234,31 @@ lifecycle events. Package-private receipt tests also consume the committed class
 receipt fixture. No test exposes sandbox state, reuses the KAP-0038 journal as its run database, or
 presents deterministic orchestration as live cluster/isolation evidence.
 
+KAP-0055 adds a provider-neutral private runner-handoff lane. Contract tests cross the narrow
+non-mutating `Application` request/grant match, exact bounded binary records, generic non-disclosing
+rejection, per-generation lease/credential rotation, durable invocation before lifecycle work,
+terminal report binding, stale and changed replay denial, replacement-lease recovery, receipt-free
+pre-attempt rejection, exact immutable receipt bytes, restart, concurrency, an absolute
+trickle-resistant receive deadline, cross-expiry invocation/report denial, and finalized recovery
+across public expiry. Direct private-listener tests reject an oversized frame and oversized receipt
+field before invocation or report mutation.
+
+Separate production runner and system subprocesses cross deployment-faithful projected-volume
+symlinks and a genuinely empty gateway volume against receipt-free and actual KAP-0038
+`SUCCEEDED`/`UNKNOWN` deterministic Kubernetes paths. They assert byte-identical outbox/system
+receipts and separately trusted inspection/classifier agreement; the actual `FAILED` Application
+path crosses the same handoff adapter in the service contract with the same byte and classifier
+checks. Production process-kill tests recover one operation from loss before invocation, after the
+durable invocation ACK, after `apply_started`, and after the durable terminal report. The
+package-private publication tests own the remaining narrower boundaries: reopening after a durable
+pending claim before final-object installation and after installation before availability commit.
+The runner owns only its initialized `run/gateway.sqlite3` and receipt outbox; the system process
+owns admission SQLite and exact immutable receipt installation. Escape/substitution layouts and a
+system-state argument fail before input or lifecycle use, and credential-bearing debug output is
+redacted. Loopback TCP and deterministic Kubernetes fixtures prove only process and state-transition
+behavior; they do not prove private-cluster reachability, network/runtime/storage isolation,
+provider identity, or live custody.
+
 KAP-0053 Authority Composition Proof (Gate 1) adds a separate provider-neutral offline lane.
 Black-box socket/process tests cross the production native HTTP/1.1 executable,
 request-line/header/body framing bounds, receive timeouts, idempotent replay, and the non-public

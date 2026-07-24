@@ -222,6 +222,15 @@ def prove_operator_composition() -> None:
     assert pod["spec"]["serviceAccountName"] == identity["service_account_name_template"]
     container = pod["spec"]["containers"][0]
     assert container["command"] == ["/usr/local/bin/kapsel-sandbox"]
+    assert container["args"] == [
+        "runner",
+        "--operator-composition",
+        "/var/run/kapsel-runner/composition/operator-configuration.json",
+        "--handoff",
+        "/var/run/kapsel-runner/handoff",
+    ]
+    assert "database" not in json.dumps(container).lower()
+    assert "system-state" not in json.dumps(container).lower()
     assert container["env"] == [] and container["envFrom"] == []
 
     mounts = {mount["name"]: mount for mount in container["volumeMounts"]}
@@ -235,13 +244,14 @@ def prove_operator_composition() -> None:
         "kubernetes-controller",
         "authorization-inputs",
         "receipt-signing",
-        "receipt-handoff",
+        "runner-handoff",
     ]:
         assert mounts[channel]["readOnly"] is True
         assert "persistentVolumeClaim" not in volumes[channel]
 
     operator = authority["operator_configuration"]
     assert set(operator) == {
+        "agent_request",
         "journal_path",
         "receipt_output_directory",
         "authorization_trust",
@@ -250,6 +260,12 @@ def prove_operator_composition() -> None:
         "receipt_signing_seed",
         "receipt_signing_key_id",
     }
+    assert operator["journal_path"]["path"] == (
+        "/var/lib/kapsel-runner/state/run/gateway.sqlite3"
+    )
+    assert operator["receipt_output_directory"]["path"] == (
+        "/var/lib/kapsel-runner/state/run/receipt-outbox"
+    )
     for name, source in operator.items():
         assert isinstance(source["owner"], str) and source["owner"]
         assert isinstance(source["channel"], str) and source["channel"] in mounts
@@ -257,11 +273,31 @@ def prove_operator_composition() -> None:
         mount_path = mounts[source["channel"]]["mountPath"]
         assert source["path"] == mount_path or source["path"].startswith(f"{mount_path}/"), name
 
-    handoff = authority["receipt_handoff"]
+    process_document = authority["runner_process_document"]
+    assert process_document["path"] == container["args"][2]
+    assert process_document["unknown_fields_rejected"] is True
+    process_fields = process_document["fields"]
+    assert process_fields == {
+        "request": operator["agent_request"]["path"],
+        "signed_authorization_grant": operator["signed_authorization_grant"]["path"],
+        "authorization_trust": operator["authorization_trust"]["path"],
+        "kubernetes_api_server": f'{operator["kubernetes_client"]["path"]}/api-server',
+        "kubernetes_ca": f'{operator["kubernetes_client"]["path"]}/ca.crt',
+        "kubernetes_namespace": f'{operator["kubernetes_client"]["path"]}/namespace',
+        "kubernetes_token": f'{operator["kubernetes_client"]["path"]}/token',
+        "journal": operator["journal_path"]["path"],
+        "receipt_directory": operator["receipt_output_directory"]["path"],
+        "receipt_signing_seed": operator["receipt_signing_seed"]["path"],
+        "receipt_signing_key_id": operator["receipt_signing_key_id"]["path"],
+    }
+
+    handoff = authority["runner_handoff"]
     assert isinstance(handoff["owner"], str) and handoff["owner"]
-    assert handoff["channel"] == "receipt-handoff"
-    assert handoff["path"] == mounts["receipt-handoff"]["mountPath"]
+    assert handoff["channel"] == "runner-handoff"
+    assert handoff["path"] == mounts["runner-handoff"]["mountPath"]
+    assert handoff["required_files"] == ["credential", "endpoint", "lease-id"]
     assert handoff["source_directory"] == operator["receipt_output_directory"]["path"]
+    assert "system-state" not in mounts and "system-state" not in volumes
     assert operator["authorization_trust"]["owner"] != operator["signed_authorization_grant"]["owner"]
     assert operator["receipt_signing_seed"]["channel"] == "receipt-signing"
     assert operator["receipt_signing_seed"]["channel"] != operator["authorization_trust"]["channel"]
@@ -280,7 +316,10 @@ def prove_operator_composition() -> None:
         "one_owner_and_one_path_per_operator_input": True,
         "one_writable_volume": "gateway-state",
         "all_authority_channels_read_only": True,
-        "receipt_handoff_cannot_re_sign_or_replace": True,
+        "runner_handoff_cannot_re_sign_replace_or_classify": True,
+        "runner_receives_no_system_state_path": True,
+        "runner_initializes_owner_private_run_directory": True,
+        "projected_inputs_follow_only_atomic_writer_layout_within_each_mount": True,
     }
 
 
@@ -510,7 +549,13 @@ def prove_storage_and_lock() -> None:
         digest.update(name.encode("ascii"))
         digest.update(len(body).to_bytes(8, "big"))
         digest.update(body)
-    assert digest.hexdigest() == lock["fixture_bundle_sha256"]
+    candidate = lock["runner_handoff_candidate"]
+    assert lock["fixture_bundle_sha256"] == (
+        "054dfc6c841e7635b64e82b68cf3ae1fe39c8b955cc7599bbe500d16c6fb568c"
+    )
+    assert digest.hexdigest() == candidate["fixture_bundle_sha256"]
+    assert candidate["implementation_revision"] is None
+    assert candidate["status"] == "unreviewed_execution_readiness_candidate"
 
 
 def main() -> None:

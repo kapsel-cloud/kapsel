@@ -75,15 +75,21 @@ locators, times, scenarios, and copied receipts can correlate activity.
 - Application errors use fixed messages and no reflected input, path, stack, store key, runner
   identity, capacity count, or fault state. Operator diagnostics are access-controlled, sampled,
   bounded per event, redacted before storage, and retained at most 24 hours.
-- Unavoidable provider control-plane management records may follow a longer provider-fixed retention
-  only when they cannot be disabled, excluded, shortened, or deleted. This exception covers only
-  administrative operation, operator/service identity, provider resource identity, time, and status.
-  It never covers a visitor locator, idempotency key, sandbox request/body, public run or operation
-  identity, receipt, journal fact, key/secret payload, workload output, data-access record, or
-  application diagnostic. These records remain private, access-controlled, unexported except for the
-  bounded evidence review, and absent from committed evidence. Every selected provider retention and
-  field set must be documented before provisioning; a configurable provider record still follows the
-  24-hour rule.
+- The sandbox is a synthetic, non-consequential prototype, not a physical-erasure or compliance
+  system. Provider control-plane records and the minimum audit records needed to test IAM, key
+  access, and policy denial may follow the provider's documented storage lifecycle. Disable
+  unnecessary sources, exclude configurable records from long-lived default stores, keep only one
+  bounded audit route with the shortest practical logical retention, and verify that Kapsel cannot
+  query or replay those records after 24 hours. A provider audit entry may contain an unavoidable
+  server-generated synthetic operation identifier other than the public `run_id`, synthetic
+  namespace/object identity, image digest, or operation annotation already approved in the public
+  sandbox receipt; these values carry no customer data and must not become an analytics join key.
+  This allowance never permits a public run locator, idempotency key, sandbox request/body, receipt
+  bytes, journal fact, key/secret payload, workload output, or application diagnostic in provider
+  logs. Provider records remain private, access-controlled, unexported except for bounded evidence
+  review, and absent from committed evidence. Document the selected fields, routes, exclusions, and
+  retention before provisioning; do not claim that provider replicas or backups are physically
+  erased within 24 hours.
 - Public run/events/receipt data and the private idempotency mapping expire exactly 24 hours after
   admission. A further 24-hour private tombstone retains exactly service-keyed run/idempotency
   digests and expiry needed to return `run_expired` and prevent key reuse. It contains no request or

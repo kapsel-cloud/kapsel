@@ -216,9 +216,23 @@ dependencies = ["test-sandbox-contract", "test-sandbox-package-boundary"]
 command = "cargo"
 args = ["test", "--locked", "-p", "kapsel-sandbox"]
 
+[tasks.test-sandbox-runner-handoff]
+description = "Run the KAP-0055 private runner handoff process and state proof"
+dependencies = ["test-sandbox-service"]
+command = "cargo"
+args = [
+  "test",
+  "--locked",
+  "-p",
+  "kapsel",
+  "--test",
+  "application_contract",
+  "request_match_validation_exposes_only_exact_grant_match_without_mutation",
+]
+
 [tasks.test-sandbox-gate1]
 description = "Run the KAP-0053 Authority Composition Proof offline fixture"
-dependencies = ["test-sandbox-service"]
+dependencies = ["test-sandbox-runner-handoff"]
 command = "python3"
 args = ["scripts/test-sandbox-gate1.py"]
 

@@ -59,11 +59,11 @@
             "/usr/local/bin/kapsel-sandbox"
           ],
           "args": [
-            "${GATE2_RUNNER_SUBCOMMAND}",
+            "runner",
             "--operator-composition",
             "/var/run/kapsel-runner/composition/operator-configuration.json",
-            "--receipt-handoff",
-            "/var/run/kapsel-runner/receipt-handoff"
+            "--handoff",
+            "/var/run/kapsel-runner/handoff"
           ],
           "env": [],
           "envFrom": [],
@@ -104,8 +104,8 @@
               "readOnly": true
             },
             {
-              "name": "receipt-handoff",
-              "mountPath": "/var/run/kapsel-runner/receipt-handoff",
+              "name": "runner-handoff",
+              "mountPath": "/var/run/kapsel-runner/handoff",
               "readOnly": true
             }
           ]
@@ -230,13 +230,13 @@
           }
         },
         {
-          "name": "receipt-handoff",
+          "name": "runner-handoff",
           "projected": {
             "defaultMode": 288,
             "sources": [
               {
                 "secret": {
-                  "name": "runner-receipt-handoff-${RUN_ID}",
+                  "name": "runner-handoff-${RUN_ID}",
                   "items": [
                     {
                       "key": "credential",
@@ -247,11 +247,15 @@
               },
               {
                 "configMap": {
-                  "name": "runner-receipt-handoff-${RUN_ID}",
+                  "name": "runner-handoff-${RUN_ID}",
                   "items": [
                     {
                       "key": "endpoint",
                       "path": "endpoint"
+                    },
+                    {
+                      "key": "lease-id",
+                      "path": "lease-id"
                     }
                   ]
                 }
@@ -274,9 +278,11 @@
     "exact_runner_identity_is_the_only_authorized_mount_consumer",
     "second_pod_mount_is_denied_including_on_the_same_node",
     "runner_replacement_reuses_the_same_volume_and_operation_identity",
+    "empty_volume_initializes_one_owner_private_run_directory_and_receipt_outbox",
+    "projected_atomic_writer_symlinks_resolve_only_within_each_read_only_mount",
     "api_other_runner_and_target_workload_cannot_read_or_mount_the_volume",
     "projected_authority_is_bound_to_the_exact_runner_and_denied_to_every_other_identity",
-    "receipt_handoff_installs_exact_frozen_bytes_without_re_signing_or_replacement",
+    "runner_handoff_acknowledges_invocation_and_installs_exact_terminal_report_without_reclassification",
     "terminal_retention_deletes_the_claim_within_the_contract_window"
   ]
 }

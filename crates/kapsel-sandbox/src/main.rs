@@ -18,12 +18,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use kapsel_sandbox::{set_global_stop, Service};
+use kapsel_sandbox::{run_runner_process, serve_private_handoff, set_global_stop, Service};
 
-const USAGE: &str = "usage: kapsel-sandbox <init|serve> --database <absolute-path> \
+const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve> --database <absolute-path> \
 --receipts <absolute-directory> --digest-key-file <absolute-path> \
 [--origin <https-origin>] [--listen <socket-address>]; or kapsel-sandbox \
-<stop|clear-stop> --database <absolute-path>";
+<stop|clear-stop> --database <absolute-path>; or kapsel-sandbox runner \
+--operator-composition <absolute-path> --handoff <absolute-directory>";
 
 fn main() -> ExitCode {
     match run() {
@@ -36,6 +37,10 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), &'static str> {
+    let mut arguments = env::args().skip(1);
+    if arguments.next().as_deref() == Some("runner") {
+        return run_runner_process(arguments);
+    }
     let configuration = Configuration::parse(env::args().skip(1))?;
     match configuration.command {
         Command::Stop | Command::ClearStop => {
@@ -55,7 +60,7 @@ fn run() -> Result<(), &'static str> {
                 }
             })
         },
-        Command::Init | Command::Serve => {
+        Command::Init | Command::Serve | Command::HandoffServe => {
             let receipts = configuration.receipts.ok_or(USAGE)?;
             let digest_key_file = configuration.digest_key_file.ok_or(USAGE)?;
             if matches!(configuration.command, Command::Init) {
@@ -85,6 +90,18 @@ fn run() -> Result<(), &'static str> {
                     let listen = configuration.listen.ok_or("serve requires --listen")?;
                     native_listener::serve(service, listen)
                 },
+                Command::HandoffServe => {
+                    if configuration.origin.is_some() {
+                        return Err("handoff-serve does not accept --origin");
+                    }
+                    let listen = configuration
+                        .listen
+                        .ok_or("handoff-serve requires --listen")?;
+                    let listener = std::net::TcpListener::bind(listen)
+                        .map_err(|_| "private handoff listener is unavailable")?;
+                    serve_private_handoff(&listener, &std::sync::Arc::new(service))
+                        .map_err(|_| "private handoff listener failed")
+                },
                 Command::Stop | Command::ClearStop => unreachable!(),
             }
         },
@@ -102,6 +119,7 @@ fn reject_listen(listen: Option<SocketAddr>) -> Result<(), &'static str> {
 enum Command {
     Init,
     Serve,
+    HandoffServe,
     Stop,
     ClearStop,
 }
@@ -121,6 +139,7 @@ impl Configuration {
         let command = match arguments.next().as_deref() {
             Some("init") => Command::Init,
             Some("serve") => Command::Serve,
+            Some("handoff-serve") => Command::HandoffServe,
             Some("stop") => Command::Stop,
             Some("clear-stop") => Command::ClearStop,
             _ => return Err(USAGE),

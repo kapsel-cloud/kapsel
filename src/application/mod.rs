@@ -147,6 +147,14 @@ impl Application {
         })
     }
 
+    /// Reports only whether request-only intent matches the grant verified during [`Self::open`].
+    ///
+    /// This non-mutating check exposes no grant facts, trust input, or durable lifecycle state.
+    #[must_use]
+    pub fn request_matches_authorized_grant(&self, request: &AgentRequest) -> bool {
+        request == &self.authorized_request
+    }
+
     /// Submits request-only intent under the operator-configured exact grant.
     ///
     /// # Errors
