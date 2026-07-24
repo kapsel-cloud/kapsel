@@ -67,6 +67,7 @@ adapter, receipt format, or artifact layout. See the
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests              |
 | Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible stable release lane           |
 | Sandbox Authority Composition Proof (Gate 1)     | Corrected offline prerequisites accepted; live proof absent |
+| Provider-neutral private runner handoff          | Implemented and accepted through offline process proofs     |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -91,9 +92,9 @@ and prerequisites.
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
 a generic provider SDK, a policy language, general hosted operation, a dashboard, and a second
 capability are outside its technical scope. The sole hosted exception is one fixed non-consequential
-public sandbox. Its deterministic service package and corrected provider-neutral Authority
-Composition Proof (Gate 1) are accepted offline evidence. No provider is selected and no sandbox
-deployment or public traffic is approved.
+public sandbox. Its deterministic service package, corrected provider-neutral Authority Composition
+Proof (Gate 1), and private runner handoff are accepted offline evidence. No provider is selected
+and no sandbox deployment or public traffic is approved.
 
 ## Read next
 

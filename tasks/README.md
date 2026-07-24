@@ -35,8 +35,8 @@ approved aggregate use evidence.
 | [KAP-0049](KAP-0049.md) | Complete    | Published the ten-minute self-serve local alpha patch                 |
 | [KAP-0051](KAP-0051.md) | Complete    | Own the fixed public sandbox contracts                                |
 | [KAP-0052](KAP-0052.md) | Complete    | Implemented and accepted one-way `kapsel-sandbox -> kapsel` package   |
-| [KAP-0055](KAP-0055.md) | In review   | Review the provider-neutral private runner handoff candidate          |
-| [KAP-0053](KAP-0053.md) | Blocked     | Compose and prove the GKE isolated live sandbox after KAP-0055        |
+| [KAP-0055](KAP-0055.md) | Complete    | Implemented and accepted the provider-neutral private runner handoff  |
+| [KAP-0053](KAP-0053.md) | Next queued | Compose and prove the GKE isolated live sandbox after KAP-0055        |
 | [KAP-0050](KAP-0050.md) | Umbrella    | Accept the backend and independent public website together            |
 | [KAP-0047](KAP-0047.md) | Queued      | Gather bounded external-use evidence without capability expansion     |
 | [KAP-0046](KAP-0046.md) | Conditional | Select one evidence-backed technical direction                        |

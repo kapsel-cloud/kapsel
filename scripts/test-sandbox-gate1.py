@@ -554,8 +554,10 @@ def prove_storage_and_lock() -> None:
         "054dfc6c841e7635b64e82b68cf3ae1fe39c8b955cc7599bbe500d16c6fb568c"
     )
     assert digest.hexdigest() == candidate["fixture_bundle_sha256"]
-    assert candidate["implementation_revision"] is None
-    assert candidate["status"] == "unreviewed_execution_readiness_candidate"
+    assert candidate["implementation_revision"] == (
+        "b36af376066b002c33ef584187a726e49634337f"
+    )
+    assert candidate["status"] == "accepted_after_independent_review"
 
 
 def main() -> None:

@@ -5,9 +5,9 @@
   "gate1_execution_revision": "bd67be9b469672b895a6214322b4dc7ff942da33",
   "fixture_bundle_sha256": "054dfc6c841e7635b64e82b68cf3ae1fe39c8b955cc7599bbe500d16c6fb568c",
   "runner_handoff_candidate": {
-    "implementation_revision": null,
+    "implementation_revision": "b36af376066b002c33ef584187a726e49634337f",
     "fixture_bundle_sha256": "5723362f649fefad74b3015975963dd85ea866c73ff1d416078505fa0f066b56",
-    "status": "unreviewed_execution_readiness_candidate",
+    "status": "accepted_after_independent_review",
     "non_claims": [
       "no_provider_selected",
       "no_live_private_network_enforcement",
