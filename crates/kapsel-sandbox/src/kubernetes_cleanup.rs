@@ -14,25 +14,34 @@ use crate::{
     CleanupObjectAbsence, Service, ServiceError,
 };
 
-const CLEANUP_ESCALATION_SECONDS: i64 = 15 * 60;
+pub(super) const CLEANUP_ESCALATION_SECONDS: i64 = 15 * 60;
+type StoredCleanupEscalation = (
+    String,
+    Option<String>,
+    String,
+    bool,
+    bool,
+    Option<i64>,
+    bool,
+);
 
-pub(crate) struct CleanupCandidate {
-    run_id: String,
-    cleanup_identity: String,
-    namespace_uid: String,
-    state: String,
-    started_at: Option<i64>,
-    escalated: bool,
-    objects: Vec<RecordedObject>,
+pub(super) struct CleanupCandidate {
+    pub(super) run_id: String,
+    pub(super) cleanup_identity: String,
+    pub(super) namespace_uid: String,
+    pub(super) state: String,
+    pub(super) started_at: Option<i64>,
+    pub(super) escalated: bool,
+    pub(super) objects: Vec<RecordedObject>,
 }
 
 #[derive(Clone)]
-struct RecordedObject {
-    kind: String,
-    namespace: Option<String>,
-    name: String,
-    uid: String,
-    owner_label: String,
+pub(super) struct RecordedObject {
+    pub(super) kind: String,
+    pub(super) namespace: Option<String>,
+    pub(super) name: String,
+    pub(super) uid: String,
+    pub(super) owner_label: String,
 }
 
 /// Runs the private UID-safe cleanup reconciler continuously.
@@ -165,8 +174,12 @@ impl CleanupReconciler {
     fn escalate_if_due(&self, candidate: &CleanupCandidate, now: i64) -> Result<(), CleanupError> {
         let started_at = candidate.started_at.unwrap_or(now);
         if !candidate.escalated && now.saturating_sub(started_at) >= CLEANUP_ESCALATION_SECONDS {
-            self.service
-                .escalate_cleanup(&candidate.run_id, &candidate.cleanup_identity, now)?;
+            self.service.escalate_cleanup(
+                &candidate.run_id,
+                &candidate.cleanup_identity,
+                &candidate.namespace_uid,
+                now,
+            )?;
         }
         Ok(())
     }
@@ -325,7 +338,7 @@ fn validate_observed_identity(
 }
 
 impl Service {
-    fn cleanup_candidates(&self) -> Result<Vec<CleanupCandidate>, ServiceError> {
+    pub(super) fn cleanup_candidates(&self) -> Result<Vec<CleanupCandidate>, ServiceError> {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(concat!(
@@ -412,31 +425,72 @@ impl Service {
             .map_err(super::storage_error)
     }
 
-    fn escalate_cleanup(
+    pub(super) fn escalate_cleanup(
         &self,
         run_id: &str,
         cleanup_identity: &str,
+        namespace_uid: &str,
         now: i64,
     ) -> Result<(), ServiceError> {
-        super::bounded_identity(run_id)?;
+        super::bounded_hex_128(run_id)?;
         super::bounded_identity(cleanup_identity)?;
-        let connection = self.connection()?;
-        let changed = connection
-            .execute(
-                concat!(
-                    "UPDATE cleanup_records SET escalated = 1 WHERE run_id = ?1 ",
-                    "AND cleanup_identity = ?2 AND active = 1 AND eligible = 1 ",
-                    "AND state = 'failed' AND escalated = 0 AND started_at IS NOT NULL ",
-                    "AND ?3 - started_at >= ?4"
-                ),
-                rusqlite::params![run_id, cleanup_identity, now, CLEANUP_ESCALATION_SECONDS],
-            )
+        super::bounded_identity(namespace_uid)?;
+        super::timestamp(now)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(super::storage_error)?;
-        if changed == 1 {
-            Ok(())
-        } else {
-            Err(ServiceError::InvalidTransition)
+        let stored: Option<StoredCleanupEscalation> = transaction
+            .query_row(
+                concat!(
+                    "SELECT cleanup_identity, namespace_uid, state, active, eligible, ",
+                    "started_at, escalated FROM cleanup_records WHERE run_id = ?1"
+                ),
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(super::storage_error)?;
+        let Some((owner, uid, state, active, eligible, started_at, escalated)) = stored else {
+            return Err(ServiceError::RunNotFound);
+        };
+        if owner != cleanup_identity || uid.as_deref() != Some(namespace_uid) {
+            return Err(ServiceError::OwnershipMismatch);
         }
+        let started_at = started_at.ok_or(ServiceError::InvalidTransition)?;
+        if !active
+            || !eligible
+            || state != "failed"
+            || now.saturating_sub(started_at) < CLEANUP_ESCALATION_SECONDS
+        {
+            return Err(ServiceError::InvalidTransition);
+        }
+        if !escalated {
+            let changed = transaction
+                .execute(
+                    concat!(
+                        "UPDATE cleanup_records SET escalated = 1 WHERE run_id = ?1 ",
+                        "AND cleanup_identity = ?2 AND namespace_uid = ?3 AND active = 1 ",
+                        "AND eligible = 1 AND state = 'failed' AND escalated = 0"
+                    ),
+                    rusqlite::params![run_id, cleanup_identity, namespace_uid],
+                )
+                .map_err(super::storage_error)?;
+            if changed != 1 {
+                return Err(ServiceError::InvalidTransition);
+            }
+        }
+        transaction.commit().map_err(super::storage_error)
     }
 }
 

@@ -27,6 +27,11 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[allow(
+    dead_code,
+    reason = "the fixed payload adapter is exercised before authenticated transport composition"
+)]
+mod cleanup_state;
 mod kubernetes_cleanup;
 mod kubernetes_policy;
 mod kubernetes_scheduler;

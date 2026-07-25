@@ -512,6 +512,42 @@ with pinned system trust will carry it and obtain operation time outside caller-
 bytes. Payload parse or authorization failure is private transport state only: it appends no public
 event and changes no lifecycle, receiver result, receipt, cleanup state, or provider fact.
 
+### Fixed cleanup-state payload contract
+
+The cleanup-state payload is a separate private adapter over only the existing cleanup-owned
+`Service` transitions. It does not share the scheduler-state operation or error vocabulary. A
+payload is a four-byte unsigned big-endian JSON length followed by exactly that many UTF-8 bytes and
+no trailing byte. The JSON payload is at most 64 KiB, uses protocol token `cleanup-state-v1`, and is
+encoded without insignificant whitespace by the owned codec. Zero, oversize, truncated, trailing,
+malformed UTF-8/JSON, duplicate or unknown fields, unknown operations, and invalid identities,
+states, object counts, or lengths fail before dispatch.
+
+The only requests are:
+
+- list active, eligible, policy-owned cleanup candidates in durable admission order, including each
+  exact recorded run identity, cleanup owner, namespace UID, cleanup state, durable start and
+  escalation facts, and the kind, namespace, name, UID, and owner label of every recorded object;
+- start cleanup for one exact candidate;
+- record its one coalesced cleanup failure;
+- commit its durable idempotent escalation only when the system-supplied operation time is at least
+  15 minutes after the durable cleanup start; and
+- complete cleanup only from one exact absent observation for every recorded object, with no
+  duplicate, missing, extra, present, or identity-changed evidence.
+
+Wire DTOs are distinct from domain types. Candidate inventories are bounded by the existing literal
+eight-active limit and each ownership/evidence inventory by a literal maximum of 16 objects. The
+fixed response error vocabulary is `invalid_payload`, `cleanup_missing`, `cleanup_forbidden`,
+`cleanup_conflict`, and `state_unavailable`; it discloses no storage, SQL, Kubernetes, receipt,
+receiver, or provider diagnostic. Deletion request acceptance is not an operation or evidence value
+and can never complete cleanup. Public expiry does not remove an active private candidate, and
+capacity remains held until the exact completion transaction succeeds.
+
+This payload contract obtains time outside caller-controlled payload bytes and adds no listener,
+network endpoint, authentication, TLS, bearer-token processing, `TokenReview`, retry loop,
+Kubernetes behavior, or generic request executor. Payload rejection is private transport state only:
+it appends no event and changes no lifecycle, receiver result, frozen receipt, cleanup state, or
+provider fact.
+
 ## Capacity and deadlines
 
 One deployment has these hard maxima:
