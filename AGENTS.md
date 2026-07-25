@@ -10,8 +10,9 @@ Read this file first. It routes work; current technical truth lives in the linke
    [`0.1.0` release record](tasks/KAP-0045.md), completed
    [self-serve hardening packet](tasks/KAP-0049.md), completed
    [sandbox-contract packet](tasks/KAP-0051.md), completed
-   [sandbox-service packet](tasks/KAP-0052.md), next queued completed
-   [runner-handoff packet](tasks/KAP-0055.md), next queued
+   [sandbox-service packet](tasks/KAP-0052.md), completed
+   [runner-handoff packet](tasks/KAP-0055.md), completed read-only
+   [architecture-integrity packet](tasks/KAP-0056.md), active offline
    [sandbox-deployment packet](tasks/KAP-0053.md), sandbox [umbrella](tasks/KAP-0050.md), and queued
    [evaluator evidence packet](tasks/KAP-0047.md).
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.

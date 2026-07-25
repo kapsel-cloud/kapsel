@@ -1,7 +1,8 @@
 # Technical task route
 
-Status: completed self-serve release, sandbox contracts, and deterministic sandbox service; queued
-live sandbox deployment, evaluator evidence cycle, and trigger-gated resident-v1 backlog.
+Status: completed self-serve release, sandbox contracts, deterministic sandbox service, private
+runner handoff, and architecture-integrity review; offline GKE execution composition next, then
+separately authorized live sandbox proof, evaluator evidence, and trigger-gated resident-v1 work.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or the active experiment contract.
@@ -11,9 +12,9 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. KAP-0049
 published the bounded `v0.1.1` self-serve patch. KAP-0050 is the following sandbox umbrella; its
 backend sequence is KAP-0051 contracts, KAP-0052 service package, KAP-0055 provider-neutral runner
-handoff, and KAP-0053 GKE/live deployment, followed by independently owned website integration
-acceptance. KAP-0047 owns the following evaluator evidence cycle. KAP-0046 remains conditional on
-approved aggregate use evidence.
+handoff, KAP-0056 architecture-integrity review, and KAP-0053 GKE/live deployment, followed by
+independently owned website integration acceptance. KAP-0047 owns the following evaluator evidence
+cycle. KAP-0046 remains conditional on approved aggregate use evidence.
 
 | Order | Packet                  | Outcome                                           | Depends on |
 | ----- | ----------------------- | ------------------------------------------------- | ---------- |
@@ -36,7 +37,8 @@ approved aggregate use evidence.
 | [KAP-0051](KAP-0051.md) | Complete    | Own the fixed public sandbox contracts                                |
 | [KAP-0052](KAP-0052.md) | Complete    | Implemented and accepted one-way `kapsel-sandbox -> kapsel` package   |
 | [KAP-0055](KAP-0055.md) | Complete    | Implemented and accepted the provider-neutral private runner handoff  |
-| [KAP-0053](KAP-0053.md) | Next queued | Compose and prove the GKE isolated live sandbox after KAP-0055        |
+| [KAP-0056](KAP-0056.md) | Complete    | Found no pre-GKE blocker; resume KAP-0053 unchanged                   |
+| [KAP-0053](KAP-0053.md) | Next queued | Complete offline GKE composition before separate live authorization   |
 | [KAP-0050](KAP-0050.md) | Umbrella    | Accept the backend and independent public website together            |
 | [KAP-0047](KAP-0047.md) | Queued      | Gather bounded external-use evidence without capability expansion     |
 | [KAP-0046](KAP-0046.md) | Conditional | Select one evidence-backed technical direction                        |
@@ -44,8 +46,8 @@ approved aggregate use evidence.
 | [KAP-0048](KAP-0048.md) | Conditional | Decide whether Cargo and docs.rs distribution is independently useful |
 
 KAP-0049 may harden only the existing evaluator, CLI, MCP, diagnostics, packaging, and documentation
-surfaces. KAP-0051 through KAP-0053 and KAP-0055 may add only one public sandbox for the same fixed
-operation and must preserve the package and authority rules in
+surfaces. KAP-0051 through KAP-0053, KAP-0055, and KAP-0056 may advance only one public sandbox for
+the same fixed operation and must preserve the package and authority rules in
 [V1 technical direction](../docs/VISION.md). These packets do not authorize a second capability or
 production compatibility promise. KAP-0046 later converts approved aggregate use evidence and
 technical findings into exactly one next route:

@@ -3,7 +3,7 @@
   "status": {
     "kind": "authorization_candidate",
     "execution_authorized": false,
-    "fixture_revision": "54e9907299041f69ead69631e0d00b77f1b1de64",
+    "fixture_revision": null,
     "forbidden_without_later_approval": [
       "provider_mutation",
       "credential_use",
@@ -27,7 +27,7 @@
     ],
     "dependency_lock": "Cargo.lock",
     "registry_digest": null,
-    "fixture_source_digest": "sha256:5642204b21e10ab54441a03af6bca587743760afba2fcb4329821e221c2f6c5d"
+    "fixture_source_digest": null
   },
   "private_authorization_binding": {
     "account_binding_digest": null,
@@ -39,7 +39,9 @@
     "maximum_gross_spend_usd": 100,
     "cleanup_window_inside_duration": true,
     "dedicated_experiment_project_required": true,
-    "default_sink_baseline_digest": null
+    "default_sink_baseline_digest": null,
+    "audit_topic_policy_baseline_digest": null,
+    "audit_sink_writer_identity_digest": null
   },
   "cluster": {
     "provider": "google-cloud",
@@ -277,18 +279,28 @@
     },
     "configurable_records": {
       "maximum_retention_seconds": 86400,
+      "shortest_practical_logical_retention_seconds": 600,
       "types": [
         "Secret Manager Data Access",
         "Kubernetes Data Access",
         "Policy Denied proof"
       ],
-      "dedicated_bucket": "kapsel-gate2-audit",
-      "bucket_location": "europe-north1",
-      "retention_days_at_creation": 1,
+      "destination_kind": "pubsub",
+      "topic": "kapsel-gate2-audit",
+      "subscription": "kapsel-gate2-audit-review",
+      "subscription_message_retention_seconds": 600,
+      "retain_acknowledged_messages": false,
+      "subscription_expiration": "never-during-authorized-experiment",
       "exclude_duplicate_default_storage": true,
       "additional_sinks": [],
-      "physical_deletion_within_24h_unproved": true,
-      "candidate_reject_if_unproved": true,
+      "physical_deletion_claimed": false,
+      "no_kapsel_query_or_replay_after_seconds": 86400,
+      "source_documents": [
+        "https://cloud.google.com/logging/docs/export/configure_export_v2#pubsub",
+        "https://cloud.google.com/pubsub/docs/subscription-properties#message-retention-duration",
+        "https://cloud.google.com/sdk/gcloud/reference/pubsub/subscriptions/create",
+        "https://cloud.google.com/sdk/gcloud/reference/logging/sinks/create"
+      ],
       "log_filter": "(log_id(\"cloudaudit.googleapis.com/data_access\") AND (protoPayload.serviceName=\"secretmanager.googleapis.com\" OR resource.type=\"k8s_cluster\")) OR log_id(\"cloudaudit.googleapis.com/policy\")",
       "default_exclusion_name": "kapsel-gate2-no-default-duplicate",
       "dedicated_sink": "kapsel-gate2-audit",
@@ -327,18 +339,33 @@
       "absence_postcondition": "no owned result"
     },
     {
-      "id": "logging-bucket",
+      "id": "audit-topic",
       "owner": "operator",
       "create_step": 2,
       "delete_step": 9,
-      "billing_class": "logging-ingestion-and-retention",
+      "billing_class": "pubsub-message-delivery-retention",
       "absence_argv": [
         "gcloud",
-        "logging",
-        "buckets",
+        "pubsub",
+        "topics",
         "describe",
         "kapsel-gate2-audit",
-        "--location=europe-north1",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "audit-subscription",
+      "owner": "private-reviewer",
+      "create_step": 2,
+      "delete_step": 9,
+      "billing_class": "pubsub-message-delivery-retention",
+      "absence_argv": [
+        "gcloud",
+        "pubsub",
+        "subscriptions",
+        "describe",
+        "kapsel-gate2-audit-review",
         "--project=${PROJECT_ID}"
       ],
       "absence_postcondition": "NOT_FOUND"
@@ -358,6 +385,23 @@
         "--project=${PROJECT_ID}"
       ],
       "absence_postcondition": "NOT_FOUND"
+    },
+    {
+      "id": "audit-topic-writer-policy",
+      "owner": "operator",
+      "create_step": 2,
+      "delete_step": 9,
+      "billing_class": "iam",
+      "absence_argv": [
+        "gcloud",
+        "pubsub",
+        "topics",
+        "get-iam-policy",
+        "kapsel-gate2-audit",
+        "--format=json",
+        "--project=${PROJECT_ID}"
+      ],
+      "absence_postcondition": "no fixture sink writer binding and policy digest equals the private baseline"
     },
     {
       "id": "default-sink-exclusion",
@@ -660,6 +704,7 @@
       "OWNER_PRIVATE_ADD_GATE2_AUDIT_POLICY_FILE",
       "OWNER_PRIVATE_ADD_GATE2_DELTAS_POLICY_FILE",
       "OWNER_PRIVATE_ADD_GATE2_IAM_POLICY_FILE",
+      "OWNER_PRIVATE_ADD_GATE2_TOPIC_POLICY_FILE",
       "OWNER_PRIVATE_AUDIT_POLICY_FILE",
       "OWNER_PRIVATE_BUDGET_NAME",
       "OWNER_PRIVATE_EVIDENCE_CAPTURE_TOOL",
@@ -675,6 +720,7 @@
       "OWNER_PRIVATE_OWNED_DISK_NAMES",
       "OWNER_PRIVATE_OWNED_SNAPSHOT_NAME",
       "OWNER_PRIVATE_REMOVE_GATE2_DELTAS_POLICY_FILE",
+      "OWNER_PRIVATE_REMOVE_GATE2_TOPIC_POLICY_FILE",
       "OWNER_PRIVATE_RENDERED_GATE2_OBJECTS",
       "OWNER_PRIVATE_RENDERED_JOURNAL_CLAIMS",
       "OWNER_PRIVATE_RENDERED_SNAPSHOT_OBJECT",
@@ -747,20 +793,39 @@
       {
         "sequence": 2,
         "inventory_ids": [
-          "logging-bucket"
+          "audit-topic"
         ],
         "argv": [
           "gcloud",
-          "logging",
-          "buckets",
+          "pubsub",
+          "topics",
           "create",
           "kapsel-gate2-audit",
-          "--location=europe-north1",
-          "--retention-days=1",
           "--project=${PROJECT_ID}"
         ],
         "rollback_inventory_sequences": {
-          "logging-bucket": 9
+          "audit-topic": 9
+        }
+      },
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "audit-subscription"
+        ],
+        "argv": [
+          "gcloud",
+          "pubsub",
+          "subscriptions",
+          "create",
+          "kapsel-gate2-audit-review",
+          "--topic=kapsel-gate2-audit",
+          "--message-retention-duration=600s",
+          "--expiration-period=never",
+          "--no-retain-acked-messages",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "audit-subscription": 9
         }
       },
       {
@@ -774,12 +839,31 @@
           "sinks",
           "create",
           "kapsel-gate2-audit",
-          "logging.googleapis.com/projects/${PROJECT_ID}/locations/europe-north1/buckets/kapsel-gate2-audit",
+          "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/kapsel-gate2-audit",
           "--log-filter=${GATE2_CONFIGURABLE_AUDIT_LOG_FILTER}",
+          "--unique-writer-identity",
           "--project=${PROJECT_ID}"
         ],
         "rollback_inventory_sequences": {
           "logging-sink": 9
+        }
+      },
+      {
+        "sequence": 2,
+        "inventory_ids": [
+          "audit-topic-writer-policy"
+        ],
+        "argv": [
+          "gcloud",
+          "pubsub",
+          "topics",
+          "set-iam-policy",
+          "kapsel-gate2-audit",
+          "${OWNER_PRIVATE_ADD_GATE2_TOPIC_POLICY_FILE}",
+          "--project=${PROJECT_ID}"
+        ],
+        "rollback_inventory_sequences": {
+          "audit-topic-writer-policy": 9
         }
       },
       {
@@ -1454,6 +1538,21 @@
       {
         "sequence": 9,
         "inventory_ids": [
+          "audit-topic-writer-policy"
+        ],
+        "argv": [
+          "gcloud",
+          "pubsub",
+          "topics",
+          "set-iam-policy",
+          "kapsel-gate2-audit",
+          "${OWNER_PRIVATE_REMOVE_GATE2_TOPIC_POLICY_FILE}",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
           "default-sink-exclusion"
         ],
         "argv": [
@@ -1484,15 +1583,29 @@
       {
         "sequence": 9,
         "inventory_ids": [
-          "logging-bucket"
+          "audit-subscription"
         ],
         "argv": [
           "gcloud",
-          "logging",
-          "buckets",
+          "pubsub",
+          "subscriptions",
+          "delete",
+          "kapsel-gate2-audit-review",
+          "--quiet",
+          "--project=${PROJECT_ID}"
+        ]
+      },
+      {
+        "sequence": 9,
+        "inventory_ids": [
+          "audit-topic"
+        ],
+        "argv": [
+          "gcloud",
+          "pubsub",
+          "topics",
           "delete",
           "kapsel-gate2-audit",
-          "--location=europe-north1",
           "--quiet",
           "--project=${PROJECT_ID}"
         ]
@@ -1556,19 +1669,18 @@
     ],
     "partial_failure_rule": "run global stop when possible, then execute every teardown entry whose inventory ID was observed created; tolerate not-found and retain the first non-not-found failure",
     "final_absence_rule": "run every inventory absence_argv after teardown and again after the 24-hour expiry; any owned result rejects cleanup",
-    "pre_logging_delete_absence_argv": [
+    "pre_audit_route_delete_drain_argv": [
       "gcloud",
-      "logging",
-      "read",
-      "${GATE2_CONFIGURABLE_AUDIT_LOG_FILTER}",
-      "--bucket=kapsel-gate2-audit",
-      "--location=europe-north1",
-      "--view=_AllLogs",
-      "--freshness=25h",
-      "--limit=1",
+      "pubsub",
+      "subscriptions",
+      "pull",
+      "kapsel-gate2-audit-review",
+      "--limit=1000",
+      "--auto-ack",
       "--project=${PROJECT_ID}"
     ],
-    "optimistic_policy_rule": "every set-iam-policy file is rendered immediately before use from the current policy etag, adds or removes only fixture-owned IAM/audit deltas, and aborts on etag conflict",
+    "audit_route_expiry_rule": "the private reviewer drains only allowlisted fields, the subscription retains unacknowledged messages for 600 seconds without retaining acknowledged messages, and teardown deletes subscription then topic; after 24 hours neither resource nor any Kapsel-controlled configurable copy may exist",
+    "optimistic_policy_rule": "every project or Pub/Sub topic set-iam-policy file is rendered immediately before use from the current policy etag, adds or removes only fixture-owned IAM, audit, or sink-writer deltas, and aborts on etag conflict",
     "default_sink_baseline_before_argv": [
       "gcloud",
       "logging",
@@ -1588,6 +1700,7 @@
       "--project=${PROJECT_ID}"
     ],
     "default_sink_restore_rule": "before digest must equal private authorization binding; after removing only the named fixture exclusion, after digest must equal before digest; any conflict or extra fixture exclusion rejects cleanup",
+    "audit_topic_policy_restore_rule": "before digest must equal the private authorization binding; the unique sink writer receives only roles/pubsub.publisher on the one topic; after removing that binding, the policy digest must equal the baseline",
     "project_scope_rule": "every project-scoped gcloud argv pins --project=${PROJECT_ID}; PROJECT_ID is accepted only from the approved private account-binding digest render"
   },
   "cost": {
@@ -1612,6 +1725,7 @@
       "gke-cluster-management",
       "iam",
       "logging-ingestion-and-retention",
+      "pubsub-message-delivery-retention",
       "n2-compute-and-boot-disk",
       "node-capacity",
       "operator-local",
@@ -1635,6 +1749,7 @@
     "reject_if_repriced_gross_ceiling_exceeds_usd": 100
   },
   "execution_blockers": [
+    "reviewed_execution_revision_and_fixture_digest",
     "registry_digest",
     "private_account_binding",
     "cleanup_owner_binding",
@@ -1642,7 +1757,7 @@
     "kubernetes_token_audience",
     "provider_runner_subcommand",
     "secret_version_identities",
-    "one_day_configurable_log_physical_deletion_proof",
+    "audit_sink_writer_identity_and_topic_policy_binding",
     "actual_required_log_field_review",
     "effective_iam_and_kubernetes_rbac_review",
     "current_version_and_price_recheck",

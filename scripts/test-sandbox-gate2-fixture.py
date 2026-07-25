@@ -35,8 +35,8 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     status = candidate["status"]
     require(status["kind"] == "authorization_candidate", "candidate kind")
     require(status["execution_authorized"] is False, "execution must remain unauthorized")
-    require(status["fixture_revision"] == "54e9907299041f69ead69631e0d00b77f1b1de64", "fixture source revision")
-    require(candidate["reproduction_lock"]["fixture_source_digest"] == "sha256:5642204b21e10ab54441a03af6bca587743760afba2fcb4329821e221c2f6c5d", "fixture source digest")
+    require(status["fixture_revision"] is None, "reviewed fixture revision blocker")
+    require(candidate["reproduction_lock"]["fixture_source_digest"] is None, "reviewed fixture digest blocker")
     require(set(status["forbidden_without_later_approval"]) == {
         "provider_mutation",
         "credential_use",
@@ -144,11 +144,24 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(set(fixed["allowed_fields"]) == {"administrative_operation", "operator_or_service_identity", "provider_resource_identity", "time", "status"}, "management exception allowlist")
     require({"visitor_locator", "run_id", "operation_id", "request_or_patch_body", "secret_payload"}.issubset(fixed["forbidden_fields"]), "management exception denials")
     configurable = audit["configurable_records"]
-    require(configurable["maximum_retention_seconds"] == 86400, "configurable retention")
-    require(configurable["retention_days_at_creation"] == 1, "one-day bucket")
+    require(configurable["maximum_retention_seconds"] == 86400, "configurable retention ceiling")
+    require(configurable["shortest_practical_logical_retention_seconds"] == 600, "Pub/Sub minimum retention")
+    require(configurable["destination_kind"] == "pubsub", "sole configurable audit destination")
+    require(configurable["topic"] == "kapsel-gate2-audit", "audit topic")
+    require(configurable["subscription"] == "kapsel-gate2-audit-review", "audit subscription")
+    require(configurable["subscription_message_retention_seconds"] == 600, "subscription retention")
+    require(not configurable["retain_acknowledged_messages"], "no acknowledged replay")
+    require(configurable["subscription_expiration"] == "never-during-authorized-experiment", "subscription continuity")
     require(configurable["exclude_duplicate_default_storage"], "default duplicate exclusion")
     require(configurable["additional_sinks"] == [], "no duplicate sinks")
-    require(configurable["physical_deletion_within_24h_unproved"] and configurable["candidate_reject_if_unproved"], "retention blocker")
+    require(not configurable["physical_deletion_claimed"], "no physical deletion claim")
+    require(configurable["no_kapsel_query_or_replay_after_seconds"] == 86400, "query/replay ceiling")
+    require(configurable["source_documents"] == [
+        "https://cloud.google.com/logging/docs/export/configure_export_v2#pubsub",
+        "https://cloud.google.com/pubsub/docs/subscription-properties#message-retention-duration",
+        "https://cloud.google.com/sdk/gcloud/reference/pubsub/subscriptions/create",
+        "https://cloud.google.com/sdk/gcloud/reference/logging/sinks/create",
+    ], "official audit-route sources")
     require(configurable["log_filter"] == "(log_id(\"cloudaudit.googleapis.com/data_access\") AND (protoPayload.serviceName=\"secretmanager.googleapis.com\" OR resource.type=\"k8s_cluster\")) OR log_id(\"cloudaudit.googleapis.com/policy\")", "audit filter")
     require(set(configurable["types"]) == {"Secret Manager Data Access", "Kubernetes Data Access", "Policy Denied proof"}, "bounded audit types")
     require(set(configurable["disabled_sources"]) == {"GKE system logs", "GKE workload logs", "GKE API server component logs", "GKE scheduler component logs", "GKE controller-manager component logs", "application diagnostics"}, "disabled configurable telemetry")
@@ -159,16 +172,16 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(authorization["maximum_gross_spend_usd"] == 100, "spend ceiling")
     require(authorization["cleanup_window_inside_duration"], "cleanup window")
     require(authorization["dedicated_experiment_project_required"], "dedicated project")
-    require(all(authorization[key] is None for key in ("account_binding_digest", "cleanup_owner_binding_digest", "reviewer_binding_digest", "approved_at", "expires_at", "default_sink_baseline_digest")), "private approval blockers")
+    require(all(authorization[key] is None for key in ("account_binding_digest", "cleanup_owner_binding_digest", "reviewer_binding_digest", "approved_at", "expires_at", "default_sink_baseline_digest", "audit_topic_policy_baseline_digest", "audit_sink_writer_identity_digest")), "private approval blockers")
 
     inventory = candidate["inventory"]
     inventory_ids = [entry["id"] for entry in inventory]
-    require(len(inventory_ids) == len(set(inventory_ids)) == 21, "complete unique inventory")
+    require(len(inventory_ids) == len(set(inventory_ids)) == 23, "complete unique inventory")
     require(all(entry["create_step"] > 0 and entry["delete_step"] > 0 for entry in inventory), "inventory order")
     require(all(len(entry["absence_argv"]) >= 3 for entry in inventory), "absence checks")
     require(all(entry["absence_argv"][0] in {"gcloud", "kubectl", "python3"} for entry in inventory), "bounded absence tools")
     require(all(entry["absence_postcondition"] for entry in inventory), "absence postconditions")
-    required_inventory = {"budget", "logging-bucket", "logging-sink", "default-sink-exclusion", "audit-policy-delta", "vpc", "subnet-and-ranges", "artifact-repository", "authorization-grant-secret", "receipt-signing-secret", "tombstone-digest-secret", "service-accounts", "iam-bindings", "regional-cluster", "system-node", "three-sandbox-nodes", "kubernetes-policy-and-workloads", "system-state-regional-disk", "eight-journal-regional-disks", "snapshot-generation", "raw-evidence"}
+    required_inventory = {"budget", "audit-topic", "audit-subscription", "logging-sink", "audit-topic-writer-policy", "default-sink-exclusion", "audit-policy-delta", "vpc", "subnet-and-ranges", "artifact-repository", "authorization-grant-secret", "receipt-signing-secret", "tombstone-digest-secret", "service-accounts", "iam-bindings", "regional-cluster", "system-node", "three-sandbox-nodes", "kubernetes-policy-and-workloads", "system-state-regional-disk", "eight-journal-regional-disks", "snapshot-generation", "raw-evidence"}
     require(set(inventory_ids) == required_inventory, "inventory entries")
     inventory_by_id = {entry["id"]: entry for entry in inventory}
     require("--billing-account=${BILLING_ACCOUNT_ID}" in inventory_by_id["budget"]["absence_argv"], "budget absence account")
@@ -183,8 +196,10 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(inventory_by_id["eight-journal-regional-disks"]["absence_argv"] == exact_disk_absence, "journal disk absence")
     absence_prefixes = {
         "budget": ("gcloud", "billing", "budgets", "list"),
-        "logging-bucket": ("gcloud", "logging", "buckets", "describe"),
+        "audit-topic": ("gcloud", "pubsub", "topics", "describe"),
+        "audit-subscription": ("gcloud", "pubsub", "subscriptions", "describe"),
         "logging-sink": ("gcloud", "logging", "sinks", "describe"),
+        "audit-topic-writer-policy": ("gcloud", "pubsub", "topics", "get-iam-policy"),
         "default-sink-exclusion": ("gcloud", "logging", "sinks", "describe"),
         "audit-policy-delta": ("gcloud", "projects", "get-iam-policy"),
         "vpc": ("gcloud", "compute", "networks", "list"),
@@ -215,7 +230,9 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(all(set(entry["rollback_inventory_sequences"]) == set(entry["inventory_ids"]) for entry in provision), "partial rollback mapping")
     allowed_provision_prefixes = {
         ("gcloud", "billing", "budgets", "create"),
-        ("gcloud", "logging", "buckets", "create"),
+        ("gcloud", "pubsub", "topics", "create"),
+        ("gcloud", "pubsub", "subscriptions", "create"),
+        ("gcloud", "pubsub", "topics", "set-iam-policy"),
         ("gcloud", "logging", "sinks", "create"),
         ("gcloud", "logging", "sinks", "update"),
         ("gcloud", "projects", "set-iam-policy"),
@@ -243,7 +260,9 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
         ("gcloud", "iam", "service-accounts", "delete"),
         ("gcloud", "logging", "sinks", "update"),
         ("gcloud", "logging", "sinks", "delete"),
-        ("gcloud", "logging", "buckets", "delete"),
+        ("gcloud", "pubsub", "subscriptions", "delete"),
+        ("gcloud", "pubsub", "topics", "delete"),
+        ("gcloud", "pubsub", "topics", "set-iam-policy"),
         ("gcloud", "compute", "networks", "subnets"),
         ("gcloud", "compute", "networks", "delete"),
         ("gcloud", "billing", "budgets", "delete"),
@@ -260,6 +279,18 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require("--num-nodes=1" in flattened and "europe-north1-a,europe-north1-b,europe-north1-c" in flattened, "regional node arithmetic")
     require("--node-pool=system" not in flattened, "unsupported initial pool name flag")
     require("--logging=NONE" in flattened and "--monitoring=NONE" in flattened, "configurable telemetry disabled")
+    topic_create = next(entry["argv"] for entry in provision if entry["argv"][:4] == ["gcloud", "pubsub", "topics", "create"])
+    subscription_create = next(entry["argv"] for entry in provision if entry["argv"][:4] == ["gcloud", "pubsub", "subscriptions", "create"])
+    sink_create = next(entry["argv"] for entry in provision if entry["argv"][:4] == ["gcloud", "logging", "sinks", "create"])
+    topic_policy = next(entry["argv"] for entry in provision if entry["argv"][:4] == ["gcloud", "pubsub", "topics", "set-iam-policy"])
+    require(topic_create == ["gcloud", "pubsub", "topics", "create", "kapsel-gate2-audit", "--project=${PROJECT_ID}"], "exact audit topic without acknowledged-message retention")
+    require(subscription_create == ["gcloud", "pubsub", "subscriptions", "create", "kapsel-gate2-audit-review", "--topic=kapsel-gate2-audit", "--message-retention-duration=600s", "--expiration-period=never", "--no-retain-acked-messages", "--project=${PROJECT_ID}"], "exact audit subscription")
+    require(sink_create == ["gcloud", "logging", "sinks", "create", "kapsel-gate2-audit", "pubsub.googleapis.com/projects/${PROJECT_ID}/topics/kapsel-gate2-audit", "--log-filter=${GATE2_CONFIGURABLE_AUDIT_LOG_FILTER}", "--unique-writer-identity", "--project=${PROJECT_ID}"], "exact sole audit sink")
+    require(topic_policy == ["gcloud", "pubsub", "topics", "set-iam-policy", "kapsel-gate2-audit", "${OWNER_PRIVATE_ADD_GATE2_TOPIC_POLICY_FILE}", "--project=${PROJECT_ID}"], "exact sink-writer policy command")
+    require(commands["audit_topic_policy_restore_rule"] == "before digest must equal the private authorization binding; the unique sink writer receives only roles/pubsub.publisher on the one topic; after removing that binding, the policy digest must equal the baseline", "sink writer publisher only")
+    require(sum(entry["argv"][:4] == ["gcloud", "pubsub", "topics", "create"] for entry in provision) == 1, "one audit topic")
+    require(sum(entry["argv"][:4] == ["gcloud", "pubsub", "subscriptions", "create"] for entry in provision) == 1, "one audit subscription")
+    require(sum(entry["argv"][:4] == ["gcloud", "logging", "sinks", "create"] for entry in provision) == 1, "one audit sink")
     cluster_create = next(entry["argv"] for entry in provision if entry["argv"][:4] == ["gcloud", "container", "clusters", "create"])
     sandbox_create = next(entry["argv"] for entry in provision if entry["argv"][:4] == ["gcloud", "container", "node-pools", "create"])
     expected_cluster_create = [
@@ -307,17 +338,20 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(covered_delete == set(inventory_ids), "full teardown coverage")
     require([entry["sequence"] for entry in teardown] == sorted(entry["sequence"] for entry in teardown), "teardown order")
     require(any(entry["argv"][:4] == ["gcloud", "container", "clusters", "delete"] for entry in teardown), "cluster teardown")
-    require(any(entry["argv"][:4] == ["gcloud", "logging", "buckets", "delete"] for entry in teardown), "logging teardown")
+    require(any(entry["argv"][:4] == ["gcloud", "pubsub", "subscriptions", "delete"] for entry in teardown), "audit subscription teardown")
+    require(any(entry["argv"][:4] == ["gcloud", "pubsub", "topics", "delete"] for entry in teardown), "audit topic teardown")
     require(any(entry["argv"][:4] == ["gcloud", "billing", "budgets", "delete"] for entry in teardown), "budget teardown")
     require(any("iam-bindings" in entry["inventory_ids"] for entry in teardown), "IAM teardown")
     require("every teardown entry" in commands["partial_failure_rule"], "partial failure rule")
     require("every inventory absence_argv" in commands["final_absence_rule"], "final absence rule")
     require("current policy etag" in commands["optimistic_policy_rule"] and "aborts on etag conflict" in commands["optimistic_policy_rule"], "optimistic IAM/audit restore")
-    require(commands["pre_logging_delete_absence_argv"][:3] == ["gcloud", "logging", "read"], "logging absence before delete")
-    require("--view=_AllLogs" in commands["pre_logging_delete_absence_argv"], "logging view")
+    require(commands["pre_audit_route_delete_drain_argv"][:4] == ["gcloud", "pubsub", "subscriptions", "pull"], "audit drain")
+    require("--auto-ack" in commands["pre_audit_route_delete_drain_argv"], "drained messages cannot replay")
+    require("600 seconds" in commands["audit_route_expiry_rule"], "logical retention rule")
+    require("neither resource" in commands["audit_route_expiry_rule"], "24-hour absence rule")
     require(commands["default_sink_baseline_before_argv"] == commands["default_sink_baseline_after_argv"], "default sink comparison")
     require("after digest must equal before digest" in commands["default_sink_restore_rule"], "default sink restore")
-    all_argv = commands["read_only_preflight"] + [entry["argv"] for entry in provision] + [entry["argv"] for entry in teardown] + [entry["absence_argv"] for entry in inventory] + [commands[key] for key in ("operator_connection_argv", "pre_logging_delete_absence_argv", "default_sink_baseline_before_argv", "default_sink_baseline_after_argv")]
+    all_argv = commands["read_only_preflight"] + [entry["argv"] for entry in provision] + [entry["argv"] for entry in teardown] + [entry["absence_argv"] for entry in inventory] + [commands[key] for key in ("operator_connection_argv", "pre_audit_route_delete_drain_argv", "default_sink_baseline_before_argv", "default_sink_baseline_after_argv")]
     require(all("--project=${PROJECT_ID}" in argv for argv in all_argv if argv[0] == "gcloud" and argv[1] != "billing"), "explicit project scope")
     require("approved private account-binding digest" in commands["project_scope_rule"], "project binding rule")
     disk_delete = next(entry["argv"] for entry in teardown if entry["argv"][:4] == ["gcloud", "compute", "disks", "delete"])
@@ -338,8 +372,9 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require({"load-balancer", "public-address", "cloud-nat", "internet-egress"}.issubset(cost["forbidden_unpriced_classes"]), "unpriced class denial")
 
     blockers = set(candidate["execution_blockers"])
-    require({"registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "secret_version_identities", "one_day_configurable_log_physical_deletion_proof", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
+    require({"reviewed_execution_revision_and_fixture_digest", "registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "secret_version_identities", "audit_sink_writer_identity_and_topic_policy_binding", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
     require(candidate["reproduction_lock"]["registry_digest"] is None, "registry digest blocker")
+    require(candidate["reproduction_lock"]["fixture_source_digest"] is None, "fixture digest blocker")
     require("no_gate2_authorization" in candidate["non_claims"], "Gate 2 non-claim")
 
     serialized = json.dumps(candidate, sort_keys=True)
@@ -354,8 +389,29 @@ def negative_cases(candidate: dict[str, Any], storage_class: dict[str, Any]) -> 
     public["cluster"]["load_balancer"] = "external"
     cases.append(public)
     retention = copy.deepcopy(candidate)
-    retention["audit_and_retention"]["configurable_records"]["retention_days_at_creation"] = 30
+    retention["audit_and_retention"]["configurable_records"]["subscription_message_retention_seconds"] = 86400
     cases.append(retention)
+    duplicate_bucket = copy.deepcopy(candidate)
+    duplicate_bucket["audit_and_retention"]["configurable_records"]["destination_kind"] = "logging-bucket"
+    cases.append(duplicate_bucket)
+    replay = copy.deepcopy(candidate)
+    replay["audit_and_retention"]["configurable_records"]["retain_acknowledged_messages"] = True
+    cases.append(replay)
+    shared_writer = copy.deepcopy(candidate)
+    sink = next(entry for entry in shared_writer["commands"]["provision_argv_preview"] if entry["argv"][:4] == ["gcloud", "logging", "sinks", "create"])
+    sink["argv"].remove("--unique-writer-identity")
+    cases.append(shared_writer)
+    extra_topic = copy.deepcopy(candidate)
+    topic = next(entry for entry in extra_topic["commands"]["provision_argv_preview"] if entry["argv"][:4] == ["gcloud", "pubsub", "topics", "create"])
+    extra_topic["commands"]["provision_argv_preview"].append(copy.deepcopy(topic))
+    cases.append(extra_topic)
+    extra_subscription = copy.deepcopy(candidate)
+    subscription = next(entry for entry in extra_subscription["commands"]["provision_argv_preview"] if entry["argv"][:4] == ["gcloud", "pubsub", "subscriptions", "create"])
+    extra_subscription["commands"]["provision_argv_preview"].append(copy.deepcopy(subscription))
+    cases.append(extra_subscription)
+    broad_writer = copy.deepcopy(candidate)
+    broad_writer["commands"]["audit_topic_policy_restore_rule"] += "; roles/owner"
+    cases.append(broad_writer)
     broad_key = copy.deepcopy(candidate)
     broad_key["key_inventory"][1]["allowed_action"] = "roles/secretmanager.secretAccessor on project"
     cases.append(broad_key)
