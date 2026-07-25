@@ -463,10 +463,13 @@ addresses are not run fields or idempotency identities.
 
 ## Policy-complete per-run isolation
 
-Every run receives a unique namespace before dispatch. The service verifies the complete policy set
-against exact ownership UIDs and the admitted deployment-policy revision before invoking Kapsel. A
-missing, stale, permissive, or unverifiable control fails closed; it cannot fall back to a shared or
-ordinary target.
+Transactional scheduler dispatch first reserves active capacity, establishes the absolute deadline,
+and appoints one private lease. The scheduler then creates the run's unique namespace and verifies
+the complete policy set against exact ownership UIDs and the admitted deployment-policy revision
+before creating runner work or invoking Kapsel. A missing, stale, permissive, or unverifiable
+control fails closed; it cannot fall back to a shared or ordinary target. This reservation-first
+order bounds partially provisioned work; it does not make scheduler dispatch, setup, or lease state
+a Kapsel lifecycle or receiver fact.
 
 The required set is:
 
@@ -626,7 +629,7 @@ One exact deployed revision must prove:
 1. both fixed images and native runner work with the selected runtime and key/store configuration;
 2. cross-run Kubernetes API, DNS, network, metadata, volume, receipt, store, and key access is
    denied;
-3. omission or corruption of each required policy fails before dispatch;
+3. omission or corruption of each required policy fails before runner dispatch or Kapsel invocation;
 4. process/store/runner restart after admission, dispatch, provider ambiguity, and receipt
    publication preserves one run identity, ordered replay, no blind second mutation, and frozen
    receipt bytes;
