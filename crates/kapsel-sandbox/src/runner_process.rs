@@ -393,7 +393,7 @@ fn validate_owner_private_directory(directory: &fs::File) -> Result<(), &'static
     }
 }
 
-fn open_projected_or_regular(path: &Path) -> Result<fs::File, &'static str> {
+pub(crate) fn open_projected_or_regular(path: &Path) -> Result<fs::File, &'static str> {
     let parent = path.parent().ok_or("runner private input is invalid")?;
     let name = path.file_name().ok_or("runner private input is invalid")?;
     let directory = fs::File::from(

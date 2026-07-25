@@ -32,6 +32,11 @@ use sha2::{Digest, Sha256};
     reason = "the fixed payload adapter is exercised before authenticated transport composition"
 )]
 mod cleanup_state;
+#[allow(
+    dead_code,
+    reason = "the authenticated foundation is composed by the following role-specific slices"
+)]
+mod controller_state_transport;
 mod kubernetes_cleanup;
 mod kubernetes_policy;
 mod kubernetes_scheduler;

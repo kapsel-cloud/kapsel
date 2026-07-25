@@ -69,6 +69,10 @@ def main() -> None:
         )
         environment = os.environ.copy()
         environment["CARGO_TARGET_DIR"] = str(ROOT / "target" / "deletion-proof")
+        # Removing an independently deployable workspace member also removes its exclusive
+        # dependencies from the copied lock. Regenerate that deletion-only lock offline, then prove
+        # the ordinary package builds with the regenerated lock held fixed.
+        run("cargo", "generate-lockfile", "--offline", cwd=checkout, env=environment)
         run(
             "cargo",
             "check",
