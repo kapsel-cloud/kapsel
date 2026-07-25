@@ -32,6 +32,11 @@ mod kubernetes_policy;
 mod kubernetes_scheduler;
 mod runner_handoff;
 mod runner_process;
+#[allow(
+    dead_code,
+    reason = "the fixed payload adapter is exercised before authenticated transport composition"
+)]
+mod scheduler_state;
 
 pub use kubernetes_cleanup::run_cleanup_role;
 pub use kubernetes_scheduler::run_scheduler_role;
@@ -797,6 +802,69 @@ impl Service {
         })
     }
 
+    fn appoint_handoff_assignment(
+        &self,
+        lease: &DispatchLease,
+        endpoint: std::net::SocketAddr,
+        now_unix_s: i64,
+    ) -> Result<HandoffAssignment, ServiceError> {
+        self.validate_lease(lease, now_unix_s)?;
+        let credential = random_credential()?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let operation_id: String = transaction
+            .query_row(
+                concat!(
+                    "SELECT operation_id FROM runs WHERE run_id = ?1 AND lease_id = ?2 ",
+                    "AND lease_epoch = ?3 AND lease_expires_at > ?4 AND active = 1 ",
+                    "AND policy_verified = 1 AND application_invoked = 0 ",
+                    "AND execution_state = 'running' AND cleanup_state = 'pending'"
+                ),
+                params![lease.run_id, lease.lease_id, lease.epoch, now_unix_s],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::InvalidTransition)?;
+        let identity = HandoffIdentity {
+            run_id: lease.run_id.clone(),
+            operation_id: operation_id.clone(),
+            lease_id: lease.lease_id.clone(),
+            credential,
+        };
+        let verifier = credential_verifier(&identity);
+        let changed = transaction
+            .execute(
+                concat!(
+                    "UPDATE runs SET handoff_credential_verifier = ?5 WHERE run_id = ?1 ",
+                    "AND lease_id = ?2 AND lease_epoch = ?3 AND lease_expires_at > ?4 ",
+                    "AND active = 1 AND policy_verified = 1 AND application_invoked = 0 ",
+                    "AND execution_state = 'running' AND cleanup_state = 'pending'"
+                ),
+                params![
+                    lease.run_id,
+                    lease.lease_id,
+                    lease.epoch,
+                    now_unix_s,
+                    verifier.as_slice()
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        transaction.commit().map_err(storage_error)?;
+        Ok(HandoffAssignment {
+            run_id: lease.run_id.clone(),
+            operation_id,
+            lease_id: lease.lease_id.clone(),
+            credential,
+            endpoint,
+        })
+    }
+
     /// Returns the exact immutable provisioning specification frozen by admission.
     ///
     /// # Errors
@@ -914,14 +982,22 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let current: (Option<String>, bool, String) = transaction
+        let current: (Option<String>, bool, String, bool, Option<String>) = transaction
             .query_row(
                 concat!(
-                    "SELECT namespace_uid, application_invoked, execution_state ",
-                    "FROM runs WHERE run_id = ?1"
+                    "SELECT namespace_uid, application_invoked, execution_state, policy_verified, ",
+                    "provisioned_objects FROM runs WHERE run_id = ?1"
                 ),
                 [&lease.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .map_err(storage_error)?;
         if current.1 || current.2 != "running" {
@@ -933,6 +1009,16 @@ impl Service {
             .is_some_and(|uid| uid != target.namespace_uid)
         {
             return Err(ServiceError::OwnershipMismatch);
+        }
+        if current.3 {
+            if !policy_matches
+                || current.0.as_deref() != Some(target.namespace_uid.as_str())
+                || current.4.as_deref() != Some(provisioned_objects.as_str())
+            {
+                return Err(ServiceError::PolicyMismatch);
+            }
+            transaction.commit().map_err(storage_error)?;
+            return Ok(());
         }
         for object in &target.objects {
             let existing: Option<(String, String, String)> = transaction

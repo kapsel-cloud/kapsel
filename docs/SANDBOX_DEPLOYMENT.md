@@ -474,6 +474,44 @@ system-workload wrapper can be called complete. This correction preserves one sy
 and least authority; it does not select GKE, authorize provisioning, or prove live identity,
 storage, policy, or custody.
 
+### Fixed scheduler-state payload contract
+
+The scheduler-state payload is one private adapter over the existing scheduler-owned `Service`
+transitions. A payload is a four-byte unsigned big-endian JSON length followed by exactly that many
+UTF-8 bytes and no trailing byte. The JSON payload is at most 64 KiB, uses protocol token
+`scheduler-state-v1`, and is encoded without insignificant whitespace by the owned codec. Zero,
+oversize, truncated, trailing, malformed UTF-8/JSON, duplicate or unknown fields, unknown
+operations, and invalid identities, enum values, inventory counts, or lengths fail before dispatch.
+
+The only requests are:
+
+- list active recoverable run identities with their server-owned policy status in durable admission
+  order;
+- reserve the next FIFO run, active capacity, absolute deadline, initial lease, and handoff verifier
+  in one existing transaction;
+- recover or renew one exact lease handle;
+- read the immutable server-owned provisioning specification for one exact current lease;
+- commit one complete policy-verification inventory for that lease;
+- derive its server-owned private handoff assignment;
+- record setup failure either for recorded resources or for the exact no-resource path; and
+- append the existing deadline fact for one exact current lease.
+
+Wire DTOs are distinct from domain types. A lease handle carries only run identity, lease identity,
+epoch, and expiry; it never carries the raw handoff credential. Only after exact policy
+verification, the successful handoff-assignment operation appoints a fresh credential and atomically
+replaces the current lease's stored verifier. The raw credential appears only in that response,
+remains redacted from `Debug` and errors, and is never persisted by this adapter. The fixed response
+error vocabulary is `invalid_request`, `not_found`, `busy`, `saturated`, `deadline`, `denied`, and
+`unavailable`; it discloses no storage, provider, SQL, Kubernetes, credential, or receipt
+diagnostic. Recoverable inventories are bounded by the existing eight-active limit, and policy
+inventories by a literal maximum of 16 objects.
+
+This payload contract adds no listener, network endpoint, TLS, bearer-token processing,
+`TokenReview`, retry loop, or generic request executor. A later authenticated-encryption transport
+with pinned system trust will carry it and obtain operation time outside caller-controlled payload
+bytes. Payload parse or authorization failure is private transport state only: it appends no public
+event and changes no lifecycle, receiver result, receipt, cleanup state, or provider fact.
+
 ## Capacity and deadlines
 
 One deployment has these hard maxima:
