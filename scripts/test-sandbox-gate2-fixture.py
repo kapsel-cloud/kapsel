@@ -39,12 +39,26 @@ def validate_system_workload(workload: dict[str, Any], bindings: dict[str, Any])
     require(not status["execution_authorized"] and not status["composition_complete"], "system workload remains blocked")
     require(not status["directly_applicable"], "evidence wrapper is not directly applicable")
     require(not status["network_access_control_complete"], "network access control blocker")
+    require(status["control_topology"] == "separate-controller-state-adapters-v1", "locked control topology")
     require(status["missing_roles"] == ["scheduler", "cleanup-reconciler"], "exact missing roles")
+    require(status["missing_controls"] == [
+        "scheduler-state-adapter",
+        "cleanup-state-adapter",
+        "authenticated-controller-transport",
+        "pinned-system-tls-trust-and-rotation",
+        "locked-token-audiences",
+        "controller-kubernetes-api-token-projections",
+        "token-review-only-system-credential",
+        "key-staging-identities",
+        "runner-resource-uid-registration",
+        "controller-rbac",
+        "network-policy",
+    ], "exact missing controls")
     objects = workload["objects"]
     canonical_objects = json.dumps(objects, sort_keys=True, separators=(",", ":")).encode()
     rendered_digest = f"sha256:{hashlib.sha256(canonical_objects).hexdigest()}"
     require(rendered_digest == status["rendered_objects_sha256"], "complete rendered-object equality")
-    require(rendered_digest == "sha256:12f56539a1b2acc12a3df436f0206f2cc6ddc4bfa87eff9beef5b1848e077373", "locked rendered-object digest")
+    require(rendered_digest == "sha256:130465b4da9cbbd94c1fa9fcc726efddba9652bba5c44ecd8b6a9d231d7e8222", "locked rendered-object digest")
     require([(item["apiVersion"], item["kind"]) for item in objects] == [
         ("v1", "Namespace"),
         ("v1", "ServiceAccount"),
@@ -54,7 +68,7 @@ def validate_system_workload(workload: dict[str, Any], bindings: dict[str, Any])
     namespace, account, service, stateful_set = objects
     require(namespace["metadata"] == {
         "name": "kapsel-sandbox-system",
-        "labels": {"kapsel.dev/gate2": "true", "kapsel.dev/policy-revision": "sandbox-policy-v1"},
+        "labels": {"kapsel.dev/gate2": "true", "kapsel.dev/policy-revision": "sandbox-policy-v2"},
     }, "system namespace")
     require(account["metadata"]["name"] == "kapsel-gate2-sandbox-api", "system service account")
     require(account["metadata"]["namespace"] == "kapsel-sandbox-system", "system account namespace")
@@ -112,6 +126,8 @@ def validate_system_workload(workload: dict[str, Any], bindings: dict[str, Any])
     require(all(term not in serialized for term in ("LoadBalancer", "NodePort", "hostNetwork", "hostPath", '"runner"')), "no public, host, or runner authority")
     require(set(workload["non_claims"]) == {
         "no_scheduler_or_cleanup_reconciler",
+        "no_controller_state_adapters_or_authenticated_transport",
+        "no_tokenreview_rbac_or_locked_token_audiences",
         "no_networkpolicy_or_public_endpoint",
         "no_secret_manager_staging_proof",
         "no_workload_identity_binding_proof",
@@ -588,6 +604,12 @@ def negative_cases(candidate: dict[str, Any], storage_class: dict[str, Any], sys
     authorized_workload = copy.deepcopy(system_workload)
     authorized_workload["status"]["execution_authorized"] = True
     workload_cases.append(authorized_workload)
+    changed_topology = copy.deepcopy(system_workload)
+    changed_topology["status"]["control_topology"] = "union-controller-sidecars"
+    workload_cases.append(changed_topology)
+    omitted_control = copy.deepcopy(system_workload)
+    omitted_control["status"]["missing_controls"].remove("authenticated-controller-transport")
+    workload_cases.append(omitted_control)
     public_service = copy.deepcopy(system_workload)
     public_service["objects"][2]["spec"]["type"] = "LoadBalancer"
     workload_cases.append(public_service)

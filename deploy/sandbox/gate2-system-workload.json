@@ -5,10 +5,24 @@
     "composition_complete": false,
     "directly_applicable": false,
     "network_access_control_complete": false,
-    "rendered_objects_sha256": "sha256:12f56539a1b2acc12a3df436f0206f2cc6ddc4bfa87eff9beef5b1848e077373",
+    "rendered_objects_sha256": "sha256:130465b4da9cbbd94c1fa9fcc726efddba9652bba5c44ecd8b6a9d231d7e8222",
+    "control_topology": "separate-controller-state-adapters-v1",
     "missing_roles": [
       "scheduler",
       "cleanup-reconciler"
+    ],
+    "missing_controls": [
+      "scheduler-state-adapter",
+      "cleanup-state-adapter",
+      "authenticated-controller-transport",
+      "pinned-system-tls-trust-and-rotation",
+      "locked-token-audiences",
+      "controller-kubernetes-api-token-projections",
+      "token-review-only-system-credential",
+      "key-staging-identities",
+      "runner-resource-uid-registration",
+      "controller-rbac",
+      "network-policy"
     ]
   },
   "objects": [
@@ -19,7 +33,7 @@
         "name": "kapsel-sandbox-system",
         "labels": {
           "kapsel.dev/gate2": "true",
-          "kapsel.dev/policy-revision": "sandbox-policy-v1"
+          "kapsel.dev/policy-revision": "sandbox-policy-v2"
         }
       }
     },
@@ -77,7 +91,7 @@
         "labels": {
           "app.kubernetes.io/name": "kapsel-sandbox",
           "kapsel.dev/gate2": "true",
-          "kapsel.dev/policy-revision": "sandbox-policy-v1"
+          "kapsel.dev/policy-revision": "sandbox-policy-v2"
         }
       },
       "spec": {
@@ -362,6 +376,8 @@
   ],
   "non_claims": [
     "no_scheduler_or_cleanup_reconciler",
+    "no_controller_state_adapters_or_authenticated_transport",
+    "no_tokenreview_rbac_or_locked_token_audiences",
     "no_networkpolicy_or_public_endpoint",
     "no_secret_manager_staging_proof",
     "no_workload_identity_binding_proof",
