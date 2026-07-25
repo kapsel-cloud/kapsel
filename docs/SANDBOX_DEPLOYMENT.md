@@ -607,6 +607,21 @@ never becomes receiver `FAILED` or `UNKNOWN`, and it never changes a frozen rece
 escalation must preserve UID checks and a record of what was removed. Public expiry does not cancel
 cleanup ownership.
 
+The offline GKE candidate implements this as one native `cleanup` reconciler over the same private
+system database and a concrete in-cluster Kubernetes client. It selects only active, eligible,
+policy-owned records; scans the fixed runner namespace for the exact cleanup-owner label without
+name-prefix deletion; rejects every labeled UID not already recorded; deletes recorded external
+objects before the exact namespace; and puts each immutable UID in the API deletion precondition.
+Delete acceptance never releases capacity. Every recorded object must subsequently be absent under
+an exact name/UID/owner observation before the existing atomic completion transition runs. One
+`cleanup.failed` event coalesces request, identity, finalizer, and observation failures while
+retries continue. Private `started_at` and one idempotent escalation bit survive restart and become
+eligible only after 15 minutes. Migration recovers the start from the durable `cleanup.started`
+event; a malformed legacy row without that required event receives epoch zero and is conservatively
+escalation-eligible rather than retrying forever. Neither field is public or a receiver fact. The
+role remains omitted from the incomplete Gate 2 wrapper until its projected token, exact RBAC,
+NetworkPolicy, and runner-resource UID recording are complete.
+
 ## Availability, rollback, and recovery
 
 Deployment health distinguishes public read availability, new admission, scheduling, execution,

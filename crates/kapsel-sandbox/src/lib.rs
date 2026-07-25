@@ -27,11 +27,13 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod kubernetes_cleanup;
 mod kubernetes_policy;
 mod kubernetes_scheduler;
 mod runner_handoff;
 mod runner_process;
 
+pub use kubernetes_cleanup::run_cleanup_role;
 pub use kubernetes_scheduler::run_scheduler_role;
 use runner_handoff::{
     constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
@@ -1829,7 +1831,8 @@ impl Service {
                  CREATE TABLE IF NOT EXISTS cleanup_records (
                    run_id TEXT PRIMARY KEY, cleanup_identity TEXT NOT NULL,
                    namespace_uid TEXT, resource_state TEXT NOT NULL, state TEXT NOT NULL,
-                   active INTEGER NOT NULL, eligible INTEGER NOT NULL
+                   active INTEGER NOT NULL, eligible INTEGER NOT NULL,
+                   started_at INTEGER, escalated INTEGER NOT NULL
                  );
                  CREATE TABLE IF NOT EXISTS provisioned_object_owners (
                    uid TEXT PRIMARY KEY, run_id TEXT NOT NULL, identity TEXT NOT NULL,
@@ -1882,6 +1885,7 @@ impl Service {
                 )
                 .map_err(storage_error)?;
         }
+        migrate_cleanup_columns(&connection)?;
         self.remove_orphan_receipts(&mut connection)
     }
 
@@ -2057,7 +2061,7 @@ impl Service {
             .execute(
                 concat!(
                     "INSERT INTO cleanup_records VALUES ",
-                    "(?1, ?2, NULL, 'unverified', 'pending', 0, 0)"
+                    "(?1, ?2, NULL, 'unverified', 'pending', 0, 0, NULL, 0)"
                 ),
                 params![run_id, cleanup_identity],
             )
@@ -2703,8 +2707,12 @@ impl Service {
         }
         transaction
             .execute(
-                "UPDATE cleanup_records SET state = ?2 WHERE run_id = ?1",
-                params![run_id, state.token()],
+                concat!(
+                    "UPDATE cleanup_records SET state = ?2, started_at = CASE ",
+                    "WHEN ?2 = 'running' AND started_at IS NULL THEN ?3 ELSE started_at END ",
+                    "WHERE run_id = ?1"
+                ),
+                params![run_id, state.token(), now_unix_s],
             )
             .map_err(storage_error)?;
         let public_retained: Option<bool> = transaction
@@ -3664,6 +3672,47 @@ fn commit_global_stop(connection: &Connection, stopped: bool) -> Result<(), Serv
     if committed != stopped {
         return Err(ServiceError::Unavailable);
     }
+    Ok(())
+}
+
+fn migrate_cleanup_columns(connection: &Connection) -> Result<(), ServiceError> {
+    let columns = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(cleanup_records)")
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage_error)?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(storage_error)?
+    };
+    if !columns.contains("started_at") {
+        connection
+            .execute(
+                "ALTER TABLE cleanup_records ADD COLUMN started_at INTEGER",
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    if !columns.contains("escalated") {
+        connection
+            .execute(
+                "ALTER TABLE cleanup_records ADD COLUMN escalated INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    connection
+        .execute(
+            concat!(
+                "UPDATE cleanup_records SET started_at = COALESCE((SELECT MIN(occurred_at) ",
+                "FROM events WHERE events.run_id = cleanup_records.run_id ",
+                "AND events.kind = 'cleanup.started'), 0) WHERE started_at IS NULL ",
+                "AND state IN ('running', 'failed')"
+            ),
+            [],
+        )
+        .map_err(storage_error)?;
     Ok(())
 }
 

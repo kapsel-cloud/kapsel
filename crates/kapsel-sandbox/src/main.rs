@@ -20,10 +20,11 @@ use std::{
 };
 
 use kapsel_sandbox::{
-    run_runner_process, run_scheduler_role, serve_private_handoff, set_global_stop, Service,
+    run_cleanup_role, run_runner_process, run_scheduler_role, serve_private_handoff,
+    set_global_stop, Service,
 };
 
-const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve|retention|scheduler> \
+const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve|retention|scheduler|cleanup> \
 --database <absolute-path> --receipts <absolute-directory> \
 --digest-key-file <absolute-path> [--origin <https-origin>] \
 [--listen <socket-address>] [--handoff-endpoint <socket-address>]; or kapsel-sandbox \
@@ -71,7 +72,8 @@ fn run() -> Result<(), &'static str> {
         | Command::Serve
         | Command::HandoffServe
         | Command::Retention
-        | Command::Scheduler => {
+        | Command::Scheduler
+        | Command::Cleanup => {
             let receipts = configuration.receipts.ok_or(USAGE)?;
             let digest_key_file = configuration.digest_key_file.ok_or(USAGE)?;
             if matches!(configuration.command, Command::Init) {
@@ -108,21 +110,41 @@ fn run() -> Result<(), &'static str> {
                     let handoff = configuration
                         .handoff_endpoint
                         .ok_or("scheduler requires --handoff-endpoint")?;
-                    let config = kube::Config::incluster()
-                        .map_err(|_| "scheduler Kubernetes configuration is unavailable")?;
-                    let client = kube::Client::try_from(config)
-                        .map_err(|_| "scheduler Kubernetes client is unavailable")?;
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_io()
-                        .enable_time()
-                        .build()
-                        .map_err(|_| "scheduler runtime is unavailable")?;
+                    let client = in_cluster_client("scheduler")?;
+                    let runtime = native_runtime("scheduler")?;
                     runtime.block_on(run_scheduler_role(service, client, handoff))
+                },
+                Command::Cleanup => {
+                    let client = in_cluster_client("cleanup")?;
+                    let runtime = native_runtime("cleanup")?;
+                    runtime.block_on(run_cleanup_role(service, client))
                 },
                 Command::Stop | Command::ClearStop => unreachable!(),
             }
         },
     }
+}
+
+fn in_cluster_client(role: &str) -> Result<kube::Client, &'static str> {
+    let config = kube::Config::incluster().map_err(|_| match role {
+        "cleanup" => "cleanup Kubernetes configuration is unavailable",
+        _ => "scheduler Kubernetes configuration is unavailable",
+    })?;
+    kube::Client::try_from(config).map_err(|_| match role {
+        "cleanup" => "cleanup Kubernetes client is unavailable",
+        _ => "scheduler Kubernetes client is unavailable",
+    })
+}
+
+fn native_runtime(role: &str) -> Result<tokio::runtime::Runtime, &'static str> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|_| match role {
+            "cleanup" => "cleanup runtime is unavailable",
+            _ => "scheduler runtime is unavailable",
+        })
 }
 
 fn set_origin(service: &mut Service, origin: Option<&str>) -> Result<(), &'static str> {
@@ -147,6 +169,7 @@ enum Command {
     HandoffServe,
     Retention,
     Scheduler,
+    Cleanup,
     Stop,
     ClearStop,
 }
@@ -170,6 +193,7 @@ impl Configuration {
             Some("handoff-serve") => Command::HandoffServe,
             Some("retention") => Command::Retention,
             Some("scheduler") => Command::Scheduler,
+            Some("cleanup") => Command::Cleanup,
             Some("stop") => Command::Stop,
             Some("clear-stop") => Command::ClearStop,
             _ => return Err(USAGE),
@@ -245,6 +269,13 @@ impl Configuration {
             },
             Command::Scheduler if self.handoff_endpoint.is_none() => {
                 Err("scheduler requires --handoff-endpoint")
+            },
+            Command::Cleanup
+                if self.origin.is_some()
+                    || self.listen.is_some()
+                    || self.handoff_endpoint.is_some() =>
+            {
+                Err("cleanup does not accept transport configuration")
             },
             _ => Ok(()),
         }

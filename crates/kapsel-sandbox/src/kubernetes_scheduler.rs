@@ -299,12 +299,16 @@ async fn create_or_observe(
     serde_json::to_value(created).map_err(|_| SchedulerError::Policy)
 }
 
-fn api_resource(api_version: &str, kind: &str) -> Result<ApiResource, SchedulerError> {
+pub(crate) fn api_resource(api_version: &str, kind: &str) -> Result<ApiResource, SchedulerError> {
     let (group, version) = api_version
         .split_once('/')
         .map_or(("", api_version), |(group, version)| (group, version));
     let plural = match kind {
         "Namespace" => "namespaces",
+        "ConfigMap" => "configmaps",
+        "PersistentVolumeClaim" => "persistentvolumeclaims",
+        "Pod" => "pods",
+        "Secret" => "secrets",
         "ServiceAccount" => "serviceaccounts",
         "Role" => "roles",
         "RoleBinding" => "rolebindings",
@@ -330,7 +334,7 @@ fn unix_time() -> Result<i64, &'static str> {
 }
 
 #[derive(Debug)]
-enum SchedulerError {
+pub(crate) enum SchedulerError {
     Service,
     Kubernetes,
     Policy,
