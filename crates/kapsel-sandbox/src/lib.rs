@@ -60,6 +60,32 @@ pub use runner_handoff::{
 };
 pub use runner_process::run as run_runner_process;
 
+/// Runs the authenticated system-side listener for only scheduler-state operations.
+///
+/// # Errors
+///
+/// Returns a fixed diagnostic when the listener, role binding, or system clock is unavailable.
+pub async fn run_scheduler_state_role(
+    service: Service,
+    listen: std::net::SocketAddr,
+    certificate_path: PathBuf,
+    private_key_path: PathBuf,
+    scheduler_service_account_uid: String,
+    kubernetes: kube::Client,
+    handoff_endpoint: std::net::SocketAddr,
+) -> Result<(), &'static str> {
+    scheduler_state::serve(
+        service,
+        listen,
+        certificate_path,
+        private_key_path,
+        scheduler_service_account_uid,
+        kubernetes,
+        handoff_endpoint,
+    )
+    .await
+}
+
 const QUEUED_RUNS_MAX: i64 = 32;
 const ACTIVE_RUNS_MAX: i64 = 8;
 const EVENT_COUNT_MAX: i64 = 64;

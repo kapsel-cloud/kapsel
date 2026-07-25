@@ -125,6 +125,11 @@ fn role_port_matches(role: Role, port: u16) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn allow_test_bound_port(port: u16) {
+    TEST_BOUND_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
 fn role_port_matches(role: Role, port: u16) -> bool {
     exact_role_port_matches(role, port)
         || (port != 0 && TEST_BOUND_PORT.load(std::sync::atomic::Ordering::Relaxed) == port)
@@ -795,7 +800,7 @@ pub(crate) async fn request(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
@@ -813,7 +818,7 @@ mod tests {
     use super::*;
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    static TEST_NETWORK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    pub(crate) static TEST_NETWORK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct TlsFixture {
         root: PathBuf,

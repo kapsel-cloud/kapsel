@@ -11,6 +11,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
+    ops::{Deref, DerefMut},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -18,8 +19,32 @@ use std::{
 };
 
 use kapsel_sandbox::{Scenario, Service};
+use sha2::{Digest, Sha256};
 
 const REQUEST_HEAD_OVERFLOW_PADDING: usize = 8 * 1024;
+
+struct ChildGuard(Child);
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
 
 fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let root = std::env::temp_dir().join(format!(
@@ -131,6 +156,91 @@ fn initialize(database: &Path, receipts: &Path, key: &Path) {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+}
+
+fn start_mock_kubernetes(root: &Path) -> (Child, u16) {
+    let script = root.join("mock-kubernetes.py");
+    fs::write(
+        &script,
+        r#"import http.server, json, ssl, sys
+objects = {}
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, format, *args):
+        pass
+    def reply(self, status, body):
+        data = json.dumps(body, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0"))
+        body = json.loads(self.rfile.read(length))
+        if self.path.split("?", 1)[0] == "/apis/authentication.k8s.io/v1/tokenreviews":
+            assert self.headers.get("authorization") == "Bearer system-kubernetes-token"
+            assert body["spec"] == {
+                "audiences": ["https://kapsel.dev/sandbox/controller-state/v1"],
+                "token": "scheduler-state-token"
+            }
+            body["status"] = {
+                "authenticated": True,
+                "audiences": ["https://kapsel.dev/sandbox/controller-state/v1"],
+                "user": {
+                    "username": "system:serviceaccount:kapsel-sandbox-system:sandbox-scheduler",
+                    "uid": "scheduler-uid"
+                }
+            }
+            self.reply(201, body)
+            return
+        assert self.headers.get("authorization") == "Bearer scheduler-kubernetes-token"
+        name = body["metadata"]["name"]
+        body["metadata"]["uid"] = "uid-" + str(len(objects))
+        body["metadata"]["resourceVersion"] = "1"
+        body["metadata"]["creationTimestamp"] = "2026-07-25T00:00:00Z"
+        objects[self.path.split("?", 1)[0] + "/" + name] = body
+        self.reply(201, body)
+    def do_GET(self):
+        assert self.headers.get("authorization") == "Bearer scheduler-kubernetes-token"
+        path = self.path.split("?", 1)[0]
+        if path in objects:
+            self.reply(200, objects[path])
+        else:
+            self.reply(404, {
+                "apiVersion":"v1", "kind":"Status", "status":"Failure",
+                "reason":"NotFound", "code":404
+            })
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[1], sys.argv[2])
+server.socket = context.wrap_socket(server.socket, server_side=True)
+print("LISTEN_PORT=" + str(server.server_port), flush=True)
+server.serve_forever()
+"#,
+    )
+    .unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kubernetes-api");
+    let mut child = Command::new("python3")
+        .arg("-u")
+        .arg(script)
+        .arg(fixture.join("cert.pem"))
+        .arg(fixture.join("key.pem"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port = line
+        .strip_prefix("LISTEN_PORT=")
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    (child, port)
 }
 
 fn operate(command_name: &str, database: &Path) {
@@ -426,30 +536,52 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
 }
 
 #[test]
-fn scheduler_role_rejects_public_transport_and_fails_closed_without_in_cluster_authority() {
+fn scheduler_role_rejects_system_state_and_uses_distinct_remote_state_inputs() {
     let (database, receipts, digest_key) = fixture("scheduler-role");
     let root = database.parent().unwrap().to_owned();
     initialize(&database, &receipts, &digest_key);
+    let ca = root.join("controller-ca.pem");
+    let state_token = root.join("state-token");
+    let kubernetes_ca = root.join("kubernetes-ca.pem");
+    let kubernetes_token = root.join("kubernetes-token");
+    fs::write(&ca, b"must-not-open").unwrap();
+    fs::write(&state_token, b"must-not-open").unwrap();
+    fs::write(&kubernetes_ca, b"must-not-open").unwrap();
+    fs::write(&kubernetes_token, b"must-not-open").unwrap();
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o000)).unwrap();
+    fs::set_permissions(&digest_key, fs::Permissions::from_mode(0o000)).unwrap();
+    let state_arguments = [
+        "--state-endpoint",
+        "127.0.0.1:8082",
+        "--state-ca-bundle",
+        ca.to_str().unwrap(),
+        "--state-ca-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--state-ca-root-count",
+        "1",
+        "--state-token",
+        state_token.to_str().unwrap(),
+    ];
+    let kubernetes_arguments = [
+        "--kubernetes-ca",
+        kubernetes_ca.to_str().unwrap(),
+        "--kubernetes-token",
+        kubernetes_token.to_str().unwrap(),
+    ];
 
-    for extra in [
-        vec![
-            "--origin",
-            "https://kapsel.invalid",
-            "--handoff-endpoint",
-            "127.0.0.1:8081",
-        ],
-        vec![
-            "--listen",
-            "127.0.0.1:0",
-            "--handoff-endpoint",
-            "127.0.0.1:8081",
-        ],
-        vec![],
+    for forbidden in [
+        vec!["--database", database.to_str().unwrap()],
+        vec!["--receipts", receipts.to_str().unwrap()],
+        vec!["--digest-key-file", digest_key.to_str().unwrap()],
+        vec!["--handoff-endpoint", "127.0.0.1:8081"],
+        vec!["--origin", "https://kapsel.invalid"],
+        vec!["--listen", "127.0.0.1:0"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
             .arg("scheduler")
-            .args(arguments(&database, &receipts, &digest_key))
-            .args(extra)
+            .args(state_arguments)
+            .args(kubernetes_arguments)
+            .args(forbidden)
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -458,8 +590,24 @@ fn scheduler_role_rejects_public_transport_and_fails_closed_without_in_cluster_a
 
     let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
         .arg("scheduler")
-        .args(arguments(&database, &receipts, &digest_key))
-        .args(["--handoff-endpoint", "127.0.0.1:8081"])
+        .args(&state_arguments[..8])
+        .args(["--state-token", kubernetes_token.to_str().unwrap()])
+        .args(kubernetes_arguments)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        concat!(
+            "kapsel-sandbox: scheduler state token must be distinct from ",
+            "Kubernetes API authority\n"
+        )
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("scheduler")
+        .args(state_arguments)
+        .args(kubernetes_arguments)
         .env_remove("KUBERNETES_SERVICE_HOST")
         .env_remove("KUBERNETES_SERVICE_PORT")
         .output()
@@ -469,6 +617,175 @@ fn scheduler_role_rejects_public_transport_and_fails_closed_without_in_cluster_a
         String::from_utf8(output.stderr).unwrap(),
         "kapsel-sandbox: scheduler Kubernetes configuration is unavailable\n"
     );
+    assert_eq!(fs::read(&ca).unwrap(), b"must-not-open");
+    assert_eq!(fs::read(&state_token).unwrap(), b"must-not-open");
+    fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(&digest_key, fs::Permissions::from_mode(0o440)).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one native-process vector keeps scheduler authority and state separation contiguous"
+)]
+fn native_scheduler_process_crosses_authenticated_state_and_distinct_kubernetes_tokens() {
+    let (database, receipts, digest_key) = fixture("scheduler-process");
+    let root = database.parent().unwrap().to_owned();
+    initialize(&database, &receipts, &digest_key);
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let service = Service::open(&database, &receipts, [7; 32], now).unwrap();
+    let admission = service
+        .admit("10101010101010101010101010101010", Scenario::Healthy, now)
+        .unwrap();
+    drop(service);
+
+    let state_fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/controller-transport/current");
+    let state_certificate = root.join("state.crt");
+    let state_private_key = root.join("state.key");
+    let state_ca = root.join("state-ca.crt");
+    for (source, destination, mode) in [
+        ("cert.pem", &state_certificate, 0o400),
+        ("key.pem", &state_private_key, 0o600),
+        ("ca.pem", &state_ca, 0o400),
+    ] {
+        fs::copy(state_fixture.join(source), destination).unwrap();
+        fs::set_permissions(destination, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let state_token = root.join("state-token");
+    let scheduler_kubernetes_token = root.join("scheduler-kubernetes-token");
+    let system_kubernetes_token = root.join("system-kubernetes-token");
+    for (path, bytes) in [
+        (&state_token, b"scheduler-state-token".as_slice()),
+        (
+            &scheduler_kubernetes_token,
+            b"scheduler-kubernetes-token".as_slice(),
+        ),
+        (
+            &system_kubernetes_token,
+            b"system-kubernetes-token".as_slice(),
+        ),
+    ] {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let kubernetes_ca =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kubernetes-api/ca.pem");
+    let (kubernetes, kubernetes_port) = start_mock_kubernetes(&root);
+    let mut kubernetes = ChildGuard(kubernetes);
+    let kubernetes_port = kubernetes_port.to_string();
+
+    let state = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("scheduler-state-serve")
+        .args(arguments(&database, &receipts, &digest_key))
+        .args(["--listen", "127.0.0.1:8082"])
+        .args(["--handoff-endpoint", "127.0.0.1:8081"])
+        .args(["--state-certificate", state_certificate.to_str().unwrap()])
+        .args(["--state-private-key", state_private_key.to_str().unwrap()])
+        .args(["--scheduler-service-account-uid", "scheduler-uid"])
+        .args(["--kubernetes-ca", kubernetes_ca.to_str().unwrap()])
+        .args([
+            "--kubernetes-token",
+            system_kubernetes_token.to_str().unwrap(),
+        ])
+        .env("KUBERNETES_SERVICE_HOST", "127.0.0.1")
+        .env("KUBERNETES_SERVICE_PORT", &kubernetes_port)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut state = ChildGuard(state);
+    let started = Instant::now();
+    loop {
+        if TcpStream::connect("127.0.0.1:8082").is_ok() {
+            break;
+        }
+        assert!(state.try_wait().unwrap().is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let ca_digest = Sha256::digest(fs::read(&state_ca).unwrap());
+    let ca_digest = ca_digest
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            write!(output, "{byte:02x}").unwrap();
+            output
+        });
+    let scheduler = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("scheduler")
+        .args(["--state-endpoint", "127.0.0.1:8082"])
+        .args(["--state-ca-bundle", state_ca.to_str().unwrap()])
+        .args(["--state-ca-sha256", &ca_digest])
+        .args(["--state-ca-root-count", "1"])
+        .args(["--state-token", state_token.to_str().unwrap()])
+        .args(["--kubernetes-ca", kubernetes_ca.to_str().unwrap()])
+        .args([
+            "--kubernetes-token",
+            scheduler_kubernetes_token.to_str().unwrap(),
+        ])
+        .env("KUBERNETES_SERVICE_HOST", "127.0.0.1")
+        .env("KUBERNETES_SERVICE_PORT", &kubernetes_port)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut scheduler = ChildGuard(scheduler);
+    let started = Instant::now();
+    let first_verifier = loop {
+        assert!(scheduler.try_wait().unwrap().is_none());
+        let row = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                concat!(
+                    "SELECT policy_verified, handoff_credential_verifier FROM runs ",
+                    "WHERE run_id = ?1"
+                ),
+                [&admission.run_id],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .unwrap();
+        if row.0 {
+            break row.1;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let assignment_started = Instant::now();
+    loop {
+        let verifier: Vec<u8> = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT handoff_credential_verifier FROM runs WHERE run_id = ?1",
+                [&admission.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if verifier != first_verifier {
+            break;
+        }
+        assert!(scheduler.try_wait().unwrap().is_none());
+        assert!(assignment_started.elapsed() < Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let service = Service::open(&database, &receipts, [7; 32], now + 2).unwrap();
+    let snapshot = service.snapshot(&admission.run_id, now + 2).unwrap();
+    assert!(snapshot.receiver_result.is_none());
+    assert!(!snapshot.receipt_available);
+
+    scheduler.kill().unwrap();
+    scheduler.wait().unwrap();
+    state.kill().unwrap();
+    state.wait().unwrap();
+    kubernetes.kill().unwrap();
+    kubernetes.wait().unwrap();
     fs::remove_dir_all(root).unwrap();
 }
 

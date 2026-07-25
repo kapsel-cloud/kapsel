@@ -3,14 +3,17 @@
 //! This module owns bounded wire DTOs and exact conversion to existing [`crate::Service`]
 //! transitions. It owns no listener, authentication, retry, Kubernetes, or storage abstraction.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
+use kube::Client as KubernetesClient;
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpListener;
 
 use crate::{
-    bounded_hex_128, bounded_identity, object_identity_parts, DispatchLease,
-    PolicyObjectRequirement, ProvisionedObject, ProvisionedTarget, ProvisioningSpecification,
-    Service, ServiceError,
+    bounded_hex_128, bounded_identity,
+    controller_state_transport::{self, ClientInputs, Role},
+    object_identity_parts, DispatchLease, HandoffAssignment, PolicyObjectRequirement,
+    ProvisionedObject, ProvisionedTarget, ProvisioningSpecification, Service, ServiceError,
 };
 
 const PROTOCOL: &str = "scheduler-state-v1";
@@ -18,14 +21,14 @@ pub(crate) const PAYLOAD_BYTES_MAX: usize = 64 * 1024;
 const ACTIVE_INVENTORY_MAX: usize = 8;
 const POLICY_INVENTORY_MAX: usize = 16;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RequestEnvelope {
     protocol: String,
     request: RequestDto,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum RequestDto {
     ListRecoverable {},
@@ -63,14 +66,14 @@ struct LeaseDto {
     expires_at_unix_s: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SetupResourceStateDto {
     Recorded,
     None,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProvisionedTargetDto {
     namespace_uid: String,
@@ -89,14 +92,14 @@ struct ProvisionedObjectDto {
     content_digest: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ResponseEnvelope {
-    protocol: &'static str,
+    protocol: String,
     response: ResponseDto,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ResponseDto {
     Recoverable { runs: Vec<RecoverableDto> },
@@ -107,14 +110,14 @@ enum ResponseDto {
     Rejected { error: ErrorDto },
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RecoverableDto {
     run_id: String,
     policy_status: PolicyStatusDto,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum PolicyStatusDto {
     NotEligible,
@@ -122,7 +125,7 @@ enum PolicyStatusDto {
     Verified,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProvisioningDto {
     run_id: String,
@@ -135,47 +138,24 @@ struct ProvisioningDto {
     required_objects: Vec<PolicyObjectRequirementDto>,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct PolicyObjectRequirementDto {
     identity: String,
     content_digest: String,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct AssignmentDto {
     run_id: String,
     operation_id: String,
     lease_id: String,
-    credential: [u8; 32],
+    credential_hex: String,
     endpoint: String,
 }
 
-impl Serialize for AssignmentDto {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        #[derive(Serialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire<'a> {
-            run_id: &'a str,
-            operation_id: &'a str,
-            lease_id: &'a str,
-            credential_hex: String,
-            endpoint: &'a str,
-        }
-        Wire {
-            run_id: &self.run_id,
-            operation_id: &self.operation_id,
-            lease_id: &self.lease_id,
-            credential_hex: hex(&self.credential),
-            endpoint: &self.endpoint,
-        }
-        .serialize(serializer)
-    }
-}
-
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ErrorDto {
     InvalidRequest,
@@ -185,6 +165,321 @@ enum ErrorDto {
     Deadline,
     Denied,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SchedulerStateError {
+    InvalidRequest,
+    NotFound,
+    Busy,
+    Saturated,
+    Deadline,
+    Denied,
+    Unavailable,
+    Authentication,
+    Transport,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecoverableRun {
+    pub(crate) run_id: String,
+    pub(crate) policy_verified: Option<bool>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SchedulerStateClient {
+    backend: SchedulerStateBackend,
+}
+
+#[derive(Clone)]
+enum SchedulerStateBackend {
+    Remote {
+        endpoint: SocketAddr,
+        inputs: ClientInputs,
+    },
+    #[cfg(test)]
+    Local {
+        service: Service,
+        handoff_endpoint: SocketAddr,
+        now: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    },
+}
+
+impl SchedulerStateClient {
+    pub(crate) fn new(
+        endpoint: SocketAddr,
+        ca_bundle_path: PathBuf,
+        ca_bundle_sha256: [u8; 32],
+        ca_root_count: u8,
+        token_path: PathBuf,
+    ) -> Result<Self, SchedulerStateError> {
+        let inputs = controller_state_transport::client_inputs(
+            ca_bundle_path,
+            ca_bundle_sha256,
+            ca_root_count,
+            token_path,
+        )
+        .map_err(|_| SchedulerStateError::Transport)?;
+        Ok(Self {
+            backend: SchedulerStateBackend::Remote { endpoint, inputs },
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local(service: Service, handoff_endpoint: SocketAddr) -> Self {
+        Self {
+            backend: SchedulerStateBackend::Local {
+                service,
+                handoff_endpoint,
+                now: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_now(&self, value: i64) {
+        if let SchedulerStateBackend::Local { now, .. } = &self.backend {
+            now.store(value, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) async fn list_recoverable(
+        &self,
+    ) -> Result<Vec<RecoverableRun>, SchedulerStateError> {
+        match self.call(RequestDto::ListRecoverable {}).await? {
+            ResponseDto::Recoverable { runs } if runs.len() <= ACTIVE_INVENTORY_MAX => runs
+                .into_iter()
+                .map(|run| {
+                    valid_run(&run.run_id).map_err(SchedulerStateError::from)?;
+                    Ok(RecoverableRun {
+                        run_id: run.run_id,
+                        policy_verified: match run.policy_status {
+                            PolicyStatusDto::NotEligible => None,
+                            PolicyStatusDto::Pending => Some(false),
+                            PolicyStatusDto::Verified => Some(true),
+                        },
+                    })
+                })
+                .collect(),
+            _ => Err(SchedulerStateError::Transport),
+        }
+    }
+
+    pub(crate) async fn reserve_next(&self) -> Result<DispatchLease, SchedulerStateError> {
+        self.lease_call(RequestDto::ReserveNext {}).await
+    }
+
+    pub(crate) async fn recover_lease(
+        &self,
+        run_id: &str,
+        previous: Option<&DispatchLease>,
+    ) -> Result<DispatchLease, SchedulerStateError> {
+        self.lease_call(RequestDto::RecoverLease {
+            run_id: run_id.to_owned(),
+            previous: previous.map(LeaseDto::from_domain),
+        })
+        .await
+    }
+
+    pub(crate) async fn read_provisioning(
+        &self,
+        lease: &DispatchLease,
+    ) -> Result<ProvisioningSpecification, SchedulerStateError> {
+        match self
+            .call(RequestDto::ReadProvisioning {
+                lease: LeaseDto::from_domain(lease),
+            })
+            .await?
+        {
+            ResponseDto::Provisioning { specification } => specification.into_domain(),
+            _ => Err(SchedulerStateError::Transport),
+        }
+    }
+
+    pub(crate) async fn commit_policy(
+        &self,
+        lease: &DispatchLease,
+        target: &ProvisionedTarget,
+    ) -> Result<(), SchedulerStateError> {
+        self.committed_call(RequestDto::CommitPolicy {
+            lease: LeaseDto::from_domain(lease),
+            target: ProvisionedTargetDto::from_domain(target),
+        })
+        .await
+    }
+
+    pub(crate) async fn derive_assignment(
+        &self,
+        lease: &DispatchLease,
+    ) -> Result<HandoffAssignment, SchedulerStateError> {
+        match self
+            .call(RequestDto::DeriveAssignment {
+                lease: LeaseDto::from_domain(lease),
+            })
+            .await?
+        {
+            ResponseDto::Assignment { assignment } => assignment.into_domain(),
+            _ => Err(SchedulerStateError::Transport),
+        }
+    }
+
+    pub(crate) async fn append_deadline(
+        &self,
+        lease: &DispatchLease,
+    ) -> Result<(), SchedulerStateError> {
+        self.committed_call(RequestDto::AppendDeadline {
+            lease: LeaseDto::from_domain(lease),
+        })
+        .await
+    }
+
+    async fn lease_call(&self, request: RequestDto) -> Result<DispatchLease, SchedulerStateError> {
+        match self.call(request).await? {
+            ResponseDto::Lease { lease } => lease
+                .into_domain()
+                .map_err(|_| SchedulerStateError::Transport),
+            _ => Err(SchedulerStateError::Transport),
+        }
+    }
+
+    async fn committed_call(&self, request: RequestDto) -> Result<(), SchedulerStateError> {
+        match self.call(request).await? {
+            ResponseDto::Committed => Ok(()),
+            _ => Err(SchedulerStateError::Transport),
+        }
+    }
+
+    async fn call(&self, request: RequestDto) -> Result<ResponseDto, SchedulerStateError> {
+        let frame = encode_request(request)?;
+        let response = match &self.backend {
+            SchedulerStateBackend::Remote { endpoint, inputs } => {
+                controller_state_transport::request(*endpoint, Role::Scheduler, inputs, &frame)
+                    .await
+                    .map_err(|error| match error {
+                        controller_state_transport::ClientError::AuthenticationRejected => {
+                            SchedulerStateError::Authentication
+                        },
+                        controller_state_transport::ClientError::TransportRejected => {
+                            SchedulerStateError::Transport
+                        },
+                    })?
+            },
+            #[cfg(test)]
+            SchedulerStateBackend::Local {
+                service,
+                handoff_endpoint,
+                now,
+            } => handle(
+                service,
+                &frame,
+                *handoff_endpoint,
+                now.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        };
+        decode_response(&response)
+    }
+}
+
+pub(crate) async fn serve(
+    service: Service,
+    listen: SocketAddr,
+    certificate_path: PathBuf,
+    private_key_path: PathBuf,
+    scheduler_service_account_uid: String,
+    kubernetes: KubernetesClient,
+    handoff_endpoint: SocketAddr,
+) -> Result<(), &'static str> {
+    if listen.port() != 8082 {
+        return Err("scheduler state listener address is invalid");
+    }
+    let listener = TcpListener::bind(listen)
+        .await
+        .map_err(|_| "scheduler state listener is unavailable")?;
+    let inputs = controller_state_transport::server_inputs(certificate_path, private_key_path);
+    let binding =
+        controller_state_transport::role_binding(Role::Scheduler, scheduler_service_account_uid)
+            .map_err(|_| "scheduler state role binding is invalid")?;
+    loop {
+        let (connection, _) = listener
+            .accept()
+            .await
+            .map_err(|_| "scheduler state listener failed")?;
+        let inputs = inputs.clone();
+        let binding = binding.clone();
+        let kubernetes = kubernetes.clone();
+        let service = service.clone();
+        tokio::spawn(async move {
+            let _ = controller_state_transport::handle_connection(
+                connection,
+                &inputs,
+                &binding,
+                kubernetes,
+                move |payload| async move {
+                    match unix_time() {
+                        Ok(now) => handle(&service, &payload, handoff_endpoint, now),
+                        Err(()) => encode_response(ResponseDto::rejected(ErrorDto::Unavailable)),
+                    }
+                },
+            )
+            .await;
+        });
+    }
+}
+
+fn encode_request(request: RequestDto) -> Result<Vec<u8>, SchedulerStateError> {
+    let body = serde_json::to_vec(&RequestEnvelope {
+        protocol: PROTOCOL.to_owned(),
+        request,
+    })
+    .map_err(|_| SchedulerStateError::Unavailable)?;
+    if body.is_empty() || body.len() > PAYLOAD_BYTES_MAX {
+        return Err(SchedulerStateError::InvalidRequest);
+    }
+    let mut frame = Vec::with_capacity(body.len() + 4);
+    frame.extend_from_slice(
+        &u32::try_from(body.len())
+            .map_err(|_| SchedulerStateError::InvalidRequest)?
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(&body);
+    Ok(frame)
+}
+
+fn decode_response(frame: &[u8]) -> Result<ResponseDto, SchedulerStateError> {
+    if frame.len() < 4 {
+        return Err(SchedulerStateError::Transport);
+    }
+    let length = u32::from_be_bytes(
+        frame[..4]
+            .try_into()
+            .map_err(|_| SchedulerStateError::Transport)?,
+    ) as usize;
+    if length == 0 || length > PAYLOAD_BYTES_MAX || frame.len() != length.saturating_add(4) {
+        return Err(SchedulerStateError::Transport);
+    }
+    let envelope: ResponseEnvelope =
+        serde_json::from_slice(&frame[4..]).map_err(|_| SchedulerStateError::Transport)?;
+    if envelope.protocol != PROTOCOL {
+        return Err(SchedulerStateError::Transport);
+    }
+    match envelope.response {
+        ResponseDto::Rejected { error } => Err(error.into()),
+        response => Ok(response),
+    }
+}
+
+impl From<ErrorDto> for SchedulerStateError {
+    fn from(error: ErrorDto) -> Self {
+        match error {
+            ErrorDto::InvalidRequest => Self::InvalidRequest,
+            ErrorDto::NotFound => Self::NotFound,
+            ErrorDto::Busy => Self::Busy,
+            ErrorDto::Saturated => Self::Saturated,
+            ErrorDto::Deadline => Self::Deadline,
+            ErrorDto::Denied => Self::Denied,
+            ErrorDto::Unavailable => Self::Unavailable,
+        }
+    }
 }
 
 /// Parses, validates, and dispatches one complete scheduler-state payload.
@@ -352,7 +647,7 @@ fn dispatch(
                     run_id: assignment.run_id,
                     operation_id: assignment.operation_id,
                     lease_id: assignment.lease_id,
-                    credential: assignment.credential,
+                    credential_hex: hex(&assignment.credential),
                     endpoint: assignment.endpoint.to_string(),
                 },
             })
@@ -410,6 +705,25 @@ impl LeaseDto {
 }
 
 impl ProvisionedTargetDto {
+    fn from_domain(target: &ProvisionedTarget) -> Self {
+        Self {
+            namespace_uid: target.namespace_uid.clone(),
+            policy_revision: target.policy_revision.clone(),
+            policy_inventory_digest: target.policy_inventory_digest.clone(),
+            cleanup_identity: target.cleanup_identity.clone(),
+            objects: target
+                .objects
+                .iter()
+                .map(|object| ProvisionedObjectDto {
+                    identity: object.identity.clone(),
+                    uid: object.uid.clone(),
+                    owner_label: object.owner_label.clone(),
+                    content_digest: object.content_digest.clone(),
+                })
+                .collect(),
+        }
+    }
+
     fn into_domain(self) -> ProvisionedTarget {
         ProvisionedTarget {
             namespace_uid: self.namespace_uid,
@@ -431,6 +745,43 @@ impl ProvisionedTargetDto {
 }
 
 impl ProvisioningDto {
+    fn into_domain(self) -> Result<ProvisioningSpecification, SchedulerStateError> {
+        valid_run(&self.run_id).map_err(SchedulerStateError::from)?;
+        valid_identity(&self.namespace).map_err(SchedulerStateError::from)?;
+        valid_identity(&self.policy_revision).map_err(SchedulerStateError::from)?;
+        valid_identity(&self.cleanup_identity).map_err(SchedulerStateError::from)?;
+        valid_digest(&self.policy_inventory_digest).map_err(SchedulerStateError::from)?;
+        if self.deadline_seconds < 1
+            || self.deadline_at_unix_s < 0
+            || self.required_objects.is_empty()
+            || self.required_objects.len() > POLICY_INVENTORY_MAX
+        {
+            return Err(SchedulerStateError::Transport);
+        }
+        let required_objects = self
+            .required_objects
+            .into_iter()
+            .map(|requirement| {
+                valid_object_identity(&requirement.identity).map_err(SchedulerStateError::from)?;
+                valid_digest(&requirement.content_digest).map_err(SchedulerStateError::from)?;
+                Ok(PolicyObjectRequirement {
+                    identity: requirement.identity,
+                    content_digest: requirement.content_digest,
+                })
+            })
+            .collect::<Result<Vec<_>, SchedulerStateError>>()?;
+        Ok(ProvisioningSpecification {
+            run_id: self.run_id,
+            namespace: self.namespace,
+            policy_revision: self.policy_revision,
+            cleanup_identity: self.cleanup_identity,
+            deadline_seconds: self.deadline_seconds,
+            deadline_at_unix_s: self.deadline_at_unix_s,
+            policy_inventory_digest: self.policy_inventory_digest,
+            required_objects,
+        })
+    }
+
     fn from_domain(specification: ProvisioningSpecification) -> Result<Self, ErrorDto> {
         if specification.required_objects.is_empty()
             || specification.required_objects.len() > POLICY_INVENTORY_MAX
@@ -454,6 +805,28 @@ impl ProvisioningDto {
     }
 }
 
+impl AssignmentDto {
+    fn into_domain(self) -> Result<HandoffAssignment, SchedulerStateError> {
+        valid_run(&self.run_id).map_err(SchedulerStateError::from)?;
+        if self.operation_id != format!("sandbox-{}", self.run_id) {
+            return Err(SchedulerStateError::Transport);
+        }
+        valid_run(&self.lease_id).map_err(SchedulerStateError::from)?;
+        let credential = decode_hex_32(&self.credential_hex)?;
+        let endpoint = self
+            .endpoint
+            .parse()
+            .map_err(|_| SchedulerStateError::Transport)?;
+        Ok(HandoffAssignment {
+            run_id: self.run_id,
+            operation_id: self.operation_id,
+            lease_id: self.lease_id,
+            credential,
+            endpoint,
+        })
+    }
+}
+
 impl PolicyObjectRequirementDto {
     fn from_domain(requirement: PolicyObjectRequirement) -> Self {
         Self {
@@ -471,7 +844,7 @@ impl ResponseDto {
 
 fn encode_response(response: ResponseDto) -> Vec<u8> {
     let envelope = ResponseEnvelope {
-        protocol: PROTOCOL,
+        protocol: PROTOCOL.to_owned(),
         response,
     };
     let body = serde_json::to_vec(&envelope).unwrap_or_else(|_| {
@@ -542,6 +915,26 @@ fn map_service_error(error: ServiceError) -> ErrorDto {
     }
 }
 
+fn decode_hex_32(value: &str) -> Result<[u8; 32], SchedulerStateError> {
+    if value.len() != 64 {
+        return Err(SchedulerStateError::Transport);
+    }
+    let mut output = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(pair).map_err(|_| SchedulerStateError::Transport)?;
+        output[index] = u8::from_str_radix(pair, 16).map_err(|_| SchedulerStateError::Transport)?;
+    }
+    Ok(output)
+}
+
+fn unix_time() -> Result<i64, ()> {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_secs();
+    i64::try_from(seconds).map_err(|_| ())
+}
+
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -560,7 +953,11 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    use http::{Response, StatusCode};
     use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    use tokio::net::TcpListener;
+    use tower_test::mock;
 
     use super::*;
     use crate::{kubernetes_policy, HandoffIdentity, Scenario};
@@ -1003,6 +1400,170 @@ mod tests {
             call(&reopened, json!({"operation":"reserve_next"}), NOW + 3)["response"]["error"],
             "not_found"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one vertical TLS vector keeps authenticated state operations contiguous"
+    )]
+    async fn concrete_client_crosses_authenticated_tls_for_scheduler_operations() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        let now = unix_time().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-scheduler-state-tls-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::create_dir(root.join("receipts")).unwrap();
+        fs::set_permissions(root.join("receipts"), fs::Permissions::from_mode(0o700)).unwrap();
+        let service = Service::open(
+            root.join("sandbox.sqlite3"),
+            root.join("receipts"),
+            [7; 32],
+            now,
+        )
+        .unwrap();
+        service
+            .admit_with_run_id(&"1".repeat(32), Scenario::Healthy, now, RUN)
+            .unwrap();
+
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/controller-transport/current");
+        let certificate = root.join("tls.crt");
+        let private_key = root.join("tls.key");
+        let ca_bundle = root.join("ca.crt");
+        let token = root.join("state-token");
+        for (source_name, destination, mode) in [
+            ("cert.pem", &certificate, 0o400),
+            ("key.pem", &private_key, 0o600),
+            ("ca.pem", &ca_bundle, 0o400),
+        ] {
+            fs::copy(source.join(source_name), destination).unwrap();
+            fs::set_permissions(destination, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::write(&token, b"scheduler-state-token").unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        crate::controller_state_transport::allow_test_bound_port(endpoint.port());
+        let server_inputs =
+            crate::controller_state_transport::server_inputs(certificate, private_key);
+        let binding = crate::controller_state_transport::role_binding(
+            Role::Scheduler,
+            "scheduler-uid".to_owned(),
+        )
+        .unwrap();
+        let (transport, mut token_review_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let token_reviews = tokio::spawn(async move {
+            for _ in 0..8 {
+                let (request, send) = token_review_handle.next_request().await.unwrap();
+                let request_body: Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                assert_eq!(request_body["spec"]["token"], "scheduler-state-token");
+                send.send_response(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .body(kube::client::Body::from(
+                            serde_json::to_vec(&json!({
+                                "apiVersion":"authentication.k8s.io/v1",
+                                "kind":"TokenReview",
+                                "metadata":{},
+                                "spec":request_body["spec"],
+                                "status":{
+                                    "authenticated":true,
+                                    "audiences":["https://kapsel.dev/sandbox/controller-state/v1"],
+                                    "user":{
+                                        "username":concat!(
+                                            "system:serviceaccount:kapsel-sandbox-system:",
+                                            "sandbox-scheduler"
+                                        ),
+                                        "uid":"scheduler-uid"
+                                    }
+                                }
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                );
+            }
+        });
+        let server_service = service.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..8 {
+                let (connection, _) = listener.accept().await.unwrap();
+                let service = server_service.clone();
+                crate::controller_state_transport::handle_connection(
+                    connection,
+                    &server_inputs,
+                    &binding,
+                    KubernetesClient::new(transport.clone(), "default"),
+                    move |payload| async move {
+                        handle(
+                            &service,
+                            &payload,
+                            "127.0.0.1:8081".parse().unwrap(),
+                            unix_time().unwrap(),
+                        )
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        });
+        let digest: [u8; 32] = Sha256::digest(fs::read(&ca_bundle).unwrap()).into();
+        let client = SchedulerStateClient::new(endpoint, ca_bundle, digest, 1, token).unwrap();
+
+        assert!(client.list_recoverable().await.unwrap().is_empty());
+        let lease = client.reserve_next().await.unwrap();
+        let listed = client.list_recoverable().await.unwrap();
+        assert_eq!(listed[0].run_id, RUN);
+        assert_eq!(listed[0].policy_verified, Some(false));
+        let mut foreign = lease.clone();
+        foreign.lease_id = "f".repeat(32);
+        assert_eq!(
+            client.recover_lease(RUN, Some(&foreign)).await,
+            Err(SchedulerStateError::Busy)
+        );
+        let specification = client.read_provisioning(&lease).await.unwrap();
+        let objects = kubernetes_policy::render(RUN)
+            .into_iter()
+            .enumerate()
+            .map(|(index, object)| ProvisionedObject {
+                identity: object.identity,
+                uid: format!("uid-{index}"),
+                owner_label: specification.cleanup_identity.clone(),
+                content_digest: kubernetes_policy::content_digest(&object.body),
+            })
+            .collect();
+        client
+            .commit_policy(
+                &lease,
+                &ProvisionedTarget {
+                    namespace_uid: "uid-0".into(),
+                    policy_revision: specification.policy_revision,
+                    policy_inventory_digest: specification.policy_inventory_digest,
+                    cleanup_identity: specification.cleanup_identity,
+                    objects,
+                },
+            )
+            .await
+            .unwrap();
+        let assignment = client.derive_assignment(&lease).await.unwrap();
+        assert_eq!(assignment.run_id, RUN);
+        assert_eq!(assignment.endpoint, "127.0.0.1:8081".parse().unwrap());
+        let recovered = client.recover_lease(RUN, Some(&lease)).await.unwrap();
+        assert_eq!(recovered.run_id, RUN);
+        server.await.unwrap();
+        token_reviews.await.unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

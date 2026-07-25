@@ -1,6 +1,6 @@
 //! Concrete Kubernetes scheduler for the fixed sandbox policy.
 
-use std::{collections::HashMap, net::SocketAddr, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
 
 use kube::{
     api::{Api, DynamicObject, PostParams},
@@ -10,7 +10,9 @@ use kube::{
 use serde_json::Value;
 
 use crate::{
-    kubernetes_policy, DispatchLease, ProvisionedObject, ProvisionedTarget, Service, ServiceError,
+    kubernetes_policy,
+    scheduler_state::{SchedulerStateClient, SchedulerStateError},
+    DispatchLease, ProvisionedObject, ProvisionedTarget,
 };
 
 const FIELD_MANAGER: &str = "kapsel-sandbox-scheduler";
@@ -24,11 +26,22 @@ const FIELD_MANAGER: &str = "kapsel-sandbox-scheduler";
 ///
 /// Returns one bounded fixed diagnostic when time or scheduler reconciliation is unavailable.
 pub async fn run_scheduler_role(
-    service: Service,
+    state_endpoint: SocketAddr,
+    state_ca_bundle: PathBuf,
+    state_ca_sha256: [u8; 32],
+    state_ca_root_count: u8,
+    state_token: PathBuf,
     client: Client,
-    handoff_endpoint: SocketAddr,
 ) -> Result<(), &'static str> {
-    let mut scheduler = Scheduler::new(service, client, handoff_endpoint);
+    let state = SchedulerStateClient::new(
+        state_endpoint,
+        state_ca_bundle,
+        state_ca_sha256,
+        state_ca_root_count,
+        state_token,
+    )
+    .map_err(|_| "scheduler state configuration is unavailable")?;
+    let mut scheduler = Scheduler::new(state, client);
     loop {
         scheduler
             .run_once_with_clock(&|| unix_time().map_err(|_| SchedulerError::Clock))
@@ -39,19 +52,17 @@ pub async fn run_scheduler_role(
 }
 
 struct Scheduler {
-    service: Service,
+    state: SchedulerStateClient,
     client: Client,
     current_leases: HashMap<String, DispatchLease>,
-    handoff_endpoint: SocketAddr,
 }
 
 impl Scheduler {
-    fn new(service: Service, client: Client, handoff_endpoint: SocketAddr) -> Self {
+    fn new(state: SchedulerStateClient, client: Client) -> Self {
         Self {
-            service,
+            state,
             client,
             current_leases: HashMap::new(),
-            handoff_endpoint,
         }
     }
 
@@ -60,28 +71,38 @@ impl Scheduler {
         self.run_once_with_clock(&|| Ok(now)).await
     }
 
+    #[allow(
+        clippy::unused_self,
+        reason = "test-only local codec time mirrors system-supplied listener time"
+    )]
+    fn appoint_test_operation_time(&self, now: i64) {
+        #[cfg(test)]
+        self.state.set_test_now(now);
+        let _ = now;
+    }
+
     async fn run_once_with_clock<F>(&mut self, clock: &F) -> Result<(), SchedulerError>
     where
         F: Fn() -> Result<i64, SchedulerError> + Sync,
     {
-        let active = self.service.recoverable_runs()?;
+        let active = self.state.list_recoverable().await?;
         let mut foreign_lease = false;
-        for run_id in &active {
-            let Some(policy_verified) = self.service.scheduler_policy_status(run_id)? else {
+        for active_run in &active {
+            let run_id = &active_run.run_id;
+            let Some(policy_verified) = active_run.policy_verified else {
                 self.current_leases.remove(run_id);
                 continue;
             };
             let now = clock()?;
-            let claimed = self.current_leases.get(run_id).map_or_else(
-                || self.claim_recovery(run_id, None, now),
-                |current| {
-                    if now < current.expires_at_unix_s.saturating_sub(5) {
-                        Ok(current.clone())
-                    } else {
-                        self.claim_recovery(run_id, Some(current), now)
-                    }
+            self.appoint_test_operation_time(now);
+            let current = self.current_leases.get(run_id).cloned();
+            let claimed = match current.as_ref() {
+                None => self.claim_recovery(run_id, None).await,
+                Some(current) if now < current.expires_at_unix_s.saturating_sub(5) => {
+                    Ok(current.clone())
                 },
-            );
+                Some(current) => self.claim_recovery(run_id, Some(current)).await,
+            };
             let lease = match claimed {
                 Ok(lease) => lease,
                 Err(SchedulerError::Busy) => {
@@ -97,8 +118,9 @@ impl Scheduler {
                 Ok(()) => {},
                 Err(SchedulerError::Deadline) => {
                     let deadline_now = clock()?;
-                    match self.service.record_deadline(run_id, deadline_now) {
-                        Ok(()) | Err(ServiceError::InvalidTransition) => {},
+                    self.appoint_test_operation_time(deadline_now);
+                    match self.state.append_deadline(&lease).await {
+                        Ok(()) | Err(SchedulerStateError::Denied) => {},
                         Err(error) => return Err(error.into()),
                     }
                 },
@@ -110,9 +132,10 @@ impl Scheduler {
             return Ok(());
         }
         let dispatch_now = clock()?;
-        let lease = match self.service.dispatch_next(dispatch_now) {
+        self.appoint_test_operation_time(dispatch_now);
+        let lease = match self.state.reserve_next().await {
             Ok(lease) => lease,
-            Err(ServiceError::RunNotFound | ServiceError::ActiveSaturated) => return Ok(()),
+            Err(SchedulerStateError::NotFound | SchedulerStateError::Saturated) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
         let run_id = lease.run_id.clone();
@@ -138,15 +161,14 @@ impl Scheduler {
         .map_err(|_| SchedulerError::Kubernetes)?
     }
 
-    fn claim_recovery(
+    async fn claim_recovery(
         &self,
         run_id: &str,
         previous: Option<&DispatchLease>,
-        now: i64,
     ) -> Result<DispatchLease, SchedulerError> {
-        match self.service.recover_run(run_id, previous, now) {
+        match self.state.recover_lease(run_id, previous).await {
             Ok(lease) => Ok(lease),
-            Err(ServiceError::LeaseBusy) => Err(SchedulerError::Busy),
+            Err(SchedulerStateError::Busy) => Err(SchedulerError::Busy),
             Err(error) => Err(error.into()),
         }
     }
@@ -160,13 +182,16 @@ impl Scheduler {
     where
         F: Fn() -> Result<i64, SchedulerError> + Sync,
     {
-        let specification = self
-            .service
-            .provisioning_specification(lease, clock()?)
-            .map_err(|error| match error {
-                ServiceError::DeadlineExceeded => SchedulerError::Deadline,
-                _ => SchedulerError::Service,
-            })?;
+        let provisioning_now = clock()?;
+        self.appoint_test_operation_time(provisioning_now);
+        let specification =
+            self.state
+                .read_provisioning(lease)
+                .await
+                .map_err(|error| match error {
+                    SchedulerStateError::Deadline => SchedulerError::Deadline,
+                    _ => SchedulerError::State,
+                })?;
         let rendered = kubernetes_policy::render(&specification.run_id);
         if rendered.len() != specification.required_objects.len()
             || rendered
@@ -183,11 +208,14 @@ impl Scheduler {
 
         let mut objects = Vec::with_capacity(rendered.len());
         for object in rendered {
-            self.service
-                .provisioning_specification(lease, clock()?)
+            let lease_check_now = clock()?;
+            self.appoint_test_operation_time(lease_check_now);
+            self.state
+                .read_provisioning(lease)
+                .await
                 .map_err(|error| match error {
-                    ServiceError::DeadlineExceeded => SchedulerError::Deadline,
-                    _ => SchedulerError::Service,
+                    SchedulerStateError::Deadline => SchedulerError::Deadline,
+                    _ => SchedulerError::State,
                 })?;
             let observed = create_or_observe(&self.client, &object.body, allow_create).await?;
             let metadata = observed
@@ -222,20 +250,22 @@ impl Scheduler {
             .map(|object| object.uid.clone())
             .ok_or(SchedulerError::Policy)?;
         let verification_now = clock()?;
-        self.service.verify_provisioned_target(
-            lease,
-            &ProvisionedTarget {
-                namespace_uid,
-                policy_revision: specification.policy_revision,
-                policy_inventory_digest: specification.policy_inventory_digest,
-                cleanup_identity: specification.cleanup_identity,
-                objects,
-            },
-            verification_now,
-        )?;
-        let _assignment =
-            self.service
-                .handoff_assignment(lease, self.handoff_endpoint, clock()?)?;
+        self.appoint_test_operation_time(verification_now);
+        self.state
+            .commit_policy(
+                lease,
+                &ProvisionedTarget {
+                    namespace_uid,
+                    policy_revision: specification.policy_revision,
+                    policy_inventory_digest: specification.policy_inventory_digest,
+                    cleanup_identity: specification.cleanup_identity,
+                    objects,
+                },
+            )
+            .await?;
+        let assignment_now = clock()?;
+        self.appoint_test_operation_time(assignment_now);
+        let _assignment = self.state.derive_assignment(lease).await?;
         Ok(())
     }
 }
@@ -335,7 +365,7 @@ fn unix_time() -> Result<i64, &'static str> {
 
 #[derive(Debug)]
 pub(crate) enum SchedulerError {
-    Service,
+    State,
     Kubernetes,
     Policy,
     Busy,
@@ -343,9 +373,13 @@ pub(crate) enum SchedulerError {
     Deadline,
 }
 
-impl From<ServiceError> for SchedulerError {
-    fn from(_: ServiceError) -> Self {
-        Self::Service
+impl From<SchedulerStateError> for SchedulerError {
+    fn from(error: SchedulerStateError) -> Self {
+        match error {
+            SchedulerStateError::Busy => Self::Busy,
+            SchedulerStateError::Deadline => Self::Deadline,
+            _ => Self::State,
+        }
     }
 }
 
@@ -354,14 +388,19 @@ mod tests {
     use std::{
         fs,
         os::unix::fs::PermissionsExt,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            atomic::{AtomicU64, AtomicUsize, Ordering},
+            Arc,
+        },
     };
 
     use http::{Response, StatusCode};
+    use sha2::{Digest, Sha256};
+    use tokio::net::TcpListener;
     use tower_test::mock;
 
     use super::*;
-    use crate::Scenario;
+    use crate::{Scenario, Service};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
     const NOW: i64 = 1_774_051_200;
@@ -390,6 +429,13 @@ mod tests {
         (root, service)
     }
 
+    fn build_scheduler(service: &Service, client: Client) -> Scheduler {
+        Scheduler::new(
+            SchedulerStateClient::local(service.clone(), "127.0.0.1:8081".parse().unwrap()),
+            client,
+        )
+    }
+
     fn response(body: &Value, status: StatusCode) -> Response<kube::client::Body> {
         Response::builder()
             .status(status)
@@ -412,6 +458,423 @@ mod tests {
         body["metadata"]["resourceVersion"] = Value::String("1".into());
         body["metadata"]["creationTimestamp"] = Value::String("2026-07-25T00:00:00Z".into());
         body
+    }
+
+    fn state_tls_fixture(root: &std::path::Path) -> (PathBuf, PathBuf, PathBuf, PathBuf, [u8; 32]) {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/controller-transport/current");
+        let certificate = root.join("scheduler-state.crt");
+        let private_key = root.join("scheduler-state.key");
+        let ca_bundle = root.join("scheduler-state-ca.crt");
+        let state_token = root.join("scheduler-state-token");
+        for (source_name, destination, mode) in [
+            ("cert.pem", &certificate, 0o400),
+            ("key.pem", &private_key, 0o600),
+            ("ca.pem", &ca_bundle, 0o400),
+        ] {
+            fs::copy(source.join(source_name), destination).unwrap();
+            fs::set_permissions(destination, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::write(&state_token, b"scheduler-state-token").unwrap();
+        fs::set_permissions(&state_token, fs::Permissions::from_mode(0o600)).unwrap();
+        let digest = Sha256::digest(fs::read(&ca_bundle).unwrap()).into();
+        (certificate, private_key, ca_bundle, state_token, digest)
+    }
+
+    fn token_review_client(count: usize) -> (Client, tokio::task::JoinHandle<()>) {
+        let (transport, mut handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let server = tokio::spawn(async move {
+            for _ in 0..count {
+                let (request, send) = handle.next_request().await.unwrap();
+                let body: Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                assert_eq!(body["spec"]["token"], "scheduler-state-token");
+                send.send_response(response(
+                    &serde_json::json!({
+                        "apiVersion":"authentication.k8s.io/v1",
+                        "kind":"TokenReview",
+                        "metadata":{},
+                        "spec":body["spec"],
+                        "status":{
+                            "authenticated":true,
+                            "audiences":["https://kapsel.dev/sandbox/controller-state/v1"],
+                            "user":{
+                                "username":concat!(
+                                    "system:serviceaccount:kapsel-sandbox-system:",
+                                    "sandbox-scheduler"
+                                ),
+                                "uid":"scheduler-uid"
+                            }
+                        }
+                    }),
+                    StatusCode::CREATED,
+                ));
+            }
+        });
+        (Client::new(transport, "default"), server)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "test helper keeps one concrete TLS composition explicit"
+    )]
+    async fn start_state_server(
+        service: Service,
+        certificate: PathBuf,
+        private_key: PathBuf,
+        ca_bundle: PathBuf,
+        state_token: PathBuf,
+        ca_digest: [u8; 32],
+        now: i64,
+        request_count: usize,
+        lost_operation: Option<&'static str>,
+    ) -> (
+        SchedulerStateClient,
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        crate::controller_state_transport::allow_test_bound_port(endpoint.port());
+        let inputs = crate::controller_state_transport::server_inputs(certificate, private_key);
+        let binding = crate::controller_state_transport::role_binding(
+            crate::controller_state_transport::Role::Scheduler,
+            "scheduler-uid".to_owned(),
+        )
+        .unwrap();
+        let (token_review, token_review_server) = token_review_client(request_count);
+        let state_server = tokio::spawn(async move {
+            for _ in 0..request_count {
+                let (connection, _) = listener.accept().await.unwrap();
+                let service = service.clone();
+                let result = crate::controller_state_transport::handle_connection(
+                    connection,
+                    &inputs,
+                    &binding,
+                    token_review.clone(),
+                    move |payload| async move {
+                        let response = crate::scheduler_state::handle(
+                            &service,
+                            &payload,
+                            "127.0.0.1:8081".parse().unwrap(),
+                            now,
+                        );
+                        if lost_operation.is_some_and(|operation| {
+                            String::from_utf8_lossy(&payload)
+                                .contains(&format!(r#""operation":"{operation}""#))
+                        }) {
+                            vec![0, 0, 0, 2, b'x']
+                        } else {
+                            response
+                        }
+                    },
+                )
+                .await;
+                if lost_operation.is_some() && result.is_err() {
+                    return;
+                }
+                result.unwrap();
+            }
+        });
+        let client =
+            SchedulerStateClient::new(endpoint, ca_bundle, ca_digest, 1, state_token).unwrap();
+        (client, state_server, token_review_server)
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one production-adapter restart vector keeps ambiguous commit recovery contiguous"
+    )]
+    async fn remote_scheduler_recovers_lost_policy_commit_response_without_public_change() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        let (root, service) = fixture();
+        let (certificate, private_key, ca_bundle, state_token, ca_digest) =
+            state_tls_fixture(&root);
+        let rendered = kubernetes_policy::render(RUN);
+        let (kubernetes_transport, mut kubernetes_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let created = rendered
+            .iter()
+            .enumerate()
+            .map(|(index, item)| observed(item.body.clone(), index))
+            .collect::<Vec<_>>();
+        let kubernetes_server = tokio::spawn(async move {
+            for body in created {
+                let (_, send) = kubernetes_handle.next_request().await.unwrap();
+                send.send_response(response(&status("NotFound", 404), StatusCode::NOT_FOUND));
+                let (request, send) = kubernetes_handle.next_request().await.unwrap();
+                assert_eq!(request.method(), http::Method::POST);
+                send.send_response(response(&body, StatusCode::CREATED));
+            }
+        });
+        let (state, state_server, token_reviews) = start_state_server(
+            service.clone(),
+            certificate.clone(),
+            private_key.clone(),
+            ca_bundle.clone(),
+            state_token.clone(),
+            ca_digest,
+            NOW + 1,
+            15,
+            Some("commit_policy"),
+        )
+        .await;
+        let mut scheduler = Scheduler::new(state, Client::new(kubernetes_transport, "default"));
+        assert!(scheduler.run_once_at(NOW + 1).await.is_err());
+        state_server.await.unwrap();
+        token_reviews.await.unwrap();
+        kubernetes_server.await.unwrap();
+        assert_eq!(service.scheduler_policy_status(RUN).unwrap(), Some(true));
+        let after_commit = service.snapshot(RUN, NOW + 2).unwrap();
+        let events_after_commit = service.events(RUN, 0, 64, NOW + 2).unwrap();
+        assert!(after_commit.receiver_result.is_none());
+        assert!(!after_commit.receipt_available);
+
+        let (kubernetes_transport, mut kubernetes_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let observed_objects = rendered
+            .iter()
+            .enumerate()
+            .map(|(index, item)| observed(item.body.clone(), index))
+            .collect::<Vec<_>>();
+        let kubernetes_server = tokio::spawn(async move {
+            for body in observed_objects {
+                let (request, send) = kubernetes_handle.next_request().await.unwrap();
+                assert_eq!(request.method(), http::Method::GET);
+                send.send_response(response(&body, StatusCode::OK));
+            }
+        });
+        let (state, state_server, token_reviews) = start_state_server(
+            service.clone(),
+            certificate,
+            private_key,
+            ca_bundle,
+            state_token,
+            ca_digest,
+            NOW + 32,
+            17,
+            None,
+        )
+        .await;
+        let mut restarted = Scheduler::new(state, Client::new(kubernetes_transport, "default"));
+        restarted.run_once_at(NOW + 32).await.unwrap();
+        state_server.await.unwrap();
+        token_reviews.await.unwrap();
+        kubernetes_server.await.unwrap();
+        let after_recovery = service.snapshot(RUN, NOW + 32).unwrap();
+        assert_eq!(after_recovery.receiver_result, after_commit.receiver_result);
+        assert_eq!(
+            after_recovery.receipt_available,
+            after_commit.receipt_available
+        );
+        assert_eq!(after_recovery.cleanup_state, after_commit.cleanup_state);
+        assert_eq!(
+            service.events(RUN, 0, 64, NOW + 32).unwrap(),
+            events_after_commit
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table proves each remaining production-adapter ambiguity seam"
+    )]
+    async fn remote_scheduler_recovers_reserve_provisioning_and_assignment_response_loss() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        for (case, operation, first_requests, resources_created) in [
+            ("reserve", "reserve_next", 2, false),
+            ("provisioning", "read_provisioning", 3, false),
+            ("assignment", "derive_assignment", 16, true),
+        ] {
+            let (root, service) = fixture();
+            let (certificate, private_key, ca_bundle, state_token, ca_digest) =
+                state_tls_fixture(&root);
+            let rendered = kubernetes_policy::render(RUN);
+            let (kubernetes_transport, mut kubernetes_handle) = mock::pair::<
+                http::Request<kube::client::Body>,
+                http::Response<kube::client::Body>,
+            >();
+            let first_kubernetes = if resources_created {
+                let created = rendered
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| observed(item.body.clone(), index))
+                    .collect::<Vec<_>>();
+                tokio::spawn(async move {
+                    for body in created {
+                        let (_, send) = kubernetes_handle.next_request().await.unwrap();
+                        send.send_response(response(
+                            &status("NotFound", 404),
+                            StatusCode::NOT_FOUND,
+                        ));
+                        let (_, send) = kubernetes_handle.next_request().await.unwrap();
+                        send.send_response(response(&body, StatusCode::CREATED));
+                    }
+                })
+            } else {
+                tokio::spawn(async move {
+                    assert!(tokio::time::timeout(
+                        Duration::from_millis(100),
+                        kubernetes_handle.next_request(),
+                    )
+                    .await
+                    .is_err());
+                })
+            };
+            let (state, state_server, token_reviews) = start_state_server(
+                service.clone(),
+                certificate.clone(),
+                private_key.clone(),
+                ca_bundle.clone(),
+                state_token.clone(),
+                ca_digest,
+                NOW + 1,
+                first_requests,
+                Some(operation),
+            )
+            .await;
+            let mut scheduler = Scheduler::new(state, Client::new(kubernetes_transport, "default"));
+            assert!(scheduler.run_once_at(NOW + 1).await.is_err(), "{case}");
+            state_server.await.unwrap();
+            token_reviews.await.unwrap();
+            first_kubernetes.await.unwrap();
+            let after_loss = service.snapshot(RUN, NOW + 2).unwrap();
+            let events_after_loss = service.events(RUN, 0, 64, NOW + 2).unwrap();
+            assert!(after_loss.receiver_result.is_none(), "{case}");
+            assert!(!after_loss.receipt_available, "{case}");
+
+            let (kubernetes_transport, mut kubernetes_handle) = mock::pair::<
+                http::Request<kube::client::Body>,
+                http::Response<kube::client::Body>,
+            >();
+            let expected_objects = rendered
+                .iter()
+                .enumerate()
+                .map(|(index, item)| observed(item.body.clone(), index))
+                .collect::<Vec<_>>();
+            let second_kubernetes = tokio::spawn(async move {
+                for body in expected_objects {
+                    let (_, send) = kubernetes_handle.next_request().await.unwrap();
+                    if resources_created {
+                        send.send_response(response(&body, StatusCode::OK));
+                    } else {
+                        send.send_response(response(
+                            &status("NotFound", 404),
+                            StatusCode::NOT_FOUND,
+                        ));
+                        let (_, send) = kubernetes_handle.next_request().await.unwrap();
+                        send.send_response(response(&body, StatusCode::CREATED));
+                    }
+                }
+            });
+            let (state, state_server, token_reviews) = start_state_server(
+                service.clone(),
+                certificate,
+                private_key,
+                ca_bundle,
+                state_token,
+                ca_digest,
+                NOW + 32,
+                17,
+                None,
+            )
+            .await;
+            let mut restarted = Scheduler::new(state, Client::new(kubernetes_transport, "default"));
+            restarted.run_once_at(NOW + 32).await.unwrap();
+            state_server.await.unwrap();
+            token_reviews.await.unwrap();
+            second_kubernetes.await.unwrap();
+            let after_recovery = service.snapshot(RUN, NOW + 32).unwrap();
+            assert_eq!(
+                after_recovery.receiver_result, after_loss.receiver_result,
+                "{case}"
+            );
+            assert_eq!(
+                after_recovery.receipt_available, after_loss.receipt_available,
+                "{case}"
+            );
+            assert_eq!(
+                after_recovery.cleanup_state, after_loss.cleanup_state,
+                "{case}"
+            );
+            assert_eq!(
+                service.events(RUN, 0, 64, NOW + 32).unwrap(),
+                events_after_loss,
+                "{case}"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn token_review_outage_prevents_state_and_kubernetes_dispatch() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        let (root, service) = fixture();
+        let baseline = service.events(RUN, 0, 64, NOW).unwrap();
+        let (certificate, private_key, ca_bundle, state_token, ca_digest) =
+            state_tls_fixture(&root);
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        crate::controller_state_transport::allow_test_bound_port(endpoint.port());
+        let inputs = crate::controller_state_transport::server_inputs(certificate, private_key);
+        let binding = crate::controller_state_transport::role_binding(
+            crate::controller_state_transport::Role::Scheduler,
+            "scheduler-uid".to_owned(),
+        )
+        .unwrap();
+        let (token_transport, mut token_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let token_server = tokio::spawn(async move {
+            let (_, send) = token_handle.next_request().await.unwrap();
+            send.send_response(response(
+                &status("Unavailable", 503),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        });
+        let dispatches = Arc::new(AtomicUsize::new(0));
+        let observed_dispatches = Arc::clone(&dispatches);
+        let state_server = tokio::spawn(async move {
+            let (connection, _) = listener.accept().await.unwrap();
+            crate::controller_state_transport::handle_connection(
+                connection,
+                &inputs,
+                &binding,
+                Client::new(token_transport, "default"),
+                move |_| async move {
+                    observed_dispatches.fetch_add(1, Ordering::Relaxed);
+                    vec![0, 0, 0, 1, b'x']
+                },
+            )
+            .await
+            .unwrap();
+        });
+        let state =
+            SchedulerStateClient::new(endpoint, ca_bundle, ca_digest, 1, state_token).unwrap();
+        let (kubernetes_transport, mut kubernetes_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let no_kubernetes = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_millis(100), kubernetes_handle.next_request())
+                .await
+                .is_err()
+        });
+        let mut scheduler = Scheduler::new(state, Client::new(kubernetes_transport, "default"));
+        assert!(scheduler.run_once_at(NOW).await.is_err());
+        state_server.await.unwrap();
+        token_server.await.unwrap();
+        assert!(no_kubernetes.await.unwrap());
+        assert_eq!(dispatches.load(Ordering::Relaxed), 0);
+        assert_eq!(service.events(RUN, 0, 64, NOW).unwrap(), baseline);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -453,14 +916,10 @@ mod tests {
                 send.send_response(response(body, StatusCode::CREATED));
             }
         });
-        let mut scheduler = Scheduler::new(
-            service,
-            Client::new(transport, "default"),
-            "127.0.0.1:8081".parse().unwrap(),
-        );
+        let mut scheduler = build_scheduler(&service, Client::new(transport, "default"));
         scheduler.run_once_at(NOW + 1).await.unwrap();
         server.await.unwrap();
-        assert_eq!(scheduler.service.recoverable_runs().unwrap(), vec![RUN]);
+        assert_eq!(service.recoverable_runs().unwrap(), vec![RUN]);
 
         let (transport, mut handle) =
             mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
@@ -483,11 +942,7 @@ mod tests {
             NOW + 32,
         )
         .unwrap();
-        let mut restarted = Scheduler::new(
-            service,
-            Client::new(transport, "default"),
-            "127.0.0.1:8081".parse().unwrap(),
-        );
+        let mut restarted = build_scheduler(&service, Client::new(transport, "default"));
         restarted.run_once_at(NOW + 32).await.unwrap();
         server.await.unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -531,11 +986,7 @@ mod tests {
                 send.send_response(response(&status("NotFound", 404), StatusCode::NOT_FOUND));
             }
         });
-        let mut scheduler = Scheduler::new(
-            service,
-            Client::new(transport, "default"),
-            "127.0.0.1:8081".parse().unwrap(),
-        );
+        let mut scheduler = build_scheduler(&service, Client::new(transport, "default"));
         let clock = std::sync::atomic::AtomicI64::new(NOW + 1);
         let result = scheduler
             .run_once_with_clock(&|| Ok(clock.fetch_add(31, Ordering::Relaxed)))
@@ -576,11 +1027,7 @@ mod tests {
                 send.send_response(response(&observed(object.body, index), StatusCode::CREATED));
             }
         });
-        let mut scheduler = Scheduler::new(
-            service,
-            Client::new(transport, "default"),
-            "127.0.0.1:8081".parse().unwrap(),
-        );
+        let mut scheduler = build_scheduler(&service, Client::new(transport, "default"));
         scheduler.run_once_at(NOW + 32).await.unwrap();
         server.await.unwrap();
         let connection = rusqlite::Connection::open(root.join("sandbox.sqlite3")).unwrap();
@@ -622,11 +1069,7 @@ mod tests {
                 .await
                 .is_err()
         });
-        let mut scheduler = Scheduler::new(
-            service,
-            Client::new(transport, "default"),
-            "127.0.0.1:8081".parse().unwrap(),
-        );
+        let mut scheduler = build_scheduler(&service, Client::new(transport, "default"));
         scheduler.run_once_at(NOW + 2).await.unwrap();
         assert!(no_request.await.unwrap());
         let epoch: i64 = rusqlite::Connection::open(root.join("sandbox.sqlite3"))
@@ -654,11 +1097,7 @@ mod tests {
             let (_, send) = handle.next_request().await.unwrap();
             send.send_response(response(&first, StatusCode::OK));
         });
-        let mut scheduler = Scheduler::new(
-            service,
-            Client::new(transport, "default"),
-            "127.0.0.1:8081".parse().unwrap(),
-        );
+        let mut scheduler = build_scheduler(&service, Client::new(transport, "default"));
         assert!(scheduler.run_once_at(NOW + 1).await.is_err());
         let connection = rusqlite::Connection::open(root.join("sandbox.sqlite3")).unwrap();
         let verified: bool = connection
