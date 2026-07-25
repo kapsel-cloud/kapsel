@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -16,6 +17,7 @@ FIXTURE_PATH = ROOT / "deploy/sandbox/gate2-gke-fixture.json"
 STORAGE_PATH = ROOT / "deploy/sandbox/gate2-gke-storage-class.json"
 JOURNAL_PATH = ROOT / "deploy/sandbox/journal-volume-template.json"
 WORKLOAD_PATH = ROOT / "deploy/sandbox/workload-template.json"
+SYSTEM_WORKLOAD_PATH = ROOT / "deploy/sandbox/gate2-system-workload.json"
 
 
 class InvalidFixture(AssertionError):
@@ -31,7 +33,94 @@ def load(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
+def validate_system_workload(workload: dict[str, Any], bindings: dict[str, Any]) -> None:
+    require(workload["api_version"] == "kapsel.sandbox.gate2-system-workload/v1", "system workload API")
+    status = workload["status"]
+    require(not status["execution_authorized"] and not status["composition_complete"], "system workload remains blocked")
+    require(not status["directly_applicable"], "evidence wrapper is not directly applicable")
+    require(not status["network_access_control_complete"], "network access control blocker")
+    require(status["missing_roles"] == ["scheduler", "cleanup-reconciler"], "exact missing roles")
+    objects = workload["objects"]
+    canonical_objects = json.dumps(objects, sort_keys=True, separators=(",", ":")).encode()
+    rendered_digest = f"sha256:{hashlib.sha256(canonical_objects).hexdigest()}"
+    require(rendered_digest == status["rendered_objects_sha256"], "complete rendered-object equality")
+    require(rendered_digest == "sha256:12f56539a1b2acc12a3df436f0206f2cc6ddc4bfa87eff9beef5b1848e077373", "locked rendered-object digest")
+    require([(item["apiVersion"], item["kind"]) for item in objects] == [
+        ("v1", "Namespace"),
+        ("v1", "ServiceAccount"),
+        ("v1", "Service"),
+        ("apps/v1", "StatefulSet"),
+    ], "exact system object inventory")
+    namespace, account, service, stateful_set = objects
+    require(namespace["metadata"] == {
+        "name": "kapsel-sandbox-system",
+        "labels": {"kapsel.dev/gate2": "true", "kapsel.dev/policy-revision": "sandbox-policy-v1"},
+    }, "system namespace")
+    require(account["metadata"]["name"] == "kapsel-gate2-sandbox-api", "system service account")
+    require(account["metadata"]["namespace"] == "kapsel-sandbox-system", "system account namespace")
+    require(account["automountServiceAccountToken"] is False, "no ambient system token")
+    service_spec = service["spec"]
+    require(service_spec["type"] == "ClusterIP" and service_spec["clusterIP"] == "None", "headless private service")
+    require(service_spec["publishNotReadyAddresses"] is False, "no unready handoff")
+    require(service_spec["ports"] == [
+        {"name": "private-http1", "port": 8080, "targetPort": "private-http1", "protocol": "TCP"},
+        {"name": "private-handoff", "port": 8081, "targetPort": "private-handoff", "protocol": "TCP"},
+    ], "exact private ports")
+    specification = stateful_set["spec"]
+    require(specification["replicas"] == 1 and specification["serviceName"] == "kapsel-sandbox-private", "singleton system writer")
+    require(specification["updateStrategy"] == {"type": "OnDelete"}, "explicit system rollback")
+    pod = specification["template"]["spec"]
+    require(pod["automountServiceAccountToken"] is False, "pod token disabled")
+    require(pod["serviceAccountName"] == "kapsel-gate2-sandbox-api", "exact system identity")
+    require(pod["terminationGracePeriodSeconds"] == 30, "bounded termination")
+    require(pod["securityContext"]["seccompProfile"] == {"type": "RuntimeDefault"}, "pod seccomp")
+    init = pod["initContainers"]
+    require(len(init) == 1 and init[0]["name"] == "initialize-durable-layout", "one layout initializer")
+    expected_state = ["--database", "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3", "--receipts", "/var/lib/kapsel-sandbox/receipts", "--digest-key-file", "/var/run/kapsel-keys/tombstone-digest.seed"]
+    require(init[0]["args"] == ["init", *expected_state], "exact initializer command")
+    containers = pod["containers"]
+    require([container["name"] for container in containers] == ["native-api", "private-handoff", "periodic-retention"], "exact implemented system roles")
+    commands = {container["name"]: container["args"] for container in containers}
+    require(commands["native-api"] == ["serve", *expected_state, "--origin", "https://kapsel.invalid", "--listen", "0.0.0.0:8080"], "exact native API command")
+    require(commands["private-handoff"] == ["handoff-serve", *expected_state, "--listen", "0.0.0.0:8081"], "exact handoff command")
+    require(commands["periodic-retention"] == [bindings["GATE2_RETENTION_SUBCOMMAND"], *expected_state], "exact retention command")
+    for container in [init[0], *containers]:
+        require(container["image"] == "${KAPSEL_SANDBOX_IMAGE_DIGEST}", "one locked image placeholder")
+        require(container["imagePullPolicy"] == "IfNotPresent", "image pull policy")
+        security = container["securityContext"]
+        require(security["allowPrivilegeEscalation"] is False, "no privilege escalation")
+        require(security["capabilities"] == {"drop": ["ALL"]}, "all capabilities dropped")
+        require(security["readOnlyRootFilesystem"] and security["runAsNonRoot"], "confined process")
+        require(set(container["resources"]) == {"requests", "limits"}, "bounded role resources")
+        mounts = container["volumeMounts"]
+        require(mounts == [
+            {"name": "system-state", "mountPath": "/var/lib/kapsel-sandbox"},
+            {"name": "tombstone-digest-key", "mountPath": "/var/run/kapsel-keys", "readOnly": True},
+        ], "exact system mounts")
+    require(pod["volumes"] == [{
+        "name": "tombstone-digest-key",
+        "secret": {"secretName": "kapsel-gate2-tombstone-digest", "defaultMode": 288},
+    }], "exact tombstone projection placeholder")
+    claims = specification["volumeClaimTemplates"]
+    require(len(claims) == 1 and claims[0]["metadata"]["name"] == "system-state", "one system claim")
+    claim = claims[0]["spec"]
+    require(claim["accessModes"] == ["ReadWriteOncePod"], "system RWOP")
+    require(claim["resources"]["requests"]["storage"] == "20Gi", "system claim size")
+    require(claim["storageClassName"] == "${GATE2_STORAGE_CLASS}", "system storage placeholder")
+    require(bindings["GATE2_STORAGE_CLASS"] == "kapsel-gate2-regional-pd-balanced", "system storage binding")
+    serialized = json.dumps(workload, sort_keys=True)
+    require(all(term not in serialized for term in ("LoadBalancer", "NodePort", "hostNetwork", "hostPath", '"runner"')), "no public, host, or runner authority")
+    require(set(workload["non_claims"]) == {
+        "no_scheduler_or_cleanup_reconciler",
+        "no_networkpolicy_or_public_endpoint",
+        "no_secret_manager_staging_proof",
+        "no_workload_identity_binding_proof",
+        "no_provider_render_or_apply",
+        "no_gate2_authorization",
+    }, "system workload non-claims")
+
+
+def validate(candidate: dict[str, Any], storage_class: dict[str, Any], system_workload: dict[str, Any]) -> None:
     status = candidate["status"]
     require(status["kind"] == "authorization_candidate", "candidate kind")
     require(status["execution_authorized"] is False, "execution must remain unauthorized")
@@ -101,6 +190,7 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(bindings["GATE2_RETENTION_SUBCOMMAND"] == "retention", "retention role binding")
     roles = candidate["service_role_composition"]
     require(roles == {
+        "rendered_file": "deploy/sandbox/gate2-system-workload.json",
         "native_api": {"subcommand": "serve", "system_state_writer": True, "public_http_owner": True},
         "private_handoff": {"subcommand": "handoff-serve", "system_state_writer": True, "public_service_forbidden": True},
         "periodic_retention": {"subcommand": "retention", "system_state_writer": True, "fixed_interval_seconds": 60, "transport_listener": False},
@@ -109,6 +199,7 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
         "shared_system_state_volume": True,
         "runner_system_state_mount": False,
     }, "bounded current service-role composition")
+    validate_system_workload(system_workload, bindings)
 
     require(storage_class["apiVersion"] == "storage.k8s.io/v1", "storage API")
     require(storage_class["kind"] == "StorageClass", "storage kind")
@@ -383,7 +474,7 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require({"load-balancer", "public-address", "cloud-nat", "internet-egress"}.issubset(cost["forbidden_unpriced_classes"]), "unpriced class denial")
 
     blockers = set(candidate["execution_blockers"])
-    require({"reviewed_execution_revision_and_fixture_digest", "registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "scheduler_and_cleanup_controller_composition", "rendered_service_role_manifests", "secret_version_identities", "audit_sink_writer_identity_and_topic_policy_binding", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
+    require({"reviewed_execution_revision_and_fixture_digest", "registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "scheduler_and_cleanup_controller_composition", "complete_rendered_service_role_manifests", "secret_version_identities", "audit_sink_writer_identity_and_topic_policy_binding", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
     require(candidate["reproduction_lock"]["registry_digest"] is None, "registry digest blocker")
     require(candidate["reproduction_lock"]["fixture_source_digest"] is None, "fixture digest blocker")
     require("no_gate2_authorization" in candidate["non_claims"], "Gate 2 non-claim")
@@ -394,7 +485,7 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require("@gmail.com" not in serialized and "@googlemail.com" not in serialized, "personal account")
 
 
-def negative_cases(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
+def negative_cases(candidate: dict[str, Any], storage_class: dict[str, Any], system_workload: dict[str, Any]) -> None:
     cases: list[dict[str, Any]] = []
     public = copy.deepcopy(candidate)
     public["cluster"]["load_balancer"] = "external"
@@ -488,10 +579,58 @@ def negative_cases(candidate: dict[str, Any], storage_class: dict[str, Any]) -> 
     cases.append(widened_fixed)
     for mutated in cases:
         try:
-            validate(mutated, storage_class)
+            validate(mutated, storage_class, system_workload)
         except InvalidFixture:
             continue
         raise InvalidFixture("negative fixture mutation was accepted")
+
+    workload_cases: list[dict[str, Any]] = []
+    authorized_workload = copy.deepcopy(system_workload)
+    authorized_workload["status"]["execution_authorized"] = True
+    workload_cases.append(authorized_workload)
+    public_service = copy.deepcopy(system_workload)
+    public_service["objects"][2]["spec"]["type"] = "LoadBalancer"
+    workload_cases.append(public_service)
+    ambient_token = copy.deepcopy(system_workload)
+    ambient_token["objects"][3]["spec"]["template"]["spec"]["automountServiceAccountToken"] = True
+    workload_cases.append(ambient_token)
+    extra_runner = copy.deepcopy(system_workload)
+    extra_runner["objects"][3]["spec"]["template"]["spec"]["containers"].append({"name": "runner"})
+    workload_cases.append(extra_runner)
+    retention_transport = copy.deepcopy(system_workload)
+    retention = retention_transport["objects"][3]["spec"]["template"]["spec"]["containers"][2]
+    retention["args"].extend(["--listen", "0.0.0.0:9090"])
+    workload_cases.append(retention_transport)
+    writable_key = copy.deepcopy(system_workload)
+    writable_key["objects"][3]["spec"]["template"]["spec"]["containers"][0]["volumeMounts"][1]["readOnly"] = False
+    workload_cases.append(writable_key)
+    resource_drift = copy.deepcopy(system_workload)
+    resource_drift["objects"][3]["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]["cpu"] = "999"
+    workload_cases.append(resource_drift)
+    command_wrapper = copy.deepcopy(system_workload)
+    command_wrapper["objects"][3]["spec"]["template"]["spec"]["containers"][0]["command"] = ["sh", "-c"]
+    workload_cases.append(command_wrapper)
+    credential_environment = copy.deepcopy(system_workload)
+    credential_environment["objects"][3]["spec"]["template"]["spec"]["containers"][0]["env"] = [{"name": "TOKEN", "value": "ambient"}]
+    workload_cases.append(credential_environment)
+    selector_drift = copy.deepcopy(system_workload)
+    selector_drift["objects"][2]["spec"]["selector"] = {"app": "other"}
+    workload_cases.append(selector_drift)
+    host_pid = copy.deepcopy(system_workload)
+    host_pid["objects"][3]["spec"]["template"]["spec"]["hostPID"] = True
+    workload_cases.append(host_pid)
+    privileged = copy.deepcopy(system_workload)
+    privileged["objects"][3]["spec"]["template"]["spec"]["containers"][0]["securityContext"]["privileged"] = True
+    workload_cases.append(privileged)
+    workload_identity = copy.deepcopy(system_workload)
+    workload_identity["objects"][1]["metadata"]["annotations"] = {"iam.gke.io/gcp-service-account": "broad@example.invalid"}
+    workload_cases.append(workload_identity)
+    for mutated in workload_cases:
+        try:
+            validate(candidate, storage_class, mutated)
+        except InvalidFixture:
+            continue
+        raise InvalidFixture("negative system-workload mutation was accepted")
 
 
 def assert_private_evidence_deletion_receipt() -> None:
@@ -515,8 +654,9 @@ def main() -> None:
     require(not sys.argv[1:], "unexpected arguments")
     candidate = load(FIXTURE_PATH)
     storage_class = load(STORAGE_PATH)
-    validate(candidate, storage_class)
-    negative_cases(candidate, storage_class)
+    system_workload = load(SYSTEM_WORKLOAD_PATH)
+    validate(candidate, storage_class, system_workload)
+    negative_cases(candidate, storage_class, system_workload)
     print("sandbox Gate 2 GKE authorization candidate: ok (offline, execution blocked)")
 
 

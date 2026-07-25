@@ -51,26 +51,31 @@ separate `Containerfile.gate2-candidate` is pre-authorization source/config evid
 and non-claims. The result is still not a registry digest, selected runtime, or Infrastructure
 Enforcement authorization.
 
-`gate2-gke-fixture.json` is the separate non-executed `europe-north1` authorization candidate, and
-`gate2-gke-storage-class.json` is its proposed regional Persistent Disk CSI class. Run
-`cargo make test-sandbox-gate2-fixture` to check the exact tuple, node arithmetic, placeholders,
-storage, key roles, audit/retention split, inventory, command previews, teardown coverage, costs,
-stop conditions, and non-claims without invoking a provider. The fixture records its reviewed source
-revision and digest; null registry digest, private approval bindings, Kubernetes audience, runner
-subcommand, and secret versions still keep execution blocked.
+`gate2-gke-fixture.json` is the separate non-executed `europe-north1` authorization candidate,
+`gate2-gke-storage-class.json` is its proposed regional Persistent Disk CSI class, and
+`gate2-system-workload.json` is the incomplete, non-applicable evidence wrapper for the implemented
+native API, private handoff, and periodic-retention roles. Its objects are digest-locked, but its
+headless Service provides only cluster-internal discovery—not access control—and NetworkPolicy is
+still absent. Run `cargo make test-sandbox-gate2-fixture` to check the exact tuple, node arithmetic,
+placeholders, storage, key roles, audit/retention split, native system-role commands and authority,
+inventory, command previews, teardown coverage, costs, stop conditions, and non-claims without
+invoking a provider. The fixture records its reviewed source revision and digest; null registry
+digest, private approval bindings, Kubernetes audience, runner subcommand, and secret versions still
+keep execution blocked.
 
 The raw signing boundary accepts only an exact 32-byte Ed25519 seed. The RFC 8032 seed/public-key/
 signature known-answer test and a production `Application` receipt inspected through
 `kapsel::inspect_receipt` prove the offline format path. They do not prove managed custody, workload
 IAM, audit, outage, rotation, backup, or deletion protection.
 
-The Authority Composition binary composes the native HTTP boundary and operator stop only. Stop and
-clear-stop open only the existing private admission database and its singleton row; receipt storage,
-tombstone-key availability, retention, and full service initialization are deliberately outside that
-emergency path. The binary does not yet launch the provider-dependent scheduler/runner, cleanup
-controller, or periodic retention loop; Infrastructure Enforcement Proof must compose those existing
-service operations with the selected Kubernetes, key, and storage identities before any deployment
-can be accepted.
+The native binary composes the HTTP boundary, private handoff, runner, operator stop, and periodic
+retention modes. Stop and clear-stop open only the existing private admission database and its
+singleton row; receipt storage, tombstone-key availability, retention, and full service
+initialization are deliberately outside that emergency path. The incomplete Gate 2 system workload
+renders only the API, handoff, and retention roles against one system-state volume and explicitly
+omits scheduler and cleanup-controller composition. Infrastructure Enforcement Proof must complete
+those roles, runner binding, policy, key staging, and selected Kubernetes/storage identities before
+any deployment can be accepted.
 
 The exact patch harness evaluates normalized Kubernetes Deployment objects. Live Kubernetes
 admission/audit enforcement, post-verification downgrade denial under the real runner identity,

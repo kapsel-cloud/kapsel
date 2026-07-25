@@ -171,6 +171,7 @@
     "GATE2_RETENTION_SUBCOMMAND": "retention"
   },
   "service_role_composition": {
+    "rendered_file": "deploy/sandbox/gate2-system-workload.json",
     "native_api": {
       "subcommand": "serve",
       "system_state_writer": true,
@@ -1780,7 +1781,7 @@
     "kubernetes_token_audience",
     "provider_runner_subcommand",
     "scheduler_and_cleanup_controller_composition",
-    "rendered_service_role_manifests",
+    "complete_rendered_service_role_manifests",
     "secret_version_identities",
     "audit_sink_writer_identity_and_topic_policy_binding",
     "actual_required_log_field_review",

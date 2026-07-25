@@ -1,0 +1,371 @@
+{
+  "api_version": "kapsel.sandbox.gate2-system-workload/v1",
+  "status": {
+    "execution_authorized": false,
+    "composition_complete": false,
+    "directly_applicable": false,
+    "network_access_control_complete": false,
+    "rendered_objects_sha256": "sha256:12f56539a1b2acc12a3df436f0206f2cc6ddc4bfa87eff9beef5b1848e077373",
+    "missing_roles": [
+      "scheduler",
+      "cleanup-reconciler"
+    ]
+  },
+  "objects": [
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "name": "kapsel-sandbox-system",
+        "labels": {
+          "kapsel.dev/gate2": "true",
+          "kapsel.dev/policy-revision": "sandbox-policy-v1"
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "kapsel-gate2-sandbox-api",
+        "namespace": "kapsel-sandbox-system",
+        "labels": {
+          "kapsel.dev/gate2": "true"
+        }
+      },
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "kapsel-sandbox-private",
+        "namespace": "kapsel-sandbox-system",
+        "labels": {
+          "kapsel.dev/gate2": "true"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "clusterIP": "None",
+        "publishNotReadyAddresses": false,
+        "selector": {
+          "app.kubernetes.io/name": "kapsel-sandbox"
+        },
+        "ports": [
+          {
+            "name": "private-http1",
+            "port": 8080,
+            "targetPort": "private-http1",
+            "protocol": "TCP"
+          },
+          {
+            "name": "private-handoff",
+            "port": 8081,
+            "targetPort": "private-handoff",
+            "protocol": "TCP"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "StatefulSet",
+      "metadata": {
+        "name": "kapsel-sandbox",
+        "namespace": "kapsel-sandbox-system",
+        "labels": {
+          "app.kubernetes.io/name": "kapsel-sandbox",
+          "kapsel.dev/gate2": "true",
+          "kapsel.dev/policy-revision": "sandbox-policy-v1"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "serviceName": "kapsel-sandbox-private",
+        "podManagementPolicy": "OrderedReady",
+        "updateStrategy": {
+          "type": "OnDelete"
+        },
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "kapsel-sandbox"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "kapsel-sandbox",
+              "kapsel.dev/gate2": "true"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "serviceAccountName": "kapsel-gate2-sandbox-api",
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "fsGroup": 65532,
+              "fsGroupChangePolicy": "OnRootMismatch",
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "initContainers": [
+              {
+                "name": "initialize-durable-layout",
+                "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+                "imagePullPolicy": "IfNotPresent",
+                "args": [
+                  "init",
+                  "--database",
+                  "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+                  "--receipts",
+                  "/var/lib/kapsel-sandbox/receipts",
+                  "--digest-key-file",
+                  "/var/run/kapsel-keys/tombstone-digest.seed"
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "25m",
+                    "memory": "32Mi",
+                    "ephemeral-storage": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "250m",
+                    "memory": "64Mi",
+                    "ephemeral-storage": "64Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "readOnlyRootFilesystem": true,
+                  "runAsNonRoot": true
+                },
+                "volumeMounts": [
+                  {
+                    "name": "system-state",
+                    "mountPath": "/var/lib/kapsel-sandbox"
+                  },
+                  {
+                    "name": "tombstone-digest-key",
+                    "mountPath": "/var/run/kapsel-keys",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "containers": [
+              {
+                "name": "native-api",
+                "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+                "imagePullPolicy": "IfNotPresent",
+                "args": [
+                  "serve",
+                  "--database",
+                  "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+                  "--receipts",
+                  "/var/lib/kapsel-sandbox/receipts",
+                  "--digest-key-file",
+                  "/var/run/kapsel-keys/tombstone-digest.seed",
+                  "--origin",
+                  "https://kapsel.invalid",
+                  "--listen",
+                  "0.0.0.0:8080"
+                ],
+                "ports": [
+                  {
+                    "name": "private-http1",
+                    "containerPort": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "250m",
+                    "memory": "256Mi",
+                    "ephemeral-storage": "256Mi"
+                  },
+                  "limits": {
+                    "cpu": "1",
+                    "memory": "512Mi",
+                    "ephemeral-storage": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "readOnlyRootFilesystem": true,
+                  "runAsNonRoot": true
+                },
+                "volumeMounts": [
+                  {
+                    "name": "system-state",
+                    "mountPath": "/var/lib/kapsel-sandbox"
+                  },
+                  {
+                    "name": "tombstone-digest-key",
+                    "mountPath": "/var/run/kapsel-keys",
+                    "readOnly": true
+                  }
+                ]
+              },
+              {
+                "name": "private-handoff",
+                "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+                "imagePullPolicy": "IfNotPresent",
+                "args": [
+                  "handoff-serve",
+                  "--database",
+                  "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+                  "--receipts",
+                  "/var/lib/kapsel-sandbox/receipts",
+                  "--digest-key-file",
+                  "/var/run/kapsel-keys/tombstone-digest.seed",
+                  "--listen",
+                  "0.0.0.0:8081"
+                ],
+                "ports": [
+                  {
+                    "name": "private-handoff",
+                    "containerPort": 8081,
+                    "protocol": "TCP"
+                  }
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "128Mi",
+                    "ephemeral-storage": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "256Mi",
+                    "ephemeral-storage": "256Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "readOnlyRootFilesystem": true,
+                  "runAsNonRoot": true
+                },
+                "volumeMounts": [
+                  {
+                    "name": "system-state",
+                    "mountPath": "/var/lib/kapsel-sandbox"
+                  },
+                  {
+                    "name": "tombstone-digest-key",
+                    "mountPath": "/var/run/kapsel-keys",
+                    "readOnly": true
+                  }
+                ]
+              },
+              {
+                "name": "periodic-retention",
+                "image": "${KAPSEL_SANDBOX_IMAGE_DIGEST}",
+                "imagePullPolicy": "IfNotPresent",
+                "args": [
+                  "retention",
+                  "--database",
+                  "/var/lib/kapsel-sandbox/admission/sandbox.sqlite3",
+                  "--receipts",
+                  "/var/lib/kapsel-sandbox/receipts",
+                  "--digest-key-file",
+                  "/var/run/kapsel-keys/tombstone-digest.seed"
+                ],
+                "resources": {
+                  "requests": {
+                    "cpu": "25m",
+                    "memory": "64Mi",
+                    "ephemeral-storage": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "250m",
+                    "memory": "128Mi",
+                    "ephemeral-storage": "64Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  },
+                  "readOnlyRootFilesystem": true,
+                  "runAsNonRoot": true
+                },
+                "volumeMounts": [
+                  {
+                    "name": "system-state",
+                    "mountPath": "/var/lib/kapsel-sandbox"
+                  },
+                  {
+                    "name": "tombstone-digest-key",
+                    "mountPath": "/var/run/kapsel-keys",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "tombstone-digest-key",
+                "secret": {
+                  "secretName": "kapsel-gate2-tombstone-digest",
+                  "defaultMode": 288
+                }
+              }
+            ]
+          }
+        },
+        "volumeClaimTemplates": [
+          {
+            "metadata": {
+              "name": "system-state",
+              "labels": {
+                "kapsel.dev/gate2": "true"
+              }
+            },
+            "spec": {
+              "accessModes": [
+                "ReadWriteOncePod"
+              ],
+              "resources": {
+                "requests": {
+                  "storage": "20Gi"
+                }
+              },
+              "storageClassName": "${GATE2_STORAGE_CLASS}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "non_claims": [
+    "no_scheduler_or_cleanup_reconciler",
+    "no_networkpolicy_or_public_endpoint",
+    "no_secret_manager_staging_proof",
+    "no_workload_identity_binding_proof",
+    "no_provider_render_or_apply",
+    "no_gate2_authorization"
+  ]
+}
