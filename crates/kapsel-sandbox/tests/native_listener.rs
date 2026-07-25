@@ -14,8 +14,10 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+use kapsel_sandbox::{Scenario, Service};
 
 const REQUEST_HEAD_OVERFLOW_PADDING: usize = 8 * 1024;
 
@@ -118,6 +120,17 @@ fn admission(key: &str) -> Vec<u8> {
     .into_iter()
     .chain(body.iter().copied())
     .collect()
+}
+
+fn initialize(database: &Path, receipts: &Path, key: &Path) {
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("init")
+        .args(arguments(database, receipts, key))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
 }
 
 fn operate(command_name: &str, database: &Path) {
@@ -341,6 +354,74 @@ fn receive_deadlines_close_partial_headers_and_bodies() {
 
     child.kill().unwrap();
     child.wait().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn retention_role_opens_only_system_state_and_rejects_transport_configuration() {
+    let (database, receipts, digest_key) = fixture("retention-role");
+    let root = database.parent().unwrap().to_owned();
+    initialize(&database, &receipts, &digest_key);
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let service = Service::open(&database, &receipts, [7; 32], now - 172_800).unwrap();
+    service
+        .admit(
+            "09090909090909090909090909090909",
+            Scenario::Healthy,
+            now - 172_800,
+        )
+        .unwrap();
+    drop(service);
+
+    for extra in [
+        ["--origin", "https://kapsel.invalid"],
+        ["--listen", "127.0.0.1:0"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+            .arg("retention")
+            .args(arguments(&database, &receipts, &digest_key))
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let retained: i64 = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(retained, 1);
+    }
+
+    let mut role = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("retention")
+        .args(arguments(&database, &receipts, &digest_key))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = Instant::now();
+    loop {
+        let retained: i64 = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+            .unwrap();
+        if retained == 0 {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(role.try_wait().unwrap().is_none());
+    role.kill().unwrap();
+    let output = role.wait_with_output().unwrap();
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
     fs::remove_dir_all(root).unwrap();
 }
 

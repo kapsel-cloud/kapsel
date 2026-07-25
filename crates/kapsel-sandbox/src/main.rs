@@ -15,16 +15,19 @@ use std::{
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::ExitCode,
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use kapsel_sandbox::{run_runner_process, serve_private_handoff, set_global_stop, Service};
 
-const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve> --database <absolute-path> \
---receipts <absolute-directory> --digest-key-file <absolute-path> \
-[--origin <https-origin>] [--listen <socket-address>]; or kapsel-sandbox \
-<stop|clear-stop> --database <absolute-path>; or kapsel-sandbox runner \
---operator-composition <absolute-path> --handoff <absolute-directory>";
+const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve|retention> \
+--database <absolute-path> --receipts <absolute-directory> \
+--digest-key-file <absolute-path> [--origin <https-origin>] \
+[--listen <socket-address>]; or kapsel-sandbox <stop|clear-stop> \
+--database <absolute-path>; or kapsel-sandbox runner --operator-composition \
+<absolute-path> --handoff <absolute-directory>";
+const RETENTION_INTERVAL: Duration = Duration::from_mins(1);
 
 fn main() -> ExitCode {
     match run() {
@@ -42,6 +45,7 @@ fn run() -> Result<(), &'static str> {
         return run_runner_process(arguments);
     }
     let configuration = Configuration::parse(env::args().skip(1))?;
+    configuration.validate_role_arguments()?;
     match configuration.command {
         Command::Stop | Command::ClearStop => {
             if configuration.receipts.is_some()
@@ -60,7 +64,7 @@ fn run() -> Result<(), &'static str> {
                 }
             })
         },
-        Command::Init | Command::Serve | Command::HandoffServe => {
+        Command::Init | Command::Serve | Command::HandoffServe | Command::Retention => {
             let receipts = configuration.receipts.ok_or(USAGE)?;
             let digest_key_file = configuration.digest_key_file.ok_or(USAGE)?;
             if matches!(configuration.command, Command::Init) {
@@ -76,24 +80,14 @@ fn run() -> Result<(), &'static str> {
             let mut service =
                 Service::open(&configuration.database, &receipts, digest_key, unix_time()?)
                     .map_err(|_| "service state is unavailable")?;
-            service
-                .set_origin(
-                    configuration
-                        .origin
-                        .as_deref()
-                        .unwrap_or("https://kapsel.invalid"),
-                )
-                .map_err(|_| "origin is invalid")?;
             match configuration.command {
-                Command::Init => reject_listen(configuration.listen),
+                Command::Init => set_origin(&mut service, configuration.origin.as_deref()),
                 Command::Serve => {
+                    set_origin(&mut service, configuration.origin.as_deref())?;
                     let listen = configuration.listen.ok_or("serve requires --listen")?;
                     native_listener::serve(service, listen)
                 },
                 Command::HandoffServe => {
-                    if configuration.origin.is_some() {
-                        return Err("handoff-serve does not accept --origin");
-                    }
                     let listen = configuration
                         .listen
                         .ok_or("handoff-serve requires --listen")?;
@@ -102,17 +96,26 @@ fn run() -> Result<(), &'static str> {
                     serve_private_handoff(&listener, &std::sync::Arc::new(service))
                         .map_err(|_| "private handoff listener failed")
                 },
+                Command::Retention => run_retention(&service),
                 Command::Stop | Command::ClearStop => unreachable!(),
             }
         },
     }
 }
 
-fn reject_listen(listen: Option<SocketAddr>) -> Result<(), &'static str> {
-    if listen.is_some() {
-        return Err("operator stop commands do not accept --listen");
+fn set_origin(service: &mut Service, origin: Option<&str>) -> Result<(), &'static str> {
+    service
+        .set_origin(origin.unwrap_or("https://kapsel.invalid"))
+        .map_err(|_| "origin is invalid")
+}
+
+fn run_retention(service: &Service) -> Result<(), &'static str> {
+    loop {
+        thread::sleep(RETENTION_INTERVAL);
+        service
+            .sweep_retention(unix_time()?)
+            .map_err(|_| "retention sweep failed")?;
     }
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -120,6 +123,7 @@ enum Command {
     Init,
     Serve,
     HandoffServe,
+    Retention,
     Stop,
     ClearStop,
 }
@@ -140,6 +144,7 @@ impl Configuration {
             Some("init") => Command::Init,
             Some("serve") => Command::Serve,
             Some("handoff-serve") => Command::HandoffServe,
+            Some("retention") => Command::Retention,
             Some("stop") => Command::Stop,
             Some("clear-stop") => Command::ClearStop,
             _ => return Err(USAGE),
@@ -175,6 +180,26 @@ impl Configuration {
             origin,
             listen,
         })
+    }
+
+    fn validate_role_arguments(&self) -> Result<(), &'static str> {
+        match self.command {
+            Command::Init if self.listen.is_some() => Err("init does not accept --listen"),
+            Command::Serve if self.listen.is_none() => Err("serve requires --listen"),
+            Command::HandoffServe if self.origin.is_some() => {
+                Err("handoff-serve does not accept --origin")
+            },
+            Command::HandoffServe if self.listen.is_none() => {
+                Err("handoff-serve requires --listen")
+            },
+            Command::Retention if self.origin.is_some() => {
+                Err("retention does not accept --origin")
+            },
+            Command::Retention if self.listen.is_some() => {
+                Err("retention does not accept --listen")
+            },
+            _ => Ok(()),
+        }
     }
 }
 

@@ -167,7 +167,30 @@
     "GATE2_STORAGE_CLASS": "kapsel-gate2-regional-pd-balanced",
     "GATE2_KUBERNETES_AUDIENCE": null,
     "KAPSEL_SANDBOX_IMAGE_DIGEST": null,
-    "GATE2_RUNNER_SUBCOMMAND": null
+    "GATE2_RUNNER_SUBCOMMAND": null,
+    "GATE2_RETENTION_SUBCOMMAND": "retention"
+  },
+  "service_role_composition": {
+    "native_api": {
+      "subcommand": "serve",
+      "system_state_writer": true,
+      "public_http_owner": true
+    },
+    "private_handoff": {
+      "subcommand": "handoff-serve",
+      "system_state_writer": true,
+      "public_service_forbidden": true
+    },
+    "periodic_retention": {
+      "subcommand": "retention",
+      "system_state_writer": true,
+      "fixed_interval_seconds": 60,
+      "transport_listener": false
+    },
+    "scheduler": null,
+    "cleanup_reconciler": null,
+    "shared_system_state_volume": true,
+    "runner_system_state_mount": false
   },
   "storage": {
     "storage_class_file": "deploy/sandbox/gate2-gke-storage-class.json",
@@ -1756,6 +1779,8 @@
     "absolute_approval_and_expiry",
     "kubernetes_token_audience",
     "provider_runner_subcommand",
+    "scheduler_and_cleanup_controller_composition",
+    "rendered_service_role_manifests",
     "secret_version_identities",
     "audit_sink_writer_identity_and_topic_policy_binding",
     "actual_required_log_field_review",

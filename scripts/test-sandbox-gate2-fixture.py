@@ -98,6 +98,17 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require(bindings["GATE2_KUBERNETES_AUDIENCE"] is None, "audience blocker")
     require(bindings["KAPSEL_SANDBOX_IMAGE_DIGEST"] is None, "registry blocker")
     require(bindings["GATE2_RUNNER_SUBCOMMAND"] is None, "runner blocker")
+    require(bindings["GATE2_RETENTION_SUBCOMMAND"] == "retention", "retention role binding")
+    roles = candidate["service_role_composition"]
+    require(roles == {
+        "native_api": {"subcommand": "serve", "system_state_writer": True, "public_http_owner": True},
+        "private_handoff": {"subcommand": "handoff-serve", "system_state_writer": True, "public_service_forbidden": True},
+        "periodic_retention": {"subcommand": "retention", "system_state_writer": True, "fixed_interval_seconds": 60, "transport_listener": False},
+        "scheduler": None,
+        "cleanup_reconciler": None,
+        "shared_system_state_volume": True,
+        "runner_system_state_mount": False,
+    }, "bounded current service-role composition")
 
     require(storage_class["apiVersion"] == "storage.k8s.io/v1", "storage API")
     require(storage_class["kind"] == "StorageClass", "storage kind")
@@ -372,7 +383,7 @@ def validate(candidate: dict[str, Any], storage_class: dict[str, Any]) -> None:
     require({"load-balancer", "public-address", "cloud-nat", "internet-egress"}.issubset(cost["forbidden_unpriced_classes"]), "unpriced class denial")
 
     blockers = set(candidate["execution_blockers"])
-    require({"reviewed_execution_revision_and_fixture_digest", "registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "secret_version_identities", "audit_sink_writer_identity_and_topic_policy_binding", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
+    require({"reviewed_execution_revision_and_fixture_digest", "registry_digest", "private_account_binding", "cleanup_owner_binding", "absolute_approval_and_expiry", "kubernetes_token_audience", "provider_runner_subcommand", "scheduler_and_cleanup_controller_composition", "rendered_service_role_manifests", "secret_version_identities", "audit_sink_writer_identity_and_topic_policy_binding", "actual_required_log_field_review", "effective_iam_and_kubernetes_rbac_review", "current_version_and_price_recheck", "node_service_account_binding", "workload_identity_bindings", "operator_iam_and_rbac_binding", "default_sink_baseline_and_restore_digest"} == blockers, "execution blockers")
     require(candidate["reproduction_lock"]["registry_digest"] is None, "registry digest blocker")
     require(candidate["reproduction_lock"]["fixture_source_digest"] is None, "fixture digest blocker")
     require("no_gate2_authorization" in candidate["non_claims"], "Gate 2 non-claim")
@@ -412,6 +423,12 @@ def negative_cases(candidate: dict[str, Any], storage_class: dict[str, Any]) -> 
     broad_writer = copy.deepcopy(candidate)
     broad_writer["commands"]["audit_topic_policy_restore_rule"] += "; roles/owner"
     cases.append(broad_writer)
+    runner_mount = copy.deepcopy(candidate)
+    runner_mount["service_role_composition"]["runner_system_state_mount"] = True
+    cases.append(runner_mount)
+    retention_listener = copy.deepcopy(candidate)
+    retention_listener["service_role_composition"]["periodic_retention"]["transport_listener"] = True
+    cases.append(retention_listener)
     broad_key = copy.deepcopy(candidate)
     broad_key["key_inventory"][1]["allowed_action"] = "roles/secretmanager.secretAccessor on project"
     cases.append(broad_key)
