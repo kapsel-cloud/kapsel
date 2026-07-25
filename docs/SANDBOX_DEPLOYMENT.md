@@ -474,6 +474,118 @@ system-workload wrapper can be called complete. This correction preserves one sy
 and least authority; it does not select GKE, authorize provisioning, or prove live identity,
 storage, policy, or custody.
 
+### Authenticated controller-state transport contract
+
+Both role-specific payload codecs use one private TLS transport implementation; this repeated
+transport is not a generic protocol, controller, provider, or storage interface. The deployment owns
+one application audience, `https://kapsel.dev/sandbox/controller-state/v1`, and these exact
+controller identities in namespace `kapsel-sandbox-system`:
+
+- scheduler: ServiceAccount `sandbox-scheduler`, username
+  `system:serviceaccount:kapsel-sandbox-system:sandbox-scheduler`, and its render-time observed
+  ServiceAccount UID; and
+- cleanup: ServiceAccount `sandbox-cleanup`, username
+  `system:serviceaccount:kapsel-sandbox-system:sandbox-cleanup`, and its render-time observed
+  ServiceAccount UID.
+
+The system remains unready until both UIDs are observed and installed in its immutable role binding.
+A recreated ServiceAccount has a different UID and is denied until a reviewed rerender installs that
+new identity. Groups and `extra` returned by authentication appoint no role and are never logged.
+The exact username form and UID binding follow Kubernetes
+[ServiceAccount authentication](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#service-account-tokens)
+and the
+[bound service-account token mechanism](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/#bound-service-account-token-volume-mechanism).
+
+Each controller disables ambient token mounting and receives two distinct read-only projected token
+files. The state-authentication projection requests only the fixed application audience above with
+`expirationSeconds: 600`; the client reopens the projected file for every connection and never
+copies or caches its bytes in an environment variable, ConfigMap, Secret, durable store, diagnostic,
+or evidence record. The separate Kubernetes-client projection also requests 600 seconds but
+intentionally omits `audience`, which Kubernetes defines as requesting the API server's configured
+default audience. Its token and cluster CA are used only by that role's concrete `kube::Client` and
+are never presented to the state service. There is no documented universal GKE Kubernetes-API
+audience literal: accepted API audiences are cluster configuration, so the renderer locks the
+intentional absence of that field and the offline fixture plus later live gate must fail closed
+unless the projected token authenticates and receives exactly the role's RBAC. It must not derive an
+audience from a GKE issuer or Workload Identity Federation value. These rules follow Kubernetes
+[projected service-account token](https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken)
+and
+[API audience](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/)
+semantics.
+
+For every state connection, the system submits a `TokenReview` containing only the presented token
+and the singleton application audience. It accepts authentication only when the Kubernetes call
+completes within three seconds, `status.authenticated` is exactly `true`, `status.audiences` is
+exactly the singleton application audience, and `status.user.username` plus `status.user.uid` equal
+the selected port's complete render-time role binding. Empty, missing, duplicate, or additional
+audiences; missing user fields; a missing UID; any other namespace, ServiceAccount, username, or
+UID; `status.error`; malformed status; timeout; and Kubernetes transport or API error all fail
+closed. The request and accepted response fields follow the Kubernetes
+[`TokenReview` v1 API](https://kubernetes.io/docs/reference/kubernetes-api/authentication-resources/token-review-v1/).
+The system ServiceAccount `kapsel-gate2-sandbox-api` receives only `create` on
+`tokenreviews.authentication.k8s.io`; it receives no controller-resource verb, and TokenReview
+success never substitutes for scheduler or cleanup RBAC.
+
+The state service has the exact TLS DNS identity
+`kapsel-sandbox-controller-state.kapsel-sandbox-system.svc`, with scheduler on TCP port 8082 and
+cleanup on TCP port 8083. TLS 1.3, SNI, that exact DNS SAN, certificate validity, and one pinned
+owner bundle are mandatory; clients use no system roots, Kubernetes API CA, DNS-only trust, leaf
+pin, plaintext fallback, or alternate server name. The system mounts the owner-private leaf and key;
+controllers mount only the read-only CA bundle. A separate controller-TLS staging identity owns both
+projections, while the system and controller identities have no read or write API authority over
+their source objects and no Secret Manager IAM. Core Kubernetes supplies no general Service serving
+certificate, as recorded by its
+[CSR signer contract](https://kubernetes.io/docs/reference/access-authn-authz/certificate-signing-requests/#kubernetes-signers).
+
+The CA bundle contains exactly one current root or, only during rotation, the current and next
+roots, and its canonical bytes and SHA-256 digest are render-locked. Rotation first stages the
+two-root bundle, rolls and proves both controller clients, stages a new valid leaf and key under the
+same DNS SAN, rolls and proves the system, then removes the old root and rolls the clients again.
+Missing, extra, reordered, expired, or not-yet-valid trust; a leaf outside either root; a changed
+SAN; an incomplete overlap; or rollback to a removed root fails readiness and connection
+establishment. GKE cluster-credential rotation is a separate Kubernetes-API trust lane and cannot
+rotate or appoint this service identity.
+
+After TLS succeeds, one connection carries exactly one request and one response and then closes. The
+client writes the exact ASCII magic `KAPSEL-SANDBOX-CONTROLLER-STATE-V1\0`, a two-byte unsigned
+big-endian token length, 1 through 16 KiB of token bytes, and exactly one already-defined role
+payload frame, then sends TLS `close_notify` for its write direction while retaining its read
+direction. The selected port appoints the only allowed role; no role or method is caller-selected
+outside that role's payload. The transport reuses each payload codec's literal 64 KiB JSON maximum
+and its four-byte length without introducing another payload limit. The server requires
+`close_notify` immediately after the complete request before TokenReview or payload dispatch; raw
+TCP EOF without it is truncation. On success it writes
+`KAPSEL-SANDBOX-CONTROLLER-STATE-ACCEPTED-V1\0`, the exact role response frame, then sends its own
+TLS `close_notify`; the client rejects raw EOF or any trailing byte between that exact frame and the
+authenticated closure. A fully read, correctly framed TLS request whose authentication fails
+receives only `KAPSEL-SANDBOX-CONTROLLER-AUTHENTICATION-REJECTED-V1\0` followed immediately by the
+server's TLS `close_notify`. The client returns `authentication_rejected` only for that exact marker
+and authenticated closure. Plaintext, TLS, magic, length, oversize, truncation, trailing-byte, and
+pre-authentication timeout failures close silently. The client exposes only that fixed local class
+or `transport_rejected` for every other TLS, framing, timeout, closure, or malformed-response
+failure; neither class includes diagnostic detail. No authentication or transport rejection response
+or local error distinguishes token absence, staleness, audience, identity, TokenReview outage, role
+mismatch, or framing cause. Authenticated payload dispatch separately retains only its role-specific
+fixed response vocabulary, including its bounded payload and state errors.
+
+The client TCP connect deadline is two seconds. TLS handshake is three seconds. Complete request
+write/read plus `close_notify` and complete response write/read plus `close_notify` are each five
+seconds, with no-progress idle capped at one second. TokenReview is capped at three seconds.
+Authenticated payload dispatch and response production are capped at five seconds. One monotonic
+absolute deadline of 20 seconds starts when TCP connects; every phase uses the smaller of its phase
+remainder and absolute remainder, so a trickled frame or repeated partial I/O cannot restart a
+window. One process-wide semaphore permits at most 16 total open connections across both listeners;
+a second process-wide semaphore permits at most eight concurrent authenticated dispatches across
+both ports. Excess connections close without dispatch. There is no keepalive, retry within a
+connection, second request, or protocol negotiation.
+
+TLS acceptance, TokenReview acceptance, connection acceptance, and response transmission are private
+orchestration facts only. Rejection, timeout, loss, retry, or outage appends no public event and
+changes no KAP-0038 lifecycle, receiver result, frozen receipt, cleanup transition, capacity, or
+provider fact. Only an authenticated, fully parsed role payload may call its existing `Service`
+transition, and transport failure after that call remains ambiguous rather than undoing or
+reclassifying the committed transition.
+
 ### Fixed scheduler-state payload contract
 
 The scheduler-state payload is one private adapter over the existing scheduler-owned `Service`
