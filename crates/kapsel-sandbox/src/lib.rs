@@ -27,9 +27,12 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod kubernetes_policy;
+mod kubernetes_scheduler;
 mod runner_handoff;
 mod runner_process;
 
+pub use kubernetes_scheduler::run_scheduler_role;
 use runner_handoff::{
     constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
     HandoffIdentity,
@@ -46,51 +49,6 @@ const EVENT_COUNT_MAX: i64 = 64;
 const PUBLIC_RETENTION_SECONDS: i64 = 86_400;
 const SANDBOX_DEADLINE_SECONDS: i64 = 180;
 const SCHEDULER_LEASE_SECONDS: i64 = 30;
-const DEPLOYMENT_POLICY_REVISION: &str = "sandbox-policy-v1";
-const POLICY_NAMESPACE_TOKEN: &str = "{namespace}";
-const POLICY_RUN_ID_TOKEN: &str = "{run_id}";
-const POLICY_OBJECTS_V1: [(&str, &str); 10] = [
-    (
-        "Namespace/{namespace}",
-        "pod-security=restricted;owner-label=required",
-    ),
-    (
-        "ServiceAccount/kapsel-sandbox-runners/runner-{run_id}",
-        "automount-service-account-token=false",
-    ),
-    (
-        "Role/{namespace}/sandbox-runner",
-        "verbs=get,list,watch,patch;resources=deployments",
-    ),
-    (
-        "RoleBinding/{namespace}/sandbox-runner",
-        "subject=ServiceAccount:kapsel-sandbox-runners:runner-{run_id}",
-    ),
-    (
-        "ResourceQuota/{namespace}/sandbox-quota",
-        "pods=1;services=1;cpu=500m;memory=256Mi",
-    ),
-    (
-        "LimitRange/{namespace}/sandbox-limits",
-        "cpu=500m;memory=256Mi;ephemeral-storage=256Mi",
-    ),
-    (
-        "NetworkPolicy/{namespace}/default-deny",
-        "ingress=deny-all;egress=deny-all",
-    ),
-    (
-        "NetworkPolicy/{namespace}/fixed-egress",
-        "egress=dns,kubernetes-api,fixed-registry;selectors=exact",
-    ),
-    (
-        "Deployment/{namespace}/sandbox-target",
-        "replicas=1;service-account=server-owned;scenario=fixed",
-    ),
-    (
-        "Service/{namespace}/sandbox-target",
-        "selector=server-owned-target;ports=fixed",
-    ),
-];
 const RECEIPT_BYTES_MAX: usize = 16 * 1024;
 type StoredReportBinding = (
     String,
@@ -698,6 +656,36 @@ impl Service {
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(storage_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
+    }
+
+    fn scheduler_policy_status(&self, run_id: &str) -> Result<Option<bool>, ServiceError> {
+        bounded_hex_128(run_id)?;
+        let connection = self.connection()?;
+        let state: Option<(String, bool, bool, String, bool)> = connection
+            .query_row(
+                concat!(
+                    "SELECT execution_state, application_invoked, policy_verified, cleanup_state, ",
+                    "active FROM runs WHERE run_id = ?1"
+                ),
+                [run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?;
+        Ok(
+            state.and_then(|(execution, invoked, verified, cleanup, active)| {
+                (execution == "running" && !invoked && cleanup == "pending" && active)
+                    .then_some(verified)
+            }),
+        )
     }
 
     /// Claims or renews recovery after process loss without changing public projection.
@@ -2033,7 +2021,7 @@ impl Service {
         }
         let operation_id = format!("sandbox-{run_id}");
         let cleanup_identity = format!("cleanup-{run_id}");
-        let (policy_inventory, policy_inventory_digest) = policy_inventory_v1(run_id)?;
+        let (policy_inventory, policy_inventory_digest) = policy_inventory(run_id)?;
         let expires_at = now_unix_s
             .checked_add(PUBLIC_RETENTION_SECONDS)
             .ok_or(ServiceError::InvalidRequest)?;
@@ -2057,7 +2045,7 @@ impl Service {
                     operation_id,
                     now_unix_s,
                     expires_at,
-                    DEPLOYMENT_POLICY_REVISION,
+                    kubernetes_policy::REVISION,
                     policy_inventory,
                     policy_inventory_digest,
                     cleanup_identity,
@@ -3544,23 +3532,16 @@ fn object_identity_parts(identity: &str) -> Result<(String, Option<String>, Stri
     }
 }
 
-fn policy_inventory_v1(run_id: &str) -> Result<(String, String), ServiceError> {
-    let namespace = format!("sandbox-{run_id}");
-    let inventory = POLICY_OBJECTS_V1
-        .iter()
-        .map(|(identity, canonical_content)| {
-            let identity = identity
-                .replace(POLICY_NAMESPACE_TOKEN, &namespace)
-                .replace(POLICY_RUN_ID_TOKEN, run_id);
-            let canonical_content = canonical_content.replace(POLICY_RUN_ID_TOKEN, run_id);
-            PolicyObjectRequirement {
-                identity,
-                content_digest: hex(&Sha256::digest(canonical_content.as_bytes())),
-            }
+fn policy_inventory(run_id: &str) -> Result<(String, String), ServiceError> {
+    let inventory = kubernetes_policy::render(run_id)
+        .into_iter()
+        .map(|object| PolicyObjectRequirement {
+            identity: object.identity,
+            content_digest: kubernetes_policy::content_digest(&object.body),
         })
         .collect::<Vec<_>>();
     let canonical = serde_json::to_string(&inventory).map_err(|_| ServiceError::Unavailable)?;
-    let digest = policy_binding_digest(DEPLOYMENT_POLICY_REVISION, &canonical);
+    let digest = policy_binding_digest(kubernetes_policy::REVISION, &canonical);
     Ok((canonical, digest))
 }
 

@@ -1146,13 +1146,24 @@ async fn policy_deadline_and_scheduler_lease_fail_closed_before_application() {
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
-    assert_eq!(specification.policy_revision, "sandbox-policy-v1");
+    assert_eq!(specification.policy_revision, "sandbox-policy-v2");
     assert_eq!(specification.deadline_seconds, 180);
     assert_eq!(specification.deadline_at_unix_s, NOW + 181);
-    assert_eq!(specification.required_objects.len(), 10);
+    assert_eq!(specification.required_objects.len(), 11);
     assert_eq!(
         specification.required_objects[0].identity,
         format!("Namespace/sandbox-{}", admission.run_id)
+    );
+    assert_eq!(
+        specification.required_objects[1].identity,
+        format!("ServiceAccount/sandbox-{}/sandbox-target", admission.run_id)
+    );
+    assert_eq!(
+        specification.required_objects[2].identity,
+        format!(
+            "ServiceAccount/kapsel-sandbox-runners/runner-{}",
+            admission.run_id
+        )
     );
     assert_eq!(
         service.recover_run(&admission.run_id, None, NOW + 2),

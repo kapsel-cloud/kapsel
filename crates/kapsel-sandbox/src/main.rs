@@ -19,14 +19,16 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use kapsel_sandbox::{run_runner_process, serve_private_handoff, set_global_stop, Service};
+use kapsel_sandbox::{
+    run_runner_process, run_scheduler_role, serve_private_handoff, set_global_stop, Service,
+};
 
-const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve|retention> \
+const USAGE: &str = "usage: kapsel-sandbox <init|serve|handoff-serve|retention|scheduler> \
 --database <absolute-path> --receipts <absolute-directory> \
 --digest-key-file <absolute-path> [--origin <https-origin>] \
-[--listen <socket-address>]; or kapsel-sandbox <stop|clear-stop> \
---database <absolute-path>; or kapsel-sandbox runner --operator-composition \
-<absolute-path> --handoff <absolute-directory>";
+[--listen <socket-address>] [--handoff-endpoint <socket-address>]; or kapsel-sandbox \
+<stop|clear-stop> --database <absolute-path>; or kapsel-sandbox runner \
+--operator-composition <absolute-path> --handoff <absolute-directory>";
 const RETENTION_INTERVAL: Duration = Duration::from_mins(1);
 
 fn main() -> ExitCode {
@@ -52,6 +54,7 @@ fn run() -> Result<(), &'static str> {
                 || configuration.digest_key_file.is_some()
                 || configuration.origin.is_some()
                 || configuration.listen.is_some()
+                || configuration.handoff_endpoint.is_some()
             {
                 return Err(USAGE);
             }
@@ -64,7 +67,11 @@ fn run() -> Result<(), &'static str> {
                 }
             })
         },
-        Command::Init | Command::Serve | Command::HandoffServe | Command::Retention => {
+        Command::Init
+        | Command::Serve
+        | Command::HandoffServe
+        | Command::Retention
+        | Command::Scheduler => {
             let receipts = configuration.receipts.ok_or(USAGE)?;
             let digest_key_file = configuration.digest_key_file.ok_or(USAGE)?;
             if matches!(configuration.command, Command::Init) {
@@ -97,6 +104,21 @@ fn run() -> Result<(), &'static str> {
                         .map_err(|_| "private handoff listener failed")
                 },
                 Command::Retention => run_retention(&service),
+                Command::Scheduler => {
+                    let handoff = configuration
+                        .handoff_endpoint
+                        .ok_or("scheduler requires --handoff-endpoint")?;
+                    let config = kube::Config::incluster()
+                        .map_err(|_| "scheduler Kubernetes configuration is unavailable")?;
+                    let client = kube::Client::try_from(config)
+                        .map_err(|_| "scheduler Kubernetes client is unavailable")?;
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_io()
+                        .enable_time()
+                        .build()
+                        .map_err(|_| "scheduler runtime is unavailable")?;
+                    runtime.block_on(run_scheduler_role(service, client, handoff))
+                },
                 Command::Stop | Command::ClearStop => unreachable!(),
             }
         },
@@ -124,6 +146,7 @@ enum Command {
     Serve,
     HandoffServe,
     Retention,
+    Scheduler,
     Stop,
     ClearStop,
 }
@@ -135,6 +158,7 @@ struct Configuration {
     digest_key_file: Option<PathBuf>,
     origin: Option<String>,
     listen: Option<SocketAddr>,
+    handoff_endpoint: Option<SocketAddr>,
 }
 
 impl Configuration {
@@ -145,6 +169,7 @@ impl Configuration {
             Some("serve") => Command::Serve,
             Some("handoff-serve") => Command::HandoffServe,
             Some("retention") => Command::Retention,
+            Some("scheduler") => Command::Scheduler,
             Some("stop") => Command::Stop,
             Some("clear-stop") => Command::ClearStop,
             _ => return Err(USAGE),
@@ -154,6 +179,7 @@ impl Configuration {
         let mut digest_key_file = None;
         let mut origin = None;
         let mut listen = None;
+        let mut handoff_endpoint = None;
         while let Some(flag) = arguments.next() {
             let value = arguments.next().ok_or(USAGE)?;
             match flag.as_str() {
@@ -165,6 +191,10 @@ impl Configuration {
                 "--origin" if origin.is_none() => origin = Some(value),
                 "--listen" if listen.is_none() => {
                     listen = Some(value.parse().map_err(|_| "listen address is invalid")?);
+                },
+                "--handoff-endpoint" if handoff_endpoint.is_none() => {
+                    handoff_endpoint =
+                        Some(value.parse().map_err(|_| "handoff endpoint is invalid")?);
                 },
                 _ => return Err(USAGE),
             }
@@ -179,24 +209,42 @@ impl Configuration {
             digest_key_file,
             origin,
             listen,
+            handoff_endpoint,
         })
     }
 
     fn validate_role_arguments(&self) -> Result<(), &'static str> {
         match self.command {
-            Command::Init if self.listen.is_some() => Err("init does not accept --listen"),
+            Command::Init if self.listen.is_some() || self.handoff_endpoint.is_some() => {
+                Err("init does not accept transport configuration")
+            },
             Command::Serve if self.listen.is_none() => Err("serve requires --listen"),
+            Command::Serve if self.handoff_endpoint.is_some() => {
+                Err("serve does not accept --handoff-endpoint")
+            },
             Command::HandoffServe if self.origin.is_some() => {
                 Err("handoff-serve does not accept --origin")
             },
             Command::HandoffServe if self.listen.is_none() => {
                 Err("handoff-serve requires --listen")
             },
+            Command::HandoffServe if self.handoff_endpoint.is_some() => {
+                Err("handoff-serve does not accept --handoff-endpoint")
+            },
             Command::Retention if self.origin.is_some() => {
                 Err("retention does not accept --origin")
             },
             Command::Retention if self.listen.is_some() => {
                 Err("retention does not accept --listen")
+            },
+            Command::Retention if self.handoff_endpoint.is_some() => {
+                Err("retention does not accept --handoff-endpoint")
+            },
+            Command::Scheduler if self.origin.is_some() || self.listen.is_some() => {
+                Err("scheduler does not accept public transport configuration")
+            },
+            Command::Scheduler if self.handoff_endpoint.is_none() => {
+                Err("scheduler requires --handoff-endpoint")
             },
             _ => Ok(()),
         }

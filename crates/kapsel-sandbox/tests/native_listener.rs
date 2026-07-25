@@ -426,6 +426,53 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
 }
 
 #[test]
+fn scheduler_role_rejects_public_transport_and_fails_closed_without_in_cluster_authority() {
+    let (database, receipts, digest_key) = fixture("scheduler-role");
+    let root = database.parent().unwrap().to_owned();
+    initialize(&database, &receipts, &digest_key);
+
+    for extra in [
+        vec![
+            "--origin",
+            "https://kapsel.invalid",
+            "--handoff-endpoint",
+            "127.0.0.1:8081",
+        ],
+        vec![
+            "--listen",
+            "127.0.0.1:0",
+            "--handoff-endpoint",
+            "127.0.0.1:8081",
+        ],
+        vec![],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+            .arg("scheduler")
+            .args(arguments(&database, &receipts, &digest_key))
+            .args(extra)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("scheduler")
+        .args(arguments(&database, &receipts, &digest_key))
+        .args(["--handoff-endpoint", "127.0.0.1:8081"])
+        .env_remove("KUBERNETES_SERVICE_HOST")
+        .env_remove("KUBERNETES_SERVICE_PORT")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "kapsel-sandbox: scheduler Kubernetes configuration is unavailable\n"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn runner_mode_rejects_system_state_arguments_before_opening_any_input() {
     let root = std::env::temp_dir().join(format!(
         "kapsel-sandbox-runner-boundary-{}",

@@ -471,6 +471,18 @@ control fails closed; it cannot fall back to a shared or ordinary target. This r
 order bounds partially provisioned work; it does not make scheduler dispatch, setup, or lease state
 a Kapsel lifecycle or receiver fact.
 
+The admitted `sandbox-policy-v2` revision binds SHA-256 digests of eleven complete, fixed,
+server-rendered objects in this order: the run Namespace; the target ServiceAccount; the external
+per-run runner ServiceAccount; namespaced runner Role and RoleBinding; ResourceQuota; LimitRange;
+default-deny and fixed-DNS-egress NetworkPolicies; the two-container target Deployment; and its
+ClusterIP Service. The renderer pins the candidate `gvisor` runtime, Kubernetes `v1.35` Pod Security
+baseline, distinct immutable baseline and requested images, exact resources and security context,
+and every count below. Its live observer may remove only enumerated Kubernetes-assigned identity,
+status, and fixed default fields before requiring normalized equality and recomputing each digest.
+Unknown defaults, extra fields, changed ownership, permissive mutations, missing objects, or another
+UID fail closed. This revision remains an offline candidate until KAP-0053 binds and proves the
+scheduler, RBAC, token audience, key staging, policy enforcement, and complete rendered composition.
+
 The required set is:
 
 - a namespace used by exactly one admitted run and labeled with an internal ownership digest;

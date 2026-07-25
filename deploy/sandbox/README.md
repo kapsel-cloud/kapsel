@@ -68,14 +68,20 @@ signature known-answer test and a production `Application` receipt inspected thr
 `kapsel::inspect_receipt` prove the offline format path. They do not prove managed custody, workload
 IAM, audit, outage, rotation, backup, or deletion protection.
 
-The native binary composes the HTTP boundary, private handoff, runner, operator stop, and periodic
-retention modes. Stop and clear-stop open only the existing private admission database and its
-singleton row; receipt storage, tombstone-key availability, retention, and full service
-initialization are deliberately outside that emergency path. The incomplete Gate 2 system workload
-renders only the API, handoff, and retention roles against one system-state volume and explicitly
-omits scheduler and cleanup-controller composition. Infrastructure Enforcement Proof must complete
-those roles, runner binding, policy, key staging, and selected Kubernetes/storage identities before
-any deployment can be accepted.
+The native binary composes the HTTP boundary, private handoff, runner, scheduler, operator stop, and
+periodic retention modes. The concrete scheduler uses only the fixed `sandbox-policy-v2` renderer
+and an in-cluster Kubernetes client, recovers active leases before new FIFO dispatch, creates or
+exactly observes all eleven policy objects, and recomputes normalized policy digests before deriving
+the private handoff assignment. It deliberately does not create a runner Pod yet: key staging,
+lease-specific runner inputs, runner-resource UID recording, and exact RBAC/token binding remain
+part of the blocked complete composition. Stop and clear-stop open only the existing private
+admission database and its singleton row; receipt storage, tombstone-key availability, retention,
+and full service initialization are deliberately outside that emergency path. The incomplete Gate 2
+system workload renders only the API, handoff, and retention roles against one system-state volume
+and explicitly omits scheduler and cleanup-controller composition. The implemented scheduler is not
+added until its projected controller token, RBAC, runner/key binding, and NetworkPolicy are
+complete. Infrastructure Enforcement Proof must complete those roles, runner binding, policy, key
+staging, and selected Kubernetes/storage identities before any deployment can be accepted.
 
 The exact patch harness evaluates normalized Kubernetes Deployment objects. Live Kubernetes
 admission/audit enforcement, post-verification downgrade denial under the real runner identity,
