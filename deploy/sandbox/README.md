@@ -82,10 +82,15 @@ existing private admission database and its singleton row; receipt storage, tomb
 availability, retention, and full service initialization are deliberately outside that emergency
 path. The incomplete Gate 2 system workload renders only the API, handoff, and retention roles
 against one system-state volume and explicitly omits scheduler and cleanup-controller composition.
-The implemented roles are not added until their projected controller tokens, RBAC, runner/key
-binding, complete UID recording, and NetworkPolicy are complete. Infrastructure Enforcement Proof
-must complete those roles, runner binding, policy, key staging, and selected Kubernetes/storage
-identities before any deployment can be accepted.
+The implemented roles are not added directly: the `ReadWriteOncePod` SQLite claim keeps one
+API/handoff/retention owner, while scheduler and cleanup require separate service accounts and Pods.
+The deployable candidate must put their exact dispatch/recovery/deadline and cleanup transitions
+behind fixed encrypted, role-authenticated private state adapters and add pinned system trust, exact
+projected controller tokens, the system Pod's token-review-only credential, `TokenReview`, RBAC,
+runner/key binding, complete UID recording, and NetworkPolicy. A union system/controller identity or
+shared SQLite mount is rejected. Infrastructure Enforcement Proof must complete those roles, runner
+binding, policy, key staging, and selected Kubernetes/storage identities before any deployment can
+be accepted.
 
 The exact patch harness evaluates normalized Kubernetes Deployment objects. Live Kubernetes
 admission/audit enforcement, post-verification downgrade denial under the real runner identity,

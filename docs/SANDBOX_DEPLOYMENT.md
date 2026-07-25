@@ -428,6 +428,52 @@ A scheduler lease is an internal revocable coordination fact, not admission, Kap
 provider acceptance, or a public identifier. Lease expiry permits another scheduler to resume owned
 work; it does not authorize another provider mutation outside Kapsel recovery.
 
+### Offline GKE control-topology lock
+
+The direct local-`Service` scheduler and cleanup implementations expose the intended transitions but
+cannot be deployed as extra containers in the current system Pod. SQLite and its `ReadWriteOncePod`
+system-state claim permit one Pod owner, while one Pod has one Kubernetes service account. Giving
+that Pod the union of API, scheduler, cleanup, and cloud-key authority would contradict the separate
+controller credentials and cleanup key denials above. Separate controller Pods cannot mount or write
+the system claim. A shared filesystem, multi-attach claim, copied database, or generic storage
+backend is not an allowed repair.
+
+The GKE candidate therefore locks this control topology before complete rendering:
+
+- the singleton system-state Pod remains the only admission SQLite and receipt-store owner and runs
+  only the native API, runner handoff, periodic retention, and durable-layout initialization;
+- scheduler and cleanup run in separate Pods under distinct Kubernetes service accounts, with no
+  system-state, receipt-store, tombstone-key, grant-key, or receipt-key mount;
+- the system process owns two fixed, private, bounded state protocols: scheduler operations may only
+  list recoverable work and its policy status, transactionally reserve the next FIFO run and initial
+  lease, recover or renew that exact lease, read the server-owned provisioning/runner assignment,
+  commit exact provisioning or setup facts, and append the existing deadline fact; cleanup
+  operations may only read eligible recorded ownership and commit the existing
+  start/failure/escalation/exact-absence transitions;
+- those protocols remain transport adapters over the existing `Service` methods. They accept no
+  caller-selected lifecycle, receiver result, Kubernetes manifest, path, key, receipt destination,
+  or generic database operation and do not become public APIs or provider interfaces;
+- each controller presents a short-lived bound service-account token for a fixed application
+  audience over authenticated encryption with pinned system trust. The system validates it through
+  Kubernetes `TokenReview` and requires the exact role identity; NetworkPolicy permits only that
+  role to reach its named state port. Each controller separately receives its own projected
+  Kubernetes-API token and exact RBAC. The system Pod receives a separate projected Kubernetes-API
+  token whose only cluster authorization is `create` on `tokenreviews.authentication.k8s.io`; it has
+  no controller-resource verbs. The application audience, GKE Kubernetes-API audience, server
+  certificate/trust delivery, and fail-closed rotation must be locked from current provider evidence
+  before any object is rendered deployable; and
+- Secret Manager access belongs only to separate staging identities. The system and controller
+  service accounts receive no Secret Manager IAM. Tombstone staging produces only the owner-private
+  Kubernetes Secret mounted by the system-state Pod. Per-run grant and receipt staging produces only
+  the exact read-only runner channels, and every temporary Kubernetes object that cleanup may delete
+  must have its UID/owner evidence durably appended before runner creation.
+
+The protocols, authenticated transport, stagers, append-only runner-resource registration, projected
+tokens, RBAC, and NetworkPolicies must be implemented and tested before the incomplete
+system-workload wrapper can be called complete. This correction preserves one system-state writer
+and least authority; it does not select GKE, authorize provisioning, or prove live identity,
+storage, policy, or custody.
+
 ## Capacity and deadlines
 
 One deployment has these hard maxima:
@@ -607,20 +653,22 @@ never becomes receiver `FAILED` or `UNKNOWN`, and it never changes a frozen rece
 escalation must preserve UID checks and a record of what was removed. Public expiry does not cancel
 cleanup ownership.
 
-The offline GKE candidate implements this as one native `cleanup` reconciler over the same private
-system database and a concrete in-cluster Kubernetes client. It selects only active, eligible,
-policy-owned records; scans the fixed runner namespace for the exact cleanup-owner label without
-name-prefix deletion; rejects every labeled UID not already recorded; deletes recorded external
-objects before the exact namespace; and puts each immutable UID in the API deletion precondition.
-Delete acceptance never releases capacity. Every recorded object must subsequently be absent under
-an exact name/UID/owner observation before the existing atomic completion transition runs. One
-`cleanup.failed` event coalesces request, identity, finalizer, and observation failures while
-retries continue. Private `started_at` and one idempotent escalation bit survive restart and become
-eligible only after 15 minutes. Migration recovers the start from the durable `cleanup.started`
-event; a malformed legacy row without that required event receives epoch zero and is conservatively
-escalation-eligible rather than retrying forever. Neither field is public or a receiver fact. The
-role remains omitted from the incomplete Gate 2 wrapper until its projected token, exact RBAC,
-NetworkPolicy, and runner-resource UID recording are complete.
+The offline implementation first proves this as one native `cleanup` reconciler over the private
+system database and a concrete in-cluster Kubernetes client. The deployable GKE composition must
+preserve the same calls through the fixed cleanup-state protocol above rather than mounting that
+database in the controller Pod. It selects only active, eligible, policy-owned records; scans the
+fixed runner namespace for the exact cleanup-owner label without name-prefix deletion; rejects every
+labeled UID not already recorded; deletes recorded external objects before the exact namespace; and
+puts each immutable UID in the API deletion precondition. Delete acceptance never releases capacity.
+Every recorded object must subsequently be absent under an exact name/UID/owner observation before
+the existing atomic completion transition runs. One `cleanup.failed` event coalesces request,
+identity, finalizer, and observation failures while retries continue. Private `started_at` and one
+idempotent escalation bit survive restart and become eligible only after 15 minutes. Migration
+recovers the start from the durable `cleanup.started` event; a malformed legacy row without that
+required event receives epoch zero and is conservatively escalation-eligible rather than retrying
+forever. Neither field is public or a receiver fact. The role remains omitted from the incomplete
+Gate 2 wrapper until its fixed state adapter, projected tokens, exact RBAC, NetworkPolicy, and
+runner-resource UID recording are complete.
 
 ## Availability, rollback, and recovery
 
