@@ -27,25 +27,13 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-#[allow(
-    dead_code,
-    reason = "the fixed payload adapter is exercised before authenticated transport composition"
-)]
 mod cleanup_state;
-#[allow(
-    dead_code,
-    reason = "the authenticated foundation is composed by the following role-specific slices"
-)]
 mod controller_state_transport;
 mod kubernetes_cleanup;
 mod kubernetes_policy;
 mod kubernetes_scheduler;
 mod runner_handoff;
 mod runner_process;
-#[allow(
-    dead_code,
-    reason = "the fixed payload adapter is exercised before authenticated transport composition"
-)]
 mod scheduler_state;
 
 pub use kubernetes_cleanup::run_cleanup_role;
@@ -59,6 +47,31 @@ pub use runner_handoff::{
     TerminalHandoffReport,
 };
 pub use runner_process::run as run_runner_process;
+
+/// Runs the authenticated system-side listener for only cleanup-state operations.
+///
+/// # Errors
+///
+/// Returns a fixed diagnostic when the listener, TLS inputs, or exact cleanup role binding is
+/// unavailable.
+pub async fn run_cleanup_state_role(
+    service: Service,
+    listen: std::net::SocketAddr,
+    certificate_path: PathBuf,
+    private_key_path: PathBuf,
+    cleanup_service_account_uid: String,
+    kubernetes: kube::Client,
+) -> Result<(), &'static str> {
+    cleanup_state::serve(
+        service,
+        listen,
+        certificate_path,
+        private_key_path,
+        cleanup_service_account_uid,
+        kubernetes,
+    )
+    .await
+}
 
 /// Runs the authenticated system-side listener for only scheduler-state operations.
 ///

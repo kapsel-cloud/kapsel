@@ -1,6 +1,6 @@
 //! UID-safe Kubernetes cleanup for the fixed sandbox deployment.
 
-use std::time::Duration;
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use kube::{
     api::{Api, DeleteParams, DynamicObject, ListParams, Preconditions},
@@ -10,8 +10,9 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 
 use crate::{
-    kubernetes_scheduler::api_resource, object_identity_parts, CleanupAbsenceEvidence,
-    CleanupObjectAbsence, Service, ServiceError,
+    cleanup_state::{CleanupStateClient, CleanupStateError},
+    kubernetes_scheduler::api_resource,
+    object_identity_parts, CleanupAbsenceEvidence, CleanupObjectAbsence, Service, ServiceError,
 };
 
 pub(super) const CLEANUP_ESCALATION_SECONDS: i64 = 15 * 60;
@@ -48,27 +49,41 @@ pub(super) struct RecordedObject {
 ///
 /// # Errors
 ///
-/// Returns a bounded diagnostic only when durable cleanup ownership or time is unavailable. A
-/// Kubernetes request failure remains retryable durable cleanup state and does not stop the role.
-pub async fn run_cleanup_role(service: Service, client: Client) -> Result<(), &'static str> {
-    let reconciler = CleanupReconciler { service, client };
+/// Returns a bounded diagnostic only when remote cleanup-state configuration or time is
+/// unavailable. Authenticated state and Kubernetes reconciliation failures remain retryable and do
+/// not stop the role.
+pub async fn run_cleanup_role(
+    state_endpoint: SocketAddr,
+    state_ca_bundle: PathBuf,
+    state_ca_sha256: [u8; 32],
+    state_ca_root_count: u8,
+    state_token: PathBuf,
+    client: Client,
+) -> Result<(), &'static str> {
+    let state = CleanupStateClient::new(
+        state_endpoint,
+        state_ca_bundle,
+        state_ca_sha256,
+        state_ca_root_count,
+        state_token,
+    )
+    .map_err(|_| "cleanup state configuration is unavailable")?;
+    let reconciler = CleanupReconciler { state, client };
     loop {
-        reconciler
-            .run_once(unix_time()?)
-            .await
-            .map_err(|_| "cleanup reconciliation failed")?;
+        let _ = reconciler.run_once(unix_time()?).await;
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
 struct CleanupReconciler {
-    service: Service,
+    state: CleanupStateClient,
     client: Client,
 }
 
 impl CleanupReconciler {
     async fn run_once(&self, now: i64) -> Result<(), CleanupError> {
-        for candidate in self.service.cleanup_candidates()? {
+        self.appoint_test_operation_time(now);
+        for candidate in self.state.list_candidates().await? {
             let result = tokio::time::timeout(
                 Duration::from_secs(20),
                 self.reconcile_candidate(&candidate, now),
@@ -76,11 +91,25 @@ impl CleanupReconciler {
             .await
             .map_err(|_| CleanupError::Kubernetes)
             .and_then(|result| result);
-            if result.is_err() {
-                self.record_failure(&candidate, now)?;
+            match result {
+                Ok(()) => {},
+                Err(CleanupError::State) => return Err(CleanupError::State),
+                Err(CleanupError::Kubernetes | CleanupError::Ownership) => {
+                    self.record_failure(&candidate, now).await?;
+                },
             }
         }
         Ok(())
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "test-only local codec time mirrors system-supplied listener time"
+    )]
+    fn appoint_test_operation_time(&self, now: i64) {
+        #[cfg(test)]
+        self.state.set_test_now(now);
+        let _ = now;
     }
 
     async fn reconcile_candidate(
@@ -89,12 +118,7 @@ impl CleanupReconciler {
         now: i64,
     ) -> Result<(), CleanupError> {
         if candidate.state == "pending" {
-            self.service.start_cleanup(
-                &candidate.run_id,
-                &candidate.cleanup_identity,
-                &candidate.namespace_uid,
-                now,
-            )?;
+            self.state.start_cleanup(candidate).await?;
         }
         scan_external_orphans(&self.client, candidate).await?;
         for object in candidate
@@ -126,63 +150,74 @@ impl CleanupReconciler {
             });
         }
         if evidence.iter().all(|object| !object.present) {
-            self.service.complete_cleanup(
-                &candidate.run_id,
-                &candidate.cleanup_identity,
-                &CleanupAbsenceEvidence {
-                    namespace_uid: candidate.namespace_uid.clone(),
-                    objects: evidence,
-                },
-                now,
-            )?;
+            self.state
+                .complete_cleanup(
+                    candidate,
+                    &CleanupAbsenceEvidence {
+                        namespace_uid: candidate.namespace_uid.clone(),
+                        objects: evidence,
+                    },
+                )
+                .await?;
         } else {
-            self.escalate_if_due(candidate, now)?;
+            self.record_failure(candidate, now).await?;
         }
         Ok(())
     }
 
-    fn record_failure(&self, candidate: &CleanupCandidate, now: i64) -> Result<(), CleanupError> {
-        match self.service.cleanup_record_state(&candidate.run_id)? {
-            Some(state) if state == "pending" => {
-                self.service.start_cleanup(
-                    &candidate.run_id,
-                    &candidate.cleanup_identity,
-                    &candidate.namespace_uid,
-                    now,
-                )?;
-                self.service.fail_cleanup(
-                    &candidate.run_id,
-                    &candidate.cleanup_identity,
-                    &candidate.namespace_uid,
-                    now,
-                )?;
+    async fn record_failure(
+        &self,
+        candidate: &CleanupCandidate,
+        now: i64,
+    ) -> Result<(), CleanupError> {
+        let durable = self
+            .state
+            .list_candidates()
+            .await?
+            .into_iter()
+            .find(|durable| same_candidate(durable, candidate))
+            .ok_or(CleanupError::State)?;
+        match durable.state.as_str() {
+            "pending" => {
+                self.state.start_cleanup(&durable).await?;
+                self.state.record_failure(&durable).await?;
             },
-            Some(state) if state == "running" => {
-                self.service.fail_cleanup(
-                    &candidate.run_id,
-                    &candidate.cleanup_identity,
-                    &candidate.namespace_uid,
-                    now,
-                )?;
-            },
-            Some(state) if state == "failed" => {},
-            _ => return Err(CleanupError::Service),
+            "running" => self.state.record_failure(&durable).await?,
+            "failed" => {},
+            _ => return Err(CleanupError::State),
         }
-        self.escalate_if_due(candidate, now)
+        let failed = self
+            .state
+            .list_candidates()
+            .await?
+            .into_iter()
+            .find(|failed| same_candidate(failed, candidate))
+            .ok_or(CleanupError::State)?;
+        self.escalate_if_due(&failed, now).await
     }
 
-    fn escalate_if_due(&self, candidate: &CleanupCandidate, now: i64) -> Result<(), CleanupError> {
-        let started_at = candidate.started_at.unwrap_or(now);
-        if !candidate.escalated && now.saturating_sub(started_at) >= CLEANUP_ESCALATION_SECONDS {
-            self.service.escalate_cleanup(
-                &candidate.run_id,
-                &candidate.cleanup_identity,
-                &candidate.namespace_uid,
-                now,
-            )?;
+    async fn escalate_if_due(
+        &self,
+        candidate: &CleanupCandidate,
+        now: i64,
+    ) -> Result<(), CleanupError> {
+        self.appoint_test_operation_time(now);
+        if candidate.state == "failed"
+            && !candidate.escalated
+            && candidate.started_at.is_some_and(|started_at| {
+                now.saturating_sub(started_at) >= CLEANUP_ESCALATION_SECONDS
+            })
+        {
+            self.state.escalate_cleanup(candidate).await?;
         }
         Ok(())
     }
+}
+
+fn same_candidate(left: &CleanupCandidate, right: &CleanupCandidate) -> bool {
+    left.run_id == right.run_id
+        && left.cleanup_identity == right.cleanup_identity
+        && left.namespace_uid == right.namespace_uid
 }
 
 fn should_request_delete(candidate: &CleanupCandidate, object: &RecordedObject) -> bool {
@@ -413,18 +448,6 @@ impl Service {
             .collect()
     }
 
-    fn cleanup_record_state(&self, run_id: &str) -> Result<Option<String>, ServiceError> {
-        super::bounded_identity(run_id)?;
-        self.connection()?
-            .query_row(
-                "SELECT state FROM cleanup_records WHERE run_id = ?1 AND active = 1",
-                [run_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(super::storage_error)
-    }
-
     pub(super) fn escalate_cleanup(
         &self,
         run_id: &str,
@@ -506,12 +529,12 @@ fn unix_time() -> Result<i64, &'static str> {
 enum CleanupError {
     Kubernetes,
     Ownership,
-    Service,
+    State,
 }
 
-impl From<ServiceError> for CleanupError {
-    fn from(_: ServiceError) -> Self {
-        Self::Service
+impl From<CleanupStateError> for CleanupError {
+    fn from(_: CleanupStateError) -> Self {
+        Self::State
     }
 }
 
@@ -689,13 +712,15 @@ mod tests {
         let (root, service, bodies) = fixture();
         let (client, server) = cleanup_client(bodies.clone(), false);
         CleanupReconciler {
-            service: Service::open(
-                root.join("sandbox.sqlite3"),
-                root.join("receipts"),
-                [7; 32],
-                NOW + 2,
-            )
-            .unwrap(),
+            state: CleanupStateClient::local(
+                Service::open(
+                    root.join("sandbox.sqlite3"),
+                    root.join("receipts"),
+                    [7; 32],
+                    NOW + 2,
+                )
+                .unwrap(),
+            ),
             client,
         }
         .run_once(NOW + 2)
@@ -706,13 +731,15 @@ mod tests {
 
         let (client, server) = cleanup_client(bodies, true);
         CleanupReconciler {
-            service: Service::open(
-                root.join("sandbox.sqlite3"),
-                root.join("receipts"),
-                [7; 32],
-                NOW + 3,
-            )
-            .unwrap(),
+            state: CleanupStateClient::local(
+                Service::open(
+                    root.join("sandbox.sqlite3"),
+                    root.join("receipts"),
+                    [7; 32],
+                    NOW + 3,
+                )
+                .unwrap(),
+            ),
             client,
         }
         .run_once(NOW + 3)
@@ -724,6 +751,49 @@ mod tests {
             service.snapshot(RUN, NOW + 3).unwrap().cleanup_state,
             crate::CleanupState::Succeeded
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn finalizer_partial_presence_coalesces_failure_then_escalates_once() {
+        let (root, service, bodies) = fixture();
+        for now in [NOW + 2, NOW + 902, NOW + 903] {
+            let (client, server) = cleanup_client(bodies.clone(), false);
+            CleanupReconciler {
+                state: CleanupStateClient::local(
+                    Service::open(
+                        root.join("sandbox.sqlite3"),
+                        root.join("receipts"),
+                        [7; 32],
+                        now,
+                    )
+                    .unwrap(),
+                ),
+                client,
+            }
+            .run_once(now)
+            .await
+            .unwrap();
+            server.await.unwrap();
+            let (state, escalated, failures): (String, bool, i64) =
+                rusqlite::Connection::open(root.join("sandbox.sqlite3"))
+                    .unwrap()
+                    .query_row(
+                        concat!(
+                            "SELECT cleanup_records.state, cleanup_records.escalated, ",
+                            "(SELECT COUNT(*) FROM events WHERE run_id = ?1 ",
+                            "AND kind = 'cleanup.failed') FROM cleanup_records ",
+                            "WHERE cleanup_records.run_id = ?1"
+                        ),
+                        [RUN],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .unwrap();
+            assert_eq!(state, "failed");
+            assert_eq!(failures, 1);
+            assert_eq!(escalated, now >= NOW + 902);
+        }
+        assert_eq!(service.recoverable_runs().unwrap(), vec![RUN]);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -756,13 +826,15 @@ mod tests {
             );
         });
         CleanupReconciler {
-            service: Service::open(
-                root.join("sandbox.sqlite3"),
-                root.join("receipts"),
-                [7; 32],
-                NOW + 2,
-            )
-            .unwrap(),
+            state: CleanupStateClient::local(
+                Service::open(
+                    root.join("sandbox.sqlite3"),
+                    root.join("receipts"),
+                    [7; 32],
+                    NOW + 2,
+                )
+                .unwrap(),
+            ),
             client: Client::new(transport, "default"),
         }
         .run_once(NOW + 2)
@@ -807,13 +879,15 @@ mod tests {
             );
         });
         CleanupReconciler {
-            service: Service::open(
-                root.join("sandbox.sqlite3"),
-                root.join("receipts"),
-                [7; 32],
-                NOW + 2,
-            )
-            .unwrap(),
+            state: CleanupStateClient::local(
+                Service::open(
+                    root.join("sandbox.sqlite3"),
+                    root.join("receipts"),
+                    [7; 32],
+                    NOW + 2,
+                )
+                .unwrap(),
+            ),
             client: Client::new(transport, "default"),
         }
         .run_once(NOW + 2)
@@ -874,16 +948,19 @@ mod tests {
                 http::Response<kube::client::Body>,
             >();
             CleanupReconciler {
-                service: Service::open(
-                    root.join("sandbox.sqlite3"),
-                    root.join("receipts"),
-                    [7; 32],
-                    NOW + 902,
-                )
-                .unwrap(),
+                state: CleanupStateClient::local(
+                    Service::open(
+                        root.join("sandbox.sqlite3"),
+                        root.join("receipts"),
+                        [7; 32],
+                        NOW + 902,
+                    )
+                    .unwrap(),
+                ),
                 client: Client::new(transport, "default"),
             }
             .escalate_if_due(&candidate, NOW + 902)
+            .await
             .unwrap();
             let escalated: bool = reopened
                 .connection()
@@ -947,13 +1024,15 @@ mod tests {
             .unwrap();
         let candidate = service.cleanup_candidates().unwrap().remove(0);
         let reconciler = CleanupReconciler {
-            service: Service::open(
-                root.join("sandbox.sqlite3"),
-                root.join("receipts"),
-                [7; 32],
-                NOW + 902,
-            )
-            .unwrap(),
+            state: CleanupStateClient::local(
+                Service::open(
+                    root.join("sandbox.sqlite3"),
+                    root.join("receipts"),
+                    [7; 32],
+                    NOW + 902,
+                )
+                .unwrap(),
+            ),
             client:
                 Client::new(
                     mock::pair::<
@@ -964,7 +1043,10 @@ mod tests {
                     "default",
                 ),
         };
-        reconciler.escalate_if_due(&candidate, NOW + 901).unwrap();
+        reconciler
+            .escalate_if_due(&candidate, NOW + 901)
+            .await
+            .unwrap();
         let escalated: bool = rusqlite::Connection::open(root.join("sandbox.sqlite3"))
             .unwrap()
             .query_row(
@@ -974,7 +1056,10 @@ mod tests {
             )
             .unwrap();
         assert!(!escalated);
-        reconciler.escalate_if_due(&candidate, NOW + 902).unwrap();
+        reconciler
+            .escalate_if_due(&candidate, NOW + 902)
+            .await
+            .unwrap();
         let escalated: bool = rusqlite::Connection::open(root.join("sandbox.sqlite3"))
             .unwrap()
             .query_row(

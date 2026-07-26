@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use kapsel_sandbox::{Scenario, Service};
+use kapsel_sandbox::{CleanupState, Scenario, Service};
 use sha2::{Digest, Sha256};
 
 const REQUEST_HEAD_OVERFLOW_PADDING: usize = 8 * 1024;
@@ -226,6 +226,143 @@ server.serve_forever()
         .arg(script)
         .arg(fixture.join("cert.pem"))
         .arg(fixture.join("key.pem"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let port = line
+        .strip_prefix("LISTEN_PORT=")
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    (child, port)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one mock keeps TokenReview, exact ownership scans, and UID-safe deletion contiguous"
+)]
+fn start_mock_cleanup_kubernetes(
+    root: &Path,
+    run_id: &str,
+    cleanup_identity: &str,
+) -> (Child, u16) {
+    let script = root.join("mock-cleanup-kubernetes.py");
+    fs::write(
+        &script,
+        r#"import http.server, json, ssl, sys, urllib.parse
+run_id = sys.argv[3]
+owner = sys.argv[4]
+namespace_name = "sandbox-" + run_id
+runner_name = "runner-" + run_id
+namespace_path = "/api/v1/namespaces/" + namespace_name
+runner_path = "/api/v1/namespaces/kapsel-sandbox-runners/pods/" + runner_name
+objects = {
+    namespace_path: {
+        "apiVersion":"v1", "kind":"Namespace",
+        "metadata":{"name":namespace_name, "uid":"uid-namespace",
+                    "resourceVersion":"1",
+                    "labels":{"kapsel.dev/cleanup-owner":owner}}
+    },
+    runner_path: {
+        "apiVersion":"v1", "kind":"Pod",
+        "metadata":{"name":runner_name, "namespace":"kapsel-sandbox-runners",
+                    "uid":"uid-runner", "resourceVersion":"1",
+                    "labels":{"kapsel.dev/cleanup-owner":owner}}
+    }
+}
+list_paths = {
+    "/api/v1/namespaces/kapsel-sandbox-runners/serviceaccounts",
+    "/api/v1/namespaces/kapsel-sandbox-runners/configmaps",
+    "/api/v1/namespaces/kapsel-sandbox-runners/secrets",
+    "/api/v1/namespaces/kapsel-sandbox-runners/persistentvolumeclaims",
+    "/api/v1/namespaces/kapsel-sandbox-runners/pods"
+}
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, format, *args):
+        pass
+    def reply(self, status, body):
+        data = json.dumps(body, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def path_only(self):
+        return urllib.parse.urlsplit(self.path).path
+    def do_POST(self):
+        assert self.headers.get("authorization") == "Bearer system-kubernetes-token"
+        assert self.path_only() == "/apis/authentication.k8s.io/v1/tokenreviews"
+        length = int(self.headers.get("content-length", "0"))
+        body = json.loads(self.rfile.read(length))
+        assert body["spec"] == {
+            "audiences": ["https://kapsel.dev/sandbox/controller-state/v1"],
+            "token": "cleanup-state-token"
+        }
+        body["status"] = {
+            "authenticated": True,
+            "audiences": ["https://kapsel.dev/sandbox/controller-state/v1"],
+            "user": {
+                "username": "system:serviceaccount:kapsel-sandbox-system:sandbox-cleanup",
+                "uid": "cleanup-uid"
+            }
+        }
+        self.reply(201, body)
+    def do_GET(self):
+        assert self.headers.get("authorization") == "Bearer cleanup-kubernetes-token"
+        path = self.path_only()
+        if path in list_paths:
+            items = []
+            if path.endswith("/pods") and runner_path in objects:
+                items = [objects[runner_path]]
+            self.reply(200, {
+                "apiVersion":"v1", "kind":"List",
+                "metadata":{"resourceVersion":"1"}, "items":items
+            })
+        elif path in objects:
+            self.reply(200, objects[path])
+        else:
+            self.reply(404, {
+                "apiVersion":"v1", "kind":"Status", "status":"Failure",
+                "reason":"NotFound", "code":404
+            })
+    def do_DELETE(self):
+        assert self.headers.get("authorization") == "Bearer cleanup-kubernetes-token"
+        path = self.path_only()
+        assert path in objects
+        length = int(self.headers.get("content-length", "0"))
+        body = json.loads(self.rfile.read(length))
+        assert body["preconditions"]["uid"] == objects[path]["metadata"]["uid"]
+        if path == namespace_path:
+            assert runner_path not in objects
+        del objects[path]
+        self.reply(200, {
+            "apiVersion":"v1", "kind":"Status", "status":"Success",
+            "reason":"Deleted", "code":200
+        })
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(sys.argv[1], sys.argv[2])
+server.socket = context.wrap_socket(server.socket, server_side=True)
+print("LISTEN_PORT=" + str(server.server_port), flush=True)
+server.serve_forever()
+"#,
+    )
+    .unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kubernetes-api");
+    let mut child = Command::new("python3")
+        .arg("-u")
+        .arg(script)
+        .arg(fixture.join("cert.pem"))
+        .arg(fixture.join("key.pem"))
+        .arg(run_id)
+        .arg(cleanup_identity)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -790,20 +927,279 @@ fn native_scheduler_process_crosses_authenticated_state_and_distinct_kubernetes_
 }
 
 #[test]
-fn cleanup_role_rejects_transport_and_fails_closed_without_in_cluster_authority() {
+#[allow(
+    clippy::too_many_lines,
+    reason = "one vector keeps cleanup state, Kubernetes authority, and frozen facts contiguous"
+)]
+fn native_cleanup_process_crosses_authenticated_state_and_uid_safe_kubernetes_completion() {
+    let (database, receipts, digest_key) = fixture("cleanup-process");
+    let root = database.parent().unwrap().to_owned();
+    initialize(&database, &receipts, &digest_key);
+    let now = i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    let service = Service::open(&database, &receipts, [7; 32], now).unwrap();
+    let admission = service
+        .admit("11111111111111111111111111111111", Scenario::Healthy, now)
+        .unwrap();
+    service.dispatch_next(now + 1).unwrap();
+    let cleanup_identity: String = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row(
+            "SELECT cleanup_identity FROM cleanup_records WHERE run_id = ?1",
+            [&admission.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let namespace_name = format!("sandbox-{}", admission.run_id);
+    let runner_name = format!("runner-{}", admission.run_id);
+    let receipt_bytes = b"frozen-native-cleanup-receipt";
+    let receipt_digest =
+        Sha256::digest(receipt_bytes)
+            .iter()
+            .fold(String::with_capacity(64), |mut output, byte| {
+                write!(output, "{byte:02x}").unwrap();
+                output
+            });
+    let receipt_name = format!("sandbox-{}-{receipt_digest}.receipt", admission.run_id);
+    fs::write(receipts.join(&receipt_name), receipt_bytes).unwrap();
+    fs::set_permissions(
+        receipts.join(&receipt_name),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute_batch(&format!(
+            concat!(
+                "UPDATE runs SET execution_state = 'terminal', receiver_result = 'UNKNOWN', ",
+                "receipt_available = 1, namespace_uid = 'uid-namespace', ",
+                "cleanup_resource_state = 'owned' WHERE run_id = '{run}'; ",
+                "UPDATE cleanup_records SET namespace_uid = 'uid-namespace', ",
+                "resource_state = 'owned', eligible = 1 WHERE run_id = '{run}'; ",
+                "INSERT INTO provisioned_object_owners VALUES ",
+                "('uid-namespace', '{run}', 'Namespace/{namespace}', '{owner}'); ",
+                "INSERT INTO provisioned_object_owners VALUES ",
+                "('uid-runner', '{run}', 'Pod/kapsel-sandbox-runners/{runner}', '{owner}'); ",
+                "INSERT INTO receipts VALUES ('{run}', '{digest}', '{receipt}');"
+            ),
+            run = admission.run_id,
+            namespace = namespace_name,
+            runner = runner_name,
+            owner = cleanup_identity,
+            digest = receipt_digest,
+            receipt = receipt_name,
+        ))
+        .unwrap();
+    let before = service.snapshot(&admission.run_id, now + 2).unwrap();
+    let frozen_before = service.receipt(&admission.run_id, now + 2).unwrap();
+    assert_eq!(before.receiver_result.as_deref(), Some("UNKNOWN"));
+    assert!(before.target_rejection.is_none());
+    assert!(before.receipt_available);
+    drop(service);
+
+    let state_fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/controller-transport/current");
+    let state_certificate = root.join("state.crt");
+    let state_private_key = root.join("state.key");
+    let state_ca = root.join("state-ca.crt");
+    for (source, destination, mode) in [
+        ("cert.pem", &state_certificate, 0o400),
+        ("key.pem", &state_private_key, 0o600),
+        ("ca.pem", &state_ca, 0o400),
+    ] {
+        fs::copy(state_fixture.join(source), destination).unwrap();
+        fs::set_permissions(destination, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let state_token = root.join("cleanup-state-token");
+    let cleanup_kubernetes_token = root.join("cleanup-kubernetes-token");
+    let system_kubernetes_token = root.join("system-kubernetes-token");
+    for (path, bytes) in [
+        (&state_token, b"cleanup-state-token".as_slice()),
+        (
+            &cleanup_kubernetes_token,
+            b"cleanup-kubernetes-token".as_slice(),
+        ),
+        (
+            &system_kubernetes_token,
+            b"system-kubernetes-token".as_slice(),
+        ),
+    ] {
+        fs::write(path, bytes).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let kubernetes_ca =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kubernetes-api/ca.pem");
+    let (kubernetes, kubernetes_port) =
+        start_mock_cleanup_kubernetes(&root, &admission.run_id, &cleanup_identity);
+    let mut kubernetes = ChildGuard(kubernetes);
+    let kubernetes_port = kubernetes_port.to_string();
+
+    let state = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("cleanup-state-serve")
+        .args(arguments(&database, &receipts, &digest_key))
+        .args(["--listen", "127.0.0.1:8083"])
+        .args(["--state-certificate", state_certificate.to_str().unwrap()])
+        .args(["--state-private-key", state_private_key.to_str().unwrap()])
+        .args(["--cleanup-service-account-uid", "cleanup-uid"])
+        .args(["--kubernetes-ca", kubernetes_ca.to_str().unwrap()])
+        .args([
+            "--kubernetes-token",
+            system_kubernetes_token.to_str().unwrap(),
+        ])
+        .env("KUBERNETES_SERVICE_HOST", "127.0.0.1")
+        .env("KUBERNETES_SERVICE_PORT", &kubernetes_port)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut state = ChildGuard(state);
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(state.try_wait().unwrap().is_none());
+
+    let ca_digest = Sha256::digest(fs::read(&state_ca).unwrap()).iter().fold(
+        String::with_capacity(64),
+        |mut output, byte| {
+            write!(output, "{byte:02x}").unwrap();
+            output
+        },
+    );
+    let cleanup = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("cleanup")
+        .args(["--state-endpoint", "127.0.0.1:8083"])
+        .args(["--state-ca-bundle", state_ca.to_str().unwrap()])
+        .args(["--state-ca-sha256", &ca_digest])
+        .args(["--state-ca-root-count", "1"])
+        .args(["--state-token", state_token.to_str().unwrap()])
+        .args(["--kubernetes-ca", kubernetes_ca.to_str().unwrap()])
+        .args([
+            "--kubernetes-token",
+            cleanup_kubernetes_token.to_str().unwrap(),
+        ])
+        .env("KUBERNETES_SERVICE_HOST", "127.0.0.1")
+        .env("KUBERNETES_SERVICE_PORT", &kubernetes_port)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut cleanup = ChildGuard(cleanup);
+    std::thread::sleep(Duration::from_millis(500));
+    let started = Instant::now();
+    loop {
+        let state_value: String = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT cleanup_state FROM runs WHERE run_id = ?1",
+                [&admission.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if state_value == "succeeded" {
+            break;
+        }
+        if let Some(status) = cleanup.try_wait().unwrap() {
+            let mut stderr = String::new();
+            cleanup
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            kubernetes.kill().unwrap();
+            kubernetes.wait().unwrap();
+            let mut kubernetes_stderr = String::new();
+            if let Some(stderr) = kubernetes.stderr.as_mut() {
+                stderr.read_to_string(&mut kubernetes_stderr).unwrap();
+            }
+            panic!("cleanup process exited {status}: {stderr}; Kubernetes: {kubernetes_stderr}");
+        }
+        if let Some(status) = state.try_wait().unwrap() {
+            let mut stderr = String::new();
+            state
+                .stderr
+                .take()
+                .unwrap()
+                .read_to_string(&mut stderr)
+                .unwrap();
+            panic!("cleanup-state process exited {status}: {stderr}");
+        }
+        assert!(started.elapsed() < Duration::from_secs(8));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let service = Service::open(&database, &receipts, [7; 32], now + 3).unwrap();
+    let after = service.snapshot(&admission.run_id, now + 3).unwrap();
+    assert_eq!(after.cleanup_state, CleanupState::Succeeded);
+    assert_eq!(after.receiver_result, before.receiver_result);
+    assert_eq!(after.target_rejection, before.target_rejection);
+    assert_eq!(after.receipt_available, before.receipt_available);
+    assert_eq!(
+        service.receipt(&admission.run_id, now + 3).unwrap(),
+        frozen_before
+    );
+    assert_eq!(frozen_before, receipt_bytes);
+
+    cleanup.kill().unwrap();
+    cleanup.wait().unwrap();
+    state.kill().unwrap();
+    state.wait().unwrap();
+    kubernetes.kill().unwrap();
+    kubernetes.wait().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one black-box vector keeps both cleanup role authority boundaries contiguous"
+)]
+fn cleanup_roles_enforce_remote_state_and_system_authority_split() {
     let (database, receipts, digest_key) = fixture("cleanup-role");
     let root = database.parent().unwrap().to_owned();
     initialize(&database, &receipts, &digest_key);
+    let ca = root.join("controller-ca.pem");
+    let state_token = root.join("state-token");
+    let kubernetes_ca = root.join("kubernetes-ca.pem");
+    let kubernetes_token = root.join("kubernetes-token");
+    for path in [&ca, &state_token, &kubernetes_ca, &kubernetes_token] {
+        fs::write(path, b"must-not-open").unwrap();
+    }
+    let state_arguments = [
+        "--state-endpoint",
+        "127.0.0.1:8083",
+        "--state-ca-bundle",
+        ca.to_str().unwrap(),
+        "--state-ca-sha256",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "--state-ca-root-count",
+        "1",
+        "--state-token",
+        state_token.to_str().unwrap(),
+    ];
+    let kubernetes_arguments = [
+        "--kubernetes-ca",
+        kubernetes_ca.to_str().unwrap(),
+        "--kubernetes-token",
+        kubernetes_token.to_str().unwrap(),
+    ];
 
-    for extra in [
-        ["--origin", "https://kapsel.invalid"],
-        ["--listen", "127.0.0.1:0"],
-        ["--handoff-endpoint", "127.0.0.1:8081"],
+    for forbidden in [
+        vec!["--database", database.to_str().unwrap()],
+        vec!["--receipts", receipts.to_str().unwrap()],
+        vec!["--digest-key-file", digest_key.to_str().unwrap()],
+        vec!["--handoff-endpoint", "127.0.0.1:8081"],
+        vec!["--origin", "https://kapsel.invalid"],
+        vec!["--listen", "127.0.0.1:0"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
             .arg("cleanup")
-            .args(arguments(&database, &receipts, &digest_key))
-            .args(extra)
+            .args(state_arguments)
+            .args(kubernetes_arguments)
+            .args(forbidden)
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -812,7 +1208,42 @@ fn cleanup_role_rejects_transport_and_fails_closed_without_in_cluster_authority(
 
     let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
         .arg("cleanup")
-        .args(arguments(&database, &receipts, &digest_key))
+        .args(&state_arguments[..8])
+        .args(["--state-token", kubernetes_token.to_str().unwrap()])
+        .args(kubernetes_arguments)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        concat!(
+            "kapsel-sandbox: cleanup state token must be distinct from ",
+            "Kubernetes API authority\n"
+        )
+    );
+
+    let state_token_alias = root.join("state-token-alias");
+    fs::hard_link(&kubernetes_token, &state_token_alias).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("cleanup")
+        .args(&state_arguments[..8])
+        .args(["--state-token", state_token_alias.to_str().unwrap()])
+        .args(kubernetes_arguments)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        concat!(
+            "kapsel-sandbox: cleanup state token must be distinct from ",
+            "Kubernetes API authority\n"
+        )
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("cleanup")
+        .args(state_arguments)
+        .args(kubernetes_arguments)
         .env_remove("KUBERNETES_SERVICE_HOST")
         .env_remove("KUBERNETES_SERVICE_PORT")
         .output()
@@ -822,6 +1253,46 @@ fn cleanup_role_rejects_transport_and_fails_closed_without_in_cluster_authority(
         String::from_utf8(output.stderr).unwrap(),
         "kapsel-sandbox: cleanup Kubernetes configuration is unavailable\n"
     );
+
+    let listener_arguments = [
+        "--listen",
+        "127.0.0.1:8083",
+        "--state-certificate",
+        ca.to_str().unwrap(),
+        "--state-private-key",
+        state_token.to_str().unwrap(),
+        "--cleanup-service-account-uid",
+        "cleanup-uid",
+        "--kubernetes-ca",
+        kubernetes_ca.to_str().unwrap(),
+        "--kubernetes-token",
+        kubernetes_token.to_str().unwrap(),
+    ];
+    for forbidden in [
+        vec!["--state-endpoint", "127.0.0.1:8083"],
+        vec!["--state-token", state_token.to_str().unwrap()],
+        vec!["--handoff-endpoint", "127.0.0.1:8081"],
+        vec!["--scheduler-service-account-uid", "scheduler-uid"],
+        vec!["--origin", "https://kapsel.invalid"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+            .arg("cleanup-state-serve")
+            .args(arguments(&database, &receipts, &digest_key))
+            .args(listener_arguments)
+            .args(forbidden)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        .arg("cleanup-state-serve")
+        .args(arguments(&database, &receipts, &digest_key))
+        .args(listener_arguments)
+        .args(["--listen", "127.0.0.1:8082"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
     fs::remove_dir_all(root).unwrap();
 }
 

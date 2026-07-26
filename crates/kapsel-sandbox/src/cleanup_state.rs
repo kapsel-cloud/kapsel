@@ -1,12 +1,18 @@
-//! Fixed private cleanup-to-system state payload adapter.
+//! Fixed private cleanup-to-system state transport adapter.
 //!
-//! This role-specific module owns bounded wire DTOs and exact conversion to existing cleanup
-//! transitions. It owns no listener, authentication, retry, Kubernetes, or storage abstraction.
+//! This role-specific module owns bounded wire DTOs, the concrete authenticated remote client,
+//! the system-side listener, and exact conversion to existing cleanup transitions. It owns no
+//! retry policy, Kubernetes cleanup authority, or storage abstraction.
 
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
+
+use kube::Client as KubernetesClient;
 use serde::{Deserialize, Serialize};
+use tokio::net::TcpListener;
 
 use crate::{
     bounded_hex_128, bounded_identity,
+    controller_state_transport::{self, ClientInputs, Role},
     kubernetes_cleanup::{CleanupCandidate, RecordedObject},
     object_identity_parts, CleanupAbsenceEvidence, CleanupObjectAbsence, Service, ServiceError,
 };
@@ -16,14 +22,14 @@ pub(crate) const PAYLOAD_BYTES_MAX: usize = 64 * 1024;
 const CANDIDATES_MAX: usize = 8;
 const OWNED_OBJECTS_MAX: usize = 16;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RequestEnvelope {
     protocol: String,
     request: RequestDto,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum RequestDto {
     ListCandidates {},
@@ -42,7 +48,7 @@ enum RequestDto {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CandidateIdentityDto {
     run_id: String,
@@ -50,14 +56,14 @@ struct CandidateIdentityDto {
     namespace_uid: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AbsenceEvidenceDto {
     namespace_uid: String,
     objects: Vec<AbsenceObjectDto>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AbsenceObjectDto {
     kind: String,
@@ -68,22 +74,22 @@ struct AbsenceObjectDto {
     present: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ResponseEnvelope {
-    protocol: &'static str,
+    protocol: String,
     response: ResponseDto,
 }
 
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ResponseDto {
     Candidates { candidates: Vec<CandidateDto> },
-    Committed,
+    Committed {},
     Rejected { error: ErrorDto },
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CandidateDto {
     run_id: String,
@@ -95,7 +101,7 @@ struct CandidateDto {
     objects: Vec<OwnedObjectDto>,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CandidateStateDto {
     Pending,
@@ -103,7 +109,7 @@ enum CandidateStateDto {
     Failed,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct OwnedObjectDto {
     kind: String,
@@ -113,7 +119,7 @@ struct OwnedObjectDto {
     owner_label: String,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ErrorDto {
     InvalidPayload,
@@ -121,6 +127,264 @@ enum ErrorDto {
     CleanupForbidden,
     CleanupConflict,
     StateUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CleanupStateError {
+    InvalidPayload,
+    CleanupMissing,
+    CleanupForbidden,
+    CleanupConflict,
+    StateUnavailable,
+    Authentication,
+    Transport,
+}
+
+#[derive(Clone)]
+pub(crate) struct CleanupStateClient {
+    backend: CleanupStateBackend,
+}
+
+#[derive(Clone)]
+enum CleanupStateBackend {
+    Remote {
+        endpoint: SocketAddr,
+        inputs: ClientInputs,
+    },
+    #[cfg(test)]
+    Local {
+        service: Service,
+        now: std::sync::Arc<std::sync::atomic::AtomicI64>,
+    },
+}
+
+impl CleanupStateClient {
+    pub(crate) fn new(
+        endpoint: SocketAddr,
+        ca_bundle_path: PathBuf,
+        ca_bundle_sha256: [u8; 32],
+        ca_root_count: u8,
+        token_path: PathBuf,
+    ) -> Result<Self, CleanupStateError> {
+        let inputs = controller_state_transport::client_inputs(
+            ca_bundle_path,
+            ca_bundle_sha256,
+            ca_root_count,
+            token_path,
+        )
+        .map_err(|_| CleanupStateError::Transport)?;
+        Ok(Self {
+            backend: CleanupStateBackend::Remote { endpoint, inputs },
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local(service: Service) -> Self {
+        Self {
+            backend: CleanupStateBackend::Local {
+                service,
+                now: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            },
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_now(&self, value: i64) {
+        if let CleanupStateBackend::Local { now, .. } = &self.backend {
+            now.store(value, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) async fn list_candidates(&self) -> Result<Vec<CleanupCandidate>, CleanupStateError> {
+        candidates_from_response(self.call(RequestDto::ListCandidates {}).await?)
+    }
+
+    pub(crate) async fn start_cleanup(
+        &self,
+        candidate: &CleanupCandidate,
+    ) -> Result<(), CleanupStateError> {
+        self.committed_call(RequestDto::StartCleanup {
+            candidate: CandidateIdentityDto::from_domain(candidate),
+        })
+        .await
+    }
+
+    pub(crate) async fn record_failure(
+        &self,
+        candidate: &CleanupCandidate,
+    ) -> Result<(), CleanupStateError> {
+        self.committed_call(RequestDto::RecordFailure {
+            candidate: CandidateIdentityDto::from_domain(candidate),
+        })
+        .await
+    }
+
+    pub(crate) async fn escalate_cleanup(
+        &self,
+        candidate: &CleanupCandidate,
+    ) -> Result<(), CleanupStateError> {
+        self.committed_call(RequestDto::EscalateCleanup {
+            candidate: CandidateIdentityDto::from_domain(candidate),
+        })
+        .await
+    }
+
+    pub(crate) async fn complete_cleanup(
+        &self,
+        candidate: &CleanupCandidate,
+        evidence: &CleanupAbsenceEvidence,
+    ) -> Result<(), CleanupStateError> {
+        self.committed_call(RequestDto::CompleteCleanup {
+            candidate: CandidateIdentityDto::from_domain(candidate),
+            evidence: AbsenceEvidenceDto::from_domain(evidence),
+        })
+        .await
+    }
+
+    async fn committed_call(&self, request: RequestDto) -> Result<(), CleanupStateError> {
+        match self.call(request).await? {
+            ResponseDto::Committed {} => Ok(()),
+            _ => Err(CleanupStateError::Transport),
+        }
+    }
+
+    async fn call(&self, request: RequestDto) -> Result<ResponseDto, CleanupStateError> {
+        let frame = encode_request(request)?;
+        let response = match &self.backend {
+            CleanupStateBackend::Remote { endpoint, inputs } => {
+                controller_state_transport::request(*endpoint, Role::Cleanup, inputs, &frame)
+                    .await
+                    .map_err(|error| match error {
+                        controller_state_transport::ClientError::AuthenticationRejected => {
+                            CleanupStateError::Authentication
+                        },
+                        controller_state_transport::ClientError::TransportRejected => {
+                            CleanupStateError::Transport
+                        },
+                    })?
+            },
+            #[cfg(test)]
+            CleanupStateBackend::Local { service, now } => handle(
+                service,
+                &frame,
+                now.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        };
+        decode_response(&response)
+    }
+}
+
+pub(crate) async fn serve(
+    service: Service,
+    listen: SocketAddr,
+    certificate_path: PathBuf,
+    private_key_path: PathBuf,
+    cleanup_service_account_uid: String,
+    kubernetes: KubernetesClient,
+) -> Result<(), &'static str> {
+    if listen.port() != 8083 {
+        return Err("cleanup state listener address is invalid");
+    }
+    let listener = TcpListener::bind(listen)
+        .await
+        .map_err(|_| "cleanup state listener is unavailable")?;
+    let inputs = controller_state_transport::server_inputs(certificate_path, private_key_path);
+    let binding =
+        controller_state_transport::role_binding(Role::Cleanup, cleanup_service_account_uid)
+            .map_err(|_| "cleanup state role binding is invalid")?;
+    loop {
+        let (connection, _) = listener
+            .accept()
+            .await
+            .map_err(|_| "cleanup state listener failed")?;
+        let inputs = inputs.clone();
+        let binding = binding.clone();
+        let kubernetes = kubernetes.clone();
+        let service = service.clone();
+        tokio::spawn(async move {
+            let _ = controller_state_transport::handle_connection(
+                connection,
+                &inputs,
+                &binding,
+                kubernetes,
+                move |payload| async move {
+                    match unix_time() {
+                        Ok(now) => handle(&service, &payload, now),
+                        Err(()) => {
+                            encode_response(ResponseDto::rejected(ErrorDto::StateUnavailable))
+                        },
+                    }
+                },
+            )
+            .await;
+        });
+    }
+}
+
+fn encode_request(request: RequestDto) -> Result<Vec<u8>, CleanupStateError> {
+    let body = serde_json::to_vec(&RequestEnvelope {
+        protocol: PROTOCOL.to_owned(),
+        request,
+    })
+    .map_err(|_| CleanupStateError::StateUnavailable)?;
+    if body.is_empty() || body.len() > PAYLOAD_BYTES_MAX {
+        return Err(CleanupStateError::InvalidPayload);
+    }
+    let mut frame = Vec::with_capacity(body.len() + 4);
+    frame.extend_from_slice(
+        &u32::try_from(body.len())
+            .map_err(|_| CleanupStateError::InvalidPayload)?
+            .to_be_bytes(),
+    );
+    frame.extend_from_slice(&body);
+    Ok(frame)
+}
+
+fn decode_response(frame: &[u8]) -> Result<ResponseDto, CleanupStateError> {
+    if frame.len() < 4 {
+        return Err(CleanupStateError::Transport);
+    }
+    let length = u32::from_be_bytes(
+        frame[..4]
+            .try_into()
+            .map_err(|_| CleanupStateError::Transport)?,
+    ) as usize;
+    if length == 0 || length > PAYLOAD_BYTES_MAX || frame.len() != length.saturating_add(4) {
+        return Err(CleanupStateError::Transport);
+    }
+    let envelope: ResponseEnvelope =
+        serde_json::from_slice(&frame[4..]).map_err(|_| CleanupStateError::Transport)?;
+    if envelope.protocol != PROTOCOL {
+        return Err(CleanupStateError::Transport);
+    }
+    match envelope.response {
+        ResponseDto::Rejected { error } => Err(error.into()),
+        response => Ok(response),
+    }
+}
+
+fn candidates_from_response(
+    response: ResponseDto,
+) -> Result<Vec<CleanupCandidate>, CleanupStateError> {
+    match response {
+        ResponseDto::Candidates { candidates } if candidates.len() <= CANDIDATES_MAX => candidates
+            .into_iter()
+            .map(CandidateDto::into_domain)
+            .collect(),
+        _ => Err(CleanupStateError::Transport),
+    }
+}
+
+impl From<ErrorDto> for CleanupStateError {
+    fn from(error: ErrorDto) -> Self {
+        match error {
+            ErrorDto::InvalidPayload => Self::InvalidPayload,
+            ErrorDto::CleanupMissing => Self::CleanupMissing,
+            ErrorDto::CleanupForbidden => Self::CleanupForbidden,
+            ErrorDto::CleanupConflict => Self::CleanupConflict,
+            ErrorDto::StateUnavailable => Self::StateUnavailable,
+        }
+    }
 }
 
 /// Parses, validates, and dispatches one complete cleanup-state payload.
@@ -210,7 +474,7 @@ fn dispatch(service: &Service, request: RequestDto, now: i64) -> Result<Response
                     now,
                 )
                 .map_err(map_service_error)?;
-            Ok(ResponseDto::Committed)
+            Ok(ResponseDto::Committed {})
         },
         RequestDto::RecordFailure { candidate } => {
             service
@@ -221,7 +485,7 @@ fn dispatch(service: &Service, request: RequestDto, now: i64) -> Result<Response
                     now,
                 )
                 .map_err(map_service_error)?;
-            Ok(ResponseDto::Committed)
+            Ok(ResponseDto::Committed {})
         },
         RequestDto::EscalateCleanup { candidate } => {
             service
@@ -232,7 +496,7 @@ fn dispatch(service: &Service, request: RequestDto, now: i64) -> Result<Response
                     now,
                 )
                 .map_err(map_service_error)?;
-            Ok(ResponseDto::Committed)
+            Ok(ResponseDto::Committed {})
         },
         RequestDto::CompleteCleanup {
             candidate,
@@ -246,7 +510,7 @@ fn dispatch(service: &Service, request: RequestDto, now: i64) -> Result<Response
                     now,
                 )
                 .map_err(map_service_error)?;
-            Ok(ResponseDto::Committed)
+            Ok(ResponseDto::Committed {})
         },
     }
 }
@@ -274,6 +538,39 @@ impl CandidateDto {
                 .collect(),
         })
     }
+
+    fn into_domain(self) -> Result<CleanupCandidate, CleanupStateError> {
+        let candidate = CleanupCandidate {
+            run_id: self.run_id,
+            cleanup_identity: self.cleanup_identity,
+            namespace_uid: self.namespace_uid,
+            state: match self.state {
+                CandidateStateDto::Pending => "pending",
+                CandidateStateDto::Running => "running",
+                CandidateStateDto::Failed => "failed",
+            }
+            .to_owned(),
+            started_at: self.started_at_unix_s,
+            escalated: self.escalated,
+            objects: self
+                .objects
+                .into_iter()
+                .map(OwnedObjectDto::into_domain)
+                .collect(),
+        };
+        validate_domain_candidate(&candidate).map_err(|_| CleanupStateError::Transport)?;
+        Ok(candidate)
+    }
+}
+
+impl CandidateIdentityDto {
+    fn from_domain(candidate: &CleanupCandidate) -> Self {
+        Self {
+            run_id: candidate.run_id.clone(),
+            cleanup_identity: candidate.cleanup_identity.clone(),
+            namespace_uid: candidate.namespace_uid.clone(),
+        }
+    }
 }
 
 impl OwnedObjectDto {
@@ -286,9 +583,37 @@ impl OwnedObjectDto {
             owner_label: object.owner_label,
         }
     }
+
+    fn into_domain(self) -> RecordedObject {
+        RecordedObject {
+            kind: self.kind,
+            namespace: self.namespace,
+            name: self.name,
+            uid: self.uid,
+            owner_label: self.owner_label,
+        }
+    }
 }
 
 impl AbsenceEvidenceDto {
+    fn from_domain(evidence: &CleanupAbsenceEvidence) -> Self {
+        Self {
+            namespace_uid: evidence.namespace_uid.clone(),
+            objects: evidence
+                .objects
+                .iter()
+                .map(|object| AbsenceObjectDto {
+                    kind: object.kind.clone(),
+                    namespace: object.namespace.clone(),
+                    name: object.name.clone(),
+                    uid: object.uid.clone(),
+                    owner_label: object.owner_label.clone(),
+                    present: object.present,
+                })
+                .collect(),
+        }
+    }
+
     fn into_domain(self) -> CleanupAbsenceEvidence {
         CleanupAbsenceEvidence {
             namespace_uid: self.namespace_uid,
@@ -316,7 +641,7 @@ impl ResponseDto {
 
 fn encode_response(response: ResponseDto) -> Vec<u8> {
     let envelope = ResponseEnvelope {
-        protocol: PROTOCOL,
+        protocol: PROTOCOL.to_owned(),
         response,
     };
     let body = serde_json::to_vec(&envelope).unwrap_or_else(|_| fallback_body());
@@ -363,6 +688,10 @@ fn validate_domain_candidate(candidate: &CleanupCandidate) -> Result<(), ErrorDt
     {
         return Err(ErrorDto::StateUnavailable);
     }
+    let expected_namespace = format!("sandbox-{}", candidate.run_id);
+    let mut namespace_count = 0;
+    let mut identities = HashSet::with_capacity(candidate.objects.len());
+    let mut uids = HashSet::with_capacity(candidate.objects.len());
     for object in &candidate.objects {
         validate_object(
             &object.kind,
@@ -372,6 +701,25 @@ fn validate_domain_candidate(candidate: &CleanupCandidate) -> Result<(), ErrorDt
             &object.owner_label,
         )
         .map_err(|_| ErrorDto::StateUnavailable)?;
+        if object.owner_label != candidate.cleanup_identity
+            || !identities.insert((
+                object.kind.as_str(),
+                object.namespace.as_deref(),
+                object.name.as_str(),
+            ))
+            || !uids.insert(object.uid.as_str())
+        {
+            return Err(ErrorDto::StateUnavailable);
+        }
+        if object.kind == "Namespace" {
+            namespace_count += 1;
+            if object.name != expected_namespace || object.uid != candidate.namespace_uid {
+                return Err(ErrorDto::StateUnavailable);
+            }
+        }
+    }
+    if namespace_count != 1 {
+        return Err(ErrorDto::StateUnavailable);
     }
     Ok(())
 }
@@ -427,6 +775,14 @@ fn valid_object_component(value: &str) -> Result<(), ErrorDto> {
     }
 }
 
+fn unix_time() -> Result<i64, ()> {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_secs();
+    i64::try_from(seconds).map_err(|_| ())
+}
+
 fn map_service_error(error: ServiceError) -> ErrorDto {
     match error {
         ServiceError::InvalidRequest | ServiceError::UnsupportedVersion => ErrorDto::InvalidPayload,
@@ -454,11 +810,569 @@ mod tests {
         sync::atomic::{AtomicU64, Ordering},
     };
 
+    use http::{Response, StatusCode};
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
+    use tokio::net::TcpListener;
+    use tower_test::mock;
 
     use super::*;
     use crate::{kubernetes_policy, ProvisionedObject, ProvisionedTarget, Scenario};
+
+    #[test]
+    fn client_rejects_malformed_wrong_protocol_trailing_and_oversize_responses() {
+        let valid = encode_response(ResponseDto::Committed {});
+        assert!(matches!(
+            decode_response(&valid),
+            Ok(ResponseDto::Committed {})
+        ));
+
+        for rejected in [
+            Vec::new(),
+            frame_body(br#"{"protocol":"wrong","response":{"kind":"committed"}}"#),
+            frame_body(
+                br#"{"protocol":"cleanup-state-v1","response":{"kind":"committed","extra":true}}"#,
+            ),
+        ] {
+            assert!(matches!(
+                decode_response(&rejected),
+                Err(CleanupStateError::Transport)
+            ));
+        }
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(matches!(
+            decode_response(&trailing),
+            Err(CleanupStateError::Transport)
+        ));
+        let mut oversize = Vec::from(u32::try_from(PAYLOAD_BYTES_MAX + 1).unwrap().to_be_bytes());
+        oversize.resize(PAYLOAD_BYTES_MAX + 5, b'x');
+        assert!(matches!(
+            decode_response(&oversize),
+            Err(CleanupStateError::Transport)
+        ));
+    }
+
+    #[test]
+    fn client_rejects_hostile_candidate_deletion_authority_responses() {
+        let (root, service) = fixture(true);
+        let candidate =
+            CandidateDto::from_domain(service.cleanup_candidates().unwrap().remove(0)).unwrap();
+        let baseline = serde_json::to_value(ResponseEnvelope {
+            protocol: PROTOCOL.to_owned(),
+            response: ResponseDto::Candidates {
+                candidates: vec![candidate],
+            },
+        })
+        .unwrap();
+        assert!(candidates_from_response(
+            decode_response(&frame_body(&serde_json::to_vec(&baseline).unwrap())).unwrap()
+        )
+        .is_ok());
+
+        let objects = baseline["response"]["candidates"][0]["objects"]
+            .as_array()
+            .unwrap();
+        let namespace_index = objects
+            .iter()
+            .position(|object| object["kind"] == "Namespace")
+            .unwrap();
+        let ordinary = objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| object["kind"] != "Namespace")
+            .map(|(index, _)| index)
+            .take(2)
+            .collect::<Vec<_>>();
+        let mut hostile = Vec::new();
+
+        let mut wrong_owner = baseline.clone();
+        wrong_owner["response"]["candidates"][0]["objects"][ordinary[0]]["owner_label"] =
+            Value::String("foreign-cleanup-owner".into());
+        hostile.push(wrong_owner);
+
+        let mut wrong_namespace_name = baseline.clone();
+        wrong_namespace_name["response"]["candidates"][0]["objects"][namespace_index]["name"] =
+            Value::String("sandbox-foreign".into());
+        hostile.push(wrong_namespace_name);
+
+        let mut wrong_namespace_uid = baseline.clone();
+        wrong_namespace_uid["response"]["candidates"][0]["objects"][namespace_index]["uid"] =
+            Value::String("foreign-namespace-uid".into());
+        hostile.push(wrong_namespace_uid);
+
+        let mut missing_namespace = baseline.clone();
+        missing_namespace["response"]["candidates"][0]["objects"]
+            .as_array_mut()
+            .unwrap()
+            .remove(namespace_index);
+        hostile.push(missing_namespace);
+
+        let mut duplicate_namespace = baseline.clone();
+        let mut namespace =
+            duplicate_namespace["response"]["candidates"][0]["objects"][namespace_index].clone();
+        namespace["uid"] = Value::String("duplicate-namespace-uid".into());
+        duplicate_namespace["response"]["candidates"][0]["objects"]
+            .as_array_mut()
+            .unwrap()
+            .push(namespace);
+        hostile.push(duplicate_namespace);
+
+        let mut duplicate_identity = baseline.clone();
+        for field in ["kind", "namespace", "name"] {
+            duplicate_identity["response"]["candidates"][0]["objects"][ordinary[1]][field] =
+                duplicate_identity["response"]["candidates"][0]["objects"][ordinary[0]][field]
+                    .clone();
+        }
+        hostile.push(duplicate_identity);
+
+        let mut duplicate_uid = baseline;
+        duplicate_uid["response"]["candidates"][0]["objects"][ordinary[1]]["uid"] =
+            duplicate_uid["response"]["candidates"][0]["objects"][ordinary[0]]["uid"].clone();
+        hostile.push(duplicate_uid);
+
+        for response in hostile {
+            let decoded = decode_response(&frame_body(&serde_json::to_vec(&response).unwrap()))
+                .expect("hostile candidate still has a well-formed response envelope");
+            assert!(matches!(
+                candidates_from_response(decoded),
+                Err(CleanupStateError::Transport)
+            ));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn start_authenticated_test_server(
+        service: Service,
+        certificate: PathBuf,
+        private_key: PathBuf,
+        now: i64,
+        request_count: usize,
+    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        crate::controller_state_transport::allow_test_bound_port(endpoint.port());
+        let inputs = crate::controller_state_transport::server_inputs(certificate, private_key);
+        let binding = crate::controller_state_transport::role_binding(
+            Role::Cleanup,
+            "cleanup-uid".to_owned(),
+        )
+        .unwrap();
+        let (transport, mut token_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let token_reviews = tokio::spawn(async move {
+            for _ in 0..request_count {
+                let (request, send) = token_handle.next_request().await.unwrap();
+                let body: Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                assert_eq!(body["spec"]["token"], "cleanup-state-token");
+                send.send_response(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .body(kube::client::Body::from(
+                            serde_json::to_vec(&json!({
+                                "apiVersion":"authentication.k8s.io/v1",
+                                "kind":"TokenReview",
+                                "metadata":{},
+                                "spec":body["spec"],
+                                "status":{
+                                    "authenticated":true,
+                                    "audiences":["https://kapsel.dev/sandbox/controller-state/v1"],
+                                    "user":{
+                                        "username":concat!(
+                                            "system:serviceaccount:kapsel-sandbox-system:",
+                                            "sandbox-cleanup"
+                                        ),
+                                        "uid":"cleanup-uid"
+                                    }
+                                }
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                );
+            }
+        });
+        let server = tokio::spawn(async move {
+            for _ in 0..request_count {
+                let (connection, _) = listener.accept().await.unwrap();
+                let service = service.clone();
+                crate::controller_state_transport::handle_connection(
+                    connection,
+                    &inputs,
+                    &binding,
+                    KubernetesClient::new(transport.clone(), "default"),
+                    move |payload| async move { handle(&service, &payload, now) },
+                )
+                .await
+                .unwrap();
+            }
+            token_reviews.await.unwrap();
+        });
+        (endpoint, server)
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one role-authentication vector keeps the complete private transport proof visible"
+    )]
+    async fn concrete_remote_client_crosses_cleanup_tls_and_exact_role_authentication() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        let (root, service) = fixture(true);
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/controller-transport/current");
+        let certificate = root.join("tls.crt");
+        let private_key = root.join("tls.key");
+        let ca_bundle = root.join("ca.crt");
+        let token = root.join("state-token");
+        for (source_name, destination, mode) in [
+            ("cert.pem", &certificate, 0o400),
+            ("key.pem", &private_key, 0o600),
+            ("ca.pem", &ca_bundle, 0o400),
+        ] {
+            fs::copy(source.join(source_name), destination).unwrap();
+            fs::set_permissions(destination, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fs::write(&token, b"cleanup-state-token").unwrap();
+        fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let endpoint = listener.local_addr().unwrap();
+        crate::controller_state_transport::allow_test_bound_port(endpoint.port());
+        let server_inputs =
+            crate::controller_state_transport::server_inputs(certificate, private_key);
+        let binding = crate::controller_state_transport::role_binding(
+            Role::Cleanup,
+            "cleanup-uid".to_owned(),
+        )
+        .unwrap();
+        let (transport, mut token_review_handle) =
+            mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+        let token_reviews = tokio::spawn(async move {
+            for _ in 0..8 {
+                let (request, send) = token_review_handle.next_request().await.unwrap();
+                let body: Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                assert_eq!(body["spec"]["token"], "cleanup-state-token");
+                send.send_response(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .body(kube::client::Body::from(
+                            serde_json::to_vec(&json!({
+                                "apiVersion":"authentication.k8s.io/v1",
+                                "kind":"TokenReview",
+                                "metadata":{},
+                                "spec":body["spec"],
+                                "status":{
+                                    "authenticated":true,
+                                    "audiences":["https://kapsel.dev/sandbox/controller-state/v1"],
+                                    "user":{
+                                        "username":concat!(
+                                            "system:serviceaccount:kapsel-sandbox-system:",
+                                            "sandbox-cleanup"
+                                        ),
+                                        "uid":"cleanup-uid"
+                                    }
+                                }
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                );
+            }
+        });
+        let server_service = service.clone();
+        let server = tokio::spawn(async move {
+            for request_index in 0..8 {
+                let (connection, _) = listener.accept().await.unwrap();
+                let service = server_service.clone();
+                crate::controller_state_transport::handle_connection(
+                    connection,
+                    &server_inputs,
+                    &binding,
+                    KubernetesClient::new(transport.clone(), "default"),
+                    move |payload| async move {
+                        let now = if request_index >= 4 {
+                            NOW + 902
+                        } else {
+                            NOW + 2
+                        };
+                        handle(&service, &payload, now)
+                    },
+                )
+                .await
+                .unwrap();
+            }
+        });
+        let digest: [u8; 32] = Sha256::digest(fs::read(&ca_bundle).unwrap()).into();
+        let client = CleanupStateClient::new(endpoint, ca_bundle, digest, 1, token).unwrap();
+
+        let candidate = client.list_candidates().await.unwrap().remove(0);
+        client.start_cleanup(&candidate).await.unwrap();
+        client.record_failure(&candidate).await.unwrap();
+        let failed = client.list_candidates().await.unwrap().remove(0);
+        client.escalate_cleanup(&failed).await.unwrap();
+        let escalated = client.list_candidates().await.unwrap().remove(0);
+        assert!(escalated.escalated);
+        let evidence = CleanupAbsenceEvidence {
+            namespace_uid: escalated.namespace_uid.clone(),
+            objects: escalated
+                .objects
+                .iter()
+                .map(|object| CleanupObjectAbsence {
+                    kind: object.kind.clone(),
+                    namespace: object.namespace.clone(),
+                    name: object.name.clone(),
+                    uid: object.uid.clone(),
+                    owner_label: object.owner_label.clone(),
+                    present: false,
+                })
+                .collect(),
+        };
+        client
+            .complete_cleanup(&escalated, &evidence)
+            .await
+            .unwrap();
+        assert!(client.list_candidates().await.unwrap().is_empty());
+        server.await.unwrap();
+        token_reviews.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::panic,
+        clippy::too_many_lines,
+        reason = "intentional handler panic drops each committed response before transport reply"
+    )]
+    async fn fresh_remote_client_relists_and_continues_after_each_committed_response_loss() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        for operation in ["start", "failure", "escalation", "completion"] {
+            let (root, service) = fixture(true);
+            let owner = format!("cleanup-{RUN}");
+            if matches!(operation, "failure" | "escalation" | "completion") {
+                service
+                    .start_cleanup(RUN, &owner, "uid-00", NOW + 2)
+                    .unwrap();
+            }
+            if operation == "escalation" {
+                service
+                    .fail_cleanup(RUN, &owner, "uid-00", NOW + 2)
+                    .unwrap();
+            }
+            let candidate = service.cleanup_candidates().unwrap().remove(0);
+            let evidence = CleanupAbsenceEvidence {
+                namespace_uid: candidate.namespace_uid.clone(),
+                objects: candidate
+                    .objects
+                    .iter()
+                    .map(|object| CleanupObjectAbsence {
+                        kind: object.kind.clone(),
+                        namespace: object.namespace.clone(),
+                        name: object.name.clone(),
+                        uid: object.uid.clone(),
+                        owner_label: object.owner_label.clone(),
+                        present: false,
+                    })
+                    .collect(),
+            };
+            let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/controller-transport/current");
+            let certificate = root.join("tls.crt");
+            let private_key = root.join("tls.key");
+            let ca_bundle = root.join("ca.crt");
+            let token = root.join("state-token");
+            for (source_name, destination, mode) in [
+                ("cert.pem", &certificate, 0o400),
+                ("key.pem", &private_key, 0o600),
+                ("ca.pem", &ca_bundle, 0o400),
+            ] {
+                fs::copy(source.join(source_name), destination).unwrap();
+                fs::set_permissions(destination, fs::Permissions::from_mode(mode)).unwrap();
+            }
+            fs::write(&token, b"cleanup-state-token").unwrap();
+            fs::set_permissions(&token, fs::Permissions::from_mode(0o600)).unwrap();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let endpoint = listener.local_addr().unwrap();
+            crate::controller_state_transport::allow_test_bound_port(endpoint.port());
+            let inputs = crate::controller_state_transport::server_inputs(
+                certificate.clone(),
+                private_key.clone(),
+            );
+            let binding = crate::controller_state_transport::role_binding(
+                Role::Cleanup,
+                "cleanup-uid".to_owned(),
+            )
+            .unwrap();
+            let (transport, mut token_handle) = mock::pair::<
+                http::Request<kube::client::Body>,
+                http::Response<kube::client::Body>,
+            >();
+            let token_review = tokio::spawn(async move {
+                let (request, send) = token_handle.next_request().await.unwrap();
+                let body: Value =
+                    serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
+                        .unwrap();
+                send.send_response(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .body(kube::client::Body::from(
+                            serde_json::to_vec(&json!({
+                                "apiVersion":"authentication.k8s.io/v1",
+                                "kind":"TokenReview",
+                                "metadata":{},
+                                "spec":body["spec"],
+                                "status":{
+                                    "authenticated":true,
+                                    "audiences":["https://kapsel.dev/sandbox/controller-state/v1"],
+                                    "user":{
+                                        "username":concat!(
+                                            "system:serviceaccount:kapsel-sandbox-system:",
+                                            "sandbox-cleanup"
+                                        ),
+                                        "uid":"cleanup-uid"
+                                    }
+                                }
+                            }))
+                            .unwrap(),
+                        ))
+                        .unwrap(),
+                );
+            });
+            let committed_service = service.clone();
+            let server = tokio::spawn(async move {
+                let (connection, _) = listener.accept().await.unwrap();
+                crate::controller_state_transport::handle_connection(
+                    connection,
+                    &inputs,
+                    &binding,
+                    KubernetesClient::new(transport, "default"),
+                    move |payload| async move {
+                        let now = if operation == "escalation" {
+                            NOW + 902
+                        } else {
+                            NOW + 3
+                        };
+                        let response = handle(&committed_service, &payload, now);
+                        assert!(matches!(
+                            decode_response(&response),
+                            Ok(ResponseDto::Committed {})
+                        ));
+                        panic!("drop committed response")
+                    },
+                )
+                .await
+                .unwrap();
+            });
+            let digest: [u8; 32] = Sha256::digest(fs::read(&ca_bundle).unwrap()).into();
+            let client =
+                CleanupStateClient::new(endpoint, ca_bundle.clone(), digest, 1, token.clone())
+                    .unwrap();
+            let result = match operation {
+                "start" => client.start_cleanup(&candidate).await,
+                "failure" => client.record_failure(&candidate).await,
+                "escalation" => client.escalate_cleanup(&candidate).await,
+                "completion" => client.complete_cleanup(&candidate, &evidence).await,
+                _ => unreachable!(),
+            };
+            assert_eq!(result, Err(CleanupStateError::Transport), "{operation}");
+            assert!(server.await.is_err(), "{operation}");
+            token_review.await.unwrap();
+
+            let recovery_now = match operation {
+                "failure" => NOW + 902,
+                "escalation" => NOW + 903,
+                _ => NOW + 4,
+            };
+            let recovery_requests = if operation == "completion" { 1 } else { 2 };
+            let (recovery_endpoint, recovery_server) = start_authenticated_test_server(
+                service.clone(),
+                certificate,
+                private_key,
+                recovery_now,
+                recovery_requests,
+            )
+            .await;
+            let fresh_client =
+                CleanupStateClient::new(recovery_endpoint, ca_bundle, digest, 1, token).unwrap();
+            let relisted = fresh_client.list_candidates().await.unwrap();
+            match operation {
+                "start" => {
+                    assert_eq!(relisted[0].state, "running");
+                    fresh_client.record_failure(&relisted[0]).await.unwrap();
+                },
+                "failure" => {
+                    assert_eq!(relisted[0].state, "failed");
+                    fresh_client.escalate_cleanup(&relisted[0]).await.unwrap();
+                },
+                "escalation" => {
+                    assert!(relisted[0].escalated);
+                    fresh_client
+                        .complete_cleanup(&relisted[0], &evidence)
+                        .await
+                        .unwrap();
+                },
+                "completion" => assert!(relisted.is_empty()),
+                _ => unreachable!(),
+            }
+            recovery_server.await.unwrap();
+            let continued = service.cleanup_candidates().unwrap();
+            match operation {
+                "start" => assert_eq!(continued[0].state, "failed"),
+                "failure" => assert!(continued[0].escalated),
+                "escalation" | "completion" => assert!(continued.is_empty()),
+                _ => unreachable!(),
+            }
+            let snapshot = service.snapshot(RUN, NOW + 903).unwrap();
+            assert!(snapshot.receiver_result.is_none());
+            assert!(!snapshot.receipt_available);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn concrete_local_client_crosses_all_cleanup_operations() {
+        let (root, service) = fixture(true);
+        let client = CleanupStateClient::local(service.clone());
+        client.set_test_now(NOW + 2);
+        let candidate = client.list_candidates().await.unwrap().remove(0);
+        assert_eq!(candidate.state, "pending");
+        client.start_cleanup(&candidate).await.unwrap();
+        client.record_failure(&candidate).await.unwrap();
+        client.set_test_now(NOW + 902);
+        let failed = client.list_candidates().await.unwrap().remove(0);
+        client.escalate_cleanup(&failed).await.unwrap();
+        let escalated = client.list_candidates().await.unwrap().remove(0);
+        assert!(escalated.escalated);
+        let evidence = CleanupAbsenceEvidence {
+            namespace_uid: escalated.namespace_uid.clone(),
+            objects: escalated
+                .objects
+                .iter()
+                .map(|object| CleanupObjectAbsence {
+                    kind: object.kind.clone(),
+                    namespace: object.namespace.clone(),
+                    name: object.name.clone(),
+                    uid: object.uid.clone(),
+                    owner_label: object.owner_label.clone(),
+                    present: false,
+                })
+                .collect(),
+        };
+        client
+            .complete_cleanup(&escalated, &evidence)
+            .await
+            .unwrap();
+        assert!(client.list_candidates().await.unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
     const NOW: i64 = 1_774_051_200;

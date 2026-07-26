@@ -20,13 +20,13 @@ use std::{
 };
 
 use kapsel_sandbox::{
-    run_cleanup_role, run_runner_process, run_scheduler_role, run_scheduler_state_role,
-    serve_private_handoff, set_global_stop, Service,
+    run_cleanup_role, run_cleanup_state_role, run_runner_process, run_scheduler_role,
+    run_scheduler_state_role, serve_private_handoff, set_global_stop, Service,
 };
 
 const USAGE: &str = concat!(
     "usage: kapsel-sandbox <init|serve|handoff-serve|retention|scheduler-state-serve|",
-    "scheduler|cleanup|stop|clear-stop|runner> <role-specific arguments>"
+    "cleanup-state-serve|scheduler|cleanup|stop|clear-stop|runner> <role-specific arguments>"
 );
 const RETENTION_INTERVAL: Duration = Duration::from_mins(1);
 
@@ -40,6 +40,10 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive role dispatch keeps native authority composition visible"
+)]
 fn run() -> Result<(), &'static str> {
     let mut arguments = env::args().skip(1);
     if arguments.next().as_deref() == Some("runner") {
@@ -51,13 +55,33 @@ fn run() -> Result<(), &'static str> {
         Command::Scheduler => {
             let state_token = configuration.state_token.ok_or(USAGE)?;
             let kubernetes_token = configuration.kubernetes_token.ok_or(USAGE)?;
-            require_distinct_tokens(&state_token, &kubernetes_token)?;
+            require_distinct_tokens("scheduler", &state_token, &kubernetes_token)?;
             let kubernetes_ca = configuration.kubernetes_ca.ok_or(USAGE)?;
             let runtime = native_runtime("scheduler")?;
             runtime.block_on(async move {
                 let client =
                     projected_kubernetes_client("scheduler", kubernetes_ca, kubernetes_token)?;
                 run_scheduler_role(
+                    configuration.state_endpoint.ok_or(USAGE)?,
+                    configuration.state_ca_bundle.ok_or(USAGE)?,
+                    configuration.state_ca_sha256.ok_or(USAGE)?,
+                    configuration.state_ca_root_count.ok_or(USAGE)?,
+                    state_token,
+                    client,
+                )
+                .await
+            })
+        },
+        Command::Cleanup => {
+            let state_token = configuration.state_token.ok_or(USAGE)?;
+            let kubernetes_token = configuration.kubernetes_token.ok_or(USAGE)?;
+            require_distinct_tokens("cleanup", &state_token, &kubernetes_token)?;
+            let kubernetes_ca = configuration.kubernetes_ca.ok_or(USAGE)?;
+            let runtime = native_runtime("cleanup")?;
+            runtime.block_on(async move {
+                let client =
+                    projected_kubernetes_client("cleanup", kubernetes_ca, kubernetes_token)?;
+                run_cleanup_role(
                     configuration.state_endpoint.ok_or(USAGE)?,
                     configuration.state_ca_bundle.ok_or(USAGE)?,
                     configuration.state_ca_sha256.ok_or(USAGE)?,
@@ -84,7 +108,7 @@ fn run() -> Result<(), &'static str> {
         | Command::HandoffServe
         | Command::Retention
         | Command::SchedulerStateServe
-        | Command::Cleanup => {
+        | Command::CleanupStateServe => {
             let database = configuration.database.as_ref().ok_or(USAGE)?;
             let receipts = configuration.receipts.as_ref().ok_or(USAGE)?;
             let digest_key_file = configuration.digest_key_file.as_ref().ok_or(USAGE)?;
@@ -128,12 +152,28 @@ fn run() -> Result<(), &'static str> {
                         .await
                     })
                 },
-                Command::Cleanup => {
-                    let client = in_cluster_client("cleanup")?;
-                    let runtime = native_runtime("cleanup")?;
-                    runtime.block_on(run_cleanup_role(service, client))
+                Command::CleanupStateServe => {
+                    let runtime = native_runtime("cleanup-state")?;
+                    runtime.block_on(async move {
+                        let client = projected_kubernetes_client(
+                            "cleanup-state",
+                            configuration.kubernetes_ca.ok_or(USAGE)?,
+                            configuration.kubernetes_token.ok_or(USAGE)?,
+                        )?;
+                        run_cleanup_state_role(
+                            service,
+                            configuration.listen.ok_or(USAGE)?,
+                            configuration.state_certificate.ok_or(USAGE)?,
+                            configuration.state_private_key.ok_or(USAGE)?,
+                            configuration.cleanup_service_account_uid.ok_or(USAGE)?,
+                            client,
+                        )
+                        .await
+                    })
                 },
-                Command::Scheduler | Command::Stop | Command::ClearStop => unreachable!(),
+                Command::Scheduler | Command::Cleanup | Command::Stop | Command::ClearStop => {
+                    unreachable!()
+                },
             }
         },
     }
@@ -146,10 +186,14 @@ fn projected_kubernetes_client(
 ) -> Result<kube::Client, &'static str> {
     let configuration_error = match role {
         "scheduler-state" => "scheduler-state Kubernetes configuration is unavailable",
+        "cleanup-state" => "cleanup-state Kubernetes configuration is unavailable",
+        "cleanup" => "cleanup Kubernetes configuration is unavailable",
         _ => "scheduler Kubernetes configuration is unavailable",
     };
     let client_error = match role {
         "scheduler-state" => "scheduler-state Kubernetes client is unavailable",
+        "cleanup-state" => "cleanup-state Kubernetes client is unavailable",
+        "cleanup" => "cleanup Kubernetes client is unavailable",
         _ => "scheduler Kubernetes client is unavailable",
     };
     let host = env::var("KUBERNETES_SERVICE_HOST").map_err(|_| configuration_error)?;
@@ -168,19 +212,6 @@ fn projected_kubernetes_client(
     kube::Client::try_from(config).map_err(|_| client_error)
 }
 
-fn in_cluster_client(role: &str) -> Result<kube::Client, &'static str> {
-    let config = kube::Config::incluster().map_err(|_| match role {
-        "cleanup" => "cleanup Kubernetes configuration is unavailable",
-        "scheduler-state" => "scheduler-state Kubernetes configuration is unavailable",
-        _ => "scheduler Kubernetes configuration is unavailable",
-    })?;
-    kube::Client::try_from(config).map_err(|_| match role {
-        "cleanup" => "cleanup Kubernetes client is unavailable",
-        "scheduler-state" => "scheduler-state Kubernetes client is unavailable",
-        _ => "scheduler Kubernetes client is unavailable",
-    })
-}
-
 fn native_runtime(role: &str) -> Result<tokio::runtime::Runtime, &'static str> {
     tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -189,6 +220,7 @@ fn native_runtime(role: &str) -> Result<tokio::runtime::Runtime, &'static str> {
         .map_err(|_| match role {
             "cleanup" => "cleanup runtime is unavailable",
             "scheduler-state" => "scheduler-state runtime is unavailable",
+            "cleanup-state" => "cleanup-state runtime is unavailable",
             _ => "scheduler runtime is unavailable",
         })
 }
@@ -215,6 +247,7 @@ enum Command {
     HandoffServe,
     Retention,
     SchedulerStateServe,
+    CleanupStateServe,
     Scheduler,
     Cleanup,
     Stop,
@@ -237,11 +270,16 @@ struct Configuration {
     state_certificate: Option<PathBuf>,
     state_private_key: Option<PathBuf>,
     scheduler_service_account_uid: Option<String>,
+    cleanup_service_account_uid: Option<String>,
     kubernetes_ca: Option<PathBuf>,
     kubernetes_token: Option<PathBuf>,
 }
 
 impl Configuration {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive parser keeps the fixed role argument vocabulary visible"
+    )]
     fn parse(arguments: impl Iterator<Item = String>) -> Result<Self, &'static str> {
         let mut arguments = arguments;
         let command = match arguments.next().as_deref() {
@@ -250,6 +288,7 @@ impl Configuration {
             Some("handoff-serve") => Command::HandoffServe,
             Some("retention") => Command::Retention,
             Some("scheduler-state-serve") => Command::SchedulerStateServe,
+            Some("cleanup-state-serve") => Command::CleanupStateServe,
             Some("scheduler") => Command::Scheduler,
             Some("cleanup") => Command::Cleanup,
             Some("stop") => Command::Stop,
@@ -272,6 +311,7 @@ impl Configuration {
             state_certificate: None,
             state_private_key: None,
             scheduler_service_account_uid: None,
+            cleanup_service_account_uid: None,
             kubernetes_ca: None,
             kubernetes_token: None,
         };
@@ -327,6 +367,11 @@ impl Configuration {
                 {
                     configuration.scheduler_service_account_uid = Some(value);
                 },
+                "--cleanup-service-account-uid"
+                    if configuration.cleanup_service_account_uid.is_none() =>
+                {
+                    configuration.cleanup_service_account_uid = Some(value);
+                },
                 "--kubernetes-ca" if configuration.kubernetes_ca.is_none() => {
                     configuration.kubernetes_ca = Some(absolute(PathBuf::from(value))?);
                 },
@@ -351,7 +396,8 @@ impl Configuration {
             || self.state_token.is_some();
         let state_server = self.state_certificate.is_some()
             || self.state_private_key.is_some()
-            || self.scheduler_service_account_uid.is_some();
+            || self.scheduler_service_account_uid.is_some()
+            || self.cleanup_service_account_uid.is_some();
         let kubernetes_client = self.kubernetes_ca.is_some() || self.kubernetes_token.is_some();
         match self.command {
             Command::Scheduler
@@ -375,6 +421,27 @@ impl Configuration {
             {
                 Err(USAGE)
             },
+            Command::Cleanup
+                if self.database.is_some()
+                    || self.receipts.is_some()
+                    || self.digest_key_file.is_some()
+                    || self.origin.is_some()
+                    || self.listen.is_some()
+                    || self.handoff_endpoint.is_some()
+                    || state_server
+                    || self.kubernetes_ca.is_none()
+                    || self.kubernetes_token.is_none()
+                    || self.state_endpoint.is_none()
+                    || self
+                        .state_endpoint
+                        .is_some_and(|value| value.port() != 8083)
+                    || self.state_ca_bundle.is_none()
+                    || self.state_ca_sha256.is_none()
+                    || !matches!(self.state_ca_root_count, Some(1 | 2))
+                    || self.state_token.is_none() =>
+            {
+                Err(USAGE)
+            },
             Command::SchedulerStateServe
                 if !kubernetes_client
                     || self.kubernetes_ca.is_none()
@@ -385,10 +452,31 @@ impl Configuration {
                     || self.digest_key_file.is_none()
                     || self.origin.is_some()
                     || self.listen.is_none()
+                    || self.listen.is_some_and(|value| value.port() != 8082)
                     || self.handoff_endpoint.is_none()
                     || self.state_certificate.is_none()
                     || self.state_private_key.is_none()
-                    || self.scheduler_service_account_uid.is_none() =>
+                    || self.scheduler_service_account_uid.is_none()
+                    || self.cleanup_service_account_uid.is_some() =>
+            {
+                Err(USAGE)
+            },
+            Command::CleanupStateServe
+                if !kubernetes_client
+                    || self.kubernetes_ca.is_none()
+                    || self.kubernetes_token.is_none()
+                    || state_client
+                    || self.database.is_none()
+                    || self.receipts.is_none()
+                    || self.digest_key_file.is_none()
+                    || self.origin.is_some()
+                    || self.listen.is_none()
+                    || self.listen.is_some_and(|value| value.port() != 8083)
+                    || self.handoff_endpoint.is_some()
+                    || self.state_certificate.is_none()
+                    || self.state_private_key.is_none()
+                    || self.scheduler_service_account_uid.is_some()
+                    || self.cleanup_service_account_uid.is_none() =>
             {
                 Err(USAGE)
             },
@@ -443,32 +531,27 @@ impl Configuration {
             {
                 Err("retention does not accept transport configuration")
             },
-            Command::Cleanup
-                if state_client
-                    || state_server
-                    || kubernetes_client
-                    || self.origin.is_some()
-                    || self.listen.is_some()
-                    || self.handoff_endpoint.is_some() =>
-            {
-                Err("cleanup does not accept transport configuration")
-            },
             _ => Ok(()),
         }
     }
 }
 
 fn require_distinct_tokens(
+    role: &str,
     state_token: &Path,
     kubernetes_token: &Path,
 ) -> Result<(), &'static str> {
+    let diagnostic = match role {
+        "cleanup" => "cleanup state token must be distinct from Kubernetes API authority",
+        _ => "scheduler state token must be distinct from Kubernetes API authority",
+    };
     if state_token == kubernetes_token {
-        return Err("scheduler state token must be distinct from Kubernetes API authority");
+        return Err(diagnostic);
     }
     if let (Ok(state), Ok(kubernetes)) = (fs::metadata(state_token), fs::metadata(kubernetes_token))
     {
         if state.dev() == kubernetes.dev() && state.ino() == kubernetes.ino() {
-            return Err("scheduler state token must be distinct from Kubernetes API authority");
+            return Err(diagnostic);
         }
     }
     Ok(())
