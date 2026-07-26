@@ -465,8 +465,18 @@ The GKE candidate therefore locks this control topology before complete renderin
 - Secret Manager access belongs only to separate staging identities. The system and controller
   service accounts receive no Secret Manager IAM. Tombstone staging produces only the owner-private
   Kubernetes Secret mounted by the system-state Pod. Per-run grant and receipt staging produces only
-  the exact read-only runner channels, and every temporary Kubernetes object that cleanup may delete
-  must have its UID/owner evidence durably appended before runner creation.
+  the exact read-only runner channels. Before any per-run external object is created, the system
+  durably fixes its complete server-derived resource-slot inventory. The scheduler then creates or
+  exactly observes one fixed slot and immediately appends its observed UID and cleanup-owner label;
+  exact recovery replay is idempotent, while changed evidence is rejected. After policy verification
+  and registration of the journal, composition, Kubernetes, trust, grant, and receipt-signing slots,
+  handoff assignment may prepare only the fixed lease, endpoint, and credential bytes needed to
+  stage the two handoff channels; that preparation is not Application invocation eligibility. All
+  eight prerequisite channels are registered before runner Pod creation. The runner Pod is created
+  with the exact `kapsel.dev/ownership-registration` scheduling gate, and its UID and owner are
+  registered before the scheduler may remove the gate or Application invocation may be accepted.
+  Cleanup consumes only registered UID/owner evidence. A fixed slot without a registered UID remains
+  setup/recovery work and cannot be ignored, treated as absent, or deleted by name.
 
 The protocols, authenticated transport, stagers, append-only runner-resource registration, projected
 tokens, RBAC, and NetworkPolicies must be implemented and tested before the incomplete
@@ -595,6 +605,11 @@ UTF-8 bytes and no trailing byte. The JSON payload is at most 64 KiB, uses proto
 oversize, truncated, trailing, malformed UTF-8/JSON, duplicate or unknown fields, unknown
 operations, and invalid identities, enum values, inventory counts, or lengths fail before dispatch.
 
+Because no scheduler-state endpoint has been deployed or authorized, `scheduler-state-v1` permits
+this additive, owner-reviewed operation expansion before its Gate 2 evidence lock. The protocol
+token remains `scheduler-state-v1`; the exact codec vectors and both peers change atomically. After
+that lock, any incompatible grammar change requires a new token.
+
 The only requests are:
 
 - list active recoverable run identities with their server-owned policy status in durable admission
@@ -604,19 +619,71 @@ The only requests are:
 - recover or renew one exact lease handle;
 - read the immutable server-owned provisioning specification for one exact current lease;
 - commit one complete policy-verification inventory for that lease;
-- derive its server-owned private handoff assignment;
+- read the complete server-derived external resource-slot inventory and immutable registration
+  status for one exact current lease;
+- append one exact observed UID and cleanup-owner label for one allowed external slot;
+- prepare its server-owned private handoff assignment after policy verification and registration of
+  the six non-handoff prerequisite slots so the exact handoff channels can be staged, without making
+  Application invocation eligible;
 - record setup failure either for recorded resources or for the exact no-resource path; and
 - append the existing deadline fact for one exact current lease.
 
+The external slot inventory is distinct from the eleven admitted `sandbox-policy-v2` objects. It is
+fixed from the run identity and contains exactly these runner-namespace objects, in this order:
+
+1. `PersistentVolumeClaim/kapsel-sandbox-runners/journal-${RUN_ID}`;
+2. `ConfigMap/kapsel-sandbox-runners/runner-composition-${RUN_ID}`;
+3. `ConfigMap/kapsel-sandbox-runners/runner-kubernetes-${RUN_ID}`;
+4. `ConfigMap/kapsel-sandbox-runners/runner-trust-${RUN_ID}`;
+5. `ConfigMap/kapsel-sandbox-runners/runner-handoff-${RUN_ID}`;
+6. `Secret/kapsel-sandbox-runners/runner-grant-${RUN_ID}`;
+7. `Secret/kapsel-sandbox-runners/runner-receipt-signing-${RUN_ID}`;
+8. `Secret/kapsel-sandbox-runners/runner-handoff-${RUN_ID}`; and
+9. `Pod/kapsel-sandbox-runners/runner-${RUN_ID}`.
+
+The first eight are prerequisite slots. Slots 1 through 4, 6, and 7 must be registered before
+handoff assignment is prepared so slots 5 and 8 can be staged, but neither assignment preparation
+nor a mounted credential authorizes Application invocation. All eight immutable UID/owner
+registrations must exist before the Pod may be created. The accepted Gate 1 Pod fixture remains a
+historical lock and is superseded for future runner creation; the later execution renderer must add
+exactly `spec.schedulingGates: [{name: "kapsel.dev/ownership-registration"}]`, and gate removal must
+be its only allowed scheduling-gate mutation. A Pod with that gate is non-runnable. The Pod
+UID/owner registration must exist before gate removal or Application invocation eligibility. The
+system-side invocation transaction independently requires all nine registrations, so an early or
+compromised credential still fails closed. The per-run runner ServiceAccount remains one of the
+eleven policy objects and is not duplicated here. The cluster-owned `kube-root-ca.crt` ConfigMap and
+system-wide controller TLS or tombstone staging objects are not per-run cleanup slots.
+
 Wire DTOs are distinct from domain types. A lease handle carries only run identity, lease identity,
-epoch, and expiry; it never carries the raw handoff credential. Only after exact policy
-verification, the successful handoff-assignment operation appoints a fresh credential and atomically
-replaces the current lease's stored verifier. The raw credential appears only in that response,
-remains redacted from `Debug` and errors, and is never persisted by this adapter. The fixed response
-error vocabulary is `invalid_request`, `not_found`, `busy`, `saturated`, `deadline`, `denied`, and
-`unavailable`; it discloses no storage, provider, SQL, Kubernetes, credential, or receipt
-diagnostic. Recoverable inventories are bounded by the existing eight-active limit, and policy
-inventories by a literal maximum of 16 objects.
+epoch, and expiry; it never carries the raw handoff credential. After exact policy verification and
+six non-handoff prerequisite registrations, the successful handoff-assignment preparation appoints a
+fresh credential and atomically replaces the current lease's stored verifier, but the invocation
+handler still requires all nine registrations. The raw credential appears only in that response,
+remains redacted from `Debug` and errors, and is never persisted by this adapter.
+
+The external-slot response is bounded to the exact nine entries above. Each entry returns only its
+kind, namespace, name, prerequisite classification, and either no observation or its immutable UID
+and owner label. Registration accepts no manifest, object body, content, path, timestamp, lifecycle
+choice, or cleanup action. Only the current unexpired lease after complete policy-v2 verification
+may append. Invocation, terminal projection, or cleanup start forbids new registration. An exact
+already-committed replay under the still-current unexpired lease remains idempotent across those
+lifecycle advances; changed slot identity, UID, owner, namespace, kind, run, cross-slot UID reuse,
+or cross-run UID reuse is denied. Durable expected-but-unregistered slots survive restart and
+prevent the no-resource setup path from claiming absence if any registration exists or any fixed
+slot might have been created. Idempotent migration backfills pending slots only for active legacy
+runs that have not invoked Application. A pre-schema active run whose invocation marker already
+exists retains no external slots, because that implementation could not create them, and may only
+finish same-operation reconciliation and cleanup; every run dispatched by the migrated schema must
+use the nine-slot contract.
+
+The fixed response error vocabulary is `invalid_request`, `not_found`, `busy`, `saturated`,
+`deadline`, `denied`, and `unavailable`; it discloses no storage, provider, SQL, Kubernetes,
+credential, or receipt diagnostic. Recoverable inventories are bounded by the existing eight-active
+limit, policy inventories by a literal maximum of 16 objects, and external slots by exactly nine.
+The normal combined cleanup ownership inventory is exactly 20 objects: eleven verified policy
+objects plus nine external slots. Failed policy observation may retain immutable ownership evidence
+without redefining the eleven-object policy contract; cumulative policy ownership is bounded to 16,
+so cleanup ownership and absence inventories are bounded to 25.
 
 This payload contract adds no listener, network endpoint, TLS, bearer-token processing,
 `TokenReview`, retry loop, or generic request executor. A later authenticated-encryption transport
@@ -647,7 +714,7 @@ The only requests are:
   duplicate, missing, extra, present, or identity-changed evidence.
 
 Wire DTOs are distinct from domain types. Candidate inventories are bounded by the existing literal
-eight-active limit and each ownership/evidence inventory by a literal maximum of 16 objects. The
+eight-active limit and each ownership/evidence inventory by a literal maximum of 25 objects. The
 fixed response error vocabulary is `invalid_payload`, `cleanup_missing`, `cleanup_forbidden`,
 `cleanup_conflict`, and `state_unavailable`; it discloses no storage, SQL, Kubernetes, receipt,
 receiver, or provider diagnostic. Deletion request acceptance is not an operation or evidence value

@@ -263,6 +263,12 @@ impl Scheduler {
                 },
             )
             .await?;
+        let registration_now = clock()?;
+        self.appoint_test_operation_time(registration_now);
+        let inventory = self.state.read_external_resources(lease).await?;
+        if !inventory.invocation_eligible {
+            return Ok(());
+        }
         let assignment_now = clock()?;
         self.appoint_test_operation_time(assignment_now);
         let _assignment = self.state.derive_assignment(lease).await?;
@@ -685,14 +691,13 @@ mod tests {
         clippy::too_many_lines,
         reason = "one table proves each remaining production-adapter ambiguity seam"
     )]
-    async fn remote_scheduler_recovers_reserve_provisioning_and_assignment_response_loss() {
+    async fn remote_scheduler_recovers_reserve_and_provisioning_response_loss() {
         let _network = crate::controller_state_transport::tests::TEST_NETWORK
             .lock()
             .await;
         for (case, operation, first_requests, resources_created) in [
             ("reserve", "reserve_next", 2, false),
             ("provisioning", "read_provisioning", 3, false),
-            ("assignment", "derive_assignment", 16, true),
         ] {
             let (root, service) = fixture();
             let (certificate, private_key, ca_bundle, state_token, ca_digest) =
@@ -812,6 +817,105 @@ mod tests {
             );
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn lost_registration_response_then_exact_retry_converges() {
+        let _network = crate::controller_state_transport::tests::TEST_NETWORK
+            .lock()
+            .await;
+        let (root, service) = fixture();
+        let lease = service.dispatch_next(NOW + 1).unwrap();
+        let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
+        let objects = kubernetes_policy::render(RUN)
+            .into_iter()
+            .enumerate()
+            .map(|(index, object)| ProvisionedObject {
+                identity: object.identity,
+                uid: format!("policy-uid-{index}"),
+                owner_label: specification.cleanup_identity.clone(),
+                content_digest: kubernetes_policy::content_digest(&object.body),
+            })
+            .collect();
+        service
+            .verify_provisioned_target(
+                &lease,
+                &ProvisionedTarget {
+                    namespace_uid: "policy-uid-0".into(),
+                    policy_revision: specification.policy_revision,
+                    policy_inventory_digest: specification.policy_inventory_digest,
+                    cleanup_identity: specification.cleanup_identity.clone(),
+                    objects,
+                },
+                NOW + 1,
+            )
+            .unwrap();
+        let slot = service
+            .external_resource_inventory(&lease, NOW + 1)
+            .unwrap()
+            .slots
+            .remove(0);
+        let (certificate, private_key, ca_bundle, state_token, ca_digest) =
+            state_tls_fixture(&root);
+        let (client, server, token_reviews) = start_state_server(
+            service.clone(),
+            certificate.clone(),
+            private_key.clone(),
+            ca_bundle.clone(),
+            state_token.clone(),
+            ca_digest,
+            NOW + 1,
+            1,
+            Some("register_external_resource"),
+        )
+        .await;
+        assert_eq!(
+            client
+                .register_external_resource(
+                    &lease,
+                    &slot,
+                    "external-uid-0",
+                    &specification.cleanup_identity,
+                )
+                .await,
+            Err(SchedulerStateError::Transport)
+        );
+        server.await.unwrap();
+        token_reviews.await.unwrap();
+        assert_eq!(
+            service
+                .external_resource_inventory(&lease, NOW + 1)
+                .unwrap()
+                .slots[0]
+                .uid
+                .as_deref(),
+            Some("external-uid-0")
+        );
+
+        let (client, server, token_reviews) = start_state_server(
+            service.clone(),
+            certificate,
+            private_key,
+            ca_bundle,
+            state_token,
+            ca_digest,
+            NOW + 1,
+            1,
+            None,
+        )
+        .await;
+        client
+            .register_external_resource(
+                &lease,
+                &slot,
+                "external-uid-0",
+                &specification.cleanup_identity,
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        token_reviews.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

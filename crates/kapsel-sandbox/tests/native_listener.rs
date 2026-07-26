@@ -895,23 +895,24 @@ fn native_scheduler_process_crosses_authenticated_state_and_distinct_kubernetes_
         assert!(started.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(20));
     };
-    let assignment_started = Instant::now();
-    loop {
-        let verifier: Vec<u8> = rusqlite::Connection::open(&database)
-            .unwrap()
-            .query_row(
-                "SELECT handoff_credential_verifier FROM runs WHERE run_id = ?1",
-                [&admission.run_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        if verifier != first_verifier {
-            break;
-        }
-        assert!(scheduler.try_wait().unwrap().is_none());
-        assert!(assignment_started.elapsed() < Duration::from_secs(3));
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(scheduler.try_wait().unwrap().is_none());
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let (verifier, slots, registered): (Vec<u8>, i64, i64) = connection
+        .query_row(
+            concat!(
+                "SELECT handoff_credential_verifier, ",
+                "(SELECT COUNT(*) FROM external_resource_slots WHERE run_id = ?1), ",
+                "(SELECT COUNT(*) FROM external_resource_slots WHERE run_id = ?1 ",
+                "AND uid IS NOT NULL) FROM runs WHERE run_id = ?1"
+            ),
+            [&admission.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(verifier, first_verifier);
+    assert_eq!(slots, 9);
+    assert_eq!(registered, 0);
     let service = Service::open(&database, &receipts, [7; 32], now + 2).unwrap();
     let snapshot = service.snapshot(&admission.run_id, now + 2).unwrap();
     assert!(snapshot.receiver_result.is_none());

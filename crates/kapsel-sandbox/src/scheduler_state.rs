@@ -12,8 +12,9 @@ use tokio::net::TcpListener;
 use crate::{
     bounded_hex_128, bounded_identity,
     controller_state_transport::{self, ClientInputs, Role},
-    object_identity_parts, DispatchLease, HandoffAssignment, PolicyObjectRequirement,
-    ProvisionedObject, ProvisionedTarget, ProvisioningSpecification, Service, ServiceError,
+    object_identity_parts, DispatchLease, ExternalResourceInventory, ExternalResourcePhase,
+    ExternalResourceSlot, HandoffAssignment, PolicyObjectRequirement, ProvisionedObject,
+    ProvisionedTarget, ProvisioningSpecification, Service, ServiceError,
 };
 
 const PROTOCOL: &str = "scheduler-state-v1";
@@ -43,6 +44,13 @@ enum RequestDto {
     CommitPolicy {
         lease: LeaseDto,
         target: ProvisionedTargetDto,
+    },
+    ReadExternalResources {
+        lease: LeaseDto,
+    },
+    RegisterExternalResource {
+        lease: LeaseDto,
+        observation: ExternalResourceObservationDto,
     },
     DeriveAssignment {
         lease: LeaseDto,
@@ -94,6 +102,16 @@ struct ProvisionedObjectDto {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct ExternalResourceObservationDto {
+    kind: String,
+    namespace: String,
+    name: String,
+    uid: String,
+    owner_label: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct ResponseEnvelope {
     protocol: String,
     response: ResponseDto,
@@ -102,12 +120,25 @@ struct ResponseEnvelope {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ResponseDto {
-    Recoverable { runs: Vec<RecoverableDto> },
-    Lease { lease: LeaseDto },
-    Provisioning { specification: ProvisioningDto },
+    Recoverable {
+        runs: Vec<RecoverableDto>,
+    },
+    Lease {
+        lease: LeaseDto,
+    },
+    Provisioning {
+        specification: ProvisioningDto,
+    },
+    ExternalResources {
+        inventory: ExternalResourceInventoryDto,
+    },
     Committed,
-    Assignment { assignment: AssignmentDto },
-    Rejected { error: ErrorDto },
+    Assignment {
+        assignment: AssignmentDto,
+    },
+    Rejected {
+        error: ErrorDto,
+    },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -143,6 +174,34 @@ struct ProvisioningDto {
 struct PolicyObjectRequirementDto {
     identity: String,
     content_digest: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalResourceInventoryDto {
+    assignment_eligible: bool,
+    pod_eligible: bool,
+    invocation_eligible: bool,
+    slots: Vec<ExternalResourceSlotDto>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalResourceSlotDto {
+    kind: String,
+    namespace: String,
+    name: String,
+    phase: ExternalResourcePhaseDto,
+    uid: Option<String>,
+    owner_label: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ExternalResourcePhaseDto {
+    BeforeAssignment,
+    BeforePod,
+    Runner,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -304,6 +363,48 @@ impl SchedulerStateClient {
         self.committed_call(RequestDto::CommitPolicy {
             lease: LeaseDto::from_domain(lease),
             target: ProvisionedTargetDto::from_domain(target),
+        })
+        .await
+    }
+
+    pub(crate) async fn read_external_resources(
+        &self,
+        lease: &DispatchLease,
+    ) -> Result<ExternalResourceInventory, SchedulerStateError> {
+        match self
+            .call(RequestDto::ReadExternalResources {
+                lease: LeaseDto::from_domain(lease),
+            })
+            .await?
+        {
+            ResponseDto::ExternalResources { inventory } => inventory.into_domain(&lease.run_id),
+            _ => Err(SchedulerStateError::Transport),
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "resource stagers consume this locked client operation in the next slice"
+    )]
+    pub(crate) async fn register_external_resource(
+        &self,
+        lease: &DispatchLease,
+        slot: &ExternalResourceSlot,
+        uid: &str,
+        owner_label: &str,
+    ) -> Result<(), SchedulerStateError> {
+        let (kind, namespace, name) = object_identity_parts(&slot.identity)
+            .map_err(|_| SchedulerStateError::InvalidRequest)?;
+        let namespace = namespace.ok_or(SchedulerStateError::InvalidRequest)?;
+        self.committed_call(RequestDto::RegisterExternalResource {
+            lease: LeaseDto::from_domain(lease),
+            observation: ExternalResourceObservationDto {
+                kind,
+                namespace,
+                name,
+                uid: uid.to_owned(),
+                owner_label: owner_label.to_owned(),
+            },
         })
         .await
     }
@@ -532,9 +633,10 @@ fn validate_request(request: &RequestDto) -> Result<(), ErrorDto> {
             }
             Ok(())
         },
-        RequestDto::ReadProvisioning { lease } | RequestDto::DeriveAssignment { lease } => {
-            validate_lease(lease)
-        },
+        RequestDto::ReadProvisioning { lease }
+        | RequestDto::ReadExternalResources { lease }
+        | RequestDto::DeriveAssignment { lease }
+        | RequestDto::AppendDeadline { lease } => validate_lease(lease),
         RequestDto::CommitPolicy { lease, target } => {
             validate_lease(lease)?;
             valid_identity(&target.namespace_uid)?;
@@ -552,6 +654,18 @@ fn validate_request(request: &RequestDto) -> Result<(), ErrorDto> {
             }
             Ok(())
         },
+        RequestDto::RegisterExternalResource { lease, observation } => {
+            validate_lease(lease)?;
+            valid_identity(&observation.kind)?;
+            valid_identity(&observation.namespace)?;
+            valid_identity(&observation.name)?;
+            valid_identity(&observation.uid)?;
+            valid_identity(&observation.owner_label)?;
+            valid_object_identity(&format!(
+                "{}/{}/{}",
+                observation.kind, observation.namespace, observation.name
+            ))
+        },
         RequestDto::RecordSetupFailure {
             lease,
             cleanup_identity,
@@ -560,7 +674,6 @@ fn validate_request(request: &RequestDto) -> Result<(), ErrorDto> {
             validate_lease(lease)?;
             valid_identity(cleanup_identity)
         },
-        RequestDto::AppendDeadline { lease } => validate_lease(lease),
     }
 }
 
@@ -627,6 +740,32 @@ fn dispatch(
             let lease = lease.into_domain()?;
             service
                 .verify_provisioned_target(&lease, &target.into_domain(), now)
+                .map_err(map_service_error)?;
+            Ok(ResponseDto::Committed)
+        },
+        RequestDto::ReadExternalResources { lease } => {
+            let lease = lease.into_domain()?;
+            let inventory = service
+                .external_resource_inventory(&lease, now)
+                .map_err(map_service_error)?;
+            Ok(ResponseDto::ExternalResources {
+                inventory: ExternalResourceInventoryDto::from_domain(inventory)?,
+            })
+        },
+        RequestDto::RegisterExternalResource { lease, observation } => {
+            let lease = lease.into_domain()?;
+            let identity = format!(
+                "{}/{}/{}",
+                observation.kind, observation.namespace, observation.name
+            );
+            service
+                .register_external_resource(
+                    &lease,
+                    &identity,
+                    &observation.uid,
+                    &observation.owner_label,
+                    now,
+                )
                 .map_err(map_service_error)?;
             Ok(ResponseDto::Committed)
         },
@@ -801,6 +940,155 @@ impl ProvisioningDto {
                 .into_iter()
                 .map(PolicyObjectRequirementDto::from_domain)
                 .collect(),
+        })
+    }
+}
+
+impl ExternalResourceInventoryDto {
+    fn from_domain(inventory: ExternalResourceInventory) -> Result<Self, ErrorDto> {
+        if inventory.slots.len() != 9 {
+            return Err(ErrorDto::Unavailable);
+        }
+        Ok(Self {
+            assignment_eligible: inventory.assignment_eligible,
+            pod_eligible: inventory.pod_eligible,
+            invocation_eligible: inventory.invocation_eligible,
+            slots: inventory
+                .slots
+                .into_iter()
+                .map(ExternalResourceSlotDto::from_domain)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    fn into_domain(self, run_id: &str) -> Result<ExternalResourceInventory, SchedulerStateError> {
+        if self.slots.len() != 9 {
+            return Err(SchedulerStateError::Transport);
+        }
+        let slots = self
+            .slots
+            .into_iter()
+            .map(ExternalResourceSlotDto::into_domain)
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected = [
+            (
+                "PersistentVolumeClaim",
+                "journal",
+                ExternalResourcePhase::BeforeAssignment,
+            ),
+            (
+                "ConfigMap",
+                "runner-composition",
+                ExternalResourcePhase::BeforeAssignment,
+            ),
+            (
+                "ConfigMap",
+                "runner-kubernetes",
+                ExternalResourcePhase::BeforeAssignment,
+            ),
+            (
+                "ConfigMap",
+                "runner-trust",
+                ExternalResourcePhase::BeforeAssignment,
+            ),
+            (
+                "ConfigMap",
+                "runner-handoff",
+                ExternalResourcePhase::BeforePod,
+            ),
+            (
+                "Secret",
+                "runner-grant",
+                ExternalResourcePhase::BeforeAssignment,
+            ),
+            (
+                "Secret",
+                "runner-receipt-signing",
+                ExternalResourcePhase::BeforeAssignment,
+            ),
+            ("Secret", "runner-handoff", ExternalResourcePhase::BeforePod),
+            ("Pod", "runner", ExternalResourcePhase::Runner),
+        ];
+        if slots
+            .iter()
+            .zip(expected)
+            .any(|(slot, (kind, prefix, phase))| {
+                slot.identity != format!("{kind}/kapsel-sandbox-runners/{prefix}-{run_id}")
+                    || slot.phase != phase
+            })
+        {
+            return Err(SchedulerStateError::Transport);
+        }
+        let registered = |phase| {
+            slots
+                .iter()
+                .filter(|slot| slot.phase == phase)
+                .all(|slot| slot.uid.is_some() && slot.owner_label.is_some())
+        };
+        let assignment_eligible = registered(ExternalResourcePhase::BeforeAssignment);
+        let pod_eligible = assignment_eligible && registered(ExternalResourcePhase::BeforePod);
+        let invocation_eligible = pod_eligible && registered(ExternalResourcePhase::Runner);
+        if self.assignment_eligible != assignment_eligible
+            || self.pod_eligible != pod_eligible
+            || self.invocation_eligible != invocation_eligible
+        {
+            return Err(SchedulerStateError::Transport);
+        }
+        Ok(ExternalResourceInventory {
+            slots,
+            assignment_eligible,
+            pod_eligible,
+            invocation_eligible,
+        })
+    }
+}
+
+impl ExternalResourceSlotDto {
+    fn from_domain(slot: ExternalResourceSlot) -> Result<Self, ErrorDto> {
+        let (kind, namespace, name) =
+            object_identity_parts(&slot.identity).map_err(|_| ErrorDto::Unavailable)?;
+        Ok(Self {
+            kind,
+            namespace: namespace.ok_or(ErrorDto::Unavailable)?,
+            name,
+            phase: match slot.phase {
+                ExternalResourcePhase::BeforeAssignment => {
+                    ExternalResourcePhaseDto::BeforeAssignment
+                },
+                ExternalResourcePhase::BeforePod => ExternalResourcePhaseDto::BeforePod,
+                ExternalResourcePhase::Runner => ExternalResourcePhaseDto::Runner,
+            },
+            uid: slot.uid,
+            owner_label: slot.owner_label,
+        })
+    }
+
+    fn into_domain(self) -> Result<ExternalResourceSlot, SchedulerStateError> {
+        valid_identity(&self.kind).map_err(SchedulerStateError::from)?;
+        valid_identity(&self.namespace).map_err(SchedulerStateError::from)?;
+        valid_identity(&self.name).map_err(SchedulerStateError::from)?;
+        if self.uid.is_some() != self.owner_label.is_some() {
+            return Err(SchedulerStateError::Transport);
+        }
+        if let Some(uid) = &self.uid {
+            valid_identity(uid).map_err(SchedulerStateError::from)?;
+        }
+        if let Some(owner) = &self.owner_label {
+            valid_identity(owner).map_err(SchedulerStateError::from)?;
+        }
+        let identity = format!("{}/{}/{}", self.kind, self.namespace, self.name);
+        valid_object_identity(&identity).map_err(SchedulerStateError::from)?;
+        Ok(ExternalResourceSlot {
+            identity,
+            phase: match self.phase {
+                ExternalResourcePhaseDto::BeforeAssignment => {
+                    ExternalResourcePhase::BeforeAssignment
+                },
+                ExternalResourcePhaseDto::BeforePod => ExternalResourcePhase::BeforePod,
+                ExternalResourcePhaseDto::Runner => ExternalResourcePhase::Runner,
+            },
+            uid: self.uid,
+            owner_label: self.owner_label,
         })
     }
 }
@@ -1098,6 +1386,58 @@ mod tests {
             committed,
             json!({"protocol":PROTOCOL,"response":{"kind":"committed"}})
         );
+        let pending_resources = call(
+            &service,
+            json!({"operation":"read_external_resources","lease":lease_from(&reserved)}),
+            NOW + 1,
+        );
+        assert_eq!(pending_resources["response"]["kind"], "external_resources");
+        assert_eq!(
+            pending_resources["response"]["inventory"]["slots"]
+                .as_array()
+                .unwrap()
+                .len(),
+            9
+        );
+        assert_eq!(
+            pending_resources["response"]["inventory"]["assignment_eligible"],
+            false
+        );
+        for (index, slot) in pending_resources["response"]["inventory"]["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot["phase"] == "before_assignment")
+        {
+            let registered = call(
+                &service,
+                json!({
+                    "operation":"register_external_resource",
+                    "lease":lease_from(&reserved),
+                    "observation":{
+                        "kind":slot["kind"],"namespace":slot["namespace"],"name":slot["name"],
+                        "uid":format!("external-uid-{index}"),
+                        "owner_label":specification["cleanup_identity"]
+                    }
+                }),
+                NOW + 1,
+            );
+            assert_eq!(registered["response"]["kind"], "committed");
+        }
+        let assignment_ready = call(
+            &service,
+            json!({"operation":"read_external_resources","lease":lease_from(&reserved)}),
+            NOW + 1,
+        );
+        assert_eq!(
+            assignment_ready["response"]["inventory"]["assignment_eligible"],
+            true
+        );
+        assert_eq!(
+            assignment_ready["response"]["inventory"]["pod_eligible"],
+            false
+        );
         let assignment = call(
             &service,
             json!({"operation":"derive_assignment","lease":lease_from(&reserved)}),
@@ -1129,6 +1469,37 @@ mod tests {
             call(&service, json!({"operation":"list_recoverable"}), NOW + 1)["response"]["runs"][0]
                 ["policy_status"],
             "verified"
+        );
+        for (index, slot) in assignment_ready["response"]["inventory"]["slots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot["phase"] != "before_assignment")
+        {
+            let registered = call(
+                &service,
+                json!({
+                    "operation":"register_external_resource",
+                    "lease":lease_from(&reserved),
+                    "observation":{
+                        "kind":slot["kind"],"namespace":slot["namespace"],"name":slot["name"],
+                        "uid":format!("external-uid-{index}"),
+                        "owner_label":specification["cleanup_identity"]
+                    }
+                }),
+                NOW + 1,
+            );
+            assert_eq!(registered["response"]["kind"], "committed");
+        }
+        let invocation_ready = call(
+            &service,
+            json!({"operation":"read_external_resources","lease":lease_from(&reserved)}),
+            NOW + 1,
+        );
+        assert_eq!(
+            invocation_ready["response"]["inventory"]["invocation_eligible"],
+            true
         );
         let assignment_body = &assignment["response"]["assignment"];
         service
@@ -1223,6 +1594,32 @@ mod tests {
                     }),
                     NOW + 1,
                 );
+                let inventory = call(
+                    &service,
+                    json!({"operation":"read_external_resources","lease":lease_from(&reserved)}),
+                    NOW + 1,
+                );
+                for (index, slot) in inventory["response"]["inventory"]["slots"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                {
+                    let registered = call(
+                        &service,
+                        json!({
+                            "operation":"register_external_resource",
+                            "lease":lease_from(&reserved),
+                            "observation":{
+                                "kind":slot["kind"],"namespace":slot["namespace"],
+                                "name":slot["name"],"uid":format!("external-uid-{index}"),
+                                "owner_label":cleanup_identity
+                            }
+                        }),
+                        NOW + 1,
+                    );
+                    assert_eq!(registered["response"]["kind"], "committed");
+                }
             }
             let result = call(
                 &service,
@@ -1240,6 +1637,92 @@ mod tests {
             assert!(snapshot.target_rejection.is_none());
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn partial_registration_blocks_both_setup_failure_paths_across_restart() {
+        let (root, service) = fixture();
+        let reserved = call(&service, json!({"operation":"reserve_next"}), NOW + 1);
+        let lease = lease_from(&reserved);
+        let provisioning = call(
+            &service,
+            json!({"operation":"read_provisioning","lease":lease}),
+            NOW + 1,
+        );
+        let specification = &provisioning["response"]["specification"];
+        let cleanup_identity = specification["cleanup_identity"].as_str().unwrap();
+        let objects = kubernetes_policy::render(RUN)
+            .iter()
+            .enumerate()
+            .map(|(index, object)| {
+                json!({
+                    "identity":object.identity,"uid":format!("uid-{index}"),
+                    "owner_label":cleanup_identity,
+                    "content_digest":kubernetes_policy::content_digest(&object.body)
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            call(
+                &service,
+                json!({
+                    "operation":"commit_policy","lease":lease_from(&reserved),"target":{
+                        "namespace_uid":"uid-0","policy_revision":specification["policy_revision"],
+                        "policy_inventory_digest":specification["policy_inventory_digest"],
+                        "cleanup_identity":cleanup_identity,"objects":objects
+                    }
+                }),
+                NOW + 1,
+            )["response"]["kind"],
+            "committed"
+        );
+        let inventory = call(
+            &service,
+            json!({"operation":"read_external_resources","lease":lease_from(&reserved)}),
+            NOW + 1,
+        );
+        let slot = &inventory["response"]["inventory"]["slots"][0];
+        assert_eq!(
+            call(
+                &service,
+                json!({
+                    "operation":"register_external_resource","lease":lease_from(&reserved),
+                    "observation":{"kind":slot["kind"],"namespace":slot["namespace"],
+                    "name":slot["name"],"uid":"partial-uid","owner_label":cleanup_identity}
+                }),
+                NOW + 1,
+            )["response"]["kind"],
+            "committed"
+        );
+        let baseline = service.events(RUN, 0, 64, NOW + 1).unwrap();
+        for resource_state in ["recorded", "none"] {
+            assert_eq!(
+                call(
+                    &service,
+                    json!({"operation":"record_setup_failure","lease":lease_from(&reserved),
+                        "cleanup_identity":cleanup_identity,"resource_state":resource_state}),
+                    NOW + 2,
+                )["response"]["error"],
+                "denied"
+            );
+        }
+        assert_eq!(service.events(RUN, 0, 64, NOW + 2).unwrap(), baseline);
+        let reopened = Service::open(
+            root.join("sandbox.sqlite3"),
+            root.join("receipts"),
+            [7; 32],
+            NOW + 2,
+        )
+        .unwrap();
+        assert_eq!(
+            call(
+                &reopened,
+                json!({"operation":"read_external_resources","lease":lease_from(&reserved)}),
+                NOW + 2,
+            )["response"]["inventory"]["slots"][0]["uid"],
+            "partial-uid"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1463,7 +1946,7 @@ mod tests {
         let (transport, mut token_review_handle) =
             mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
         let token_reviews = tokio::spawn(async move {
-            for _ in 0..8 {
+            for _ in 0..15 {
                 let (request, send) = token_review_handle.next_request().await.unwrap();
                 let request_body: Value =
                     serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
@@ -1498,7 +1981,7 @@ mod tests {
         });
         let server_service = service.clone();
         let server = tokio::spawn(async move {
-            for _ in 0..8 {
+            for _ in 0..15 {
                 let (connection, _) = listener.accept().await.unwrap();
                 let service = server_service.clone();
                 crate::controller_state_transport::handle_connection(
@@ -1544,6 +2027,7 @@ mod tests {
                 content_digest: kubernetes_policy::content_digest(&object.body),
             })
             .collect();
+        let cleanup_identity = specification.cleanup_identity.clone();
         client
             .commit_policy(
                 &lease,
@@ -1557,6 +2041,23 @@ mod tests {
             )
             .await
             .unwrap();
+        let inventory = client.read_external_resources(&lease).await.unwrap();
+        for (index, slot) in inventory
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.phase == ExternalResourcePhase::BeforeAssignment)
+        {
+            client
+                .register_external_resource(
+                    &lease,
+                    slot,
+                    &format!("external-uid-{index}"),
+                    &cleanup_identity,
+                )
+                .await
+                .unwrap();
+        }
         let assignment = client.derive_assignment(&lease).await.unwrap();
         assert_eq!(assignment.run_id, RUN);
         assert_eq!(assignment.endpoint, "127.0.0.1:8081".parse().unwrap());

@@ -51,8 +51,13 @@ verbs.
 Exact RBAC and NetworkPolicy permit each controller to reach only its named state port and to
 perform only its fixed Kubernetes role. System and controller identities receive no Secret Manager
 IAM. Separate staging identities produce the system Pod's tombstone input and the exact per-run
-grant and receipt-signing channels. Every temporary runner resource that cleanup may delete must
-have its UID and owner evidence durably appended before runner creation.
+grant and receipt-signing channels. The system durably fixes every exact per-run external resource
+slot before creation. After each fixed object is created or exactly observed, the scheduler
+immediately appends immutable UID/owner evidence. Handoff assignment may prepare the bytes required
+to stage its two channels after policy verification and registration of the six non-handoff
+prerequisite slots, but Application invocation remains forbidden. Every prerequisite channel is
+registered before the gated runner Pod is created, and the Pod itself is registered before its
+scheduling gate or Application invocation can be released.
 
 [`docs/SANDBOX_DEPLOYMENT.md`](../SANDBOX_DEPLOYMENT.md) remains the behavioral and deployment
 contract. This decision explains the rationale and does not override that owner.

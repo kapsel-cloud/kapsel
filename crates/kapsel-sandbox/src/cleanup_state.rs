@@ -20,7 +20,7 @@ use crate::{
 const PROTOCOL: &str = "cleanup-state-v1";
 pub(crate) const PAYLOAD_BYTES_MAX: usize = 64 * 1024;
 const CANDIDATES_MAX: usize = 8;
-const OWNED_OBJECTS_MAX: usize = 16;
+const OWNED_OBJECTS_MAX: usize = 25;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1476,6 +1476,60 @@ mod tests {
     fn listed_candidate(service: &Service, now: i64) -> Value {
         call(service, json!({"operation":"list_candidates"}), now)["response"]["candidates"][0]
             .clone()
+    }
+
+    #[test]
+    fn cleanup_payload_returns_bounded_historical_and_external_ownership_inventory() {
+        let (root, service) = fixture(true);
+        let (lease_id, epoch, expires_at): (String, i64, i64) =
+            rusqlite::Connection::open(root.join("sandbox.sqlite3"))
+                .unwrap()
+                .query_row(
+                    "SELECT lease_id, lease_epoch, lease_expires_at FROM runs WHERE run_id = ?1",
+                    [RUN],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        let lease = crate::DispatchLease {
+            run_id: RUN.into(),
+            lease_id,
+            epoch,
+            expires_at_unix_s: expires_at,
+            handoff_credential: [0; 32],
+        };
+        let owner = format!("cleanup-{RUN}");
+        for (index, slot) in service
+            .external_resource_inventory(&lease, NOW + 1)
+            .unwrap()
+            .slots
+            .iter()
+            .enumerate()
+        {
+            service
+                .register_external_resource(
+                    &lease,
+                    &slot.identity,
+                    &format!("external-uid-{index:02}"),
+                    &owner,
+                    NOW + 1,
+                )
+                .unwrap();
+        }
+        rusqlite::Connection::open(root.join("sandbox.sqlite3"))
+            .unwrap()
+            .execute(
+                "INSERT INTO provisioned_object_owners VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "historical-uid",
+                    RUN,
+                    format!("ConfigMap/sandbox-{RUN}/historical-extra"),
+                    owner
+                ],
+            )
+            .unwrap();
+        let candidate = listed_candidate(&service, NOW + 2);
+        assert_eq!(candidate["objects"].as_array().unwrap().len(), 21);
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn identity(candidate: &Value) -> Value {

@@ -93,7 +93,7 @@ fn fixture() -> (PathBuf, Service, PathBuf) {
     (root, service, digest_key)
 }
 
-fn verify_target(service: &Service, lease: &DispatchLease, at: i64) {
+fn verify_target(service: &Service, database: &Path, lease: &DispatchLease, at: i64) {
     let specification = service.provisioning_specification(lease, at).unwrap();
     service
         .verify_provisioned_target(
@@ -108,6 +108,46 @@ fn verify_target(service: &Service, lease: &DispatchLease, at: i64) {
             at,
         )
         .unwrap();
+    let mut connection = rusqlite::Connection::open(database).unwrap();
+    let transaction = connection.transaction().unwrap();
+    let cleanup_identity: String = transaction
+        .query_row(
+            "SELECT cleanup_identity FROM runs WHERE run_id = ?1",
+            [&lease.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let identities = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT identity FROM external_resource_slots WHERE run_id = ?1 ORDER BY ordinal",
+            )
+            .unwrap();
+        statement
+            .query_map([&lease.run_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    for (index, identity) in identities.into_iter().enumerate() {
+        let uid = format!("handoff-{}-{index}", lease.run_id);
+        transaction
+            .execute(
+                concat!(
+                    "UPDATE external_resource_slots SET uid = ?3, owner_label = ?4 ",
+                    "WHERE run_id = ?1 AND identity = ?2"
+                ),
+                rusqlite::params![lease.run_id, identity, uid, cleanup_identity],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO provisioned_object_owners VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![uid, lease.run_id, identity, cleanup_identity],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
 }
 
 fn provisioned_objects(specification: &ProvisioningSpecification) -> Vec<ProvisionedObject> {
@@ -355,7 +395,7 @@ fn prepare_process_fixture(
         )
         .unwrap();
     let lease = service.dispatch_next(at).unwrap();
-    verify_target(&service, &lease, at);
+    verify_target(&service, &root.join("sandbox.sqlite3"), &lease, at);
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let handoff_address = probe.local_addr().unwrap();
     drop(probe);
@@ -599,7 +639,7 @@ fn run_native_runner_case(outcome: NativeOutcome) {
         )
         .unwrap();
     let lease = service.dispatch_next(at).unwrap();
-    verify_target(&service, &lease, at);
+    verify_target(&service, &root.join("sandbox.sqlite3"), &lease, at);
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let handoff_address = probe.local_addr().unwrap();
     drop(probe);
@@ -1053,7 +1093,7 @@ async fn separate_system_process_commits_invocation_and_receipt_free_rejection()
         .admit(&"1".repeat(32), Scenario::Healthy, at)
         .unwrap();
     let lease = service.dispatch_next(at).unwrap();
-    verify_target(&service, &lease, at);
+    verify_target(&service, &root.join("sandbox.sqlite3"), &lease, at);
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = probe.local_addr().unwrap();
     drop(probe);

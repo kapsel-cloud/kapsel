@@ -707,6 +707,95 @@ mod tests {
         (Client::new(transport, "default"), server)
     }
 
+    #[test]
+    fn registered_external_inventory_extends_exact_cleanup_to_twenty_objects() {
+        let (root, service, _bodies) = fixture();
+        let (lease_id, epoch, expires_at): (String, i64, i64) =
+            rusqlite::Connection::open(root.join("sandbox.sqlite3"))
+                .unwrap()
+                .query_row(
+                    "SELECT lease_id, lease_epoch, lease_expires_at FROM runs WHERE run_id = ?1",
+                    [RUN],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        let lease = crate::DispatchLease {
+            run_id: RUN.into(),
+            lease_id,
+            epoch,
+            expires_at_unix_s: expires_at,
+            handoff_credential: [0; 32],
+        };
+        let owner = format!("cleanup-{RUN}");
+        let slots = service
+            .external_resource_inventory(&lease, NOW + 1)
+            .unwrap()
+            .slots;
+        for (index, slot) in slots.iter().enumerate() {
+            service
+                .register_external_resource(
+                    &lease,
+                    &slot.identity,
+                    &format!("external-uid-{index:02}"),
+                    &owner,
+                    NOW + 1,
+                )
+                .unwrap();
+        }
+        let candidate = service.cleanup_candidates().unwrap().remove(0);
+        assert_eq!(candidate.objects.len(), 20);
+        for kind in ["PersistentVolumeClaim", "ConfigMap", "Secret", "Pod"] {
+            assert!(candidate.objects.iter().any(|object| object.kind == kind));
+        }
+        assert!(candidate
+            .objects
+            .iter()
+            .filter(|object| object.namespace.as_deref() == Some("kapsel-sandbox-runners"))
+            .all(|object| should_request_delete(&candidate, object)));
+        service
+            .start_cleanup(RUN, &owner, "uid-00", NOW + 2)
+            .unwrap();
+        let evidence = CleanupAbsenceEvidence {
+            namespace_uid: "uid-00".into(),
+            objects: candidate
+                .objects
+                .iter()
+                .map(|object| CleanupObjectAbsence {
+                    kind: object.kind.clone(),
+                    namespace: object.namespace.clone(),
+                    name: object.name.clone(),
+                    uid: object.uid.clone(),
+                    owner_label: object.owner_label.clone(),
+                    present: false,
+                })
+                .collect(),
+        };
+        service
+            .complete_cleanup(RUN, &owner, &evidence, NOW + 3)
+            .unwrap();
+        assert!(service.recoverable_runs().unwrap().is_empty());
+        let connection = rusqlite::Connection::open(root.join("sandbox.sqlite3")).unwrap();
+        for table in [
+            "external_resource_slots",
+            "provisioned_object_owners",
+            "cleanup_records",
+        ] {
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE run_id = ?1"),
+                    [RUN],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table}");
+        }
+        assert_eq!(
+            service.snapshot(RUN, NOW + 3).unwrap().cleanup_state,
+            crate::CleanupState::Succeeded
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn delete_acceptance_holds_capacity_until_every_recorded_uid_is_absent() {
         let (root, service, bodies) = fixture();
