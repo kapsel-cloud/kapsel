@@ -20,13 +20,15 @@ use std::{
 };
 
 use kapsel_sandbox::{
-    run_cleanup_role, run_cleanup_state_role, run_runner_process, run_scheduler_role,
-    run_scheduler_state_role, serve_private_handoff, set_global_stop, Service,
+    run_cleanup_role, run_cleanup_state_role, run_key_stager_process, run_runner_process,
+    run_scheduler_role, run_scheduler_state_role, serve_private_handoff, set_global_stop, Service,
 };
 
 const USAGE: &str = concat!(
     "usage: kapsel-sandbox <init|serve|handoff-serve|retention|scheduler-state-serve|",
-    "cleanup-state-serve|scheduler|cleanup|stop|clear-stop|runner> <role-specific arguments>"
+    "cleanup-state-serve|scheduler|cleanup|stop|clear-stop|runner|stage-controller-tls|",
+    "stage-tombstone-key|stage-authorization-grant|stage-receipt-signing> ",
+    "<role-specific arguments>"
 );
 const RETENTION_INTERVAL: Duration = Duration::from_mins(1);
 
@@ -46,8 +48,21 @@ fn main() -> ExitCode {
 )]
 fn run() -> Result<(), &'static str> {
     let mut arguments = env::args().skip(1);
-    if arguments.next().as_deref() == Some("runner") {
+    let command = arguments.next();
+    if command.as_deref() == Some("runner") {
         return run_runner_process(arguments);
+    }
+    if let Some(
+        stager @ ("stage-controller-tls"
+        | "stage-tombstone-key"
+        | "stage-authorization-grant"
+        | "stage-receipt-signing"),
+    ) = command.as_deref()
+    {
+        if let Some(result) = run_key_stager_process(stager, arguments)? {
+            println!("{result}");
+        }
+        return Ok(());
     }
     let configuration = Configuration::parse(env::args().skip(1))?;
     configuration.validate_role_arguments()?;

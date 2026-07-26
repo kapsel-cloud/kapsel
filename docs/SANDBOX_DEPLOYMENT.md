@@ -556,6 +556,76 @@ SAN; an incomplete overlap; or rollback to a removed root fails readiness and co
 establishment. GKE cluster-credential rotation is a separate Kubernetes-API trust lane and cannot
 rotate or appoint this service identity.
 
+### Fixed native key and channel staging
+
+Four one-shot native roles transform already mounted, pinned owner material into fixed Kubernetes
+projections. Current official GKE documentation states that the managed Secret Manager add-on mounts
+pinned versions as read-only files but does not synchronize Kubernetes Secrets; the native roles own
+that separate create boundary. Provider references must use immutable numeric versions rather than
+`latest` or movable aliases. They are not provider clients, generic secret copiers, controllers,
+queues, or ownership registrars. Each source path is absolute, a direct child of its role-specific
+read-only mount, and is opened only as an owner/workload-group-private regular file or the exact
+Kubernetes atomic-writer layout. Source bytes never enter arguments, environment variables, standard
+input, diagnostics, state, receipts, or returned metadata. The separately projected Kubernetes CA
+and token must be outside and inode-distinct from every source lane. Each role uses one concrete
+in-cluster client, performs one exact create, and on conflict performs one exact get. It never
+updates, patches, deletes, lists, or accepts a destination. Every destination is immutable, contains
+exactly the keys below, and carries exactly the stated labels. Kubernetes-assigned UID, resource
+version, creation time, and managed fields are the only observation fields normalized before
+equality.
+
+The fixed roles and outputs are:
+
+- `stage-controller-tls` reads `ca.crt`, `tls.crt`, and `tls.key`, and accepts only the
+  render-locked CA SHA-256 digest and root count of one or two as non-secret arguments. Before any
+  create it requires that exact ordered bundle, current validity, the exact
+  `kapsel-sandbox-controller-state.kapsel-sandbox-system.svc` DNS SAN, a non-CA leaf chaining to the
+  bundle, and its matching private key. It creates Secret
+  `kapsel-sandbox-system/kapsel-controller-state-serving` with only `tls.crt` and `tls.key`, and
+  ConfigMap `kapsel-sandbox-system/kapsel-controller-state-ca` with only `ca.crt`. Both carry
+  `kapsel.dev/gate2=true` and `kapsel.dev/staging-role=controller-tls`. The system projection
+  exposes only the serving Secret; both controllers project only the CA ConfigMap. Each later
+  projection is read-only with mode `0440`.
+- `stage-tombstone-key` reads exactly 32 bytes and creates Secret
+  `kapsel-sandbox-system/kapsel-gate2-tombstone-digest` with only `tombstone-digest.seed`. It
+  carries `kapsel.dev/gate2=true` and `kapsel.dev/staging-role=tombstone`. Only the system-state Pod
+  projects it, read-only with mode `0440`. Rotation remains prohibited while protected tombstones
+  exist unless compatibility is separately proved.
+- `stage-authorization-grant` reads an exact 32-byte Ed25519 seed from its private source mount. It
+  separately reads canonical `key-identity.json` from a render-owned trust projection and canonical
+  `request.json` from the immutable server-owned composition projection; both lanes are outside and
+  inode-distinct from the source and Kubernetes credentials. The key identity contains only a
+  bounded key ID and 32-byte public key and must match the seed. The strict request document
+  contains only `operation_id`, `namespace`, `deployment`, `container`, and
+  `immutable_image_digest`. For run `${RUN_ID}`, it requires operation `sandbox-${RUN_ID}`,
+  namespace `sandbox-${RUN_ID}`, deployment `sandbox-target`, container `target`, and one of the two
+  server-owned scenario image digests. Authorization identity is derived only as `auth-${RUN_ID}`;
+  it is not a request field. The role calls the existing `kapsel::provision_exact_grant` and creates
+  Secret `kapsel-sandbox-runners/runner-grant-${RUN_ID}` with only `signed-grant.json`, plus
+  ConfigMap `kapsel-sandbox-runners/runner-trust-${RUN_ID}` with only canonical `trust.json`
+  containing that key identity and its derived Ed25519 public key. Both carry
+  `kapsel.dev/cleanup-owner=cleanup-${RUN_ID}`, `kapsel.dev/sandbox-run-id=${RUN_ID}`, and their
+  respective `kapsel.dev/staging-role` values `authorization-grant` and `authorization-trust`.
+- `stage-receipt-signing` reads exactly 32 Ed25519 seed bytes from its private source mount and a
+  separate canonical render-owned `key-identity.json`. The bounded key ID and public key must match
+  the seed before it creates Secret `kapsel-sandbox-runners/runner-receipt-signing-${RUN_ID}` with
+  only `seed` and `key-id`. It carries `kapsel.dev/cleanup-owner=cleanup-${RUN_ID}`,
+  `kapsel.dev/sandbox-run-id=${RUN_ID}`, and `kapsel.dev/staging-role=receipt-signing`. The bytes
+  exactly match the existing `Application` raw-seed interface and are projected read-only with mode
+  `0440`.
+
+Controller TLS and tombstone success writes no standard output. Grant/trust and receipt success
+writes exactly one canonical, single-line JSON result with protocol `key-staging-result-v1` and an
+`objects` array in fixed creation order. Each object contains only `kind`, `namespace`, `name`,
+`uid`, and `owner_label`; authorization returns grant then trust, and receipt returns its one
+Secret. Error writes no result. A later renderer must carry that bounded result through a private
+non-logging process-result channel; granting the scheduler Secret read or workload-log authority is
+forbidden. The scheduler strictly verifies the expected slot list and separately append-registers
+those exact UID/owner observations. Create acceptance or stager completion is not registration,
+assignment, Pod eligibility, gate removal, or Application invocation. Controller TLS and tombstone
+destinations are system-wide and never enter per-run cleanup slots. Source-version identities remain
+render-time private evidence and are never committed identifiers.
+
 After TLS succeeds, one connection carries exactly one request and one response and then closes. The
 client writes the exact ASCII magic `KAPSEL-SANDBOX-CONTROLLER-STATE-V1\0`, a two-byte unsigned
 big-endian token length, 1 through 16 KiB of token bytes, and exactly one already-defined role

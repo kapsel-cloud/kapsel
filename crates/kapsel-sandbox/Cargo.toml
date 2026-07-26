@@ -10,6 +10,7 @@ description = "Deterministic service package for the fixed Kapsel public sandbox
 publish = false
 
 [dependencies]
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["signature", "zeroize"] }
 getrandom = "=0.3.4"
 http = "=1.4.2"
 httparse = "=1.10.1"
@@ -25,9 +26,9 @@ rustls = { version = "=0.23.41", default-features = false, features = ["ring", "
 tokio = { version = "=1.52.3", features = ["net", "rt", "sync", "time"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring"] }
 x509-parser = { version = "=0.18.1", default-features = false }
+zeroize = "=1.9.0"
 
 [dev-dependencies]
-ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["signature", "zeroize"] }
 tokio = { version = "=1.52.3", features = ["macros"] }
 tower-test = "=0.4.0"
 

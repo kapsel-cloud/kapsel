@@ -1298,6 +1298,71 @@ fn cleanup_roles_enforce_remote_state_and_system_authority_split() {
 }
 
 #[test]
+fn fixed_stager_roles_reject_other_authority_and_emit_no_secret_output() {
+    let run_id = "0123456789abcdef0123456789abcdef";
+    for role in [
+        "stage-controller-tls",
+        "stage-tombstone-key",
+        "stage-authorization-grant",
+        "stage-receipt-signing",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+            .arg(role)
+            .args(["--database", "/private/system.sqlite3"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{role}");
+        assert!(output.stdout.is_empty(), "{role}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "kapsel-sandbox: stager arguments are invalid\n",
+            "{role}"
+        );
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"));
+        command.arg(role).args([
+            "--source-mount",
+            "/private/stager-source",
+            "--kubernetes-ca",
+            "/var/run/kubernetes/ca.crt",
+            "--kubernetes-token",
+            "/var/run/kubernetes/token",
+        ]);
+        if matches!(role, "stage-authorization-grant" | "stage-receipt-signing") {
+            command.args([
+                "--run-id",
+                run_id,
+                "--key-identity",
+                "/private/stager-config/key-identity.json",
+            ]);
+        }
+        if role == "stage-authorization-grant" {
+            command.args(["--request", "/private/stager-composition/request.json"]);
+        }
+        if role == "stage-controller-tls" {
+            command.args([
+                "--ca-sha256",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "--ca-root-count",
+                "1",
+            ]);
+        }
+        let output = command
+            .env_remove("KUBERNETES_SERVICE_HOST")
+            .env_remove("KUBERNETES_SERVICE_PORT")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{role}");
+        assert!(output.stdout.is_empty(), "{role}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap(),
+            "kapsel-sandbox: stager source is unavailable\n",
+            "{role}"
+        );
+    }
+}
+
+#[test]
 fn runner_mode_rejects_system_state_arguments_before_opening_any_input() {
     let root = std::env::temp_dir().join(format!(
         "kapsel-sandbox-runner-boundary-{}",

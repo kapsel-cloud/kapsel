@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 
 mod cleanup_state;
 mod controller_state_transport;
+mod key_staging;
 mod kubernetes_cleanup;
 mod kubernetes_policy;
 mod kubernetes_scheduler;
@@ -36,6 +37,7 @@ mod runner_handoff;
 mod runner_process;
 mod scheduler_state;
 
+pub use key_staging::run as run_key_stager_process;
 pub use kubernetes_cleanup::run_cleanup_role;
 pub use kubernetes_scheduler::run_scheduler_role;
 use runner_handoff::{

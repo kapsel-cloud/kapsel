@@ -73,12 +73,13 @@ operator-stop, and periodic-retention modes. The concrete scheduler uses only th
 `sandbox-policy-v2` renderer and an in-cluster Kubernetes client, recovers active leases before new
 FIFO dispatch, creates or exactly observes all eleven policy objects, and recomputes normalized
 policy digests before deriving the private handoff assignment. It deliberately does not create a
-runner Pod yet: key staging, lease-specific runner inputs, runner-resource UID recording, and exact
-RBAC/token binding remain part of the blocked complete composition. The concrete cleanup role
-consumes recorded immutable UID/owner evidence, scans only exact cleanup-owner labels, uses
-UID-preconditioned deletion, retries through finalizers and API failures, escalates once after 15
-minutes, and releases capacity only after observed absence. Stop and clear-stop open only the
-existing private admission database and its singleton row; receipt storage, tombstone-key
+runner Pod yet. Append-only runner-resource UID recording and the four fixed native key/channel
+stagers are implemented offline, but no stager workload or lease-specific runner input is rendered;
+exact RBAC/token and provider custody binding remain part of the blocked complete composition. The
+concrete cleanup role consumes recorded immutable UID/owner evidence, scans only exact cleanup-owner
+labels, uses UID-preconditioned deletion, retries through finalizers and API failures, escalates
+once after 15 minutes, and releases capacity only after observed absence. Stop and clear-stop open
+only the existing private admission database and its singleton row; receipt storage, tombstone-key
 availability, retention, and full service initialization are deliberately outside that emergency
 path. The incomplete Gate 2 system workload renders only the API, handoff, and retention roles
 against one system-state volume and explicitly omits scheduler and cleanup-controller composition.
@@ -86,11 +87,12 @@ The implemented roles are not added directly: the `ReadWriteOncePod` SQLite clai
 API/handoff/retention owner, while scheduler and cleanup require separate service accounts and Pods.
 The native scheduler and cleanup processes now put their exact transitions behind separate fixed
 encrypted, role-authenticated private state adapters with pinned trust and distinct state/Kubernetes
-token lanes. The deployable candidate must still render those controller Pods, projected tokens, the
-system Pod's token-review-only credential, exact RBAC, runner/key binding, complete UID recording,
-and NetworkPolicy. A union system/controller identity or shared SQLite mount is rejected.
-Infrastructure Enforcement Proof must complete those roles, runner binding, policy, key staging, and
-selected Kubernetes/storage identities before any deployment can be accepted.
+token lanes. The deployable candidate must still render those controller and stager Pods, projected
+tokens, the system Pod's token-review-only credential, exact RBAC, runner/key binding, and
+NetworkPolicy. A union system/controller identity or shared SQLite mount is rejected. Infrastructure
+Enforcement Proof must compose the implemented roles and UID protocol with runner binding, policy,
+provider CSI custody, and selected Kubernetes/storage identities before any deployment can be
+accepted.
 
 The exact patch harness evaluates normalized Kubernetes Deployment objects. Live Kubernetes
 admission/audit enforcement, post-verification downgrade denial under the real runner identity,
