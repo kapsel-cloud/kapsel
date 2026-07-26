@@ -6,29 +6,29 @@ Owns: Question-to-owner routing and document authority order.
 
 ## Owners
 
-| Question                                      | Owner                                                                                   |
-| --------------------------------------------- | --------------------------------------------------------------------------------------- |
-| What is Kapsel testing and why?               | [Technical scope](SCOPE.md)                                                             |
-| What exactly does the capability guarantee?   | [KAP-0038 experiment owner](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) |
-| How is it composed today?                     | [Architecture](ARCHITECTURE.md)                                                         |
-| What is the intended v1 technical shape?      | [V1 technical direction](VISION.md)                                                     |
-| What could the finite v0.2.0 release unit be? | [Prospective v0.2.0 release unit](V0.2.md)                                              |
-| What is the evaluator command contract?       | [Evaluator commands](COMMANDS.md)                                                       |
-| What is the fixed MCP adapter contract?       | [MCP adapter](MCP.md)                                                                   |
-| What is the public sandbox HTTP contract?     | [Public sandbox API](SANDBOX_API.md)                                                    |
-| How must the sandbox be deployed?             | [Sandbox deployment](SANDBOX_DEPLOYMENT.md)                                             |
-| What can I run?                               | [Build](BUILD.md)                                                                       |
-| What is the release artifact contract?        | [Release artifacts](RELEASE.md)                                                         |
-| How do I evaluate an installed artifact?      | [Evaluator guide](EVALUATOR.md)                                                         |
-| What proof is required?                       | [Testing](TESTING.md)                                                                   |
-| What may Kapsel claim?                        | [Threat model](THREAT_MODEL.md)                                                         |
-| What data can receipts and reports disclose?  | [Privacy](PRIVACY.md)                                                                   |
-| What do current terms mean?                   | [Glossary](GLOSSARY.md)                                                                 |
-| How should Rust be shaped?                    | [Style](STYLE.md)                                                                       |
-| How is a change reviewed?                     | [Review](REVIEW.md)                                                                     |
-| What work remains?                            | [Technical task route](../tasks/README.md)                                              |
-| Why were current durable choices made?        | [Decisions](decisions/README.md)                                                        |
-| How do I report a vulnerability?              | [Security policy](../SECURITY.md)                                                       |
+| Question                                     | Owner                                                                                   |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- |
+| What is Kapsel testing and why?              | [Technical scope](SCOPE.md)                                                             |
+| What exactly does the capability guarantee?  | [KAP-0038 experiment owner](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) |
+| How is it composed today?                    | [Architecture](ARCHITECTURE.md)                                                         |
+| What is the intended v1 technical shape?     | [V1 technical direction](VISION.md)                                                     |
+| What is the finite v0.2.0 beta plan?         | [v0.2.0 Kubernetes effect-gateway beta](V0.2.md)                                        |
+| What is the evaluator command contract?      | [Evaluator commands](COMMANDS.md)                                                       |
+| What is the fixed MCP adapter contract?      | [MCP adapter](MCP.md)                                                                   |
+| What is the public sandbox HTTP contract?    | [Public sandbox API](SANDBOX_API.md)                                                    |
+| How must the sandbox be deployed?            | [Sandbox deployment](SANDBOX_DEPLOYMENT.md)                                             |
+| What can I run?                              | [Build](BUILD.md)                                                                       |
+| What is the release artifact contract?       | [Release artifacts](RELEASE.md)                                                         |
+| How do I evaluate an installed artifact?     | [Evaluator guide](EVALUATOR.md)                                                         |
+| What proof is required?                      | [Testing](TESTING.md)                                                                   |
+| What may Kapsel claim?                       | [Threat model](THREAT_MODEL.md)                                                         |
+| What data can receipts and reports disclose? | [Privacy](PRIVACY.md)                                                                   |
+| What do current terms mean?                  | [Glossary](GLOSSARY.md)                                                                 |
+| How should Rust be shaped?                   | [Style](STYLE.md)                                                                       |
+| How is a change reviewed?                    | [Review](REVIEW.md)                                                                     |
+| What work remains?                           | [Technical task route](../tasks/README.md)                                              |
+| Why were current durable choices made?       | [Decisions](decisions/README.md)                                                        |
+| How do I report a vulnerability?             | [Security policy](../SECURITY.md)                                                       |
 
 ## Authority order
 

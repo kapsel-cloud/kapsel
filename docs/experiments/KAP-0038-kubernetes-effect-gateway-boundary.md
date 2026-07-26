@@ -1,7 +1,7 @@
 # Kubernetes effect-gateway experiment boundary
 
-Status: active experiment. It establishes no stable package, generic capability, policy, or provider
-contract.
+Status: active experiment and v0.2 beta semantic owner. It establishes no stable package, generic
+capability, policy, or provider contract.
 
 Kind: experiment boundary. Authority: the active experiment's scope and claim limits. Scope: one
 self-hosted, local-cluster demonstration of a crash-safe Kubernetes deployment-image change.
@@ -195,6 +195,10 @@ Deployment, container, and immutable image digest in that order. The signed gran
 the fixed purpose, signing-key identity, statement bytes, and Ed25519 signature. The signing input
 is the exact byte string `purpose`, one zero byte, then the statement bytes.
 
+The v0.2 beta continues to accept canonical grant v1 bytes emitted by `v0.1.1` and preserves this
+exact wire across v0.2.x. That bounded compatibility appoints no new trust, adds no expiry or
+revocation semantics, and creates no generic grant format or promise beyond the v0.2.x beta line.
+
 Kubernetes credentials and signing seeds are owner-controlled private inputs; they never enter agent
 requests, SQLite, receipts, reports, or errors. Public signing-key identities and digests are not
 secrets and are frozen to identify the accepted authority. The grant does not itself grant
@@ -205,8 +209,12 @@ reject unsafe paths and must not print secrets or unbounded provider response bo
 
 The experiment writes one signed, portable receipt and supports offline inspection under separately
 provided trust, explicit evaluation time, and explicit resource limits. Its bytes, report language,
-and trust inputs are prototype-scoped and disposable. They must use experiment-specific identifiers
-and cannot become a stable cross-version contract by reuse or rename.
+and trust inputs remain capability-specific beta surfaces. v0.2 continues offline inspection of
+canonical receipt and trust v2 bytes emitted by `v0.1.1`, emits the same receipt v2 wire, and
+preserves that wire across v0.2.x. This bounded compatibility never re-signs frozen bytes, appoints
+receipt-carried trust, creates a generic receipt format, or promises compatibility beyond the v0.2.x
+beta line. A later format must use a new identifier and explicit migration/inspection policy rather
+than reuse or rename these bytes.
 
 The prototype bytes are fixed-order length-delimited records with these magic prefixes:
 

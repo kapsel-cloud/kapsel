@@ -87,6 +87,18 @@ Each live command creates and removes its own uniquely named cluster. This is de
 evidence, not part of the deterministic default gate. See [Build](docs/BUILD.md) for exact meaning
 and prerequisites.
 
+## v0.2 developer beta direction
+
+Kapsel is now deepening this same operation into one finite developer beta. The release will unify
+its production and crash-test lifecycle path, adopt explicit CLI/MCP and retained grant/receipt
+compatibility, prove `v0.1.1` upgrade and rollback, qualify hostile-input and resource behavior, and
+publish one authenticated reproducible x86-64 GNU/Linux artifact.
+
+It will not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident
+daemon, hosted dependency, second target, or production-readiness claim. External beta use follows
+publication and decides what—if anything—Kapsel builds next. See the [v0.2 beta plan](docs/V0.2.md)
+and [ordered task route](tasks/README.md).
+
 ## Scope discipline
 
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,

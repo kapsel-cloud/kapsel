@@ -38,7 +38,9 @@ key custody, and cleanup. These accepted contracts authorize later implementatio
 currently deployed service.
 
 The current release is the stable `0.1.1` artifact for this one experiment—not a broader platform,
-production-support promise, or second provider.
+production-support promise, or second provider. The accepted [v0.2 beta plan](V0.2.md) now deepens
+that same operation into one finite developer-beta release; it does not widen the capability or
+claim external validation.
 
 ## 0.1.1 release
 
@@ -62,13 +64,37 @@ It does not promise production support or compatibility for the CLI, configurati
 adapter, receipt format, or artifact layout. Those surfaces remain explicitly versioned experiment
 interfaces until a later release owns compatibility.
 
+## Active v0.2.0 direction
+
+KAP-0046 selected one maintainer-led stabilization cycle. v0.2.0 will remain a developer beta for
+the same Kubernetes Deployment image change and will make the existing path coherent enough to
+release, explain, and evaluate after publication.
+
+The beta must:
+
+1. use one production lifecycle implementation for ordinary execution and crash proof;
+2. adopt explicit CLI, MCP, grant, receipt, artifact, target, and migration compatibility classes;
+3. preserve exact KAP-0038 authorization, mutation-attempt, receiver-result, `UNKNOWN`, receipt, and
+   inspection semantics;
+4. prove `v0.1.1` upgrade, backup, rollback or bounded downgrade refusal, and retained receipt
+   inspection;
+5. qualify hostile input, reliability, resource use, supply chain, installation, cleanup, and
+   downloaded-artifact behavior under finite gates; and
+6. publish only after independent acceptance of one exact candidate.
+
+The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
+resident daemon, managed control plane, live sandbox, second target, or production-support promise.
+External beta evidence follows publication and selects whether another technical cycle is justified.
+
+The direct owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md).
+
 ## Future v1.0.0 requirements
 
 `v1.0.0` is not planned or implied by publishing `0.1.1`. The accepted
 [V1 technical direction](VISION.md) describes the intended resident effect-gateway shape without
 authorizing implementation or release. A `v1.0.0` proposal still requires approved public-use
-evidence and an evidence-selected KAP-0046 implementation decision. Before a `v1.0.0` tag, Kapsel
-must:
+evidence, a real pilot workflow, and a new explicit production implementation decision. Before a
+`v1.0.0` tag, Kapsel must:
 
 1. name every compatibility surface it will support and publish versioning, deprecation, and
    migration rules for the CLI, configuration, MCP behavior, receipt format, Rust API, and artifact

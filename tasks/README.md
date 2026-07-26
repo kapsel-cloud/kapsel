@@ -1,78 +1,96 @@
 # Technical task route
 
-Status: completed self-serve release and accepted offline sandbox architecture tranches; the hosted
-sandbox is paused at an explicit scope checkpoint. The finite v0.2.0 release-unit design is
-complete. Bounded local `v0.1.1` evaluator evidence is the active next route; release implementation
-remains evidence- and decision-gated.
+Status: v0.2.0 Kubernetes effect-gateway beta selected. One bounded implementation packet is active;
+publication and all later packets remain ordered and gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
-`docs/` or the active experiment contract.
+`docs/` or KAP-0038.
 
-## 0.1.0 sequence
+## Current direction
 
-KAP-0045 published `v0.1.0` after the clean-checkout rehearsal and acceptance review. KAP-0049
-published the bounded `v0.1.1` self-serve patch. KAP-0050's sandbox sequence completed contracts,
-service, runner handoff, architecture review, and several offline KAP-0053 composition tranches,
-then paused before complete rendering/live proof. That optional hosted program no longer blocks
-local artifact evaluation. KAP-0047 owns the active bounded local evidence cycle. KAP-0057 completed
-the prospective finite v0.2.0 release-unit design. KAP-0046 remains conditional on approved
-aggregate evidence and is the sole selector of Stabilize, Specify, Freeze, or Retire.
+[KAP-0046](KAP-0046.md) selected **Stabilize** as an explicit maintainer technology bet. Kapsel will
+ship one deep developer beta around the existing `kubernetes.set_deployment_image` capability before
+using external beta adoption to choose another product cycle.
 
-| Order | Packet                  | Outcome                                           | Depends on |
-| ----- | ----------------------- | ------------------------------------------------- | ---------- |
-| 0     | [KAP-0038](KAP-0038.md) | 0.1.0 release acceptance and evidence index       | —          |
-| 1     | [KAP-0039](KAP-0039.md) | Short, navigable deep gateway module              | foundation |
-| 2     | [KAP-0040](KAP-0040.md) | Frozen evaluator application interface            | KAP-0039   |
-| 3     | [KAP-0041](KAP-0041.md) | Commands and navigable deep product structure     | KAP-0040   |
-| 4     | [KAP-0042](KAP-0042.md) | Public real-process crash and failed-rollout demo | KAP-0041   |
-| 5     | [KAP-0043](KAP-0043.md) | Thin fixed-schema MCP adapter                     | KAP-0042   |
-| 6     | [KAP-0044](KAP-0044.md) | Installable, documented 0.1.0 artifact            | KAP-0043   |
-| 7     | [KAP-0045](KAP-0045.md) | Rehearsed and published 0.1.0                     | KAP-0044   |
+[`docs/V0.2.md`](../docs/V0.2.md) owns the finite promise:
 
-[KAP-0038](KAP-0038.md) is the completed release-level acceptance and evidence index.
+```text
+request-only CLI or MCP intent
+  -> operator-owned exact authorization and Kubernetes authority
+  -> durable conditional mutation opportunity
+  -> restart without blind retry
+  -> bounded SUCCEEDED / FAILED / UNKNOWN receiver result
+  -> frozen signed receipt and offline inspection
+```
 
-## After 0.1.0
+This route is not externally validated, production-ready, a Kubernetes operation suite, or an
+automatic v1 roadmap. [KAP-0047](KAP-0047.md) moves after the beta release; it no longer blocks
+implementation.
 
-| Packet                  | Status      | Outcome                                                                 |
-| ----------------------- | ----------- | ----------------------------------------------------------------------- |
-| [KAP-0049](KAP-0049.md) | Complete    | Published the ten-minute self-serve local alpha patch                   |
-| [KAP-0051](KAP-0051.md) | Complete    | Own the fixed public sandbox contracts                                  |
-| [KAP-0052](KAP-0052.md) | Complete    | Implemented and accepted one-way `kapsel-sandbox -> kapsel` package     |
-| [KAP-0055](KAP-0055.md) | Complete    | Implemented and accepted the provider-neutral private runner handoff    |
-| [KAP-0056](KAP-0056.md) | Complete    | Found no pre-GKE blocker; resume KAP-0053 unchanged                     |
-| [KAP-0053](KAP-0053.md) | Paused      | Preserve accepted offline tranches; require a continuation decision     |
-| [KAP-0050](KAP-0050.md) | Paused      | Optional hosted umbrella, not local release scope                       |
-| [KAP-0047](KAP-0047.md) | Active      | Gather bounded local `v0.1.1` evidence without capability expansion     |
-| [KAP-0057](KAP-0057.md) | Complete    | Defined a prospective finite v0.2.0 release unit without implementation |
-| [KAP-0046](KAP-0046.md) | Conditional | Select one evidence-backed technical direction                          |
-| [KAP-0054](KAP-0054.md) | Conditional | Specify one real customer-resident `kapseld` pilot                      |
-| [KAP-0048](KAP-0048.md) | Conditional | Decide whether Cargo and docs.rs distribution is independently useful   |
+## v0.2.0 ordered sequence
 
-KAP-0049 may harden only the existing evaluator, CLI, MCP, diagnostics, packaging, and documentation
-surfaces. Accepted KAP-0051 through KAP-0053, KAP-0055, and KAP-0056 work remains one optional
-public sandbox for the same fixed operation and preserves the package and authority rules in
-[V1 technical direction](../docs/VISION.md). Continuing that hosted program requires a new explicit
-scope decision. KAP-0057's completed design does not implement or authorize v0.2.0. None of these
-packets authorizes a second capability or production compatibility promise. KAP-0046 later converts
-approved aggregate use evidence and technical findings into exactly one next route:
+| Order | Packet                  | Status       | Required result                                                                                      |
+| ----: | ----------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
+|     0 | [KAP-0046](KAP-0046.md) | Complete     | Selected Stabilize and rejected widening, freeze, retirement, suite, daemon, and hosted alternatives |
+|     0 | [KAP-0057](KAP-0057.md) | Complete     | Defined and adopted the finite release unit, compatibility classes, gates, and non-goals             |
+|     1 | [KAP-0058](KAP-0058.md) | Active       | One production lifecycle implementation crossed by every crash test                                  |
+|     2 | [KAP-0059](KAP-0059.md) | Queued       | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
+|     3 | [KAP-0060](KAP-0060.md) | Queued       | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
+|     4 | [KAP-0061](KAP-0061.md) | Queued       | Finite reliability, hostile-input, security, and performance qualification                           |
+|     5 | [KAP-0062](KAP-0062.md) | Queued       | Authenticated, reproducible, documented beta distribution candidate                                  |
+|     6 | [KAP-0063](KAP-0063.md) | Queued       | Independent acceptance, publication, downloaded verification, and website handoff                    |
+|     7 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
 
-1. stabilize the existing capability;
-2. specify one evidence-selected capability under a new owner;
-3. freeze at maintenance-only scope; or
-4. retire the experiment.
+Implement and independently review one packet at a time. Do not combine architecture, compatibility,
+migration, qualification, distribution, and publication into one change. A passing packet does not
+pre-authorize the next packet's release act, provider use, or publication.
 
-A Stabilize decision may adopt the reviewed KAP-0057 design and create finite release implementation
-packets; another KAP-0046 route closes or replaces it rather than averaging directions.
+## Release shape
 
-KAP-0054 records the intended resident-daemon route without pre-authorizing implementation. It
-requires both the evidence-selected KAP-0046 route and one real pilot workflow. KAP-0048 remains
-blocked unless approved evidence independently selects Cargo installation or Rust-library use.
+The v0.2 distribution is the root `kapsel` archive for the sole x86-64 GNU/Linux target. It supports
+only the adopted CLI, one exact stdio MCP tool, grant v1 continuity, retained receipt v2 inspection,
+and private operational journal migration named by `docs/V0.2.md` and their direct owners.
 
-Future receipt, protocol, client SDK, provider, Kubernetes, storage, and separate CLI packages are
-tracked by explicit extraction triggers in [V1 technical direction](../docs/VISION.md), not by
-placeholder implementation packets. Create a finite task only after its trigger passes.
+The Rust package remains unsupported for external consumers. [KAP-0048](KAP-0048.md) remains
+conditional future work; v0.2 does not publish crates.io or docs.rs artifacts.
 
-No second capability, generic provider interface, general hosted control plane, operator console, or
-production-readiness program is pre-authorized. KAP-0050's fixed public sandbox is the sole hosted
-exception. Community outreach copy, evaluator identities, company observation thresholds,
-positioning, and commercial decisions remain private operations work.
+## Paused and conditional programs
+
+| Packet                  | Status      | Route                                                                                            |
+| ----------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
+| [KAP-0050](KAP-0050.md) | Paused      | Optional hosted sandbox umbrella; not release scope                                              |
+| [KAP-0053](KAP-0053.md) | Paused      | Preserve accepted offline tranches; continuation requires a new scope and authorization decision |
+| [KAP-0054](KAP-0054.md) | Conditional | Resident process requires a real post-beta pilot workflow                                        |
+| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs distribution requires a later explicit use and compatibility decision              |
+
+KAP-0051, KAP-0052, KAP-0055, and KAP-0056 remain accepted sandbox history. Their implementation and
+the shared workspace version do not make the sandbox, private controller protocols, runner handoff,
+manifests, provider resources, or hosted endpoint part of v0.2 compatibility.
+
+No provider selection, credential access, provisioning, spend, image push, endpoint, DNS, or public
+traffic is authorized. The beta release does not depend on the sandbox.
+
+## Completed 0.1 release sequence
+
+| Order | Packet                  | Outcome                                           |
+| ----: | ----------------------- | ------------------------------------------------- |
+|     0 | [KAP-0038](KAP-0038.md) | 0.1.0 release acceptance and evidence index       |
+|     1 | [KAP-0039](KAP-0039.md) | Short, navigable deep gateway module              |
+|     2 | [KAP-0040](KAP-0040.md) | Frozen evaluator application interface            |
+|     3 | [KAP-0041](KAP-0041.md) | Commands and navigable deep product structure     |
+|     4 | [KAP-0042](KAP-0042.md) | Public real-process crash and failed-rollout demo |
+|     5 | [KAP-0043](KAP-0043.md) | Thin fixed-schema MCP adapter                     |
+|     6 | [KAP-0044](KAP-0044.md) | Installable, documented 0.1.0 artifact            |
+|     7 | [KAP-0045](KAP-0045.md) | Rehearsed and published 0.1.0                     |
+|     8 | [KAP-0049](KAP-0049.md) | Published ten-minute self-serve `v0.1.1` patch    |
+
+## After v0.2.0
+
+KAP-0047 evaluates the exact published beta. Its evidence may justify one of five routes: evidenced
+corrections to the existing capability, one additional operation completing a repeated workflow, one
+resident pilot, maintenance-only scope, or retirement. A feature request, download, star, website
+visit, or release completion does not authorize another capability or generic interface.
+
+Future receipt, protocol, client SDK, provider, Kubernetes, storage, and separate CLI packages
+remain behind the extraction triggers in [V1 technical direction](../docs/VISION.md). Create a
+finite task only after the exact trigger passes.

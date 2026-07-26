@@ -45,21 +45,30 @@ The current package proves one concrete operation through the local CLI, stdio M
 disposable-kind demonstration, and signed receipt. Its Rust, CLI, MCP, configuration, journal, and
 receipt interfaces remain prototype-scoped.
 
-### Public sandbox: post-0.1 technical slice
+### Developer beta: 0.2.0
 
-One independently deployed sandbox exposes fixed non-consequential scenarios through a narrow Rust
-service and reuses the existing `Application`. Its accepted [HTTP contract](SANDBOX_API.md) and
+The accepted [v0.2 plan](V0.2.md) deepens the same operation into one technology-led developer beta.
+It adopts bounded CLI/MCP, grant/receipt continuity, private journal migration, release integrity,
+and qualification obligations without adding a capability, daemon, hosted dependency, public Rust
+SDK, or production-support claim. External beta evidence follows publication rather than blocking
+implementation.
+
+### Optional public sandbox
+
+One independently deployed sandbox may expose fixed non-consequential scenarios through a narrow
+Rust module that reuses the existing `Application`. Its accepted [HTTP contract](SANDBOX_API.md) and
 [deployment contract](SANDBOX_DEPLOYMENT.md) own hosted admission, isolation, reconnectable public
-projection, bounded scheduling, cleanup, and receipt presentation before implementation. It is a
-demonstration surface, not the production resident interface.
+projection, bounded scheduling, cleanup, and receipt presentation. It remains paused, optional, and
+separate from the v0.2 release unit. It is a demonstration surface, not the production resident
+interface.
 
 ### Production v1
 
 A customer-resident `kapseld` process owns supported local admission, durable execution, restart and
 upgrade recovery, bounded concurrency, provider authority, grant and trust configuration, receipt
 publication, health, diagnostics, and a versioned local interface. Production v1 requires a real
-workflow pilot and an evidence-selected KAP-0046 implementation decision; the target described here
-does not authorize the release by itself.
+workflow pilot and a new explicit production implementation decision; neither the v0.2 beta nor the
+target described here authorizes that release.
 
 ## Package strategy
 

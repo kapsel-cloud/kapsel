@@ -9,14 +9,10 @@ Read this file first. It routes work; current technical truth lives in the linke
 2. Read the [technical task route](tasks/README.md), completed
    [`0.1.0` release record](tasks/KAP-0045.md), completed
    [self-serve hardening packet](tasks/KAP-0049.md), completed
-   [sandbox-contract packet](tasks/KAP-0051.md), completed
-   [sandbox-service packet](tasks/KAP-0052.md), completed
-   [runner-handoff packet](tasks/KAP-0055.md), completed read-only
-   [architecture-integrity packet](tasks/KAP-0056.md), paused
-   [sandbox-deployment packet](tasks/KAP-0053.md), paused sandbox [umbrella](tasks/KAP-0050.md),
-   active [evaluator evidence packet](tasks/KAP-0047.md), conditional
-   [direction decision](tasks/KAP-0046.md), and completed design-only
-   [v0.2.0 release-unit packet](tasks/KAP-0057.md).
+   [v0.2.0 direction decision](tasks/KAP-0046.md), adopted [v0.2.0 release design](docs/V0.2.md),
+   and active first implementation packet [KAP-0058](tasks/KAP-0058.md). The
+   [evaluator evidence packet](tasks/KAP-0047.md) is post-release. The
+   [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md) remain paused.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -26,7 +22,9 @@ Read this file first. It routes work; current technical truth lives in the linke
 
 ## Current route
 
-Kapsel is testing one Kubernetes effect-gateway capability. The active technical owner is
+Kapsel is building one finite v0.2.0 Kubernetes effect-gateway developer beta around the sole
+`kubernetes.set_deployment_image` capability. The release owner is [`docs/V0.2.md`](docs/V0.2.md);
+lifecycle, receiver-result, and receipt semantics remain owned by
 [`docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md`](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 Use [`docs/INDEX.md`](docs/INDEX.md) for every other owner rather than recreating its routing here.
 
@@ -52,8 +50,9 @@ explain why a route was chosen; they do not override current contract text.
 - One production adapter does not justify a public provider interface. Do not add runtime plugins, a
   generic capability SDK, policy engine, queue, hosted control plane, dashboard, or second
   capability.
-- Treat MCP as one implemented 0.1 prototype transport adapter, not as project identity, a
-  compatibility promise, or a generic API.
+- Treat MCP as one fixed stdio adapter for the sole capability, not as project identity, a generic
+  interface, or authorization for another transport. Its exact v0.2.x compatibility remains owned by
+  the MCP contract and KAP-0059.
 - Do not promote a timeout, request acceptance, or provider ambiguity into receiver success or
   failure. Preserve explicit `UNKNOWN`.
 - Contracts state shared behavior. ADRs state rationale. Guides describe commands that exist. Tasks
