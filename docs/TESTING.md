@@ -70,8 +70,11 @@ schedule. Use deterministic `kind` setup where a test actually crosses Kubernete
 
 A live `kind` demonstration is allowed only when its setup and cleanup are explicit. It does not
 replace fault-injection tests around the journal. Process-kill tests must cross both the ambiguous
-mutation seam and the receipt-publication seam. They must prove that recovery does not issue a
-second mutation and does not re-sign or relocate already prepared receipt bytes.
+mutation seam and the receipt-publication seam. Deterministic faults, simulations, subprocess
+recovery, and the compile-time demo controls cross the same private operation-selected provider and
+receipt implementations used by `Application`; queue-oriented helpers may select an identity but own
+no lifecycle transition. These tests must prove that recovery does not issue a second mutation and
+does not re-sign or relocate already prepared receipt bytes.
 
 ## Suite shape and robustness lanes
 

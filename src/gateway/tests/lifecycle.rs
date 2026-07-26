@@ -250,16 +250,30 @@
             .await
             .unwrap();
 
+        let receipt_settings = ReceiptSettings {
+            signing_seed: &[51_u8; 32],
+            key_id: "targeted-receipt-key",
+            output_directory: &output,
+        };
+        assert!(matches!(
+            gateway.finalize_operation_receipt_once_with_fault(
+                &configured.operation_id,
+                &receipt_settings,
+                Some(FaultPoint::ReceiptPreparedCommitted),
+            ),
+            Err(GatewayError::InjectedFault)
+        ));
+        assert_eq!(
+            gateway.get(&first.operation_id).unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert_eq!(
+            gateway.get(&configured.operation_id).unwrap(),
+            Some(OperationState::ReceiptPrepared)
+        );
         assert_eq!(
             gateway
-                .finalize_operation_receipt_once(
-                    &configured.operation_id,
-                    &ReceiptSettings {
-                        signing_seed: &[51_u8; 32],
-                        key_id: "targeted-receipt-key",
-                        output_directory: &output,
-                    },
-                )
+                .finalize_operation_receipt_once(&configured.operation_id, &receipt_settings)
                 .unwrap(),
             Some(OperationState::Finalized)
         );
@@ -287,7 +301,11 @@
                 .unwrap();
             assert!(matches!(
                 gateway
-                    .run_once_with_adapter(&mut adapter, Some(FaultPoint::TargetObserved))
+                    .run_operation_once_with_adapter_and_fault(
+                        &request.operation_id,
+                        &mut adapter,
+                        Some(FaultPoint::TargetObserved),
+                    )
                     .await,
                 Err(GatewayError::InjectedFault)
             ));

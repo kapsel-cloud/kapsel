@@ -16,7 +16,11 @@
                 .enable_time()
                 .build()
                 .unwrap()
-                .block_on(gateway.run_once_with_adapter(&mut adapter, None))
+                .block_on(gateway.run_operation_once_with_adapter_and_fault(
+                    "op-001",
+                    &mut adapter,
+                    None,
+                ))
                 .unwrap();
             unreachable!("the parent must kill the child while apply is pending");
         }
@@ -24,7 +28,8 @@
         let output = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_OUTPUT").unwrap());
         let gateway = Gateway::open_for_test(&database).unwrap();
         assert!(matches!(
-            gateway.finalize_receipt_once_with_fault(
+            gateway.finalize_operation_receipt_once_with_fault(
+                "op-001",
                 &ReceiptSettings {
                     signing_seed: &[31_u8; 32],
                     key_id: "process-receipt-key",
@@ -240,7 +245,11 @@
                     .unwrap();
                 assert!(matches!(
                     gateway
-                        .run_once_with_adapter(&mut adapter, Some(fault))
+                        .run_operation_once_with_adapter_and_fault(
+                            &request.operation_id,
+                            &mut adapter,
+                            Some(fault),
+                        )
                         .await,
                     Err(GatewayError::InjectedFault)
                 ));
@@ -253,7 +262,7 @@
             ) {
                 assert_eq!(
                     gateway
-                        .run_once_with_adapter(&mut adapter, None)
+                        .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                         .await
                         .unwrap(),
                     Some(OperationState::ReceiverObserved)
@@ -262,7 +271,7 @@
                 assert_eq!(state, OperationState::ReceiverObserved);
                 assert_eq!(
                     gateway
-                        .run_once_with_adapter(&mut adapter, None)
+                        .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                         .await
                         .unwrap(),
                     None

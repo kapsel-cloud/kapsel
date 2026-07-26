@@ -194,7 +194,8 @@
                 .run_once_with_adapter(&mut adapter, None)
                 .await
                 .unwrap();
-            let result = gateway.finalize_receipt_once_with_fault(
+            let result = gateway.finalize_operation_receipt_once_with_fault(
+                &request.operation_id,
                 &ReceiptSettings {
                     signing_seed: &seed,
                     key_id: "kap0038-test-key",
@@ -259,7 +260,8 @@
                 .await
                 .unwrap();
             assert!(matches!(
-                gateway.finalize_receipt_once_with_fault(
+                gateway.finalize_operation_receipt_once_with_fault(
+                    &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &[13_u8; 32],
                         key_id: "kap0038-test-key",
@@ -389,7 +391,8 @@
                 .await
                 .unwrap();
             assert!(matches!(
-                gateway.finalize_receipt_once_with_fault(
+                gateway.finalize_operation_receipt_once_with_fault(
+                    &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &seed,
                         key_id: "kap0038-test-key",
@@ -448,7 +451,8 @@
                 .await
                 .unwrap();
             assert!(matches!(
-                gateway.finalize_receipt_once_with_fault(
+                gateway.finalize_operation_receipt_once_with_fault(
+                    &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &seed,
                         key_id: "kap0038-test-key",

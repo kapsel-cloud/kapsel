@@ -70,7 +70,10 @@ cannot provide grants, trust, Kubernetes authority, signing material, paths, or 
 configured Kubernetes and receipt authority. `Application::reconcile` resumes the exact configured
 operation after restart, and both return one typed `OperationReport`. Reconciliation and receipt
 finalization select that exact operation identity even if the journal contains another operation.
-Exact grant provisioning is a separate operator function requiring signing material.
+Provider execution/recovery and receipt preparation/publication each have one private
+operation-selected implementation used by production and deterministic fault proofs. Queue-oriented
+test helpers select one exact identity and delegate without owning lifecycle transitions. Exact
+grant provisioning is a separate operator function requiring signing material.
 
 This Rust application interface is not itself a configuration-file or command grammar. The
 [evaluator command contract](COMMANDS.md) owns the implemented local adapter, which converts its

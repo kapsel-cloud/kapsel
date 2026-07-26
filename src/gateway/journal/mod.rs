@@ -514,52 +514,6 @@ impl Journal {
         changed_one(changed)
     }
 
-    #[cfg(test)]
-    pub(in crate::gateway) fn frozen_receipt(
-        &self,
-        state: OperationState,
-    ) -> Result<Option<FrozenReceipt>, GatewayError> {
-        if !matches!(
-            state,
-            OperationState::ReceiptPrepared | OperationState::ReceiptWritten
-        ) {
-            return Err(GatewayError::InvalidPersistedState);
-        }
-        let receipt = self
-            .connection
-            .query_row(
-                "SELECT operation_id, receipt_path, receipt_digest, receipt_bytes,
-                        receipt_key_id
-                 FROM kubernetes_image_operations
-                 WHERE state = ?1
-                 ORDER BY operation_id
-                 LIMIT 1",
-                [state.as_sql()],
-                |row| {
-                    Ok(FrozenReceipt {
-                        operation_id: row.get(0)?,
-                        path: PathBuf::from(row.get::<_, String>(1)?),
-                        digest: row.get(2)?,
-                        bytes: row.get(3)?,
-                        key_id: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some(receipt) = receipt else {
-            return Ok(None);
-        };
-        if receipt.bytes.len() > RECEIPT_BYTES_MAX
-            || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
-        {
-            return Err(GatewayError::ReceiptDigestMismatch);
-        }
-        validate_identity(InputField::AuthorizationId, &receipt.key_id)
-            .map_err(|_| GatewayError::InvalidPersistedState)?;
-        Ok(Some(receipt))
-    }
-
     pub(in crate::gateway) fn frozen_receipt_for(
         &self,
         operation_id: &str,

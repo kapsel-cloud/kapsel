@@ -366,9 +366,51 @@ impl Gateway {
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
     ) -> Result<Option<OperationState>, GatewayError> {
+        self.finalize_operation_receipt_once_with_fault(operation_id, settings, None)
+    }
+
+    fn finalize_operation_receipt_once_with_fault(
+        &self,
+        operation_id: &str,
+        settings: &ReceiptSettings<'_>,
+        fault: Option<FaultPoint>,
+    ) -> Result<Option<OperationState>, GatewayError> {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
+        self.finalize_locked_operation_receipt_once(operation_id, settings, fault)
+    }
+
+    // Queue-oriented tests select only an exact identity while holding worker exclusion, then cross
+    // the same operation-selected implementation used by Application.
+    #[cfg(test)]
+    pub(crate) fn finalize_receipt_once_with_fault(
+        &self,
+        settings: &ReceiptSettings<'_>,
+        fault: Option<FaultPoint>,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        let Some(_worker_lock) = self.journal.try_lock_worker()? else {
+            return Ok(None);
+        };
+        let operation = self
+            .journal
+            .next_request(OperationState::ReceiverObserved)?
+            .or(self.journal.next_request(OperationState::ReceiptPrepared)?)
+            .or(self.journal.next_request(OperationState::ReceiptWritten)?);
+        let Some(operation) = operation else {
+            return Ok(None);
+        };
+        self.finalize_locked_operation_receipt_once(&operation.operation_id, settings, fault)
+    }
+
+    fn finalize_locked_operation_receipt_once(
+        &self,
+        operation_id: &str,
+        settings: &ReceiptSettings<'_>,
+        fault: Option<FaultPoint>,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        #[cfg(not(test))]
+        let _ = fault;
         if self
             .journal
             .request_in_state(operation_id, OperationState::ReceiverObserved)?
@@ -378,6 +420,10 @@ impl Gateway {
             publication::validate_private_directory(settings.output_directory)
                 .map_err(publication_error)?;
             self.journal.prepare_receipt(&receipt)?;
+            #[cfg(test)]
+            if fault == Some(FaultPoint::ReceiptPreparedCommitted) {
+                return Err(GatewayError::InjectedFault);
+            }
         }
         if let Some(receipt) = self
             .journal
@@ -388,102 +434,32 @@ impl Gateway {
             #[cfg(feature = "demo-harness")]
             demo_control::checkpoint_after_receipt_publish()
                 .map_err(|()| GatewayError::ReceiptPublication)?;
+            #[cfg(test)]
+            if fault == Some(FaultPoint::ReceiptPublished) {
+                return Err(GatewayError::InjectedFault);
+            }
             self.journal.mark_receipt_written(operation_id)?;
         }
         if let Some(receipt) = self
             .journal
             .frozen_receipt_for(operation_id, OperationState::ReceiptWritten)?
         {
+            #[cfg(test)]
+            if fault == Some(FaultPoint::ReceiptWrittenCommitted) {
+                return Err(GatewayError::InjectedFault);
+            }
             if !stored_receipt_matches(&receipt.path, &receipt.bytes)? {
                 publication::publish_receipt(&receipt.path, &receipt.bytes)
                     .map_err(publication_error)?;
             }
             self.journal.mark_finalized(operation_id)?;
+            #[cfg(test)]
+            if fault == Some(FaultPoint::FinalizedCommitted) {
+                return Err(GatewayError::InjectedFault);
+            }
             return Ok(Some(OperationState::Finalized));
         }
         Ok(None)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn finalize_receipt_once_with_fault(
-        &self,
-        settings: &ReceiptSettings<'_>,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let Some(_worker_lock) = self.journal.try_lock_worker()? else {
-            return Ok(None);
-        };
-        if let Some(request) = self
-            .journal
-            .next_request(OperationState::ReceiverObserved)?
-        {
-            let receipt = self.build_receipt(&request.operation_id, settings)?;
-            publication::validate_private_directory(settings.output_directory)
-                .map_err(publication_error)?;
-            self.journal.prepare_receipt(&receipt)?;
-            if fault == Some(FaultPoint::ReceiptPreparedCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-        }
-        if self
-            .journal
-            .next_request(OperationState::ReceiptPrepared)?
-            .is_some()
-        {
-            return self.publish_prepared_receipt(fault);
-        }
-        self.finalize_written_receipt(fault)
-    }
-
-    #[cfg(test)]
-    fn publish_prepared_receipt(
-        &self,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let receipt = self
-            .journal
-            .frozen_receipt(OperationState::ReceiptPrepared)?
-            .ok_or(GatewayError::InvalidPersistedState)?;
-        publication::publish_receipt(&receipt.path, &receipt.bytes).map_err(publication_error)?;
-        if fault == Some(FaultPoint::ReceiptPublished) {
-            return Err(GatewayError::InjectedFault);
-        }
-        self.journal.mark_receipt_written(&receipt.operation_id)?;
-        self.finalize_written_operation(&receipt.operation_id, fault)
-    }
-
-    #[cfg(test)]
-    fn finalize_written_receipt(
-        &self,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let Some(receipt) = self
-            .journal
-            .frozen_receipt(OperationState::ReceiptWritten)?
-        else {
-            return Ok(None);
-        };
-        if !stored_receipt_matches(&receipt.path, &receipt.bytes)? {
-            publication::publish_receipt(&receipt.path, &receipt.bytes)
-                .map_err(publication_error)?;
-        }
-        self.finalize_written_operation(&receipt.operation_id, fault)
-    }
-
-    #[cfg(test)]
-    fn finalize_written_operation(
-        &self,
-        operation_id: &str,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        if fault == Some(FaultPoint::ReceiptWrittenCommitted) {
-            return Err(GatewayError::InjectedFault);
-        }
-        self.journal.mark_finalized(operation_id)?;
-        if fault == Some(FaultPoint::FinalizedCommitted) {
-            return Err(GatewayError::InjectedFault);
-        }
-        Ok(Some(OperationState::Finalized))
     }
 
     fn build_receipt(
@@ -541,7 +517,7 @@ impl Gateway {
         client: kube::Client,
     ) -> Result<Option<OperationState>, GatewayError> {
         let mut adapter = KubernetesDeploymentImageAdapter::new(client);
-        self.run_once_with_adapter_for(&mut adapter, None, Some(operation_id))
+        self.run_operation_once_with_adapter_and_fault(operation_id, &mut adapter, None)
             .await
     }
 
@@ -551,31 +527,26 @@ impl Gateway {
         operation_id: &str,
         adapter: &mut A,
     ) -> Result<Option<OperationState>, GatewayError> {
-        self.run_once_with_adapter_for(adapter, None, Some(operation_id))
+        self.run_operation_once_with_adapter_and_fault(operation_id, adapter, None)
             .await
     }
 
-    // The exclusive borrow prevents overlapping journal transitions while provider I/O is pending.
-    #[allow(clippy::needless_pass_by_ref_mut, dead_code)]
-    pub(crate) async fn run_once_with_adapter<A: DeploymentImageAdapter + Send>(
-        &mut self,
-        adapter: &mut A,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        self.run_once_with_adapter_for(adapter, fault, None).await
-    }
-
+    // The exclusive mutable caller borrow and worker lock prevent overlapping journal transitions
+    // while provider I/O is pending.
     #[allow(clippy::needless_pass_by_ref_mut)]
-    async fn run_once_with_adapter_for<A: DeploymentImageAdapter + Send>(
+    async fn run_operation_once_with_adapter_and_fault<A: DeploymentImageAdapter + Send>(
         &mut self,
+        operation_id: &str,
         adapter: &mut A,
         fault: Option<FaultPoint>,
-        operation_id: Option<&str>,
     ) -> Result<Option<OperationState>, GatewayError> {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        if let Some(request) = self.request_in_state(OperationState::Authorized, operation_id)? {
+        if let Some(request) = self
+            .journal
+            .request_in_state(operation_id, OperationState::Authorized)?
+        {
             let target = match adapter.identify(&request).await {
                 Ok(target) => target,
                 Err(TargetReadError::Transient) => {
@@ -629,7 +600,10 @@ impl Gateway {
         }
         // ApplyStarted is the durable mutation marker. Recovery observes from this state and never
         // issues another provider mutation.
-        if let Some(request) = self.request_in_state(OperationState::ApplyStarted, operation_id)? {
+        if let Some(request) = self
+            .journal
+            .request_in_state(operation_id, OperationState::ApplyStarted)?
+        {
             let outcome = self
                 .journal
                 .persisted_apply_outcome(&request.operation_id)?;
@@ -647,15 +621,24 @@ impl Gateway {
         Ok(None)
     }
 
-    fn request_in_state(
-        &self,
-        state: OperationState,
-        operation_id: Option<&str>,
-    ) -> Result<Option<SetDeploymentImageRequest>, GatewayError> {
-        operation_id.map_or_else(
-            || self.journal.next_request(state),
-            |operation_id| self.journal.request_in_state(operation_id, state),
-        )
+    // Queue-oriented tests select only an exact identity, then cross the same operation-selected
+    // implementation used by Application. The delegated implementation holds worker exclusion
+    // across every provider and receiver call.
+    #[allow(clippy::needless_pass_by_ref_mut, dead_code)]
+    pub(crate) async fn run_once_with_adapter<A: DeploymentImageAdapter + Send>(
+        &mut self,
+        adapter: &mut A,
+        fault: Option<FaultPoint>,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        let operation = self
+            .journal
+            .next_request(OperationState::Authorized)?
+            .or(self.journal.next_request(OperationState::ApplyStarted)?);
+        let Some(operation) = operation else {
+            return Ok(None);
+        };
+        self.run_operation_once_with_adapter_and_fault(&operation.operation_id, adapter, fault)
+            .await
     }
 }
 
