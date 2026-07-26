@@ -15,7 +15,7 @@ Read this file first. It routes work; current technical truth lives in the linke
    [architecture-integrity packet](tasks/KAP-0056.md), paused
    [sandbox-deployment packet](tasks/KAP-0053.md), paused sandbox [umbrella](tasks/KAP-0050.md),
    active [evaluator evidence packet](tasks/KAP-0047.md), conditional
-   [direction decision](tasks/KAP-0046.md), and active design-only
+   [direction decision](tasks/KAP-0046.md), and completed design-only
    [v0.2.0 release-unit packet](tasks/KAP-0057.md).
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
