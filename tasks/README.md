@@ -1,8 +1,8 @@
 # Technical task route
 
 Status: v0.2.0 Kubernetes effect-gateway beta selected. Interface adoption and Application locality
-are complete; the upgrade/migration/rollback packet is active, and publication and all later packets
-remain ordered and gated.
+are complete; the upgrade/migration/rollback packet is active, release-source locality follows
+before qualification, and publication and all later packets remain ordered and gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -37,14 +37,15 @@ implementation.
 |     1 | [KAP-0058](KAP-0058.md) | Complete     | One production lifecycle implementation crossed by every crash test                                  |
 |     2 | [KAP-0059](KAP-0059.md) | Complete     | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
 |     3 | [KAP-0060](KAP-0060.md) | Active       | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
-|     4 | [KAP-0061](KAP-0061.md) | Queued       | Finite reliability, hostile-input, security, and performance qualification                           |
-|     5 | [KAP-0062](KAP-0062.md) | Queued       | Authenticated, reproducible, documented beta distribution candidate                                  |
-|     6 | [KAP-0063](KAP-0063.md) | Queued       | Independent acceptance, publication, downloaded verification, and website handoff                    |
-|     7 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
+|     4 | [KAP-0064](KAP-0064.md) | Queued       | Stable, navigable private implementation locality across the root release source                     |
+|     5 | [KAP-0061](KAP-0061.md) | Queued       | Finite reliability, hostile-input, security, and performance qualification                           |
+|     6 | [KAP-0062](KAP-0062.md) | Queued       | Authenticated, reproducible, documented beta distribution candidate                                  |
+|     7 | [KAP-0063](KAP-0063.md) | Queued       | Independent acceptance, publication, downloaded verification, and website handoff                    |
+|     8 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
 
 Implement and independently review one packet at a time. Do not combine architecture, compatibility,
-migration, qualification, distribution, and publication into one change. A passing packet does not
-pre-authorize the next packet's release act, provider use, or publication.
+migration, locality, qualification, distribution, and publication into one change. A passing packet
+does not pre-authorize the next packet's release act, provider use, or publication.
 
 ## Release shape
 
