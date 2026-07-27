@@ -9,7 +9,7 @@ log_directory="${TMPDIR:-/tmp}/kapsel-kind-logs-$$"
 cluster_owned=0
 
 phase() {
-  printf '[kind %s/6] %s\n' "$1" "$2"
+  printf '[kind %s/7] %s\n' "$1" "$2"
 }
 
 cleanup() {
@@ -24,7 +24,7 @@ cleanup() {
     fi
   fi
   if [[ $cluster_owned -eq 1 ]]; then
-    phase 6 "deleting owned cluster $cluster_name"
+    phase 7 "deleting owned cluster $cluster_name"
     if ! kind delete cluster --name "$cluster_name"; then
       printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
       if [[ $status -eq 0 ]]; then
@@ -87,6 +87,15 @@ phase 5 "running failed-rollout and receipt-inspection proof"
 KAPSEL_KIND_TEST=1 cargo test --locked \
   -p kapsel \
   kind_tests::kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt \
+  -- \
+  --ignored \
+  --exact \
+  --nocapture
+
+phase 6 "running deleted-after-patch bounded-unknown proof"
+KAPSEL_KIND_TEST=1 cargo test --locked \
+  -p kapsel \
+  kind_tests::kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receipt \
   -- \
   --ignored \
   --exact \

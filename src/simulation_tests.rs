@@ -9,7 +9,7 @@ use crate::{
 };
 
 const DEFAULT_SEED: u64 = 0x004b_4150_3030_3338;
-const DEFAULT_CASES: usize = 1_000;
+const DEFAULT_CASES: usize = 10_000;
 
 struct Generator(u64);
 

@@ -24,8 +24,10 @@ use crate::{
 
 const NAMESPACE: &str = "kapsel-kap0038";
 const FAILED_NAMESPACE: &str = "kapsel-kap0038-failed";
+const UNKNOWN_NAMESPACE: &str = "kapsel-kap0038-unknown";
 const DEPLOYMENT: &str = "image-demo";
 const FAILED_DEPLOYMENT: &str = "image-demo-failed";
+const UNKNOWN_DEPLOYMENT: &str = "image-demo-unknown";
 const TARGET_IMAGE: &str = concat!(
     "registry.k8s.io/pause@sha256:",
     "278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c"
@@ -166,6 +168,50 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
     proof.unwrap();
 }
 
+#[tokio::test]
+#[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receipt() {
+    assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
+    let client = Client::try_default().await.unwrap();
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        namespaces.create(
+            &PostParams::default(),
+            &Namespace {
+                metadata: ObjectMeta {
+                    name: Some(UNKNOWN_NAMESPACE.into()),
+                    ..ObjectMeta::default()
+                },
+                ..Namespace::default()
+            },
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let proof = tokio::time::timeout(
+        std::time::Duration::from_mins(1),
+        run_unknown_rollout_proof(client.clone()),
+    )
+    .await
+    .map_or_else(
+        |_| Err("kind unknown proof exceeded 60 seconds".into()),
+        |result| result.map_err(|error| error.to_string()),
+    );
+    let cleanup = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        namespaces.delete(UNKNOWN_NAMESPACE, &DeleteParams::default()),
+    )
+    .await
+    .map_or_else(
+        |_| Err("kind unknown cleanup exceeded 15 seconds".into()),
+        |result| result.map(|_| ()).map_err(|error| error.to_string()),
+    );
+    assert!(cleanup.is_ok(), "kind unknown fixture cleanup failed");
+    proof.unwrap();
+}
+
 async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
     tokio::time::timeout(
@@ -239,6 +285,109 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
             .and_then(|container| container.image.as_deref()),
         Some(FIXTURE_IMAGE)
     );
+    drop(gateway);
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::error::Error>> {
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), UNKNOWN_NAMESPACE);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        deployments.create(
+            &PostParams::default(),
+            &fixture_deployment_for(UNKNOWN_NAMESPACE, UNKNOWN_DEPLOYMENT),
+        ),
+    )
+    .await??;
+    wait_for_deployment_rollout(&deployments, UNKNOWN_DEPLOYMENT).await?;
+    let request = unknown_request();
+    let authorization = ExactAuthorization {
+        authorization_id: "kind-unknown-auth-001".into(),
+        operation_id: request.operation_id.clone(),
+        namespace: request.namespace.clone(),
+        deployment: request.deployment.clone(),
+        container: request.container.clone(),
+        immutable_image_digest: request.immutable_image_digest.clone(),
+    };
+    let directory = private_test_directory_for("unknown");
+    let receipt_directory = directory.join("receipts");
+    fs::create_dir(&receipt_directory)?;
+    fs::set_permissions(&receipt_directory, fs::Permissions::from_mode(0o700))?;
+    let database = directory.join("journal.sqlite3");
+    let mut gateway = Gateway::open_for_test(&database)?;
+    gateway.submit_exact_for_test(&request, &authorization)?;
+    let mut first_adapter = CountingAdapter::new(client.clone());
+    match gateway
+        .run_once_with_adapter(&mut first_adapter, Some(FaultPoint::ApplyReturned))
+        .await
+    {
+        Err(GatewayError::InjectedFault) => {},
+        Err(error) => return Err(error.into()),
+        Ok(_) => return Err("kind unknown fault did not stop after patch".into()),
+    }
+    assert_eq!(first_adapter.apply_calls, 1);
+    drop(gateway);
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        deployments.delete(UNKNOWN_DEPLOYMENT, &DeleteParams::default()),
+    )
+    .await??;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if deployments.get_opt(UNKNOWN_DEPLOYMENT).await?.is_none() {
+                return Ok::<(), kube::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .map_err(|_| "deleted Deployment remained observable for 10 seconds")??;
+
+    let mut gateway = Gateway::open_for_test(&database)?;
+    let mut recovery_adapter = CountingAdapter::new(client);
+    assert_eq!(
+        gateway
+            .run_once_with_adapter(&mut recovery_adapter, None)
+            .await?,
+        Some(OperationState::ReceiverObserved)
+    );
+    assert_eq!(recovery_adapter.apply_calls, 0);
+    assert_eq!(
+        gateway.result(&request.operation_id)?,
+        Some(OperationResult::Unknown)
+    );
+
+    let receipt_seed = [43_u8; 32];
+    assert_eq!(
+        gateway.finalize_receipt_once(&ReceiptSettings {
+            signing_seed: &receipt_seed,
+            key_id: "kind-unknown-receipt-key",
+            output_directory: &receipt_directory,
+        })?,
+        Some(OperationState::Finalized)
+    );
+    let reference = gateway
+        .receipt_reference(&request.operation_id)?
+        .ok_or("missing unknown receipt reference")?;
+    let receipt_bytes = fs::read(reference.path)?;
+    let trust = ReceiptTrust {
+        key_id: "kind-unknown-receipt-key".into(),
+        public_key: SigningKey::from_bytes(&receipt_seed)
+            .verifying_key()
+            .to_bytes(),
+        accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
+        not_before_unix_s: 100,
+        not_after_unix_s: 200,
+    }
+    .encode()?;
+    let report = inspect_receipt(&receipt_bytes, &trust, 150, InspectionLimits::default());
+    assert_eq!(report.status(), InspectionStatus::Inspected);
+    let statement = report.statement().ok_or("missing inspected statement")?;
+    assert_eq!(statement.result(), OperationResult::Unknown);
+    assert_eq!(statement.observed_image(), None);
+    assert_eq!(statement.observed_operation_marker(), None);
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -369,6 +518,16 @@ fn request() -> SetDeploymentImageRequest {
         operation_id: "kind-op-001".into(),
         namespace: NAMESPACE.into(),
         deployment: DEPLOYMENT.into(),
+        container: "target".into(),
+        immutable_image_digest: TARGET_IMAGE.into(),
+    }
+}
+
+fn unknown_request() -> SetDeploymentImageRequest {
+    SetDeploymentImageRequest {
+        operation_id: "kind-unknown-op-001".into(),
+        namespace: UNKNOWN_NAMESPACE.into(),
+        deployment: UNKNOWN_DEPLOYMENT.into(),
         container: "target".into(),
         immutable_image_digest: TARGET_IMAGE.into(),
     }

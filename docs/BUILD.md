@@ -248,11 +248,13 @@ cargo make test-kind
 The direct script equivalent is `./scripts/test-kind-effect-gateway.sh`.
 
 It precompiles the tests, creates a uniquely named disposable cluster from a pinned Kubernetes 1.33
-node-image digest, preloads the fixture images, and runs two fault-injected post-patch
+node-image digest, preloads the fixture images, and runs three fault-injected post-patch
 journal-reopen paths. The healthy path verifies the exact target image and unchanged untargeted
 container. The unhealthy-image path verifies no second patch, observes `ProgressDeadlineExceeded`,
-freezes a `FAILED` receipt, and inspects every signed classifier input offline. The script removes
-only the cluster it created. On a test failure after cluster creation, it exports kind logs under
+freezes a `FAILED` receipt, and inspects every signed classifier input offline. The bounded-unknown
+path deletes the exact Deployment after one returned patch, verifies restart makes no second patch,
+exhausts the 30-read production schedule, and inspects an `UNKNOWN` receipt. The script removes only
+the cluster it created. On a test failure after cluster creation, it exports kind logs under
 `$TMPDIR` before cleanup.
 
 This live gate is not part of hosted deterministic CI. The separate default test suite provides the

@@ -156,11 +156,12 @@ frozen receipt bytes, rotated settings, and offline inspection. Separate prerequ
 Docker, `kind`, and `kubectl` to prove failures occur before cluster creation.
 
 The explicit live harness then crosses the same executable and markers against its owned `kind`
-cluster. It proves healthy and `ProgressDeadlineExceeded` receiver paths, the unchanged untargeted
-container, one harness-counted apply, frozen digest and path under rotation, bounded failure logs,
-no-network inspection, and ownership-safe cleanup. The compile-time feature and its environment are
-harness control, not agent input or a public lifecycle interface. Existing internal fault tests
-remain the exhaustive transition proof; the visual demonstration does not replace them.
+cluster. It proves healthy, `ProgressDeadlineExceeded`, and deleted-after-patch bounded `UNKNOWN`
+receiver paths, the unchanged untargeted container, one harness-counted apply per operation, frozen
+digest and path under rotation, bounded failure logs, no-network inspection, and ownership-safe
+cleanup. The compile-time feature and its environment are harness control, not agent input or a
+public lifecycle interface. Existing internal fault tests remain the exhaustive transition proof;
+the visual demonstration does not replace them.
 
 ## KAP-0051 public sandbox contract proof
 
