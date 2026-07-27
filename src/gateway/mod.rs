@@ -121,7 +121,7 @@ pub enum OperationState {
 
 /// Outcome of submitting an exact authorized request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SubmissionResult {
+pub(crate) enum SubmissionResult {
     /// A new authorized operation was recorded.
     Created,
     /// The same authorized operation already exists in this state.
@@ -657,7 +657,7 @@ fn stored_receipt_matches(path: &Path, expected: &[u8]) -> Result<bool, GatewayE
 
 /// Name of an input field rejected by the bounded experiment grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InputField {
+pub(crate) enum InputField {
     /// Operation identity.
     OperationId,
     /// Authorization identity.
@@ -674,7 +674,7 @@ pub enum InputField {
 
 /// Failure before or during the experiment's durable submission boundary.
 #[derive(Debug)]
-pub enum GatewayError {
+pub(crate) enum GatewayError {
     /// SQLite rejected a journal operation.
     Database(rusqlite::Error),
     /// The operating system rejected private journal-file protection.

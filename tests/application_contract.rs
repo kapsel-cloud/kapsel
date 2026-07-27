@@ -14,7 +14,10 @@ use std::{
 use ed25519_dalek::SigningKey;
 use tower_test::mock;
 
-use kapsel::*;
+use kapsel::{
+    provision_exact_grant, AgentRequest, Application, ApplicationError, AuthorizationTrust,
+    ExactAuthorization, GrantProvisioning, OperationState, OperatorConfiguration, TargetRejection,
+};
 
 fn request() -> AgentRequest {
     AgentRequest {
@@ -125,34 +128,6 @@ async fn execute_owns_target_rejection_lifecycle() {
     );
     assert_eq!(report.result, None);
     assert_eq!(report.receipt, None);
-    responder.await.unwrap();
-    drop(application);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn request_only_submission_uses_operator_configured_grant() {
-    let root =
-        std::env::temp_dir().join(format!("kapsel-application-submit-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    private_directory(&root);
-    let application = Application::open(configuration(&root)).unwrap();
-    let request = request();
-
-    assert_eq!(
-        application.submit(&request).unwrap(),
-        SubmissionResult::Created
-    );
-    assert_eq!(
-        application.report().unwrap(),
-        Some(OperationReport {
-            operation_id: request.operation_id,
-            state: OperationState::Authorized,
-            result: None,
-            target_rejection: None,
-            receipt: None,
-        })
-    );
     assert_eq!(
         fs::metadata(root.join("journal.sqlite3"))
             .unwrap()
@@ -161,6 +136,7 @@ async fn request_only_submission_uses_operator_configured_grant() {
             & 0o777,
         0o600
     );
+    responder.await.unwrap();
     drop(application);
     fs::remove_dir_all(root).unwrap();
 }
@@ -173,7 +149,7 @@ async fn request_match_validation_exposes_only_exact_grant_match_without_mutatio
     ));
     let _ = fs::remove_dir_all(&root);
     private_directory(&root);
-    let application = Application::open(configuration(&root)).unwrap();
+    let mut application = Application::open(configuration(&root)).unwrap();
     let exact = request();
     assert!(application.request_matches_authorized_grant(&exact));
 
@@ -205,7 +181,7 @@ async fn request_match_validation_exposes_only_exact_grant_match_without_mutatio
     ] {
         assert!(!application.request_matches_authorized_grant(&mismatched));
     }
-    assert_eq!(application.report().unwrap(), None);
+    assert_eq!(application.reconcile().await.unwrap(), None);
     drop(application);
     fs::remove_dir_all(root).unwrap();
 }
@@ -257,17 +233,15 @@ async fn mismatched_intent_does_not_create_an_operation() {
     ));
     let _ = fs::remove_dir_all(&root);
     private_directory(&root);
-    let application = Application::open(configuration(&root)).unwrap();
+    let mut application = Application::open(configuration(&root)).unwrap();
     let mut mismatched = request();
     mismatched.container = "other".into();
 
     assert!(matches!(
-        application.submit(&mismatched),
-        Err(ApplicationError::Gateway(
-            GatewayError::AuthorizationMismatch
-        ))
+        application.execute(&mismatched).await,
+        Err(ApplicationError::RequestRejected)
     ));
-    assert_eq!(application.report().unwrap(), None);
+    assert_eq!(application.reconcile().await.unwrap(), None);
     drop(application);
     fs::remove_dir_all(root).unwrap();
 }

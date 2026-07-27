@@ -7,8 +7,8 @@ use std::{
 };
 
 use kapsel::{
-    Application, ApplicationError, AuthorizationTrust, GatewayError, OperationReport,
-    OperationResult, OperationState, OperatorConfiguration, TargetRejection,
+    Application, ApplicationError, AuthorizationTrust, OperationReport, OperationResult,
+    OperationState, OperatorConfiguration, TargetRejection,
 };
 use kube::{config::KubeConfigOptions, Config};
 use rustix::fs::{openat, Mode, OFlags, CWD};
@@ -62,7 +62,7 @@ pub(crate) async fn open_application(path: &Path) -> Result<Application, Failure
         | ApplicationError::InvalidJournalPath
         | ApplicationError::InvalidReceiptOutputDirectory
         | ApplicationError::InvalidGrantProvisioning => FailureClass::OperatorConfiguration,
-        ApplicationError::Gateway(_) | ApplicationError::InvalidApplicationState => {
+        ApplicationError::RequestRejected | ApplicationError::OperationFailure => {
             FailureClass::OperationFailure
         },
     })
@@ -70,9 +70,7 @@ pub(crate) async fn open_application(path: &Path) -> Result<Application, Failure
 
 pub(crate) fn classify_application_operation(error: &ApplicationError) -> FailureClass {
     match error {
-        ApplicationError::Gateway(
-            GatewayError::InvalidInput(_) | GatewayError::AuthorizationMismatch,
-        ) => FailureClass::RequestRejected,
+        ApplicationError::RequestRejected => FailureClass::RequestRejected,
         _ => FailureClass::OperationFailure,
     }
 }

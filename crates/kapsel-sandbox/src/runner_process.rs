@@ -219,8 +219,8 @@ fn application_open_error(error: &ApplicationError) -> &'static str {
         ApplicationError::InvalidReceiptConfiguration => "runner receipt composition is invalid",
         ApplicationError::InvalidJournalPath => "runner journal composition is invalid",
         ApplicationError::InvalidReceiptOutputDirectory => "runner outbox composition is invalid",
-        ApplicationError::Gateway(_) => "runner gateway composition is invalid",
-        ApplicationError::InvalidGrantProvisioning | ApplicationError::InvalidApplicationState => {
+        ApplicationError::OperationFailure => "runner gateway composition is invalid",
+        ApplicationError::InvalidGrantProvisioning | ApplicationError::RequestRejected => {
             "runner application composition is invalid"
         },
     }

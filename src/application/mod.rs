@@ -74,7 +74,7 @@ pub fn provision_exact_grant(
     .map_err(|_| ApplicationError::InvalidGrantProvisioning)
 }
 
-/// Application-level report shared by future local and MCP adapters.
+/// Application-level report shared by the local CLI, MCP, and sandbox adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReport {
     /// Stable operation identity fixed by the configured authorization grant.
@@ -111,7 +111,7 @@ impl Application {
     ///
     /// Returns a typed configuration error when grant trust, receipt authority, or paths are
     /// unsafe. Journal open, durability, migration, and filesystem failures are returned as
-    /// [`ApplicationError::Gateway`].
+    /// [`ApplicationError::OperationFailure`].
     pub fn open(configuration: OperatorConfiguration) -> Result<Self, ApplicationError> {
         let verified_grant = verify_authorization_grant(
             &configuration.signed_authorization_grant,
@@ -135,7 +135,7 @@ impl Application {
             &configuration.journal_path,
             configuration.authorization_trust,
         )
-        .map_err(ApplicationError::Gateway)?;
+        .map_err(|_| ApplicationError::OperationFailure)?;
         Ok(Self {
             gateway,
             kubernetes_client: configuration.kubernetes_client,
@@ -159,12 +159,13 @@ impl Application {
     ///
     /// # Errors
     ///
-    /// Returns [`ApplicationError::Gateway`] when intent is malformed, differs from the configured
-    /// exact grant, conflicts with durable facts, or cannot be persisted.
-    pub fn submit(&self, request: &AgentRequest) -> Result<SubmissionResult, ApplicationError> {
+    /// Returns [`ApplicationError::RequestRejected`] when intent is malformed or differs from the
+    /// configured exact grant. Durable conflicts and persistence failures return
+    /// [`ApplicationError::OperationFailure`].
+    fn submit(&self, request: &AgentRequest) -> Result<SubmissionResult, ApplicationError> {
         self.gateway
             .submit_authorized(request, &self.signed_authorization_grant)
-            .map_err(ApplicationError::Gateway)
+            .map_err(|error| map_operation_error(&error))
     }
 
     /// Submits request-only intent and owns all subsequent lifecycle sequencing.
@@ -186,7 +187,7 @@ impl Application {
         self.submit(request)?;
         self.reconcile()
             .await?
-            .ok_or(ApplicationError::InvalidApplicationState)
+            .ok_or(ApplicationError::OperationFailure)
     }
 
     /// Recovers and advances the configured operation to its next externally blocked or terminal
@@ -194,8 +195,8 @@ impl Application {
     ///
     /// # Errors
     ///
-    /// Returns a typed gateway error when recovery cannot read or advance durable state, perform
-    /// bounded Kubernetes interaction, or publish the frozen receipt.
+    /// Returns [`ApplicationError::OperationFailure`] when recovery cannot read or advance durable
+    /// state, perform bounded Kubernetes interaction, or publish the frozen receipt.
     ///
     /// # Cancellation safety
     ///
@@ -214,7 +215,7 @@ impl Application {
                             &self.authorized_request,
                             &self.signed_authorization_grant,
                         )
-                        .map_err(ApplicationError::Gateway)?;
+                        .map_err(|error| map_operation_error(&error))?;
                 },
                 OperationState::Authorized | OperationState::ApplyStarted => {
                     let operation_state_after_run = self
@@ -224,7 +225,7 @@ impl Application {
                             self.kubernetes_client.clone(),
                         )
                         .await
-                        .map_err(ApplicationError::Gateway)?;
+                        .map_err(|_| ApplicationError::OperationFailure)?;
                     if operation_state_after_run.is_none() {
                         return self.report();
                     }
@@ -243,7 +244,7 @@ impl Application {
                             &self.authorized_request.operation_id,
                             &receipt_settings,
                         )
-                        .map_err(ApplicationError::Gateway)?;
+                        .map_err(|_| ApplicationError::OperationFailure)?;
                     if receipt_state_after_finalization.is_none() {
                         return self.report();
                     }
@@ -256,17 +257,12 @@ impl Application {
     }
 
     /// Reports the configured operation without provider or network access.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError::Gateway`] when the atomic durable snapshot cannot be read or
-    /// contains facts outside the owned lifecycle.
-    pub fn report(&self) -> Result<Option<OperationReport>, ApplicationError> {
+    fn report(&self) -> Result<Option<OperationReport>, ApplicationError> {
         let operation_id = &self.authorized_request.operation_id;
         let Some(snapshot) = self
             .gateway
             .operation_snapshot(operation_id)
-            .map_err(ApplicationError::Gateway)?
+            .map_err(|_| ApplicationError::OperationFailure)?
         else {
             return Ok(None);
         };
@@ -277,6 +273,17 @@ impl Application {
             target_rejection: snapshot.target_rejection,
             receipt: snapshot.receipt,
         }))
+    }
+}
+
+fn map_operation_error(error: &GatewayError) -> ApplicationError {
+    match error {
+        GatewayError::InvalidInput(field) => {
+            let _ = field;
+            ApplicationError::RequestRejected
+        },
+        GatewayError::AuthorizationMismatch => ApplicationError::RequestRejected,
+        _ => ApplicationError::OperationFailure,
     }
 }
 
@@ -320,10 +327,10 @@ pub enum ApplicationError {
     InvalidJournalPath,
     /// Receipt output was absent, unsafe, or not owner-private.
     InvalidReceiptOutputDirectory,
-    /// Application state did not contain the configured operation after submission.
-    InvalidApplicationState,
-    /// The deep gateway rejected configuration, intent, durable state, or provider interaction.
-    Gateway(GatewayError),
+    /// Request intent was malformed or did not match the operator-configured exact grant.
+    RequestRejected,
+    /// Durable state, provider interaction, or receipt publication could not complete.
+    OperationFailure,
 }
 
 impl fmt::Display for ApplicationError {
@@ -334,8 +341,8 @@ impl fmt::Display for ApplicationError {
             Self::InvalidReceiptConfiguration => "invalid_receipt_configuration",
             Self::InvalidJournalPath => "invalid_journal_path",
             Self::InvalidReceiptOutputDirectory => "invalid_receipt_output_directory",
-            Self::InvalidApplicationState => "invalid_application_state",
-            Self::Gateway(_) => "gateway",
+            Self::RequestRejected => "request_rejected",
+            Self::OperationFailure => "operation_failure",
         };
         write!(formatter, "Kapsel application failure: {class}")
     }
@@ -343,14 +350,6 @@ impl fmt::Display for ApplicationError {
 
 impl Error for ApplicationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Gateway(error) => Some(error),
-            Self::InvalidGrantProvisioning
-            | Self::InvalidAuthorizationConfiguration
-            | Self::InvalidReceiptConfiguration
-            | Self::InvalidJournalPath
-            | Self::InvalidReceiptOutputDirectory
-            | Self::InvalidApplicationState => None,
-        }
+        None
     }
 }
