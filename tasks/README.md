@@ -1,8 +1,8 @@
 # Technical task route
 
-Status: v0.2.0 Kubernetes effect-gateway beta selected. Interface adoption and Application locality
-are complete; the upgrade/migration/rollback packet is active, release-source locality follows
-before qualification, and publication and all later packets remain ordered and gated.
+Status: v0.2.0 Kubernetes effect-gateway beta selected. Upgrade, rollback, and downgrade proof is
+complete; release-source locality is active before qualification, and publication and all later
+packets remain ordered and gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -36,8 +36,8 @@ implementation.
 |     0 | [KAP-0057](KAP-0057.md) | Complete     | Defined and adopted the finite release unit, compatibility classes, gates, and non-goals             |
 |     1 | [KAP-0058](KAP-0058.md) | Complete     | One production lifecycle implementation crossed by every crash test                                  |
 |     2 | [KAP-0059](KAP-0059.md) | Complete     | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
-|     3 | [KAP-0060](KAP-0060.md) | Active       | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
-|     4 | [KAP-0064](KAP-0064.md) | Queued       | Stable, navigable private implementation locality across the root release source                     |
+|     3 | [KAP-0060](KAP-0060.md) | Complete     | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
+|     4 | [KAP-0064](KAP-0064.md) | Active       | Stable, navigable private implementation locality across the root release source                     |
 |     5 | [KAP-0061](KAP-0061.md) | Queued       | Finite reliability, hostile-input, security, and performance qualification                           |
 |     6 | [KAP-0062](KAP-0062.md) | Queued       | Authenticated, reproducible, documented beta distribution candidate                                  |
 |     7 | [KAP-0063](KAP-0063.md) | Queued       | Independent acceptance, publication, downloaded verification, and website handoff                    |
