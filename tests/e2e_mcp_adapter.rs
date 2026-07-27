@@ -18,6 +18,7 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+use sha2::{Digest, Sha256};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 const IMAGE: &str = concat!(
@@ -51,10 +52,13 @@ fn private_file(path: &Path, bytes: &[u8]) {
 #[derive(Clone, Copy)]
 enum ReceiverPlan {
     Unavailable,
-    NotAttempted,
+    DeploymentNotFound,
+    ContainerNotFound,
+    InvalidTarget,
     Succeeded,
     Failed,
     Unknown,
+    TransientThenSucceeded,
 }
 
 fn fixture() -> Fixture {
@@ -65,16 +69,12 @@ fn successful_fixture() -> Fixture {
     fixture_with_receiver(ReceiverPlan::Succeeded)
 }
 
-fn not_attempted_fixture() -> Fixture {
-    fixture_with_receiver(ReceiverPlan::NotAttempted)
+fn target_rejection_fixture(receiver_plan: ReceiverPlan) -> Fixture {
+    fixture_with_receiver(receiver_plan)
 }
 
-fn failed_fixture() -> Fixture {
-    fixture_with_receiver(ReceiverPlan::Failed)
-}
-
-fn unknown_fixture() -> Fixture {
-    fixture_with_receiver(ReceiverPlan::Unknown)
+fn transient_fixture() -> Fixture {
+    fixture_with_receiver(ReceiverPlan::TransientThenSucceeded)
 }
 
 fn fixture_with_receiver(receiver_plan: ReceiverPlan) -> Fixture {
@@ -176,32 +176,67 @@ fn fixture_with_receiver(receiver_plan: ReceiverPlan) -> Fixture {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the fixed target and receiver response plans stay visible together"
+)]
 fn serve_outcome(listener: &TcpListener, receiver_plan: ReceiverPlan) {
-    if matches!(receiver_plan, ReceiverPlan::NotAttempted) {
-        let body = serde_json::json!({
-            "apiVersion": "v1", "kind": "Status", "status": "Failure",
-            "reason": "NotFound", "message": "SECRET_PROVIDER_CANARY", "code": 404
-        })
-        .to_string();
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 4096];
-        let _ = stream.read(&mut request).unwrap();
-        write!(
-            stream,
-            concat!(
-                "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\n",
-                "content-length: {}\r\nconnection: close\r\n\r\n"
-            ),
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body.as_bytes()).unwrap();
+    if matches!(receiver_plan, ReceiverPlan::DeploymentNotFound) {
+        serve_response(
+            listener,
+            "404 Not Found",
+            &serde_json::json!({
+                "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                "reason": "NotFound", "message": "SECRET_PROVIDER_CANARY", "code": 404
+            })
+            .to_string(),
+        );
         return;
     }
     let old_image = concat!(
         "registry.example/agent-api@sha256:",
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
+    if matches!(
+        receiver_plan,
+        ReceiverPlan::ContainerNotFound | ReceiverPlan::InvalidTarget
+    ) {
+        let containers = if matches!(receiver_plan, ReceiverPlan::ContainerNotFound) {
+            serde_json::json!([{"name": "other", "image": old_image}])
+        } else {
+            serde_json::json!([{"name": "api", "image": old_image}])
+        };
+        let metadata = if matches!(receiver_plan, ReceiverPlan::InvalidTarget) {
+            serde_json::json!({"name": "agent-api", "namespace": "demo", "generation": 1})
+        } else {
+            serde_json::json!({"name": "agent-api", "namespace": "demo", "uid": "uid-1",
+                "resourceVersion": "1", "generation": 1})
+        };
+        serve_response(
+            listener,
+            "200 OK",
+            &serde_json::json!({
+                "apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
+                "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "agent-api"}},
+                    "template": {"metadata": {"labels": {"app": "agent-api"}},
+                        "spec": {"containers": containers}}},
+                "status": {"observedGeneration": 1}
+            })
+            .to_string(),
+        );
+        return;
+    }
+    if matches!(receiver_plan, ReceiverPlan::TransientThenSucceeded) {
+        serve_response(
+            listener,
+            "500 Internal Server Error",
+            &serde_json::json!({
+                "apiVersion": "v1", "kind": "Status", "status": "Failure",
+                "reason": "InternalError", "message": "SECRET_TRANSIENT_CANARY", "code": 500
+            })
+            .to_string(),
+        );
+    }
     let failed = matches!(receiver_plan, ReceiverPlan::Failed);
     let responses = [
         serde_json::json!({
@@ -248,20 +283,25 @@ fn serve_outcome(listener: &TcpListener, receiver_plan: ReceiverPlan) {
         }),
     ];
     for body in responses.map(|value| value.to_string()) {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 4096];
-        let _ = stream.read(&mut request).unwrap();
-        write!(
-            stream,
-            concat!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
-                "content-length: {}\r\nconnection: close\r\n\r\n"
-            ),
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body.as_bytes()).unwrap();
+        serve_response(listener, "200 OK", &body);
     }
+}
+
+fn serve_response(listener: &TcpListener, status: &str, body: &str) {
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut request = [0_u8; 4096];
+    let _ = stream.read(&mut request).unwrap();
+    write!(
+        stream,
+        concat!(
+            "HTTP/1.1 {}\r\ncontent-type: application/json\r\n",
+            "content-length: {}\r\nconnection: close\r\n\r\n"
+        ),
+        status,
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body.as_bytes()).unwrap();
 }
 
 fn run_session(fixture: &Fixture, messages: &[serde_json::Value]) -> Vec<serde_json::Value> {
@@ -316,6 +356,57 @@ fn parse_responses(bytes: &[u8]) -> Vec<serde_json::Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+fn operation_messages() -> [serde_json::Value; 3] {
+    [
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"}}
+        }),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "kubernetes.set_deployment_image", "arguments": {
+                "operation_id": "mcp-op-1", "namespace": "demo",
+                "deployment": "agent-api", "container": "api",
+                "immutable_image_digest": IMAGE
+            }}
+        }),
+    ]
+}
+
+fn mcp_operation(fixture: &Fixture) -> serde_json::Value {
+    let responses = run_session(fixture, &operation_messages());
+    assert_eq!(responses.len(), 2);
+    responses[1].clone()
+}
+
+fn local_operation(fixture: &Fixture) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .args([
+            "operate",
+            "--request",
+            fixture.request.to_str().unwrap(),
+            "--operator-config",
+            fixture.operator_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap()
+}
+
+fn tool_report(response: &serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(64);
+    for byte in Sha256::digest(bytes) {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").unwrap();
+    }
+    output
 }
 
 #[test]
@@ -500,6 +591,22 @@ fn mutable_image_and_exact_grant_mismatch_are_request_rejections() {
             r#"{"status":"ERROR","error_class":"request_rejected"}"#
         );
     }
+    private_file(
+        &fixture.request,
+        format!(
+            concat!(
+                "{{\"operation_id\":\"mcp-op-1\",\"namespace\":\"demo\",",
+                "\"deployment\":\"agent-api\",\"container\":\"other\",",
+                "\"immutable_image_digest\":\"{IMAGE}\"}}"
+            ),
+            IMAGE = IMAGE
+        )
+        .as_bytes(),
+    );
+    let local = local_operation(&fixture);
+    assert_eq!(local.status.code(), Some(2));
+    let local_failure: serde_json::Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local_failure["error_class"], "command_input");
     assert_eq!(
         fs::read_dir(fixture.root.join("receipts")).unwrap().count(),
         0
@@ -507,63 +614,121 @@ fn mutable_image_and_exact_grant_mismatch_are_request_rejections() {
 }
 
 #[test]
-fn application_outcome_vocabulary_remains_distinct() {
-    for (create, expected_state, expected_result) in [
+fn application_outcomes_preserve_domain_parity_across_cli_and_mcp() {
+    for (plan, expected_state, expected_result, expected_rejection) in [
         (
-            not_attempted_fixture as fn() -> Fixture,
+            ReceiverPlan::DeploymentNotFound,
             "NOT_ATTEMPTED",
             None,
+            Some("DEPLOYMENT_NOT_FOUND"),
         ),
         (
-            failed_fixture as fn() -> Fixture,
-            "FINALIZED",
-            Some("FAILED"),
+            ReceiverPlan::ContainerNotFound,
+            "NOT_ATTEMPTED",
+            None,
+            Some("CONTAINER_NOT_FOUND"),
         ),
         (
-            unknown_fixture as fn() -> Fixture,
-            "FINALIZED",
-            Some("UNKNOWN"),
+            ReceiverPlan::InvalidTarget,
+            "NOT_ATTEMPTED",
+            None,
+            Some("INVALID_TARGET"),
         ),
+        (
+            ReceiverPlan::Succeeded,
+            "FINALIZED",
+            Some("SUCCEEDED"),
+            None,
+        ),
+        (ReceiverPlan::Failed, "FINALIZED", Some("FAILED"), None),
+        (ReceiverPlan::Unknown, "FINALIZED", Some("UNKNOWN"), None),
     ] {
-        let mut fixture = create();
-        let responses = run_session(
-            &fixture,
-            &[
-                serde_json::json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                    "params": {"protocolVersion": "2025-11-25", "capabilities": {},
-                        "clientInfo": {"name": "test", "version": "1"}}
-                }),
-                serde_json::json!({
-                    "jsonrpc": "2.0", "method": "notifications/initialized"
-                }),
-                serde_json::json!({
-                    "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                    "params": {"name": "kubernetes.set_deployment_image", "arguments": {
-                        "operation_id": "mcp-op-1", "namespace": "demo",
-                        "deployment": "agent-api", "container": "api",
-                        "immutable_image_digest": IMAGE
-                    }}
-                }),
-            ],
-        );
-        let report: serde_json::Value = serde_json::from_str(
-            responses[1]["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap(),
-        )
-        .unwrap();
+        let mut fixture = target_rejection_fixture(plan);
+        let response = mcp_operation(&fixture);
+        assert_eq!(response["result"]["isError"], false);
+        let report = tool_report(&response);
         assert_eq!(report["state"], expected_state);
         assert_eq!(
             report["result"],
             expected_result.map_or(serde_json::Value::Null, serde_json::Value::from)
         );
-        if expected_state == "NOT_ATTEMPTED" {
-            assert_eq!(report["target_rejection"], "DEPLOYMENT_NOT_FOUND");
-        }
-        assert_eq!(responses[1]["result"]["isError"], false);
+        assert_eq!(
+            report["target_rejection"],
+            expected_rejection.map_or(serde_json::Value::Null, serde_json::Value::from)
+        );
         fixture.server.take().unwrap().join().unwrap();
+
+        let local = local_operation(&fixture);
+        assert_eq!(local.status.code(), Some(0));
+        let local_report: serde_json::Value = serde_json::from_slice(&local.stdout).unwrap();
+        for field in [
+            "operation_id",
+            "state",
+            "result",
+            "target_rejection",
+            "receipt_file",
+            "receipt_sha256",
+        ] {
+            assert_eq!(report[field], local_report[field], "field {field}");
+        }
+
+        if expected_state == "NOT_ATTEMPTED" {
+            assert_eq!(report["receipt_file"], serde_json::Value::Null);
+            assert_eq!(report["receipt_sha256"], serde_json::Value::Null);
+            assert_eq!(
+                fs::read_dir(fixture.root.join("receipts")).unwrap().count(),
+                0
+            );
+        } else {
+            let receipt_file = report["receipt_file"].as_str().unwrap();
+            let receipt = fs::read(fixture.root.join("receipts").join(receipt_file)).unwrap();
+            let digest = sha256_hex(&receipt);
+            assert_eq!(report["receipt_sha256"], digest);
+            assert!(receipt_file.ends_with(&format!("-{digest}.receipt")));
+        }
     }
+}
+
+#[test]
+fn operation_failure_and_restart_preserve_cli_mcp_parity() {
+    let mut fixture = transient_fixture();
+    let failed = mcp_operation(&fixture);
+    assert_eq!(failed["result"]["isError"], true);
+    assert_eq!(
+        failed["result"]["content"][0]["text"],
+        r#"{"status":"ERROR","error_class":"operation_failure"}"#
+    );
+    let recovered = mcp_operation(&fixture);
+    assert_eq!(recovered["result"]["isError"], false);
+    let recovered_report = tool_report(&recovered);
+    assert_eq!(recovered_report["result"], "SUCCEEDED");
+    fixture.server.take().unwrap().join().unwrap();
+    let local_replay = local_operation(&fixture);
+    assert_eq!(local_replay.status.code(), Some(0));
+    let local_report: serde_json::Value = serde_json::from_slice(&local_replay.stdout).unwrap();
+    for field in [
+        "operation_id",
+        "state",
+        "result",
+        "target_rejection",
+        "receipt_file",
+        "receipt_sha256",
+    ] {
+        assert_eq!(
+            recovered_report[field], local_report[field],
+            "field {field}"
+        );
+    }
+
+    let mut fixture = transient_fixture();
+    let failed = local_operation(&fixture);
+    assert_eq!(failed.status.code(), Some(4));
+    let failure: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(failure["error_class"], "operation_failure");
+    let recovered = mcp_operation(&fixture);
+    assert_eq!(recovered["result"]["isError"], false);
+    assert_eq!(tool_report(&recovered)["result"], "SUCCEEDED");
+    fixture.server.take().unwrap().join().unwrap();
 }
 
 #[test]
@@ -574,6 +739,10 @@ fn untrusted_operator_configuration_exits_before_protocol_traffic() {
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty());
+    assert_eq!(
+        output.stderr,
+        b"Kapsel command failure: operator_configuration\n"
+    );
     assert!(output.stderr.len() < 4096);
     for canary in [
         b"grant.bin".as_slice(),
@@ -585,6 +754,10 @@ fn untrusted_operator_configuration_exits_before_protocol_traffic() {
             .windows(canary.len())
             .any(|window| window == canary));
     }
+    let local = local_operation(&fixture);
+    assert_eq!(local.status.code(), Some(3));
+    let failure: serde_json::Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(failure["error_class"], "operator_configuration");
 }
 
 #[test]

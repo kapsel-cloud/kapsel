@@ -284,9 +284,22 @@ mod tests {
     }
 
     #[test]
-    fn exact_owner_signed_grant_authenticates_under_application_configured_trust() {
+    fn canonical_grant_v1_vector_authenticates_under_application_configured_trust() {
         let seed = [7_u8; 32];
         let bytes = sign_authorization_grant(&authorization(), &seed, "owner-key").unwrap();
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in &bytes {
+            use std::fmt::Write as _;
+            write!(&mut hex, "{byte:02x}").unwrap();
+        }
+        assert_eq!(
+            hex,
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/vectors/kap0038-grant.hex"
+            ))
+            .trim()
+        );
         let verified = verify_authorization_grant(&bytes, &trust(&seed, "owner-key")).unwrap();
         assert_eq!(verified.authorization, authorization());
         assert_eq!(verified.signer_key_id, "owner-key");

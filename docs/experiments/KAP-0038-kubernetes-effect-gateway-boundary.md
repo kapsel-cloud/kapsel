@@ -196,8 +196,11 @@ the fixed purpose, signing-key identity, statement bytes, and Ed25519 signature.
 is the exact byte string `purpose`, one zero byte, then the statement bytes.
 
 The v0.2 beta continues to accept canonical grant v1 bytes emitted by `v0.1.1` and preserves this
-exact wire across v0.2.x. That bounded compatibility appoints no new trust, adds no expiry or
-revocation semantics, and creates no generic grant format or promise beyond the v0.2.x beta line.
+exact wire across v0.2.x. The canonical signed known answer is
+[`vectors/kap0038-grant.hex`](../../vectors/kap0038-grant.hex); it uses the fixed authorization,
+seed, and signer identity in the owner test rather than defining another vector format. That bounded
+compatibility appoints no new trust, adds no expiry or revocation semantics, and creates no generic
+grant format or promise beyond the v0.2.x beta line.
 
 Kubernetes credentials and signing seeds are owner-controlled private inputs; they never enter agent
 requests, SQLite, receipts, reports, or errors. Public signing-key identities and digests are not
@@ -214,7 +217,10 @@ canonical receipt and trust v2 bytes emitted by `v0.1.1`, emits the same receipt
 preserves that wire across v0.2.x. This bounded compatibility never re-signs frozen bytes, appoints
 receipt-carried trust, creates a generic receipt format, or promises compatibility beyond the v0.2.x
 beta line. A later format must use a new identifier and explicit migration/inspection policy rather
-than reuse or rename these bytes.
+than reuse or rename these bytes. The canonical `v0.1.1` receipt, statement, and trust known answers
+remain [`vectors/kap0038-receipt.hex`](../../vectors/kap0038-receipt.hex),
+[`vectors/kap0038-statement.hex`](../../vectors/kap0038-statement.hex), and
+[`vectors/kap0038-trust.hex`](../../vectors/kap0038-trust.hex).
 
 The prototype bytes are fixed-order length-delimited records with these magic prefixes:
 
