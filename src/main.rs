@@ -2,6 +2,7 @@
 
 mod command;
 mod mcp;
+mod transport_support;
 
 use std::{io::Write as _, process::ExitCode};
 

@@ -45,15 +45,16 @@ Their exact beta interfaces are adopted for v0.2.x, but v0.2 has not yet been bu
 | Publication module                  | Unix descriptor-relative, owner-private, collision-safe frozen-byte installation                 | Generic blob storage or hosted publication                            |
 
 The source tree keeps these owners local. `lib.rs` is a compact workspace-visible interface map;
-`application` owns the shared deep application interface and sequencing; `command` owns bounded CLI
-input, deterministic rendering, and exit classes; and `main.rs` owns only process arguments,
-streams, and exit handling. The adopted v0.2 design concentrates operator-file composition and
-domain report/error projection behind one private seam used by both CLI and MCP while preserving
-their separate framing. In current `v0.1.1` code, that composition remains under `command` and MCP
-reaches through its sibling; KAP-0059 owns the implementation change. Authorization, lifecycle,
-journal/schema, concrete Kubernetes I/O and classification, receipt encoding/inspection,
-publication, and their private seam tests live beneath the private `gateway` module. A concern earns
-another file only when it owns policy or a durable fact behind a smaller internal interface.
+`application` owns the shared deep application interface and sequencing; `transport_support` owns
+bounded operator-file composition plus domain report and application-error projection for the two
+production adapters; `command` owns bounded CLI input, deterministic envelopes, and exit classes;
+`mcp` owns protocol framing and lifecycle; and `main.rs` owns only process arguments, streams, and
+exit handling. Deleting the private transport-support module would move operator loading, exact
+application failure classification, and operation-state/result/rejection/receipt projection back
+into both adapters. Authorization, lifecycle, journal/schema, concrete Kubernetes I/O and
+classification, receipt encoding/inspection, publication, and their private seam tests live beneath
+the private `gateway` module. A concern earns another file only when it owns policy or a durable
+fact behind a smaller internal interface.
 
 The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).

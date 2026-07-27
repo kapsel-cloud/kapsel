@@ -9,17 +9,14 @@ use std::{
     process::ExitCode,
 };
 
-use kapsel::{
-    AgentRequest, Application, ApplicationError, GatewayError, OperationReport, OperationResult,
-    OperationState, TargetRejection,
-};
+use kapsel::{AgentRequest, Application, OperationReport};
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
 };
 use serde_json::{json, Value};
 
-use crate::command;
+use crate::transport_support::{self, FailureClass};
 
 const PROTOCOL_VERSION: &str = "2025-11-25";
 const MESSAGE_BYTES_MAX: u64 = 16 * 1024;
@@ -146,28 +143,31 @@ pub(crate) fn run(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
     if flag != "--operator-config" || arguments.next().is_some() {
         return startup_failure("command_input", 2);
     }
-    let runtime = match command::runtime("mcp") {
+    let runtime = match transport_support::runtime() {
         Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = writeln!(std::io::stderr().lock(), "{}", error.diagnostic());
-            return ExitCode::from(error.exit_code());
-        },
+        Err(class) => return support_failure(class),
     };
-    let application = match runtime.block_on(command::open_application(
-        &PathBuf::from(operator_path),
-        "mcp",
-    )) {
+    let application = match runtime.block_on(transport_support::open_application(&PathBuf::from(
+        operator_path,
+    ))) {
         Ok(application) => application,
-        Err(error) => {
-            let _ = writeln!(std::io::stderr().lock(), "{}", error.diagnostic());
-            return ExitCode::from(error.exit_code());
-        },
+        Err(class) => return support_failure(class),
     };
     serve(&runtime, application)
 }
 
 fn startup_failure(class: &str, exit: u8) -> ExitCode {
     let _ = writeln!(std::io::stderr().lock(), "Kapsel MCP failure: {class}");
+    ExitCode::from(exit)
+}
+
+fn support_failure(class: FailureClass) -> ExitCode {
+    let (class, exit) = match class {
+        FailureClass::OperatorConfiguration => ("operator_configuration", 3),
+        FailureClass::RequestRejected => ("request_rejected", 2),
+        FailureClass::OperationFailure => ("operation_failure", 4),
+    };
+    let _ = writeln!(std::io::stderr().lock(), "Kapsel command failure: {class}");
     ExitCode::from(exit)
 }
 
@@ -374,17 +374,21 @@ fn dispatch_tool_call(
     };
 
     match runtime.block_on(application.execute(&request)) {
-        Ok(report) => call_result(id, render_report(&report), false),
-        Err(error) if request_rejected(&error) => call_result(
-            id,
-            String::from(r#"{"status":"ERROR","error_class":"request_rejected"}"#),
-            true,
-        ),
-        Err(_) => call_result(
-            id,
-            String::from(r#"{"status":"ERROR","error_class":"operation_failure"}"#),
-            true,
-        ),
+        Ok(report) => match render_report(&report) {
+            Ok(text) => call_result(id, text, false),
+            Err(_) => operation_failure(id),
+        },
+        Err(error)
+            if transport_support::classify_application_operation(&error)
+                == FailureClass::RequestRejected =>
+        {
+            call_result(
+                id,
+                String::from(r#"{"status":"ERROR","error_class":"request_rejected"}"#),
+                true,
+            )
+        },
+        Err(_) => operation_failure(id),
     }
 }
 
@@ -461,12 +465,11 @@ fn tool_definition() -> Value {
     })
 }
 
-fn request_rejected(error: &ApplicationError) -> bool {
-    matches!(
-        error,
-        ApplicationError::Gateway(
-            GatewayError::InvalidInput(_) | GatewayError::AuthorizationMismatch
-        )
+fn operation_failure(id: Value) -> Value {
+    call_result(
+        id,
+        String::from(r#"{"status":"ERROR","error_class":"operation_failure"}"#),
+        true,
     )
 }
 
@@ -485,28 +488,22 @@ fn call_result(id: Value, text: String, is_error: bool) -> Value {
     })
 }
 
-fn render_report(report: &OperationReport) -> String {
-    let operation_id_json = json_text(&report.operation_id);
-    let result_json = report.result.map_or_else(
-        || String::from("null"),
-        |value| json_text(operation_result(value)),
-    );
-    let target_rejection_json = report.target_rejection.map_or_else(
-        || String::from("null"),
-        |value| json_text(target_rejection(value)),
-    );
-    let (receipt_file_json, receipt_digest_json) = report.receipt.as_ref().map_or_else(
-        || (String::from("null"), String::from("null")),
-        |receipt| {
-            let file = receipt
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map_or_else(|| String::from("null"), json_text);
-            (file, json_text(&receipt.digest))
-        },
-    );
-    format!(
+fn render_report(report: &OperationReport) -> Result<String, FailureClass> {
+    let projection = transport_support::project_operation(report)?;
+    let operation_id_json = json_text(projection.operation_id);
+    let result_json = projection
+        .result
+        .map_or_else(|| String::from("null"), json_text);
+    let target_rejection_json = projection
+        .target_rejection
+        .map_or_else(|| String::from("null"), json_text);
+    let receipt_file_json = projection
+        .receipt_file
+        .map_or_else(|| String::from("null"), json_text);
+    let receipt_digest_json = projection
+        .receipt_sha256
+        .map_or_else(|| String::from("null"), json_text);
+    Ok(format!(
         concat!(
             "{{\"operation_id\":{operation_id_json},\"state\":\"{state}\",",
             "\"result\":{result_json},\"target_rejection\":{target_rejection_json},",
@@ -514,46 +511,17 @@ fn render_report(report: &OperationReport) -> String {
             "\"receipt_sha256\":{receipt_digest_json}}}"
         ),
         operation_id_json = operation_id_json,
-        state = operation_state(report.state),
+        state = projection.state,
         result_json = result_json,
         target_rejection_json = target_rejection_json,
         receipt_file_json = receipt_file_json,
         receipt_digest_json = receipt_digest_json
-    )
+    ))
 }
 
 fn json_text(value: &str) -> String {
     serde_json::to_string(value)
         .unwrap_or_else(|_| unreachable!("serializing a string as JSON cannot fail"))
-}
-
-const fn operation_state(state: OperationState) -> &'static str {
-    match state {
-        OperationState::Requested => "REQUESTED",
-        OperationState::Authorized => "AUTHORIZED",
-        OperationState::NotAttempted => "NOT_ATTEMPTED",
-        OperationState::ApplyStarted => "APPLY_STARTED",
-        OperationState::ReceiverObserved => "RECEIVER_OBSERVED",
-        OperationState::ReceiptPrepared => "RECEIPT_PREPARED",
-        OperationState::ReceiptWritten => "RECEIPT_WRITTEN",
-        OperationState::Finalized => "FINALIZED",
-    }
-}
-
-const fn operation_result(result: OperationResult) -> &'static str {
-    match result {
-        OperationResult::Succeeded => "SUCCEEDED",
-        OperationResult::Failed => "FAILED",
-        OperationResult::Unknown => "UNKNOWN",
-    }
-}
-
-const fn target_rejection(rejection: TargetRejection) -> &'static str {
-    match rejection {
-        TargetRejection::DeploymentNotFound => "DEPLOYMENT_NOT_FOUND",
-        TargetRejection::ContainerNotFound => "CONTAINER_NOT_FOUND",
-        TargetRejection::InvalidTarget => "INVALID_TARGET",
-    }
 }
 
 #[allow(

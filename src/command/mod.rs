@@ -10,17 +10,16 @@ use std::{
 };
 
 use kapsel::{
-    inspect_receipt, provision_exact_grant, AgentRequest, Application, ApplicationError,
-    AuthorizationTrust, ExactAuthorization, GatewayError, GrantProvisioning, InspectionLimits,
-    InspectionReport, InspectionStatus, OperationReport, OperationResult, OperationState,
-    OperatorConfiguration, ReceiptStatement, TargetRejection,
+    inspect_receipt, provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning,
+    InspectionLimits, InspectionReport, InspectionStatus, OperationReport, OperationResult,
+    ReceiptStatement,
 };
-use kube::{config::KubeConfigOptions, Config};
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use serde::Deserialize;
 
+use crate::transport_support::{self, FailureClass};
+
 const JSON_BYTES_MAX: usize = 16 * 1024;
-const GRANT_BYTES_MAX: usize = 4 * 1024;
 const MACHINE_OUTPUT_BYTES_MAX: usize = 64 * 1024;
 const NON_CLAIMS: &str = concat!(
     "no-exactly-once;no-causation;no-kubernetes-truth;",
@@ -123,19 +122,6 @@ struct RequestDocument {
     immutable_image_digest: String,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OperatorDocument {
-    signed_authorization_grant: PathBuf,
-    authorization_key_id: String,
-    authorization_public_key: PathBuf,
-    kubeconfig: PathBuf,
-    journal: PathBuf,
-    receipt_directory: PathBuf,
-    receipt_signing_seed: PathBuf,
-    receipt_signing_key_id: String,
-}
-
 fn provision(mut options: BTreeMap<String, OsString>) -> CommandResult {
     let authorization_path = take_path(&mut options, "--authorization", "provision-grant")?;
     let seed_path = take_path(&mut options, "--signing-seed", "provision-grant")?;
@@ -182,98 +168,19 @@ fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
         immutable_image_digest: request.immutable_image_digest,
     };
 
-    let runtime = runtime("operate")?;
+    let runtime = transport_support::runtime().map_err(|class| map_failure("operate", class))?;
     let report = runtime.block_on(async {
-        let mut application = open_application(&operator_path, "operate").await?;
-        application
-            .execute(&request)
+        let mut application = transport_support::open_application(&operator_path)
             .await
-            .map_err(|error| map_application_operation(&error))
+            .map_err(|class| map_failure("operate", class))?;
+        application.execute(&request).await.map_err(|error| {
+            map_failure(
+                "operate",
+                transport_support::classify_application_operation(&error),
+            )
+        })
     })?;
     render_operation(&report)
-}
-
-pub(crate) async fn open_application(
-    operator_path: &Path,
-    command: &'static str,
-) -> Result<Application, CommandError> {
-    let operator: OperatorDocument =
-        read_json_classified(operator_path, command, ErrorClass::OperatorConfiguration)?;
-    let configuration = load_operator_configuration(operator, command).await?;
-    Application::open(configuration).map_err(|error| map_application_open(&error, command))
-}
-
-async fn load_operator_configuration(
-    operator: OperatorDocument,
-    command: &'static str,
-) -> Result<OperatorConfiguration, CommandError> {
-    for path in [
-        &operator.signed_authorization_grant,
-        &operator.authorization_public_key,
-        &operator.kubeconfig,
-        &operator.journal,
-        &operator.receipt_directory,
-        &operator.receipt_signing_seed,
-    ] {
-        if !path.is_absolute() {
-            return Err(CommandError::configuration(command));
-        }
-    }
-    let grant = read_bounded(
-        &operator.signed_authorization_grant,
-        GRANT_BYTES_MAX,
-        command,
-        ErrorClass::OperatorConfiguration,
-    )?;
-    let authorization_public_key = read_exact_32(
-        &operator.authorization_public_key,
-        command,
-        ErrorClass::OperatorConfiguration,
-    )?;
-    let receipt_seed = read_exact_32(
-        &operator.receipt_signing_seed,
-        command,
-        ErrorClass::OperatorConfiguration,
-    )?;
-    let kubernetes_client = load_kubernetes_client(&operator.kubeconfig, command).await?;
-
-    Ok(OperatorConfiguration {
-        journal_path: operator.journal,
-        receipt_output_directory: operator.receipt_directory,
-        authorization_trust: AuthorizationTrust {
-            key_id: operator.authorization_key_id,
-            public_key: authorization_public_key,
-        },
-        signed_authorization_grant: grant,
-        kubernetes_client,
-        receipt_signing_seed: receipt_seed,
-        receipt_signing_key_id: operator.receipt_signing_key_id,
-    })
-}
-
-async fn load_kubernetes_client(
-    kubeconfig_path: &Path,
-    command: &'static str,
-) -> Result<kube::Client, CommandError> {
-    let kubeconfig_bytes = read_bounded(
-        kubeconfig_path,
-        JSON_BYTES_MAX,
-        command,
-        ErrorClass::OperatorConfiguration,
-    )?;
-    let kubeconfig_text =
-        std::str::from_utf8(&kubeconfig_bytes).map_err(|_| CommandError::configuration(command))?;
-    let mut kubeconfig = kube::config::Kubeconfig::from_yaml(kubeconfig_text)
-        .map_err(|_| CommandError::configuration(command))?;
-    let proxy_placeholder_was_added = configure_explicit_kubeconfig(&mut kubeconfig, command)?;
-    let mut client_config =
-        Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
-            .await
-            .map_err(|_| CommandError::configuration(command))?;
-    if proxy_placeholder_was_added {
-        client_config.proxy_url = None;
-    }
-    kube::Client::try_from(client_config).map_err(|_| CommandError::configuration(command))
 }
 
 fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
@@ -395,55 +302,6 @@ fn read_exact_32(
         .map_err(|_| CommandError { command, class })
 }
 
-fn configure_explicit_kubeconfig(
-    kubeconfig: &mut kube::config::Kubeconfig,
-    command: &'static str,
-) -> Result<bool, CommandError> {
-    let current = kubeconfig
-        .current_context
-        .as_deref()
-        .ok_or_else(|| CommandError::configuration(command))?;
-    let context = kubeconfig
-        .contexts
-        .iter()
-        .find(|context| context.name == current)
-        .and_then(|context| context.context.as_ref())
-        .ok_or_else(|| CommandError::configuration(command))?;
-    let cluster_name = context.cluster.clone();
-    let user_name = context.user.clone();
-    let cluster = kubeconfig
-        .clusters
-        .iter_mut()
-        .find(|cluster| cluster.name == cluster_name)
-        .and_then(|cluster| cluster.cluster.as_mut())
-        .ok_or_else(|| CommandError::configuration(command))?;
-    if cluster.certificate_authority.is_some() {
-        return Err(CommandError::configuration(command));
-    }
-    if let Some(user_name) = user_name {
-        let user = kubeconfig
-            .auth_infos
-            .iter()
-            .find(|user| user.name == user_name)
-            .and_then(|user| user.auth_info.as_ref())
-            .ok_or_else(|| CommandError::configuration(command))?;
-        if user.token_file.is_some()
-            || user.client_certificate.is_some()
-            || user.client_key.is_some()
-            || user.auth_provider.is_some()
-            || user.exec.is_some()
-        {
-            return Err(CommandError::configuration(command));
-        }
-    }
-    if cluster.proxy_url.as_deref().is_none_or(str::is_empty) {
-        cluster.proxy_url = Some(String::from("http://127.0.0.1"));
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
 fn open_regular(
     path: &Path,
     command: &'static str,
@@ -534,28 +392,14 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn runtime(command: &'static str) -> Result<tokio::runtime::Runtime, CommandError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|_| CommandError::operation(command))
-}
-
 fn render_operation(report: &OperationReport) -> CommandResult {
-    let operation_id_json = json_string(&report.operation_id);
-    let state = operation_state(report.state);
-    let result_json = optional_json(report.result.map(operation_result));
-    let target_rejection_json = optional_json(report.target_rejection.map(target_rejection));
-    let (receipt_file_json, receipt_digest_json) = if let Some(receipt) = &report.receipt {
-        let file = receipt
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| CommandError::operation("operate"))?;
-        (json_string(file), json_string(&receipt.digest))
-    } else {
-        ("null".into(), "null".into())
-    };
+    let projection = transport_support::project_operation(report)
+        .map_err(|class| map_failure("operate", class))?;
+    let operation_id_json = json_string(projection.operation_id);
+    let result_json = optional_json(projection.result);
+    let target_rejection_json = optional_json(projection.target_rejection);
+    let receipt_file_json = optional_json(projection.receipt_file);
+    let receipt_digest_json = optional_json(projection.receipt_sha256);
     Ok(format!(
         concat!(
             "{{\"command\":\"operate\",\"operation_id\":{operation_id_json},",
@@ -565,7 +409,7 @@ fn render_operation(report: &OperationReport) -> CommandResult {
             "\"receipt_sha256\":{receipt_digest_json}}}"
         ),
         operation_id_json = operation_id_json,
-        state = state,
+        state = projection.state,
         result_json = result_json,
         target_rejection_json = target_rejection_json,
         receipt_file_json = receipt_file_json,
@@ -724,32 +568,11 @@ fn optional_json(value: Option<&str>) -> String {
     value.map_or_else(|| "null".into(), json_string)
 }
 
-const fn operation_state(value: OperationState) -> &'static str {
-    match value {
-        OperationState::Requested => "REQUESTED",
-        OperationState::Authorized => "AUTHORIZED",
-        OperationState::NotAttempted => "NOT_ATTEMPTED",
-        OperationState::ApplyStarted => "APPLY_STARTED",
-        OperationState::ReceiverObserved => "RECEIVER_OBSERVED",
-        OperationState::ReceiptPrepared => "RECEIPT_PREPARED",
-        OperationState::ReceiptWritten => "RECEIPT_WRITTEN",
-        OperationState::Finalized => "FINALIZED",
-    }
-}
-
 const fn operation_result(value: OperationResult) -> &'static str {
     match value {
         OperationResult::Succeeded => "SUCCEEDED",
         OperationResult::Failed => "FAILED",
         OperationResult::Unknown => "UNKNOWN",
-    }
-}
-
-const fn target_rejection(value: TargetRejection) -> &'static str {
-    match value {
-        TargetRejection::DeploymentNotFound => "DEPLOYMENT_NOT_FOUND",
-        TargetRejection::ContainerNotFound => "CONTAINER_NOT_FOUND",
-        TargetRejection::InvalidTarget => "INVALID_TARGET",
     }
 }
 
@@ -762,25 +585,11 @@ const fn inspection_status(value: InspectionStatus) -> &'static str {
     }
 }
 
-fn map_application_open(error: &ApplicationError, command: &'static str) -> CommandError {
-    match error {
-        ApplicationError::InvalidAuthorizationConfiguration
-        | ApplicationError::InvalidReceiptConfiguration
-        | ApplicationError::InvalidJournalPath
-        | ApplicationError::InvalidReceiptOutputDirectory
-        | ApplicationError::InvalidGrantProvisioning => CommandError::configuration(command),
-        ApplicationError::Gateway(_) | ApplicationError::InvalidApplicationState => {
-            CommandError::operation(command)
-        },
-    }
-}
-
-fn map_application_operation(error: &ApplicationError) -> CommandError {
-    match error {
-        ApplicationError::Gateway(
-            GatewayError::InvalidInput(_) | GatewayError::AuthorizationMismatch,
-        ) => CommandError::input("operate"),
-        _ => CommandError::operation("operate"),
+fn map_failure(command: &'static str, class: FailureClass) -> CommandError {
+    match class {
+        FailureClass::OperatorConfiguration => CommandError::configuration(command),
+        FailureClass::RequestRejected => CommandError::input(command),
+        FailureClass::OperationFailure => CommandError::operation(command),
     }
 }
 
