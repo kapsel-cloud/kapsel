@@ -35,3 +35,9 @@ mod migration {
 
     include!("migration.rs");
 }
+
+mod v011_upgrade {
+    use super::*;
+
+    include!("v011_upgrade.rs");
+}

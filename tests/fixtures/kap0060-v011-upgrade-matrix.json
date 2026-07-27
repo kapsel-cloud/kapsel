@@ -1,0 +1,115 @@
+{
+  "format": "kapsel.kap0060.v011-upgrade-matrix.v1",
+  "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+  "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)",
+  "cases": [
+    {
+      "name": "requested",
+      "initial_state": "requested",
+      "crash_point": "after_requested_commit",
+      "expected_state": "requested",
+      "provider_call_count": 0,
+      "receipt_identity": "absent",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "authorized",
+      "initial_state": "authorized",
+      "crash_point": "after_authorized_commit",
+      "expected_state": "authorized",
+      "provider_call_count": 0,
+      "receipt_identity": "absent",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "not_attempted",
+      "initial_state": "not_attempted",
+      "crash_point": "after_target_rejected_commit",
+      "expected_state": "not_attempted",
+      "provider_call_count": 0,
+      "receipt_identity": "absent",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "apply_started_before_call",
+      "initial_state": "apply_started",
+      "crash_point": "after_apply_started_commit_before_provider_call",
+      "expected_state": "apply_started",
+      "provider_call_count": 0,
+      "receipt_identity": "absent",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "apply_started_after_side_effect",
+      "initial_state": "apply_started",
+      "crash_point": "process_loss_after_one_provider_side_effect_before_response",
+      "expected_state": "apply_started",
+      "provider_call_count": 1,
+      "receipt_identity": "absent",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "receiver_observed",
+      "initial_state": "receiver_observed",
+      "crash_point": "after_receiver_observed_commit",
+      "expected_state": "receiver_observed",
+      "provider_call_count": 1,
+      "receipt_identity": "absent",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "receipt_prepared",
+      "initial_state": "receipt_prepared",
+      "crash_point": "after_receipt_prepared_commit_before_publication",
+      "expected_state": "receipt_prepared",
+      "provider_call_count": 1,
+      "receipt_identity": "frozen_in_journal_not_published",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "receipt_written",
+      "initial_state": "receipt_written",
+      "crash_point": "after_receipt_written_commit",
+      "expected_state": "receipt_written",
+      "provider_call_count": 1,
+      "receipt_identity": "frozen_and_published",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    },
+    {
+      "name": "finalized",
+      "initial_state": "finalized",
+      "crash_point": "after_finalized_commit",
+      "expected_state": "finalized",
+      "provider_call_count": 1,
+      "receipt_identity": "frozen_and_published",
+      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
+      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
+      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+    }
+  ]
+}
