@@ -51,10 +51,14 @@ production adapters; `command` owns bounded CLI input, deterministic envelopes, 
 `mcp` owns protocol framing and lifecycle; and `main.rs` owns only process arguments, streams, and
 exit handling. Deleting the private transport-support module would move operator loading, exact
 application failure classification, and operation-state/result/rejection/receipt projection back
-into both adapters. Authorization, lifecycle, journal/schema, concrete Kubernetes I/O and
-classification, receipt encoding/inspection, publication, and their private seam tests live beneath
-the private `gateway` module. A concern earns another file only when it owns policy or a durable
-fact behind a smaller internal interface.
+into both adapters. Authorization, lifecycle, the concrete Kubernetes adapter and classification,
+receipt encoding/inspection, publication, and their private seam tests live beneath the private
+`gateway` module. The journal retains one deep interface for rows, snapshots, worker locking,
+capacity, and guarded transitions. Its private `schema` child concentrates exact layout recognition
+and legacy migration, while its private `opening` child concentrates durable SQLite entry, v0.1.1
+backup verification, rollback-file recovery, and owner-private Unix pathname identity. Gateway
+callers cannot select either child, SQL, storage, or lifecycle sequencing. A concern earns another
+file only when it owns policy or a durable fact behind a smaller internal interface.
 
 The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
