@@ -1,18 +1,30 @@
 # Evaluator commands
 
-Status: 0.1 prototype command contract. No compatibility promise.
+Status: adopted v0.2 beta command contract; the current published implementation remains `v0.1.1`.
 
-Kind: contract. Authority: local evaluator command grammar, operator files, output, and exit
-classes.
+Kind: contract. Authority: local evaluator command grammar, operator files, output, bounds,
+diagnostics, and exit classes.
 
-Owns: The fixed `kapsel` command surface for KAP-0041.
+Owns: The exact `kapsel` command surface supported across v0.2.x.
 
 Does not own: Gateway lifecycle/result semantics, receipt bytes, Kubernetes semantics, MCP,
 packaging, or the KAP-0042 crash demonstration.
 
+## Compatibility posture
+
+The grammar, files, bounds, machine output, diagnostics, and exit classes below describe the current
+`v0.1.1` implementation and are adopted unchanged as the supported but not yet published v0.2
+command surface. Across v0.2.x, intentional incompatible changes require an explicit owner update,
+migration or replacement guidance, and release notes. This support does not extend to the Rust
+package, source layout, crates.io, docs.rs, `cargo install`, another platform, or production use.
+
+Canonical grant v1 and receipt/trust v2 continuity are owned only by
+[KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md). This command contract adopts
+their bytes and result vocabulary without defining another vector format.
+
 ## Command grammar
 
-The Unix prototype executable accepts exactly these local evaluator forms:
+The Unix executable accepts exactly these local evaluator forms:
 
 ```text
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
@@ -192,6 +204,7 @@ The `command` value is the parsed subcommand, or `kapsel` when parsing did not i
 | 3    | `operator_configuration` | Unsafe/missing operator file, authority, kubeconfig, signing, or path.    |
 | 4    | `operation_failure`      | Durable, Kubernetes, reconciliation, or publication failure.              |
 
-This command and every file/output shape above are prototype-scoped and may be removed or changed
-before a future compatibility release. They do not establish a stable CLI, configuration format,
-receipt format, or production-support promise.
+Every file and output shape above is a supported v0.2.x beta surface. Only the latest v0.2.x patch
+receives best-effort security and correctness maintenance. There is no response-time, remediation,
+availability, platform, or production-support SLA, and the adopted contract does not claim that v0.2
+has been built or published.

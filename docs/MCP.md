@@ -1,18 +1,33 @@
 # MCP adapter
 
-Status: 0.1 prototype contract. No compatibility promise.
+Status: adopted v0.2 beta contract; the current published implementation remains `v0.1.1`.
 
 Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response
-semantics for KAP-0043.
+semantics.
 
-Owns: The prototype MCP process grammar and wire behavior for the sole KAP-0038 operation.
+Owns: The exact stdio MCP process grammar and wire behavior supported across v0.2.x for the sole
+KAP-0038 operation.
 
 Does not own: Authorization, durable lifecycle, Kubernetes behavior, receiver classification,
 receipt bytes, the local evaluator command, a generic MCP host, or a stable transport API.
 
+## Compatibility posture
+
+The protocol, process grammar, lifecycle, tool schema, bounds, responses, diagnostics, and error
+classes below describe the current `v0.1.1` implementation and are adopted as the supported but not
+yet published v0.2 MCP surface. Across v0.2.x, intentional incompatible changes require an explicit
+owner update, migration or replacement guidance, and release notes. The package version reported in
+`serverInfo.version` identifies the running patch and is the only value below expected to vary
+between v0.2.x releases.
+
+This contract supports one stdio adapter and one tool. It does not support another transport, remote
+endpoint, generic MCP host, SDK, plugin interface, Rust package interface, or production service.
+Canonical grant, lifecycle, receiver-result, and receipt semantics remain owned only by
+[KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
+
 ## Protocol and process
 
-The prototype supports exactly MCP protocol version `2025-11-25` over the official standard-input /
+The adapter supports exactly MCP protocol version `2025-11-25` over the official standard-input /
 standard-output transport. Each message is one UTF-8 JSON-RPC 2.0 object on one line. Standard
 output contains protocol messages only; bounded diagnostics use standard error. HTTP, Server-Sent
 Events, `Content-Length` framing, JSON-RPC batches, and embedded newlines are unsupported.
@@ -54,7 +69,8 @@ at most 4 KiB and never contains request bytes, operator values, provider bodies
 The first request is `initialize`. Kapsel accepts a numeric non-null request ID or a non-null string
 request ID of at most 128 UTF-8 bytes and echoes its exact JSON value. Longer strings and other ID
 types receive `Invalid Request` with `id: null`; this bound guarantees the echoed ID cannot exceed
-the response limit. Initialization returns:
+the response limit. Initialization returns the following shape. The example shows the current
+published package version; a v0.2.x process reports its own exact package version.
 
 ```json
 {
@@ -181,12 +197,14 @@ is available. Tool/input failures do not echo values. Every JSON object at every
 rejects duplicate keys. Extra envelope or method fields are invalid. Responses, diagnostics,
 reports, receipts, and the journal retain the existing KAP-0038 disclosure limits.
 
-## Prototype limits
+## Beta support limits
 
-This is one 0.1 transport adapter, not a generic MCP server, tool registry, SDK, plugin host, remote
-service, or compatibility commitment. It deliberately implements the fixed official wire surface
-directly with the repository's existing JSON and runtime dependencies; no MCP SDK dependency is
-required. The contract may be removed or changed before a future compatibility release.
+This is one bounded beta transport adapter, not a generic MCP server, tool registry, SDK, plugin
+host, or remote service. It deliberately implements the fixed official wire surface directly with
+the repository's existing JSON and runtime dependencies; no MCP SDK dependency is required. Only the
+latest v0.2.x patch receives best-effort security and correctness maintenance. There is no
+response-time, remediation, availability, platform, or production-support SLA, and the adopted
+contract does not claim that v0.2 has been built or published.
 
 ## Official protocol basis
 

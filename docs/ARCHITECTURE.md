@@ -1,6 +1,6 @@
 # Architecture
 
-Status: active experiment design.
+Status: current `v0.1.1` architecture and adopted, unpublished v0.2 beta direction.
 
 Kind: design. Authority: current module ownership, dependency direction, and composition status.
 
@@ -30,7 +30,8 @@ receipt bytes + explicit trust + time + limits
   -> offline inspector
 ```
 
-The fixed prototype evaluator command and thin fixed-schema MCP stdio adapter are implemented.
+The fixed evaluator command and thin fixed-schema MCP stdio adapter are implemented in `v0.1.1`.
+Their exact beta interfaces are adopted for v0.2.x, but v0.2 has not yet been built or published.
 
 ## Implemented modules
 
@@ -43,13 +44,16 @@ The fixed prototype evaluator command and thin fixed-schema MCP stdio adapter ar
 | Receipt module                      | Classifier-complete prototype bytes, signing, parsing, recomputation, trust/time/limits          | Stable package format, generic verifier, ambient trust, or `VERIFIED` |
 | Publication module                  | Unix descriptor-relative, owner-private, collision-safe frozen-byte installation                 | Generic blob storage or hosted publication                            |
 
-The source tree keeps these owners local. `lib.rs` is a compact exported-interface map;
-`application` owns the shared deep application interface and sequencing; `command` owns bounded
-input, operator-file composition, deterministic rendering, and exit classes; and `main.rs` owns only
-process arguments, streams, and exit handling. Authorization, lifecycle, journal/schema, concrete
-Kubernetes I/O and classification, receipt encoding/inspection, publication, and their private seam
-tests live beneath the private `gateway` module. A concern earns another file only when it owns
-policy or a durable fact behind a smaller internal interface.
+The source tree keeps these owners local. `lib.rs` is a compact workspace-visible interface map;
+`application` owns the shared deep application interface and sequencing; `command` owns bounded CLI
+input, deterministic rendering, and exit classes; and `main.rs` owns only process arguments,
+streams, and exit handling. The adopted v0.2 design concentrates operator-file composition and
+domain report/error projection behind one private seam used by both CLI and MCP while preserving
+their separate framing. In current `v0.1.1` code, that composition remains under `command` and MCP
+reaches through its sibling; KAP-0059 owns the implementation change. Authorization, lifecycle,
+journal/schema, concrete Kubernetes I/O and classification, receipt encoding/inspection,
+publication, and their private seam tests live beneath the private `gateway` module. A concern earns
+another file only when it owns policy or a durable fact behind a smaller internal interface.
 
 The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
@@ -109,8 +113,12 @@ the independently deployable `crates/kapsel-sandbox` consumer, and the excluded 
 product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`,
 `kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only after an independent
 consumer, a one-way package dependency graph, or a measured dependency-isolation need proves that a
-package seam is real. The 0.1 release does not establish a stable library interface or justify
-another package boundary.
+package seam is real. Neither the 0.1 release nor the adopted v0.2 beta establishes a supported
+external Rust interface or justifies another package boundary. Public Rust visibility is retained
+only where the ordinary binary adapters, offline inspection/provisioning composition, the real
+`kapsel-sandbox -> kapsel` consumer, or package tests require it. The public exports, module tree,
+and private adapter seams may change within v0.2.x without external migration support; crates.io,
+docs.rs, and `cargo install` remain unsupported.
 
 KAP-0052 implements the accepted [public sandbox API](SANDBOX_API.md) and
 [deployment composition](SANDBOX_DEPLOYMENT.md) through one one-way `kapsel-sandbox -> kapsel`
