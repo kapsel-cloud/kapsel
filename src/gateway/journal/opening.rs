@@ -13,7 +13,7 @@ use std::{
 
 #[cfg(test)]
 use rusqlite::Transaction;
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{limits::Limit, Connection, TransactionBehavior};
 use rustix::fs::{open, Mode, OFlags};
 use sha2::{Digest, Sha256};
 
@@ -21,8 +21,13 @@ use super::{schema, GatewayError};
 
 const SQLITE_HEADER_BYTES: usize = 100;
 const SQLITE_USER_VERSION_OFFSET: usize = 60;
+const JOURNAL_BYTES_MAX: u64 = 64 * 1024 * 1024;
+const ROLLBACK_JOURNAL_BYTES_MAX: u64 = 65 * 1024 * 1024;
 const BACKUP_SUFFIX: &str = ".kapsel-v011.backup";
 const BACKUP_DIGEST_SUFFIX: &str = ".sha256";
+
+const _: () = assert!(SQLITE_USER_VERSION_OFFSET + size_of::<u32>() <= SQLITE_HEADER_BYTES);
+const _: () = assert!(JOURNAL_BYTES_MAX < ROLLBACK_JOURNAL_BYTES_MAX);
 
 pub(super) struct OpenedJournal {
     pub(super) connection: Connection,
@@ -35,6 +40,9 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     let database_identity = database_file
         .metadata()
         .map_err(GatewayError::JournalFile)?;
+    if database_identity.len() > JOURNAL_BYTES_MAX {
+        return Err(GatewayError::InvalidPersistedState);
+    }
     let fresh = database_identity.len() == 0;
     let initial_version = read_header_version(&mut database_file)?;
     if !fresh && initial_version != 0 && initial_version != schema::JOURNAL_FORMAT_VERSION {
@@ -58,6 +66,9 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     migration_recovery_process_loss_seam(source_version);
 
     let mut connection = Connection::open(path).map_err(GatewayError::Database)?;
+    connection
+        .set_limit(Limit::SQLITE_LIMIT_LENGTH, schema::PERSISTED_ROW_BYTES_MAX)
+        .map_err(GatewayError::Database)?;
     require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
     configure_durable_connection(&connection)?;
@@ -285,6 +296,9 @@ fn recover_private_rollback_journal(
         Err(error) => return Err(GatewayError::JournalBackup(error)),
     };
     let journal_identity = journal.metadata().map_err(GatewayError::JournalBackup)?;
+    if journal_identity.len() > ROLLBACK_JOURNAL_BYTES_MAX {
+        return Err(GatewayError::JournalBackupMismatch);
+    }
     if database_identity.len() == 0 {
         return Err(GatewayError::InvalidPersistedState);
     }
@@ -357,6 +371,10 @@ fn verify_offline_backup(
     let mut backup =
         open_existing_private_file(&backup_path).map_err(GatewayError::JournalBackup)?;
     let backup_identity = backup.metadata().map_err(GatewayError::JournalBackup)?;
+    if backup_identity.len() > JOURNAL_BYTES_MAX || backup_identity.len() != database_identity.len()
+    {
+        return Err(GatewayError::JournalBackupMismatch);
+    }
     if backup_identity.dev() == database_identity.dev()
         && backup_identity.ino() == database_identity.ino()
     {
@@ -439,7 +457,7 @@ fn open_private_file(path: &Path) -> io::Result<File> {
     if !metadata.is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.nlink() != 1
-        || (metadata.mode() & 0o077) != 0
+        || (metadata.mode() & 0o777) != 0o600
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -459,7 +477,7 @@ fn open_existing_private_file(path: &Path) -> io::Result<File> {
     if !metadata.is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.nlink() != 1
-        || (metadata.mode() & 0o077) != 0
+        || (metadata.mode() & 0o777) != 0o600
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -479,7 +497,7 @@ fn require_private_parent(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(parent)?;
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
-        || (metadata.mode() & 0o077) != 0
+        || (metadata.mode() & 0o777) != 0o700
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -496,7 +514,7 @@ fn require_named_identity(path: &Path, expected: &fs::Metadata) -> io::Result<()
         || actual.ino() != expected.ino()
         || actual.uid() != expected.uid()
         || actual.nlink() != 1
-        || (actual.mode() & 0o077) != 0
+        || (actual.mode() & 0o777) != 0o600
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

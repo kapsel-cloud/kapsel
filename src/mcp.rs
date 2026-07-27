@@ -23,6 +23,9 @@ const MESSAGE_BYTES_MAX: u64 = 16 * 1024;
 const RESPONSE_BYTES_MAX: usize = 8 * 1024;
 const REQUEST_ID_BYTES_MAX: usize = 128;
 
+const _: () = assert!(RESPONSE_BYTES_MAX as u64 <= MESSAGE_BYTES_MAX);
+const _: () = assert!(REQUEST_ID_BYTES_MAX < RESPONSE_BYTES_MAX);
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
     Uninitialized,

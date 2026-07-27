@@ -61,6 +61,73 @@
     }
 
     #[test]
+    fn persisted_value_and_row_boundaries_are_checked_on_every_reopen() {
+        let value_path = database_path("persisted-value-bound");
+        drop(Gateway::open_for_test(&value_path).unwrap());
+        let connection = Connection::open(&value_path).unwrap();
+        connection
+            .execute(
+                concat!(
+                    "INSERT INTO kubernetes_image_operations (",
+                    "operation_id, namespace, deployment, container, ",
+                    "immutable_image_digest, state, receipt_bytes",
+                    ") VALUES ('op-value', 'demo', 'agent-api', 'api', ?1, ",
+                    "'authorized', zeroblob(?2))"
+                ),
+                rusqlite::params![request().immutable_image_digest, 16 * 1024],
+            )
+            .unwrap();
+        drop(connection);
+        drop(Gateway::open_for_test(&value_path).unwrap());
+        Connection::open(&value_path)
+            .unwrap()
+            .execute(
+                "UPDATE kubernetes_image_operations SET receipt_bytes = zeroblob(?1)",
+                [16 * 1024 + 1],
+            )
+            .unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&value_path),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        fs::remove_dir_all(value_path.parent().unwrap()).unwrap();
+
+        let count_path = database_path("persisted-row-count-bound");
+        drop(Gateway::open_for_test(&count_path).unwrap());
+        Connection::open(&count_path)
+            .unwrap()
+            .execute(
+                concat!(
+                    "WITH RECURSIVE numbers(value) AS (",
+                    "SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 10000",
+                    ") INSERT INTO kubernetes_image_operations (",
+                    "operation_id, namespace, deployment, container, immutable_image_digest, state",
+                    ") SELECT 'op-' || value, 'demo', 'agent-api', 'api', ?1, ",
+                    "'authorized' FROM numbers"
+                ),
+                [&request().immutable_image_digest],
+            )
+            .unwrap();
+        drop(Gateway::open_for_test(&count_path).unwrap());
+        Connection::open(&count_path)
+            .unwrap()
+            .execute(
+                concat!(
+                    "INSERT INTO kubernetes_image_operations (",
+                    "operation_id, namespace, deployment, container, immutable_image_digest, state",
+                    ") VALUES ('op-overflow', 'demo', 'agent-api', 'api', ?1, 'authorized')"
+                ),
+                [&request().immutable_image_digest],
+            )
+            .unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&count_path),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        fs::remove_dir_all(count_path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn exact_unmarked_store_requires_and_verifies_backup_before_atomic_marker() {
         let path = database_path("verified-upgrade-marker");
         let request = request();
@@ -255,6 +322,59 @@
             assert_unmarked_refusal_preserves_bytes(&path);
             fs::remove_dir_all(path.parent().unwrap()).unwrap();
         }
+    }
+
+    #[test]
+    fn oversized_or_nonexact_mode_artifacts_refuse_before_sqlite_reads() {
+        const JOURNAL_BYTES_MAX: u64 = 64 * 1024 * 1024;
+        const ROLLBACK_JOURNAL_BYTES_MAX: u64 = 65 * 1024 * 1024;
+
+        let oversized_source = database_path("oversized-source");
+        let source = fs::File::create(&oversized_source).unwrap();
+        source.set_len(JOURNAL_BYTES_MAX + 1).unwrap();
+        fs::set_permissions(&oversized_source, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&oversized_source),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        fs::remove_dir_all(oversized_source.parent().unwrap()).unwrap();
+
+        let oversized_rollback = database_path("oversized-rollback-journal");
+        drop(Gateway::open_for_test(&oversized_rollback).unwrap());
+        let rollback = PathBuf::from(format!("{}-journal", oversized_rollback.display()));
+        let rollback_file = fs::File::create(&rollback).unwrap();
+        rollback_file
+            .set_len(ROLLBACK_JOURNAL_BYTES_MAX + 1)
+            .unwrap();
+        fs::set_permissions(&rollback, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&oversized_rollback),
+            Err(GatewayError::JournalBackupMismatch)
+        ));
+        fs::remove_dir_all(oversized_rollback.parent().unwrap()).unwrap();
+
+        let permissive_source = database_path("permissive-source-mode");
+        drop(Gateway::open_for_test(&permissive_source).unwrap());
+        fs::set_permissions(&permissive_source, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&permissive_source),
+            Err(GatewayError::JournalFile(_))
+        ));
+        fs::remove_dir_all(permissive_source.parent().unwrap()).unwrap();
+
+        let permissive_backup = database_path("permissive-backup-mode");
+        create_unmarked_current_journal(&permissive_backup);
+        write_upgrade_backup(&permissive_backup);
+        let backup = PathBuf::from(format!(
+            "{}.kapsel-v011.backup",
+            permissive_backup.display()
+        ));
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&permissive_backup),
+            Err(GatewayError::JournalBackup(_))
+        ));
+        fs::remove_dir_all(permissive_backup.parent().unwrap()).unwrap();
     }
 
     #[test]

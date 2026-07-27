@@ -8,7 +8,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{SocketAddr, TcpListener, TcpStream},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
@@ -29,11 +29,18 @@ struct Fixture {
     root: PathBuf,
     request: PathBuf,
     operator_config: PathBuf,
+    server_address: SocketAddr,
     server: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if let Some(server) = self.server.take() {
+            for _ in 0..4 {
+                let _ = TcpStream::connect(self.server_address);
+            }
+            let _ = server.join();
+        }
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -160,7 +167,7 @@ fn fixture_with_plan(successful: bool, transient_first: bool) -> Fixture {
         for (index, body) in responses.into_iter().enumerate() {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request).unwrap();
+            let _ = stream.read(&mut request);
             let status = if transient_first && index == 0 {
                 "500 Internal Server Error"
             } else if successful {
@@ -168,7 +175,7 @@ fn fixture_with_plan(successful: bool, transient_first: bool) -> Fixture {
             } else {
                 "404 Not Found"
             };
-            write!(
+            if write!(
                 stream,
                 concat!(
                     "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n",
@@ -177,8 +184,11 @@ fn fixture_with_plan(successful: bool, transient_first: bool) -> Fixture {
                 body.len(),
                 status = status
             )
-            .unwrap();
-            stream.write_all(body.as_bytes()).unwrap();
+            .is_err()
+                || stream.write_all(body.as_bytes()).is_err()
+            {
+                break;
+            }
         }
     });
 
@@ -259,6 +269,7 @@ fn fixture_with_plan(successful: bool, transient_first: bool) -> Fixture {
         root,
         request,
         operator_config,
+        server_address: address,
         server: Some(server),
     }
 }
@@ -448,6 +459,118 @@ fn valid_operation_mutates_and_publishes_a_secret_free_receipt() {
 }
 
 #[test]
+fn command_grammar_rejects_unknown_duplicate_missing_positional_and_non_utf8_input() {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let cases = [
+        vec![],
+        vec![std::ffi::OsString::from("unknown")],
+        vec![
+            "inspect".into(),
+            "--receipt".into(),
+            "one".into(),
+            "--receipt".into(),
+            "two".into(),
+        ],
+        vec!["inspect".into(), "--receipt".into()],
+        vec!["inspect".into(), "positional".into()],
+        vec![std::ffi::OsString::from_vec(vec![0xff])],
+    ];
+    for arguments in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.len() < 4096);
+        assert!(output.stderr.len() < 4096);
+        for canary in [b"positional".as_slice(), &[0xff]] {
+            assert!(!output
+                .stdout
+                .windows(canary.len())
+                .any(|window| window == canary));
+            assert!(!output
+                .stderr
+                .windows(canary.len())
+                .any(|window| window == canary));
+        }
+    }
+}
+
+#[test]
+fn request_json_rejects_duplicate_unknown_missing_wrong_type_trailing_and_oversized_shapes() {
+    let canonical = format!(
+        concat!(
+            "{{\"operation_id\":\"command-op-1\",\"namespace\":\"demo\",",
+            "\"deployment\":\"agent-api\",\"container\":\"api\",",
+            "\"immutable_image_digest\":\"{IMAGE}\"}}"
+        ),
+        IMAGE = IMAGE
+    );
+    let cases = [
+        canonical.replace(
+            "\"operation_id\":\"command-op-1\"",
+            "\"operation_id\":\"command-op-1\",\"operation_id\":\"duplicate\"",
+        ),
+        canonical.replace(
+            "\"namespace\":\"demo\"",
+            "\"namespace\":\"demo\",\"unknown\":\"value\"",
+        ),
+        canonical.replace("\"namespace\":\"demo\",", ""),
+        canonical.replace("\"container\":\"api\"", "\"container\":1"),
+        format!("{canonical}\n{{}}"),
+    ];
+    for bytes in cases {
+        let fixture = fixture();
+        private_file(&fixture.request, bytes.as_bytes());
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+            .args([
+                "operate",
+                "--request",
+                fixture.request.to_str().unwrap(),
+                "--operator-config",
+                fixture.operator_config.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.len() < 4096);
+        assert!(output.stderr.len() < 4096);
+    }
+
+    let exact = successful_fixture();
+    let mut exact_bytes = canonical.into_bytes();
+    exact_bytes.resize(16 * 1024, b' ');
+    private_file(&exact.request, &exact_bytes);
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .args([
+            "operate",
+            "--request",
+            exact.request.to_str().unwrap(),
+            "--operator-config",
+            exact.operator_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+
+    let oversized = fixture();
+    exact_bytes.push(b' ');
+    private_file(&oversized.request, &exact_bytes);
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .args([
+            "operate",
+            "--request",
+            oversized.request.to_str().unwrap(),
+            "--operator-config",
+            oversized.operator_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn malformed_or_mutable_agent_intent_has_a_bounded_input_exit() {
     let mutable = serde_json::json!({
         "operation_id": "command-op-1",
@@ -576,6 +699,94 @@ fn unsafe_operator_authority_files_fail_before_journal_creation() {
 }
 
 #[test]
+fn kubeconfig_requires_selected_embedded_authority_and_rejects_plugins_and_oversize() {
+    let mutations: [fn(String) -> String; 8] = [
+        |value| value.replace("current-context: fixture\n", ""),
+        |value| value.replace("current-context: fixture", "current-context: missing"),
+        |value| {
+            value.replace(
+                "    server:",
+                "    certificate-authority: /tmp/ca.pem\n    server:",
+            )
+        },
+        |value| value.replace("  user: {}", "  user:\n    tokenFile: /tmp/token"),
+        |value| {
+            value.replace(
+                "  user: {}",
+                "  user:\n    client-certificate: /tmp/client.crt",
+            )
+        },
+        |value| value.replace("  user: {}", "  user:\n    client-key: /tmp/client.key"),
+        |value| {
+            value.replace(
+                "  user: {}",
+                "  user:\n    auth-provider:\n      name: hostile",
+            )
+        },
+        |value| {
+            value.replace(
+                "  user: {}",
+                "  user:\n    exec:\n      command: /tmp/hostile",
+            )
+        },
+    ];
+    for mutate in mutations {
+        let fixture = fixture();
+        let kubeconfig = fixture.root.join("kubeconfig.yaml");
+        let changed = mutate(fs::read_to_string(&kubeconfig).unwrap());
+        private_file(&kubeconfig, changed.as_bytes());
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+            .args([
+                "operate",
+                "--request",
+                fixture.request.to_str().unwrap(),
+                "--operator-config",
+                fixture.operator_config.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert!(!fixture.root.join("journal.sqlite3").exists());
+        assert!(output.stdout.len() < 4096);
+        assert!(output.stderr.len() < 4096);
+    }
+
+    let exact = successful_fixture();
+    let kubeconfig = exact.root.join("kubeconfig.yaml");
+    let mut exact_bytes = fs::read(&kubeconfig).unwrap();
+    exact_bytes.resize(16 * 1024, b' ');
+    private_file(&kubeconfig, &exact_bytes);
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .args([
+            "operate",
+            "--request",
+            exact.request.to_str().unwrap(),
+            "--operator-config",
+            exact.operator_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+
+    let oversized = fixture();
+    let kubeconfig = oversized.root.join("kubeconfig.yaml");
+    exact_bytes.push(b' ');
+    private_file(&kubeconfig, &exact_bytes);
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .args([
+            "operate",
+            "--request",
+            oversized.request.to_str().unwrap(),
+            "--operator-config",
+            oversized.operator_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(!oversized.root.join("journal.sqlite3").exists());
+}
+
+#[test]
 fn untrusted_operator_grant_fails_before_journal_creation() {
     let fixture = fixture();
     private_file(&fixture.root.join("authorization.pub"), &[99_u8; 32]);
@@ -646,5 +857,48 @@ fn operator_can_provision_an_exact_grant() {
         fs::metadata(&grant).unwrap().permissions().mode() & 0o777,
         0o600
     );
+    let grant_before = fs::read(&grant).unwrap();
+
+    let collision = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .args([
+            "provision-grant",
+            "--authorization",
+            authorization.to_str().unwrap(),
+            "--signing-seed",
+            seed.to_str().unwrap(),
+            "--signing-key-id",
+            "owner-key",
+            "--output",
+            grant.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(collision.status.code(), Some(3));
+    assert_eq!(fs::read(&grant).unwrap(), grant_before);
+
+    for (name, bytes) in [
+        ("short.seed", vec![7_u8; 31]),
+        ("long.seed", vec![7_u8; 33]),
+    ] {
+        let selected_seed = root.join(name);
+        let selected_output = root.join(format!("{name}.grant"));
+        private_file(&selected_seed, &bytes);
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+            .args([
+                "provision-grant",
+                "--authorization",
+                authorization.to_str().unwrap(),
+                "--signing-seed",
+                selected_seed.to_str().unwrap(),
+                "--signing-key-id",
+                "owner-key",
+                "--output",
+                selected_output.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert!(!selected_output.exists());
+    }
     fs::remove_dir_all(root).unwrap();
 }

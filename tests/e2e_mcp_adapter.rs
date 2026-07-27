@@ -811,6 +811,23 @@ fn duplicate_and_oversized_frames_fail_without_disclosure() {
         .windows(b"SECRET_DUPLICATE_CANARY".len())
         .any(|window| window == b"SECRET_DUPLICATE_CANARY"));
 
+    let output = run_raw_session(
+        &fixture,
+        concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"#,
+            r#""protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"#,
+            r#""name":"test","name":"SECRET_NESTED_CANARY","version":"1"}}}"#,
+            "\n"
+        )
+        .as_bytes(),
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(parse_responses(&output.stdout)[0]["error"]["code"], -32700);
+    assert!(!output
+        .stdout
+        .windows(b"SECRET_NESTED_CANARY".len())
+        .any(|window| window == b"SECRET_NESTED_CANARY"));
+
     let output = run_raw_session(&fixture, &vec![b'x'; 16 * 1024 + 1]);
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
@@ -844,6 +861,43 @@ fn framing_boundaries_reject_incomplete_utf8_and_batch_input() {
     let output = run_raw_session(&fixture, &exact_frame);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(parse_responses(&output.stdout)[0]["id"], 1);
+
+    let maximum_id = "i".repeat(128);
+    let maximum_id_frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": maximum_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"}
+        }
+    })
+    .to_string()
+        + "\n";
+    let output = run_raw_session(&fixture, maximum_id_frame.as_bytes());
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(parse_responses(&output.stdout)[0]["id"], maximum_id);
+    assert!(output.stdout.len() <= 8 * 1024);
+
+    let oversized_id = "i".repeat(129);
+    let oversized_id_frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": oversized_id,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"}
+        }
+    })
+    .to_string()
+        + "\n";
+    let output = run_raw_session(&fixture, oversized_id_frame.as_bytes());
+    assert_eq!(output.status.code(), Some(0));
+    let response = &parse_responses(&output.stdout)[0];
+    assert_eq!(response["id"], serde_json::Value::Null);
+    assert_eq!(response["error"]["code"], -32600);
 }
 
 #[test]

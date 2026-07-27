@@ -732,6 +732,7 @@ version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "http",
+ "http-body-util",
  "k8s-openapi",
  "kube",
  "rusqlite",
@@ -740,6 +741,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "tower-http",
  "tower-test",
 ]
 

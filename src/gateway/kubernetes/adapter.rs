@@ -23,6 +23,12 @@ const OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
 const OBSERVATION_DEADLINE: Duration = Duration::from_secs(30);
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+const _: () = assert!(OBSERVATION_ATTEMPTS_MAX > 0);
+const _: () = assert!(
+    (OBSERVATION_ATTEMPTS_MAX as u64 - 1) * OBSERVATION_INTERVAL.as_secs()
+        < OBSERVATION_DEADLINE.as_secs()
+);
+
 pub(crate) struct KubernetesDeploymentImageAdapter {
     client: Client,
     observation_attempts: usize,

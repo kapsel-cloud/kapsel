@@ -24,7 +24,9 @@ private format marker after recognizing the store. It does not add a command or 
 `provision-grant`, `operate`, `inspect`, or `mcp` grammar.
 
 The marker changes database bytes, so an existing unmarked store requires a verified backup even
-though its operation rows need no migration. A newly created empty journal initializes directly.
+though its operation rows need no migration. The active database and exact backup must each be no
+larger than 64 MiB. A rollback-journal artifact may be at most 65 MiB for bounded SQLite framing;
+larger artifacts refuse before SQLite recovery. A newly created empty journal initializes directly.
 
 ## Before the first v0.2 open
 
@@ -35,8 +37,9 @@ this private-parent boundary prevents another OS user from replacing its entries
 simple pathname replacement but does not claim defense against a malicious same-owner ABA sequence.
 
 Run the following fail-fast block with GNU coreutils while Kapsel remains stopped. Replace only the
-first path. It requires exact owner, mode, link-count, sidecar, and digest syntax and creates both
-artifacts without following or clobbering an existing or dangling-symlink name.
+first path. Before running it, require `test "$(stat -c %s -- "$journal")" -le 67108864`. The block
+requires exact owner, mode, link-count, sidecar, and digest syntax and creates both artifacts
+without following or clobbering an existing or dangling-symlink name.
 
 ```bash
 set -eu
@@ -183,11 +186,12 @@ Restore is supported only when the first v0.2 open failed and no later lifecycle
 v0.2 advanced an operation or published a receipt, do not restore an older generation: use the
 direct downgrade below or continue with v0.2.
 
-Stop Kapsel and supervisor restarts. Require all three SQLite sidecars to be absent; if one exists,
-recover and stop the exact creating binary rather than deleting it. The following fail-fast block
-revalidates the backup pair, prepares and verifies a distinct replacement, copies and synchronizes
-the still-active generation into a new quarantine, and finally atomically renames the prepared file
-over the still-present active journal. There is no missing-active-path window.
+Stop Kapsel and supervisor restarts. Require the active database and backup to be at most 64 MiB.
+Require all three SQLite sidecars to be absent; if one exists, recover and stop the exact creating
+binary rather than deleting it. The following fail-fast block revalidates the backup pair, prepares
+and verifies a distinct replacement, copies and synchronizes the still-active generation into a new
+quarantine, and finally atomically renames the prepared file over the still-present active journal.
+There is no missing-active-path window.
 
 ```bash
 set -eu

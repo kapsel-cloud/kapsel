@@ -144,11 +144,20 @@ timeout.
 | `finalized`         | Terminal state and receipt reference.                                                                                                                               | Read-only.                                                                                         |
 
 The implementation explicitly uses SQLite's rollback journal with `synchronous=FULL` and verifies
-both settings whenever it opens the journal. It holds one crash-released exclusive worker lock
-around provider and receiver I/O so two processes cannot advance the same journal concurrently. A
-contender performs no provider or receiver call and changes no public fact. The implementation may
-add other internal lease or scheduling fields, but those fields are not public facts and must not
-change result meaning.
+both settings whenever it opens the journal. The main journal and exact offline backup are each at
+most 64 MiB; a rollback-journal artifact is at most 65 MiB to allow bounded SQLite framing around
+the owned database pages. Every persisted text or blob value is additionally at most 16 KiB,
+SQLite's per-value-or-row allocation limit is 64 KiB, and every reopen checks those bounds and the
+10,000-row ceiling before operation loading. Files are exact mode 0600 and their parent is exact
+mode 0700. Larger, permissive, linked, or replaced artifacts fail before SQLite reads or recovery.
+These physical and logical caps bound integrity checking, backup hashing, and persisted allocation
+even when an owner-controlled journal is malformed; they are not a storage-capacity or retention
+promise beyond the finite operation ceiling.
+
+The implementation holds one crash-released exclusive worker lock around provider and receiver I/O
+so two processes cannot advance the same journal concurrently. A contender performs no provider or
+receiver call and changes no public fact. The implementation may add other internal lease or
+scheduling fields, but those fields are not public facts and must not change result meaning.
 
 ## Result meaning
 
@@ -168,12 +177,19 @@ itself classify `FAILED`. A local observation timeout always classifies `UNKNOWN
 resource versions, operation markers, and condition reasons retained from Kubernetes are ASCII and
 at most 128 bytes each. Generations and replica counts must be nonnegative. The requested and
 observed image remains subject to the 512-byte immutable-image grammar above. Target observation and
-the conditional strategic merge patch each have a ten-second request deadline. Receiver observation
-has a 30-second overall deadline and performs at most 30 Deployment reads: one immediately, then at
-most 29 more at one-second intervals. It stops only when the current generation has been observed
-with the defined available or progress-deadline signal. Exhausting this budget, object deletion, API
-unavailability, identity mismatch, or incomplete facts classifies `UNKNOWN`; timeout never
-classifies `FAILED`.
+the conditional strategic merge patch each have a ten-second request deadline. The root CLI/MCP
+composition rejects any single Kubernetes HTTP response body above 2 MiB while it is streamed,
+before kube-client can collect or deserialize it; this applies with content-length, chunked, or
+close-delimited framing. An oversized target read is transient and cannot create a mutation marker.
+An oversized patch response may leave the already marked provider attempt ambiguous, so restart
+observes without another patch. An oversized receiver response contributes no facts and therefore
+cannot strengthen `UNKNOWN` into another result.
+
+Receiver observation has a 30-second overall deadline and performs at most 30 Deployment reads: one
+immediately, then at most 29 more at one-second intervals. It stops only when the current generation
+has been observed with the defined available or progress-deadline signal. Exhausting this budget,
+object deletion, API unavailability, identity mismatch, an oversized response, or incomplete facts
+classifies `UNKNOWN`; timeout never classifies `FAILED`.
 
 ## Authorization and secrets
 

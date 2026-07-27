@@ -31,6 +31,10 @@ const STATEMENT_BYTES_MAX: usize = 8 * 1024;
 const TRUST_BYTES_MAX: usize = 1024;
 const TEXT_BYTES_MAX: usize = 512;
 
+const _: () = assert!(TEXT_BYTES_MAX <= TRUST_BYTES_MAX);
+const _: () = assert!(TEXT_BYTES_MAX <= STATEMENT_BYTES_MAX);
+const _: () = assert!(STATEMENT_BYTES_MAX < RECEIPT_BYTES_MAX);
+
 /// Read-only classifier inputs authenticated by a successfully parsed receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptStatement {

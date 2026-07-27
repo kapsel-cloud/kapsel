@@ -99,8 +99,10 @@ Every operator path is absolute. Kapsel reads only the named kubeconfig and its 
 `current-context`; it does not infer a kubeconfig, context, credentials, proxy, or authority from
 the environment. Certificate authority, client certificate, client key, and token data must be
 embedded in that bounded kubeconfig. Path-based credential references, auth-provider plugins, and
-exec plugins are rejected. Kubernetes authority and both signing seeds remain operator-owned and
-never enter the agent request, journal, receipt, report, stdout, or stderr.
+exec plugins are rejected. The shared root composition limits each Kubernetes HTTP response body to
+2 MiB before collection or deserialization, independent of content-length, chunked, or
+close-delimited framing. Kubernetes authority and both signing seeds remain operator-owned and never
+enter the agent request, journal, receipt, report, stdout, or stderr.
 
 ## Startup and restart
 

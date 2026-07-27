@@ -5,9 +5,16 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
-use super::GatewayError;
+use super::{GatewayError, OPERATION_COUNT_MAX};
+use crate::gateway::receipt::RECEIPT_BYTES_MAX;
 
 pub(super) const JOURNAL_FORMAT_VERSION: u32 = 2;
+
+const PERSISTED_VALUE_BYTES_MAX: usize = 16 * 1024;
+pub(super) const PERSISTED_ROW_BYTES_MAX: i32 = 64 * 1024;
+
+const _: () = assert!(RECEIPT_BYTES_MAX <= PERSISTED_VALUE_BYTES_MAX);
+const _: () = assert!(PERSISTED_VALUE_BYTES_MAX < PERSISTED_ROW_BYTES_MAX as usize);
 
 const CURRENT_COLUMNS: &[&str] = &[
     "operation_id",
@@ -248,7 +255,7 @@ pub(super) fn initialize_schema(
     } else {
         return Err(GatewayError::InvalidPersistedState);
     }
-    Ok(())
+    require_persisted_bounds(transaction)
 }
 
 pub(super) fn require_integrity(transaction: &Transaction<'_>) -> Result<(), GatewayError> {
@@ -268,14 +275,46 @@ pub(super) fn require_integrity(transaction: &Transaction<'_>) -> Result<(), Gat
 }
 
 pub(super) fn recognized_supported_schema(connection: &Connection) -> Result<bool, GatewayError> {
-    Ok(
-        recognized_schema(connection, CURRENT_COLUMNS, CREATE_OPERATION_TABLE)?
-            || recognized_schema(
-                connection,
-                MIGRATED_LEGACY_COLUMNS,
-                MIGRATED_LEGACY_OPERATION_TABLE,
-            )?,
-    )
+    let recognized = recognized_schema(connection, CURRENT_COLUMNS, CREATE_OPERATION_TABLE)?
+        || recognized_schema(
+            connection,
+            MIGRATED_LEGACY_COLUMNS,
+            MIGRATED_LEGACY_OPERATION_TABLE,
+        )?;
+    if recognized {
+        require_persisted_bounds(connection)?;
+    }
+    Ok(recognized)
+}
+
+fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError> {
+    let value_predicates = CURRENT_COLUMNS
+        .iter()
+        .filter(|name| expected_column_type(name) != "INTEGER")
+        .map(|name| format!("COALESCE(length({name}), 0) > ?2"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let query = format!(
+        "SELECT
+            (SELECT COUNT(*) FROM kubernetes_image_operations) <= ?1
+            AND NOT EXISTS (
+                SELECT 1 FROM kubernetes_image_operations
+                WHERE {value_predicates}
+                LIMIT 1
+            )"
+    );
+    let value_max = i64::try_from(PERSISTED_VALUE_BYTES_MAX)
+        .map_err(|_| GatewayError::InvalidPersistedState)?;
+    let within_bounds = connection
+        .query_row(&query, [OPERATION_COUNT_MAX, value_max], |row| {
+            row.get::<_, bool>(0)
+        })
+        .map_err(GatewayError::Database)?;
+    if within_bounds {
+        Ok(())
+    } else {
+        Err(GatewayError::InvalidPersistedState)
+    }
 }
 
 type SchemaEntry = (String, String, String, Option<String>);

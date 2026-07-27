@@ -15,6 +15,9 @@ const SIGNED_GRANT_BYTES_MAX: usize = 4 * 1024;
 const GRANT_STATEMENT_BYTES_MAX: usize = 2 * 1024;
 const GRANT_TEXT_BYTES_MAX: usize = 512;
 
+const _: () = assert!(GRANT_TEXT_BYTES_MAX <= GRANT_STATEMENT_BYTES_MAX);
+const _: () = assert!(GRANT_STATEMENT_BYTES_MAX < SIGNED_GRANT_BYTES_MAX);
+
 /// Owner-controlled trust for the one fixed-purpose authorization-grant signer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorizationTrust {
@@ -304,6 +307,60 @@ mod tests {
         assert_eq!(verified.authorization, authorization());
         assert_eq!(verified.signer_key_id, "owner-key");
         assert_eq!(verified.grant_digest.len(), 64);
+    }
+
+    fn record_offset(input: &[u8], magic: &[u8], tag: u8) -> (usize, usize, usize) {
+        let mut offset = magic.len();
+        loop {
+            let record_tag = input[offset];
+            let length = u32::from_be_bytes(input[offset + 1..offset + 5].try_into().unwrap());
+            let length = usize::try_from(length).unwrap();
+            if record_tag == tag {
+                return (offset, offset + 5, length);
+            }
+            offset += 5 + length;
+        }
+    }
+
+    #[test]
+    fn duplicate_reordered_unknown_malformed_and_non_ascii_grant_records_fail_closed() {
+        let seed = [7_u8; 32];
+        let bytes = sign_authorization_grant(&authorization(), &seed, "owner-key").unwrap();
+        let (key_header, key_value, _) = record_offset(&bytes, SIGNED_GRANT_MAGIC, 2);
+        let (statement_header, statement_value, statement_length) =
+            record_offset(&bytes, SIGNED_GRANT_MAGIC, 3);
+        let statement = &bytes[statement_value..statement_value + statement_length];
+        let (statement_first_header, _, _) = record_offset(statement, GRANT_STATEMENT_MAGIC, 1);
+
+        let mut duplicate = bytes.clone();
+        duplicate[key_header] = 1;
+        let mut reordered = bytes.clone();
+        reordered[statement_header] = 2;
+        let mut unknown = bytes.clone();
+        unknown[key_header] = 9;
+        let mut malformed_length = bytes.clone();
+        malformed_length[key_header + 1..key_header + 5].copy_from_slice(&u32::MAX.to_be_bytes());
+        let mut empty = bytes.clone();
+        empty[key_header + 1..key_header + 5].copy_from_slice(&0_u32.to_be_bytes());
+        let mut non_ascii = bytes.clone();
+        non_ascii[key_value] = 0xff;
+        let mut nested_duplicate = bytes.clone();
+        nested_duplicate[statement_value + statement_first_header] = 2;
+
+        for hostile in [
+            duplicate,
+            reordered,
+            unknown,
+            malformed_length,
+            empty,
+            non_ascii,
+            nested_duplicate,
+        ] {
+            assert!(matches!(
+                verify_authorization_grant(&hostile, &trust(&seed, "owner-key")),
+                Err(GatewayError::InvalidAuthorizationGrant)
+            ));
+        }
     }
 
     #[test]
