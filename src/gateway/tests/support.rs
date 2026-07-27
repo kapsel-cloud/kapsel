@@ -19,6 +19,7 @@
         ));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         directory.join("journal.sqlite3")
     }
 

@@ -19,6 +19,7 @@ Owns: Question-to-owner routing and document authority order.
 | How must the sandbox be deployed?            | [Sandbox deployment](SANDBOX_DEPLOYMENT.md)                                             |
 | What can I run?                              | [Build](BUILD.md)                                                                       |
 | What is the release artifact contract?       | [Release artifacts](RELEASE.md)                                                         |
+| How do I upgrade, restore, or downgrade?     | [Upgrade and rollback](UPGRADE.md)                                                      |
 | How do I evaluate an installed artifact?     | [Evaluator guide](EVALUATOR.md)                                                         |
 | What proof is required?                      | [Testing](TESTING.md)                                                                   |
 | What may Kapsel claim?                       | [Threat model](THREAT_MODEL.md)                                                         |

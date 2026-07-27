@@ -18,6 +18,7 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -729,6 +730,34 @@ fn operation_failure_and_restart_preserve_cli_mcp_parity() {
     assert_eq!(recovered["result"]["isError"], false);
     assert_eq!(tool_report(&recovered)["result"], "SUCCEEDED");
     fixture.server.take().unwrap().join().unwrap();
+}
+
+#[test]
+fn clean_eof_opens_and_reopens_the_journal_without_lifecycle_work() {
+    let fixture = fixture();
+    for _ in 0..2 {
+        let output = run_raw_session(&fixture, b"");
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+    let connection = Connection::open(fixture.root.join("journal.sqlite3")).unwrap();
+    assert_eq!(
+        connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM kubernetes_image_operations",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

@@ -30,6 +30,11 @@ description = "Run documentation tests"
 command = "cargo"
 args = ["test", "--locked", "--doc", "--workspace"]
 
+[tasks.test-v011-upgrade]
+description = "Generate and verify exact v0.1.1 upgrade fixtures and downgrade reopen"
+command = "python3"
+args = ["scripts/test-v011-upgrade-fixtures.py"]
+
 [tasks.test-simulation]
 description = "Run the replayable seeded long lifecycle simulation"
 command = "cargo"

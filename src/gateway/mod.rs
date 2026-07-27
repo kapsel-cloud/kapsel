@@ -681,6 +681,12 @@ pub(crate) enum GatewayError {
     JournalFile(std::io::Error),
     /// The operating system rejected the crash-released worker lock.
     WorkerLock(std::io::Error),
+    /// The operating system rejected an owner-created offline upgrade backup.
+    JournalBackup(std::io::Error),
+    /// An offline upgrade backup did not exactly match its source and SHA-256 sidecar.
+    JournalBackupMismatch,
+    /// The private journal marker is not recognized by this binary.
+    UnsupportedJournalVersion,
     /// Hostile or unsupported input failed its named bound.
     InvalidInput(InputField),
     /// Signed authorization-grant bytes violated their bounded canonical shape.
@@ -721,6 +727,9 @@ impl fmt::Display for GatewayError {
             Self::Database(_) => "database",
             Self::JournalFile(_) => "journal_file",
             Self::WorkerLock(_) => "worker_lock",
+            Self::JournalBackup(_) => "journal_backup",
+            Self::JournalBackupMismatch => "journal_backup_mismatch",
+            Self::UnsupportedJournalVersion => "unsupported_journal_version",
             Self::InvalidInput(_) => "invalid_input",
             Self::InvalidAuthorizationGrant => "invalid_authorization_grant",
             Self::UntrustedAuthorizationGrant => "untrusted_authorization_grant",
@@ -746,9 +755,13 @@ impl Error for GatewayError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Database(error) => Some(error),
-            Self::JournalFile(error) | Self::WorkerLock(error) => Some(error),
+            Self::JournalFile(error) | Self::WorkerLock(error) | Self::JournalBackup(error) => {
+                Some(error)
+            },
             Self::Receipt(error) => Some(error),
             Self::InvalidInput(_)
+            | Self::JournalBackupMismatch
+            | Self::UnsupportedJournalVersion
             | Self::InvalidAuthorizationGrant
             | Self::UntrustedAuthorizationGrant
             | Self::AuthorizationMismatch

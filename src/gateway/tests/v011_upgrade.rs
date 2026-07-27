@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use rusqlite::OptionalExtension;
+use rusqlite::{types::Value as SqlValue, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -17,6 +17,11 @@ const FIXTURE_FORMAT: &str = "kapsel.kap0060.v011-fixture-manifest.v1";
 const MATRIX_FORMAT: &str = "kapsel.kap0060.v011-upgrade-matrix.v1";
 const OPERATION_ID: &str = "op-001";
 const RECEIPT_KEY_ID: &str = "kap0060-v011-receipt-key";
+const NEW_BINARY: &str = "v0.2.0 KAP-0060 candidate journal opener";
+const BACKUP_FACT: &str =
+    "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker";
+const PERMITTED_OPERATOR_ACTION: &str =
+    "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry";
 const MATRIX_BYTES: &[u8] =
     include_bytes!("../../../tests/fixtures/kap0060-v011-upgrade-matrix.json");
 
@@ -181,7 +186,7 @@ fn v011_upgrade_matrix_names_every_historical_state_and_ambiguity() {
         "v0.1.1 lifecycle test binary built from tagged source {SOURCE_COMMIT} with the recorded \
          test-only harness overlay"
     );
-    let new_binary = "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)";
+    let new_binary = NEW_BINARY;
     assert_eq!(required_str(&matrix, "old_binary"), old_binary);
     assert_eq!(required_str(&matrix, "new_binary"), new_binary);
     let cases = matrix["cases"].as_array().unwrap();
@@ -203,13 +208,10 @@ fn v011_upgrade_matrix_names_every_historical_state_and_ambiguity() {
             required_str(actual, "receipt_identity"),
             expected.receipt_identity
         );
-        assert_eq!(
-            required_str(actual, "backup_fact"),
-            "required_before_upgrade_but_not_implemented_in_slice_1"
-        );
+        assert_eq!(required_str(actual, "backup_fact"), BACKUP_FACT);
         assert_eq!(
             required_str(actual, "permitted_operator_action"),
-            "fixture_verification_only_until_slice_2_contract"
+            PERMITTED_OPERATOR_ACTION
         );
     }
 }
@@ -261,6 +263,28 @@ fn v011_fixture_verification() {
     assert_eq!(fs::read(&matrix_path).unwrap(), MATRIX_BYTES);
     for case in FIXTURE_CASES {
         verify_fixture(&output, case, &harness_sha256);
+    }
+}
+
+#[test]
+#[ignore = "invoked in the exact v0.1.1 worktree after the candidate marked every fixture"]
+fn v011_marked_fixture_reopen() {
+    assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.1");
+    let output = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_FIXTURES").unwrap());
+    let output = fs::canonicalize(output).unwrap();
+    for case in FIXTURE_CASES {
+        let database = output.join(case.name).join("journal.sqlite3");
+        let row_before = durable_row(&database);
+        let digest_before = sha256_file(&database);
+        let gateway = Gateway::open_for_test(&database).unwrap();
+        assert_eq!(
+            gateway.get(OPERATION_ID).unwrap(),
+            Some(operation_state(case.state))
+        );
+        drop(gateway);
+        assert_eq!(journal_version(&database), 2);
+        assert_eq!(durable_row(&database), row_before);
+        assert_eq!(sha256_file(&database), digest_before);
     }
 }
 
@@ -556,13 +580,27 @@ fn verify_fixture(output: &Path, case: &FixtureCase, harness_sha256: &str) {
     assert_private_file(&lock);
     let before_sha256 = sha256_file(&database);
     assert_eq!(required_str(&manifest["database"], "sha256"), before_sha256);
+    let backup = PathBuf::from(format!("{}.kapsel-v011.backup", database.display()));
+    let backup_digest = PathBuf::from(format!("{}.sha256", backup.display()));
+    assert_private_file(&backup);
+    assert_private_file(&backup_digest);
+    assert_eq!(sha256_file(&backup), before_sha256);
+    assert_eq!(fs::read_to_string(&backup_digest).unwrap(), format!("{before_sha256}\n"));
+    let row_before = durable_row(&database);
     let gateway = Gateway::open_for_test(&database).unwrap();
     assert_eq!(
         gateway.get(OPERATION_ID).unwrap(),
         Some(operation_state(case.state))
     );
     drop(gateway);
-    assert_eq!(sha256_file(&database), before_sha256);
+    assert_eq!(journal_version(&database), 2);
+    assert_eq!(durable_row(&database), row_before);
+    assert_ne!(sha256_file(&database), before_sha256);
+    let marked_sha256 = sha256_file(&database);
+    drop(Gateway::open_for_test(&database).unwrap());
+    assert_eq!(sha256_file(&database), marked_sha256);
+    assert_eq!(durable_row(&database), row_before);
+    assert_eq!(sha256_file(&backup), before_sha256);
     assert_eq!(
         fs::read_to_string(fixture.join("provider-call-count.txt")).unwrap(),
         case.provider_call_count.to_string()
@@ -585,6 +623,21 @@ fn verify_fixture(output: &Path, case: &FixtureCase, harness_sha256: &str) {
         assert_eq!(required_str(&manifest["receipt"], "key_id"), key_id);
         assert_eq!(key_id, RECEIPT_KEY_ID);
         assert_eq!(sha256_bytes(&bytes), digest);
+        let trust = ReceiptTrust {
+            key_id: RECEIPT_KEY_ID.into(),
+            public_key: ed25519_dalek::SigningKey::from_bytes(&[41_u8; 32])
+                .verifying_key()
+                .to_bytes(),
+            accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
+            not_before_unix_s: 0,
+            not_after_unix_s: 1_000,
+        }
+        .encode()
+        .unwrap();
+        assert_eq!(
+            inspect_receipt(&bytes, &trust, 150, InspectionLimits::default()).status(),
+            InspectionStatus::Inspected
+        );
         let path = PathBuf::from(path);
         assert_eq!(path.parent().unwrap(), fixture.join("receipts"));
         let should_be_published = case.receipt_identity == "frozen_and_published";
@@ -595,7 +648,34 @@ fn verify_fixture(output: &Path, case: &FixtureCase, harness_sha256: &str) {
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
     }
-    assert!(!fixture.join("backup").exists());
+}
+
+fn durable_row(database: &Path) -> Vec<SqlValue> {
+    let connection = Connection::open(database).unwrap();
+    let column_count = usize::try_from(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('kubernetes_image_operations')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    connection
+        .query_row(
+            "SELECT * FROM kubernetes_image_operations WHERE operation_id = ?1",
+            [OPERATION_ID],
+            |row| (0..column_count).map(|index| row.get(index)).collect(),
+        )
+        .unwrap()
+}
+
+fn journal_version(database: &Path) -> u32 {
+    Connection::open(database)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap()
 }
 
 fn receipt_facts(database: &Path) -> Option<(String, String, Vec<u8>, String)> {

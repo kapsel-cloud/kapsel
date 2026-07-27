@@ -17,6 +17,7 @@ TAG_OBJECT = "9085414ad329edfa5afe49577afd1d1409a30a5d"
 SOURCE_COMMIT = "ad799b39112ccd6ef06e1ec954c615b6635650f6"
 GENERATION_TEST = "gateway::tests::v011_upgrade::v011_fixture_generation"
 VERIFICATION_TEST = "gateway::tests::v011_upgrade::v011_fixture_verification"
+OLD_REOPEN_TEST = "gateway::tests::v011_upgrade::v011_marked_fixture_reopen"
 MATRIX_TEST = (
     "gateway::tests::v011_upgrade::"
     "v011_upgrade_matrix_names_every_historical_state_and_ambiguity"
@@ -43,6 +44,32 @@ def output(command: list[str], cwd: pathlib.Path) -> str:
 
 def sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def publish_offline_backups(fixtures: pathlib.Path) -> None:
+    for fixture in sorted(fixtures.iterdir()):
+        if not fixture.is_dir():
+            continue
+        source = fixture / "journal.sqlite3"
+        backup = pathlib.Path(f"{source}.kapsel-v011.backup")
+        sidecar = pathlib.Path(f"{backup}.sha256")
+        if backup.exists() or sidecar.exists():
+            raise RuntimeError(f"upgrade backup already exists for {fixture.name}")
+        shutil.copyfile(source, backup)
+        backup.chmod(0o600)
+        with backup.open("rb") as handle:
+            os.fsync(handle.fileno())
+        sidecar.write_text(f"{sha256(backup)}\n")
+        sidecar.chmod(0o600)
+        with sidecar.open("rb") as handle:
+            os.fsync(handle.fileno())
+        directory = os.open(fixture, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        if sha256(source) != sha256(backup):
+            raise RuntimeError(f"offline backup does not match source for {fixture.name}")
 
 
 def require_sha256(path: pathlib.Path, expected: str, phase: str) -> None:
@@ -288,7 +315,10 @@ def main() -> None:
             f"historical compiled overlay sha256 verified: {harness_sha256}",
             flush=True,
         )
+        publish_offline_backups(fixtures)
+        print("published owner-private offline backups and SHA-256 sidecars", flush=True)
         run(cargo_test_command(VERIFICATION_TEST, ignored=True), root, current_environment)
+        run(cargo_test_command(OLD_REOPEN_TEST, ignored=True), historical, historical_environment)
         print(
             f"verified nine provenance-bound v0.1.1 fixtures in place at {fixtures}",
             flush=True,

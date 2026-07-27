@@ -170,6 +170,23 @@ recovery behavior are exercised through both the library and fixed evaluator com
 deterministic suite includes real subprocess kill/restart proofs at the mutation and
 receipt-publication seams.
 
+## Upgrade and rollback fixture gate
+
+The [operator upgrade and rollback contract](UPGRADE.md) owns the supported procedure and limits.
+Generate exact historical journals through the pinned `v0.1.1` lifecycle behavior, create the
+operator-owned offline backups, mark and reopen every durable state with the candidate, and reopen
+the marked stores with the exact old source:
+
+```sh
+cargo make test-v011-upgrade
+```
+
+The direct command is `python3 scripts/test-v011-upgrade-fixtures.py`. It verifies the annotated tag
+and peeled source identity, compiles a digest-bound test harness overlay in a detached worktree, and
+removes temporary fixtures and worktree state. It uses no Kubernetes cluster or network. Retain a
+fixture set only for focused diagnosis with a new `--output-directory`; receipt-bearing fixture
+paths are absolute and must not be copied or relocated.
+
 ## Robustness lanes
 
 Compile the offline receipt-inspection fuzz target with:

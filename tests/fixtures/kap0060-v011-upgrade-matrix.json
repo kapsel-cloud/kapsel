@@ -1,7 +1,7 @@
 {
   "format": "kapsel.kap0060.v011-upgrade-matrix.v1",
   "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-  "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)",
+  "new_binary": "v0.2.0 KAP-0060 candidate journal opener",
   "cases": [
     {
       "name": "requested",
@@ -10,10 +10,10 @@
       "expected_state": "requested",
       "provider_call_count": 0,
       "receipt_identity": "absent",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "authorized",
@@ -22,10 +22,10 @@
       "expected_state": "authorized",
       "provider_call_count": 0,
       "receipt_identity": "absent",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "not_attempted",
@@ -34,10 +34,10 @@
       "expected_state": "not_attempted",
       "provider_call_count": 0,
       "receipt_identity": "absent",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "apply_started_before_call",
@@ -46,10 +46,10 @@
       "expected_state": "apply_started",
       "provider_call_count": 0,
       "receipt_identity": "absent",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "apply_started_after_side_effect",
@@ -58,10 +58,10 @@
       "expected_state": "apply_started",
       "provider_call_count": 1,
       "receipt_identity": "absent",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "receiver_observed",
@@ -70,10 +70,10 @@
       "expected_state": "receiver_observed",
       "provider_call_count": 1,
       "receipt_identity": "absent",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "receipt_prepared",
@@ -82,10 +82,10 @@
       "expected_state": "receipt_prepared",
       "provider_call_count": 1,
       "receipt_identity": "frozen_in_journal_not_published",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "receipt_written",
@@ -94,10 +94,10 @@
       "expected_state": "receipt_written",
       "provider_call_count": 1,
       "receipt_identity": "frozen_and_published",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     },
     {
       "name": "finalized",
@@ -106,10 +106,10 @@
       "expected_state": "finalized",
       "provider_call_count": 1,
       "receipt_identity": "frozen_and_published",
-      "backup_fact": "required_before_upgrade_but_not_implemented_in_slice_1",
-      "permitted_operator_action": "fixture_verification_only_until_slice_2_contract",
+      "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
+      "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 Slice 2 candidate binary (not implemented in Slice 1)"
+      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
     }
   ]
 }
