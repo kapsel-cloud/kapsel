@@ -10,9 +10,10 @@ Read this file first. It routes work; current technical truth lives in the linke
    [`0.1.0` release record](tasks/KAP-0045.md), completed
    [self-serve hardening packet](tasks/KAP-0049.md), completed
    [v0.2.0 direction decision](tasks/KAP-0046.md), adopted [v0.2.0 release design](docs/V0.2.md),
-   and active first implementation packet [KAP-0058](tasks/KAP-0058.md). The
-   [evaluator evidence packet](tasks/KAP-0047.md) is post-release. The
-   [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md) remain paused.
+   completed interface packet [KAP-0059](tasks/KAP-0059.md), and active migration packet
+   [KAP-0060](tasks/KAP-0060.md). The [evaluator evidence packet](tasks/KAP-0047.md) is
+   post-release. The [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md)
+   remain paused.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
