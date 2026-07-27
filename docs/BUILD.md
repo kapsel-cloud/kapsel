@@ -183,9 +183,22 @@ cargo make test-v011-upgrade
 
 The direct command is `python3 scripts/test-v011-upgrade-fixtures.py`. It verifies the annotated tag
 and peeled source identity, compiles a digest-bound test harness overlay in a detached worktree, and
-removes temporary fixtures and worktree state. It uses no Kubernetes cluster or network. Retain a
-fixture set only for focused diagnosis with a new `--output-directory`; receipt-bearing fixture
-paths are absolute and must not be copied or relocated.
+removes temporary fixtures and worktree state. For every one of the nine historical lifecycle states
+it kills the real candidate test process before the exclusive marker transaction, while the marker
+is set in that uncommitted transaction, and after commit, then performs two ordinary reopens. The
+in-transaction case forces a hot journal with test-only probe pages and uses a controlled
+`cfg(test)` direct marker-page write to exercise marker-2 rollback; it does not claim a natural
+production page spill. Before kill it requires marker 2 and a nonzero journal header, then marker 0,
+exact old schema/row, and no test probe before normal re-mark. It also kills a private test-only
+restore process before atomic publication, after synchronized quarantine while the active path
+remains, and after atomic replacement. The gate compares complete rows, state, provider-call count,
+backup identity, and frozen receipt bytes/path/digest/key, publication, and retained-v2 inspection
+across every seam. Malformed migration and restore attempts, including link, mode, and type
+substitutions, must remain non-destructive and owner-private; the fixture scan rejects the fixed
+signing-seed bytes in every retained file. It uses no Kubernetes cluster or network and does not
+prove sudden-power or filesystem/hardware flush behavior. Retain a fixture set only for focused
+diagnosis with a new `--output-directory`; receipt-bearing fixture paths are absolute and must not
+be copied or relocated.
 
 ## Robustness lanes
 

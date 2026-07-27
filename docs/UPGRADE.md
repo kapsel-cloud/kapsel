@@ -128,14 +128,33 @@ exact implicit primary-key index, and absence of another table, view, trigger, o
 and any pre-existing private legacy maintenance then commit in one transaction. Exact `v0.1.1` rows
 require no data migration.
 
-Slice 2 proves completed first open and idempotent reopen for every historical fixture. SQLite
-transaction design makes an interrupted commit recover as old or new, but KAP-0060 Slice 3 owns real
-subprocess loss before, during, and after the marker and restore. No Slice 2 result is process-loss
-proof.
+If this candidate is terminated inside that transaction, SQLite may leave either a hot rollback
+journal or a validated zero-header non-hot residual beside the active database. The next candidate
+open accepts only that same owner-private, singly linked artifact. SQLite recovers a hot journal; if
+the same validated journal remains with a cleared header, Kapsel removes only that non-hot residual
+and synchronizes the parent before rechecking the source and verified backup. WAL, shared-memory,
+replaced, linked, permissive, malformed, and still-hot residual artifacts remain bounded refusals
+rather than speculative cleanup.
 
-Normal fixture opens preserve every lifecycle state, authorization and receiver fact,
-provider-call-count fact, receipt byte, absolute path, digest, signing-key identity, and retained
-receipt-v2 inspection meaning. Upgrade does not call Kubernetes or re-sign a receipt.
+The source-fixture gate kills a real candidate test process for every one of the nine
+provenance-bound `v0.1.1` states before the exclusive transaction, after the marker is set inside
+the uncommitted transaction, and after marker commit. Only under the selected compile-time test
+seam, a private probe table and bounded pages force a hot rollback journal without changing an
+operation row. Because SQLite may keep its marker page pinned before commit, a controlled
+`cfg(test)`-only direct marker-page write materializes marker 2 solely to exercise the recovery
+branch; it does not claim that production SQLite naturally spills that page. Before kill, the parent
+reads the database header and journal bytes directly and requires marker 2 plus a nonzero
+rollback-journal header. A second real candidate pauses after ordinary recovery but before
+re-marking; the parent then requires marker 0, the exact old schema and complete row, no probe
+table, and no rollback journal. Normal re-mark and another reopen follow. The assertions also
+compare expected state, provider-call-count file, backup path/bytes/digest/inode/owner/mode/link
+identity, and frozen receipt bytes, path, digest, key ID, publication fact, and complete retained-v2
+inspection report. The two `apply_started` fixtures retain zero and one provider calls respectively;
+migration open has no provider adapter and cannot issue a mutation.
+
+Normal and process-loss fixture opens preserve every lifecycle state, authorization and receiver
+fact, provider-call-count fact, receipt byte, absolute path, digest, signing-key identity, and
+retained receipt-v2 inspection meaning. Upgrade does not call Kubernetes or re-sign a receipt.
 
 ## Bounded failures
 
@@ -256,7 +275,24 @@ sync -f "$quarantine"
 Do not move or delete the receipt directory. Keep quarantine until the restored generation passes
 the two migration-only MCP opens and expected operation/receipt inspection. If any step before
 `mv -T` fails, the active pathname remains the old generation. The rename itself is namespace
-atomic, but Slice 3 still owns subprocess interruption and restart evidence for this protocol.
+atomic.
+
+The source-fixture gate implements this restore sequence only in compile-time test code and kills
+the real test process after the synchronized replacement is prepared but before publication, after
+the quarantine and its checksum are synchronized while the active pathname still exists, and after
+the atomic replacement. At each seam, deterministic test recovery selects the present non-empty
+active pathname, removes only an unpublished prepared replacement, and performs two ordinary
+candidate opens. A synchronized quarantine remains private through active recognition and invariant
+checks and is removed only afterward by test cleanup. All nine historical states retain the same
+lifecycle, provider-call, backup, and frozen-receipt facts described above. Corrupted backup/digest
+attempts fail before replacement. Focused restore recovery also refuses existing and dangling
+symlinks, hard links, permissive entries, and file/directory type substitutions at the replacement
+and quarantine paths before opening or changing the active generation. Test cleanup classifies
+entries with `symlink_metadata` and never follows a rejected link. All recognized artifacts require
+the current owner, exact mode, and bounded link identity; a byte scan of every retained fixture file
+rejects the fixed signing seed itself rather than inferring absence from filenames. This is evidence
+for the documented operator protocol, not a restore API, CLI, or automatic production restore
+feature.
 
 ## Downgrade to exact v0.1.1
 
@@ -296,7 +332,9 @@ rmdir -- "$quarantine"
 sync -f "$parent"
 ```
 
-The focused tests prove completed SQLite transactions and normal source-built opens on the local
-host. They do not prove Slice 3 process-loss seams, arbitrary filesystem or hardware flush
-correctness, sudden power loss, a live copy, a moved receipt directory, a downloaded artifact,
-another release pair, or restoration after lifecycle advancement.
+The focused tests prove real process termination and restart at the named migration and restore
+seams on the local host. Process termination is not sudden power loss. The gate does not prove a
+filesystem that violates SQLite, atomic-rename, `fsync`, or directory-sync guarantees; storage or
+hardware that acknowledges but loses synchronized writes; torn sectors; controller caches without
+power-loss protection; a live copy; a moved receipt directory; a downloaded artifact; another
+release pair; or restoration after lifecycle advancement.

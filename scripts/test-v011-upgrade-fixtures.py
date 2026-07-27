@@ -17,6 +17,7 @@ TAG_OBJECT = "9085414ad329edfa5afe49577afd1d1409a30a5d"
 SOURCE_COMMIT = "ad799b39112ccd6ef06e1ec954c615b6635650f6"
 GENERATION_TEST = "gateway::tests::v011_upgrade::v011_fixture_generation"
 VERIFICATION_TEST = "gateway::tests::v011_upgrade::v011_fixture_verification"
+PROCESS_LOSS_TEST = "gateway::tests::v011_upgrade::v011_process_loss_verification"
 OLD_REOPEN_TEST = "gateway::tests::v011_upgrade::v011_marked_fixture_reopen"
 MATRIX_TEST = (
     "gateway::tests::v011_upgrade::"
@@ -317,6 +318,11 @@ def main() -> None:
         )
         publish_offline_backups(fixtures)
         print("published owner-private offline backups and SHA-256 sidecars", flush=True)
+        run(cargo_test_command(PROCESS_LOSS_TEST, ignored=True), root, current_environment)
+        print(
+            "verified candidate process loss at migration and restore seams",
+            flush=True,
+        )
         run(cargo_test_command(VERIFICATION_TEST, ignored=True), root, current_environment)
         run(cargo_test_command(OLD_REOPEN_TEST, ignored=True), historical, historical_environment)
         print(

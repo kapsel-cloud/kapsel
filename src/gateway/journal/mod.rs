@@ -350,8 +350,13 @@ impl Journal {
         let database_identity = database_file
             .metadata()
             .map_err(GatewayError::JournalFile)?;
-        let source_version = read_header_version(&mut database_file)?;
         let fresh = database_identity.len() == 0;
+        let initial_version = read_header_version(&mut database_file)?;
+        if !fresh && initial_version != 0 && initial_version != JOURNAL_FORMAT_VERSION {
+            return Err(GatewayError::UnsupportedJournalVersion);
+        }
+        recover_private_rollback_journal(path, &database_identity)?;
+        let source_version = read_header_version(&mut database_file)?;
         if !fresh && source_version != 0 && source_version != JOURNAL_FORMAT_VERSION {
             return Err(GatewayError::UnsupportedJournalVersion);
         }
@@ -364,6 +369,8 @@ impl Journal {
         } else {
             None
         };
+        #[cfg(test)]
+        migration_recovery_process_loss_seam(source_version);
 
         let mut connection = Connection::open(path).map_err(GatewayError::Database)?;
         require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
@@ -1180,6 +1187,8 @@ fn initialize_journal(
     fresh: bool,
     backup_digest: Option<&str>,
 ) -> Result<(), GatewayError> {
+    #[cfg(test)]
+    migration_process_loss_seam("before_exclusive_transaction");
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Exclusive)
         .map_err(GatewayError::Database)?;
@@ -1203,7 +1212,13 @@ fn initialize_journal(
     transaction
         .pragma_update(None, "user_version", JOURNAL_FORMAT_VERSION)
         .map_err(GatewayError::Database)?;
+    #[cfg(test)]
+    force_hot_rollback_journal_for_process_loss(&transaction, database_file)?;
+    #[cfg(test)]
+    migration_process_loss_seam("marker_set_inside_exclusive_transaction");
     transaction.commit().map_err(GatewayError::Database)?;
+    #[cfg(test)]
+    migration_process_loss_seam("after_marker_commit");
     let version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
         .map_err(GatewayError::Database)?;
@@ -1211,6 +1226,93 @@ fn initialize_journal(
         return Err(GatewayError::InvalidPersistedState);
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn force_hot_rollback_journal_for_process_loss(
+    transaction: &Transaction<'_>,
+    database_file: &mut File,
+) -> Result<(), GatewayError> {
+    use std::io::Write as _;
+    if std::env::var("KAPSEL_KAP0060_MIGRATION_SEAM").as_deref()
+        != Ok("marker_set_inside_exclusive_transaction")
+    {
+        return Ok(());
+    }
+    transaction
+        .execute_batch(
+            "PRAGMA cache_size = 1;
+             PRAGMA cache_spill = ON;
+             CREATE TABLE kap0060_hot_rollback_probe (
+                 page INTEGER PRIMARY KEY,
+                 payload BLOB NOT NULL
+             ) STRICT;",
+        )
+        .map_err(GatewayError::Database)?;
+    for page in 0..32 {
+        transaction
+            .execute(
+                "INSERT INTO kap0060_hot_rollback_probe(page, payload)
+                 VALUES (?1, zeroblob(8192))",
+                [page],
+            )
+            .map_err(GatewayError::Database)?;
+    }
+    transaction.cache_flush().map_err(GatewayError::Database)?;
+    // SQLite can keep page 1 pinned even after spilling the probe pages. This test-only write
+    // materializes the transaction's already-selected marker bytes in that main-database page;
+    // the hot journal still owns the original page and must restore marker 0 after process loss.
+    database_file
+        .seek(SeekFrom::Start(SQLITE_USER_VERSION_OFFSET as u64))
+        .and_then(|_| database_file.write_all(&JOURNAL_FORMAT_VERSION.to_be_bytes()))
+        .and_then(|()| database_file.sync_all())
+        .and_then(|()| database_file.seek(SeekFrom::Start(0)).map(|_| ()))
+        .map_err(GatewayError::JournalFile)
+}
+
+#[cfg(test)]
+fn migration_recovery_process_loss_seam(source_version: u32) {
+    if std::env::var_os("KAPSEL_KAP0060_RECOVERY_CHILD").is_none() {
+        return;
+    }
+    assert_eq!(
+        source_version, 0,
+        "hot rollback must restore the old marker"
+    );
+    migration_ready_marker("KAPSEL_KAP0060_RECOVERY_READY", "hot_rollback_restored");
+}
+
+#[cfg(test)]
+fn migration_process_loss_seam(selected: &str) {
+    if std::env::var("KAPSEL_KAP0060_MIGRATION_SEAM").as_deref() != Ok(selected) {
+        return;
+    }
+    migration_ready_marker("KAPSEL_KAP0060_MIGRATION_READY", selected);
+}
+
+#[cfg(test)]
+fn migration_ready_marker(environment: &str, selected: &str) {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _, time::Duration};
+
+    let ready = PathBuf::from(
+        std::env::var_os(environment)
+            .expect("the migration process-loss seam requires a ready path"),
+    );
+    let mut marker = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&ready)
+        .expect("the migration process-loss ready marker must be new");
+    marker
+        .write_all(selected.as_bytes())
+        .expect("the migration process-loss marker must be writable");
+    marker
+        .sync_all()
+        .expect("the migration process-loss marker must synchronize");
+    loop {
+        std::thread::sleep(Duration::from_mins(1));
+    }
 }
 
 fn require_integrity(transaction: &Transaction<'_>) -> Result<(), GatewayError> {
@@ -1539,6 +1641,81 @@ fn read_header_version(file: &mut File) -> Result<u32, GatewayError> {
         header[SQLITE_USER_VERSION_OFFSET + 2],
         header[SQLITE_USER_VERSION_OFFSET + 3],
     ]))
+}
+
+fn recover_private_rollback_journal(
+    database_path: &Path,
+    database_identity: &fs::Metadata,
+) -> Result<(), GatewayError> {
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = database_path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        match fs::symlink_metadata(PathBuf::from(sidecar)) {
+            Ok(_) => return Err(GatewayError::JournalBackupMismatch),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+            Err(error) => return Err(GatewayError::JournalBackup(error)),
+        }
+    }
+    let mut journal_name = database_path.as_os_str().to_os_string();
+    journal_name.push("-journal");
+    let journal_path = PathBuf::from(journal_name);
+    let journal = match open_existing_private_file(&journal_path) {
+        Ok(journal) => journal,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(GatewayError::JournalBackup(error)),
+    };
+    let journal_identity = journal.metadata().map_err(GatewayError::JournalBackup)?;
+    if database_identity.len() == 0 {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    if journal_identity.dev() == database_identity.dev()
+        && journal_identity.ino() == database_identity.ino()
+    {
+        return Err(GatewayError::JournalBackupMismatch);
+    }
+    require_named_identity(&journal_path, &journal_identity)
+        .map_err(GatewayError::JournalBackup)?;
+    require_named_identity(database_path, database_identity).map_err(GatewayError::JournalFile)?;
+    require_private_parent(database_path).map_err(GatewayError::JournalFile)?;
+    drop(journal);
+
+    let connection = Connection::open(database_path).map_err(GatewayError::Database)?;
+    configure_durable_connection(&connection)?;
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+        .map_err(GatewayError::Database)?;
+    drop(connection);
+    match open_existing_private_file(&journal_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+        Err(error) => return Err(GatewayError::JournalBackup(error)),
+        Ok(mut residual) => {
+            let residual_identity = residual.metadata().map_err(GatewayError::JournalBackup)?;
+            if residual_identity.dev() != journal_identity.dev()
+                || residual_identity.ino() != journal_identity.ino()
+            {
+                return Err(GatewayError::JournalBackupMismatch);
+            }
+            let mut header = [0_u8; 8];
+            residual
+                .read_exact(&mut header)
+                .map_err(GatewayError::JournalBackup)?;
+            if header != [0_u8; 8] {
+                return Err(GatewayError::InvalidPersistedState);
+            }
+            require_named_identity(&journal_path, &residual_identity)
+                .map_err(GatewayError::JournalBackup)?;
+            fs::remove_file(&journal_path).map_err(GatewayError::JournalBackup)?;
+            File::open(database_path.parent().ok_or_else(|| {
+                GatewayError::JournalBackup(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "journal path has no parent",
+                ))
+            })?)
+            .and_then(|parent| parent.sync_all())
+            .map_err(GatewayError::JournalBackup)?;
+        },
+    }
+    require_named_identity(database_path, database_identity).map_err(GatewayError::JournalFile)
 }
 
 fn verify_offline_backup(
