@@ -10,9 +10,9 @@ Read this file first. It routes work; current technical truth lives in the linke
    [`0.1.0` release record](tasks/KAP-0045.md), completed
    [self-serve hardening packet](tasks/KAP-0049.md), completed
    [v0.2.0 direction decision](tasks/KAP-0046.md), adopted [v0.2.0 release design](docs/V0.2.md),
-   completed release-source locality packet [KAP-0064](tasks/KAP-0064.md), and finite qualification
-   packet [KAP-0061](tasks/KAP-0061.md), which awaits final independent review before queued
-   distribution packet [KAP-0062](tasks/KAP-0062.md). The
+   completed release-source locality packet [KAP-0064](tasks/KAP-0064.md), and active finite
+   qualification packet [KAP-0061](tasks/KAP-0061.md), whose final independent review found blockers
+   that keep distribution packet [KAP-0062](tasks/KAP-0062.md) queued. The
    [evaluator evidence packet](tasks/KAP-0047.md) is post-release. The
    [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md) remain paused.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
