@@ -65,7 +65,7 @@ def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]
     version = run(["cargo-audit", "--version"], root).stdout.decode().strip()
     database = Path.home() / ".cargo/advisory-db"
     commit = run(["git", "rev-parse", "HEAD"], database).stdout.decode().strip()
-    timestamp = run(["git", "log", "-1", "--format=%cI"], database).stdout.decode().strip()
+    refreshed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     result = {
         "vulnerabilities": vulnerability_count,
         "warning_counts": warning_counts,
@@ -74,7 +74,7 @@ def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]
         "version": version,
         "database_commit": commit,
         "database_sha256": git_tree_sha256(database, commit),
-        "database_utc": utc_timestamp(timestamp),
+        "database_utc": refreshed_at,
     }
     return result, tool
 
