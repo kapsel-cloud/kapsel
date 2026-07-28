@@ -137,6 +137,69 @@ EXPECTED_ENVIRONMENTS = {
         "description": "pinned x86-64 builder in an isolated Docker container",
     },
 }
+EXPECTED_TOOL_ENVIRONMENTS = {
+    "rust-host": "host",
+    "cargo-host": "host",
+    "python-host": "host",
+    "docker": "host",
+    "kind": "host",
+    "kubectl": "host",
+    "cargo-fuzz": "host",
+    "nightly-rust": "host",
+    "cargo-audit": "host",
+    "trivy": "host",
+    "rust-container": "container",
+    "python-container": "container",
+    "builder-image": "container",
+}
+EXPECTED_LANE_COMMANDS = {
+    "default": ["./scripts/ci-local.sh"],
+    "hostile-input": ["./scripts/ci-local.sh"],
+    "simulation": ["cargo", "make", "test-simulation"],
+    "fuzz": ["cargo", "make", "test-fuzz"],
+    "subprocess": ["cargo", "make", "test-v011-upgrade"],
+    "demo": ["cargo", "make", "test-demo-harness"],
+    "live-kind": ["cargo", "make", "test-kind"],
+    "measurement": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT",
+    ],
+    "cargo-audit": [
+        "python3",
+        "scripts/run-kap0061-security.py",
+        "--output",
+        "BOUNDED_OUTPUT",
+    ],
+    "trivy": [
+        "python3",
+        "scripts/run-kap0061-security.py",
+        "--output",
+        "BOUNDED_OUTPUT",
+    ],
+    "privacy": [
+        "python3",
+        "scripts/check-kap0061-privacy.py",
+        "--output",
+        "BOUNDED_OUTPUT",
+    ],
+}
+DEFAULT_BUDGETS = {
+    "immutable-image-size",
+    "kubernetes-identity-size",
+    "kubernetes-response-size",
+    "machine-output-size",
+    "mcp-frame-size",
+    "mcp-response-size",
+    "request-json-size",
+}
+LIVE_BUDGETS = {
+    "live-healthy-wall",
+    "live-failed-wall",
+    "live-unknown-wall",
+    "live-cleanup-wall",
+}
 EXPECTED_TOOL_VERSIONS = {
     "rust-host": "rustc 1.96.1 commit 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
     "cargo-host": "cargo 1.96.1 (356927216 2026-06-26)",
@@ -354,8 +417,8 @@ def validate(path: Path) -> None:
         text(tool["version"], "tool.version")
         if tool["version"] != EXPECTED_TOOL_VERSIONS[tool["id"]]:
             fail(f"tool.{tool['id']} differs from the frozen identity")
-        if tool["environment_id"] not in environment_ids:
-            fail("tool references an unknown environment")
+        if tool["environment_id"] != EXPECTED_TOOL_ENVIRONMENTS[tool["id"]]:
+            fail(f"tool.{tool['id']} differs from the frozen environment")
         requires_database = tool["id"] in {"cargo-audit", "trivy"}
         if ("database_utc" in tool) != requires_database:
             fail("scanner database timestamp presence is invalid")
@@ -461,10 +524,21 @@ def validate(path: Path) -> None:
             seen_lanes.add(result["subject_id"])
         else:
             fail("result kind is unsupported")
-        if result["environment_id"] not in environment_ids:
-            fail("result references an unknown environment")
-        if not isinstance(result["command"], list) or not result["command"]:
-            fail("result command must be nonempty argv")
+        if result["kind"] == "lane":
+            producer = result["subject_id"]
+        elif result["subject_id"] in DEFAULT_BUDGETS:
+            producer = "default"
+        elif result["subject_id"] in LIVE_BUDGETS:
+            producer = "live-kind"
+        elif result["subject_id"] == "security-findings":
+            producer = "cargo-audit"
+        else:
+            producer = "measurement"
+        expected_environment = "container" if producer == "measurement" else "host"
+        if result["environment_id"] != expected_environment:
+            fail(f"result.{result['id']} differs from the frozen environment")
+        if result["command"] != EXPECTED_LANE_COMMANDS[producer]:
+            fail(f"result.{result['id']} differs from the frozen producer command")
         for argument in result["command"]:
             text(argument, "result.command")
         if not isinstance(result["input_sha256"], dict):

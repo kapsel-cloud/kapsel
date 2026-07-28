@@ -45,7 +45,20 @@ class BaselineValidatorTests(unittest.TestCase):
                 else "host"
             )
         for result in document["results"]:
-            result["environment_id"] = "host"
+            if result["kind"] == "lane":
+                producer = result["subject_id"]
+            elif result["subject_id"] in MODULE.DEFAULT_BUDGETS:
+                producer = "default"
+            elif result["subject_id"] in MODULE.LIVE_BUDGETS:
+                producer = "live-kind"
+            elif result["subject_id"] == "security-findings":
+                producer = "cargo-audit"
+            else:
+                producer = "measurement"
+            result["environment_id"] = (
+                "container" if producer == "measurement" else "host"
+            )
+            result["command"] = copy.deepcopy(MODULE.EXPECTED_LANE_COMMANDS[producer])
         commit = MODULE.git_output("rev-parse", "HEAD").decode().strip()
         source_paths = MODULE.baseline_source_paths(commit)
         document["baseline"]["commit"] = commit
@@ -392,6 +405,35 @@ class BaselineValidatorTests(unittest.TestCase):
             if environment["id"] == "container"
         )["virtualized"] = False
         cases.append(wrong_environment)
+        tool_environment = self.valid_document()
+        next(
+            tool for tool in tool_environment["tools"] if tool["id"] == "rust-host"
+        )["environment_id"] = "container"
+        cases.append(tool_environment)
+        producer_command = self.valid_document()
+        next(
+            result
+            for result in producer_command["results"]
+            if result["kind"] == "lane" and result["subject_id"] == "simulation"
+        )["command"] = ["true"]
+        cases.append(producer_command)
+        privacy_environment = self.valid_document()
+        next(
+            result
+            for result in privacy_environment["results"]
+            if result["kind"] == "lane" and result["subject_id"] == "privacy"
+        )["environment_id"] = "container"
+        cases.append(privacy_environment)
+        live_environment = self.valid_document()
+        for result in live_environment["results"]:
+            if (
+                result["kind"] == "lane" and result["subject_id"] == "live-kind"
+            ) or (
+                result["kind"] == "budget"
+                and result["subject_id"] in MODULE.LIVE_BUDGETS
+            ):
+                result["environment_id"] = "container"
+        cases.append(live_environment)
         baseline_tree = self.valid_document()
         baseline_tree["baseline"]["tree"] = "0" * 40
         cases.append(baseline_tree)
