@@ -125,20 +125,73 @@ def operate(binary: pathlib.Path, paths: dict[str, pathlib.Path]) -> bytes:
     return result.stdout
 
 
+def require_private_directory(path: pathlib.Path) -> None:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+        or metadata.st_uid != os.getuid()
+    ):
+        raise RuntimeError("upgrade directory is not owner-private")
+
+
+def require_private_file(path: pathlib.Path, maximum: int) -> None:
+    metadata = path.lstat()
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_uid != os.getuid()
+        or metadata.st_nlink != 1
+        or metadata.st_size > maximum
+    ):
+        raise RuntimeError("upgrade file identity is not owner-private and bounded")
+
+
+def write_private_exclusive(path: pathlib.Path, value: bytes) -> None:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(value)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+def fsync_directory(path: pathlib.Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def require_no_sidecars(journal: pathlib.Path) -> None:
+    for suffix in ("-journal", "-wal", "-shm"):
+        sidecar = journal.with_name(journal.name + suffix)
+        if sidecar.exists() or sidecar.is_symlink():
+            raise RuntimeError("SQLite sidecar exists during stopped upgrade procedure")
+
+
 def private_backup(journal: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    parent = journal.parent
     backup = journal.with_name(journal.name + ".kapsel-v011.backup")
     checksum = backup.with_name(backup.name + ".sha256")
-    if journal.stat().st_size > 64 * 1024 * 1024:
-        raise RuntimeError("v0.1.1 journal exceeds its backup bound")
-    with journal.open("rb") as source, backup.open("xb") as output:
-        shutil.copyfileobj(source, output)
-    backup.chmod(0o600)
-    digest = SMOKE.sha256(backup)
-    with checksum.open("xb") as output:
-        output.write((digest + "\n").encode())
-    checksum.chmod(0o600)
-    if SMOKE.sha256(journal) != digest:
+    require_private_directory(parent)
+    require_private_file(journal, 64 * 1024 * 1024)
+    require_no_sidecars(journal)
+    if backup.exists() or backup.is_symlink() or checksum.exists() or checksum.is_symlink():
+        raise RuntimeError("upgrade backup destination already exists")
+    journal_bytes = read_bounded_regular(journal, 64 * 1024 * 1024)
+    write_private_exclusive(backup, journal_bytes)
+    require_private_file(backup, 64 * 1024 * 1024)
+    digest = sha256_bytes(journal_bytes)
+    if sha256_bytes(read_bounded_regular(backup, 64 * 1024 * 1024)) != digest:
         raise RuntimeError("v0.1.1 backup identity mismatch")
+    write_private_exclusive(checksum, (digest + "\n").encode())
+    require_private_file(checksum, 65)
+    fsync_directory(parent)
     return backup, checksum
 
 
@@ -146,7 +199,13 @@ def restore_backup(
     journal: pathlib.Path,
     backup: pathlib.Path,
     checksum: pathlib.Path,
-) -> None:
+) -> pathlib.Path:
+    parent = journal.parent
+    require_private_directory(parent)
+    require_private_file(journal, 64 * 1024 * 1024)
+    require_private_file(backup, 64 * 1024 * 1024)
+    require_private_file(checksum, 65)
+    require_no_sidecars(journal)
     recorded = read_bounded_regular(checksum, 65)
     if len(recorded) != 65 or not recorded.endswith(b"\n"):
         raise RuntimeError("v0.1.1 backup checksum format is invalid")
@@ -156,13 +215,50 @@ def restore_backup(
     backup_bytes = read_bounded_regular(backup, 64 * 1024 * 1024)
     if sha256_bytes(backup_bytes) != expected:
         raise RuntimeError("v0.1.1 backup checksum mismatch")
-    replacement = journal.with_name(journal.name + ".restore")
-    with replacement.open("xb") as output:
-        output.write(backup_bytes)
-        output.flush()
-        os.fsync(output.fileno())
-    replacement.chmod(0o600)
-    os.replace(replacement, journal)
+    replacement = journal.with_name(f"{journal.name}.restore.{os.getpid()}")
+    if replacement.exists() or replacement.is_symlink():
+        raise RuntimeError("upgrade restore destination already exists")
+    quarantine = pathlib.Path(tempfile.mkdtemp(prefix=f"{journal.name}.quarantine.", dir=parent))
+    quarantine.chmod(0o700)
+    quarantined = quarantine / journal.name
+    quarantined_checksum = quarantine / f"{journal.name}.sha256"
+    published = False
+    try:
+        write_private_exclusive(replacement, backup_bytes)
+        require_private_file(replacement, 64 * 1024 * 1024)
+        if read_bounded_regular(replacement, 64 * 1024 * 1024) != backup_bytes:
+            raise RuntimeError("prepared restore differs from verified backup")
+        active_bytes = read_bounded_regular(journal, 64 * 1024 * 1024)
+        active_digest = sha256_bytes(active_bytes)
+        write_private_exclusive(quarantined, active_bytes)
+        write_private_exclusive(quarantined_checksum, (active_digest + "\n").encode())
+        require_private_directory(quarantine)
+        require_private_file(quarantined, 64 * 1024 * 1024)
+        require_private_file(quarantined_checksum, 65)
+        fsync_directory(quarantine)
+        require_private_file(journal, 64 * 1024 * 1024)
+        require_no_sidecars(journal)
+        if sha256_bytes(read_bounded_regular(replacement, 64 * 1024 * 1024)) != expected:
+            raise RuntimeError("prepared restore changed before publication")
+        os.replace(replacement, journal)
+        published = True
+        require_private_file(journal, 64 * 1024 * 1024)
+        if sha256_bytes(read_bounded_regular(journal, 64 * 1024 * 1024)) != expected:
+            raise RuntimeError("published restore identity changed")
+        descriptor = os.open(journal, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        fsync_directory(parent)
+        fsync_directory(quarantine)
+        return quarantine
+    except BaseException:
+        if replacement.exists() and not replacement.is_symlink():
+            replacement.unlink()
+        if not published and quarantine.exists() and not quarantine.is_symlink():
+            shutil.rmtree(quarantine)
+        raise
 
 
 def smoke_upgrade(candidate_archive: pathlib.Path, old_archive: pathlib.Path) -> None:
@@ -221,13 +317,24 @@ def smoke_upgrade(candidate_archive: pathlib.Path, old_archive: pathlib.Path) ->
             if operate(old_binary, paths) != old_report:
                 raise RuntimeError("exact v0.1.1 direct downgrade changed the report")
 
-            restore_backup(journal, backup, backup_checksum)
+            candidate_generation = read_bounded_regular(journal, 64 * 1024 * 1024)
+            quarantine = restore_backup(journal, backup, backup_checksum)
+            quarantined = quarantine / journal.name
+            quarantined_checksum = quarantine / f"{journal.name}.sha256"
+            if (
+                read_bounded_regular(quarantined, 64 * 1024 * 1024) != candidate_generation
+                or read_bounded_regular(quarantined_checksum, 65)
+                != (sha256_bytes(candidate_generation) + "\n").encode()
+            ):
+                raise RuntimeError("rollback quarantine did not preserve the active generation")
             mcp_open(candidate_binary, paths["operator"])
             mcp_open(candidate_binary, paths["operator"])
             if operate(candidate_binary, paths) != old_report or receipt.read_bytes() != frozen_receipt:
                 raise RuntimeError("restored v0.1.1 generation changed candidate behavior")
+            shutil.rmtree(quarantine)
             backup.unlink()
             backup_checksum.unlink()
+            fsync_directory(journal.parent)
         finally:
             fixture.shutdown()
             fixture.server_close()

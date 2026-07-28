@@ -27,8 +27,13 @@ class ReleaseUpgradeBackupTests(unittest.TestCase):
             journal.chmod(0o600)
             backup, checksum = UPGRADE.private_backup(journal)
             journal.write_bytes(b"candidate-generation")
-            UPGRADE.restore_backup(journal, backup, checksum)
+            quarantine = UPGRADE.restore_backup(journal, backup, checksum)
             self.assertEqual(journal.read_bytes(), b"old-generation")
+            self.assertEqual((quarantine / journal.name).read_bytes(), b"candidate-generation")
+            self.assertEqual(
+                (quarantine / f"{journal.name}.sha256").read_text(),
+                UPGRADE.sha256_bytes(b"candidate-generation") + "\n",
+            )
 
     def test_corrupt_checksum_refuses_before_active_replacement(self) -> None:
         with tempfile.TemporaryDirectory(prefix="kapsel-upgrade-corrupt-") as temporary:
@@ -53,7 +58,20 @@ class ReleaseUpgradeBackupTests(unittest.TestCase):
             backup.replace(original)
             backup.symlink_to(original)
             journal.write_bytes(b"candidate-generation")
-            with self.assertRaises(OSError):
+            with self.assertRaises(RuntimeError):
+                UPGRADE.restore_backup(journal, backup, checksum)
+            self.assertEqual(journal.read_bytes(), b"candidate-generation")
+
+    def test_permissive_parent_refuses_before_active_replacement(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="kapsel-upgrade-parent-") as temporary:
+            parent = pathlib.Path(temporary)
+            journal = parent / "journal.sqlite3"
+            journal.write_bytes(b"old-generation")
+            journal.chmod(0o600)
+            backup, checksum = UPGRADE.private_backup(journal)
+            journal.write_bytes(b"candidate-generation")
+            parent.chmod(0o755)
+            with self.assertRaisesRegex(RuntimeError, "directory is not owner-private"):
                 UPGRADE.restore_backup(journal, backup, checksum)
             self.assertEqual(journal.read_bytes(), b"candidate-generation")
 

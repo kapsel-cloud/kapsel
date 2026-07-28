@@ -57,6 +57,9 @@ all its sidecars from the public GitHub release. With Cosign v3.1.2, authenticat
 publisher workflow and source revision before checking the signed digest manifest:
 
 ```sh
+umask 077
+download_directory=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-download.XXXXXXXX")
+cd "$download_directory"
 version="${KAPSEL_VERSION:?set KAPSEL_VERSION to an exact attached 0.2.x version}"
 revision="${KAPSEL_REVISION:?set KAPSEL_REVISION to the release's exact 40-hex source revision}"
 base="https://github.com/kapsel-cloud/kapsel/releases/download/v$version"
@@ -77,10 +80,11 @@ cosign verify-blob \
 sha256sum --check --strict "$archive.SHA256SUMS"
 sha256sum --check --strict "$archive.sha256"
 python3 - "$archive" <<'PY'
-import pathlib, shutil, sys, tarfile
+import gzip, io, pathlib, shutil, sys, tarfile
 archive = pathlib.Path(sys.argv[1])
-if not archive.is_file() or archive.stat().st_size > 32 * 1024 * 1024:
-    raise RuntimeError("release archive exceeds its compressed bound")
+if not archive.is_file() or archive.is_symlink() or archive.stat().st_size > 32 * 1024 * 1024:
+    raise RuntimeError("release archive is not a bounded regular file")
+archive_bytes = archive.read_bytes()
 basename = archive.name.removesuffix(".tar.gz")
 if pathlib.Path(basename).exists():
     raise RuntimeError("release extraction destination already exists")
@@ -97,10 +101,35 @@ expected = {
     f"{basename}/CHANGELOG.md", f"{basename}/LICENSE",
     f"{basename}/RELEASE-METADATA.json",
 }
-with tarfile.open(archive, "r:gz") as release:
+with gzip.GzipFile(fileobj=io.BytesIO(archive_bytes), mode="rb") as compressed:
+    tar_bytes = compressed.read(64 * 1024 * 1024 + 64 * 1024 + 1)
+if len(tar_bytes) > 64 * 1024 * 1024 + 64 * 1024:
+    raise RuntimeError("release tar stream exceeds its decompressed bound")
+offset = entries = zero_blocks = 0
+while offset + 512 <= len(tar_bytes):
+    header = tar_bytes[offset:offset + 512]
+    if header == bytes(512):
+        zero_blocks += 1
+        offset += 512
+        if zero_blocks == 2:
+            break
+        continue
+    if zero_blocks or header[257:263] != b"ustar\0" or header[156:157] not in {b"\0", b"0", b"5"}:
+        raise RuntimeError("release tar is not exact extension-free USTAR")
+    size_field = header[124:136].rstrip(b"\0 ")
+    if any(character not in b"01234567" for character in size_field):
+        raise RuntimeError("release tar size is not canonical octal")
+    size = int(size_field or b"0", 8)
+    entries += 1
+    offset += 512 + ((size + 511) // 512) * 512
+    if entries > len(expected) or offset > len(tar_bytes):
+        raise RuntimeError("release tar framing exceeds its bound")
+if entries != len(expected) or zero_blocks != 2 or any(tar_bytes[offset:]):
+    raise RuntimeError("release tar framing or padding is not canonical")
+with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as release:
     members = release.getmembers()
-    names = {member.name + ("/" if member.isdir() else "") for member in members}
-    if names != expected or [member.name for member in members] != sorted(member.name for member in members):
+    ordered_names = [member.name + ("/" if member.isdir() else "") for member in members]
+    if set(ordered_names) != expected or len(ordered_names) != len(expected) or ordered_names != sorted(expected):
         raise RuntimeError("unexpected release archive layout or ordering")
     if sum(member.size for member in members if member.isfile()) > 64 * 1024 * 1024:
         raise RuntimeError("release archive exceeds its expanded bound")
@@ -117,19 +146,27 @@ with tarfile.open(archive, "r:gz") as release:
         ) else 0o644
         if member.mode != expected_mode:
             raise RuntimeError("unexpected release archive mode")
-    for member in members:
-        path = pathlib.PurePosixPath(member.name)
-        target = pathlib.Path(*path.parts)
-        if member.isdir():
-            target.mkdir(parents=True, exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source = release.extractfile(member)
-            if source is None:
-                raise RuntimeError("release file could not be read")
-            with target.open("xb") as output:
-                shutil.copyfileobj(source, output)
-        target.chmod(member.mode)
+    root = pathlib.Path(basename)
+    root.mkdir(mode=0o700)
+    try:
+        for member in members:
+            path = pathlib.PurePosixPath(member.name)
+            target = pathlib.Path(*path.parts)
+            if target == root:
+                continue
+            if member.isdir():
+                target.mkdir(mode=member.mode)
+            else:
+                source = release.extractfile(member)
+                if source is None:
+                    raise RuntimeError("release file could not be read")
+                with target.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(member.mode)
+        root.chmod(0o755)
+    except BaseException:
+        shutil.rmtree(root)
+        raise
 PY
 cd "$(basename "$archive" .tar.gz)"
 python3 -m json.tool RELEASE-METADATA.json
