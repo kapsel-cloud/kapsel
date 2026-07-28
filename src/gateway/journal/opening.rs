@@ -464,7 +464,7 @@ fn open_private_file(path: &Path) -> io::Result<File> {
     if !metadata.is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.nlink() != 1
-        || (metadata.mode() & 0o777) != 0o600
+        || (metadata.mode() & 0o7777) != 0o600
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -484,7 +484,7 @@ fn open_existing_private_file(path: &Path) -> io::Result<File> {
     if !metadata.is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.nlink() != 1
-        || (metadata.mode() & 0o777) != 0o600
+        || (metadata.mode() & 0o7777) != 0o600
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -504,7 +504,7 @@ fn require_private_parent(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(parent)?;
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
-        || (metadata.mode() & 0o777) != 0o700
+        || (metadata.mode() & 0o7777) != 0o700
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -521,7 +521,7 @@ fn require_named_identity(path: &Path, expected: &fs::Metadata) -> io::Result<()
         || actual.ino() != expected.ino()
         || actual.uid() != expected.uid()
         || actual.nlink() != 1
-        || (actual.mode() & 0o777) != 0o600
+        || (actual.mode() & 0o7777) != 0o600
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,

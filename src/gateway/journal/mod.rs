@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{
     authorization::VerifiedAuthorization,
@@ -203,8 +203,10 @@ impl Journal {
         &self,
         request: &SetDeploymentImageRequest,
     ) -> Result<(), GatewayError> {
-        let operation_count = self
-            .connection
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(GatewayError::Database)?;
+        let operation_count = transaction
             .query_row(
                 "SELECT COUNT(*) FROM kubernetes_image_operations",
                 [],
@@ -214,7 +216,7 @@ impl Journal {
         if operation_count >= OPERATION_COUNT_MAX {
             return Err(GatewayError::JournalFull);
         }
-        self.connection
+        transaction
             .execute(
                 "INSERT INTO kubernetes_image_operations (
                     operation_id, namespace, deployment, container,
@@ -230,7 +232,7 @@ impl Journal {
                 ],
             )
             .map_err(GatewayError::Database)?;
-        Ok(())
+        transaction.commit().map_err(GatewayError::Database)
     }
 
     pub(in crate::gateway) fn mark_authorized(

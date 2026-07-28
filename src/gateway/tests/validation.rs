@@ -278,6 +278,88 @@
     }
 
     #[test]
+    fn concurrent_submissions_cannot_exceed_the_operation_ceiling() {
+        use std::sync::{Arc, Barrier};
+
+        let path = database_path("journal-concurrent-capacity");
+        let mut setup = Gateway::open_for_test(&path).unwrap();
+        {
+            let transaction = setup.journal.connection.transaction().unwrap();
+            {
+                let mut insert = transaction
+                    .prepare(
+                        "INSERT INTO kubernetes_image_operations (
+                            operation_id, namespace, deployment, container,
+                            immutable_image_digest, state
+                         ) VALUES (?1, 'demo', 'agent-api', 'api', ?2, 'requested')",
+                    )
+                    .unwrap();
+                for index in 0..journal::OPERATION_COUNT_MAX - 1 {
+                    insert
+                        .execute(params![
+                            format!("existing-{index}"),
+                            request().immutable_image_digest,
+                        ])
+                        .unwrap();
+                }
+            }
+            transaction.commit().unwrap();
+        }
+        drop(setup);
+
+        let first = Gateway::open_for_test(&path).unwrap();
+        let second = Gateway::open_for_test(&path).unwrap();
+        first
+            .journal
+            .connection
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap();
+        second
+            .journal
+            .connection
+            .busy_timeout(Duration::from_secs(5))
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let submit = |gateway: Gateway, operation_id: &str, barrier: Arc<Barrier>| {
+            let mut request = request();
+            request.operation_id = operation_id.into();
+            std::thread::spawn(move || {
+                barrier.wait();
+                gateway.submit_exact_for_test(&request, &authorization(&request))
+            })
+        };
+        let first = submit(first, "concurrent-a", Arc::clone(&barrier));
+        let second = submit(second, "concurrent-b", barrier);
+        let results = [first.join().unwrap(), second.join().unwrap()];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Ok(SubmissionResult::Created)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(GatewayError::JournalFull)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            Connection::open(&path)
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM kubernetes_image_operations",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            journal::OPERATION_COUNT_MAX
+        );
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn image_grammar_rejects_every_mutable_or_ambiguous_form() {
         let path = database_path("image-grammar");
         let invalid_images = [

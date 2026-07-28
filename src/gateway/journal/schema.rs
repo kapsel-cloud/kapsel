@@ -291,7 +291,7 @@ fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError>
     let value_predicates = CURRENT_COLUMNS
         .iter()
         .filter(|name| expected_column_type(name) != "INTEGER")
-        .map(|name| format!("COALESCE(length({name}), 0) > ?2"))
+        .map(|name| format!("COALESCE(length(CAST({name} AS BLOB)), 0) > ?2"))
         .collect::<Vec<_>>()
         .join(" OR ");
     let query = format!(

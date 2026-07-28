@@ -92,6 +92,35 @@
         ));
         fs::remove_dir_all(value_path.parent().unwrap()).unwrap();
 
+        let text_path = database_path("persisted-text-byte-bound");
+        drop(Gateway::open_for_test(&text_path).unwrap());
+        let connection = Connection::open(&text_path).unwrap();
+        connection
+            .execute(
+                concat!(
+                    "INSERT INTO kubernetes_image_operations (",
+                    "operation_id, namespace, deployment, container, ",
+                    "immutable_image_digest, authorization_id, state",
+                    ") VALUES ('op-text', 'demo', 'agent-api', 'api', ?1, ?2, 'authorized')"
+                ),
+                rusqlite::params![request().immutable_image_digest, "é".repeat(8 * 1024)],
+            )
+            .unwrap();
+        drop(connection);
+        drop(Gateway::open_for_test(&text_path).unwrap());
+        Connection::open(&text_path)
+            .unwrap()
+            .execute(
+                "UPDATE kubernetes_image_operations SET authorization_id = ?1",
+                ["é".repeat(8 * 1024 + 1)],
+            )
+            .unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&text_path),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        fs::remove_dir_all(text_path.parent().unwrap()).unwrap();
+
         let count_path = database_path("persisted-row-count-bound");
         drop(Gateway::open_for_test(&count_path).unwrap());
         Connection::open(&count_path)
@@ -353,14 +382,50 @@
         ));
         fs::remove_dir_all(oversized_rollback.parent().unwrap()).unwrap();
 
-        let permissive_source = database_path("permissive-source-mode");
-        drop(Gateway::open_for_test(&permissive_source).unwrap());
-        fs::set_permissions(&permissive_source, fs::Permissions::from_mode(0o700)).unwrap();
+        for mode in [0o700, 0o4600] {
+            let source_path = database_path(&format!("nonexact-source-mode-{mode:o}"));
+            drop(Gateway::open_for_test(&source_path).unwrap());
+            fs::set_permissions(&source_path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(matches!(
+                Gateway::open_for_test(&source_path),
+                Err(GatewayError::JournalFile(_))
+            ));
+            fs::remove_dir_all(source_path.parent().unwrap()).unwrap();
+        }
+
+        let special_parent = database_path("special-parent-mode");
+        drop(Gateway::open_for_test(&special_parent).unwrap());
+        fs::set_permissions(
+            special_parent.parent().unwrap(),
+            fs::Permissions::from_mode(0o2700),
+        )
+        .unwrap();
         assert!(matches!(
-            Gateway::open_for_test(&permissive_source),
+            Gateway::open_for_test(&special_parent),
             Err(GatewayError::JournalFile(_))
         ));
-        fs::remove_dir_all(permissive_source.parent().unwrap()).unwrap();
+        fs::remove_dir_all(special_parent.parent().unwrap()).unwrap();
+
+        let special_lock = database_path("special-lock-mode");
+        drop(Gateway::open_for_test(&special_lock).unwrap());
+        let lock = PathBuf::from(format!("{}.kap0038-worker.lock", special_lock.display()));
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o4600)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&special_lock),
+            Err(GatewayError::WorkerLock(_))
+        ));
+        fs::remove_dir_all(special_lock.parent().unwrap()).unwrap();
+
+        let special_rollback = database_path("special-rollback-mode");
+        drop(Gateway::open_for_test(&special_rollback).unwrap());
+        let rollback = PathBuf::from(format!("{}-journal", special_rollback.display()));
+        fs::write(&rollback, [0_u8; 8]).unwrap();
+        fs::set_permissions(&rollback, fs::Permissions::from_mode(0o4600)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&special_rollback),
+            Err(GatewayError::JournalBackup(_))
+        ));
+        fs::remove_dir_all(special_rollback.parent().unwrap()).unwrap();
 
         let permissive_backup = database_path("permissive-backup-mode");
         create_unmarked_current_journal(&permissive_backup);
@@ -369,12 +434,26 @@
             "{}.kapsel-v011.backup",
             permissive_backup.display()
         ));
-        fs::set_permissions(&backup, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&backup, fs::Permissions::from_mode(0o4600)).unwrap();
         assert!(matches!(
             Gateway::open_for_test(&permissive_backup),
             Err(GatewayError::JournalBackup(_))
         ));
         fs::remove_dir_all(permissive_backup.parent().unwrap()).unwrap();
+
+        let special_digest = database_path("special-digest-mode");
+        create_unmarked_current_journal(&special_digest);
+        write_upgrade_backup(&special_digest);
+        let digest = PathBuf::from(format!(
+            "{}.kapsel-v011.backup.sha256",
+            special_digest.display()
+        ));
+        fs::set_permissions(&digest, fs::Permissions::from_mode(0o4600)).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&special_digest),
+            Err(GatewayError::JournalBackup(_))
+        ));
+        fs::remove_dir_all(special_digest.parent().unwrap()).unwrap();
     }
 
     #[test]
