@@ -49,6 +49,13 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
     recover_private_rollback_journal(path, &database_identity)?;
+    let database_identity = database_file
+        .metadata()
+        .map_err(GatewayError::JournalFile)?;
+    if database_identity.len() > JOURNAL_BYTES_MAX {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
     let source_version = read_header_version(&mut database_file)?;
     if !fresh && source_version != 0 && source_version != schema::JOURNAL_FORMAT_VERSION {
         return Err(GatewayError::UnsupportedJournalVersion);

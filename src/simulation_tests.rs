@@ -97,13 +97,29 @@ async fn seeded_lifecycle_crash_simulation_preserves_invariants() {
     .unwrap();
     assert!(cases > 0, "seed={seed} requires at least one case");
 
-    let result = run_simulation(seed, cases).await;
-    assert!(result.is_ok(), "seed={seed} result={result:?}");
+    let shard_count = usize::try_from(environment_number("KAPSEL_SIMULATION_SHARDS", 1)).unwrap();
+    let shard_index =
+        usize::try_from(environment_number("KAPSEL_SIMULATION_SHARD_INDEX", 0)).unwrap();
+    assert!(
+        shard_count > 0 && shard_count <= 8 && shard_index < shard_count,
+        "seed={seed} invalid shard {shard_index}/{shard_count}"
+    );
+
+    let result = run_simulation(seed, cases, shard_index, shard_count).await;
+    assert!(
+        result.is_ok(),
+        "seed={seed} shard={shard_index}/{shard_count} result={result:?}"
+    );
 }
 
-async fn run_simulation(seed: u64, cases: usize) -> SimulationResult {
+async fn run_simulation(
+    seed: u64,
+    cases: usize,
+    shard_index: usize,
+    shard_count: usize,
+) -> SimulationResult {
     let root = std::env::temp_dir().join(format!(
-        "kapsel-lifecycle-simulation-{}-{seed}",
+        "kapsel-lifecycle-simulation-{}-{seed}-{shard_index}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
@@ -140,7 +156,9 @@ async fn run_simulation(seed: u64, cases: usize) -> SimulationResult {
             apply_fault: apply_faults[generator.index(apply_faults.len())],
             publication_fault: publication_faults[generator.index(publication_faults.len())],
         };
-        run_case(seed, case, paths, schedule).await?;
+        if case % shard_count == shard_index {
+            run_case(seed, case, paths, schedule).await?;
+        }
     }
 
     fs::remove_dir_all(root)?;
