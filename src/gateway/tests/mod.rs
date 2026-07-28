@@ -36,6 +36,12 @@ mod migration {
     include!("migration.rs");
 }
 
+mod qualification {
+    use super::*;
+
+    include!("qualification.rs");
+}
+
 mod v011_upgrade {
     use super::*;
 
