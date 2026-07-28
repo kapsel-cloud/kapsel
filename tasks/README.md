@@ -1,8 +1,9 @@
 # Technical task route
 
-Status: v0.2.0 Kubernetes effect-gateway beta selected. Upgrade, release-source locality, and finite
-qualification and distribution are complete; pre-publication acceptance and rehearsal are active,
-and the publication transaction and all later packets remain ordered and gated.
+Status: v0.2.0 Kubernetes effect-gateway beta selected. Upgrade, release-source locality, finite
+qualification, and the first distribution candidate are complete. Candidate documentation correction
+and replacement are active; pre-publication acceptance, publication, and all later packets remain
+ordered and gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -10,8 +11,9 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 ## Current direction
 
 [KAP-0046](KAP-0046.md) selected **Stabilize** as an explicit maintainer technology bet. Kapsel will
-ship one deep developer beta around the existing `kubernetes.set_deployment_image` capability before
-using external beta adoption to choose another product cycle.
+ship one deep developer beta around the existing `kubernetes.set_deployment_image` capability after
+KAP-0065 corrects the bundled documentation and produces the replacement candidate, then use
+external beta adoption to choose another product cycle.
 
 [`docs/V0.2.md`](../docs/V0.2.md) owns the finite promise:
 
@@ -39,9 +41,10 @@ implementation.
 |     3 | [KAP-0060](KAP-0060.md) | Complete     | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
 |     4 | [KAP-0064](KAP-0064.md) | Complete     | Stable, navigable private implementation locality across the root release source                     |
 |     5 | [KAP-0061](KAP-0061.md) | Complete     | Accepted finite reliability, hostile-input, security, and performance qualification                  |
-|     6 | [KAP-0062](KAP-0062.md) | Complete     | Authenticated, reproducible, documented beta distribution candidate                                  |
-|     7 | [KAP-0063](KAP-0063.md) | Active       | Independent acceptance, publication, downloaded verification, and website handoff                    |
-|     8 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
+|     6 | [KAP-0062](KAP-0062.md) | Complete     | Authenticated, reproducible beta distribution candidate                                              |
+|     7 | [KAP-0065](KAP-0065.md) | Active       | Correct bundled release truth and produce one exact replacement candidate                            |
+|     8 | [KAP-0063](KAP-0063.md) | Blocked      | Independently accept, publish, download-verify, and hand off the replacement candidate               |
+|     9 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
 
 Implement and independently review one packet at a time. Do not combine architecture, compatibility,
 migration, locality, qualification, distribution, and publication into one change. A passing packet
@@ -56,14 +59,18 @@ and private operational journal migration named by `docs/V0.2.md` and their dire
 The Rust package remains unsupported for external consumers. [KAP-0048](KAP-0048.md) remains
 conditional future work; v0.2 does not publish crates.io or docs.rs artifacts.
 
-## Paused and conditional programs
+## Paused, conditional, and post-release programs
 
-| Packet                  | Status      | Route                                                                                            |
-| ----------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
-| [KAP-0050](KAP-0050.md) | Paused      | Optional hosted sandbox umbrella; not release scope                                              |
-| [KAP-0053](KAP-0053.md) | Paused      | Preserve accepted offline tranches; continuation requires a new scope and authorization decision |
-| [KAP-0054](KAP-0054.md) | Conditional | Resident process requires a real post-beta pilot workflow                                        |
-| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs distribution requires a later explicit use and compatibility decision              |
+| Packet                  | Status       | Route                                                                                            |
+| ----------------------- | ------------ | ------------------------------------------------------------------------------------------------ |
+| [KAP-0050](KAP-0050.md) | Paused       | Optional hosted sandbox umbrella; not release scope                                              |
+| [KAP-0053](KAP-0053.md) | Paused       | Preserve accepted offline tranches; continuation requires a new scope and authorization decision |
+| [KAP-0054](KAP-0054.md) | Conditional  | Resident process requires a real post-beta pilot workflow                                        |
+| [KAP-0048](KAP-0048.md) | Conditional  | Cargo/docs.rs distribution requires a later explicit use and compatibility decision              |
+| [KAP-0066](KAP-0066.md) | Post-release | Deepen release-artifact tooling in the existing unpublished `kapsel-dev` package                 |
+| [KAP-0067](KAP-0067.md) | Post-release | Deepen qualification tooling after KAP-0066 establishes the tooling direction                    |
+| [KAP-0068](KAP-0068.md) | Post-release | Minimize workspace Rust interfaces against real consumers                                        |
+| [KAP-0069](KAP-0069.md) | Conditional  | Deepen or retire the paused sandbox only after an explicit continuation decision                 |
 
 KAP-0051, KAP-0052, KAP-0055, and KAP-0056 remain accepted sandbox history. Their implementation and
 the shared workspace version do not make the sandbox, private controller protocols, runner handoff,
