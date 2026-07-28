@@ -237,6 +237,29 @@ The simulation injects generated mutation and receipt-publication crash windows,
 journal, and asserts provider-call counts, receiver classification, terminal state, and frozen
 receipt location after every case. It uses no live cluster and is separate from the default gate.
 
+## Qualification baseline
+
+The completed KAP-0061 baseline is validated without reading raw journals, provider bodies, receipt
+bytes, or key material:
+
+```sh
+python3 scripts/validate-kap0061-baseline.py qualification/kap0061-baseline.json
+python3 scripts/test-validate-kap0061-baseline.py
+```
+
+The pinned x86-64 measurement harness requires a clean tree, Docker, the already pulled builder
+image, and the host Cargo registry. It builds and runs inside the fixed 8-CPU, 8-GiB virtualized
+container and writes bounded aggregates to a caller-selected temporary path:
+
+```sh
+python3 scripts/run-kap0061-measurements.py --output /tmp/kap0061-measurements.json
+```
+
+The semantic lanes remain `cargo make test-simulation`, `cargo make test-fuzz`,
+`cargo make test-v011-upgrade`, `cargo make test-demo-harness`, and `cargo make test-kind`. KAP-0062
+must apply the baseline manifest's invalidation rules before treating any result as candidate
+evidence. These commands are qualification evidence, not production performance or support claims.
+
 ## Live Kubernetes gate
 
 The explicit live gate requires a working Docker daemon and `kind` 0.32 or newer:

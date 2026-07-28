@@ -1,0 +1,2177 @@
+{
+  "baseline": {
+    "commit": "b7320947e3c313ea1a0d2b8cc2e9310e7ca97184",
+    "demo_executable_bytes": 9101776,
+    "demo_executable_sha256": "be2087ad42c590edb0b2e8d572f12fa933a7626754b896b444ef75f041dd5e85",
+    "ordinary_executable_bytes": 9099664,
+    "ordinary_executable_sha256": "9ab9aa4254e7b9ece4d546e0a692af42512dc3797e94fc580b3fbe8b9b1ffc4d",
+    "qualification_baseline_only": true,
+    "source_path_count": 38,
+    "source_sha256": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825",
+    "tree": "3e3aafd254b5319391e6432aa027c4bf1a00feb4"
+  },
+  "budgets": [
+    {
+      "class": "process startup",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "process-startup-wall",
+      "limit": 500000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "maximum",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "grant provision",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "grant-provision-wall",
+      "limit": 500000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "fresh journal open",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "journal-fresh-open-wall",
+      "limit": 1000000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "marked journal open",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "journal-marked-open-wall",
+      "limit": 500000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "offline inspection",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "offline-inspection-wall",
+      "limit": 500000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "authorized submission",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "submit-authorized-wall",
+      "limit": 1000000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "target read",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "target-read-wall",
+      "limit": 1000000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "conditional patch",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "conditional-patch-wall",
+      "limit": 1000000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "apply-started reconciliation",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "reconcile-apply-started-wall",
+      "limit": 1000000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "receipt finalization",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "receipt-finalize-wall",
+      "limit": 500000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "restart recovery",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "restart-recovery-wall",
+      "limit": 1000000,
+      "metric": "wall time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "complete success",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "complete-success-cpu",
+      "limit": 2000000,
+      "metric": "CPU time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "complete recovery",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "complete-recovery-cpu",
+      "limit": 2000000,
+      "metric": "CPU time",
+      "required_samples": 30,
+      "statistic": "p95",
+      "unit": "microseconds",
+      "warmups": 5
+    },
+    {
+      "class": "ordinary measured process",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "process-rss",
+      "limit": 134217728,
+      "metric": "peak RSS",
+      "required_samples": 210,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "bounded unknown observation",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "bounded-unknown-wall",
+      "limit": 35000,
+      "metric": "wall time",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "milliseconds",
+      "warmups": 0
+    },
+    {
+      "class": "live healthy scenario",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "live-healthy-wall",
+      "limit": 60000,
+      "metric": "wall time",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "milliseconds",
+      "warmups": 0
+    },
+    {
+      "class": "live failed scenario",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "live-failed-wall",
+      "limit": 60000,
+      "metric": "wall time",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "milliseconds",
+      "warmups": 0
+    },
+    {
+      "class": "live unknown scenario",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "live-unknown-wall",
+      "limit": 60000,
+      "metric": "wall time",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "milliseconds",
+      "warmups": 0
+    },
+    {
+      "class": "live owned cleanup",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "live-cleanup-wall",
+      "limit": 15000,
+      "metric": "wall time",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "milliseconds",
+      "warmups": 0
+    },
+    {
+      "class": "journal at capacity",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "journal-size",
+      "limit": 67108864,
+      "metric": "file size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "journal operation",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "journal-average-growth",
+      "limit": 8192,
+      "metric": "average growth",
+      "required_samples": 10000,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "grant",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "grant-size",
+      "limit": 4096,
+      "metric": "wire size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "trust",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "trust-size",
+      "limit": 1024,
+      "metric": "wire size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "receipt",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "receipt-size",
+      "limit": 16384,
+      "metric": "wire size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "statement",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "statement-size",
+      "limit": 8192,
+      "metric": "wire size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "request JSON",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "request-json-size",
+      "limit": 16384,
+      "metric": "input size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "MCP frame",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "mcp-frame-size",
+      "limit": 16384,
+      "metric": "input size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "MCP response",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "mcp-response-size",
+      "limit": 8192,
+      "metric": "output size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "machine output",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "machine-output-size",
+      "limit": 65536,
+      "metric": "output size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "Kubernetes identity fact",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "kubernetes-identity-size",
+      "limit": 128,
+      "metric": "input size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "immutable image",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "immutable-image-size",
+      "limit": 512,
+      "metric": "input size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "Kubernetes response body",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "kubernetes-response-size",
+      "limit": 2097152,
+      "metric": "input size",
+      "required_samples": 3,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "ordinary executable",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "ordinary-executable-size",
+      "limit": 33554432,
+      "metric": "file size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "demonstration executable",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "demo-executable-size",
+      "limit": 33554432,
+      "metric": "file size",
+      "required_samples": 1,
+      "statistic": "maximum",
+      "unit": "bytes",
+      "warmups": 0
+    },
+    {
+      "class": "rejected security findings",
+      "comparator": "less_than_or_equal",
+      "failure_ceiling": 0,
+      "id": "security-findings",
+      "limit": 0,
+      "metric": "finding count",
+      "required_samples": 2,
+      "statistic": "maximum",
+      "unit": "count",
+      "warmups": 0
+    }
+  ],
+  "environments": [
+    {
+      "architecture": "arm64",
+      "cpu_count": 8,
+      "description": "repository host with OrbStack Docker backend",
+      "id": "host-macos-arm64",
+      "memory_bytes": 17179869184,
+      "os": "macOS 26.5.1 build 25F80",
+      "virtualized": false
+    },
+    {
+      "architecture": "linux-amd64",
+      "cpu_count": 8,
+      "description": "pinned x86-64 builder under arm64 OrbStack emulation",
+      "id": "debian12-linux-amd64-virtualized",
+      "memory_bytes": 8589934592,
+      "os": "Debian 12 container",
+      "virtualized": true
+    }
+  ],
+  "invalidation_rules": [
+    {
+      "id": "root-source-or-identity",
+      "rerun_lanes": [
+        "all"
+      ],
+      "trigger": "any root source dependency lockfile toolchain feature compatibility command or executable identity change"
+    },
+    {
+      "id": "qualification-input",
+      "rerun_lanes": [
+        "simulation",
+        "fuzz",
+        "subprocess",
+        "demo",
+        "live-kind",
+        "measurement",
+        "cargo-audit",
+        "trivy",
+        "privacy"
+      ],
+      "trigger": "any fixture vector corpus test harness scanner database environment or tool change"
+    },
+    {
+      "id": "distribution-only",
+      "rerun_lanes": [
+        "default",
+        "privacy",
+        "trivy"
+      ],
+      "trigger": "nonexecutable KAP-0062 distribution metadata or publication input change"
+    },
+    {
+      "id": "semantic-or-budget",
+      "rerun_lanes": [
+        "all"
+      ],
+      "trigger": "any semantic security-policy or budget change"
+    }
+  ],
+  "lanes": [
+    {
+      "description": "format links Clippy rustdoc deterministic tests and docs",
+      "id": "default",
+      "required": true
+    },
+    {
+      "description": "root CLI MCP grant kubeconfig provider and journal denial matrices",
+      "id": "hostile-input",
+      "required": true
+    },
+    {
+      "description": "seeded lifecycle crash simulation",
+      "id": "simulation",
+      "required": true
+    },
+    {
+      "description": "seeded receipt inspection fuzzing",
+      "id": "fuzz",
+      "required": true
+    },
+    {
+      "description": "exact historical migration restore and downgrade subprocess matrix",
+      "id": "subprocess",
+      "required": true
+    },
+    {
+      "description": "real-process deterministic demonstration recovery",
+      "id": "demo",
+      "required": true
+    },
+    {
+      "description": "healthy failed and bounded unknown live Kubernetes scenarios",
+      "id": "live-kind",
+      "required": true
+    },
+    {
+      "description": "pinned virtualized x86-64 resource measurements",
+      "id": "measurement",
+      "required": true
+    },
+    {
+      "description": "fresh RustSec dependency audit",
+      "id": "cargo-audit",
+      "required": true
+    },
+    {
+      "description": "clean exact-worktree vulnerability and secret scan",
+      "id": "trivy",
+      "required": true
+    },
+    {
+      "description": "key trust disclosure privacy and no-SLA review",
+      "id": "privacy",
+      "required": true
+    }
+  ],
+  "replay": {
+    "fuzz_corpus_sha256": "86dda67e958b96cd56452de77199c2ebfac36400d6c971e84966a4b9fb3e9e8d",
+    "fuzz_runs": 10000,
+    "fuzz_seed": 2118243591,
+    "simulation_cases": 10000,
+    "simulation_seed": 21182435914953528,
+    "simulation_shards": 8
+  },
+  "residual_risks": [
+    {
+      "id": "virtualized-performance",
+      "statement": "x86-64 measurements are virtualized on one arm64 host and do not establish native-host or production performance"
+    },
+    {
+      "id": "single-live-environment",
+      "statement": "one disposable kind cluster cannot establish behavior across production Kubernetes distributions or failures"
+    },
+    {
+      "id": "scanner-scope",
+      "statement": "dependency scanners do not prove absence of malicious packages future advisories or unreachable lower-severity defects"
+    },
+    {
+      "id": "beta-storage",
+      "statement": "prototype journal trust lifecycle and receipt semantics remain scoped to the finite beta and are not a production storage claim"
+    }
+  ],
+  "results": [
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-process-startup-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-max-us",
+          "statistic": "maximum",
+          "unit": "microseconds",
+          "value": 20133
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "process-startup-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-grant-provision-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 29850
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "grant-provision-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-journal-fresh-open-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 110719
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "journal-fresh-open-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-journal-marked-open-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 97038
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "journal-marked-open-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-offline-inspection-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 26766
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "offline-inspection-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-submit-authorized-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 9048
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "submit-authorized-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-target-read-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 852
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "target-read-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-conditional-patch-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 90
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "conditional-patch-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-reconcile-apply-started-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 5076
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "reconcile-apply-started-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-receipt-finalize-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 16071
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "receipt-finalize-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-restart-recovery-wall",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wall-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 5086
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "restart-recovery-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-complete-success-cpu",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "cpu-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 155186
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "complete-success-cpu"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "measured value is within the predeclared stopping rule",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-complete-recovery-cpu",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "cpu-p95-us",
+          "statistic": "p95",
+          "unit": "microseconds",
+          "value": 143986
+        }
+      ],
+      "sample_count": 30,
+      "status": "passed",
+      "subject_id": "complete-recovery-cpu"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "all measured ordinary process samples remained below 128 MiB",
+          "id": "within-budget",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-process-rss",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "peak-rss",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 19324928
+        }
+      ],
+      "sample_count": 210,
+      "status": "passed",
+      "subject_id": "process-rss"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "live proof retained one patch opportunity and removed only the owned cluster",
+          "id": "one-patch-and-owned-cleanup",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170",
+      "command": [
+        "cargo",
+        "make",
+        "test-kind"
+      ],
+      "duration_ms": 82920,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-bounded-unknown-wall",
+      "input_sha256": {
+        "kind-harness": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "bounded-unknown-wall",
+          "statistic": "maximum",
+          "unit": "milliseconds",
+          "value": 30640
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "bounded-unknown-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "live proof retained one patch opportunity and removed only the owned cluster",
+          "id": "one-patch-and-owned-cleanup",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170",
+      "command": [
+        "cargo",
+        "make",
+        "test-kind"
+      ],
+      "duration_ms": 82920,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-live-healthy-wall",
+      "input_sha256": {
+        "kind-harness": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "live-healthy-wall",
+          "statistic": "maximum",
+          "unit": "milliseconds",
+          "value": 2749
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "live-healthy-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "live proof retained one patch opportunity and removed only the owned cluster",
+          "id": "one-patch-and-owned-cleanup",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170",
+      "command": [
+        "cargo",
+        "make",
+        "test-kind"
+      ],
+      "duration_ms": 82920,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-live-failed-wall",
+      "input_sha256": {
+        "kind-harness": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "live-failed-wall",
+          "statistic": "maximum",
+          "unit": "milliseconds",
+          "value": 18487
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "live-failed-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "live proof retained one patch opportunity and removed only the owned cluster",
+          "id": "one-patch-and-owned-cleanup",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170",
+      "command": [
+        "cargo",
+        "make",
+        "test-kind"
+      ],
+      "duration_ms": 82920,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-live-unknown-wall",
+      "input_sha256": {
+        "kind-harness": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "live-unknown-wall",
+          "statistic": "maximum",
+          "unit": "milliseconds",
+          "value": 30640
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "live-unknown-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "live proof retained one patch opportunity and removed only the owned cluster",
+          "id": "one-patch-and-owned-cleanup",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170",
+      "command": [
+        "cargo",
+        "make",
+        "test-kind"
+      ],
+      "duration_ms": 82920,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-live-cleanup-wall",
+      "input_sha256": {
+        "kind-harness": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "live-cleanup-wall",
+          "statistic": "maximum",
+          "unit": "milliseconds",
+          "value": 631
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "live-cleanup-wall"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "journal had no rollback WAL or SHM sidecar after clean close",
+          "id": "clean-close",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-journal-size",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "final-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 15278080
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "journal-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "journal had no rollback WAL or SHM sidecar after clean close",
+          "id": "clean-close",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-journal-average-growth",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "average-growth",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 1526
+        }
+      ],
+      "sample_count": 10000,
+      "status": "passed",
+      "subject_id": "journal-average-growth"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "canonical or maximal generated bytes remained within the owner limit",
+          "id": "within-wire-limit",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-grant-size",
+      "input_sha256": {
+        "vectors": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wire-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 380
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "grant-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "canonical or maximal generated bytes remained within the owner limit",
+          "id": "within-wire-limit",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-trust-size",
+      "input_sha256": {
+        "vectors": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wire-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 160
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "trust-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "canonical or maximal generated bytes remained within the owner limit",
+          "id": "within-wire-limit",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-receipt-size",
+      "input_sha256": {
+        "vectors": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wire-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 2514
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "receipt-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "canonical or maximal generated bytes remained within the owner limit",
+          "id": "within-wire-limit",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-statement-size",
+      "input_sha256": {
+        "vectors": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "wire-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 793
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "statement-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-request-json-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 16384
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "request-json-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-mcp-frame-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 16384
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "mcp-frame-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-mcp-response-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 1251
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "mcp-response-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-machine-output-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 1251
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "machine-output-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-kubernetes-identity-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 128
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "kubernetes-identity-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-immutable-image-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 512
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "immutable-image-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact boundary was accepted where valid and every above-boundary input was rejected",
+          "id": "exact-and-over-boundary",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-kubernetes-response-size",
+      "input_sha256": {
+        "default-output": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "boundary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 2097152
+        }
+      ],
+      "sample_count": 3,
+      "status": "passed",
+      "subject_id": "kubernetes-response-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "file and readelf identified a stripped x86-64 ELF without symbol or debug sections",
+          "id": "stripped-x86-64",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-ordinary-executable-size",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "ordinary-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 9099664
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "ordinary-executable-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "file and readelf identified a stripped x86-64 ELF without symbol or debug sections",
+          "id": "stripped-x86-64",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "budget-demo-executable-size",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "demo-bytes",
+          "statistic": "maximum",
+          "unit": "bytes",
+          "value": 9101776
+        }
+      ],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "demo-executable-size"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "RustSec and clean-worktree Trivy scans reported no vulnerability or verified secret",
+          "id": "no-rejected-finding",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "74845b839c8b7996beadc116f7d5dd138c5b49e0221fe61aeefea54fdec4ab15",
+      "command": [
+        "cargo-audit",
+        "audit",
+        "--json"
+      ],
+      "duration_ms": 1620,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "budget-security-findings",
+      "input_sha256": {
+        "cargo-lock": "0bcdc6a54c9e080862fa03dcfa8dfe49917be55cb22aac96cae35b9b85ce7f6f",
+        "trivy-database": "de72b63e87bfd58e09c580a05f06e451884bf98a28f2469491735bacb633bf16"
+      },
+      "kind": "budget",
+      "measurements": [
+        {
+          "id": "rejected-findings",
+          "statistic": "count",
+          "unit": "count",
+          "value": 0
+        }
+      ],
+      "sample_count": 2,
+      "status": "passed",
+      "subject_id": "security-findings"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "default repository gate passed",
+          "id": "default-gate",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-default",
+      "input_sha256": {},
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "default"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "CLI JSON MCP grant kubeconfig response and journal hostile matrices passed",
+          "id": "denial-matrix",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "a696ad308f69879e17139c4218659f61840b1a3f5a979269d40e8fec737a5dd4",
+      "command": [
+        "./scripts/ci-local.sh",
+        "check"
+      ],
+      "duration_ms": 37240,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-hostile-input",
+      "input_sha256": {},
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "hostile-input"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "all 10000 seeded cases preserved mutation receipt and recovery invariants",
+          "id": "replayable",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "c3eef9a93e480b3257d4268f4217e43b0db66d61772666d845702a9ebb3befc6",
+      "command": [
+        "cargo",
+        "make",
+        "test-simulation"
+      ],
+      "duration_ms": 131570,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-simulation",
+      "input_sha256": {
+        "simulation-seed": "388af68f2b5a0fda2f45308db24812c2bd26e342356416b5084647baa484a31f"
+      },
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 10000,
+      "status": "passed",
+      "subject_id": "simulation"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "all seeded fuzz runs completed without crash or finding",
+          "id": "no-crash",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "262637bb556febc860e6ad9879a42dc6674c73bd4c09c2e20d203fe0134add16",
+      "command": [
+        "cargo",
+        "make",
+        "test-fuzz"
+      ],
+      "duration_ms": 6270,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-fuzz",
+      "input_sha256": {
+        "corpus": "86dda67e958b96cd56452de77199c2ebfac36400d6c971e84966a4b9fb3e9e8d"
+      },
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 10000,
+      "status": "passed",
+      "subject_id": "fuzz"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "nine tagged fixtures and every migration restore process seam passed",
+          "id": "historical-compatibility",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "c6a73d6da8ed63d797b4c535a323fc4e3042a8e20c9e438ddc0d5fe26eaa8171",
+      "command": [
+        "cargo",
+        "make",
+        "test-v011-upgrade"
+      ],
+      "duration_ms": 12600,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-subprocess",
+      "input_sha256": {},
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 9,
+      "status": "passed",
+      "subject_id": "subprocess"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "real-process recovery retained exactly one returned patch",
+          "id": "one-apply",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "76d2ee04574459dba64807701253a864e4d6026931b6a550c68118a7243fac69",
+      "command": [
+        "cargo",
+        "make",
+        "test-demo-harness"
+      ],
+      "duration_ms": 11850,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-demo",
+      "input_sha256": {},
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "demo"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "healthy failed and bounded unknown scenarios passed with owned cleanup",
+          "id": "three-scenarios",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "ec69afccded638fd800b77aaa06b3b536d324cc8e73cfa5a1ac59a9ca8e55170",
+      "command": [
+        "cargo",
+        "make",
+        "test-kind"
+      ],
+      "duration_ms": 82920,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-live-kind",
+      "input_sha256": {
+        "node-image": "8f31cd703971fa2623e0cfffca0bd7e0299a3696363f14ad1b8fc32018986c62"
+      },
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 3,
+      "status": "passed",
+      "subject_id": "live-kind"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "all x86-64 wall CPU RSS growth wire and executable stopping rules passed",
+          "id": "all-budgets",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "857b8c5976f15889a07e183ac211e064fc460981c92c2a807d7e1fab7127b67f",
+      "command": [
+        "python3",
+        "scripts/run-kap0061-measurements.py",
+        "--output",
+        "BOUNDED_OUTPUT"
+      ],
+      "duration_ms": 571000,
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "failure_count": 0,
+      "id": "lane-measurement",
+      "input_sha256": {
+        "source": "f7c76cf20db5778d65a652db9f969d63baa598c64d656b4ef9ad6019ee398825"
+      },
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 390,
+      "status": "passed",
+      "subject_id": "measurement"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "fresh RustSec audit reported zero vulnerabilities and warnings",
+          "id": "zero-rustsec",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "74845b839c8b7996beadc116f7d5dd138c5b49e0221fe61aeefea54fdec4ab15",
+      "command": [
+        "cargo-audit",
+        "audit",
+        "--json"
+      ],
+      "duration_ms": 1430,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-cargo-audit",
+      "input_sha256": {
+        "cargo-lock": "0bcdc6a54c9e080862fa03dcfa8dfe49917be55cb22aac96cae35b9b85ce7f6f"
+      },
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "cargo-audit"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "exact clean-worktree scan reported zero vulnerabilities and zero secrets",
+          "id": "zero-trivy",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "06c18303b4dfd2b13a066ed524c0de18d4acfd0407536bea2ecb881e359102f6",
+      "command": [
+        "trivy",
+        "filesystem",
+        "CLEAN_WORKTREE"
+      ],
+      "duration_ms": 190,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-trivy",
+      "input_sha256": {
+        "database": "de72b63e87bfd58e09c580a05f06e451884bf98a28f2469491735bacb633bf16"
+      },
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "trivy"
+    },
+    {
+      "assertions": [
+        {
+          "detail": "root scope contained no private path credential pattern secret output or unsupported SLA claim",
+          "id": "no-private-material",
+          "passed": true
+        }
+      ],
+      "bounded_output_sha256": "2d36efb803383662f451b8e6b07ce3c7266dab2cd807d20e217f737687be8be7",
+      "command": [
+        "git",
+        "grep",
+        "ROOT_RELEASE_PATHS"
+      ],
+      "duration_ms": 1,
+      "environment_id": "host-macos-arm64",
+      "failure_count": 0,
+      "id": "lane-privacy",
+      "input_sha256": {},
+      "kind": "lane",
+      "measurements": [],
+      "sample_count": 1,
+      "status": "passed",
+      "subject_id": "privacy"
+    }
+  ],
+  "schema_version": 1,
+  "security": {
+    "exceptions": [],
+    "findings": [],
+    "reviews": [
+      {
+        "disposition": "cargo-audit 0.22.2 parsed the freshly updated RustSec database and reported no vulnerability or warning",
+        "id": "dependency",
+        "status": "passed"
+      },
+      {
+        "disposition": "exact mode no-follow identity size trust and replacement tests passed without bypass",
+        "id": "filesystem-and-trust",
+        "status": "passed"
+      },
+      {
+        "disposition": "root release paths and bounded outputs contained no private path credential or secret",
+        "id": "privacy-and-disclosure",
+        "status": "passed"
+      },
+      {
+        "disposition": "Trivy reported no vulnerability or secret in a detached exact-baseline worktree",
+        "id": "trivy-clean-worktree",
+        "status": "passed"
+      },
+      {
+        "disposition": "an initial nonbaseline scan matched an ignored local subagent transcript; the artifact was absent from Git and excluded by scanning the exact clean worktree",
+        "id": "trivy-local-artifact",
+        "status": "passed"
+      },
+      {
+        "disposition": "measured budgets remain finite qualification stopping rules and are not production latency availability or support promises",
+        "id": "no-sla",
+        "status": "passed"
+      }
+    ]
+  },
+  "tools": [
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "rust-host",
+      "version": "rustc 1.96.1 commit 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "cargo-host",
+      "version": "cargo 1.96.1 commit 356927216"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "python-host",
+      "version": "Python 3.14.6"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "docker",
+      "version": "client 28.4.0 server 29.4.0"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "kind",
+      "version": "0.32.0"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "kubectl",
+      "version": "1.33.9"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "cargo-fuzz",
+      "version": "0.13.1"
+    },
+    {
+      "environment_id": "host-macos-arm64",
+      "id": "nightly-rust",
+      "version": "commit c397dae808f70caebab1fc4e11b3edf7e59f58c7"
+    },
+    {
+      "database_utc": "2026-07-28T01:04:00Z",
+      "environment_id": "host-macos-arm64",
+      "id": "cargo-audit",
+      "version": "0.22.2"
+    },
+    {
+      "database_utc": "2026-07-27T19:20:18Z",
+      "environment_id": "host-macos-arm64",
+      "id": "trivy",
+      "version": "0.72.0 database version 2"
+    },
+    {
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "id": "rust-container",
+      "version": "rustc and cargo 1.96.1"
+    },
+    {
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "id": "python-container",
+      "version": "Python 3.11.2"
+    },
+    {
+      "environment_id": "debian12-linux-amd64-virtualized",
+      "id": "builder-image",
+      "version": "rust image digest a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663"
+    }
+  ]
+}
