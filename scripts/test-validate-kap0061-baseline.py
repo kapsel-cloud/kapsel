@@ -35,6 +35,17 @@ class BaselineValidatorTests(unittest.TestCase):
 
     def valid_document(self) -> dict:
         document = self.canonical_document()
+        document["environments"] = copy.deepcopy(
+            list(MODULE.EXPECTED_ENVIRONMENTS.values())
+        )
+        for tool in document["tools"]:
+            tool["environment_id"] = (
+                "container"
+                if tool["id"] in {"rust-container", "python-container", "builder-image"}
+                else "host"
+            )
+        for result in document["results"]:
+            result["environment_id"] = "host"
         commit = MODULE.git_output("rev-parse", "HEAD").decode().strip()
         source_paths = MODULE.baseline_source_paths(commit)
         document["baseline"]["commit"] = commit
@@ -51,6 +62,7 @@ class BaselineValidatorTests(unittest.TestCase):
             for result in document["results"]
         }
         measurement_lane = copy.deepcopy(result_by_subject[("lane", "measurement")])
+        measurement_lane["environment_id"] = "container"
         measurement_lane["input_sha256"]["source"] = document["baseline"]["source_sha256"]
         measurement_lane["input_sha256"]["ordinary-executable"] = document["baseline"]["ordinary_executable_sha256"]
         measurement_lane["input_sha256"]["demo-executable"] = document["baseline"]["demo_executable_sha256"]
@@ -373,6 +385,13 @@ class BaselineValidatorTests(unittest.TestCase):
             tool for tool in stale_database["tools"] if tool["id"] == "trivy"
         )["database_utc"] = "1900-01-01T00:00:00Z"
         cases.append(stale_database)
+        wrong_environment = self.valid_document()
+        next(
+            environment
+            for environment in wrong_environment["environments"]
+            if environment["id"] == "container"
+        )["virtualized"] = False
+        cases.append(wrong_environment)
         baseline_tree = self.valid_document()
         baseline_tree["baseline"]["tree"] = "0" * 40
         cases.append(baseline_tree)

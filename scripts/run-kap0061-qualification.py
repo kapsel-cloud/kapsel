@@ -446,7 +446,7 @@ def main() -> None:
             ("subprocess", "historical migration restore and downgrade subprocess matrix"),
             ("demo", "real-process deterministic demonstration recovery"),
             ("live-kind", "healthy failed and bounded unknown live Kubernetes scenarios"),
-            ("measurement", "pinned virtualized x86-64 resource measurements"),
+            ("measurement", "pinned containerized native x86-64 resource measurements"),
             ("cargo-audit", "fresh RustSec dependency audit"),
             ("trivy", "clean exact-tree vulnerability and secret scan"),
             ("privacy", "key trust disclosure privacy and no-SLA review"),
@@ -460,7 +460,7 @@ def main() -> None:
             "cpu_count": os.cpu_count() or 1,
             "memory_bytes": host_memory_bytes(),
             "virtualized": False,
-            "description": "repository host with Docker backend",
+            "description": "dedicated native x86-64 Linux qualification host",
         },
         {
             "id": "container",
@@ -468,8 +468,8 @@ def main() -> None:
             "architecture": "linux-amd64",
             "cpu_count": 8,
             "memory_bytes": 8 * 1024 * 1024 * 1024,
-            "virtualized": platform.machine() != "x86_64",
-            "description": "pinned x86-64 builder under host container virtualization",
+            "virtualized": True,
+            "description": "pinned x86-64 builder in an isolated Docker container",
         },
     ]
     document = {
@@ -512,7 +512,7 @@ def main() -> None:
             ],
         },
         "residual_risks": [
-            {"id": "virtualized-performance", "statement": "x86-64 measurements are virtualized on one host and do not establish native-host or production performance"},
+            {"id": "containerized-performance", "statement": "measurements from one native host in an isolated container do not establish uncontainerized or production performance"},
             {"id": "single-live-environment", "statement": "one disposable kind cluster cannot establish behavior across production Kubernetes distributions or failures"},
             {"id": "scanner-scope", "statement": "dependency scanners do not prove absence of malicious packages future advisories or unreachable lower-severity defects"},
             {"id": "beta-storage", "statement": "prototype journal trust lifecycle and receipt semantics remain scoped to the finite beta"},

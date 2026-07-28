@@ -117,6 +117,26 @@ EXPECTED_LANE_SAMPLES = {
     "trivy": 1,
     "privacy": 1,
 }
+EXPECTED_ENVIRONMENTS = {
+    "host": {
+        "id": "host",
+        "os": "Linux-6.12.48+deb13-amd64-x86_64-with-glibc2.41",
+        "architecture": "x86_64",
+        "cpu_count": 8,
+        "memory_bytes": 25144446976,
+        "virtualized": False,
+        "description": "dedicated native x86-64 Linux qualification host",
+    },
+    "container": {
+        "id": "container",
+        "os": "Debian 12 container",
+        "architecture": "linux-amd64",
+        "cpu_count": 8,
+        "memory_bytes": 8 * 1024 * 1024 * 1024,
+        "virtualized": True,
+        "description": "pinned x86-64 builder in an isolated Docker container",
+    },
+}
 EXPECTED_TOOL_VERSIONS = {
     "rust-host": "rustc 1.96.1 commit 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
     "cargo-host": "cargo 1.96.1 (356927216 2026-06-26)",
@@ -293,6 +313,8 @@ def validate(path: Path) -> None:
     if not isinstance(environments, list) or not environments:
         fail("environments must be nonempty")
     environment_ids = unique(environments, "environments")
+    if environment_ids != set(EXPECTED_ENVIRONMENTS):
+        fail("environment set differs from the frozen qualification identities")
     for environment in environments:
         exact(
             environment,
@@ -314,6 +336,8 @@ def validate(path: Path) -> None:
         if not isinstance(environment["virtualized"], bool):
             fail("environment.virtualized must be boolean")
         text(environment["description"], "environment.description")
+        if environment != EXPECTED_ENVIRONMENTS[environment["id"]]:
+            fail(f"environment.{environment['id']} differs from the frozen identity")
 
     tools = document["tools"]
     if not isinstance(tools, list) or not tools:
