@@ -892,7 +892,7 @@ fn wait_for_child_marker(
 ) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if ready.exists() {
+        if fs::metadata(ready).is_ok_and(|metadata| metadata.len() > 0) {
             return Ok(());
         }
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
