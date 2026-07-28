@@ -120,8 +120,8 @@ EXPECTED_LANE_SAMPLES = {
 EXPECTED_TOOL_VERSIONS = {
     "rust-host": "rustc 1.96.1 commit 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
     "cargo-host": "cargo 1.96.1 (356927216 2026-06-26)",
-    "python-host": "3.14.6",
-    "docker": "client 28.4.0 server 29.4.0",
+    "python-host": "3.13.5",
+    "docker": "client 29.5.2 server 29.5.2",
     "kind": "0.32.0",
     "kubectl": "1.33.9",
     "cargo-fuzz": "cargo-fuzz 0.13.1",

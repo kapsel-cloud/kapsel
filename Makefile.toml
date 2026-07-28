@@ -117,7 +117,7 @@ python3 scripts/smoke-release-artifact.py --archive "$KAPSEL_RELEASE_ARCHIVE" --
 description = "Compile the offline receipt-inspection fuzz target"
 cwd = "fuzz"
 command = "rustup"
-args = ["run", "nightly", "cargo", "fuzz", "check", "inspect_receipt"]
+args = ["run", "nightly-2026-07-03", "cargo", "fuzz", "check", "inspect_receipt"]
 
 [tasks.test-fuzz]
 description = "Run the frozen 10,000-case seeded receipt-inspection fuzz lane"
@@ -127,7 +127,7 @@ set -eu
 corpus_directory=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-fuzz-corpus.XXXXXX")
 trap 'rm -rf "$corpus_directory"' EXIT HUP INT TERM
 cp corpus/inspect_receipt/canonical-receipt-and-trust "$corpus_directory/"
-rustup run nightly cargo fuzz run --dev inspect_receipt "$corpus_directory" -- \
+rustup run nightly-2026-07-03 cargo fuzz run --dev inspect_receipt "$corpus_directory" -- \
   -runs=10000 -seed=2118243591
 '''
 

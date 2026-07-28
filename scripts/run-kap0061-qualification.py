@@ -143,7 +143,7 @@ def tools(security: dict[str, Any]) -> list[dict[str, Any]]:
         {"id": "kind", "environment_id": "host", "version": kind},
         {"id": "kubectl", "environment_id": "host", "version": kubectl},
         {"id": "cargo-fuzz", "environment_id": "host", "version": version(["cargo", "fuzz", "--version"], ROOT / "fuzz")},
-        {"id": "nightly-rust", "environment_id": "host", "version": rust_commit(["rustup", "run", "nightly", "rustc", "-Vv"])},
+        {"id": "nightly-rust", "environment_id": "host", "version": rust_commit(["rustup", "run", "nightly-2026-07-03", "rustc", "-Vv"])},
         {"id": "cargo-audit", "environment_id": "host", "version": audit_tool["version"].removeprefix("cargo-audit "), "database_utc": audit_tool["database_utc"]},
         {"id": "trivy", "environment_id": "host", "version": f"{trivy_tool['version']} database version {trivy_tool['database_version']}", "database_utc": trivy_tool["database_utc"]},
         {"id": "rust-container", "environment_id": "container", "version": "rustc and cargo 1.96.1"},
