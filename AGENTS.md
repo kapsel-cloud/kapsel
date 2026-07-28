@@ -11,10 +11,11 @@ Read this file first. It routes work; current technical truth lives in the linke
    [self-serve hardening packet](tasks/KAP-0049.md), completed
    [v0.2.0 direction decision](tasks/KAP-0046.md), adopted [v0.2.0 release design](docs/V0.2.md),
    completed release-source locality packet [KAP-0064](tasks/KAP-0064.md), and accepted finite
-   qualification packet [KAP-0061](tasks/KAP-0061.md). Distribution packet
-   [KAP-0062](tasks/KAP-0062.md) is active. The [evaluator evidence packet](tasks/KAP-0047.md) is
-   post-release. The [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md)
-   remain paused.
+   qualification packet [KAP-0061](tasks/KAP-0061.md), and completed distribution packet
+   [KAP-0062](tasks/KAP-0062.md). Release acceptance packet [KAP-0063](tasks/KAP-0063.md) is active
+   for rehearsal; publication still requires explicit approval. The
+   [evaluator evidence packet](tasks/KAP-0047.md) is post-release. The
+   [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md) remain paused.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -24,9 +25,10 @@ Read this file first. It routes work; current technical truth lives in the linke
 
 ## Current route
 
-Kapsel is building one finite v0.2.0 Kubernetes effect-gateway developer beta around the sole
-`kubernetes.set_deployment_image` capability. The release owner is [`docs/V0.2.md`](docs/V0.2.md);
-lifecycle, receiver-result, and receipt semantics remain owned by
+Kapsel has produced one finite v0.2.0 Kubernetes effect-gateway developer-beta candidate around the
+sole `kubernetes.set_deployment_image` capability. KAP-0063 now owns independent acceptance and
+rehearsal, while publication remains separately gated. The release owner is
+[`docs/V0.2.md`](docs/V0.2.md); lifecycle, receiver-result, and receipt semantics remain owned by
 [`docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md`](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 Use [`docs/INDEX.md`](docs/INDEX.md) for every other owner rather than recreating its routing here.
 
