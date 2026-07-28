@@ -22,7 +22,7 @@ use super::{schema, GatewayError};
 const SQLITE_HEADER_BYTES: usize = 100;
 const SQLITE_USER_VERSION_OFFSET: usize = 60;
 const JOURNAL_BYTES_MAX: u64 = 64 * 1024 * 1024;
-const ROLLBACK_JOURNAL_BYTES_MAX: u64 = 65 * 1024 * 1024;
+pub(super) const ROLLBACK_JOURNAL_BYTES_MAX: u64 = 65 * 1024 * 1024;
 const BACKUP_SUFFIX: &str = ".kapsel-v011.backup";
 const BACKUP_DIGEST_SUFFIX: &str = ".sha256";
 

@@ -184,7 +184,7 @@ def deployment_response(
 
 
 class FixtureServer:
-    def __init__(self, responses: list[bytes]) -> None:
+    def __init__(self, responses: list[bytes | tuple[int, bytes]]) -> None:
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
@@ -197,7 +197,8 @@ class FixtureServer:
 
     def _serve(self) -> None:
         try:
-            for body in self.responses:
+            for response in self.responses:
+                status, body = response if isinstance(response, tuple) else (200, response)
                 connection, _ = self.listener.accept()
                 with connection:
                     data = b""
@@ -207,8 +208,9 @@ class FixtureServer:
                             break
                         data += chunk
                     self.methods.append(data.split(b" ", 1)[0].decode("ascii"))
+                    reason = "OK" if status == 200 else "Not Found"
                     header = (
-                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n"
+                        f"HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\n".encode()
                         + f"content-length: {len(body)}\r\nconnection: close\r\n\r\n".encode()
                     )
                     connection.sendall(header + body)
@@ -225,8 +227,12 @@ class FixtureServer:
             raise self.error
 
 
-def sample_child(command: list[str], stdin_bytes: bytes = b"") -> dict[str, int]:
-    payload = json.dumps({"command": command, "stdin_hex": stdin_bytes.hex()})
+def sample_child(
+    command: list[str], stdin_bytes: bytes = b"", expected_result: str | None = None
+) -> dict[str, int]:
+    payload = json.dumps(
+        {"command": command, "stdin_hex": stdin_bytes.hex(), "expected_result": expected_result}
+    )
     completed = run(
         [sys.executable, __file__, "--sample", payload],
         stdout=subprocess.PIPE,
@@ -247,6 +253,10 @@ def one_sample(payload: str) -> None:
     completed = subprocess.run(command, input=stdin_bytes, capture_output=True, check=False)
     elapsed = (time.monotonic_ns() - started) // 1000
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    if request["expected_result"] is not None:
+        machine_output = json.loads(completed.stdout)
+        if machine_output.get("result") != request["expected_result"]:
+            raise RuntimeError("measured command returned an unexpected receiver result")
     cpu_us = int(
         ((after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)) * 1_000_000
     )
@@ -319,16 +329,23 @@ def inspect_elf(path: Path) -> str:
 def measure(repo: Path, output: Path) -> None:
     target = Path("/tmp/kap0061-target")
     environment = {**os.environ, "CARGO_TARGET_DIR": str(target)}
-    run(["cargo", "build", "--release", "--locked", "-p", "kapsel"], cwd=repo, env=environment)
+    build = [
+        "cargo",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-p",
+        "kapsel",
+    ]
+    run(build, cwd=repo, env=environment)
+    target_binary = target / "x86_64-unknown-linux-gnu/release/kapsel"
     ordinary = Path("/tmp/kap0061-kapsel")
-    shutil.copy2(target / "release/kapsel", ordinary)
-    run(
-        ["cargo", "build", "--release", "--locked", "-p", "kapsel", "--features", "demo-harness"],
-        cwd=repo,
-        env=environment,
-    )
+    shutil.copy2(target_binary, ordinary)
+    run([*build, "--features", "demo-harness"], cwd=repo, env=environment)
     demonstration = Path("/tmp/kap0061-kapsel-demo")
-    shutil.copy2(target / "release/kapsel", demonstration)
+    shutil.copy2(target_binary, demonstration)
 
     measurements: dict[str, list[dict[str, int]]] = {}
     with tempfile.TemporaryDirectory(prefix="kap0061-measure-") as temporary:
@@ -489,6 +506,72 @@ def measure(repo: Path, output: Path) -> None:
             if index >= WARMUPS:
                 record(measurements, "complete_recovery", result, 0)
 
+        unknown_request = ordinary_request()
+        unknown_setup = FixtureServer(
+            [
+                deployment_response(unknown_request, "1", False),
+                deployment_response(unknown_request, "2", True),
+            ]
+        )
+        unknown_root = root / "bounded-unknown"
+        unknown_request_path, unknown_operator_path = operator_fixture(
+            ordinary, unknown_root, unknown_setup.address, unknown_request
+        )
+        unknown_marker = unknown_root / "after-apply.ready"
+        unknown_child = subprocess.Popen(
+            [
+                str(demonstration),
+                "operate",
+                "--request",
+                str(unknown_request_path),
+                "--operator-config",
+                str(unknown_operator_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={
+                **os.environ,
+                "KAPSEL_DEMO_CONTROL_DIRECTORY": str(unknown_root),
+                "KAPSEL_DEMO_PAUSE": "after_apply",
+            },
+        )
+        deadline = time.monotonic() + 10
+        while (
+            not unknown_marker.exists()
+            and unknown_child.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        if not unknown_marker.exists():
+            unknown_child.kill()
+            unknown_child.wait()
+            raise RuntimeError("bounded unknown setup did not reach after_apply")
+        unknown_child.kill()
+        unknown_child.wait()
+        unknown_setup.finish()
+        if unknown_setup.methods.count("PATCH") != 1:
+            raise RuntimeError("bounded unknown setup did not perform exactly one patch")
+        not_found = b'{"kind":"Status","status":"Failure","reason":"NotFound","code":404}'
+        unknown_observation = FixtureServer([(404, not_found)] * 30)
+        write_kubeconfig(unknown_root / "kubeconfig.yaml", unknown_observation.address)
+        bounded_unknown = sample_child(
+            [
+                str(ordinary),
+                "operate",
+                "--request",
+                str(unknown_request_path),
+                "--operator-config",
+                str(unknown_operator_path),
+            ],
+            expected_result="UNKNOWN",
+        )
+        unknown_observation.finish()
+        if unknown_observation.methods != ["GET"] * 30:
+            raise RuntimeError("bounded unknown did not exhaust exactly 30 observation reads")
+        if bounded_unknown["returncode"] != 0:
+            raise RuntimeError("bounded unknown command failed")
+
     internal = run_internal_measurements(repo)
     growth = run_internal_test(
         repo,
@@ -500,6 +583,7 @@ def measure(repo: Path, output: Path) -> None:
         "warmups": WARMUPS,
         "samples": SAMPLES,
         "process_measurements": measurements,
+        "bounded_unknown_observation": bounded_unknown,
         "internal_wall_us": internal,
         "growth": growth,
         "wire_sizes": {
@@ -509,6 +593,7 @@ def measure(repo: Path, output: Path) -> None:
             "canonical_trust_bytes": len(bytes.fromhex((repo / "vectors/kap0038-trust.hex").read_text().strip())),
         },
         "binary": {
+            "build_target": "x86_64-unknown-linux-gnu",
             "ordinary_sha256": hashlib.sha256(ordinary.read_bytes()).hexdigest(),
             "ordinary_bytes": ordinary.stat().st_size,
             "ordinary_elf": inspect_elf(ordinary),

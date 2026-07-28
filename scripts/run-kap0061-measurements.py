@@ -78,11 +78,34 @@ def aggregate(raw: dict[str, Any]) -> dict[str, Any]:
             "stderr_max_bytes": max(sample["stderr_bytes"] for sample in samples),
         }
     for name, samples in internal.items():
-        require(len(samples) == SAMPLES and all(isinstance(value, int) for value in samples), f"{name} samples changed")
+        require(
+            len(samples) == SAMPLES and all(isinstance(value, int) for value in samples),
+            f"{name} samples changed",
+        )
         measurements[name] = {
             "wall_p95_us": nearest_rank_p95(samples),
             "wall_max_us": max(samples),
         }
+    bounded_unknown = raw["bounded_unknown_observation"]
+    require(
+        set(bounded_unknown)
+        == {
+            "wall_us",
+            "cpu_us",
+            "rss_bytes",
+            "returncode",
+            "stdout_bytes",
+            "stderr_bytes",
+        },
+        "bounded unknown sample shape changed",
+    )
+    measurements["bounded_unknown_observation"] = {
+        "wall_max_us": bounded_unknown["wall_us"],
+        "cpu_max_us": bounded_unknown["cpu_us"],
+        "rss_max_bytes": bounded_unknown["rss_bytes"],
+        "stdout_max_bytes": bounded_unknown["stdout_bytes"],
+        "stderr_max_bytes": bounded_unknown["stderr_bytes"],
+    }
 
     require(measurements["process_startup"]["wall_max_us"] <= 500_000, "startup budget failed")
     for name in ("grant_provision", "journal_marked_open", "offline_inspection"):
@@ -97,10 +120,22 @@ def aggregate(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         require(measurements[name]["wall_p95_us"] <= 1_000_000, f"{name} wall budget failed")
     require(measurements["receipt_finalize"]["wall_p95_us"] <= 500_000, "receipt budget failed")
-    for name, values in process.items():
+    require(
+        measurements["bounded_unknown_observation"]["wall_max_us"] <= 35_000_000,
+        "bounded unknown wall budget failed",
+    )
+    for name in process:
         cpu_limit = 2_000_000 if name in {"complete_success", "complete_recovery"} else 1_000_000
         require(measurements[name]["cpu_p95_us"] <= cpu_limit, f"{name} CPU budget failed")
         require(measurements[name]["rss_max_bytes"] <= 128 * 1024 * 1024, f"{name} RSS budget failed")
+    require(
+        measurements["bounded_unknown_observation"]["rss_max_bytes"] <= 128 * 1024 * 1024,
+        "bounded unknown RSS budget failed",
+    )
+    require(
+        raw["binary"]["build_target"] == "x86_64-unknown-linux-gnu",
+        "explicit build target changed",
+    )
     require(raw["binary"]["ordinary_bytes"] <= 32 * 1024 * 1024, "ordinary size budget failed")
     require(raw["binary"]["demo_bytes"] <= 32 * 1024 * 1024, "demo size budget failed")
     growth = raw["growth"]
@@ -108,6 +143,15 @@ def aggregate(raw: dict[str, Any]) -> dict[str, Any]:
     require(growth["final_bytes"] <= 64 * 1024 * 1024, "journal size budget failed")
     require(growth["average_growth_bytes"] <= 8 * 1024, "journal growth budget failed")
     require(growth["maximal_receipt_bytes"] <= 16 * 1024, "maximal receipt budget failed")
+    require(growth["persisted_value_bytes_max"] == 16 * 1024, "persisted value limit changed")
+    require(
+        growth["sqlite_value_or_row_bytes_max"] == 64 * 1024,
+        "SQLite value-or-row limit changed",
+    )
+    require(
+        growth["rollback_journal_bytes_max"] == 65 * 1024 * 1024,
+        "rollback journal limit changed",
+    )
 
     return {
         "schema_version": 1,

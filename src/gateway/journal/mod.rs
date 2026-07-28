@@ -23,6 +23,16 @@ use super::{
 };
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
+
+#[cfg(test)]
+pub(crate) fn qualification_storage_limits() -> (usize, i32, u64) {
+    (
+        schema::PERSISTED_VALUE_BYTES_MAX,
+        schema::PERSISTED_ROW_BYTES_MAX,
+        opening::ROLLBACK_JOURNAL_BYTES_MAX,
+    )
+}
+
 pub(crate) struct Journal {
     pub(crate) connection: Connection,
     worker_lock: File,

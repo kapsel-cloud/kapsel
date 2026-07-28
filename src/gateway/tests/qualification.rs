@@ -162,6 +162,8 @@
         )
         .unwrap()
         .len();
+        let (persisted_value_bytes_max, sqlite_value_or_row_bytes_max, rollback_bytes_max) =
+            journal::qualification_storage_limits();
         println!(
             "KAP0061_GROWTH={}",
             json!({
@@ -170,7 +172,10 @@
                 "page_bytes": page_count * page_size,
                 "average_growth_bytes": (final_bytes - empty_bytes) / 10_000,
                 "operations": 10_000,
-                "maximal_receipt_bytes": receipt_bytes
+                "maximal_receipt_bytes": receipt_bytes,
+                "persisted_value_bytes_max": persisted_value_bytes_max,
+                "sqlite_value_or_row_bytes_max": sqlite_value_or_row_bytes_max,
+                "rollback_journal_bytes_max": rollback_bytes_max
             })
         );
         drop(gateway);

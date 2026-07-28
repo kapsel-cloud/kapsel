@@ -10,7 +10,7 @@ use crate::gateway::receipt::RECEIPT_BYTES_MAX;
 
 pub(super) const JOURNAL_FORMAT_VERSION: u32 = 2;
 
-const PERSISTED_VALUE_BYTES_MAX: usize = 16 * 1024;
+pub(super) const PERSISTED_VALUE_BYTES_MAX: usize = 16 * 1024;
 pub(super) const PERSISTED_ROW_BYTES_MAX: i32 = 64 * 1024;
 
 const _: () = assert!(RECEIPT_BYTES_MAX <= PERSISTED_VALUE_BYTES_MAX);
