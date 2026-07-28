@@ -12,6 +12,14 @@ phase() {
   printf '[kind %s/7] %s\n' "$1" "$2"
 }
 
+monotonic_ns() {
+  python3 -c 'import time; print(time.monotonic_ns())'
+}
+
+elapsed_ms() {
+  python3 -c "print((${2} - ${1}) // 1000000)"
+}
+
 cleanup() {
   status=$?
   trap - EXIT INT TERM
@@ -25,12 +33,15 @@ cleanup() {
   fi
   if [[ $cluster_owned -eq 1 ]]; then
     phase 7 "deleting owned cluster $cluster_name"
+    cleanup_started=$(monotonic_ns)
     if ! kind delete cluster --name "$cluster_name"; then
       printf 'could not delete owned kind cluster: %s\n' "$cluster_name" >&2
       if [[ $status -eq 0 ]]; then
         status=1
       fi
     fi
+    cleanup_finished=$(monotonic_ns)
+    printf '[kind timing] cleanup_ms=%s\n' "$(elapsed_ms "$cleanup_started" "$cleanup_finished")"
   fi
   exit "$status"
 }
@@ -63,10 +74,13 @@ phase 1 "precompiling Kapsel tests"
 cargo test --locked -p kapsel --no-run
 phase 2 "creating disposable cluster $cluster_name"
 cluster_owned=1
+cluster_started=$(monotonic_ns)
 kind create cluster \
   --name "$cluster_name" \
   --image "$node_image" \
   --wait 120s
+cluster_finished=$(monotonic_ns)
+printf '[kind timing] cluster_create_ms=%s\n' "$(elapsed_ms "$cluster_started" "$cluster_finished")"
 
 phase 3 "loading two pinned fixture images"
 printf '[kind] loading %s\n' "$fixture_image"
@@ -75,6 +89,7 @@ printf '[kind] loading %s\n' "$target_image"
 docker exec "${cluster_name}-control-plane" crictl pull "$target_image"
 
 phase 4 "running healthy rollout proof"
+scenario_started=$(monotonic_ns)
 KAPSEL_KIND_TEST=1 cargo test --locked \
   -p kapsel \
   kind_tests::kind_changes_exactly_one_container_through_the_gateway \
@@ -82,8 +97,11 @@ KAPSEL_KIND_TEST=1 cargo test --locked \
   --ignored \
   --exact \
   --nocapture
+scenario_finished=$(monotonic_ns)
+printf '[kind timing] healthy_ms=%s\n' "$(elapsed_ms "$scenario_started" "$scenario_finished")"
 
 phase 5 "running failed-rollout and receipt-inspection proof"
+scenario_started=$(monotonic_ns)
 KAPSEL_KIND_TEST=1 cargo test --locked \
   -p kapsel \
   kind_tests::kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt \
@@ -91,8 +109,11 @@ KAPSEL_KIND_TEST=1 cargo test --locked \
   --ignored \
   --exact \
   --nocapture
+scenario_finished=$(monotonic_ns)
+printf '[kind timing] failed_ms=%s\n' "$(elapsed_ms "$scenario_started" "$scenario_finished")"
 
 phase 6 "running deleted-after-patch bounded-unknown proof"
+scenario_started=$(monotonic_ns)
 KAPSEL_KIND_TEST=1 cargo test --locked \
   -p kapsel \
   kind_tests::kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receipt \
@@ -100,3 +121,5 @@ KAPSEL_KIND_TEST=1 cargo test --locked \
   --ignored \
   --exact \
   --nocapture
+scenario_finished=$(monotonic_ns)
+printf '[kind timing] unknown_ms=%s\n' "$(elapsed_ms "$scenario_started" "$scenario_finished")"
