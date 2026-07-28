@@ -163,7 +163,7 @@ def main() -> None:
             "bash",
             "-lc",
             "mkdir -p /tmp/cargo && ln -s /cargo-registry /tmp/cargo/registry && "
-            "CARGO_HOME=/tmp/cargo CARGO_NET_OFFLINE=true "
+            "PATH=/usr/local/cargo/bin:$PATH CARGO_HOME=/tmp/cargo CARGO_NET_OFFLINE=true "
             "python3 scripts/qualify-kap0061.py --output /output/raw.json",
         ]
         subprocess.run(command, check=True)
