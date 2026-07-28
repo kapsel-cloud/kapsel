@@ -239,13 +239,27 @@ receipt location after every case. It uses no live cluster and is separate from 
 
 ## Qualification baseline
 
-The completed KAP-0061 baseline is validated without reading raw journals, provider bodies, receipt
-bytes, or key material:
+The active KAP-0061 replacement baseline is validated without reading raw journals, provider bodies,
+receipt bytes, or key material:
 
 ```sh
 python3 scripts/validate-kap0061-baseline.py qualification/kap0061-baseline.json
 python3 scripts/test-validate-kap0061-baseline.py
+cargo make test-kap0061-privacy
 ```
+
+After every correction and qualification input is committed, rerun all finite lanes and replace the
+tracked baseline through the closed orchestrator:
+
+```sh
+cargo make qualify-kap0061
+```
+
+This command requires a clean tree, Docker, kind, kubectl, cargo-fuzz/nightly, cargo-audit 0.22.2,
+Trivy 0.72.0 with current databases, the pinned builder image, and the host Cargo registry. It runs
+the default/hostile, simulation, fuzz, historical subprocess, deterministic demo, live-kind,
+measurement, security, and privacy lanes. It writes only the closed aggregate manifest after every
+lane passes.
 
 The pinned x86-64 measurement harness requires a clean tree, Docker, the already pulled builder
 image, and the host Cargo registry. It builds and runs inside the fixed 8-CPU, 8-GiB virtualized

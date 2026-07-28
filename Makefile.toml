@@ -131,6 +131,25 @@ rustup run nightly cargo fuzz run --dev inspect_receipt "$corpus_directory" -- \
   -runs=10000 -seed=2118243591
 '''
 
+[tasks.test-kap0061-privacy]
+description = "Run the closed KAP-0061 privacy and overclaim review"
+command = "python3"
+args = ["scripts/test-check-kap0061-privacy.py"]
+
+[tasks.test-kap0061-security]
+description = "Run fresh KAP-0061 dependency and exact-tree secret scans"
+command = "python3"
+args = ["scripts/run-kap0061-security.py", "--output", "/tmp/kap0061-security.json"]
+
+[tasks.qualify-kap0061]
+description = "Rerun every KAP-0061 lane and freeze the replacement baseline"
+command = "python3"
+args = [
+  "scripts/run-kap0061-qualification.py",
+  "--output",
+  "qualification/kap0061-baseline.json",
+]
+
 [tasks.fmt]
 clear = true
 description = "Format Rust and Markdown sources"
