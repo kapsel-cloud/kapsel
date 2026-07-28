@@ -164,6 +164,7 @@ def main() -> None:
             "-lc",
             "mkdir -p /tmp/cargo && ln -s /cargo-registry /tmp/cargo/registry && "
             "PATH=/usr/local/cargo/bin:$PATH CARGO_HOME=/tmp/cargo CARGO_NET_OFFLINE=true "
+            "RUSTUP_TOOLCHAIN=1.96.1-x86_64-unknown-linux-gnu "
             "python3 scripts/qualify-kap0061.py --output /output/raw.json",
         ]
         subprocess.run(command, check=True)
