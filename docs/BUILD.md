@@ -239,8 +239,8 @@ receipt location after every case. It uses no live cluster and is separate from 
 
 ## Qualification baseline
 
-The active KAP-0061 replacement baseline is validated without reading raw journals, provider bodies,
-receipt bytes, or key material:
+The accepted KAP-0061 native-Linux baseline is validated without reading raw journals, provider
+bodies, receipt bytes, or key material:
 
 ```sh
 python3 scripts/validate-kap0061-baseline.py qualification/kap0061-baseline.json
@@ -262,7 +262,7 @@ measurement, security, and privacy lanes. It writes only the closed aggregate ma
 lane passes.
 
 The pinned x86-64 measurement harness requires a clean tree, Docker, the already pulled builder
-image, and the host Cargo registry. It builds and runs inside the fixed 8-CPU, 8-GiB virtualized
+image, and the host Cargo registry. It builds and runs inside the fixed 8-CPU, 8-GiB isolated
 container and writes bounded aggregates to a caller-selected temporary path:
 
 ```sh

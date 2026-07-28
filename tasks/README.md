@@ -38,8 +38,8 @@ implementation.
 |     2 | [KAP-0059](KAP-0059.md) | Complete     | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
 |     3 | [KAP-0060](KAP-0060.md) | Complete     | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
 |     4 | [KAP-0064](KAP-0064.md) | Complete     | Stable, navigable private implementation locality across the root release source                     |
-|     5 | [KAP-0061](KAP-0061.md) | Active       | Correct blockers found by final qualification review                                                 |
-|     6 | [KAP-0062](KAP-0062.md) | Queued       | Authenticated, reproducible, documented beta distribution candidate                                  |
+|     5 | [KAP-0061](KAP-0061.md) | Complete     | Accepted finite reliability, hostile-input, security, and performance qualification                  |
+|     6 | [KAP-0062](KAP-0062.md) | Active       | Authenticated, reproducible, documented beta distribution candidate                                  |
 |     7 | [KAP-0063](KAP-0063.md) | Queued       | Independent acceptance, publication, downloaded verification, and website handoff                    |
 |     8 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
 
