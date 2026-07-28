@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 from typing import Any
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -102,6 +104,44 @@ EXPECTED_PRIVACY_COMMAND = [
     "--output",
     "BOUNDED_OUTPUT",
 ]
+EXPECTED_LANE_SAMPLES = {
+    "default": 1,
+    "hostile-input": 1,
+    "simulation": 10000,
+    "fuzz": 10000,
+    "subprocess": 9,
+    "demo": 1,
+    "live-kind": 3,
+    "measurement": 391,
+    "cargo-audit": 1,
+    "trivy": 1,
+    "privacy": 1,
+}
+EXPECTED_TOOL_VERSIONS = {
+    "rust-host": "rustc 1.96.1 commit 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
+    "cargo-host": "cargo 1.96.1 (356927216 2026-06-26)",
+    "python-host": "3.14.6",
+    "docker": "client 28.4.0 server 29.4.0",
+    "kind": "0.32.0",
+    "kubectl": "1.33.9",
+    "cargo-fuzz": "cargo-fuzz 0.13.1",
+    "nightly-rust": "rustc 1.98.0-nightly commit c397dae808f70caebab1fc4e11b3edf7e59f58c7",
+    "cargo-audit": "0.22.2",
+    "trivy": "0.72.0 database version 2",
+    "rust-container": "rustc and cargo 1.96.1",
+    "python-container": "Python 3.11.2",
+    "builder-image": "rust image digest a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663",
+}
+PRIVACY_ROOT_FILES = {
+    "Cargo.lock",
+    "Cargo.toml",
+    "Makefile.toml",
+    "README.md",
+    "SECURITY.md",
+    "rust-toolchain.toml",
+    "tasks/KAP-0061.md",
+}
+PRIVACY_ROOT_PREFIXES = ("docs/", "scripts/", "src/", "tests/", "vectors/")
 
 
 def fail(message: str) -> None:
@@ -138,6 +178,44 @@ def unique(items: list[dict[str, Any]], context: str) -> set[str]:
     if len(identifiers) != len(set(identifiers)):
         fail(f"{context} contains duplicate ids")
     return set(identifiers)
+
+
+def git_output(*arguments: str) -> bytes:
+    try:
+        return subprocess.check_output(["git", *arguments], cwd=Path(__file__).resolve().parent.parent)
+    except subprocess.CalledProcessError as error:
+        fail(f"baseline Git identity is unavailable: {error}")
+
+
+def canonical_git_digest(commit: str, paths: list[str]) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        contents = git_output("show", f"{commit}:{path}")
+        digest.update(path.encode())
+        digest.update(b"\0")
+        digest.update(contents)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def baseline_source_paths(commit: str) -> list[str]:
+    paths = git_output("ls-tree", "-r", "--name-only", commit).decode().splitlines()
+    return [
+        path
+        for path in paths
+        if path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Makefile.toml"}
+        or path.startswith("src/")
+        or path.startswith("vectors/")
+    ]
+
+
+def privacy_source_paths(commit: str) -> list[str]:
+    paths = git_output("ls-tree", "-r", "--name-only", commit).decode().splitlines()
+    return [
+        path
+        for path in paths
+        if path in PRIVACY_ROOT_FILES or path.startswith(PRIVACY_ROOT_PREFIXES)
+    ]
 
 
 def validate(path: Path) -> None:
@@ -191,6 +269,15 @@ def validate(path: Path) -> None:
     integer(baseline["demo_executable_bytes"], "baseline.demo_executable_bytes")
     if baseline["qualification_baseline_only"] is not True:
         fail("baseline must remain qualification-only")
+    commit = baseline["commit"]
+    tree = git_output("rev-parse", f"{commit}^{{tree}}").decode().strip()
+    if tree != baseline["tree"]:
+        fail("baseline tree does not match its commit")
+    source_paths = baseline_source_paths(commit)
+    if len(source_paths) != baseline["source_path_count"]:
+        fail("baseline source path count does not match Git")
+    if canonical_git_digest(commit, source_paths) != baseline["source_sha256"]:
+        fail("baseline source digest does not match Git")
 
     environments = document["environments"]
     if not isinstance(environments, list) or not environments:
@@ -221,17 +308,30 @@ def validate(path: Path) -> None:
     tools = document["tools"]
     if not isinstance(tools, list) or not tools:
         fail("tools must be nonempty")
-    unique(tools, "tools")
+    tool_ids = unique(tools, "tools")
+    if tool_ids != set(EXPECTED_TOOL_VERSIONS):
+        fail("tool set differs from the frozen qualification identities")
     for tool in tools:
         fields = {"id", "version", "environment_id"}
         if "database_utc" in tool:
             fields.add("database_utc")
         exact(tool, fields, f"tool.{tool['id']}")
         text(tool["version"], "tool.version")
+        if tool["version"] != EXPECTED_TOOL_VERSIONS[tool["id"]]:
+            fail(f"tool.{tool['id']} differs from the frozen identity")
         if tool["environment_id"] not in environment_ids:
             fail("tool references an unknown environment")
+        requires_database = tool["id"] in {"cargo-audit", "trivy"}
+        if ("database_utc" in tool) != requires_database:
+            fail("scanner database timestamp presence is invalid")
         if "database_utc" in tool:
-            text(tool["database_utc"], "tool.database_utc")
+            timestamp = text(tool["database_utc"], "tool.database_utc")
+            if not timestamp.endswith("Z"):
+                fail("scanner database timestamp is not UTC")
+            try:
+                datetime.fromisoformat(timestamp.removesuffix("Z") + "+00:00")
+            except ValueError:
+                fail("scanner database timestamp is invalid")
 
     budgets = document["budgets"]
     lanes = document["lanes"]
@@ -348,8 +448,11 @@ def validate(path: Path) -> None:
                 fail("budget result sample count differs from its requirement")
             if result["failure_count"] > budget["failure_ceiling"]:
                 fail("budget result exceeded its failure ceiling")
-        elif result["failure_count"] != 0:
-            fail("lane result exceeded its failure ceiling")
+        else:
+            if result["sample_count"] != EXPECTED_LANE_SAMPLES[result["subject_id"]]:
+                fail("lane result sample count differs from the frozen contract")
+            if result["failure_count"] != 0:
+                fail("lane result exceeded its failure ceiling")
         if not isinstance(result["bounded_output_sha256"], str) or HEX64.fullmatch(result["bounded_output_sha256"]) is None:
             fail("result output is not lowercase SHA-256")
         if not isinstance(result["measurements"], list) or not isinstance(result["assertions"], list):
@@ -423,6 +526,9 @@ def validate(path: Path) -> None:
         fail("privacy result command differs from the closed review command")
     if not privacy_result["input_sha256"]:
         fail("privacy result lacks input identity")
+    privacy_digest = canonical_git_digest(commit, privacy_source_paths(commit))
+    if privacy_result["input_sha256"].get("checked-source") != privacy_digest:
+        fail("privacy reviewed-source digest does not match Git")
     required_assertions = {
         ("budget", "bounded-unknown-wall"): {
             "deterministic-404-fixture",
@@ -486,6 +592,10 @@ def validate(path: Path) -> None:
     source_digest = baseline["source_sha256"]
     if measurement_result["input_sha256"].get("source") != source_digest:
         fail("measurement source input differs from the baseline")
+    if measurement_result["input_sha256"].get("ordinary-executable") != baseline["ordinary_executable_sha256"]:
+        fail("ordinary executable digest is disconnected from measurement evidence")
+    if measurement_result["input_sha256"].get("demo-executable") != baseline["demo_executable_sha256"]:
+        fail("demonstration executable digest is disconnected from measurement evidence")
     if result_by_subject[("budget", "ordinary-executable-size")]["measurements"][0]["value"] != baseline["ordinary_executable_bytes"]:
         fail("ordinary executable size differs from the baseline")
     if result_by_subject[("budget", "demo-executable-size")]["measurements"][0]["value"] != baseline["demo_executable_bytes"]:
@@ -507,6 +617,22 @@ def validate(path: Path) -> None:
         fail("live harness input is absent or conflated with bounded output")
     if live_result["input_sha256"].get("source") != source_digest:
         fail("live source input differs from the baseline")
+
+    audit_result = result_by_subject[("lane", "cargo-audit")]
+    trivy_result = result_by_subject[("lane", "trivy")]
+    security_budget = result_by_subject[("budget", "security-findings")]
+    for result in (trivy_result, security_budget):
+        for field in ("command", "environment_id", "input_sha256", "bounded_output_sha256"):
+            if result[field] != audit_result[field]:
+                fail("security evidence is disconnected from its producer")
+    security_inputs = audit_result["input_sha256"]
+    if set(security_inputs) != {"cargo-lock", "rustsec-database", "source", "trivy-database"}:
+        fail("security evidence input set is incomplete")
+    if security_inputs["source"] != source_digest:
+        fail("security source input differs from the baseline")
+    cargo_lock = git_output("show", f"{commit}:Cargo.lock")
+    if security_inputs["cargo-lock"] != hashlib.sha256(cargo_lock).hexdigest():
+        fail("security Cargo.lock input differs from Git")
 
     security = document["security"]
     exact(security, {"findings", "exceptions", "reviews"}, "security")

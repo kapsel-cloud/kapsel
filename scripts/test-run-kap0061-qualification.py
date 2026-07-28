@@ -31,6 +31,14 @@ class QualificationOrchestratorTests(unittest.TestCase):
                 hashlib.sha256(b"bounded").hexdigest(),
             )
 
+    def test_kind_version_selects_semver_not_platform(self) -> None:
+        self.assertEqual(
+            ORCHESTRATOR["parse_kind_version"]("kind v0.32.0 go1.26.3 darwin/arm64"),
+            "0.32.0",
+        )
+        with self.assertRaises(RuntimeError):
+            ORCHESTRATOR["parse_kind_version"]("darwin/arm64")
+
     def test_live_timings_are_closed_and_complete(self) -> None:
         output = b"\n".join(
             [

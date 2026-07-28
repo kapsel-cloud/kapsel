@@ -42,6 +42,8 @@ class BaselineValidatorTests(unittest.TestCase):
         }
         measurement_lane = copy.deepcopy(result_by_subject[("lane", "measurement")])
         measurement_lane["input_sha256"]["source"] = document["baseline"]["source_sha256"]
+        measurement_lane["input_sha256"]["ordinary-executable"] = document["baseline"]["ordinary_executable_sha256"]
+        measurement_lane["input_sha256"]["demo-executable"] = document["baseline"]["demo_executable_sha256"]
         measurement_lane["assertions"] = [
             {"id": "all-budgets", "passed": True, "detail": "all budgets passed"},
             {
@@ -147,7 +149,13 @@ class BaselineValidatorTests(unittest.TestCase):
                 result[field] = copy.deepcopy(live[field])
         privacy = result_by_subject[("lane", "privacy")]
         privacy["command"] = copy.deepcopy(MODULE.EXPECTED_PRIVACY_COMMAND)
-        privacy["input_sha256"] = {"privacy-check": "2" * 64}
+        privacy["input_sha256"] = {
+            "checked-source": MODULE.canonical_git_digest(
+                document["baseline"]["commit"],
+                MODULE.privacy_source_paths(document["baseline"]["commit"]),
+            ),
+            "privacy-check": "2" * 64,
+        }
         privacy["assertions"] = [
             {"id": "no-private-material", "passed": True, "detail": "no private paths"},
             {"id": "no-credentials", "passed": True, "detail": "no credentials"},
@@ -157,12 +165,37 @@ class BaselineValidatorTests(unittest.TestCase):
         for result in result_by_subject.values():
             if result["kind"] == "lane":
                 result["measurements"] = []
+                result["sample_count"] = MODULE.EXPECTED_LANE_SAMPLES[result["subject_id"]]
                 if not result["assertions"]:
                     result["assertions"] = [
                         {"id": "passed", "passed": True, "detail": "lane passed"}
                     ]
+        audit = result_by_subject[("lane", "cargo-audit")]
+        audit["input_sha256"] = {
+            "cargo-lock": __import__("hashlib").sha256(
+                MODULE.git_output("show", f"{document['baseline']['commit']}:Cargo.lock")
+            ).hexdigest(),
+            "rustsec-database": "3" * 64,
+            "source": document["baseline"]["source_sha256"],
+            "trivy-database": "4" * 64,
+        }
+        for key in (("lane", "trivy"), ("budget", "security-findings")):
+            result = result_by_subject[key]
+            for field in (
+                "command", "environment_id", "input_sha256", "duration_ms",
+                "bounded_output_sha256",
+            ):
+                result[field] = copy.deepcopy(audit[field])
+        for tool in document["tools"]:
+            tool["version"] = MODULE.EXPECTED_TOOL_VERSIONS[tool["id"]]
+            if tool["id"] in {"cargo-audit", "trivy"}:
+                tool["database_utc"] = "2026-07-28T00:00:00Z"
+            else:
+                tool.pop("database_utc", None)
         document["budgets"] = [budget_by_id[id_] for id_ in sorted(budget_by_id)]
         document["results"] = list(result_by_subject.values())
+        for result in document["results"]:
+            result["input_sha256"] = dict(sorted(result["input_sha256"].items()))
         for rule in document["invalidation_rules"]:
             rule["rerun_lanes"] = sorted(MODULE.EXPECTED_INVALIDATION[rule["id"]])
         return document
@@ -261,6 +294,25 @@ class BaselineValidatorTests(unittest.TestCase):
         incomplete = self.valid_document()
         incomplete["invalidation_rules"][1]["rerun_lanes"] = ["privacy"]
         cases.append(incomplete)
+        lane_count = self.valid_document()
+        next(result for result in lane_count["results"] if result["subject_id"] == "live-kind")[
+            "sample_count"
+        ] = 0
+        cases.append(lane_count)
+        tool_version = self.valid_document()
+        next(tool for tool in tool_version["tools"] if tool["id"] == "kind")["version"] = "not-a-version"
+        cases.append(tool_version)
+        baseline_tree = self.valid_document()
+        baseline_tree["baseline"]["tree"] = "0" * 40
+        cases.append(baseline_tree)
+        executable = self.valid_document()
+        executable["baseline"]["ordinary_executable_sha256"] = "0" * 64
+        cases.append(executable)
+        checked_source = self.valid_document()
+        next(result for result in checked_source["results"] if result["subject_id"] == "privacy")[
+            "input_sha256"
+        ]["checked-source"] = "0" * 64
+        cases.append(checked_source)
         for document in cases:
             with self.subTest():
                 self.assertNotEqual(self.run_document(document).returncode, 0)

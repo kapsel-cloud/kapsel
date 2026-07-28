@@ -121,9 +121,16 @@ def rust_commit(command: list[str]) -> str:
     return f"rustc {release} commit {commit}"
 
 
+def parse_kind_version(output: str) -> str:
+    match = re.fullmatch(r"kind v([0-9]+\.[0-9]+\.[0-9]+) .+", output)
+    if match is None:
+        raise RuntimeError("kind version output is not recognized")
+    return match.group(1)
+
+
 def tools(security: dict[str, Any]) -> list[dict[str, Any]]:
     docker = version(["docker", "version", "--format", "client {{.Client.Version}} server {{.Server.Version}}"])
-    kind = version(["kind", "version"]).split()[-1].removeprefix("v")
+    kind = parse_kind_version(version(["kind", "version"]))
     kubectl_document = json.loads(version(["kubectl", "version", "--client", "-o", "json"]))
     kubectl = kubectl_document["clientVersion"]["gitVersion"].removeprefix("v")
     audit_tool = security["cargo_audit_tool"]
@@ -265,6 +272,8 @@ def main() -> None:
 
     measurement_inputs = {
         **source_input,
+        "demo-executable": measured["binary"]["demo_sha256"],
+        "ordinary-executable": measured["binary"]["ordinary_sha256"],
         "measurement-harness": digest_paths(
             [
                 ROOT / "scripts/qualify-kap0061.py",
@@ -278,8 +287,10 @@ def main() -> None:
         "kind-harness": sha256_path(ROOT / "scripts/test-kind-effect-gateway.sh"),
         "node-image": sha256_bytes(NODE_IMAGE.encode()),
     }
+    privacy_document = json.loads(privacy["bounded_output"])
     privacy_inputs = {
         **source_input,
+        "checked-source": privacy_document["checked_source_sha256"],
         "privacy-check": digest_paths(
             [
                 ROOT / "scripts/check-kap0061-privacy.py",
@@ -290,6 +301,7 @@ def main() -> None:
     security_inputs = {
         **source_input,
         "cargo-lock": security["cargo_lock_sha256"],
+        "rustsec-database": security["cargo_audit_tool"]["database_sha256"],
         "trivy-database": security["trivy_tool"]["database_sha256"],
     }
     default_source = producer(default, "host", source_input)

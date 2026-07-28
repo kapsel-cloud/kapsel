@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
 import tarfile
@@ -33,6 +33,26 @@ def trivy_database() -> Path:
     raise RuntimeError("Trivy vulnerability database file is unavailable")
 
 
+def utc_timestamp(value: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+    age = datetime.now(timezone.utc) - parsed
+    if age.total_seconds() < 0 or age.total_seconds() > 24 * 60 * 60:
+        raise RuntimeError("scanner database is unavailable or older than 24 hours")
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
+def git_tree_sha256(repository: Path, commit: str) -> str:
+    paths = run(["git", "ls-tree", "-r", "--name-only", commit], repository).stdout.decode().splitlines()
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        contents = run(["git", "show", f"{commit}:{path}"], repository).stdout
+        digest.update(path.encode())
+        digest.update(b"\0")
+        digest.update(contents)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]]:
     completed = run(["cargo-audit", "audit", "--json"], root)
     document = json.loads(completed.stdout)
@@ -53,7 +73,8 @@ def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]
     tool = {
         "version": version,
         "database_commit": commit,
-        "database_utc": timestamp,
+        "database_sha256": git_tree_sha256(database, commit),
+        "database_utc": utc_timestamp(timestamp),
     }
     return result, tool
 
@@ -99,7 +120,7 @@ def trivy_result(root: Path, commit: str) -> tuple[dict[str, object], dict[str, 
     tool = {
         "version": version_document["Version"],
         "database_version": vulnerability_db["Version"],
-        "database_utc": vulnerability_db["UpdatedAt"],
+        "database_utc": utc_timestamp(vulnerability_db["UpdatedAt"]),
         "database_sha256": sha256(database),
     }
     return result, tool
