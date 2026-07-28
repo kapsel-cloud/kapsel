@@ -214,6 +214,7 @@ class BaselineValidatorTests(unittest.TestCase):
                 tool["database_utc"] = "2026-07-28T00:00:00Z"
             else:
                 tool.pop("database_utc", None)
+        document["security"]["scanned_utc"] = "2026-07-28T00:00:00Z"
         document["security"]["findings"] = []
         expected_reviews = {
             "dependency",
@@ -322,10 +323,13 @@ class BaselineValidatorTests(unittest.TestCase):
         lower = self.valid_document()
         lower["security"]["findings"] = [
             {
-                "id": "trivy-low",
+                "id": "trivy-finding-1",
                 "scanner": "trivy",
                 "severity": "LOW",
-                "count": 1,
+                "vulnerability_id": "CVE-TEST",
+                "package": "example",
+                "installed_version": "1.0",
+                "fixed_version": "unavailable",
                 "disposition": "recorded for review",
             }
         ]
@@ -364,6 +368,11 @@ class BaselineValidatorTests(unittest.TestCase):
         tool_version = self.valid_document()
         next(tool for tool in tool_version["tools"] if tool["id"] == "kind")["version"] = "not-a-version"
         cases.append(tool_version)
+        stale_database = self.valid_document()
+        next(
+            tool for tool in stale_database["tools"] if tool["id"] == "trivy"
+        )["database_utc"] = "1900-01-01T00:00:00Z"
+        cases.append(stale_database)
         baseline_tree = self.valid_document()
         baseline_tree["baseline"]["tree"] = "0" * 40
         cases.append(baseline_tree)

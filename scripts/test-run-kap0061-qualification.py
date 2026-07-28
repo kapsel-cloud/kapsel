@@ -42,18 +42,25 @@ class QualificationOrchestratorTests(unittest.TestCase):
     def test_lower_security_findings_are_retained(self) -> None:
         self.assertEqual(
             ORCHESTRATOR["retained_security_findings"](
-                {"trivy": {"vulnerability_counts": {}}}
+                {"trivy": {"findings": []}}
             ),
             [],
         )
+        low = {
+            "vulnerability_id": "CVE-TEST",
+            "package": "example",
+            "installed_version": "1.0",
+            "fixed_version": "unavailable",
+            "severity": "LOW",
+        }
         findings = ORCHESTRATOR["retained_security_findings"](
-            {"trivy": {"vulnerability_counts": {"LOW": 2}}}
+            {"trivy": {"findings": [low]}}
         )
         self.assertEqual(findings[0]["severity"], "LOW")
-        self.assertEqual(findings[0]["count"], 2)
+        self.assertEqual(findings[0]["vulnerability_id"], "CVE-TEST")
         with self.assertRaises(RuntimeError):
             ORCHESTRATOR["retained_security_findings"](
-                {"trivy": {"vulnerability_counts": {"HIGH": 1}}}
+                {"trivy": {"findings": [{**low, "severity": "HIGH"}]}}
             )
 
     def test_live_timings_are_closed_and_complete(self) -> None:

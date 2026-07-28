@@ -54,7 +54,11 @@ def git_tree_sha256(repository: Path, commit: str) -> str:
 
 
 def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]]:
-    completed = run(["cargo-audit", "audit", "--json"], root)
+    run(["cargo-audit", "audit", "--json"], root)
+    database = Path.home() / ".cargo/advisory-db"
+    commit = run(["git", "rev-parse", "HEAD"], database).stdout.decode().strip()
+    database_sha256 = git_tree_sha256(database, commit)
+    completed = run(["cargo-audit", "audit", "--json", "--no-fetch"], root)
     document = json.loads(completed.stdout)
     vulnerability_count = document["vulnerabilities"]["count"]
     warning_counts = {
@@ -63,8 +67,8 @@ def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]
     if vulnerability_count != 0 or any(warning_counts.values()):
         raise RuntimeError("cargo-audit reported a vulnerability or warning")
     version = run(["cargo-audit", "--version"], root).stdout.decode().strip()
-    database = Path.home() / ".cargo/advisory-db"
-    commit = run(["git", "rev-parse", "HEAD"], database).stdout.decode().strip()
+    if git_tree_sha256(database, commit) != database_sha256:
+        raise RuntimeError("RustSec database identity changed during the accepted scan")
     refreshed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     result = {
         "vulnerabilities": vulnerability_count,
@@ -73,14 +77,17 @@ def cargo_audit_result(root: Path) -> tuple[dict[str, object], dict[str, object]
     tool = {
         "version": version,
         "database_commit": commit,
-        "database_sha256": git_tree_sha256(database, commit),
+        "database_sha256": database_sha256,
         "database_utc": refreshed_at,
     }
     return result, tool
 
 
 def trivy_result(root: Path, commit: str) -> tuple[dict[str, object], dict[str, object]]:
+    run(["trivy", "filesystem", "--download-db-only", str(root)], root)
     version_document = json.loads(run(["trivy", "version", "--format", "json"], root).stdout)
+    database = trivy_database()
+    database_sha256 = sha256(database)
     with tempfile.TemporaryDirectory(prefix="kap0061-trivy-") as temporary:
         temporary_root = Path(temporary)
         archive = temporary_root / "source.tar"
@@ -97,31 +104,52 @@ def trivy_result(root: Path, commit: str) -> tuple[dict[str, object], dict[str, 
                 "vuln,secret",
                 "--format",
                 "json",
+                "--skip-db-update",
                 str(checkout),
             ],
             root,
         )
         document = json.loads(completed.stdout)
     vulnerabilities: dict[str, int] = {}
+    findings = []
     secrets = 0
     for result in document.get("Results", []):
         for vulnerability in result.get("Vulnerabilities") or []:
             severity = vulnerability.get("Severity", "UNKNOWN")
             vulnerabilities[severity] = vulnerabilities.get(severity, 0) + 1
+            findings.append(
+                {
+                    "vulnerability_id": vulnerability.get("VulnerabilityID", "UNKNOWN"),
+                    "package": vulnerability.get("PkgName", "UNKNOWN"),
+                    "installed_version": vulnerability.get("InstalledVersion", "UNKNOWN"),
+                    "fixed_version": vulnerability.get("FixedVersion") or "unavailable",
+                    "severity": severity,
+                }
+            )
         secrets += len(result.get("Secrets") or [])
     if vulnerabilities.get("HIGH", 0) or vulnerabilities.get("CRITICAL", 0) or secrets:
         raise RuntimeError("Trivy reported a rejected vulnerability or secret")
-    database = trivy_database()
+    if sha256(database) != database_sha256:
+        raise RuntimeError("Trivy database identity changed during the accepted scan")
     vulnerability_db = version_document["VulnerabilityDB"]
     result = {
         "vulnerability_counts": dict(sorted(vulnerabilities.items())),
+        "findings": sorted(
+            findings,
+            key=lambda finding: (
+                finding["severity"],
+                finding["vulnerability_id"],
+                finding["package"],
+                finding["installed_version"],
+            ),
+        ),
         "secrets": secrets,
     }
     tool = {
         "version": version_document["Version"],
         "database_version": vulnerability_db["Version"],
         "database_utc": utc_timestamp(vulnerability_db["UpdatedAt"]),
-        "database_sha256": sha256(database),
+        "database_sha256": database_sha256,
     }
     return result, tool
 
@@ -143,6 +171,7 @@ def main() -> None:
     result = {
         "schema_version": 1,
         "commit": commit,
+        "scanned_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "cargo_lock_sha256": sha256(root / "Cargo.lock"),
         "cargo_audit": cargo_audit,
         "cargo_audit_tool": audit_tool,

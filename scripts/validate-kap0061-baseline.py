@@ -321,6 +321,7 @@ def validate(path: Path) -> None:
     tool_ids = unique(tools, "tools")
     if tool_ids != set(EXPECTED_TOOL_VERSIONS):
         fail("tool set differs from the frozen qualification identities")
+    database_times: dict[str, datetime] = {}
     for tool in tools:
         fields = {"id", "version", "environment_id"}
         if "database_utc" in tool:
@@ -339,7 +340,9 @@ def validate(path: Path) -> None:
             if not timestamp.endswith("Z"):
                 fail("scanner database timestamp is not UTC")
             try:
-                datetime.fromisoformat(timestamp.removesuffix("Z") + "+00:00")
+                database_times[tool["id"]] = datetime.fromisoformat(
+                    timestamp.removesuffix("Z") + "+00:00"
+                )
             except ValueError:
                 fail("scanner database timestamp is invalid")
 
@@ -666,21 +669,50 @@ def validate(path: Path) -> None:
         fail("security Cargo.lock input differs from Git")
 
     security = document["security"]
-    exact(security, {"findings", "exceptions", "reviews"}, "security")
+    exact(security, {"scanned_utc", "findings", "exceptions", "reviews"}, "security")
+    scanned_text = text(security["scanned_utc"], "security.scanned_utc")
+    if not scanned_text.endswith("Z"):
+        fail("security scan timestamp is not UTC")
+    try:
+        scanned_at = datetime.fromisoformat(scanned_text.removesuffix("Z") + "+00:00")
+    except ValueError:
+        fail("security scan timestamp is invalid")
+    for scanner in ("cargo-audit", "trivy"):
+        age = (scanned_at - database_times[scanner]).total_seconds()
+        if age < 0 or age > 24 * 60 * 60:
+            fail(f"{scanner} database was not fresh at scan time")
     if security["exceptions"] != []:
         fail("accepted baseline contains a security exception")
     if not isinstance(security["findings"], list):
         fail("security findings must be an array")
     unique(security["findings"], "security.findings")
     for finding in security["findings"]:
-        exact(finding, {"id", "scanner", "severity", "count", "disposition"}, "security.finding")
+        exact(
+            finding,
+            {
+                "id",
+                "scanner",
+                "severity",
+                "vulnerability_id",
+                "package",
+                "installed_version",
+                "fixed_version",
+                "disposition",
+            },
+            "security.finding",
+        )
         if finding["scanner"] != "trivy":
             fail("security finding names an unsupported scanner")
         if finding["severity"] not in {"LOW", "MEDIUM", "UNKNOWN"}:
             fail("security finding has a rejected severity")
-        if integer(finding["count"], "security.finding.count") == 0:
-            fail("security finding count must be positive")
-        text(finding["disposition"], "security.finding.disposition")
+        for field in (
+            "vulnerability_id",
+            "package",
+            "installed_version",
+            "fixed_version",
+            "disposition",
+        ):
+            text(finding[field], f"security.finding.{field}")
     if not isinstance(security["reviews"], list) or not security["reviews"]:
         fail("security reviews are required")
     review_ids = unique(security["reviews"], "security.reviews")

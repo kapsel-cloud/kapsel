@@ -226,18 +226,15 @@ def parse_live(output: bytes) -> dict[str, int]:
 
 def retained_security_findings(security: dict[str, Any]) -> list[dict[str, Any]]:
     findings = []
-    for severity, count in sorted(security["trivy"]["vulnerability_counts"].items()):
-        if count == 0:
-            continue
-        if severity in {"HIGH", "CRITICAL"}:
+    for index, finding in enumerate(security["trivy"]["findings"], start=1):
+        if finding["severity"] in {"HIGH", "CRITICAL"}:
             raise RuntimeError("rejected Trivy severity reached baseline construction")
         findings.append(
             {
-                "id": f"trivy-{severity.lower()}",
+                "id": f"trivy-finding-{index}",
                 "scanner": "trivy",
-                "severity": severity,
-                "count": count,
-                "disposition": "recorded for review and not rejected by the frozen severity policy",
+                **finding,
+                "disposition": "retained for review and not rejected by the frozen severity policy",
             }
         )
     return findings
@@ -502,6 +499,7 @@ def main() -> None:
             "simulation_shards": 8,
         },
         "security": {
+            "scanned_utc": security["scanned_utc"],
             "findings": retained_security_findings(security),
             "exceptions": [],
             "reviews": [
