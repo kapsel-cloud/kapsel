@@ -224,6 +224,25 @@ def parse_live(output: bytes) -> dict[str, int]:
     return values
 
 
+def retained_security_findings(security: dict[str, Any]) -> list[dict[str, Any]]:
+    findings = []
+    for severity, count in sorted(security["trivy"]["vulnerability_counts"].items()):
+        if count == 0:
+            continue
+        if severity in {"HIGH", "CRITICAL"}:
+            raise RuntimeError("rejected Trivy severity reached baseline construction")
+        findings.append(
+            {
+                "id": f"trivy-{severity.lower()}",
+                "scanner": "trivy",
+                "severity": severity,
+                "count": count,
+                "disposition": "recorded for review and not rejected by the frozen severity policy",
+            }
+        )
+    return findings
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
@@ -483,13 +502,14 @@ def main() -> None:
             "simulation_shards": 8,
         },
         "security": {
-            "findings": [],
+            "findings": retained_security_findings(security),
             "exceptions": [],
             "reviews": [
                 {"id": "dependency", "status": "passed", "disposition": "cargo-audit 0.22.2 reported no vulnerability or warning"},
                 {"id": "filesystem-and-trust", "status": "passed", "disposition": "exact modes no-follow identity size trust and replacement tests passed"},
                 {"id": "privacy-and-disclosure", "status": "passed", "disposition": "closed root privacy command reported no private material or overclaim"},
                 {"id": "trivy-clean-tree", "status": "passed", "disposition": "Trivy reported no rejected vulnerability or secret in the exact clean tree"},
+                {"id": "trivy-lower-severity", "status": "passed", "disposition": f"Trivy retained lower-severity counts: {json.dumps(security['trivy']['vulnerability_counts'], sort_keys=True)}"},
                 {"id": "no-sla", "status": "passed", "disposition": "budgets remain qualification stopping rules rather than production promises"},
             ],
         },

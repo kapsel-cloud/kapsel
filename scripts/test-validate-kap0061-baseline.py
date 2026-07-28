@@ -35,6 +35,16 @@ class BaselineValidatorTests(unittest.TestCase):
 
     def valid_document(self) -> dict:
         document = self.canonical_document()
+        commit = MODULE.git_output("rev-parse", "HEAD").decode().strip()
+        source_paths = MODULE.baseline_source_paths(commit)
+        document["baseline"]["commit"] = commit
+        document["baseline"]["tree"] = MODULE.git_output(
+            "rev-parse", f"{commit}^{{tree}}"
+        ).decode().strip()
+        document["baseline"]["source_path_count"] = len(source_paths)
+        document["baseline"]["source_sha256"] = MODULE.canonical_git_digest(
+            commit, source_paths
+        )
         budget_by_id = {budget["id"]: budget for budget in document["budgets"]}
         result_by_subject = {
             (result["kind"], result["subject_id"]): result
@@ -44,6 +54,9 @@ class BaselineValidatorTests(unittest.TestCase):
         measurement_lane["input_sha256"]["source"] = document["baseline"]["source_sha256"]
         measurement_lane["input_sha256"]["ordinary-executable"] = document["baseline"]["ordinary_executable_sha256"]
         measurement_lane["input_sha256"]["demo-executable"] = document["baseline"]["demo_executable_sha256"]
+        measurement_lane["input_sha256"]["measurement-harness"] = MODULE.canonical_git_digest(
+            document["baseline"]["commit"], MODULE.MEASUREMENT_HARNESS_PATHS
+        )
         measurement_lane["assertions"] = [
             {"id": "all-budgets", "passed": True, "detail": "all budgets passed"},
             {
@@ -130,7 +143,13 @@ class BaselineValidatorTests(unittest.TestCase):
         ]
         live = result_by_subject[("lane", "live-kind")]
         live["input_sha256"] = {
-            "kind-harness": "1" * 64,
+            "kind-harness": __import__("hashlib").sha256(
+                MODULE.git_output(
+                    "show",
+                    f"{document['baseline']['commit']}:scripts/test-kind-effect-gateway.sh",
+                )
+            ).hexdigest(),
+            "node-image": __import__("hashlib").sha256(MODULE.NODE_IMAGE.encode()).hexdigest(),
             "source": document["baseline"]["source_sha256"],
         }
         live["assertions"] = [
@@ -154,7 +173,10 @@ class BaselineValidatorTests(unittest.TestCase):
                 document["baseline"]["commit"],
                 MODULE.privacy_source_paths(document["baseline"]["commit"]),
             ),
-            "privacy-check": "2" * 64,
+            "privacy-check": MODULE.canonical_git_digest(
+                document["baseline"]["commit"], MODULE.PRIVACY_CHECK_PATHS
+            ),
+            "source": document["baseline"]["source_sha256"],
         }
         privacy["assertions"] = [
             {"id": "no-private-material", "passed": True, "detail": "no private paths"},
@@ -192,6 +214,30 @@ class BaselineValidatorTests(unittest.TestCase):
                 tool["database_utc"] = "2026-07-28T00:00:00Z"
             else:
                 tool.pop("database_utc", None)
+        document["security"]["findings"] = []
+        expected_reviews = {
+            "dependency",
+            "filesystem-and-trust",
+            "privacy-and-disclosure",
+            "trivy-clean-tree",
+            "trivy-lower-severity",
+            "no-sla",
+        }
+        reviews = {
+            review["id"]: review
+            for review in document["security"]["reviews"]
+            if review["id"] in expected_reviews
+        }
+        for id_ in expected_reviews:
+            reviews.setdefault(
+                id_,
+                {
+                    "id": id_,
+                    "status": "passed",
+                    "disposition": "closed synthetic review disposition",
+                },
+            )
+        document["security"]["reviews"] = list(reviews.values())
         document["budgets"] = [budget_by_id[id_] for id_ in sorted(budget_by_id)]
         document["results"] = list(result_by_subject.values())
         for result in document["results"]:
@@ -272,6 +318,22 @@ class BaselineValidatorTests(unittest.TestCase):
             with self.subTest():
                 self.assertNotEqual(self.run_document(document).returncode, 0)
 
+    def test_disposed_lower_security_findings_pass_but_rejected_severity_fails(self) -> None:
+        lower = self.valid_document()
+        lower["security"]["findings"] = [
+            {
+                "id": "trivy-low",
+                "scanner": "trivy",
+                "severity": "LOW",
+                "count": 1,
+                "disposition": "recorded for review",
+            }
+        ]
+        self.assertEqual(self.run_document(lower).returncode, 0)
+        rejected = copy.deepcopy(lower)
+        rejected["security"]["findings"][0]["severity"] = "HIGH"
+        self.assertNotEqual(self.run_document(rejected).returncode, 0)
+
     def test_replay_input_privacy_and_invalidation_mutations_fail(self) -> None:
         cases = []
         fuzz_seed = self.valid_document()
@@ -313,6 +375,16 @@ class BaselineValidatorTests(unittest.TestCase):
             "input_sha256"
         ]["checked-source"] = "0" * 64
         cases.append(checked_source)
+        measurement_harness = self.valid_document()
+        for result in measurement_harness["results"]:
+            if result["input_sha256"].get("measurement-harness"):
+                result["input_sha256"]["measurement-harness"] = "0" * 64
+        cases.append(measurement_harness)
+        node_image = self.valid_document()
+        for result in node_image["results"]:
+            if result["input_sha256"].get("node-image"):
+                result["input_sha256"]["node-image"] = "0" * 64
+        cases.append(node_image)
         for document in cases:
             with self.subTest():
                 self.assertNotEqual(self.run_document(document).returncode, 0)

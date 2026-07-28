@@ -39,6 +39,23 @@ class QualificationOrchestratorTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             ORCHESTRATOR["parse_kind_version"]("darwin/arm64")
 
+    def test_lower_security_findings_are_retained(self) -> None:
+        self.assertEqual(
+            ORCHESTRATOR["retained_security_findings"](
+                {"trivy": {"vulnerability_counts": {}}}
+            ),
+            [],
+        )
+        findings = ORCHESTRATOR["retained_security_findings"](
+            {"trivy": {"vulnerability_counts": {"LOW": 2}}}
+        )
+        self.assertEqual(findings[0]["severity"], "LOW")
+        self.assertEqual(findings[0]["count"], 2)
+        with self.assertRaises(RuntimeError):
+            ORCHESTRATOR["retained_security_findings"](
+                {"trivy": {"vulnerability_counts": {"HIGH": 1}}}
+            )
+
     def test_live_timings_are_closed_and_complete(self) -> None:
         output = b"\n".join(
             [

@@ -142,6 +142,16 @@ PRIVACY_ROOT_FILES = {
     "tasks/KAP-0061.md",
 }
 PRIVACY_ROOT_PREFIXES = ("docs/", "scripts/", "src/", "tests/", "vectors/")
+NODE_IMAGE = "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
+MEASUREMENT_HARNESS_PATHS = [
+    "scripts/qualify-kap0061.py",
+    "scripts/run-kap0061-measurements.py",
+    "src/gateway/tests/qualification.rs",
+]
+PRIVACY_CHECK_PATHS = [
+    "scripts/check-kap0061-privacy.py",
+    "scripts/test-check-kap0061-privacy.py",
+]
 
 
 def fail(message: str) -> None:
@@ -527,8 +537,14 @@ def validate(path: Path) -> None:
     if not privacy_result["input_sha256"]:
         fail("privacy result lacks input identity")
     privacy_digest = canonical_git_digest(commit, privacy_source_paths(commit))
-    if privacy_result["input_sha256"].get("checked-source") != privacy_digest:
+    if set(privacy_result["input_sha256"]) != {"checked-source", "privacy-check", "source"}:
+        fail("privacy result input set is incomplete")
+    if privacy_result["input_sha256"]["checked-source"] != privacy_digest:
         fail("privacy reviewed-source digest does not match Git")
+    if privacy_result["input_sha256"]["privacy-check"] != canonical_git_digest(commit, PRIVACY_CHECK_PATHS):
+        fail("privacy checker digest does not match Git")
+    if privacy_result["input_sha256"]["source"] != baseline["source_sha256"]:
+        fail("privacy release-source digest differs from the baseline")
     required_assertions = {
         ("budget", "bounded-unknown-wall"): {
             "deterministic-404-fixture",
@@ -590,8 +606,17 @@ def validate(path: Path) -> None:
             if result[field] != measurement_result[field]:
                 fail(f"measurement budget {subject} is disconnected from its producer")
     source_digest = baseline["source_sha256"]
-    if measurement_result["input_sha256"].get("source") != source_digest:
+    if set(measurement_result["input_sha256"]) != {
+        "demo-executable",
+        "measurement-harness",
+        "ordinary-executable",
+        "source",
+    }:
+        fail("measurement input set is incomplete")
+    if measurement_result["input_sha256"]["source"] != source_digest:
         fail("measurement source input differs from the baseline")
+    if measurement_result["input_sha256"]["measurement-harness"] != canonical_git_digest(commit, MEASUREMENT_HARNESS_PATHS):
+        fail("measurement harness digest does not match Git")
     if measurement_result["input_sha256"].get("ordinary-executable") != baseline["ordinary_executable_sha256"]:
         fail("ordinary executable digest is disconnected from measurement evidence")
     if measurement_result["input_sha256"].get("demo-executable") != baseline["demo_executable_sha256"]:
@@ -612,10 +637,16 @@ def validate(path: Path) -> None:
         for field in ("command", "environment_id", "input_sha256", "bounded_output_sha256"):
             if result[field] != live_result[field]:
                 fail(f"live budget {subject} is disconnected from its producer")
-    harness_digest = live_result["input_sha256"].get("kind-harness")
-    if harness_digest is None or harness_digest == live_result["bounded_output_sha256"]:
-        fail("live harness input is absent or conflated with bounded output")
-    if live_result["input_sha256"].get("source") != source_digest:
+    if set(live_result["input_sha256"]) != {"kind-harness", "node-image", "source"}:
+        fail("live input set is incomplete")
+    harness_digest = live_result["input_sha256"]["kind-harness"]
+    expected_harness = hashlib.sha256(git_output("show", f"{commit}:scripts/test-kind-effect-gateway.sh")).hexdigest()
+    if harness_digest != expected_harness or harness_digest == live_result["bounded_output_sha256"]:
+        fail("live harness digest does not match Git")
+    expected_node = hashlib.sha256(NODE_IMAGE.encode()).hexdigest()
+    if live_result["input_sha256"]["node-image"] != expected_node:
+        fail("live node-image digest differs from the pinned input")
+    if live_result["input_sha256"]["source"] != source_digest:
         fail("live source input differs from the baseline")
 
     audit_result = result_by_subject[("lane", "cargo-audit")]
@@ -636,11 +667,32 @@ def validate(path: Path) -> None:
 
     security = document["security"]
     exact(security, {"findings", "exceptions", "reviews"}, "security")
-    if security["findings"] != [] or security["exceptions"] != []:
-        fail("accepted baseline contains a security finding or exception")
+    if security["exceptions"] != []:
+        fail("accepted baseline contains a security exception")
+    if not isinstance(security["findings"], list):
+        fail("security findings must be an array")
+    unique(security["findings"], "security.findings")
+    for finding in security["findings"]:
+        exact(finding, {"id", "scanner", "severity", "count", "disposition"}, "security.finding")
+        if finding["scanner"] != "trivy":
+            fail("security finding names an unsupported scanner")
+        if finding["severity"] not in {"LOW", "MEDIUM", "UNKNOWN"}:
+            fail("security finding has a rejected severity")
+        if integer(finding["count"], "security.finding.count") == 0:
+            fail("security finding count must be positive")
+        text(finding["disposition"], "security.finding.disposition")
     if not isinstance(security["reviews"], list) or not security["reviews"]:
         fail("security reviews are required")
-    unique(security["reviews"], "security.reviews")
+    review_ids = unique(security["reviews"], "security.reviews")
+    if review_ids != {
+        "dependency",
+        "filesystem-and-trust",
+        "privacy-and-disclosure",
+        "trivy-clean-tree",
+        "trivy-lower-severity",
+        "no-sla",
+    }:
+        fail("security review set is incomplete")
     for review in security["reviews"]:
         exact(review, {"id", "status", "disposition"}, "security.review")
         if review["status"] != "passed":
