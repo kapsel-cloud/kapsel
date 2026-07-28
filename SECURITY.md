@@ -7,9 +7,9 @@ Owns: Vulnerability reporting and support posture for the public repository.
 Does not own: The threat model, production assurance, technical scope, or release progress.
 
 Kapsel has no supported production version. Do not use the current repository or the planned v0.2
-developer beta for consequential production actions. The current published artifact remains
-`v0.1.1`; a `0.2.0` candidate implementation and adopted policy do not mean that v0.2 has passed
-release acceptance or been published.
+developer beta for consequential production actions. Package version `0.2.0` follows this finite
+developer-beta policy. Embedded policy text does not assert whether a particular artifact has passed
+release acceptance or been published; verify that status through the authenticated release evidence.
 
 ## Reporting a vulnerability
 

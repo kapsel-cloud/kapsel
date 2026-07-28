@@ -1,6 +1,6 @@
 # MCP adapter
 
-Status: adopted v0.2 beta contract; the current published implementation remains `v0.1.1`.
+Status: v0.2 beta MCP contract implemented by package version `0.2.0`.
 
 Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response
 semantics.
@@ -14,11 +14,11 @@ receipt bytes, the local evaluator command, a generic MCP host, or a stable tran
 ## Compatibility posture
 
 The protocol, process grammar, lifecycle, tool schema, bounds, responses, diagnostics, and error
-classes below are preserved from published `v0.1.1` in the `0.2.0` candidate and are adopted as the
-supported but not yet published v0.2 MCP surface. Across v0.2.x, intentional incompatible changes
-require an explicit owner update, migration or replacement guidance, and release notes. The package
-version reported in `serverInfo.version` identifies the running patch and is the only value below
-expected to vary between v0.2.x releases.
+classes below are preserved from `v0.1.1` in package version `0.2.0` and define the supported v0.2
+MCP surface. Across v0.2.x, intentional incompatible changes require an explicit owner update,
+migration or replacement guidance, and release notes. The package version reported in
+`serverInfo.version` identifies the running patch and is the only value below expected to vary
+between v0.2.x releases.
 
 This contract supports one stdio adapter and one tool. It does not support another transport, remote
 endpoint, generic MCP host, SDK, plugin interface, Rust package interface, or production service.
@@ -203,8 +203,8 @@ This is one bounded beta transport adapter, not a generic MCP server, tool regis
 host, or remote service. It deliberately implements the fixed official wire surface directly with
 the repository's existing JSON and runtime dependencies; no MCP SDK dependency is required. Only the
 latest v0.2.x patch receives best-effort security and correctness maintenance. There is no
-response-time, remediation, availability, platform, or production-support SLA, and the adopted
-contract does not claim that v0.2 has been built or published.
+response-time, remediation, availability, platform, or production-support SLA. Embedded contract
+text does not assert whether a particular artifact has passed release acceptance or been published.
 
 ## Official protocol basis
 

@@ -2,7 +2,7 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
-## 0.2.0 - Unreleased
+## 0.2.0
 
 - Adopts the finite developer-beta CLI, MCP, grant, receipt, archive, and private-journal
   compatibility classes for the sole Kubernetes Deployment image operation.

@@ -1,6 +1,6 @@
 # Evaluator commands
 
-Status: adopted v0.2 beta command contract; the current published implementation remains `v0.1.1`.
+Status: v0.2 beta command contract implemented by package version `0.2.0`.
 
 Kind: contract. Authority: local evaluator command grammar, operator files, output, bounds,
 diagnostics, and exit classes.
@@ -13,11 +13,11 @@ packaging, or the KAP-0042 crash demonstration.
 ## Compatibility posture
 
 The operation grammar, files, bounds, machine output, diagnostics, and exit classes below are
-preserved from published `v0.1.1` in the `0.2.0` candidate and are adopted as the supported but not
-yet published v0.2 command surface. v0.2 additionally adopts one read-only package identity form.
-Across v0.2.x, intentional incompatible changes require an explicit owner update, migration or
-replacement guidance, and release notes. This support does not extend to the Rust package, source
-layout, crates.io, docs.rs, `cargo install`, another platform, or production use.
+preserved from `v0.1.1` in package version `0.2.0` and define the supported v0.2 command surface.
+v0.2 additionally adopts one read-only package identity form. Across v0.2.x, intentional
+incompatible changes require an explicit owner update, migration or replacement guidance, and
+release notes. This support does not extend to the Rust package, source layout, crates.io, docs.rs,
+`cargo install`, another platform, or production use.
 
 Canonical grant v1 and receipt/trust v2 continuity are owned only by
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md). This command contract adopts
@@ -215,5 +215,5 @@ The `command` value is the parsed subcommand, or `kapsel` when parsing did not i
 
 Every file and output shape above is a supported v0.2.x beta surface. Only the latest v0.2.x patch
 receives best-effort security and correctness maintenance. There is no response-time, remediation,
-availability, platform, or production-support SLA, and the adopted contract does not claim that v0.2
-has been built or published.
+availability, platform, or production-support SLA. Embedded contract text does not assert whether a
+particular artifact has passed release acceptance or been published.

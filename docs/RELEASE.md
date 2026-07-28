@@ -1,6 +1,7 @@
 # Release artifacts
 
-Status: adopted v0.2 developer-beta candidate contract; publication remains KAP-0063-gated.
+Status: v0.2 developer-beta artifact contract. Acceptance and publication status are external
+evidence.
 
 Kind: contract. Authority: supported release target, archive layout, assembly, SBOM,
 publisher-authentication, installation, and artifact-only behavior.
@@ -258,5 +259,5 @@ another platform. Receipts and reports remain sensitive operational metadata und
 The target and build behavior follow official Rust platform, Cargo locked-build/metadata, release
 profile, and path-remapping documentation. SPDX fields follow the SPDX 2.3 specification. Keyless
 blob signing and verification follow current Sigstore Cosign, Fulcio, Rekor, and trusted-root
-specifications. KAP-0062 owns the unpublished candidate evidence; KAP-0063 alone owns tag,
-publication, public download verification, and website handoff.
+specifications. KAP-0062 owns candidate-production evidence; KAP-0063 alone owns tag, publication,
+public download verification, and website handoff.
