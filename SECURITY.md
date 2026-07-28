@@ -8,7 +8,8 @@ Does not own: The threat model, production assurance, technical scope, or releas
 
 Kapsel has no supported production version. Do not use the current repository or the planned v0.2
 developer beta for consequential production actions. The current published artifact remains
-`v0.1.1`; adopting a v0.2 policy does not mean that v0.2 has been built or published.
+`v0.1.1`; a `0.2.0` candidate implementation and adopted policy do not mean that v0.2 has passed
+release acceptance or been published.
 
 ## Reporting a vulnerability
 
@@ -43,8 +44,11 @@ receipt/trust v2 surfaces selected by the [v0.2 release design](docs/V0.2.md) ar
 compatibility commitments, not supported production security guarantees. Public Rust exports,
 crates.io, docs.rs, `cargo install`, another MCP transport, another platform, and production use
 remain unsupported. Release artifact availability and supported targets are owned by the
-[release contract](docs/RELEASE.md). A SHA-256 checksum detects byte mismatch but does not
-authenticate a publisher or make the binary trustworthy.
+[release contract](docs/RELEASE.md). The v0.2 candidate contract appoints one exact GitHub Actions
+workflow through keyless Sigstore authentication. Its signed digest manifest authenticates the
+approved publisher action and named bytes; it does not prove source review, workflow or builder
+integrity, dependency safety, production fitness, or current non-withdrawal. A SHA-256 checksum
+alone detects byte mismatch but does not authenticate a publisher.
 
 A durable journal narrows crash ambiguity. It does not prove exactly-once provider effects,
 Kubernetes truth, authorization legitimacy, causation, complete capture, compliance, or production

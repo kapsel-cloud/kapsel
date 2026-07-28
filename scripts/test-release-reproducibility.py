@@ -38,10 +38,15 @@ def main() -> int:
         second = assemble(pathlib.Path(second_temporary))
         if first.read_bytes() != second.read_bytes():
             raise RuntimeError("isolated release archives are not byte-for-byte identical")
-        first_checksum = first.with_name(first.name + ".sha256")
-        second_checksum = second.with_name(second.name + ".sha256")
-        if first_checksum.read_bytes() != second_checksum.read_bytes():
-            raise RuntimeError("isolated release checksum files are not identical")
+        for suffix, label in [
+            (".sha256", "checksum"),
+            (".spdx.json", "SBOM"),
+            (".SHA256SUMS", "digest manifest"),
+        ]:
+            first_sidecar = first.with_name(first.name + suffix)
+            second_sidecar = second.with_name(second.name + suffix)
+            if first_sidecar.read_bytes() != second_sidecar.read_bytes():
+                raise RuntimeError(f"isolated release {label} files are not identical")
     print("Kapsel release reproducibility: ok")
     return 0
 

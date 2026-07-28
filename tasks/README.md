@@ -1,8 +1,8 @@
 # Technical task route
 
-Status: v0.2.0 Kubernetes effect-gateway beta selected. Upgrade and release-source locality are
-complete; finite qualification is active after rejected final independent review, and distribution,
-publication, and all later packets remain ordered and gated.
+Status: v0.2.0 Kubernetes effect-gateway beta selected. Upgrade, release-source locality, and finite
+qualification are complete; distribution is active, and publication and all later packets remain
+ordered and gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.

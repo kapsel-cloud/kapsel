@@ -37,11 +37,19 @@ pub(crate) fn run(arguments: impl Iterator<Item = OsString>) -> CommandResult {
         .into_string()
         .map_err(|_| CommandError::input("kapsel"))?;
     match subcommand.as_str() {
+        "--version" => version(arguments),
         "provision-grant" => provision(parse_options("provision-grant", arguments)?),
         "operate" => operate(parse_options("operate", arguments)?),
         "inspect" => inspect(parse_options("inspect", arguments)?),
         _ => Err(CommandError::input("kapsel")),
     }
+}
+
+fn version(mut arguments: impl Iterator<Item = OsString>) -> CommandResult {
+    if arguments.next().is_some() {
+        return Err(CommandError::input("kapsel"));
+    }
+    Ok(format!("kapsel {}", env!("CARGO_PKG_VERSION")))
 }
 
 fn parse_options(

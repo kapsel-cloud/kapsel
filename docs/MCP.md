@@ -14,11 +14,11 @@ receipt bytes, the local evaluator command, a generic MCP host, or a stable tran
 ## Compatibility posture
 
 The protocol, process grammar, lifecycle, tool schema, bounds, responses, diagnostics, and error
-classes below describe the current `v0.1.1` implementation and are adopted as the supported but not
-yet published v0.2 MCP surface. Across v0.2.x, intentional incompatible changes require an explicit
-owner update, migration or replacement guidance, and release notes. The package version reported in
-`serverInfo.version` identifies the running patch and is the only value below expected to vary
-between v0.2.x releases.
+classes below are preserved from published `v0.1.1` in the `0.2.0` candidate and are adopted as the
+supported but not yet published v0.2 MCP surface. Across v0.2.x, intentional incompatible changes
+require an explicit owner update, migration or replacement guidance, and release notes. The package
+version reported in `serverInfo.version` identifies the running patch and is the only value below
+expected to vary between v0.2.x releases.
 
 This contract supports one stdio adapter and one tool. It does not support another transport, remote
 endpoint, generic MCP host, SDK, plugin interface, Rust package interface, or production service.
@@ -69,14 +69,14 @@ at most 4 KiB and never contains request bytes, operator values, provider bodies
 The first request is `initialize`. Kapsel accepts a numeric non-null request ID or a non-null string
 request ID of at most 128 UTF-8 bytes and echoes its exact JSON value. Longer strings and other ID
 types receive `Invalid Request` with `id: null`; this bound guarantees the echoed ID cannot exceed
-the response limit. Initialization returns the following shape. The example shows the current
-published package version; a v0.2.x process reports its own exact package version.
+the response limit. Initialization returns the following shape. The example shows the v0.2.0
+candidate package identity; every v0.2.x process reports its own exact package version.
 
 ```json
 {
   "protocolVersion": "2025-11-25",
   "capabilities": { "tools": {} },
-  "serverInfo": { "name": "kapsel", "version": "0.1.1" }
+  "serverInfo": { "name": "kapsel", "version": "0.2.0" }
 }
 ```
 

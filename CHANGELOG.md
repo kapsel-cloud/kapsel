@@ -2,6 +2,22 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
+## 0.2.0 - Unreleased
+
+- Adopts the finite developer-beta CLI, MCP, grant, receipt, archive, and private-journal
+  compatibility classes for the sole Kubernetes Deployment image operation.
+- Uses one production lifecycle path for ordinary operation and crash recovery, with explicit
+  `SUCCEEDED`, `FAILED`, and `UNKNOWN` receiver outcomes unchanged.
+- Adds exact `v0.1.1` journal backup, upgrade, rollback, direct downgrade, and retained-receipt
+  continuity procedures.
+- Adds bounded hostile-input, simulation, fuzz, subprocess, live-kind, resource, dependency,
+  privacy, and security qualification.
+- Adds an authenticated reproducible x86-64 GNU/Linux archive, deterministic SPDX SBOM, exact
+  installed version identity, and artifact-only install, operation, cleanup, and uninstall proof.
+
+This developer beta remains non-production and supports no second capability, provider interface,
+public Rust API, hosted dependency, crates.io package, or second target.
+
 ## 0.1.1 - 2026-07-20
 
 - Adds a one-command real-kind front door from the extracted release archive.

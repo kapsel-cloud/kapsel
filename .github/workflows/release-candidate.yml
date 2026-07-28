@@ -1,0 +1,316 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  candidate:
+    name: Authenticate x86-64 GNU/Linux candidate
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Verify exact candidate source
+        run: |
+          set -eu
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Smoke-test extracted artifact
+        run: python3 scripts/test-release-artifact.py
+      - name: Verify deterministic archive and sidecars
+        run: python3 scripts/test-release-reproducibility.py
+      - name: Assemble candidate files
+        run: python3 scripts/assemble-release-artifact.py --output-directory dist
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.72.0
+          cache: false
+      - name: Test and scan exact candidate SBOM
+        run: |
+          set -eu
+          python3 scripts/test-scan-release-sbom.py
+          sbom=$(find dist -maxdepth 1 -type f -name '*.tar.gz.spdx.json')
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz.spdx.json' | wc -l)" -eq 1
+          python3 scripts/scan-release-sbom.py \
+            --sbom "$sbom" \
+            --output dist/candidate-sbom-scan.json
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+      - name: Authenticate exact digest manifest
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master
+        run: |
+          set -eu
+          manifest=$(find dist -maxdepth 1 -type f -name '*.tar.gz.SHA256SUMS')
+          test -n "$manifest"
+          test "$(find dist -maxdepth 1 -type f -name '*.tar.gz.SHA256SUMS' | wc -l)" -eq 1
+          bundle="$manifest.sigstore.json"
+          cosign version --json >dist/cosign-version.json
+          python3 - <<'PY'
+          import json
+          import pathlib
+
+          version = json.loads(pathlib.Path("dist/cosign-version.json").read_text())
+          if version["gitVersion"] != "v3.1.2":
+              raise SystemExit("unexpected Cosign version")
+          PY
+          cosign initialize
+          trusted_root=$(find "$HOME/.sigstore/root" -type f -path '*/targets/trusted_root.json')
+          test "$(printf '%s\n' "$trusted_root" | wc -l)" -eq 1
+          cp "$trusted_root" dist/sigstore-trusted-root.json
+          (cd dist && sha256sum sigstore-trusted-root.json >sigstore-trusted-root.json.sha256)
+          cosign sign-blob --yes --bundle "$bundle" "$manifest"
+          test "$(stat -c %s -- "$bundle")" -le 1048576
+          cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-github-workflow-repository kapsel-cloud/kapsel \
+            --certificate-github-workflow-ref refs/heads/master \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --certificate-github-workflow-trigger workflow_dispatch \
+            "$manifest"
+          env HTTPS_PROXY=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 NO_PROXY='' \
+            cosign verify-blob \
+              --trusted-root dist/sigstore-trusted-root.json \
+              --bundle "$bundle" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$CERTIFICATE_IDENTITY" \
+              --certificate-github-workflow-repository kapsel-cloud/kapsel \
+              --certificate-github-workflow-ref refs/heads/master \
+              --certificate-github-workflow-sha "$GITHUB_SHA" \
+              --certificate-github-workflow-trigger workflow_dispatch \
+              "$manifest"
+          printf '\n' >>"$manifest"
+          if cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            "$manifest"; then
+            echo 'altered signed manifest was accepted' >&2
+            exit 1
+          fi
+          sed -i '$d' "$manifest"
+          if cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity \
+              https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/rotated \
+            "$manifest"; then
+            echo 'rotated workflow identity was accepted' >&2
+            exit 1
+          fi
+          if cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-github-workflow-repository attacker/kapsel \
+            "$manifest"; then
+            echo 'wrong repository identity was accepted' >&2
+            exit 1
+          fi
+          (cd dist && sha256sum --check --strict "$(basename "$manifest")")
+      - name: Verify authenticated time after Fulcio leaf expiry
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master
+        run: |
+          set -eu
+          manifest=$(find dist -maxdepth 1 -type f -name '*.tar.gz.SHA256SUMS')
+          bundle="$manifest.sigstore.json"
+          python3 - "$bundle" /tmp/candidate-cert.der <<'PY'
+          import base64
+          import json
+          import pathlib
+          import sys
+
+          bundle = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          raw = bundle["verificationMaterial"]["certificate"]["rawBytes"]
+          pathlib.Path(sys.argv[2]).write_bytes(base64.b64decode(raw, validate=True))
+          PY
+          not_after=$(openssl x509 -inform DER -in /tmp/candidate-cert.der -noout -enddate)
+          not_after=${not_after#notAfter=}
+          expiry=$(date --date "$not_after" +%s)
+          now=$(date +%s)
+          wait_seconds=$((expiry - now + 1))
+          test "$wait_seconds" -ge 0
+          test "$wait_seconds" -le 660
+          sleep "$wait_seconds"
+          cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-github-workflow-repository kapsel-cloud/kapsel \
+            --certificate-github-workflow-ref refs/heads/master \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --certificate-github-workflow-trigger workflow_dispatch \
+            "$manifest"
+      - name: Record bounded candidate event evidence
+        env:
+          CANDIDATE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -eu
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+
+          dist = pathlib.Path("dist")
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          files = {
+              path.name: digest(path)
+              for path in sorted(dist.iterdir())
+              if path.is_file() and path.name != "candidate-evidence.json"
+          }
+          evidence = {
+              "schema": "kapsel.release-candidate-evidence.v1",
+              "candidate_revision": os.environ["GITHUB_SHA"],
+              "candidate_tree": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD^{tree}"], text=True
+              ).strip(),
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "ref": os.environ["GITHUB_REF"],
+              "trigger": os.environ["GITHUB_EVENT_NAME"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "workflow_sha": os.environ["GITHUB_WORKFLOW_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "run_url": os.environ["CANDIDATE_RUN_URL"],
+              "cosign": json.loads(dist.joinpath("cosign-version.json").read_text()),
+              "files_sha256": files,
+              "verification": [
+                  "connected_exact_identity_passed",
+                  "captured_trusted_root_passed_with_network_proxies_blocked",
+                  "altered_manifest_rejected",
+                  "rotated_workflow_identity_rejected",
+                  "wrong_repository_rejected",
+                  "digest_manifest_passed",
+                  "fresh_sbom_scan_passed",
+                  "expired_leaf_authenticated_time_passed",
+              ],
+          }
+          encoded = (json.dumps(evidence, indent=2, separators=(",", ": ")) + "\n").encode()
+          if len(encoded) > 65536:
+              raise RuntimeError("candidate event evidence exceeded its byte bound")
+          dist.joinpath("candidate-evidence.json").write_bytes(encoded)
+          PY
+      - name: Upload unpublished candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kapsel-candidate-x86_64-unknown-linux-gnu-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.tar.gz.spdx.json
+            dist/*.tar.gz.SHA256SUMS
+            dist/*.tar.gz.SHA256SUMS.sigstore.json
+            dist/sigstore-trusted-root.json
+            dist/sigstore-trusted-root.json.sha256
+            dist/candidate-sbom-scan.json
+            dist/candidate-evidence.json
+            dist/cosign-version.json
+          if-no-files-found: error
+          compression-level: 0
+
+  downloaded-candidate:
+    name: Verify downloaded candidate files
+    needs: candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kapsel-candidate-x86_64-unknown-linux-gnu-${{ github.sha }}
+          path: downloaded
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.2
+      - name: Authenticate downloaded bytes
+        env:
+          CERTIFICATE_IDENTITY: https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master
+        run: |
+          set -eu
+          archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
+          manifest="$archive.SHA256SUMS"
+          bundle="$manifest.sigstore.json"
+          test "$(find downloaded -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+          cosign verify-blob \
+            --bundle "$bundle" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-github-workflow-repository kapsel-cloud/kapsel \
+            --certificate-github-workflow-ref refs/heads/master \
+            --certificate-github-workflow-sha "$GITHUB_SHA" \
+            --certificate-github-workflow-trigger workflow_dispatch \
+            "$manifest"
+          (cd downloaded && sha256sum --check --strict "$(basename "$manifest")")
+      - name: Smoke only downloaded and extracted files
+        run: |
+          set -eu
+          archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
+          docker run --rm --platform linux/amd64 \
+            --volume "$PWD/downloaded:/input:ro" \
+            --volume "$PWD/scripts/smoke-release-artifact.py:/smoke.py:ro" \
+            python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 \
+            python3 /smoke.py \
+              --archive "/input/$(basename "$archive")" \
+              --expected-revision "$GITHUB_SHA"
+      - name: Run downloaded disposable-kind demonstration
+        run: |
+          set -eu
+          tools=$(mktemp -d)
+          curl -fsSLo "$tools/kind-linux-amd64" \
+            https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64
+          curl -fsSLo "$tools/kind.sha256sum" \
+            https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64.sha256sum
+          (cd "$tools" && sha256sum --check --strict kind.sha256sum)
+          mv "$tools/kind-linux-amd64" "$tools/kind"
+          curl -fsSLo "$tools/kubectl" \
+            https://dl.k8s.io/release/v1.33.9/bin/linux/amd64/kubectl
+          curl -fsSLo "$tools/kubectl.sha256" \
+            https://dl.k8s.io/release/v1.33.9/bin/linux/amd64/kubectl.sha256
+          printf '%s  kubectl\n' "$(cat "$tools/kubectl.sha256")" >"$tools/kubectl.sha256sum"
+          (cd "$tools" && sha256sum --check --strict kubectl.sha256sum)
+          chmod 0755 "$tools/kind" "$tools/kubectl"
+          archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
+          PATH="$tools:$PATH" python3 scripts/smoke-release-artifact.py \
+            --archive "$archive" \
+            --live-demo
+      - name: Exercise exact v0.1.1 upgrade, rollback, and downgrade pair
+        run: |
+          set -eu
+          python3 scripts/test-release-upgrade.py
+          mkdir v011
+          curl -fsSLo v011/kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz \
+            https://github.com/kapsel-cloud/kapsel/releases/download/v0.1.1/kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' \
+            d1a5bfec47012e126a9c8b351fbe2331aa52e12c2df0fd41dd2a91c03b7c7fb4 \
+            kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz \
+            >v011/archive.sha256
+          (cd v011 && sha256sum --check --strict archive.sha256)
+          archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
+          docker run --rm --platform linux/amd64 \
+            --volume "$PWD/downloaded:/candidate:ro" \
+            --volume "$PWD/v011:/v011:ro" \
+            --volume "$PWD/scripts:/scripts:ro" \
+            python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 \
+            python3 /scripts/smoke-release-upgrade.py \
+              --candidate-archive "/candidate/$(basename "$archive")" \
+              --v011-archive /v011/kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz

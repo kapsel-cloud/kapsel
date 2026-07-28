@@ -12,11 +12,12 @@ packaging, or the KAP-0042 crash demonstration.
 
 ## Compatibility posture
 
-The grammar, files, bounds, machine output, diagnostics, and exit classes below describe the current
-`v0.1.1` implementation and are adopted unchanged as the supported but not yet published v0.2
-command surface. Across v0.2.x, intentional incompatible changes require an explicit owner update,
-migration or replacement guidance, and release notes. This support does not extend to the Rust
-package, source layout, crates.io, docs.rs, `cargo install`, another platform, or production use.
+The operation grammar, files, bounds, machine output, diagnostics, and exit classes below are
+preserved from published `v0.1.1` in the `0.2.0` candidate and are adopted as the supported but not
+yet published v0.2 command surface. v0.2 additionally adopts one read-only package identity form.
+Across v0.2.x, intentional incompatible changes require an explicit owner update, migration or
+replacement guidance, and release notes. This support does not extend to the Rust package, source
+layout, crates.io, docs.rs, `cargo install`, another platform, or production use.
 
 Canonical grant v1 and receipt/trust v2 continuity are owned only by
 [KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md). This command contract adopts
@@ -27,6 +28,7 @@ their bytes and result vocabulary without defining another vector format.
 The Unix executable accepts exactly these local evaluator forms:
 
 ```text
+kapsel --version
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel operate --request <file> --operator-config <file>
 kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
@@ -37,6 +39,11 @@ kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
 The same executable also has one separately owned MCP process form,
 `kapsel mcp --operator-config <file>`. [MCP adapter](MCP.md) owns its protocol, lifecycle, tool,
 responses, and bounds; this document continues to own the shared operator-file grammar.
+
+`kapsel --version` accepts no additional argument, reads no configuration or environment, writes
+`kapsel <Cargo package version>` plus one newline to standard output, writes no diagnostic, and
+exits zero. The value identifies the running binary; it does not imply another workspace package,
+platform, registry artifact, or production support.
 
 Options may appear in any order, exactly once. Unknown options, duplicate options, positional
 values, missing values, and additional arguments are command-input failures. There are no

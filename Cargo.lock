@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "http",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel-dev"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "syn",
@@ -755,7 +755,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel-sandbox"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",

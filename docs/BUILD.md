@@ -382,9 +382,10 @@ and smoke containers. Assemble it only from a clean checkout:
 cargo make assemble-release
 ```
 
-This emits one normalized `.tar.gz` archive and adjacent SHA-256 file under `dist/`. The archive
-contains the ordinary executable, a separately named feature-gated demo executable, the owned demo
-script and public trust vector, standalone evaluator documentation, license, changelog, and fixed
+This emits one normalized `.tar.gz` archive plus deterministic `.sha256`, `.spdx.json`, and
+`.SHA256SUMS` sidecars under `dist/`. The archive contains the ordinary executable, a separately
+named feature-gated demo executable, the owned demo script and public trust vector, standalone CLI,
+MCP, evaluator, release, upgrade, security, and privacy documentation, license, changelog, and fixed
 provenance metadata. It contains no evaluator authority, credentials, journals, receipts, or
 outputs.
 
@@ -395,19 +396,60 @@ cargo make test-release-artifact
 ```
 
 It assembles and validates the archive, then exercises only extracted files in the pinned clean
-container. See the [testing strategy](TESTING.md#kap-0044-release-artifact-proof) for the exact
-proof and [release artifact contract](RELEASE.md) for the owned format and bounds.
+container. See the [testing strategy](TESTING.md#release-artifact-proof) for the exact proof and
+[release artifact contract](RELEASE.md) for the owned format and bounds.
 
-Verify two isolated builds produce identical archive and checksum bytes with:
+Verify two isolated builds produce identical archive, checksum, SBOM, and digest-manifest bytes
+with:
 
 ```sh
 cargo make test-release-reproducibility
 ```
 
-After those lanes pass on a push, hosted CI performs one strict clean assembly and uploads the
-versioned `.tar.gz` and adjacent checksum as a workflow artifact named with the source revision. The
-GitHub-generated download wrapper is transport only; the adjacent checksum still identifies the
-inner `.tar.gz` bytes.
+Scan one exact SPDX sidecar with the KAP-0061-frozen Trivy 0.72.0 policy and a vulnerability
+database no older than 24 hours:
+
+```sh
+KAPSEL_RELEASE_SBOM=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.spdx.json \
+KAPSEL_RELEASE_SBOM_SCAN=/absolute/kap0062-sbom-scan.json \
+  cargo make scan-release-sbom
+```
+
+The lane refreshes the database immediately before scanning, hashes it before and after the
+no-update scan, and writes a bounded summary recording SBOM digest, scanner/database identity,
+database digest and time, and every detected finding. It rejects `HIGH` or `CRITICAL` findings. It
+is candidate review evidence, not a release sidecar or complete vulnerability-absence claim.
+
+Drive an extracted candidate through one clean finalized exact-v0.1.1 journal, operator backup,
+migration-only open/reopen, retained receipt inspection, restore/re-mark, and direct exact-v0.1.1
+downgrade with:
+
+```sh
+KAPSEL_RELEASE_ARCHIVE=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz \
+KAPSEL_V011_ARCHIVE=/absolute/kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz \
+  cargo make test-release-upgrade
+```
+
+The historical archive must match the immutable accepted v0.1.1 SHA-256. This artifact-only lane
+complements rather than replaces the nine-state, 54-process-seam source fixture matrix.
+
+After those lanes pass on a push, hosted CI performs one strict clean assembly and uploads the four
+deterministic files as a workflow artifact named with the source revision. The GitHub-generated
+download wrapper is transport only.
+
+The unpublished authenticated candidate is produced only by manually dispatching
+`.github/workflows/release-candidate.yml` on `master` at the exact candidate revision. That
+least-privilege workflow repeats artifact smoke and reproducibility, assembles once more, installs
+Cosign v3.1.2 through a commit-pinned action, keylessly signs the exact `.SHA256SUMS` bytes,
+verifies the issuer plus repository/workflow/ref/SHA/trigger certificate identity, and uploads the
+resulting bounded `.sigstore.json` bundle with the four deterministic files. The bundle is
+intentionally nondeterministic and publication remains KAP-0063-owned. See
+[Release artifacts](RELEASE.md) for connected/offline trust, expiry, compromise, withdrawal, and
+replacement rules. A dependent clean job downloads that workflow artifact, re-authenticates the
+exact bytes, drives operation/restart/MCP/inspection/cleanup/uninstall in the pinned smoke
+container, runs the extracted live-kind demo, and crosses the exact v0.1.1 finalized
+upgrade/restore/downgrade pair. This is unpublished candidate-download evidence; KAP-0063 still owns
+public-release download verification.
 
 On a supported x86-64 GNU/Linux host, run the live disposable-kind demonstration directly from the
 safely extracted archive top-level directory:

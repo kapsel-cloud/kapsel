@@ -1,8 +1,8 @@
-# Evaluate Kapsel 0.1.x
+# Evaluate Kapsel v0.2.x
 
-This guide evaluates a published stable `0.1.x` `x86_64-unknown-linux-gnu` artifact for the fixed
-`kubernetes.set_deployment_image` experiment. It is not production guidance or a compatibility
-promise. Use an exact version attached to the project's GitHub release; release tags and assets are
+This guide evaluates an authenticated v0.2.x `x86_64-unknown-linux-gnu` developer-beta artifact for
+the fixed `kubernetes.set_deployment_image` operation. It is not production guidance. Use one exact
+version and all named sidecars attached to the project's GitHub release; release tags and assets are
 immutable.
 
 ## Limits first
@@ -36,8 +36,8 @@ verified release archive
 With Docker, kind 0.32 or newer, kubectl 1.30 or newer, Python 3.11 or newer, and `curl` on x86-64
 GNU/Linux, the primary path is:
 
-1. download the exact archive and checksum;
-2. verify and safely extract them with the next section; then
+1. download the exact archive, checksum, SBOM, digest manifest, and Sigstore bundle;
+2. authenticate, verify, and safely extract them with the next section; then
 3. run one command from the extracted top-level directory:
 
 ```sh
@@ -52,16 +52,30 @@ receiver result.
 
 ## Verify and install
 
-The sole release target is x86-64 GNU/Linux, validated in Debian 12. Download one exact version from
-its public GitHub release, then verify the adjacent checksum before extraction:
+The sole release target is x86-64 GNU/Linux, validated in Debian 12. Download one exact version and
+all its sidecars from the public GitHub release. With Cosign v3.1.2, authenticate the exact
+publisher workflow and source revision before checking the signed digest manifest:
 
 ```sh
-version="${KAPSEL_VERSION:?set KAPSEL_VERSION to an exact attached 0.1.x version}"
+version="${KAPSEL_VERSION:?set KAPSEL_VERSION to an exact attached 0.2.x version}"
+revision="${KAPSEL_REVISION:?set KAPSEL_REVISION to the release's exact 40-hex source revision}"
 base="https://github.com/kapsel-cloud/kapsel/releases/download/v$version"
-curl -fLO "$base/kapsel-$version-x86_64-unknown-linux-gnu.tar.gz"
-curl -fLO "$base/kapsel-$version-x86_64-unknown-linux-gnu.tar.gz.sha256"
 archive="kapsel-$version-x86_64-unknown-linux-gnu.tar.gz"
-sha256sum --check "$archive.sha256"
+for suffix in '' .sha256 .spdx.json .SHA256SUMS .SHA256SUMS.sigstore.json; do
+  curl -fLO "$base/$archive$suffix"
+done
+cosign verify-blob \
+  --bundle "$archive.SHA256SUMS.sigstore.json" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity \
+    https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master \
+  --certificate-github-workflow-repository kapsel-cloud/kapsel \
+  --certificate-github-workflow-ref refs/heads/master \
+  --certificate-github-workflow-sha "$revision" \
+  --certificate-github-workflow-trigger workflow_dispatch \
+  "$archive.SHA256SUMS"
+sha256sum --check --strict "$archive.SHA256SUMS"
+sha256sum --check --strict "$archive.sha256"
 python3 - "$archive" <<'PY'
 import pathlib, shutil, sys, tarfile
 archive = pathlib.Path(sys.argv[1])
@@ -76,15 +90,18 @@ expected = {
     f"{basename}/share/", f"{basename}/share/kapsel/",
     f"{basename}/share/kapsel/demo-kind-crash-recovery.sh",
     f"{basename}/share/kapsel/kap0038-trust.hex", f"{basename}/share/doc/",
-    f"{basename}/share/doc/kapsel/", f"{basename}/share/doc/kapsel/EVALUATOR.md",
+    f"{basename}/share/doc/kapsel/", f"{basename}/share/doc/kapsel/COMMANDS.md",
+    f"{basename}/share/doc/kapsel/EVALUATOR.md", f"{basename}/share/doc/kapsel/MCP.md",
+    f"{basename}/share/doc/kapsel/PRIVACY.md", f"{basename}/share/doc/kapsel/RELEASE.md",
+    f"{basename}/share/doc/kapsel/SECURITY.md", f"{basename}/share/doc/kapsel/UPGRADE.md",
     f"{basename}/CHANGELOG.md", f"{basename}/LICENSE",
     f"{basename}/RELEASE-METADATA.json",
 }
 with tarfile.open(archive, "r:gz") as release:
     members = release.getmembers()
     names = {member.name + ("/" if member.isdir() else "") for member in members}
-    if names != expected:
-        raise RuntimeError("unexpected release archive layout")
+    if names != expected or [member.name for member in members] != sorted(member.name for member in members):
+        raise RuntimeError("unexpected release archive layout or ordering")
     if sum(member.size for member in members if member.isfile()) > 64 * 1024 * 1024:
         raise RuntimeError("release archive exceeds its expanded bound")
     for member in members:
@@ -93,11 +110,15 @@ with tarfile.open(archive, "r:gz") as release:
             raise RuntimeError("unsafe archive path")
         if not (member.isdir() or member.isfile()) or member.size > 32 * 1024 * 1024:
             raise RuntimeError("links, special entries, or oversized files are forbidden")
+        if (member.uid, member.gid, member.uname, member.gname, member.mtime) != (0, 0, "", "", 0):
+            raise RuntimeError("release archive metadata is not normalized")
         expected_mode = 0o755 if member.isdir() or member.name.endswith(
             ("/kapsel", "/kapsel-demo-harness", ".sh")
         ) else 0o644
         if member.mode != expected_mode:
             raise RuntimeError("unexpected release archive mode")
+    for member in members:
+        path = pathlib.PurePosixPath(member.name)
         target = pathlib.Path(*path.parts)
         if member.isdir():
             target.mkdir(parents=True, exist_ok=True)
@@ -116,11 +137,14 @@ install -d "$HOME/.local/bin"
 install -m 0755 bin/kapsel "$HOME/.local/bin/kapsel"
 export PATH="$HOME/.local/bin:$PATH"
 command -v kapsel
+kapsel --version
 ```
 
-Confirm that `package_version`, `rust_target`, `source_revision`, and `source_dirty` identify the
-intended release. A publishable artifact has `source_dirty: false`. SHA-256 detects changed bytes;
-it does not authenticate a publisher.
+Confirm that `package_version`, `rust_target`, `source_revision`, `source_tree`, and `source_dirty`
+identify the intended release. A publishable artifact has `source_dirty: false`. Confirm
+`kapsel --version` reports the same package version. SHA-256 detects changed bytes; the successful
+Sigstore verification appoints the exact publisher workflow but does not prove builder integrity,
+source review, dependency safety, or production fitness.
 
 The ordinary binary contains no demonstration pause behavior. The separate
 `libexec/kapsel-demo-harness` executable is only for the owned disposable-cluster demonstration.

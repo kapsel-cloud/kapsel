@@ -91,19 +91,53 @@ args = [
 ]
 
 [tasks.assemble-release]
-description = "Assemble the clean x86-64 GNU/Linux release artifact"
+description = "Assemble the clean x86-64 GNU/Linux archive and deterministic sidecars"
 command = "python3"
 args = ["scripts/assemble-release-artifact.py", "--output-directory", "dist"]
 
+[tasks.test-release-sbom-scan]
+description = "Test release SBOM scanner freshness, findings, and atomic database identity"
+command = "python3"
+args = ["scripts/test-scan-release-sbom.py"]
+
 [tasks.test-release-artifact]
 description = "Assemble and smoke-test the extracted release artifact"
+dependencies = ["test-release-sbom-scan"]
 command = "python3"
 args = ["scripts/test-release-artifact.py"]
 
 [tasks.test-release-reproducibility]
-description = "Compare two isolated release assemblies byte for byte"
+description = "Compare two isolated archive and deterministic-sidecar assemblies byte for byte"
 command = "python3"
 args = ["scripts/test-release-reproducibility.py"]
+
+[tasks.scan-release-sbom]
+description = "Scan one exact release SBOM with the frozen fresh Trivy policy"
+script = '''
+set -eu
+: "${KAPSEL_RELEASE_SBOM:?set KAPSEL_RELEASE_SBOM to the exact SPDX JSON sidecar}"
+: "${KAPSEL_RELEASE_SBOM_SCAN:?set KAPSEL_RELEASE_SBOM_SCAN to the summary output path}"
+python3 scripts/scan-release-sbom.py \
+  --sbom "$KAPSEL_RELEASE_SBOM" \
+  --output "$KAPSEL_RELEASE_SBOM_SCAN"
+'''
+
+[tasks.test-release-upgrade-backup]
+description = "Test artifact-upgrade backup verification and non-destructive restore refusal"
+command = "python3"
+args = ["scripts/test-release-upgrade.py"]
+
+[tasks.test-release-upgrade]
+description = "Exercise an extracted candidate across exact v0.1.1 upgrade and rollback"
+dependencies = ["test-release-upgrade-backup"]
+script = '''
+set -eu
+: "${KAPSEL_RELEASE_ARCHIVE:?set KAPSEL_RELEASE_ARCHIVE to the candidate archive path}"
+: "${KAPSEL_V011_ARCHIVE:?set KAPSEL_V011_ARCHIVE to the exact v0.1.1 archive path}"
+python3 scripts/smoke-release-upgrade.py \
+  --candidate-archive "$KAPSEL_RELEASE_ARCHIVE" \
+  --v011-archive "$KAPSEL_V011_ARCHIVE"
+'''
 
 [tasks.demo-release-artifact]
 description = "Run the live kind demo from an extracted release artifact"

@@ -128,20 +128,25 @@ lookup, trust lookup, clock, external service, public provider seam, or demonstr
 Protocol parser tests stay at this black-box boundary because framing, stdout purity, process exit,
 and startup authority separation are transport behavior.
 
-## KAP-0044 release artifact proof
+## Release artifact proof
 
 The release artifact lane crosses a fixed `x86_64-unknown-linux-gnu` archive rather than a Cargo
-test binary. Assembly runs in a pinned x86-64 Debian 12 Rust container, records exact source and
-binary provenance, normalizes archive metadata, and writes a checksum over the final downloadable
-bytes. Two isolated builds must produce byte-identical archives and checksum files.
+test binary. Assembly runs in a pinned x86-64 Debian 12 Rust container, records exact source, tree,
+lockfile, builder, and binary provenance, normalizes archive metadata, and writes deterministic
+checksum, SPDX 2.3, and signed-manifest inputs over the final downloadable bytes. Two isolated
+builds must produce byte-identical archives, checksums, SBOMs, and digest manifests. The separate
+keyless Sigstore bundle is event-derived and receives semantic identity/failure tests instead of a
+false byte-reproducibility requirement.
 
-The clean smoke verifies checksum, exact entries, modes, metadata, target, revision, license, binary
-digests, and extraction safety before executing only extracted files in a pinned x86-64 Debian 12
-Python container. A deterministic HTTP Kubernetes fixture proves installed grant provisioning,
-operation and restart, offline inspection, MCP discovery and call equivalence, bounded output, and
-cleanup. The separately extracted demo executable is killed at both owned seams; recovery retains
-one provider attempt, frozen receipt bytes under rotated settings, and offline classification. This
-lane never calls Cargo, reads `target/`, or introduces a public provider seam after extraction.
+The clean smoke verifies checksum and digest manifest, SPDX/archive/binary/source bindings, exact
+entries, ordering, types, modes, metadata, target, revision, license, binary digests, and traversal,
+link, special-file, unsafe-mode, and size rejection before executing only extracted files in a
+pinned x86-64 Debian 12 Python container. A deterministic HTTP Kubernetes fixture proves installed
+version identity, grant provisioning, operation and restart, offline inspection, MCP discovery and
+call equivalence, bounded output, cleanup, and uninstall. The separately extracted demo executable
+is killed at both owned seams; recovery retains one provider attempt, frozen receipt bytes under
+rotated settings, and offline classification. This lane never calls Cargo, reads `target/`, or
+introduces a public provider seam after extraction.
 
 The live artifact demo remains an explicit environment-owning gate on the supported target. It uses
 the same bundled demo script and feature-gated executable, preserves prerequisite-before-mutation

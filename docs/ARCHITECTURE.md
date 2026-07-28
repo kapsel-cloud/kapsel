@@ -1,6 +1,6 @@
 # Architecture
 
-Status: current `v0.1.1` architecture and adopted, unpublished v0.2 beta direction.
+Status: current architecture for published `v0.1.1` and the unpublished `0.2.0` candidate.
 
 Kind: design. Authority: current module ownership, dependency direction, and composition status.
 

@@ -76,7 +76,7 @@ jobs:
       - name: Assemble downloadable artifact
         if: github.event_name == 'push'
         run: python3 scripts/assemble-release-artifact.py --output-directory dist
-      - name: Upload archive and checksum
+      - name: Upload deterministic archive and sidecars
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
@@ -84,5 +84,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.tar.gz.sha256
+            dist/*.tar.gz.spdx.json
+            dist/*.tar.gz.SHA256SUMS
           if-no-files-found: error
           compression-level: 0
