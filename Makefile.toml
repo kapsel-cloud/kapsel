@@ -141,8 +141,14 @@ description = "Run fresh KAP-0061 dependency and exact-tree secret scans"
 command = "python3"
 args = ["scripts/run-kap0061-security.py", "--output", "/tmp/kap0061-security.json"]
 
+[tasks.test-kap0061-orchestrator]
+description = "Test the KAP-0061 qualification orchestrator"
+command = "python3"
+args = ["scripts/test-run-kap0061-qualification.py"]
+
 [tasks.qualify-kap0061]
 description = "Rerun every KAP-0061 lane and freeze the replacement baseline"
+dependencies = ["test-kap0061-orchestrator", "test-kap0061-privacy"]
 command = "python3"
 args = [
   "scripts/run-kap0061-qualification.py",

@@ -76,8 +76,12 @@ def run_lane(
 ) -> dict[str, Any]:
     print(f"==> {name}", file=sys.stderr, flush=True)
     started = time.monotonic_ns()
+    execution_command = [
+        str(output_path) if argument == "BOUNDED_OUTPUT" and output_path is not None else argument
+        for argument in command
+    ]
     completed = subprocess.run(
-        command,
+        execution_command,
         cwd=directory,
         capture_output=True,
         timeout=timeout,
