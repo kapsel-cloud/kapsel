@@ -306,6 +306,16 @@ def run_internal_measurements(repo: Path) -> dict[str, list[int]]:
     )
 
 
+def inspect_elf(path: Path) -> str:
+    description = run(["file", "-b", str(path)], stdout=subprocess.PIPE).stdout.decode().strip()
+    if "ELF 64-bit LSB pie executable, x86-64" not in description or "stripped" not in description:
+        raise RuntimeError(f"unexpected executable identity: {description}")
+    sections = run(["readelf", "--sections", str(path)], stdout=subprocess.PIPE).stdout.decode()
+    if ".symtab" in sections or ".debug_" in sections:
+        raise RuntimeError("release executable retained symbol or debug sections")
+    return description
+
+
 def measure(repo: Path, output: Path) -> None:
     target = Path("/tmp/kap0061-target")
     environment = {**os.environ, "CARGO_TARGET_DIR": str(target)}
@@ -501,8 +511,10 @@ def measure(repo: Path, output: Path) -> None:
         "binary": {
             "ordinary_sha256": hashlib.sha256(ordinary.read_bytes()).hexdigest(),
             "ordinary_bytes": ordinary.stat().st_size,
+            "ordinary_elf": inspect_elf(ordinary),
             "demo_sha256": hashlib.sha256(demonstration.read_bytes()).hexdigest(),
             "demo_bytes": demonstration.stat().st_size,
+            "demo_elf": inspect_elf(demonstration),
         },
     }
     output.write_text(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
