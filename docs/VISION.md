@@ -41,17 +41,17 @@ of provider truth or silently move customer authority into the cloud.
 
 ### Developer alpha: 0.1.x
 
-The current package proves one concrete operation through the local CLI, stdio MCP adapter,
+The 0.1.x package proves one concrete operation through the local CLI, stdio MCP adapter,
 disposable-kind demonstration, and signed receipt. Its Rust, CLI, MCP, configuration, journal, and
 receipt interfaces remain prototype-scoped.
 
 ### Developer beta: 0.2.0
 
-The accepted [v0.2 plan](V0.2.md) deepens the same operation into one technology-led developer beta.
-It adopts bounded CLI/MCP, grant/receipt continuity, private journal migration, release integrity,
-and qualification obligations without adding a capability, daemon, hosted dependency, public Rust
-SDK, or production-support claim. External beta evidence follows publication rather than blocking
-implementation.
+The accepted [v0.2 plan](V0.2.md) has deepened the same operation into one technology-led developer
+beta design. It adopts bounded CLI/MCP, grant/receipt continuity, private journal migration, release
+integrity, and qualification obligations without adding a capability, daemon, hosted dependency,
+public Rust SDK, or production-support claim. Ordered release evidence owns exact candidate and
+publication state; external beta evidence follows publication.
 
 ### Optional public sandbox
 
@@ -113,6 +113,21 @@ operational diagnostics. It does not absorb effect lifecycle or provider classif
 
 The existing `kapsel` executable remains in the root package until independent release cadence,
 installation size, or dependency isolation proves a separate CLI package useful.
+
+## Runtime and repository tooling posture
+
+A production resident installation must not require Python or shell for ordinary operation,
+recovery, migration, receipt inspection, health, upgrade, or rollback. Required customer-resident
+behavior belongs in supported Rust binaries with explicit compatibility and distribution evidence.
+This is a prospective v1 constraint, not a v0.2 artifact-layout change.
+
+Repository-only release, qualification, fixture, and documentation tooling may remain
+implementation-private in another language. Stable repeated invariants should deepen behind typed
+modules in the existing unpublished `kapsel-dev` package when deletion would otherwise spread those
+invariants across scripts. Keep at least one release verifier independent from the product
+implementation. A future public demonstration either retires with the v0.2 evaluation artifact or
+receives an explicit supported executable and prerequisite decision; shell or Python does not become
+a v1 distribution interface by inheritance.
 
 ## Generic data rule
 

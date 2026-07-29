@@ -7,8 +7,9 @@ Status: active experiment.
 Kind: design. Authority: repository purpose, active capability, release maturity, and technical
 non-goals.
 
-Owns: Project identity, the Kubernetes `set_deployment_image` experiment, and the distinction
-between the current 0.1 release and a future 1.0 compatibility commitment.
+Owns: Project identity, the Kubernetes `set_deployment_image` experiment, and the maturity
+distinction among the published 0.1 line, finite v0.2 beta design, and prospective 1.0 compatibility
+commitment.
 
 Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details, the
 fixed public-sandbox HTTP/deployment contracts, a reusable provider interface, or task status.
@@ -28,23 +29,25 @@ agent intent
   -> classifier-complete signed experiment receipt
 ```
 
-The sole capability is `kubernetes.set_deployment_image`. The current release demonstrates it
-against a local `kind` cluster; its technical owner is the
+The sole capability is `kubernetes.set_deployment_image`. The published `v0.1.1` artifact and the
+`0.2.0` source demonstrate it against a local `kind` cluster; exact current release state is
+external authenticated evidence. Its technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 The sole hosted exception is one fixed, non-consequential public sandbox composition over the same
 `Application`, lifecycle, result, and receipt semantics. The [sandbox API](SANDBOX_API.md) owns
 admission and projection, and [sandbox deployment](SANDBOX_DEPLOYMENT.md) owns isolation, capacity,
-key custody, and cleanup. These accepted contracts authorize later implementation packets, not a
-currently deployed service.
+key custody, and cleanup. Their implementation is accepted offline evidence for a paused program,
+not a currently deployed service.
 
-The current release is the stable `0.1.1` artifact for this one experiment—not a broader platform,
-production-support promise, or second provider. The accepted [v0.2 beta plan](V0.2.md) now deepens
+The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
+production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens
 that same operation into one finite developer-beta release; it does not widen the capability or
-claim external validation.
+claim external validation. Source and package identity do not establish candidate acceptance,
+currentness, or publication.
 
 ## 0.1.1 release
 
-`0.1.1` is the current non-prerelease Kapsel release. A fresh evaluator can:
+`0.1.1` is the published non-prerelease predecessor to the v0.2 beta. A fresh evaluator can:
 
 1. install a versioned artifact for the supported x86-64 GNU/Linux target and identify its exact
    source revision;
@@ -66,9 +69,9 @@ interfaces until a later release owns compatibility.
 
 ## Active v0.2.0 direction
 
-KAP-0046 selected one maintainer-led stabilization cycle. v0.2.0 will remain a developer beta for
-the same Kubernetes Deployment image change and will make the existing path coherent enough to
-release, explain, and evaluate after publication.
+KAP-0046 selected one maintainer-led stabilization cycle. v0.2.0 remains a developer beta for the
+same Kubernetes Deployment image change. Its implementation makes the existing path coherent enough
+to release, explain, and evaluate after publication.
 
 The beta must:
 

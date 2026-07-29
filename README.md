@@ -87,14 +87,18 @@ Each live command creates and removes its own uniquely named cluster. This is de
 evidence, not part of the deterministic default gate. See [Build](docs/BUILD.md) for exact meaning
 and prerequisites.
 
-## v0.2 developer beta direction
+## v0.2 developer beta status
 
-Kapsel is now deepening this same operation into one finite developer beta. The release will unify
-its production and crash-test lifecycle path, adopt explicit CLI/MCP and retained grant/receipt
-compatibility, prove `v0.1.1` upgrade and rollback, qualify hostile-input and resource behavior, and
-publish one authenticated reproducible x86-64 GNU/Linux artifact.
+Kapsel `0.2.0` is prepared as a finite developer beta with implemented compatibility, migration,
+qualification, and authenticated distribution-candidate requirements. A source checkout, package
+version, badge, or candidate file does not establish that exact bytes passed final acceptance,
+remain current, or were published; determine release state from the project's GitHub Releases and
+the authenticated evidence they name.
 
-It will not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident
+The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and retained
+grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
+resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution design. It
+does not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident
 daemon, hosted dependency, second target, or production-readiness claim. External beta use follows
 publication and decides what—if anything—Kapsel builds next. See the [v0.2 beta plan](docs/V0.2.md)
 and [ordered task route](tasks/README.md).

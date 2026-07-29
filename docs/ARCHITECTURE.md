@@ -1,6 +1,7 @@
 # Architecture
 
-Status: current architecture for published `v0.1.1` and the unpublished `0.2.0` candidate.
+Status: current architecture for `v0.1.1` and the `0.2.0` source; exact release state is external
+evidence.
 
 Kind: design. Authority: current module ownership, dependency direction, and composition status.
 
@@ -12,10 +13,10 @@ semantics, or public-sandbox wire/deployment behavior.
 ## Short answer
 
 KAP-0038 is one deep Rust product package, `kapsel`, for one bounded Kubernetes Deployment image
-operation. Its `Gateway` module entry type owns validation, journaling, conditional mutation,
-reconciliation, receiver classification, receipt construction, immutable publication, and offline
-inspection. Concrete operation names, including `SetDeploymentImageRequest`, keep the Kubernetes
-scope visible at the interface.
+operation. `Application` is the caller-facing deep module; its private `Gateway` semantic engine
+owns validation, journaling, conditional mutation, reconciliation, receiver classification, receipt
+construction, immutable publication, and offline inspection. Concrete operation names, including
+`SetDeploymentImageRequest`, keep the Kubernetes scope visible at the interface.
 
 ```text
 bounded request + signed exact grant + application-configured trust
@@ -30,8 +31,10 @@ receipt bytes + explicit trust + time + limits
   -> offline inspector
 ```
 
-The fixed evaluator command and thin fixed-schema MCP stdio adapter are implemented in `v0.1.1`.
-Their exact beta interfaces are adopted for v0.2.x, but v0.2 has not yet been built or published.
+The fixed evaluator command and thin fixed-schema MCP stdio adapter are implemented in `v0.1.1` and
+their exact beta interfaces are adopted for v0.2.x. The `0.2.0` source implements the adopted
+architecture. Source and package identity do not establish candidate acceptance or publication;
+ordered release evidence owns that state.
 
 ## Implemented modules
 

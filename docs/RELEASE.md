@@ -259,5 +259,6 @@ another platform. Receipts and reports remain sensitive operational metadata und
 The target and build behavior follow official Rust platform, Cargo locked-build/metadata, release
 profile, and path-remapping documentation. SPDX fields follow the SPDX 2.3 specification. Keyless
 blob signing and verification follow current Sigstore Cosign, Fulcio, Rekor, and trusted-root
-specifications. KAP-0062 owns candidate-production evidence; KAP-0063 alone owns tag, publication,
-public download verification, and website handoff.
+specifications. KAP-0062 retains immutable evidence for its superseded candidate; KAP-0065 owns
+replacement-candidate production evidence. KAP-0063 alone owns tag, publication, public download
+verification, and website handoff for the accepted replacement.

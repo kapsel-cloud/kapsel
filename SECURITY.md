@@ -1,15 +1,17 @@
 # Security policy
 
-Status: current `v0.1.1` experiment policy and adopted v0.2 beta maintenance posture.
+Status: published `v0.1.1` experiment policy and adopted v0.2 beta maintenance posture; exact
+current release state is external evidence.
 
 Owns: Vulnerability reporting and support posture for the public repository.
 
 Does not own: The threat model, production assurance, technical scope, or release progress.
 
-Kapsel has no supported production version. Do not use the current repository or the planned v0.2
-developer beta for consequential production actions. Package version `0.2.0` follows this finite
-developer-beta policy. Embedded policy text does not assert whether a particular artifact has passed
-release acceptance or been published; verify that status through the authenticated release evidence.
+Kapsel has no supported production version. Do not use the current repository or any v0.2 developer
+beta for consequential production actions. Package version `0.2.0` follows this finite
+developer-beta policy. Embedded policy text does not establish whether a particular artifact has
+passed release acceptance, remains current, or was published; verify that status through the
+authenticated release evidence.
 
 ## Reporting a vulnerability
 

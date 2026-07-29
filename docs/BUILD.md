@@ -45,95 +45,6 @@ cargo make fmt-check
 
 `cargo make fmt` formats Rust and Markdown. `cargo make fmt-check` checks both without rewriting.
 
-Validate the demonstration-scoped public sandbox fixtures without a service or network:
-
-```sh
-cargo make test-sandbox-contract
-```
-
-The direct command is `python3 scripts/test-sandbox-contract.py`. It validates the fixed KAP-0051
-HTTP transcripts, field bounds, replay ordering, outcome separation, disclosure key set, and raw
-receipt digest. It is contract evidence, not a sandbox implementation or live deployment proof.
-
-Run the deterministic KAP-0052 service, fixture, dependency, and deletion-boundary proof with:
-
-```sh
-cargo make test-sandbox-service
-```
-
-The focused package test crosses strict HTTP translation, durable admission/restart, the real
-`Application` against a deterministic Kubernetes transport, exact receipt publication/retrieval,
-retention, and cleanup. The boundary script also compiles the ordinary root package from a temporary
-copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
-website, or deployment provider; KAP-0053 owns those live properties.
-
-Run the KAP-0055 provider-neutral private runner handoff proof with:
-
-```sh
-cargo make test-sandbox-runner-handoff
-```
-
-It crosses the exact request/grant match check, strict binary codec, per-lease credential fencing,
-durable invocation and terminal-report transactions, separate native runner and system processes,
-deployment-faithful projected-input symlinks, empty gateway-volume initialization, receipt-free and
-finalized deterministic Kubernetes fixtures, exact receipt publication/replay including public
-expiry, and the runner CLI state-path boundary. It binds only loopback fixtures and proves no
-private-cluster reachability, network isolation, provider identity, storage fencing, key custody, or
-public endpoint.
-
-Run the KAP-0053 Authority Composition Proof (Gate 1) provider-neutral execution fixture with:
-
-```sh
-cargo make test-sandbox-gate1
-```
-
-It adds the native HTTP/1.1 process and private operator stop black-box tests, exact normalized
-Deployment-transition denial matrix, single-writer storage/backup composition lock, raw 32-byte
-Ed25519 known-answer and production-inspector path, and Authority Composition non-claim checks. It
-does not build or provision provider resources, exercise Kubernetes admission, prove snapshot
-fencing or managed key custody, publish an endpoint, or send public traffic. The image and
-storage-class template values remain intentionally blocked for Infrastructure Enforcement Proof
-(Gate 2) authorization.
-
-Build the locked local OCI image separately when Docker is available:
-
-```sh
-cargo make build-sandbox-gate1-image
-```
-
-This uses the pinned builder/runtime base and no provider account. A local image ID proves that one
-working-tree build completed; it is not registry provenance, byte-for-byte reproducibility, a
-vulnerability result, a selected runtime, or deployment evidence.
-
-Build and inspect the separate pre-authorization `linux/amd64` Infrastructure Enforcement image
-candidate with:
-
-```sh
-cargo make test-sandbox-gate2-image-candidate
-```
-
-This Docker-only lane verifies the pinned Distroless runtime signature with Cosign, builds the
-native binary for `linux/amd64`, checks its no-argument process boundary, rejects an image larger
-than 64 MiB, and uses Trivy to reject detected `HIGH` or `CRITICAL` package vulnerabilities. It
-requires Docker, Cosign, Trivy, and their network-fetched signature/transparency and vulnerability
-data. It creates no provider resource and is not part of the deterministic default gate. A passing
-local scan is time-bound input evidence, not registry provenance, runtime compatibility, absence of
-unknown vulnerabilities, or authorization for Infrastructure Enforcement.
-
-Validate the non-executed GKE Infrastructure Enforcement authorization candidate with:
-
-```sh
-cargo make test-sandbox-gate2-fixture
-```
-
-This standard-library-only gate checks the proposed `europe-north1` cluster, four-node arithmetic,
-gVisor/Dataplane V2/private-node controls, regional `ReadWriteOncePod` storage, three separate key
-roles, narrow provider-management-log exception, 24-hour configurable-record retention, inventory,
-teardown, cost classes, private approval placeholders, unresolved execution blockers, and negative
-mutations. It runs no provider command, reads no credential, and creates no resource, registry
-object, endpoint, DNS record, spend, or traffic. Passing means only that the authorization packet is
-internally consistent; every live property and Gate 2 authorization remains absent.
-
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:
@@ -270,9 +181,10 @@ python3 scripts/run-kap0061-measurements.py --output /tmp/kap0061-measurements.j
 ```
 
 The semantic lanes remain `cargo make test-simulation`, `cargo make test-fuzz`,
-`cargo make test-v011-upgrade`, `cargo make test-demo-harness`, and `cargo make test-kind`. KAP-0062
-must apply the baseline manifest's invalidation rules before treating any result as candidate
-evidence. These commands are qualification evidence, not production performance or support claims.
+`cargo make test-v011-upgrade`, `cargo make test-demo-harness`, and `cargo make test-kind`. The
+active candidate-production packet must apply the baseline manifest's invalidation rules before
+treating any result as candidate evidence. These commands are qualification evidence, not production
+performance or support claims.
 
 ## Live Kubernetes gate
 
@@ -325,7 +237,7 @@ and fault control is not part of agent input, operator JSON, or the public Rust 
 
 ## Evaluator commands
 
-Build the prototype Unix executable from this checkout:
+Build the Unix executable from this checkout:
 
 ```sh
 cargo build --locked --bin kapsel
@@ -352,7 +264,8 @@ target/debug/kapsel inspect \
 ```
 
 See the [evaluator command contract](COMMANDS.md) for exact JSON fields, authority separation,
-limits, machine output, and exit classes. These are prototype commands, not a stable installed CLI.
+limits, machine output, and exit classes. These forms are the supported v0.2.x beta CLI surface, not
+a production or v1-stable interface.
 
 ## MCP adapter
 
@@ -474,6 +387,102 @@ meaning, cleanup, unsupported targets, and non-claims. Public `0.1.1` assets are
 is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence remains in
 [KAP-0045](../tasks/KAP-0045.md).
 
+## Paused sandbox preservation lanes
+
+The sandbox is implemented but paused, excluded from the v0.2 release unit, and not authorized for
+provider selection, deployment, credentials, spend, an endpoint, or public traffic. These commands
+preserve accepted offline evidence; they are not KAP-0065 replacement-candidate requirements unless
+a changed shared input invalidates their owning lane.
+
+Validate the demonstration-scoped public sandbox fixtures without a service or network:
+
+```sh
+cargo make test-sandbox-contract
+```
+
+The direct command is `python3 scripts/test-sandbox-contract.py`. It validates the fixed KAP-0051
+HTTP transcripts, field bounds, replay ordering, outcome separation, disclosure key set, and raw
+receipt digest. It is contract evidence, not a sandbox implementation or live deployment proof.
+
+Run the deterministic KAP-0052 service, fixture, dependency, and deletion-boundary proof with:
+
+```sh
+cargo make test-sandbox-service
+```
+
+The focused package test crosses strict HTTP translation, durable admission/restart, the real
+`Application` against a deterministic Kubernetes transport, exact receipt publication/retrieval,
+retention, and cleanup. The boundary script also compiles the ordinary root package from a temporary
+copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
+website, or deployment provider; KAP-0053 owns those live properties.
+
+Run the KAP-0055 provider-neutral private runner handoff proof with:
+
+```sh
+cargo make test-sandbox-runner-handoff
+```
+
+It crosses the exact request/grant match check, strict binary codec, per-lease credential fencing,
+durable invocation and terminal-report transactions, separate native runner and system processes,
+deployment-faithful projected-input symlinks, empty gateway-volume initialization, receipt-free and
+finalized deterministic Kubernetes fixtures, exact receipt publication/replay including public
+expiry, and the runner CLI state-path boundary. It binds only loopback fixtures and proves no
+private-cluster reachability, network isolation, provider identity, storage fencing, key custody, or
+public endpoint.
+
+Run the KAP-0053 Authority Composition Proof (Gate 1) provider-neutral execution fixture with:
+
+```sh
+cargo make test-sandbox-gate1
+```
+
+It adds the native HTTP/1.1 process and private operator stop black-box tests, exact normalized
+Deployment-transition denial matrix, single-writer storage/backup composition lock, raw 32-byte
+Ed25519 known-answer and production-inspector path, and Authority Composition non-claim checks. It
+does not build or provision provider resources, exercise Kubernetes admission, prove snapshot
+fencing or managed key custody, publish an endpoint, or send public traffic. The image and
+storage-class template values remain intentionally blocked for Infrastructure Enforcement Proof
+(Gate 2) authorization.
+
+Build the locked local OCI image separately when Docker is available:
+
+```sh
+cargo make build-sandbox-gate1-image
+```
+
+This uses the pinned builder/runtime base and no provider account. A local image ID proves that one
+working-tree build completed; it is not registry provenance, byte-for-byte reproducibility, a
+vulnerability result, a selected runtime, or deployment evidence.
+
+Build and inspect the separate pre-authorization `linux/amd64` Infrastructure Enforcement image
+candidate with:
+
+```sh
+cargo make test-sandbox-gate2-image-candidate
+```
+
+This Docker-only lane verifies the pinned Distroless runtime signature with Cosign, builds the
+native binary for `linux/amd64`, checks its no-argument process boundary, rejects an image larger
+than 64 MiB, and uses Trivy to reject detected `HIGH` or `CRITICAL` package vulnerabilities. It
+requires Docker, Cosign, Trivy, and their network-fetched signature/transparency and vulnerability
+data. It creates no provider resource and is not part of the deterministic default gate. A passing
+local scan is time-bound input evidence, not registry provenance, runtime compatibility, absence of
+unknown vulnerabilities, or authorization for Infrastructure Enforcement.
+
+Validate the non-executed GKE Infrastructure Enforcement authorization candidate with:
+
+```sh
+cargo make test-sandbox-gate2-fixture
+```
+
+This standard-library-only gate checks the proposed `europe-north1` cluster, four-node arithmetic,
+gVisor/Dataplane V2/private-node controls, regional `ReadWriteOncePod` storage, three separate key
+roles, narrow provider-management-log exception, 24-hour configurable-record retention, inventory,
+teardown, cost classes, private approval placeholders, unresolved execution blockers, and negative
+mutations. It runs no provider command, reads no credential, and creates no resource, registry
+object, endpoint, DNS record, spend, or traffic. Passing means only that the authorization packet is
+internally consistent; every live property and Gate 2 authorization remains absent.
+
 ## Toolchain
 
 Authoritative inputs are `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`,
@@ -481,4 +490,7 @@ Authoritative inputs are `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rus
 `scripts/ci-local.sh`.
 
 Cargo-make, Prettier 3, and Python 3.11 or newer are repository prerequisites. Hosted CI pins the
-Rust toolchain, Prettier version, and Python 3.11.
+Rust toolchain, Prettier version, and Python 3.11. Python, shell, Docker, kind, kubectl, Cosign,
+Trivy, and curl are build, qualification, release, or demonstration prerequisites where named; they
+are not Kapsel caller interfaces. The ordinary installed executable requires none of them merely to
+start, report its version, or expose the adopted local and MCP grammar.

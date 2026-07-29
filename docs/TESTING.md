@@ -170,6 +170,8 @@ the visual demonstration does not replace them.
 
 ## KAP-0051 public sandbox contract proof
 
+The sandbox is implemented but paused and excluded from the v0.2 release unit. The following lanes
+preserve accepted offline evidence; they are not active deployment or replacement-candidate scope.
 The sandbox contract lane is distinct from KAP-0038 gateway tests. It must not widen the
 `Application`, expose the gateway journal, or treat a service simulation as Kubernetes/isolation
 evidence.
