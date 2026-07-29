@@ -15,10 +15,10 @@ Read this file first. It routes work; current technical truth lives in the linke
    [KAP-0062](tasks/KAP-0062.md). Completed candidate-correction packet
    [KAP-0065](tasks/KAP-0065.md) produced the exact replacement candidate after fresh documentation
    review found bundled status contradictions. Release acceptance packet
-   [KAP-0063](tasks/KAP-0063.md) is active for independent acceptance and rehearsal; publication
-   still requires explicit approval. The [evaluator evidence packet](tasks/KAP-0047.md) is
-   post-release. The [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md)
-   remain paused.
+   [KAP-0063](tasks/KAP-0063.md) completed independent acceptance and rehearsal and has a local-only
+   annotated tag; maintainer push and publication remain pending, and release creation still
+   requires explicit approval. The [evaluator evidence packet](tasks/KAP-0047.md) is post-release.
+   The [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md) remain paused.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -31,9 +31,10 @@ Read this file first. It routes work; current technical truth lives in the linke
 Kapsel produced one finite v0.2.0 Kubernetes effect-gateway developer-beta candidate around the sole
 `kubernetes.set_deployment_image` capability, then replaced it after fresh documentation review
 found bundled status contradictions. KAP-0065 completed the narrow correction and exact
-replacement-candidate evidence. KAP-0063 now owns independent acceptance and rehearsal, while
-publication remains separately gated. The release owner is [`docs/V0.2.md`](docs/V0.2.md);
-lifecycle, receiver-result, and receipt semantics remain owned by
+replacement-candidate evidence. KAP-0063 completed independent acceptance and rehearsal and now owns
+the pending maintainer push, publication transaction, and public downloaded verification; release
+creation remains separately gated. The release owner is [`docs/V0.2.md`](docs/V0.2.md); lifecycle,
+receiver-result, and receipt semantics remain owned by
 [`docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md`](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 Use [`docs/INDEX.md`](docs/INDEX.md) for every other owner rather than recreating its routing here.
 
