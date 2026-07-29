@@ -1,9 +1,9 @@
 # Technical task route
 
 Status: v0.2.0 Kubernetes effect-gateway beta selected. Upgrade, release-source locality, finite
-qualification, distribution, documentation-corrected replacement, and pre-publication acceptance and
-rehearsal are complete. Maintainer push, publication, public verification, and all later packets
-remain ordered and gated.
+qualification, distribution, documentation-corrected replacement, acceptance, publication, and
+public verification are complete. The bounded v0.2 beta evidence cycle is active; every later
+implementation route remains separately gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -11,9 +11,8 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 ## Current direction
 
 [KAP-0046](KAP-0046.md) selected **Stabilize** as an explicit maintainer technology bet. Kapsel will
-ship one deep developer beta around the existing `kubernetes.set_deployment_image` capability after
-KAP-0063 publishes and publicly verifies the independently accepted and rehearsed exact KAP-0065
-replacement candidate, then use external beta adoption to choose another product cycle.
+evaluate the published developer beta around the existing `kubernetes.set_deployment_image`
+capability, then use external beta adoption to choose—rather than assume—another product cycle.
 
 [`docs/V0.2.md`](../docs/V0.2.md) owns the finite promise:
 
@@ -32,19 +31,19 @@ implementation.
 
 ## v0.2.0 ordered sequence
 
-| Order | Packet                  | Status       | Required result                                                                                      |
-| ----: | ----------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
-|     0 | [KAP-0046](KAP-0046.md) | Complete     | Selected Stabilize and rejected widening, freeze, retirement, suite, daemon, and hosted alternatives |
-|     0 | [KAP-0057](KAP-0057.md) | Complete     | Defined and adopted the finite release unit, compatibility classes, gates, and non-goals             |
-|     1 | [KAP-0058](KAP-0058.md) | Complete     | One production lifecycle implementation crossed by every crash test                                  |
-|     2 | [KAP-0059](KAP-0059.md) | Complete     | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
-|     3 | [KAP-0060](KAP-0060.md) | Complete     | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
-|     4 | [KAP-0064](KAP-0064.md) | Complete     | Stable, navigable private implementation locality across the root release source                     |
-|     5 | [KAP-0061](KAP-0061.md) | Complete     | Accepted finite reliability, hostile-input, security, and performance qualification                  |
-|     6 | [KAP-0062](KAP-0062.md) | Complete     | Authenticated, reproducible beta distribution candidate                                              |
-|     7 | [KAP-0065](KAP-0065.md) | Complete     | Corrected bundled release truth and produced one exact replacement candidate                         |
-|     8 | [KAP-0063](KAP-0063.md) | Active       | Publish, download-verify, and hand off the accepted and rehearsed exact replacement candidate        |
-|     9 | [KAP-0047](KAP-0047.md) | Post-release | Bounded evidence from the exact published beta selects what follows                                  |
+| Order | Packet                  | Status   | Required result                                                                                      |
+| ----: | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+|     0 | [KAP-0046](KAP-0046.md) | Complete | Selected Stabilize and rejected widening, freeze, retirement, suite, daemon, and hosted alternatives |
+|     0 | [KAP-0057](KAP-0057.md) | Complete | Defined and adopted the finite release unit, compatibility classes, gates, and non-goals             |
+|     1 | [KAP-0058](KAP-0058.md) | Complete | One production lifecycle implementation crossed by every crash test                                  |
+|     2 | [KAP-0059](KAP-0059.md) | Complete | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
+|     3 | [KAP-0060](KAP-0060.md) | Complete | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
+|     4 | [KAP-0064](KAP-0064.md) | Complete | Stable, navigable private implementation locality across the root release source                     |
+|     5 | [KAP-0061](KAP-0061.md) | Complete | Accepted finite reliability, hostile-input, security, and performance qualification                  |
+|     6 | [KAP-0062](KAP-0062.md) | Complete | Authenticated, reproducible beta distribution candidate                                              |
+|     7 | [KAP-0065](KAP-0065.md) | Complete | Corrected bundled release truth and produced one exact replacement candidate                         |
+|     8 | [KAP-0063](KAP-0063.md) | Complete | Published, download-verified, and handed off exact prerelease `v0.2.0`                               |
+|     9 | [KAP-0047](KAP-0047.md) | Active   | Bounded evidence from exact public prerelease `v0.2.0` selects what follows                          |
 
 Implement and independently review one packet at a time. Do not combine architecture, compatibility,
 migration, locality, qualification, distribution, and publication into one change. A passing packet

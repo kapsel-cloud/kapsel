@@ -1,12 +1,12 @@
 # kapsel
 
 [![CI](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml)
-[![GitHub release](https://img.shields.io/github/v/release/kapsel-cloud/kapsel?display_name=tag&sort=semver)](https://github.com/kapsel-cloud/kapsel/releases/latest)
+[![Developer beta](https://img.shields.io/badge/developer_beta-v0.2.0-orange)](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0)
 
-A crash-recoverable effect-gateway experiment for autonomous agents.
+A crash-recoverable Kubernetes effect gateway for autonomous agents.
 
-Kapsel tests a simple idea: give agents bounded operations, not provider credentials. Its current
-experiment accepts one authorized Kubernetes image change, records state before any mutation
+Kapsel's developer beta tests a simple idea: give agents bounded operations, not provider
+credentials. It accepts one authorized Kubernetes image change, records state before any mutation
 attempt, recovers without blindly retrying, and returns an inspectable `SUCCEEDED`, `FAILED`, or
 `UNKNOWN` result.
 
@@ -21,10 +21,10 @@ bounded agent intent
 
 > [!WARNING]
 >
-> Kapsel 0.1.1 is an experiment. It is not production-ready, a generic agent runtime, or a
+> Kapsel 0.2.0 is a developer beta. It is not production-ready, a generic agent runtime, or a
 > compliance product. Do not use it for consequential production changes.
 
-## Active experiment
+## Developer beta
 
 The only active capability is:
 
@@ -47,11 +47,12 @@ same bounded request.
 Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
 of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
 
-The [Kapsel `0.1.1` release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.1) is the
-stable x86-64 GNU/Linux experiment artifact. “Stable” identifies a named, non-prerelease artifact;
-it does not promise production support or compatibility for the CLI, configuration, Rust API, MCP
-adapter, receipt format, or artifact layout. See the
-[experiment boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before use.
+The [Kapsel `0.2.0` release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0) is the
+public x86-64 GNU/Linux developer-beta prerelease. It adopts bounded v0.2.x compatibility for the
+CLI, fixed stdio MCP adapter, grant and retained-receipt bytes, archive layout, and journal upgrade.
+It does not promise production support or external Rust API compatibility. See the
+[effect-gateway boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before
+use.
 
 ## What exists today
 
@@ -65,7 +66,7 @@ adapter, receipt format, or artifact layout. See the
 | Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness        |
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                    |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests              |
-| Versioned x86-64 Linux artifact and checksum     | Implemented as a reproducible stable release lane           |
+| Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0    |
 | Sandbox Authority Composition Proof (Gate 1)     | Corrected offline prerequisites accepted; live proof absent |
 | Provider-neutral private runner handoff          | Implemented and accepted through offline process proofs     |
 
@@ -89,19 +90,19 @@ and prerequisites.
 
 ## v0.2 developer beta status
 
-Kapsel `0.2.0` is prepared as a finite developer beta with implemented compatibility, migration,
-qualification, and authenticated distribution-candidate requirements. A source checkout, package
-version, badge, or candidate file does not establish that exact bytes passed final acceptance,
-remain current, or were published; determine release state from the project's GitHub Releases and
-the authenticated evidence they name.
+Kapsel `0.2.0` is published and publicly verified as a finite developer-beta prerelease. Its exact
+five assets, authenticated digest manifest, source identity, safe extraction, install, CLI/MCP,
+inspection, `v0.1.1` upgrade and rollback, disposable-kind demonstration, cleanup, and uninstall
+passed fresh public-download verification. A package version or source checkout alone does not
+establish release identity; use the exact GitHub release and authenticate its signed manifest.
 
 The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and retained
 grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
-resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution design. It
-does not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident
-daemon, hosted dependency, second target, or production-readiness claim. External beta use follows
-publication and decides what—if anything—Kapsel builds next. See the [v0.2 beta plan](docs/V0.2.md)
-and [ordered task route](tasks/README.md).
+resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
+not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
+hosted dependency, second target, or production-readiness claim. KAP-0047 now gathers bounded
+external technical evidence to decide what—if anything—Kapsel builds next. See the
+[v0.2 beta design](docs/V0.2.md) and [ordered task route](tasks/README.md).
 
 ## Scope discipline
 
