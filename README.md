@@ -100,9 +100,10 @@ The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and
 grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
 resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
-hosted dependency, second target, or production-readiness claim. KAP-0047 now gathers bounded
-external technical evidence to decide what—if anything—Kapsel builds next. See the
-[v0.2 beta design](docs/V0.2.md) and [ordered task route](tasks/README.md).
+hosted dependency, second target, or production-readiness claim. KAP-0069 is the sole active
+technical decision: it selects whether and how to continue toward one bounded public proof without
+authorizing deployment. KAP-0047 remains the supporting owner for approved aggregate technical
+findings. See the [v0.2 beta design](docs/V0.2.md) and [ordered task route](tasks/README.md).
 
 ## Scope discipline
 

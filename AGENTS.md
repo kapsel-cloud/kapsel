@@ -16,8 +16,11 @@ Read this file first. It routes work; current technical truth lives in the linke
    [KAP-0065](tasks/KAP-0065.md) produced the exact replacement candidate after fresh documentation
    review found bundled status contradictions. Completed release acceptance packet
    [KAP-0063](tasks/KAP-0063.md) published and publicly verified exact prerelease `v0.2.0`. The
-   [evaluator evidence packet](tasks/KAP-0047.md) is now active against only that release. The
-   [sandbox deployment](tasks/KAP-0053.md) and [umbrella](tasks/KAP-0050.md) remain paused.
+   [evaluator evidence packet](tasks/KAP-0047.md) remains a supporting owner for exact-artifact
+   findings. The active [sandbox route decision](tasks/KAP-0069.md) now selects continuation,
+   replacement, or retirement without authorizing deployment. Only if a continuation route produces
+   an exactly accepted public proof may the [resident preview decision](tasks/KAP-0054.md) begin;
+   implementation remains separately gated.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -27,12 +30,16 @@ Read this file first. It routes work; current technical truth lives in the linke
 
 ## Current route
 
-Kapsel produced one finite v0.2.0 Kubernetes effect-gateway developer-beta candidate around the sole
-`kubernetes.set_deployment_image` capability, then replaced it after fresh documentation review
-found bundled status contradictions. KAP-0065 completed the narrow correction and exact
-replacement-candidate evidence. KAP-0063 published and publicly verified exact developer-beta
-prerelease `v0.2.0`; KAP-0047 now owns bounded external technical evidence. The release owner is
-[`docs/V0.2.md`](docs/V0.2.md); lifecycle, receiver-result, and receipt semantics remain owned by
+Kapsel has a verified v0.2.0 mechanism and is deciding whether and how to convert it into one
+bounded product proof for the same sole `kubernetes.set_deployment_image` capability. KAP-0069 first
+decides which accepted sandbox contracts, implementation, and deployment evidence the public proof
+retains, reshapes, supersedes, or retires. If it retires the proof, no live successor or resident
+decision follows. Only after a continuation route's exact public-proof acceptance may KAP-0054
+decide whether the existing CLI/MCP process suffices or one finite resident boundary is justified;
+it does not pre-authorize a daemon, transport, package, or production release. KAP-0047 remains
+available for approved aggregate technical findings but is not the implementation route. The release
+owner is [`docs/V0.2.md`](docs/V0.2.md); lifecycle, receiver-result, and receipt semantics remain
+owned by
 [`docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md`](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 Use [`docs/INDEX.md`](docs/INDEX.md) for every other owner rather than recreating its routing here.
 

@@ -87,9 +87,14 @@ The beta must:
 
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
-External beta evidence follows publication and selects whether another technical cycle is justified.
+After publication, an explicit maintainer product-scope decision activated KAP-0069 to select
+whether and how one bounded fixed-input public proof should continue. That decision does not widen
+the capability or authorize deployment. KAP-0047 remains the supporting owner for approved aggregate
+external technical findings; retained customer-controlled use is still required before production
+resident compatibility or another broader cycle.
 
-The direct owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md).
+The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
+route is owned by [the task route](../tasks/README.md).
 
 ## Future v1.0.0 requirements
 
