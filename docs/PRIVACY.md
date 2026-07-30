@@ -94,14 +94,20 @@ locators, times, scenarios, and copied receipts can correlate activity.
   admission. A further 24-hour private tombstone retains exactly service-keyed run/idempotency
   digests and expiry needed to return `run_expired` and prevent key reuse. It contains no request or
   scenario digest. Public and idempotency data is then deleted.
-- Backups cannot silently extend these periods. Backup design must support expiry or cryptographic
-  erasure and a restore must reapply deletions before serving traffic. Cleanup ownership records may
-  outlive public expiry only until owned resources are deleted and the bounded operator record is no
-  longer required.
-- Raw gateway journals, receipt-storage object keys, internal ownership labels, runner
-  Pod/node/lease identifiers, controller paths, credentials, private signing material, trust
-  decisions, fault controls, generic logs, and private infrastructure identifiers are never public
-  protocol fields.
+- Backups cannot silently extend these periods. The sole crash-consistent unit may contain only
+  admission/projection/stop state, immutable receipts and pending publication, the active
+  journal/outbox when present, capacity/lease state, complete ownership inventory, compatible
+  deployment metadata, and required public trust. It is owner-private and access-controlled; no
+  diagnostic, provider log, evidence archive, or second backup may copy its request, locator,
+  receipt, journal, key, or trust-decision payload. Private signing keys and Kubernetes credentials
+  remain in separately owned continuity sources. Restore fences the original writer, permits one
+  runnable journal, and reapplies expiry/tombstone deletion before serving. Cleanup ownership may
+  outlive public expiry only until exact owned-resource absence is recorded.
+- Raw gateway journals and outboxes, receipt-storage object keys, internal ownership labels, host
+  runner OS/lease identities, prior-run paths, controller volume/database/receipt paths, staged
+  key/trust and Kubernetes-input paths, backup/snapshot identities, canary identity, credentials,
+  private signing material, trust decisions, fault controls, generic logs, and private cluster or
+  provider identifiers are never public protocol fields.
 - Public fixture times and identifiers are synthetic. Public technical evidence reports only
   aggregate approved facts and exact deployed revisions, never visitor-level traces.
 

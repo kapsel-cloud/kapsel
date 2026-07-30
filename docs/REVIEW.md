@@ -72,12 +72,30 @@ docs: tighten the active capability contract
   explicit?
 - Are run IDs unguessable bearer locators without becoming authentication or anonymity claims?
 - Do global stop and saturation fail before admission while retained reads/recovery/cleanup
-  continue?
-- Is every run policy-complete before dispatch, and does cleanup delete only recorded UIDs?
-- Are private runner/store/control-plane identifiers, paths, credentials, uncontrolled logs, raw
-  journal rows, and fault controls absent from every public field and fixture?
-- Did a contract choice accidentally select a provider, framework, store, generic protocol package,
-  production interface, or second capability?
+  continue, including after controller-host loss and fenced replacement?
+- Is the maximum exactly one through terminal/`not_attempted` handoff and complete UID/owner
+  absence, with no next dispatch while cleanup, runner revocation, or journal handoff is incomplete?
+- Is the host boundary explicit: one controller-state/receipt writer, a separate per-run OS
+  identity, descriptor-relative no-follow fixed inputs, stale-process/descriptor/lease denial, and
+  no runner access to controller state, receipts, staged sources, backups, or prior journals?
+- Is every run policy-complete before dispatch, does the exact conditional patch preserve every
+  field except the named image and required operation annotation, and are canary/unrelated/prior-run
+  denials temporal rather than simultaneous-run claims?
+- Are controller, runner, cleanup, target, backup, key, and operator authorities fixed and separate?
+- Does cleanup delete only recorded UID/owner objects and prove exact absence before releasing
+  capacity?
+- Does one crash-consistent backup identity cover admission, immutable receipts, active
+  journal/outbox, capacity, ownership inventory, deployment metadata, and public trust while
+  excluding private keys; does restore fence the original writer, permit one runnable journal,
+  reapply deletion before serve, and avoid duplicate identity/capacity?
+- Are operation result, receipt availability, deadline, handoff transport, cleanup, and
+  visualization still separate facts at every crash/rollback seam?
+- Are private host/runner/store/staging/backup/provider identifiers, paths, credentials,
+  uncontrolled logs, raw journal rows, and fault controls absent from every public field and
+  fixture?
+- Did a contract choice accidentally retain the remote controller/stager route or select a provider,
+  framework, generic store/queue/protocol package, resident/production interface, or second
+  capability?
 
 ## Documentation review
 

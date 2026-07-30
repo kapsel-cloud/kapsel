@@ -56,19 +56,19 @@ use.
 
 ## What exists today
 
-| Surface                                          | Status                                                      |
-| ------------------------------------------------ | ----------------------------------------------------------- |
-| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                          |
-| Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate     |
-| Classifier-complete receipt and inspection       | Implemented in the experiment library                       |
-| Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests               |
-| Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate                  |
-| Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness        |
-| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                    |
-| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests              |
-| Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0    |
-| Sandbox Authority Composition Proof (Gate 1)     | Corrected offline prerequisites accepted; live proof absent |
-| Provider-neutral private runner handoff          | Implemented and accepted through offline process proofs     |
+| Surface                                          | Status                                                   |
+| ------------------------------------------------ | -------------------------------------------------------- |
+| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                       |
+| Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate  |
+| Classifier-complete receipt and inspection       | Implemented in the experiment library                    |
+| Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests            |
+| Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate               |
+| Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness     |
+| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                 |
+| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
+| Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
+| Serialized sandbox Contract Correction (Gate 0)  | Accepted; offline composition Gate 1 remains unstarted   |
+| Provider-neutral private runner handoff          | Implemented and accepted through offline process proofs  |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the

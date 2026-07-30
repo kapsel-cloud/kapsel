@@ -4,7 +4,11 @@ set -eu
 # Rustfmt's max_width is advisory. Check tracked Rust source independently so
 # macros, literals, and method chains cannot silently exceed the repository limit.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git ls-files -z -- '*.rs'
+  git ls-files -- '*.rs' | while IFS= read -r file; do
+    if [ -f "$file" ]; then
+      printf '%s\0' "$file"
+    fi
+  done
 else
   find . -type f -name '*.rs' ! -path './target/*' -print0
 fi | LC_ALL=C xargs -0 awk -v max_width=100 '

@@ -27,19 +27,9 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-mod cleanup_state;
-mod controller_state_transport;
-mod key_staging;
-mod kubernetes_cleanup;
 mod kubernetes_policy;
-mod kubernetes_scheduler;
 mod runner_handoff;
 mod runner_process;
-mod scheduler_state;
-
-pub use key_staging::run as run_key_stager_process;
-pub use kubernetes_cleanup::run_cleanup_role;
-pub use kubernetes_scheduler::run_scheduler_role;
 use runner_handoff::{
     constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
     HandoffIdentity,
@@ -49,57 +39,6 @@ pub use runner_handoff::{
     TerminalHandoffReport,
 };
 pub use runner_process::run as run_runner_process;
-
-/// Runs the authenticated system-side listener for only cleanup-state operations.
-///
-/// # Errors
-///
-/// Returns a fixed diagnostic when the listener, TLS inputs, or exact cleanup role binding is
-/// unavailable.
-pub async fn run_cleanup_state_role(
-    service: Service,
-    listen: std::net::SocketAddr,
-    certificate_path: PathBuf,
-    private_key_path: PathBuf,
-    cleanup_service_account_uid: String,
-    kubernetes: kube::Client,
-) -> Result<(), &'static str> {
-    cleanup_state::serve(
-        service,
-        listen,
-        certificate_path,
-        private_key_path,
-        cleanup_service_account_uid,
-        kubernetes,
-    )
-    .await
-}
-
-/// Runs the authenticated system-side listener for only scheduler-state operations.
-///
-/// # Errors
-///
-/// Returns a fixed diagnostic when the listener, role binding, or system clock is unavailable.
-pub async fn run_scheduler_state_role(
-    service: Service,
-    listen: std::net::SocketAddr,
-    certificate_path: PathBuf,
-    private_key_path: PathBuf,
-    scheduler_service_account_uid: String,
-    kubernetes: kube::Client,
-    handoff_endpoint: std::net::SocketAddr,
-) -> Result<(), &'static str> {
-    scheduler_state::serve(
-        service,
-        listen,
-        certificate_path,
-        private_key_path,
-        scheduler_service_account_uid,
-        kubernetes,
-        handoff_endpoint,
-    )
-    .await
-}
 
 const QUEUED_RUNS_MAX: i64 = 32;
 const ACTIVE_RUNS_MAX: i64 = 8;
@@ -240,29 +179,6 @@ pub struct ProvisionedObject {
     pub owner_label: String,
     /// SHA-256 digest of the observed policy-relevant content.
     pub content_digest: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ExternalResourcePhase {
-    BeforeAssignment,
-    BeforePod,
-    Runner,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ExternalResourceSlot {
-    pub(crate) identity: String,
-    pub(crate) phase: ExternalResourcePhase,
-    pub(crate) uid: Option<String>,
-    pub(crate) owner_label: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ExternalResourceInventory {
-    pub(crate) slots: Vec<ExternalResourceSlot>,
-    pub(crate) assignment_eligible: bool,
-    pub(crate) pod_eligible: bool,
-    pub(crate) invocation_eligible: bool,
 }
 
 /// One deterministic post-deletion observation for a recorded owned object.
@@ -706,7 +622,6 @@ impl Service {
                 [&run_id],
             )
             .map_err(storage_error)?;
-        insert_external_resource_slots(&transaction, &run_id)?;
         append_event(&transaction, &run_id, "execution.started", now_unix_s)?;
         transaction.commit().map_err(storage_error)?;
         Ok(DispatchLease {
@@ -739,36 +654,6 @@ impl Service {
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(storage_error)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
-    }
-
-    fn scheduler_policy_status(&self, run_id: &str) -> Result<Option<bool>, ServiceError> {
-        bounded_hex_128(run_id)?;
-        let connection = self.connection()?;
-        let state: Option<(String, bool, bool, String, bool)> = connection
-            .query_row(
-                concat!(
-                    "SELECT execution_state, application_invoked, policy_verified, cleanup_state, ",
-                    "active FROM runs WHERE run_id = ?1"
-                ),
-                [run_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(storage_error)?;
-        Ok(
-            state.and_then(|(execution, invoked, verified, cleanup, active)| {
-                (execution == "running" && !invoked && cleanup == "pending" && active)
-                    .then_some(verified)
-            }),
-        )
     }
 
     /// Claims or renews recovery after process loss without changing public projection.
@@ -874,73 +759,6 @@ impl Service {
             operation_id,
             lease_id: lease.lease_id.clone(),
             credential: lease.handoff_credential,
-            endpoint,
-        })
-    }
-
-    fn appoint_handoff_assignment(
-        &self,
-        lease: &DispatchLease,
-        endpoint: std::net::SocketAddr,
-        now_unix_s: i64,
-    ) -> Result<HandoffAssignment, ServiceError> {
-        self.validate_lease(lease, now_unix_s)?;
-        let credential = random_credential()?;
-        let mut connection = self.connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage_error)?;
-        let operation_id: String = transaction
-            .query_row(
-                concat!(
-                    "SELECT operation_id FROM runs WHERE run_id = ?1 AND lease_id = ?2 ",
-                    "AND lease_epoch = ?3 AND lease_expires_at > ?4 AND active = 1 ",
-                    "AND policy_verified = 1 AND application_invoked = 0 ",
-                    "AND execution_state = 'running' AND cleanup_state = 'pending' ",
-                    "AND (SELECT COUNT(*) FROM external_resource_slots WHERE run_id = ?1 ",
-                    "AND phase = 'before_assignment' AND uid IS NOT NULL) = 6"
-                ),
-                params![lease.run_id, lease.lease_id, lease.epoch, now_unix_s],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage_error)?
-            .ok_or(ServiceError::InvalidTransition)?;
-        let identity = HandoffIdentity {
-            run_id: lease.run_id.clone(),
-            operation_id: operation_id.clone(),
-            lease_id: lease.lease_id.clone(),
-            credential,
-        };
-        let verifier = credential_verifier(&identity);
-        let changed = transaction
-            .execute(
-                concat!(
-                    "UPDATE runs SET handoff_credential_verifier = ?5 WHERE run_id = ?1 ",
-                    "AND lease_id = ?2 AND lease_epoch = ?3 AND lease_expires_at > ?4 ",
-                    "AND active = 1 AND policy_verified = 1 AND application_invoked = 0 ",
-                    "AND execution_state = 'running' AND cleanup_state = 'pending' ",
-                    "AND (SELECT COUNT(*) FROM external_resource_slots WHERE run_id = ?1 ",
-                    "AND phase = 'before_assignment' AND uid IS NOT NULL) = 6"
-                ),
-                params![
-                    lease.run_id,
-                    lease.lease_id,
-                    lease.epoch,
-                    now_unix_s,
-                    verifier.as_slice()
-                ],
-            )
-            .map_err(storage_error)?;
-        if changed != 1 {
-            return Err(ServiceError::InvalidTransition);
-        }
-        transaction.commit().map_err(storage_error)?;
-        Ok(HandoffAssignment {
-            run_id: lease.run_id.clone(),
-            operation_id,
-            lease_id: lease.lease_id.clone(),
-            credential,
             endpoint,
         })
     }
@@ -1191,152 +1009,6 @@ impl Service {
         }
     }
 
-    pub(crate) fn external_resource_inventory(
-        &self,
-        lease: &DispatchLease,
-        now_unix_s: i64,
-    ) -> Result<ExternalResourceInventory, ServiceError> {
-        self.validate_lease(lease, now_unix_s)?;
-        let connection = self.connection()?;
-        let mut statement = connection
-            .prepare(concat!(
-                "SELECT identity, phase, uid, owner_label FROM external_resource_slots ",
-                "WHERE run_id = ?1 ORDER BY ordinal"
-            ))
-            .map_err(storage_error)?;
-        let rows = statement
-            .query_map([&lease.run_id], |row| {
-                let phase = match row.get::<_, String>(1)?.as_str() {
-                    "before_assignment" => ExternalResourcePhase::BeforeAssignment,
-                    "before_pod" => ExternalResourcePhase::BeforePod,
-                    "runner" => ExternalResourcePhase::Runner,
-                    _ => return Err(rusqlite::Error::InvalidQuery),
-                };
-                Ok(ExternalResourceSlot {
-                    identity: row.get(0)?,
-                    phase,
-                    uid: row.get(2)?,
-                    owner_label: row.get(3)?,
-                })
-            })
-            .map_err(storage_error)?;
-        let slots = rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)?;
-        if slots.len() != 9 {
-            return Err(ServiceError::Unavailable);
-        }
-        let registered = |phase| {
-            slots
-                .iter()
-                .filter(|slot| slot.phase == phase)
-                .all(|slot| slot.uid.is_some() && slot.owner_label.is_some())
-        };
-        let assignment_eligible = registered(ExternalResourcePhase::BeforeAssignment);
-        let pod_eligible = assignment_eligible && registered(ExternalResourcePhase::BeforePod);
-        let invocation_eligible = pod_eligible && registered(ExternalResourcePhase::Runner);
-        Ok(ExternalResourceInventory {
-            slots,
-            assignment_eligible,
-            pod_eligible,
-            invocation_eligible,
-        })
-    }
-
-    pub(crate) fn register_external_resource(
-        &self,
-        lease: &DispatchLease,
-        identity: &str,
-        uid: &str,
-        owner_label: &str,
-        now_unix_s: i64,
-    ) -> Result<(), ServiceError> {
-        self.validate_lease(lease, now_unix_s)?;
-        bounded_identity(uid)?;
-        bounded_identity(owner_label)?;
-        object_identity_parts(identity)?;
-        let mut connection = self.connection()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage_error)?;
-        let state: (String, bool, bool, String, String) = transaction
-            .query_row(
-                concat!(
-                    "SELECT cleanup_identity, policy_verified, application_invoked, ",
-                    "execution_state, cleanup_state FROM runs WHERE run_id = ?1 AND lease_id = ?2 ",
-                    "AND lease_epoch = ?3 AND lease_expires_at > ?4 AND active = 1"
-                ),
-                params![lease.run_id, lease.lease_id, lease.epoch, now_unix_s],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(storage_error)?
-            .ok_or(ServiceError::InvalidTransition)?;
-        if state.0 != owner_label {
-            return Err(ServiceError::OwnershipMismatch);
-        }
-        let stored: (Option<String>, Option<String>) = transaction
-            .query_row(
-                concat!(
-                    "SELECT uid, owner_label FROM external_resource_slots ",
-                    "WHERE run_id = ?1 AND identity = ?2"
-                ),
-                params![lease.run_id, identity],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(storage_error)?
-            .ok_or(ServiceError::OwnershipMismatch)?;
-        match (stored.0.as_deref(), stored.1.as_deref()) {
-            (Some(existing_uid), Some(existing_owner))
-                if existing_uid == uid && existing_owner == owner_label =>
-            {
-                transaction.commit().map_err(storage_error)?;
-                return Ok(());
-            },
-            (None, None) => {},
-            _ => return Err(ServiceError::OwnershipMismatch),
-        }
-        if !state.1 || state.2 || state.3 != "running" || state.4 != "pending" {
-            return Err(ServiceError::InvalidTransition);
-        }
-        let uid_owned: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM provisioned_object_owners WHERE uid = ?1)",
-                [uid],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)?;
-        if uid_owned {
-            return Err(ServiceError::OwnershipMismatch);
-        }
-        let changed = transaction
-            .execute(
-                concat!(
-                    "UPDATE external_resource_slots SET uid = ?3, owner_label = ?4 ",
-                    "WHERE run_id = ?1 AND identity = ?2 AND uid IS NULL AND owner_label IS NULL"
-                ),
-                params![lease.run_id, identity, uid, owner_label],
-            )
-            .map_err(storage_error)?;
-        if changed != 1 {
-            return Err(ServiceError::OwnershipMismatch);
-        }
-        transaction
-            .execute(
-                "INSERT INTO provisioned_object_owners VALUES (?1, ?2, ?3, ?4)",
-                params![uid, lease.run_id, identity, owner_label],
-            )
-            .map_err(storage_error)?;
-        transaction.commit().map_err(storage_error)
-    }
-
     pub(crate) fn commit_application_invoked(
         &self,
         identity: &HandoffIdentity,
@@ -1347,14 +1019,12 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let stored: (String, String, i64, bool, Vec<u8>, String, bool, bool, i64) = transaction
+        let stored: (String, String, i64, bool, Vec<u8>, String, bool, bool) = transaction
             .query_row(
                 concat!(
                     "SELECT operation_id, lease_id, lease_expires_at, active, ",
                     "handoff_credential_verifier, execution_state, policy_verified, ",
-                    "application_invoked, (SELECT COUNT(*) FROM external_resource_slots ",
-                    "WHERE external_resource_slots.run_id = runs.run_id AND uid IS NOT NULL) ",
-                    "FROM runs WHERE run_id = ?1"
+                    "application_invoked FROM runs WHERE run_id = ?1"
                 ),
                 [&identity.run_id],
                 |row| {
@@ -1367,7 +1037,6 @@ impl Service {
                         row.get(5)?,
                         row.get(6)?,
                         row.get(7)?,
-                        row.get(8)?,
                     ))
                 },
             )
@@ -1384,9 +1053,6 @@ impl Service {
             || (!stored.7 && stored.5 != "running")
         {
             return Err(ServiceError::Unavailable);
-        }
-        if !stored.7 && stored.8 != 9 {
-            return Err(ServiceError::InvalidTransition);
         }
         if !stored.7 {
             let changed = transaction
@@ -1724,8 +1390,7 @@ impl Service {
                     "UPDATE runs SET execution_state = 'service_failed' ",
                     "WHERE run_id = ?1 AND execution_state = 'running' ",
                     "AND application_invoked = 0 AND namespace_uid IS NOT NULL ",
-                    "AND cleanup_identity = ?2 AND (SELECT COUNT(*) FROM external_resource_slots ",
-                    "WHERE external_resource_slots.run_id = runs.run_id AND uid IS NOT NULL) = 9"
+                    "AND cleanup_identity = ?2"
                 ),
                 params![lease.run_id, cleanup_identity],
             )
@@ -1829,12 +1494,6 @@ impl Service {
             )
             .map_err(storage_error)?;
         append_event(&transaction, &lease.run_id, "cleanup.succeeded", now_unix_s)?;
-        transaction
-            .execute(
-                "DELETE FROM external_resource_slots WHERE run_id = ?1",
-                [&lease.run_id],
-            )
-            .map_err(storage_error)?;
         transaction
             .execute(
                 "DELETE FROM cleanup_records WHERE run_id = ?1",
@@ -2196,12 +1855,6 @@ impl Service {
                    uid TEXT PRIMARY KEY, run_id TEXT NOT NULL, identity TEXT NOT NULL,
                    owner_label TEXT NOT NULL
                  );
-                 CREATE TABLE IF NOT EXISTS external_resource_slots (
-                   run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, identity TEXT NOT NULL,
-                   phase TEXT NOT NULL, uid TEXT UNIQUE, owner_label TEXT,
-                   PRIMARY KEY (run_id, identity), UNIQUE (run_id, ordinal),
-                   CHECK ((uid IS NULL) = (owner_label IS NULL))
-                 );
                  CREATE TABLE IF NOT EXISTS events (
                    run_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
                    occurred_at INTEGER NOT NULL, execution_state TEXT NOT NULL,
@@ -2250,7 +1903,6 @@ impl Service {
                 .map_err(storage_error)?;
         }
         migrate_cleanup_columns(&connection)?;
-        migrate_external_resource_slots(&mut connection)?;
         self.remove_orphan_receipts(&mut connection)
     }
 
@@ -2516,26 +2168,18 @@ impl Service {
         recovery: bool,
     ) -> Result<(), ServiceError> {
         self.validate_lease(lease, now_unix_s)?;
-        let (policy_verified, deadline_at, invoked, registered): (bool, i64, bool, i64) = self
+        let (policy_verified, deadline_at): (bool, i64) = self
             .connection()?
             .query_row(
-                concat!(
-                    "SELECT policy_verified, deadline_at, application_invoked, ",
-                    "(SELECT COUNT(*) FROM external_resource_slots WHERE ",
-                    "external_resource_slots.run_id = runs.run_id AND uid IS NOT NULL) ",
-                    "FROM runs WHERE run_id = ?1"
-                ),
+                "SELECT policy_verified, deadline_at FROM runs WHERE run_id = ?1",
                 [&lease.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(storage_error)?
             .ok_or(ServiceError::RunNotFound)?;
         if !policy_verified {
             return Err(ServiceError::PolicyMismatch);
-        }
-        if registered != 9 && !(recovery && invoked && registered == 0) {
-            return Err(ServiceError::InvalidTransition);
         }
         if !recovery && now_unix_s >= deadline_at {
             return Err(ServiceError::DeadlineExceeded);
@@ -3005,12 +2649,6 @@ impl Service {
             append_event(&transaction, run_id, "cleanup.succeeded", now_unix_s)?;
         }
         transaction
-            .execute(
-                "DELETE FROM external_resource_slots WHERE run_id = ?1",
-                [run_id],
-            )
-            .map_err(storage_error)?;
-        transaction
             .execute("DELETE FROM cleanup_records WHERE run_id = ?1", [run_id])
             .map_err(storage_error)?;
         transaction
@@ -3215,12 +2853,6 @@ impl Service {
             } else {
                 transaction
                     .execute("DELETE FROM cleanup_records WHERE run_id = ?1", [&run_id])
-                    .map_err(storage_error)?;
-                transaction
-                    .execute(
-                        "DELETE FROM external_resource_slots WHERE run_id = ?1",
-                        [&run_id],
-                    )
                     .map_err(storage_error)?;
                 transaction
                     .execute(
@@ -3906,51 +3538,6 @@ fn random_credential() -> Result<[u8; 32], ServiceError> {
     Ok(bytes)
 }
 
-fn insert_external_resource_slots(
-    transaction: &rusqlite::Transaction<'_>,
-    run_id: &str,
-) -> Result<(), ServiceError> {
-    let slots = [
-        ("PersistentVolumeClaim", "journal", "before_assignment"),
-        ("ConfigMap", "runner-composition", "before_assignment"),
-        ("ConfigMap", "runner-kubernetes", "before_assignment"),
-        ("ConfigMap", "runner-trust", "before_assignment"),
-        ("ConfigMap", "runner-handoff", "before_pod"),
-        ("Secret", "runner-grant", "before_assignment"),
-        ("Secret", "runner-receipt-signing", "before_assignment"),
-        ("Secret", "runner-handoff", "before_pod"),
-        ("Pod", "runner", "runner"),
-    ];
-    for (ordinal, (kind, prefix, phase)) in slots.iter().enumerate() {
-        let ordinal = i64::try_from(ordinal).map_err(|_| ServiceError::Unavailable)?;
-        let identity = format!("{kind}/kapsel-sandbox-runners/{prefix}-{run_id}");
-        transaction
-            .execute(
-                concat!(
-                    "INSERT OR IGNORE INTO external_resource_slots ",
-                    "(run_id, ordinal, identity, phase, uid, owner_label) ",
-                    "VALUES (?1, ?2, ?3, ?4, NULL, NULL)"
-                ),
-                params![run_id, ordinal, identity, phase],
-            )
-            .map_err(storage_error)?;
-        let exact: bool = transaction
-            .query_row(
-                concat!(
-                    "SELECT EXISTS(SELECT 1 FROM external_resource_slots WHERE run_id = ?1 ",
-                    "AND ordinal = ?2 AND identity = ?3 AND phase = ?4)"
-                ),
-                params![run_id, ordinal, identity, phase],
-                |row| row.get(0),
-            )
-            .map_err(storage_error)?;
-        if !exact {
-            return Err(ServiceError::Unavailable);
-        }
-    }
-    Ok(())
-}
-
 fn object_identity_parts(identity: &str) -> Result<(String, Option<String>, String), ServiceError> {
     let parts = identity.split('/').collect::<Vec<_>>();
     match parts.as_slice() {
@@ -4105,29 +3692,6 @@ fn commit_global_stop(connection: &Connection, stopped: bool) -> Result<(), Serv
     Ok(())
 }
 
-fn migrate_external_resource_slots(connection: &mut Connection) -> Result<(), ServiceError> {
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(storage_error)?;
-    let run_ids = {
-        let mut statement = transaction
-            .prepare(concat!(
-                "SELECT runs.run_id FROM runs JOIN cleanup_records ON cleanup_records.run_id = ",
-                "runs.run_id WHERE runs.dispatched_at IS NOT NULL ",
-                "AND runs.application_invoked = 0 AND cleanup_records.active = 1"
-            ))
-            .map_err(storage_error)?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(storage_error)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)?
-    };
-    for run_id in run_ids {
-        insert_external_resource_slots(&transaction, &run_id)?;
-    }
-    transaction.commit().map_err(storage_error)
-}
-
 fn migrate_cleanup_columns(connection: &Connection) -> Result<(), ServiceError> {
     let columns = {
         let mut statement = connection
@@ -4183,365 +3747,6 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "slot derivation, replay, gating, and cross-run UID safety stay contiguous"
-    )]
-    fn external_resource_slots_are_fixed_and_registration_is_append_only() {
-        let root = std::env::temp_dir().join(format!(
-            "kapsel-sandbox-external-registration-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let receipts = root.join("receipts");
-        fs::create_dir(&receipts).unwrap();
-        fs::set_permissions(&receipts, fs::Permissions::from_mode(0o700)).unwrap();
-        let service = Service::open(
-            root.join("sandbox.sqlite3"),
-            receipts,
-            [9; 32],
-            1_774_051_200,
-        )
-        .unwrap();
-        let run_id = "0123456789abcdef0123456789abcdef";
-        service
-            .admit_with_run_id(
-                "00000000000000000000000000000001",
-                Scenario::Healthy,
-                1_774_051_200,
-                run_id,
-            )
-            .unwrap();
-        let lease = service.dispatch_next(1_774_051_201).unwrap();
-        let specification = service
-            .provisioning_specification(&lease, 1_774_051_201)
-            .unwrap();
-        let objects = specification
-            .required_objects
-            .iter()
-            .enumerate()
-            .map(|(index, object)| ProvisionedObject {
-                identity: object.identity.clone(),
-                uid: format!("policy-uid-{index}"),
-                owner_label: specification.cleanup_identity.clone(),
-                content_digest: object.content_digest.clone(),
-            })
-            .collect();
-        service
-            .verify_provisioned_target(
-                &lease,
-                &ProvisionedTarget {
-                    namespace_uid: "policy-uid-0".into(),
-                    policy_revision: specification.policy_revision,
-                    policy_inventory_digest: specification.policy_inventory_digest,
-                    cleanup_identity: specification.cleanup_identity.clone(),
-                    objects,
-                },
-                1_774_051_201,
-            )
-            .unwrap();
-
-        let expected = [
-            format!("PersistentVolumeClaim/kapsel-sandbox-runners/journal-{run_id}"),
-            format!("ConfigMap/kapsel-sandbox-runners/runner-composition-{run_id}"),
-            format!("ConfigMap/kapsel-sandbox-runners/runner-kubernetes-{run_id}"),
-            format!("ConfigMap/kapsel-sandbox-runners/runner-trust-{run_id}"),
-            format!("ConfigMap/kapsel-sandbox-runners/runner-handoff-{run_id}"),
-            format!("Secret/kapsel-sandbox-runners/runner-grant-{run_id}"),
-            format!("Secret/kapsel-sandbox-runners/runner-receipt-signing-{run_id}"),
-            format!("Secret/kapsel-sandbox-runners/runner-handoff-{run_id}"),
-            format!("Pod/kapsel-sandbox-runners/runner-{run_id}"),
-        ];
-        let inventory = service
-            .external_resource_inventory(&lease, 1_774_051_201)
-            .unwrap();
-        assert!(!inventory.assignment_eligible);
-        assert!(!inventory.pod_eligible);
-        assert!(!inventory.invocation_eligible);
-        let slots = inventory.slots;
-        assert_eq!(
-            slots
-                .iter()
-                .map(|slot| slot.identity.as_str())
-                .collect::<Vec<_>>(),
-            expected.iter().map(String::as_str).collect::<Vec<_>>()
-        );
-        assert!(slots.iter().all(|slot| slot.uid.is_none()));
-        let public_events = service.events(run_id, 0, 64, 1_774_051_201).unwrap();
-
-        service
-            .register_external_resource(
-                &lease,
-                &expected[0],
-                "external-uid-0",
-                &specification.cleanup_identity,
-                1_774_051_201,
-            )
-            .unwrap();
-        service
-            .register_external_resource(
-                &lease,
-                &expected[0],
-                "external-uid-0",
-                &specification.cleanup_identity,
-                1_774_051_201,
-            )
-            .unwrap();
-        assert_eq!(
-            service.register_external_resource(
-                &lease,
-                &expected[0],
-                "changed-uid",
-                &specification.cleanup_identity,
-                1_774_051_201,
-            ),
-            Err(ServiceError::OwnershipMismatch)
-        );
-        assert_eq!(
-            service.events(run_id, 0, 64, 1_774_051_201).unwrap(),
-            public_events
-        );
-        assert_eq!(
-            service.record_setup_failure(&lease, &specification.cleanup_identity, 1_774_051_201,),
-            Err(ServiceError::InvalidTransition)
-        );
-        let reopened = Service::open(
-            root.join("sandbox.sqlite3"),
-            root.join("receipts"),
-            [9; 32],
-            1_774_051_201,
-        )
-        .unwrap();
-        let recovered_inventory = reopened
-            .external_resource_inventory(&lease, 1_774_051_201)
-            .unwrap();
-        assert_eq!(
-            recovered_inventory.slots[0].uid.as_deref(),
-            Some("external-uid-0")
-        );
-        assert!(matches!(
-            service.appoint_handoff_assignment(
-                &lease,
-                "127.0.0.1:8081".parse().unwrap(),
-                1_774_051_201,
-            ),
-            Err(ServiceError::InvalidTransition)
-        ));
-        for (index, slot) in slots
-            .iter()
-            .enumerate()
-            .skip(1)
-            .filter(|(_, slot)| slot.phase == ExternalResourcePhase::BeforeAssignment)
-        {
-            service
-                .register_external_resource(
-                    &lease,
-                    &slot.identity,
-                    &format!("external-uid-{index}"),
-                    &specification.cleanup_identity,
-                    1_774_051_201,
-                )
-                .unwrap();
-        }
-        let assignment = service
-            .appoint_handoff_assignment(&lease, "127.0.0.1:8081".parse().unwrap(), 1_774_051_201)
-            .unwrap();
-        let identity = HandoffIdentity {
-            run_id: assignment.run_id,
-            operation_id: assignment.operation_id,
-            lease_id: assignment.lease_id,
-            credential: assignment.credential,
-        };
-        assert_eq!(
-            service.commit_application_invoked(&identity, 1_774_051_201),
-            Err(ServiceError::InvalidTransition)
-        );
-        for (index, slot) in slots
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| slot.phase != ExternalResourcePhase::BeforeAssignment)
-        {
-            service
-                .register_external_resource(
-                    &lease,
-                    &slot.identity,
-                    &format!("external-uid-{index}"),
-                    &specification.cleanup_identity,
-                    1_774_051_201,
-                )
-                .unwrap();
-        }
-        service
-            .commit_application_invoked(&identity, 1_774_051_201)
-            .unwrap();
-        service
-            .register_external_resource(
-                &lease,
-                &expected[0],
-                "external-uid-0",
-                &specification.cleanup_identity,
-                1_774_051_201,
-            )
-            .unwrap();
-        assert_eq!(
-            service.register_external_resource(
-                &lease,
-                &expected[0],
-                "changed-after-invocation",
-                &specification.cleanup_identity,
-                1_774_051_201,
-            ),
-            Err(ServiceError::OwnershipMismatch)
-        );
-
-        let second_run = "fedcba9876543210fedcba9876543210";
-        service
-            .admit_with_run_id(
-                "00000000000000000000000000000002",
-                Scenario::Healthy,
-                1_774_051_200,
-                second_run,
-            )
-            .unwrap();
-        let second_lease = service.dispatch_next(1_774_051_202).unwrap();
-        let second_inventory = service
-            .external_resource_inventory(&second_lease, 1_774_051_202)
-            .unwrap();
-        let second_specification = service
-            .provisioning_specification(&second_lease, 1_774_051_202)
-            .unwrap();
-        assert_eq!(
-            service.register_external_resource(
-                &second_lease,
-                &second_inventory.slots[0].identity,
-                "second-uid",
-                &second_specification.cleanup_identity,
-                1_774_051_202,
-            ),
-            Err(ServiceError::InvalidTransition)
-        );
-        let second_objects = second_specification
-            .required_objects
-            .iter()
-            .enumerate()
-            .map(|(index, object)| ProvisionedObject {
-                identity: object.identity.clone(),
-                uid: format!("second-policy-uid-{index}"),
-                owner_label: second_specification.cleanup_identity.clone(),
-                content_digest: object.content_digest.clone(),
-            })
-            .collect();
-        service
-            .verify_provisioned_target(
-                &second_lease,
-                &ProvisionedTarget {
-                    namespace_uid: "second-policy-uid-0".into(),
-                    policy_revision: second_specification.policy_revision,
-                    policy_inventory_digest: second_specification.policy_inventory_digest,
-                    cleanup_identity: second_specification.cleanup_identity.clone(),
-                    objects: second_objects,
-                },
-                1_774_051_202,
-            )
-            .unwrap();
-        assert_eq!(
-            service.register_external_resource(
-                &second_lease,
-                &second_inventory.slots[0].identity,
-                "external-uid-0",
-                &second_specification.cleanup_identity,
-                1_774_051_202,
-            ),
-            Err(ServiceError::OwnershipMismatch)
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn external_resource_slot_migration_backfills_once_for_active_legacy_runs() {
-        let root = std::env::temp_dir().join(format!(
-            "kapsel-sandbox-external-migration-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir(&root).unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let receipts = root.join("receipts");
-        fs::create_dir(&receipts).unwrap();
-        fs::set_permissions(&receipts, fs::Permissions::from_mode(0o700)).unwrap();
-        let database = root.join("sandbox.sqlite3");
-        let service = Service::open(&database, &receipts, [9; 32], 1_774_051_200).unwrap();
-        service
-            .admit_with_run_id(
-                "00000000000000000000000000000001",
-                Scenario::Healthy,
-                1_774_051_200,
-                "0123456789abcdef0123456789abcdef",
-            )
-            .unwrap();
-        let lease = service.dispatch_next(1_774_051_201).unwrap();
-        let invoked_run = "fedcba9876543210fedcba9876543210";
-        service
-            .admit_with_run_id(
-                "00000000000000000000000000000002",
-                Scenario::Healthy,
-                1_774_051_200,
-                invoked_run,
-            )
-            .unwrap();
-        let invoked_lease = service.dispatch_next(1_774_051_201).unwrap();
-        rusqlite::Connection::open(&database)
-            .unwrap()
-            .execute(
-                "UPDATE runs SET policy_verified = 1, application_invoked = 1 WHERE run_id = ?1",
-                [invoked_run],
-            )
-            .unwrap();
-        let invoked_identity = HandoffIdentity {
-            run_id: invoked_run.into(),
-            operation_id: format!("sandbox-{invoked_run}"),
-            lease_id: invoked_lease.lease_id.clone(),
-            credential: invoked_lease.handoff_credential,
-        };
-        drop(service);
-        rusqlite::Connection::open(&database)
-            .unwrap()
-            .execute("DROP TABLE external_resource_slots", [])
-            .unwrap();
-
-        for _ in 0..2 {
-            let reopened = Service::open(&database, &receipts, [9; 32], 1_774_051_201).unwrap();
-            assert_eq!(
-                reopened
-                    .external_resource_inventory(&lease, 1_774_051_201)
-                    .unwrap()
-                    .slots
-                    .len(),
-                9
-            );
-            let invoked_slots: i64 = reopened
-                .connection()
-                .unwrap()
-                .query_row(
-                    "SELECT COUNT(*) FROM external_resource_slots WHERE run_id = ?1",
-                    [invoked_run],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(invoked_slots, 0);
-            reopened
-                .validate_application_ready(&invoked_lease, 1_774_051_201, true)
-                .unwrap();
-            reopened
-                .commit_application_invoked(&invoked_identity, 1_774_051_201)
-                .unwrap();
-        }
-        fs::remove_dir_all(root).unwrap();
-    }
 
     #[test]
     fn receipt_install_is_exact_immutable_restart_safe_and_expiring() {

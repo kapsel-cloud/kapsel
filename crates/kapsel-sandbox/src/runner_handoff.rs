@@ -751,30 +751,6 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    fn register_all_external_resources(service: &Service, lease: &crate::DispatchLease, now: i64) {
-        let owner = service
-            .provisioning_specification(lease, now)
-            .unwrap()
-            .cleanup_identity;
-        for (index, slot) in service
-            .external_resource_inventory(lease, now)
-            .unwrap()
-            .slots
-            .iter()
-            .enumerate()
-        {
-            service
-                .register_external_resource(
-                    lease,
-                    &slot.identity,
-                    &format!("handoff-{}-{index}", lease.run_id),
-                    &owner,
-                    now,
-                )
-                .unwrap();
-        }
-    }
-
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -809,7 +785,6 @@ mod tests {
                 [&admission.run_id],
             )
             .unwrap();
-        register_all_external_resources(&service, &lease, now);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = listener.local_addr().unwrap();
         let server_service = Arc::clone(&service);
@@ -1039,7 +1014,6 @@ mod tests {
                 now + 1,
             )
             .unwrap();
-        register_all_external_resources(&service, &lease, now + 1);
         let assignment = service
             .handoff_assignment(&lease, "127.0.0.1:1".parse().unwrap(), now + 1)
             .unwrap();
@@ -1115,21 +1089,35 @@ mod tests {
                 now + 86_403,
             )
             .unwrap();
-        let candidate = service.cleanup_candidates().unwrap().remove(0);
-        let absence = crate::CleanupAbsenceEvidence {
-            namespace_uid: namespace_uid.into(),
-            objects: candidate
-                .objects
-                .into_iter()
-                .map(|object| crate::CleanupObjectAbsence {
-                    kind: object.kind,
-                    namespace: object.namespace,
-                    name: object.name,
-                    uid: object.uid,
-                    owner_label: object.owner_label,
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT identity, uid, owner_label FROM provisioned_object_owners \
+                 WHERE run_id = ?1",
+            )
+            .unwrap();
+        let objects = statement
+            .query_map([&admission.run_id], |row| {
+                let identity = row.get::<_, String>(0)?;
+                let (kind, namespace, name) = crate::object_identity_parts(&identity)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                Ok(crate::CleanupObjectAbsence {
+                    kind,
+                    namespace,
+                    name,
+                    uid: row.get(1)?,
+                    owner_label: row.get(2)?,
                     present: false,
                 })
-                .collect(),
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        drop(statement);
+        drop(connection);
+        let absence = crate::CleanupAbsenceEvidence {
+            namespace_uid: namespace_uid.into(),
+            objects,
         };
         service
             .complete_cleanup(
@@ -1207,7 +1195,6 @@ mod tests {
                     [&admission.run_id],
                 )
                 .unwrap();
-            register_all_external_resources(&service, &lease, now);
             let assignment = service
                 .handoff_assignment(&lease, "127.0.0.1:1".parse().unwrap(), now)
                 .unwrap();
@@ -1342,7 +1329,6 @@ mod tests {
                 [&invocation_run.run_id],
             )
             .unwrap();
-        register_all_external_resources(&service, &invocation_lease, now);
         let invocation_assignment = service
             .handoff_assignment(&invocation_lease, "127.0.0.1:1".parse().unwrap(), now)
             .unwrap();
@@ -1383,7 +1369,6 @@ mod tests {
                 [&report_run.run_id],
             )
             .unwrap();
-        register_all_external_resources(&service, &report_lease, unix_time().unwrap());
         let report_assignment = service
             .handoff_assignment(
                 &report_lease,

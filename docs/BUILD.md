@@ -392,9 +392,9 @@ is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence rem
 
 KAP-0070 is active only for the serialized reshape selected by KAP-0069; provider selection,
 deployment, credentials, spend, an endpoint, DNS, and public traffic remain separately gated. These
-commands preserve accepted offline evidence while KAP-0070 Gate 0 corrects the contracts. Historical
-KAP-0053 Gate 1 and Gate 2 commands do not authorize or validate the selected topology and must be
-replaced or removed before implementation proceeds.
+commands preserve the accepted KAP-0070 Gate 0 evidence. Serialized Composition (Gate 1) remains
+unstarted. Historical KAP-0053 Gate 1 and Gate 2 tasks and artifacts are removed; Git history
+retains their evidence.
 
 Validate the demonstration-scoped public sandbox fixtures without a service or network:
 
@@ -405,6 +405,18 @@ cargo make test-sandbox-contract
 The direct command is `python3 scripts/test-sandbox-contract.py`. It validates the fixed KAP-0051
 HTTP transcripts, field bounds, replay ordering, outcome separation, disclosure key set, and raw
 receipt digest. It is contract evidence, not a sandbox implementation or live deployment proof.
+
+Validate the topology-neutral exact conditional-patch invariant and Gate 0 deletion boundary with:
+
+```sh
+cargo make test-sandbox-preservation
+```
+
+The direct command is `python3 scripts/test-sandbox-preservation.py`. It uses only
+`deploy/sandbox/admission-fixture.json` and `deploy/sandbox/operator-admission-rule.json`, rejects
+all mutation beyond the selected image and operation annotation, and asserts that superseded source,
+CLI modes, artifacts, and Make tasks are absent. It uses no Docker, provider, credential, resource,
+or network.
 
 Run the deterministic KAP-0052 service, fixture, dependency, and deletion-boundary proof with:
 
@@ -432,59 +444,19 @@ expiry, and the runner CLI state-path boundary. It binds only loopback fixtures 
 private-cluster reachability, network isolation, provider identity, storage fencing, key custody, or
 public endpoint.
 
-Run the historical KAP-0053 Authority Composition Proof (Gate 1) preservation fixture with:
+Run the root-package deletion and one-way dependency proof directly when needed:
 
 ```sh
-cargo make test-sandbox-gate1
+cargo make test-sandbox-package-boundary
 ```
 
-It adds the native HTTP/1.1 process and private operator stop black-box tests, exact normalized
-Deployment-transition denial matrix, single-writer storage/backup composition lock, raw 32-byte
-Ed25519 known-answer and production-inspector path, and Authority Composition non-claim checks. It
-does not build or provision provider resources, exercise Kubernetes admission, prove snapshot
-fencing or managed key custody, publish an endpoint, or send public traffic. The image and
-storage-class template values remain intentionally blocked for Infrastructure Enforcement Proof
-(Gate 2) authorization.
+It compiles the ordinary root package after removing `kapsel-sandbox` from a temporary copy and
+checks that the sandbox depends one way on `kapsel`. `test-sandbox-service` already includes this
+lane.
 
-Build the locked local OCI image separately when Docker is available:
-
-```sh
-cargo make build-sandbox-gate1-image
-```
-
-This uses the pinned builder/runtime base and no provider account. A local image ID proves that one
-working-tree build completed; it is not registry provenance, byte-for-byte reproducibility, a
-vulnerability result, a selected runtime, or deployment evidence.
-
-Build and inspect the historical pre-authorization `linux/amd64` Infrastructure Enforcement image
-candidate with:
-
-```sh
-cargo make test-sandbox-gate2-image-candidate
-```
-
-This Docker-only lane verifies the pinned Distroless runtime signature with Cosign, builds the
-native binary for `linux/amd64`, checks its no-argument process boundary, rejects an image larger
-than 64 MiB, and uses Trivy to reject detected `HIGH` or `CRITICAL` package vulnerabilities. It
-requires Docker, Cosign, Trivy, and their network-fetched signature/transparency and vulnerability
-data. It creates no provider resource and is not part of the deterministic default gate. A passing
-local scan is time-bound input evidence, not registry provenance, runtime compatibility, absence of
-unknown vulnerabilities, or authorization for Infrastructure Enforcement.
-
-Validate the superseded, non-executed GKE Infrastructure Enforcement fixture for historical
-consistency only with:
-
-```sh
-cargo make test-sandbox-gate2-fixture
-```
-
-This standard-library-only gate checks the proposed `europe-north1` cluster, four-node arithmetic,
-gVisor/Dataplane V2/private-node controls, regional `ReadWriteOncePod` storage, three separate key
-roles, narrow provider-management-log exception, 24-hour configurable-record retention, inventory,
-teardown, cost classes, private approval placeholders, unresolved execution blockers, and negative
-mutations. It runs no provider command, reads no credential, and creates no resource, registry
-object, endpoint, DNS record, spend, or traffic. Passing means only that the historical fixture is
-internally consistent; KAP-0069 forbids using it as KAP-0070 deployment input or authorization.
+The superseded KAP-0053 Gate 1/Gate 2, controller/stager, provider-fixture, and image-candidate
+tasks and working-tree artifacts are deleted. Gate 1 image or bundle commands become guidance only
+after implementation and review.
 
 ## Toolchain
 

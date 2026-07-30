@@ -1,5 +1,5 @@
 {
-  "request_username": "system:serviceaccount:kapsel-sandbox-runners:runner-0123456789abcdef0123456789abcdef",
+  "request_username": "kapsel-sandbox-runner",
   "preconditions": {
     "run_id": "0123456789abcdef0123456789abcdef",
     "namespace": "sandbox-0123456789abcdef0123456789abcdef",

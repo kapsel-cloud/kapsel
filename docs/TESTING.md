@@ -168,13 +168,13 @@ cleanup. The compile-time feature and its environment are harness control, not a
 public lifecycle interface. Existing internal fault tests remain the exhaustive transition proof;
 the visual demonstration does not replace them.
 
-## KAP-0051 public sandbox contract proof
+## Serialized public sandbox proof
 
-The sandbox is implemented but paused and excluded from the v0.2 release unit. The following lanes
-preserve accepted offline evidence; they are not active deployment or replacement-candidate scope.
-The sandbox contract lane is distinct from KAP-0038 gateway tests. It must not widen the
-`Application`, expose the gateway journal, or treat a service simulation as Kubernetes/isolation
-evidence.
+KAP-0070 retains the fixed API, deterministic service, root-package deletion boundary, and KAP-0055
+handoff while replacing the deployment composition. These offline lanes are preservation evidence,
+not proof of the planned host, provider, cluster, isolation, backup, or public endpoint. The sandbox
+contract lane remains distinct from KAP-0038 gateway tests and must not widen `Application`, expose
+the journal, or present simulation as live enforcement.
 
 Committed fixtures under [`docs/fixtures/sandbox-v1`](fixtures/sandbox-v1/README.md) cover healthy,
 unavailable-image, setup failure, saturation, expiry, every bounded error, incompatible version, and
@@ -208,17 +208,19 @@ boundary:
 - field-level disclosure assertions over responses, durable run state, bounded diagnostics, and
   allowlisted telemetry.
 
-The implemented package tests use explicit times, fixed keys, temporary owner-private storage, and
-the existing deterministic Kubernetes transport. They prove atomic admission/replay/conflict,
-32-queued and 8-active saturation, global stop, oldest-first dispatch, durable lease exclusion and
-recovery, queued age beyond 180 seconds without head blocking, and exact oldest-first dispatch. They
-prove an admission-frozen policy revision/inventory digest, cleanup identity, and 180-second
-duration plus an exact dispatch-relative absolute deadline. Deterministic target evidence includes
-every object identity, immutable UID, owner label, and policy-content digest; missing, stale,
-permissive, duplicate-UID, and wrong-owner evidence blocks `Application` before provider traffic.
-Cross-run UID reuse is rejected. Cleanup ownership rows are append-only across repeated policy
-verification; a mismatched observation with an extra owned object remains required even after later
-exact verification. Cleanup completion consumes absence observations for every durable
+The retained KAP-0052 package tests use explicit times, fixed keys, temporary owner-private storage,
+and the existing deterministic Kubernetes transport. They prove atomic admission/replay/conflict,
+queue-32 saturation, global stop, oldest-first dispatch, durable lease exclusion and recovery,
+queued age beyond 180 seconds without head blocking, and exact oldest-first dispatch. Their
+historical eight-active saturation cases are implementation evidence to replace, not the selected
+capacity contract; KAP-0070 must prove active=1 through cleanup and exact absence. The retained
+tests also prove an admission-frozen policy revision/inventory digest, cleanup identity, and
+180-second duration plus an exact dispatch-relative absolute deadline. Deterministic target evidence
+includes every object identity, immutable UID, owner label, and policy-content digest; missing,
+stale, permissive, duplicate-UID, and wrong-owner evidence blocks `Application` before provider
+traffic. Cross-run UID reuse is rejected. Cleanup ownership rows are append-only across repeated
+policy verification; a mismatched observation with an extra owned object remains required even after
+later exact verification. Cleanup completion consumes absence observations for every durable
 kind/namespace/name/UID/owner row and rejects missing, mismatched, or still-present objects before
 releasing capacity. This does not claim live policy enforcement. The separate confirmed-no-resource
 setup path releases capacity without inventing a UID. An explicit periodic sweep deletes expired raw
@@ -270,48 +272,35 @@ redacted. Loopback TCP and deterministic Kubernetes fixtures prove only process 
 behavior; they do not prove private-cluster reachability, network/runtime/storage isolation,
 provider identity, or live custody.
 
-Historical KAP-0053 Authority Composition Proof (Gate 1) adds a separate provider-neutral offline
-preservation lane; KAP-0069 supersedes its deployment topology. Black-box socket/process tests cross
-the production native HTTP/1.1 executable, request-line/header/body framing bounds, receive
-timeouts, idempotent replay, and the non-public durable stop/clear commands. Exact-limit cases cover
-the request line, request head, header count/value, and body. Listener-local tests exercise exact
-connection/in-flight counters and prove that a bounded response-wait timeout does not cancel the
-continuing worker; the production path then returns and closes that connection. Stop/clear tests
-remove receipt and key availability before proving that only the existing private admission database
-and singleton control row are required. A normalized-object adversarial harness accepts only the
-selected named-container image plus required KAP-0038 operation annotation under exact frozen
-preconditions and rejects every other tested Deployment mutation. The same lane locks distinct
-system state and one owner-private `ReadWriteOncePod` gateway-state volume per active run; one
-runner identity across mount, target RoleBinding, and patch admission; exactly one
-owner/channel/path for every `OperatorConfiguration` input; and read-only projected Kubernetes,
-authorization, signing, composition, and receipt-handoff channels. The normalized mount harness
-compares the complete rendered Pod and rejects command, argument, environment, projection, security,
-volume, mount, and undeclared-field changes. It also locks the fenced multi-volume backup-generation
-protocol and verifies the RFC 8032 raw 32-byte seed known answer plus an `Application` receipt
-through the production inspector. These are implementation and fixture proofs only: they do not
-establish the runner subcommand, real Kubernetes admission, runtime/CNI denial, volume or snapshot
-fencing, restore, managed custody, handoff, provider cost, endpoint safety, or live reproducibility.
+Historical KAP-0053 tests retain only topology-neutral evidence: bounded native HTTP parsing,
+durable stop behavior, the exact conditional named-container image and KAP-0038 operation-annotation
+rule, strict input non-disclosure, and Ed25519/inspector known answers. Its `ReadWriteOncePod`,
+runner Pod, projected Kubernetes input, controller-state, key-stager, multi-volume backup,
+concurrent-run, provider fixture, and image-candidate assertions are deleted evidence for KAP-0070
+and must not run or pass as current composition proof. Gate 0 retains the exact conditional patch
+rule and source/artifact deletion boundary in `test-sandbox-preservation`, which uses only the two
+provider-neutral fixtures under `deploy/sandbox`. The current runnable preservation set is
+`test-sandbox-contract`, `test-sandbox-preservation`, `test-sandbox-service`,
+`test-sandbox-package-boundary`, and `test-sandbox-runner-handoff`.
 
-KAP-0070 must replace and adapt these historical KAP-0053 live lanes for one exact serialized
-revision before any provider authorization:
+The serialized proof matrix is:
 
-| Lane                     | Required evidence                                                                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Isolation adversary      | Cross-run API, DNS, network, metadata, volume, receipt, store, and key access denied                 |
-| Policy fail-closed       | Missing namespace, account, quota, limits, network policy, runtime, or ownership proof blocks run    |
-| Restart and reconnect    | API/scheduler/runner/store restarts preserve identity, cursor ordering, report, receipt, and cleanup |
-| Saturation and stop      | Edge/service/queue/active/cluster exhaustion stays bounded; stop preserves read/recovery/cleanup     |
-| Timeout                  | Sandbox deadline remains separate from KAP-0038 observation and receiver result                      |
-| Cleanup failure          | Client loss, API outage, stuck finalizer, controller restart, retry, escalation, eventual deletion   |
-| Key and storage failure  | Permission denial, rotation, outage, backup restore, expiry, no re-signing or disclosure             |
-| Rollback                 | Incompatible service/schema/config/key revision rolls back with retained runs recoverable            |
-| Retention and disclosure | Exact public expiry/tombstone/deletion and allowlisted logs/metrics under real requests              |
-| Cost/resource ceiling    | Maximum concurrency through deadline and cleanup measures fixed and marginal resource ceilings       |
+| Property                               | Retained Gate 0 evidence                                              | Gate 1 deterministic composition                                        | Gate 3 private-live assertion                                                              | Gate 4 public assertion                                               |
+| -------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| Identity/replay/receipt                | Exact fixtures and service restart tests                              | Host-volume crash/reopen and immutable publication                      | Replacement-host restore without identity drift                                            | Lost response, reconnect, exact raw receipt                           |
+| Server authority/conditional operation | Service authority negatives, real `Application`, exact KAP-0038 tests | Fixed descriptor inputs and exact patch denial matrix                   | Runner/target authority and downgrade denials                                              | Both fixed scenarios only                                             |
+| Runner loss/reconcile                  | KAP-0055 subprocess seams and frozen bytes                            | OS identity, no-follow, stale-process/lease fencing                     | Kill at every invocation/apply/report/publication seam                                     | One approved public runner kill                                       |
+| Bounds/stop                            | API transport, queue/rate/deadline/retention, durable stop tests      | Active=1 through cleanup, finite host/state/event bounds                | Burst every bound and stop under dependency loss; measure cost                             | Configured rate/spend ceiling and stop                                |
+| Temporal isolation                     | Disclosure, stale credential, UID/owner tests                         | Prior-run fixtures and canary model                                     | Runner and target denial against canary, unrelated state, prior journals, metadata/network | Disclosure inspection only; no tenant claim                           |
+| Cleanup/backup/recreation              | UID/owner/absence and retention tests                                 | One-unit restore matrix, original-writer fencing, deletion-before-serve | API/finalizer failure, exact absence, teardown/recreation twice                            | Cleanup failure/recovery and endpoint rollback                        |
+| Fact separation                        | Exact API fixtures, service transitions, handoff byte identity        | Crash each operation/publication/deadline/transport/cleanup seam        | Independently fail each fact; preserve explicit `UNKNOWN`                                  | Consumer keeps operation, cleanup, receipt and visualization separate |
 
-The live lanes must attempt adversarial access from both the native runner boundary and the most
-compromised fixed workload posture the selected runtime permits. A passing namespace test alone is
-not called tenant isolation. Provider/runtime/CNI behavior, asynchronous deletion, key custody,
-store durability, rollback, and cost remain unproved until those lanes pass.
+Gate 1/3 adversarial tests act from both the host runner OS identity and the most compromised fixed
+target posture. They deny controller state/receipts/staged inputs/backups, canary/unrelated cluster
+objects, prior journals, metadata, API and arbitrary network destinations. A namespace, runtime
+label, or policy manifest alone is not enforcement evidence. Provider/runtime/network behavior, key
+custody, storage fencing, rollback, teardown, cost, and public safety remain unproved until their
+separate gates pass.
 
 A fresh website consumer and a fresh Grafik-boundary consumer must each implement fixture parsing,
 replay from a nonzero cursor, terminal snapshot rendering, raw receipt retrieval, expiry, and all

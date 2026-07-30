@@ -163,69 +163,82 @@ blind second mutation.
 Run locators, whole-second admission/event times, scenario, synthetic operation identity, result,
 and classifier-complete receipt can be correlated across requests or copied outside the service. The
 fixed scenarios use no visitor, customer, or production data. Public receipt identifiers are
-server-chosen synthetic evidence. Private runner Pod/node/lease/store/control-plane identifiers,
-credentials, internal paths, raw journal rows, uncontrolled logs, and fault controls are excluded.
-Bounds and retention reduce exposure but do not establish anonymity or unlinkability.
+server-chosen synthetic evidence. Private host runner identities, leases, journal/outbox paths,
+controller-volume and staged-input paths, backup generations, cluster/provider identifiers,
+credentials, raw journal rows, uncontrolled logs, and fault controls are excluded. Bounds and
+retention reduce exposure but do not establish anonymity or unlinkability.
 
 ### Compromised workload and namespace escape
 
-A fixed image or its dependency can be compromised and attempt Kubernetes API access,
-cross-namespace discovery, metadata/identity access, network egress, volume reads, resource
-exhaustion, or a container/runtime escape. Every run receives a policy-complete namespace, unique
-service account, quota, limits, default-deny network policy, restricted security context, and
-server-owned deadline in a dedicated non-consequential cluster. Run workloads cannot access
-admission/receipt state or signing authority.
+A fixed image or dependency can attempt Kubernetes API access, cross-namespace discovery,
+metadata/identity access, network egress, volume reads, resource exhaustion, or a container/runtime
+escape. The one active run receives a policy-complete namespace, target identity, quota, limits,
+default-deny network policy, restricted security context, server-owned deadline, and independently
+proved sandboxed-runtime-or-equivalent boundary in a dedicated synthetic cluster. The target must be
+denied the operator canary, unrelated resources, host/controller state, receipts, keys, runner and
+cleanup authority, and prior-run artifacts.
 
-Kubernetes namespaces, RBAC, quotas, and NetworkPolicy are not by themselves hard tenant isolation.
-The selected runtime and CNI must pass live adversarial proof; a container or kernel escape can
-still compromise the dedicated cluster. No production or customer workload may share that cluster.
+Namespaces, RBAC, quotas, NetworkPolicy, and a runtime label are not hard isolation or enforcement
+proof. Gate 3 must test the selected runtime, network implementation, metadata path, and Kubernetes
+authority. A container or kernel escape can still compromise the dedicated cluster. No production or
+customer workload may share it.
 
-### Compromised native runner and gateway journal
+### Compromised native runner and host boundary
 
-A compromised native runner can use its per-run Kubernetes controller authority, read or corrupt
-that run's gateway journal, misuse loaded grant/signing material, forge public projection handoff,
-or attack stores and control-plane services reachable from its identity. This is more powerful than
-a compromised synthetic target workload. The deployment gives each run a separate runner identity
-and owner-private durable journal, scopes Kubernetes access to the exact run namespace, denies other
-run journals/stores/keys where the existing `Application` permits, and keeps the global stop and
-cleanup controller under separate operator authority.
+A compromised native runner can use its loaded exact grant, receipt-signing input, and scoped
+Kubernetes credential; corrupt its journal/outbox; forge its authenticated handoff; or attack paths
+and services reachable from its OS identity. It is more powerful than the target workload. The
+selected route uses one fresh least-privilege OS identity and directory per run, fixed read-only
+descriptor-relative inputs, exact owner/mode/no-follow and same-inode checks, stale
+process/descriptor/lease denial, and separate cleanup authority. The runner must be denied
+controller SQLite, immutable receipts, backups, staged sources, prior journals, the canary, and
+unrelated cluster resources.
 
-The existing `Application` requires authorization and receipt signing material during composition,
-so runner compromise while that material is available can forge grants or receipts under the loaded
-key. Process, workload-identity, key-access, egress, journal-volume, and signer isolation require
-live proof; contract separation cannot eliminate that blast radius. Detection activates the global
-stop, preserves journals and immutable receipts, rotates affected keys through the separately owned
-trust route, and reconciles/cleans already admitted runs without rewriting their receiver results.
-No public receipt claims independence from its runner or signing authority.
+OS users and a sandboxed process are not hard tenant isolation. Symlink/path substitution, parent or
+inode replacement, leaked descriptors, permissive groups, stale processes, ptrace/kernel escape, and
+local network reachability are explicit adversaries. Detection activates durable stop, preserves
+frozen facts, revokes the runner generation, rotates affected inputs through separately owned trust,
+and reconciles/cleans the admitted run without rewriting its receiver result. No receipt claims
+independence from the runner or signing authority.
 
-Journal loss, rollback, cloning, or concurrent mounting can omit durable facts or create unsafe
-recovery. The per-run journal survives runner replacement, is never cloned as runnable state, and
-uses KAP-0038 locking/settings. Receiver-result journals remain through final report and verified
-receipt handoff; `not_attempted` journals remain through durable rejection projection and cleanup
-handoff without awaiting a nonexistent receipt; pre-Application `service_failed` runs need no Kapsel
-journal. Cleanup then proceeds from its separate durable ownership record and does not extend
-journal retention. Admission-store state cannot substitute for missing gateway facts.
+Journal loss, rollback, cloning, or concurrent execution can omit facts or create unsafe recovery. A
+backup restore must fence the original controller and runner, restore one writer, one active
+capacity reservation, and one runnable journal, reapply expiry before serve, then reconcile the same
+operation. Receiver-result journals remain through verified report/receipt handoff; `not_attempted`
+remains receipt-free; pre-Application `service_failed` needs no gateway journal. Admission state
+cannot substitute for missing KAP-0038 facts.
 
-### Key, storage, and receipt failure
+### Controller-host, key, storage, and receipt failure
 
-Compromise of authorization-signing or receipt-signing material permits forged grants or receipts;
-compromise of the durable store can alter admission/projection; loss or rollback can omit runs or
-resurrect state. Keys are separated from run namespaces and public storage, access is restricted to
-the native signer/runner identity, and rotation/restore/deletion protection require live proof.
-Receipt storage accepts only exact frozen bytes and refuses replacement. A store, signer, or key
-outage fails admission or receipt publication without changing receiver classification.
+The controller host concentrates admission, projection, receipt, scheduler, cleanup, cluster
+credentials, and staged-input coordination. Host compromise can alter public state, suppress
+cleanup, substitute runner inputs, or deny all service; one writer reduces races but not this blast
+radius. Compromise of authorization- or receipt-signing material permits forged grants or receipts;
+store compromise can alter projection; loss or rollback can omit runs or resurrect expired state.
 
-A receipt signature authenticates bytes under separately supplied trust; receipt retrieval does not
-publish or appoint trust. Backups and restore narrow loss but are not an external witness or proof
-of complete history.
+Authorization, receipt, tombstone, public trust, runner Kubernetes, and cleanup Kubernetes inputs
+have separate fixed owners and host staging paths. Path substitution, key export, backup/diagnostic
+leakage, rotation gaps, and outage are explicit threats. Exact source/destination/schema,
+owner/mode/no-follow checks, atomic install, rotation overlap, restart, denial, and non-disclosure
+require Gate 1/3 proof. Receipt storage accepts only frozen bytes and refuses replacement. An outage
+may block admission or publication but cannot change receiver classification. Receipt retrieval does
+not appoint trust.
+
+One crash-consistent unit covers admission state, immutable receipts, active journal/outbox,
+capacity, leases, ownership inventory, deployment metadata, and required public trust. A stale or
+parallel restore can create a second writer/journal/reservation, resurrect deleted visitor state, or
+duplicate cleanup. Original-writer fencing, one runnable journal, restore-before-serve deletion, and
+identity/digest verification are mandatory. Backup is not an external witness or complete history.
 
 ### Cleanup failure and unsafe deletion
 
-Namespace deletion is asynchronous and can stall on finalizers or API/controller failure. Cleanup
-uses recorded UIDs and ownership labels, retries durably, scans only owned orphans, escalates, and
-never deletes by a reusable name alone. Public expiry and client disconnect do not release cleanup
-ownership. A compromised controller credential can still exceed these software checks within its
-RBAC, and a stuck cleanup can consume resources indefinitely until operator remediation.
+Namespace deletion is asynchronous and can stall on finalizers or API/controller failure. The local
+cleanup role uses a separate fixed credential, recorded UIDs and ownership labels, durable retry,
+owned-orphan scans, and bounded escalation; it never deletes by a reusable name alone. Public expiry
+and client disconnect do not release cleanup ownership or the sole capacity reservation, and no next
+run dispatches before complete recorded absence. A compromised cleanup credential can still exceed
+software checks within its RBAC. Wrong UID/owner, canary access, stale inventory, host loss, API
+outage, and failure to erase prior-run state before dispatch require explicit denial/recovery proof.
 
 ### Dependency and image compromise
 
@@ -263,8 +276,10 @@ The experiment does not establish:
 - The deployment controller exposes the documented receiver facts needed for the experiment's result
   classification.
 - External trust supplied to offline inspection is reviewed separately from receipt bytes.
-- The public sandbox cluster contains only synthetic non-consequential workloads, and the operator
-  protects admission/receipt storage, controller credentials, and key custody.
-- The selected CNI, runtime, key service, store, and cleanup controller enforce the exact serialized
-  deployment configuration proved by KAP-0070; contract text and historical KAP-0053 evidence cannot
-  establish that enforcement.
+- The public sandbox cluster contains only synthetic non-consequential targets plus an operator
+  canary; the operator protects the native controller host/volume, backups, staged inputs, and fixed
+  controller, runner, cleanup, target, backup, key, and operator authorities.
+- The host OS identities/path controls and the selected Kubernetes runtime, network implementation,
+  RBAC/admission policy, storage, and cleanup behavior enforce the exact serialized configuration
+  only after KAP-0070 proves them. Contract text and historical KAP-0053 Pod/PVC, workload-identity,
+  stager, or provider evidence cannot establish that enforcement.

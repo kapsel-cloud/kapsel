@@ -283,6 +283,7 @@ pub(crate) fn content_digest(body: &Value) -> String {
     hex(&Sha256::digest(body.to_string().as_bytes()))
 }
 
+#[cfg(test)]
 pub(crate) fn observed_content_digest(expected: &Value, observed: &Value) -> Option<String> {
     let mut normalized = observed.clone();
     normalized.as_object_mut()?.remove("status");
@@ -375,6 +376,7 @@ pub(crate) fn observed_content_digest(expected: &Value, observed: &Value) -> Opt
     (normalized == *expected).then(|| content_digest(expected))
 }
 
+#[cfg(test)]
 fn remove_exact(root: &mut Value, pointer: &str, expected: &Value) -> Option<()> {
     let (parent, key) = pointer.rsplit_once('/')?;
     let Some(parent) = root.pointer_mut(parent) else {
@@ -391,6 +393,7 @@ fn remove_exact(root: &mut Value, pointer: &str, expected: &Value) -> Option<()>
     Some(())
 }
 
+#[cfg(test)]
 fn remove_empty_object(root: &mut Value, pointer: &str) -> Option<()> {
     let Some(value) = root.pointer(pointer) else {
         return Some(());
@@ -402,6 +405,7 @@ fn remove_empty_object(root: &mut Value, pointer: &str) -> Option<()> {
     }
 }
 
+#[cfg(test)]
 fn remove_string(root: &mut Value, pointer: &str) -> Option<()> {
     let Some(value) = root.pointer(pointer) else {
         return Some(());
@@ -413,6 +417,7 @@ fn remove_string(root: &mut Value, pointer: &str) -> Option<()> {
     }
 }
 
+#[cfg(test)]
 fn remove_string_array(root: &mut Value, pointer: &str) -> Option<()> {
     let Some(value) = root.pointer(pointer) else {
         return Some(());
@@ -425,6 +430,7 @@ fn remove_string_array(root: &mut Value, pointer: &str) -> Option<()> {
     }
 }
 
+#[cfg(test)]
 fn remove_pointer(root: &mut Value, pointer: &str) -> Option<()> {
     let (parent, key) = pointer.rsplit_once('/')?;
     root.pointer_mut(parent)?.as_object_mut()?.remove(key)?;

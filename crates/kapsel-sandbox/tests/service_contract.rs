@@ -96,50 +96,6 @@ fn provisioned_objects(
         .collect()
 }
 
-fn register_external_resources(database: &Path, lease: &DispatchLease, cleanup_identity: &str) {
-    let mut connection = rusqlite::Connection::open(database).unwrap();
-    let transaction = connection.transaction().unwrap();
-    let identities = {
-        let mut statement = transaction
-            .prepare(
-                "SELECT identity FROM external_resource_slots WHERE run_id = ?1 ORDER BY ordinal",
-            )
-            .unwrap();
-        statement
-            .query_map([&lease.run_id], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    for (index, identity) in identities.into_iter().enumerate() {
-        let uid = format!("external-{}-{index}", lease.run_id);
-        transaction
-            .execute(
-                concat!(
-                    "UPDATE external_resource_slots SET uid = ?3, owner_label = ?4 ",
-                    "WHERE run_id = ?1 AND identity = ?2"
-                ),
-                rusqlite::params![lease.run_id, identity, uid, cleanup_identity],
-            )
-            .unwrap();
-        transaction
-            .execute(
-                "INSERT INTO provisioned_object_owners VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![uid, lease.run_id, identity, cleanup_identity],
-            )
-            .unwrap();
-    }
-    transaction.commit().unwrap();
-}
-
-fn register_all_for_lease(root: &Path, service: &Service, lease: &DispatchLease, at: i64) {
-    let cleanup_identity = service
-        .provisioning_specification(lease, at)
-        .unwrap()
-        .cleanup_identity;
-    register_external_resources(&root.join("sandbox.sqlite3"), lease, &cleanup_identity);
-}
-
 fn cleanup_absence_from_database(
     database: &Path,
     run_id: &str,
@@ -514,11 +470,6 @@ fn repeated_verification_keeps_historical_cleanup_ownership() {
         Err(ServiceError::PolicyMismatch)
     );
     verify_target(&service, &lease, namespace_uid, NOW + 1);
-    register_external_resources(
-        &root.join("sandbox.sqlite3"),
-        &lease,
-        &specification.cleanup_identity,
-    );
     service
         .record_setup_failure(&lease, &specification.cleanup_identity, NOW + 2)
         .unwrap();
@@ -581,7 +532,6 @@ async fn application_rejection_and_cleanup_remain_separate_across_restart() {
         std::slice::from_ref(&admission.run_id)
     );
     let specification = verify_target(&service, &lease, "namespace-uid-1", NOW + 1);
-    register_all_for_lease(&root, &service, &lease, NOW + 1);
     let stored_objects: String = rusqlite::Connection::open(root.join("sandbox.sqlite3"))
         .unwrap()
         .query_row(
@@ -756,7 +706,6 @@ async fn pre_submit_marker_crash_submits_same_request_on_reconciliation() {
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     verify_target(&service, &lease, "pre-submit-namespace-uid", NOW + 1);
-    register_all_for_lease(&root, &service, &lease, NOW + 1);
     let database = root.join("sandbox.sqlite3");
     rusqlite::Connection::open(&database)
         .unwrap()
@@ -823,7 +772,6 @@ async fn uncertain_invocation_recovers_with_one_mutation_and_same_operation() {
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     verify_target(&service, &lease, "uncertain-namespace-uid", NOW + 1);
-    register_all_for_lease(&root, &service, &lease, NOW + 1);
     let (configuration, mut handle) =
         application_configuration(&root, &admission.run_id, Scenario::Healthy);
     let operation_id = admission.operation_id.clone();
@@ -963,7 +911,6 @@ async fn report_and_receipt_reference_crash_recovers_exact_bytes() {
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     verify_target(&service, &lease, "healthy-namespace-uid", NOW + 1);
-    register_all_for_lease(&root, &service, &lease, NOW + 1);
     let (configuration, mut handle) =
         application_configuration(&root, &admission.run_id, Scenario::Healthy);
     let operation_id = admission.operation_id.clone();
@@ -1129,7 +1076,6 @@ async fn unavailable_image_application_preserves_failed_receiver_result() {
         .unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     verify_target(&service, &lease, "unavailable-namespace-uid", NOW + 1);
-    register_all_for_lease(&root, &service, &lease, NOW + 1);
     let (configuration, mut handle) =
         application_configuration(&root, &admission.run_id, Scenario::UnavailableImage);
     let operation_id = admission.operation_id.clone();
@@ -1324,11 +1270,6 @@ async fn policy_deadline_and_scheduler_lease_fail_closed_before_application() {
     let provider_request =
         tokio::time::timeout(std::time::Duration::from_millis(20), handle.next_request()).await;
     assert!(matches!(provider_request, Ok(None) | Err(_)));
-    register_external_resources(
-        &root.join("sandbox.sqlite3"),
-        &recovered,
-        &specification.cleanup_identity,
-    );
     service
         .record_setup_failure(&recovered, &specification.cleanup_identity, NOW + 2)
         .unwrap();
@@ -1355,11 +1296,6 @@ fn pagination_every_cursor_is_snapshot_consistent_during_append_and_bounded() {
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     let specification = verify_target(&service, &lease, "pagination-namespace-uid", NOW + 1);
-    register_external_resources(
-        &root.join("sandbox.sqlite3"),
-        &lease,
-        &specification.cleanup_identity,
-    );
     service
         .record_setup_failure(&lease, &specification.cleanup_identity, NOW + 2)
         .unwrap();

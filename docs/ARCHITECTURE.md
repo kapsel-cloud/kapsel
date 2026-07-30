@@ -157,13 +157,52 @@ The sandbox directly pins `http` for typed in-process translation, `httparse` fo
 HTTP/1.1 parsing without route duplication, `serde`/`serde_json` for exact bounded `v1` documents,
 `rusqlite` with bundled SQLite for one local transactional service store, `getrandom` for opaque
 128-bit run identities, `sha2` for exact receipt and keyed tombstone digests, and `rustix` for
-owner-private Unix path checks. It reuses no transitive dependency implicitly. Historical KAP-0053
-Authority Composition Proof (Gate 1) added the package-local native process, private stop commands,
-provider-neutral exact-patch harness, and static-volume/backup composition lock. KAP-0069 retained
-only the mapped listener, stop, patch, input, runner, scheduler, cleanup, and retention evidence and
-superseded the Kubernetes-hosted controller/stager topology. KAP-0070 now owns contract correction
-and fresh serialized host/cluster evidence before any provider selection, live transport,
-durable-store placement and fencing, key custody, Kubernetes admission/isolation, or cleanup claim.
+owner-private Unix path checks. It reuses no transitive dependency implicitly.
+
+## Active serialized sandbox composition
+
+The [deployment contract](SANDBOX_DEPLOYMENT.md) now owns one active KAP-0070 route:
+
+```text
+same-origin edge
+  -> native controller host and its single writer
+       -> owner-private admission SQLite + immutable receipt directory
+       -> local serial scheduler / retention / cleanup roles
+       -> authenticated KAP-0055 handoff
+            -> separate per-run OS runner identity
+                 -> private gateway journal + receipt outbox
+                 -> real kapsel Application
+                      -> dedicated synthetic cluster
+                           -> one policy-complete namespace + target
+                           -> operator-owned isolation canary
+```
+
+At most one run owns dispatch or cleanup capacity. Release requires terminal or `not_attempted`
+handoff plus exact absence of every recorded UID/owner object; operation, receipt availability,
+deadline, handoff transport, cleanup, and capacity release remain separate durable transitions. The
+controller host stages fixed authorization, receipt, tombstone, Kubernetes, handoff, and
+public-trust inputs descriptor-relatively under exact owner/mode/no-follow rules. The runner
+receives only fixed read-only descriptors, owns one fresh journal/outbox, and cannot access
+controller state, receipts, backups, other/prior journals, or cleanup authority.
+
+One crash-consistent backup identity covers admission/projection/stop state, immutable receipts and
+pending publication, the active journal/outbox when present, capacity and lease state, the complete
+ownership inventory, compatible deployment metadata, and required public trust. Restore fences the
+original writer and runner, permits one writer and one runnable journal, reapplies deletion before
+serve, then reconciles operation, receipt, and cleanup state. Private signing and Kubernetes
+credentials retain separately owned continuity and are not copied into that backup.
+
+This is the selected production path, not completed enforcement. The retained implementation today
+is the exact public contract, KAP-0052 service semantics, real one-way `kapsel-sandbox -> kapsel`
+dependency, and KAP-0055 process handoff. KAP-0070 must implement and prove host identities,
+active=1, staging, backup, cluster policy, canary isolation, teardown, and recreation before any
+live or public claim.
+
+KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
+projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor
+runs, and multi-volume backup topology. None is an alternate architecture. The retained negative
+invariants do not justify a generic coordinator, database, storage, queue, provider, policy,
+transport, or package seam.
 
 ## Failure structure
 
