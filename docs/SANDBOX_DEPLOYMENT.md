@@ -1,8 +1,9 @@
 # Public sandbox deployment contract
 
-Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0) is accepted.
-Serialized Composition (Gate 1) remains unstarted. No provider, credential, resource, spend, image
-push, endpoint, DNS, private live command, or public traffic is authorized.
+Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0) and Gate 1
+Slice 1 serialized capacity/local-role implementation are accepted. Gate 1 Slices 2–6 remain. No
+provider, credential, resource, spend, image push, endpoint, DNS, private live command, or public
+traffic is authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
@@ -44,9 +45,10 @@ stagers, runner Pod/PVC composition, concurrent visitor runs, and multi-volume b
 They are history in Git and the task records, not deployable alternatives or KAP-0070 inputs.
 
 The fixed [public `v1` API](SANDBOX_API.md), KAP-0052 admission/projection behavior, and KAP-0055
-handoff implementation are retained evidence. Host composition, one-active enforcement, host key
-staging, cluster policy, complete backup/restore, fencing, and live isolation are planned KAP-0070
-work and are not established merely by this contract.
+handoff implementation are retained evidence. Gate 1 Slice 1 implements one-active enforcement and
+concrete process-local scheduler, retention, and cleanup role sequencing. Host process composition,
+runner fencing, host key staging, cluster policy, complete backup/restore, and live isolation remain
+planned KAP-0070 work and are not established merely by this contract.
 
 ## Authorization gates
 
@@ -109,9 +111,12 @@ One active reservation is held from dispatch until all applicable facts are dura
 - runner authority is revoked, the process is absent, and the journal/outbox reached its owned
   retention handoff.
 
-No subsequent run dispatches before that release transaction. A cleanup failure or stuck finalizer
-therefore holds capacity; it never changes the receiver result. Saturation and durable global stop
-fail before admission and preserve exact existing `v1` error bytes.
+No subsequent run dispatches before that release transaction. The implemented serial scheduler
+recovers the sole active reservation before considering the oldest queued run; reopen and dispatch
+refuse multiple, noncanonical, inconsistent, or missing capacity ownership rows, and restart waits
+for an unexpired foreign lease. A cleanup failure or stuck finalizer therefore holds capacity; it
+never changes the receiver result. Saturation and durable global stop fail before admission and
+preserve exact existing `v1` error bytes.
 
 Ordinary dispatched work retains the admission-frozen 180-second absolute deadline. Public state and
 idempotency mapping retain the exact 24-hour lifetime and the minimal tombstone a further 24 hours.
@@ -249,10 +254,13 @@ replacement failure must preserve this behavior through fenced restore; a stoppe
 is not itself durable stop evidence.
 
 Scheduler, retention, receipt publication, and cleanup are explicit local roles over concrete
-bounded `Service` transitions. They cannot execute arbitrary SQL or widen lifecycle/result
-vocabulary. Restart-before-serve runs fencing, restore validation, expiry/tombstone deletion,
-pending receipt convergence, active journal reconciliation, stale-process denial, ownership scan,
-and cleanup before admission readiness.
+bounded `Service` transitions. Gate 1 Slice 1 implements a scheduler step that recovers active work
+before FIFO dispatch, the existing periodic retention process through its concrete role, and cleanup
+selection/start/failure/escalation/completion over the exact append-only inventory. They cannot
+execute arbitrary SQL or widen lifecycle/result vocabulary. The runner launch, Kubernetes deletion
+observer, and restart-before-serve composition remain later slices; eventual startup must run
+fencing, restore validation, expiry/tombstone deletion, pending receipt convergence, active journal
+reconciliation, stale-process denial, ownership scan, and cleanup before admission readiness.
 
 ## UID- and owner-safe cleanup
 
@@ -329,8 +337,11 @@ host/provider/live enforcement claim exists yet.
 
 Gate 0 accepted this map after the exact public fixtures, topology-neutral preservation, retained
 service and handoff lanes, root package deletion boundary, formatting, links, the full repository
-gate, and independent architecture/security review passed. No row treats historical provider
-configuration or Kubernetes-hosted controller composition as preservation evidence.
+gate, and independent architecture/security review passed. Gate 1 Slice 1 then accepted exactly one
+durable active reservation through cleanup, fail-closed reopen and dispatch for corrupt capacity
+state, active-first lease recovery, FIFO dispatch, coalesced cleanup retry, one 15-minute
+escalation, and release only after exact absence. No row treats historical provider configuration or
+Kubernetes-hosted controller composition as preservation evidence.
 
 ## Acceptance and non-claims
 

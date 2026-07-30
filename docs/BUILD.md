@@ -392,9 +392,9 @@ is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence rem
 
 KAP-0070 is active only for the serialized reshape selected by KAP-0069; provider selection,
 deployment, credentials, spend, an endpoint, DNS, and public traffic remain separately gated. These
-commands preserve the accepted KAP-0070 Gate 0 evidence. Serialized Composition (Gate 1) remains
-unstarted. Historical KAP-0053 Gate 1 and Gate 2 tasks and artifacts are removed; Git history
-retains their evidence.
+commands preserve the accepted KAP-0070 Gate 0 evidence and Gate 1 Slice 1 serialized-capacity and
+local-role evidence. Historical KAP-0053 Gate 1 and Gate 2 tasks and artifacts are removed; Git
+history retains their evidence.
 
 Validate the demonstration-scoped public sandbox fixtures without a service or network:
 
@@ -417,6 +417,17 @@ The direct command is `python3 scripts/test-sandbox-preservation.py`. It uses on
 all mutation beyond the selected image and operation annotation, and asserts that superseded source,
 CLI modes, artifacts, and Make tasks are absent. It uses no Docker, provider, credential, resource,
 or network.
+
+Run the focused deterministic one-active and concrete local-role proof with:
+
+```sh
+cargo make test-sandbox-serialized-capacity
+```
+
+It proves exactly one durable dispatch/recovery owner, fail-closed reopen and dispatch for corrupt
+capacity state, active-first recovery, FIFO dispatch, cleanup-held capacity through restart, retry,
+and escalation, and release only after exact UID/owner absence. It uses no runner process, cluster,
+provider, credential, or network.
 
 Run the deterministic KAP-0052 service, fixture, dependency, and deletion-boundary proof with:
 

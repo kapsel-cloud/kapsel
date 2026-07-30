@@ -67,7 +67,7 @@ use.
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                 |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
 | Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
-| Serialized sandbox Contract Correction (Gate 0)  | Accepted; offline composition Gate 1 remains unstarted   |
+| Serialized sandbox Gate 1 Slice 1                | One-active/local-role offline proof accepted             |
 | Provider-neutral private runner handoff          | Implemented and accepted through offline process proofs  |
 
 The exact local evaluator grammar and file separation are owned by the

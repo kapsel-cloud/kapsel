@@ -1,6 +1,7 @@
 //! Exported sandbox service contract tests.
 
 #![allow(
+    clippy::panic,
     clippy::unwrap_used,
     reason = "controlled fixture failures must stop the contract test"
 )]
@@ -18,9 +19,9 @@ use kapsel::{
     GrantProvisioning, InspectionLimits, InspectionStatus, OperatorConfiguration, ReceiptTrust,
 };
 use kapsel_sandbox::{
-    AdmissionDisposition, CleanupAbsenceEvidence, CleanupObjectAbsence, CleanupState,
+    AdmissionDisposition, CleanupAbsenceEvidence, CleanupObjectAbsence, CleanupRole, CleanupState,
     DispatchLease, ExecutionState, ProvisionedObject, ProvisionedTarget, ProvisioningSpecification,
-    Scenario, Service, ServiceError,
+    RetentionRole, Scenario, SchedulerRole, SchedulerStep, Service, ServiceError,
 };
 use tower_test::mock;
 
@@ -319,13 +320,266 @@ fn admission_is_durable_idempotent_stopped_and_bounded() {
         Err(ServiceError::CapacitySaturated)
     );
     assert_eq!(service.dispatch_next(NOW + 2).unwrap().run_id, first.run_id);
-    for _ in 1..8 {
-        service.dispatch_next(NOW + 2).unwrap();
-    }
     assert_eq!(
         service.dispatch_next(NOW + 2),
         Err(ServiceError::ActiveSaturated)
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reopen_rejects_more_than_one_durable_active_reservation() {
+    let (root, service) = fixture("historical-active-overflow");
+    let first = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
+    let second = service.admit(&key(2), Scenario::Healthy, NOW + 1).unwrap();
+    assert_eq!(service.dispatch_next(NOW + 2).unwrap().run_id, first.run_id);
+    drop(service);
+    let connection = rusqlite::Connection::open(root.join("sandbox.sqlite3")).unwrap();
+    connection
+        .execute(
+            concat!(
+                "UPDATE runs SET active = 1, execution_state = 'running', dispatched_at = ?2, ",
+                "deadline_at = ?3, lease_id = 'historical-overflow', lease_epoch = 1, ",
+                "lease_expires_at = ?4 WHERE run_id = ?1"
+            ),
+            rusqlite::params![second.run_id, NOW + 2, NOW + 182, NOW + 32],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cleanup_records SET active = 1 WHERE run_id = ?1",
+            [&second.run_id],
+        )
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        Service::open(
+            root.join("sandbox.sqlite3"),
+            root.join("receipts"),
+            [7; 32],
+            NOW + 3,
+        ),
+        Err(ServiceError::Unavailable)
+    ));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn corrupt_capacity_state_fails_closed_on_reopen_and_dispatch() {
+    let (missing_root, missing_service) = fixture("missing-capacity-row");
+    let missing = missing_service
+        .admit(&key(1), Scenario::Healthy, NOW)
+        .unwrap();
+    rusqlite::Connection::open(missing_root.join("sandbox.sqlite3"))
+        .unwrap()
+        .execute(
+            "DELETE FROM cleanup_records WHERE run_id = ?1",
+            [&missing.run_id],
+        )
+        .unwrap();
+    assert_eq!(
+        missing_service.dispatch_next(NOW + 1),
+        Err(ServiceError::Unavailable)
+    );
+    let state: (String, bool) = rusqlite::Connection::open(missing_root.join("sandbox.sqlite3"))
+        .unwrap()
+        .query_row(
+            "SELECT execution_state, active FROM runs WHERE run_id = ?1",
+            [&missing.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, ("queued".into(), false));
+    drop(missing_service);
+    assert!(matches!(
+        Service::open(
+            missing_root.join("sandbox.sqlite3"),
+            missing_root.join("receipts"),
+            [7; 32],
+            NOW + 1,
+        ),
+        Err(ServiceError::Unavailable)
+    ));
+    fs::remove_dir_all(missing_root).unwrap();
+
+    let (noncanonical_root, noncanonical_service) = fixture("noncanonical-capacity");
+    let noncanonical = noncanonical_service
+        .admit(&key(1), Scenario::Healthy, NOW)
+        .unwrap();
+    drop(noncanonical_service);
+    let connection = rusqlite::Connection::open(noncanonical_root.join("sandbox.sqlite3")).unwrap();
+    connection
+        .execute(
+            "UPDATE runs SET active = 2 WHERE run_id = ?1",
+            [&noncanonical.run_id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE cleanup_records SET active = 2 WHERE run_id = ?1",
+            [&noncanonical.run_id],
+        )
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        Service::open(
+            noncanonical_root.join("sandbox.sqlite3"),
+            noncanonical_root.join("receipts"),
+            [7; 32],
+            NOW + 1,
+        ),
+        Err(ServiceError::Unavailable)
+    ));
+    fs::remove_dir_all(noncanonical_root).unwrap();
+}
+
+#[test]
+fn corrupt_capacity_variants_and_late_update_rollback_are_rejected() {
+    let (orphan_root, orphan_service) = fixture("orphan-capacity-row");
+    drop(orphan_service);
+    rusqlite::Connection::open(orphan_root.join("sandbox.sqlite3"))
+        .unwrap()
+        .execute(
+            concat!(
+                "INSERT INTO cleanup_records VALUES ",
+                "('orphan', 'cleanup-orphan', NULL, 'unverified', 'pending', 0, 0, NULL, 0)"
+            ),
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        Service::open(
+            orphan_root.join("sandbox.sqlite3"),
+            orphan_root.join("receipts"),
+            [7; 32],
+            NOW + 1,
+        ),
+        Err(ServiceError::Unavailable)
+    ));
+    fs::remove_dir_all(orphan_root).unwrap();
+
+    let (mismatch_root, mismatch_service) = fixture("mismatched-capacity-row");
+    let mismatch = mismatch_service
+        .admit(&key(1), Scenario::Healthy, NOW)
+        .unwrap();
+    mismatch_service.dispatch_next(NOW + 1).unwrap();
+    drop(mismatch_service);
+    rusqlite::Connection::open(mismatch_root.join("sandbox.sqlite3"))
+        .unwrap()
+        .execute(
+            "UPDATE cleanup_records SET active = 0 WHERE run_id = ?1",
+            [&mismatch.run_id],
+        )
+        .unwrap();
+    assert!(matches!(
+        Service::open(
+            mismatch_root.join("sandbox.sqlite3"),
+            mismatch_root.join("receipts"),
+            [7; 32],
+            NOW + 2,
+        ),
+        Err(ServiceError::Unavailable)
+    ));
+    fs::remove_dir_all(mismatch_root).unwrap();
+
+    let (rollback_root, rollback_service) = fixture("capacity-update-rollback");
+    let rollback = rollback_service
+        .admit(&key(1), Scenario::Healthy, NOW)
+        .unwrap();
+    rusqlite::Connection::open(rollback_root.join("sandbox.sqlite3"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER ignore_cleanup_activation BEFORE UPDATE OF active ON cleanup_records
+             WHEN NEW.active = 1 BEGIN SELECT RAISE(IGNORE); END;",
+        )
+        .unwrap();
+    assert_eq!(
+        rollback_service.dispatch_next(NOW + 1),
+        Err(ServiceError::Unavailable)
+    );
+    let state: (String, bool, bool) =
+        rusqlite::Connection::open(rollback_root.join("sandbox.sqlite3"))
+            .unwrap()
+            .query_row(
+                concat!(
+                    "SELECT runs.execution_state, runs.active, cleanup_records.active FROM runs ",
+                    "JOIN cleanup_records ON cleanup_records.run_id = runs.run_id ",
+                    "WHERE runs.run_id = ?1"
+                ),
+                [&rollback.run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+    assert_eq!(state, ("queued".into(), false, false));
+    fs::remove_dir_all(rollback_root).unwrap();
+}
+
+#[test]
+fn local_roles_recover_before_dispatch_and_release_only_after_exact_cleanup() {
+    let (root, service) = fixture("local-roles");
+    let first = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
+    let second = service
+        .admit(&key(2), Scenario::UnavailableImage, NOW + 1)
+        .unwrap();
+    let mut scheduler = SchedulerRole::new(service.clone());
+    let first_lease = match scheduler.run_once(NOW + 2).unwrap() {
+        SchedulerStep::Dispatched(lease) => lease,
+        other => panic!("unexpected scheduler step: {other:?}"),
+    };
+    assert_eq!(first_lease.run_id, first.run_id);
+    assert!(matches!(
+        scheduler.run_once(NOW + 3).unwrap(),
+        SchedulerStep::Active(_)
+    ));
+
+    let mut restarted_scheduler = SchedulerRole::new(service.clone());
+    assert_eq!(
+        restarted_scheduler.run_once(NOW + 3).unwrap(),
+        SchedulerStep::Waiting
+    );
+    let recovered = match restarted_scheduler.run_once(NOW + 33).unwrap() {
+        SchedulerStep::Recovered(lease) => lease,
+        other => panic!("unexpected scheduler recovery: {other:?}"),
+    };
+    let specification = verify_target(&service, &recovered, "local-role-namespace-uid", NOW + 33);
+    service
+        .record_setup_failure(&recovered, &specification.cleanup_identity, NOW + 34)
+        .unwrap();
+
+    RetentionRole::new(service.clone())
+        .run_once(NOW + 35)
+        .unwrap();
+    let cleanup = CleanupRole::new(service);
+    let work = cleanup.next(NOW + 35).unwrap().unwrap();
+    assert_eq!(work.run_id, first.run_id);
+    assert_eq!(work.cleanup_identity, specification.cleanup_identity);
+    assert_eq!(work.namespace_uid, "local-role-namespace-uid");
+    assert!(!work.escalated);
+    assert_eq!(
+        restarted_scheduler.run_once(NOW + 35).unwrap(),
+        SchedulerStep::Active(recovered.clone())
+    );
+    cleanup.fail(&work, NOW + 36).unwrap();
+    cleanup.fail(&work, NOW + 37).unwrap();
+    assert_eq!(
+        restarted_scheduler.run_once(NOW + 36).unwrap(),
+        SchedulerStep::Active(recovered)
+    );
+    assert!(!cleanup.next(NOW + 934).unwrap().unwrap().escalated);
+    assert!(cleanup.next(NOW + 935).unwrap().unwrap().escalated);
+    assert!(cleanup.next(NOW + 936).unwrap().unwrap().escalated);
+
+    let exact_absence = cleanup_absence_from_database(
+        &root.join("sandbox.sqlite3"),
+        &first.run_id,
+        "local-role-namespace-uid",
+    );
+    cleanup.complete(&work, &exact_absence, NOW + 37).unwrap();
+    let second_lease = match restarted_scheduler.run_once(NOW + 37).unwrap() {
+        SchedulerStep::Dispatched(lease) => lease,
+        other => panic!("unexpected second dispatch: {other:?}"),
+    };
+    assert_eq!(second_lease.run_id, second.run_id);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -368,22 +622,30 @@ fn queued_age_does_not_consume_dispatch_window_or_block_fair_order() {
 
     let first_lease = service.dispatch_next(NOW + 1_000).unwrap();
     assert_eq!(first_lease.run_id, first.run_id);
-    assert_eq!(
-        service
-            .provisioning_specification(&first_lease, NOW + 1_000)
-            .unwrap()
-            .deadline_at_unix_s,
-        NOW + 1_180
-    );
+    let first_specification = service
+        .provisioning_specification(&first_lease, NOW + 1_000)
+        .unwrap();
+    assert_eq!(first_specification.deadline_at_unix_s, NOW + 1_180);
+    service
+        .record_setup_failure_without_resources(
+            &first_lease,
+            &first_specification.cleanup_identity,
+            NOW + 1_000,
+        )
+        .unwrap();
     let second_lease = service.dispatch_next(NOW + 1_001).unwrap();
     assert_eq!(second_lease.run_id, second.run_id);
-    assert_eq!(
-        service
-            .provisioning_specification(&second_lease, NOW + 1_001)
-            .unwrap()
-            .deadline_at_unix_s,
-        NOW + 1_181
-    );
+    let second_specification = service
+        .provisioning_specification(&second_lease, NOW + 1_001)
+        .unwrap();
+    assert_eq!(second_specification.deadline_at_unix_s, NOW + 1_181);
+    service
+        .record_setup_failure_without_resources(
+            &second_lease,
+            &second_specification.cleanup_identity,
+            NOW + 1_001,
+        )
+        .unwrap();
     let third_lease = service.dispatch_next(NOW + 1_002).unwrap();
     assert_eq!(third_lease.run_id, third.run_id);
     assert_eq!(
@@ -397,32 +659,60 @@ fn queued_age_does_not_consume_dispatch_window_or_block_fair_order() {
 }
 
 #[test]
-fn cross_run_provisioned_object_uid_reuse_is_rejected() {
-    let (root, service) = fixture("cross-run-object-uid");
+fn serialized_dispatch_waits_for_prior_object_absence() {
+    let (root, service) = fixture("serialized-prior-absence");
     let first = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
+    let second = service.admit(&key(2), Scenario::Healthy, NOW + 1).unwrap();
     let first_lease = service.dispatch_next(NOW + 1).unwrap();
-    let first_specification = verify_target(&service, &first_lease, "cross-run-uid-one", NOW + 1);
-    let first_objects = provisioned_objects(&first_specification, "cross-run-uid-one");
-
-    let second = service.admit(&key(2), Scenario::Healthy, NOW).unwrap();
-    let second_lease = service.dispatch_next(NOW + 1).unwrap();
-    let second_specification = service
-        .provisioning_specification(&second_lease, NOW + 1)
+    let specification = verify_target(&service, &first_lease, "prior-namespace-uid", NOW + 1);
+    service
+        .record_setup_failure(&first_lease, &specification.cleanup_identity, NOW + 2)
         .unwrap();
-    let mut second_objects = provisioned_objects(&second_specification, "cross-run-uid-two");
-    second_objects[4].uid = first_objects[4].uid.clone();
-    let second_target = ProvisionedTarget {
-        namespace_uid: "cross-run-uid-two".into(),
-        policy_revision: second_specification.policy_revision.clone(),
-        policy_inventory_digest: second_specification.policy_inventory_digest.clone(),
-        cleanup_identity: second_specification.cleanup_identity,
-        objects: second_objects,
-    };
+    service
+        .start_cleanup(
+            &first.run_id,
+            &specification.cleanup_identity,
+            "prior-namespace-uid",
+            NOW + 3,
+        )
+        .unwrap();
     assert_eq!(
-        service.verify_provisioned_target(&second_lease, &second_target, NOW + 1),
-        Err(ServiceError::OwnershipMismatch)
+        service.dispatch_next(NOW + 3),
+        Err(ServiceError::ActiveSaturated)
     );
-    assert_ne!(first.run_id, second.run_id);
+
+    let exact_absence = cleanup_absence_from_database(
+        &root.join("sandbox.sqlite3"),
+        &first.run_id,
+        "prior-namespace-uid",
+    );
+    let mut still_present = exact_absence.clone();
+    still_present.objects[4].present = true;
+    assert_eq!(
+        service.complete_cleanup(
+            &first.run_id,
+            &specification.cleanup_identity,
+            &still_present,
+            NOW + 4,
+        ),
+        Err(ServiceError::InvalidTransition)
+    );
+    assert_eq!(
+        service.dispatch_next(NOW + 4),
+        Err(ServiceError::ActiveSaturated)
+    );
+    service
+        .complete_cleanup(
+            &first.run_id,
+            &specification.cleanup_identity,
+            &exact_absence,
+            NOW + 5,
+        )
+        .unwrap();
+    assert_eq!(
+        service.dispatch_next(NOW + 5).unwrap().run_id,
+        second.run_id
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -525,7 +815,14 @@ fn repeated_verification_keeps_historical_cleanup_ownership() {
 async fn application_rejection_and_cleanup_remain_separate_across_restart() {
     let (root, service) = fixture("application");
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
+    let queued = service
+        .admit(&key(2), Scenario::UnavailableImage, NOW + 1)
+        .unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
+    assert_eq!(
+        service.dispatch_next(NOW + 1),
+        Err(ServiceError::ActiveSaturated)
+    );
     assert_eq!(lease.run_id, admission.run_id);
     assert_eq!(
         service.recoverable_runs().unwrap().as_slice(),
@@ -580,6 +877,10 @@ async fn application_rejection_and_cleanup_remain_separate_across_restart() {
     assert_eq!(before.receiver_result, None);
     assert_eq!(before.cleanup_state, CleanupState::Pending);
     assert_eq!(
+        service.dispatch_next(NOW + 3),
+        Err(ServiceError::ActiveSaturated)
+    );
+    assert_eq!(
         service.start_cleanup(
             &admission.run_id,
             &specification.cleanup_identity,
@@ -607,6 +908,10 @@ async fn application_rejection_and_cleanup_remain_separate_across_restart() {
     let failed = service.snapshot(&admission.run_id, NOW + 4).unwrap();
     assert_eq!(failed.cleanup_state, CleanupState::Failed);
     assert_eq!(failed.receiver_result, None);
+    assert_eq!(
+        service.dispatch_next(NOW + 4),
+        Err(ServiceError::ActiveSaturated)
+    );
     drop(service);
 
     let service = Service::open(
@@ -616,6 +921,10 @@ async fn application_rejection_and_cleanup_remain_separate_across_restart() {
         NOW + 5,
     )
     .unwrap();
+    assert_eq!(
+        service.dispatch_next(NOW + 5),
+        Err(ServiceError::ActiveSaturated)
+    );
     let assert_mismatch = |evidence: &CleanupAbsenceEvidence| {
         assert_eq!(
             service.complete_cleanup(
@@ -682,6 +991,10 @@ async fn application_rejection_and_cleanup_remain_separate_across_restart() {
     assert_eq!(terminal.cleanup_state, CleanupState::Succeeded);
     assert!(!terminal.receipt_available);
     assert!(service.recoverable_runs().unwrap().is_empty());
+    assert_eq!(
+        service.dispatch_next(NOW + 5).unwrap().run_id,
+        queued.run_id
+    );
     let verifier: Vec<u8> = rusqlite::Connection::open(root.join("sandbox.sqlite3"))
         .unwrap()
         .query_row(
@@ -1272,6 +1585,27 @@ async fn policy_deadline_and_scheduler_lease_fail_closed_before_application() {
     assert!(matches!(provider_request, Ok(None) | Err(_)));
     service
         .record_setup_failure(&recovered, &specification.cleanup_identity, NOW + 2)
+        .unwrap();
+    service
+        .start_cleanup(
+            &admission.run_id,
+            &specification.cleanup_identity,
+            "policy-namespace-uid",
+            NOW + 2,
+        )
+        .unwrap();
+    let exact_absence = cleanup_absence_from_database(
+        &root.join("sandbox.sqlite3"),
+        &admission.run_id,
+        "policy-namespace-uid",
+    );
+    service
+        .complete_cleanup(
+            &admission.run_id,
+            &specification.cleanup_identity,
+            &exact_absence,
+            NOW + 2,
+        )
         .unwrap();
     let deadline_admission = service.admit(&key(2), Scenario::Healthy, NOW).unwrap();
     service.dispatch_next(NOW + 1).unwrap();

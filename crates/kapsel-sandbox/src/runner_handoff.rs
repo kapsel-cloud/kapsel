@@ -1353,6 +1353,23 @@ mod tests {
             )
             .unwrap();
         assert!(!invoked);
+        let invocation_recovery = service
+            .recover_run(
+                &invocation_run.run_id,
+                Some(&invocation_lease),
+                unix_time().unwrap(),
+            )
+            .unwrap();
+        let invocation_specification = service
+            .provisioning_specification(&invocation_recovery, unix_time().unwrap())
+            .unwrap();
+        service
+            .record_setup_failure_without_resources(
+                &invocation_recovery,
+                &invocation_specification.cleanup_identity,
+                unix_time().unwrap(),
+            )
+            .unwrap();
 
         let report_run = service
             .admit(

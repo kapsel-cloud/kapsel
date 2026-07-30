@@ -135,10 +135,12 @@ point.
 - A non-success response other than an idempotent conflict never proves whether an earlier request
   with another key exists.
 
-The global stop, per-source abuse controls, queue bound, and active-run bound are checked before the
-admission transaction commits. Capacity is reserved atomically with admission. Saturation fails
-closed and creates no run. Edge admission may reject earlier, but only the native service's durable
-transaction establishes admission.
+The global stop, per-source abuse controls, and queue bound are checked before the admission
+transaction commits. One bounded queue slot is reserved atomically with admission. Active execution
+capacity is reserved separately and atomically only when the serial scheduler dispatches the oldest
+queued run; transport activity never reserves it. Saturation fails closed and creates no run. Edge
+admission may reject earlier, but only the native service's durable transaction establishes
+admission.
 
 A success response has exactly:
 

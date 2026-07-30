@@ -28,8 +28,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod kubernetes_policy;
+mod local_roles;
 mod runner_handoff;
 mod runner_process;
+pub use local_roles::{
+    CleanupOwnedObject, CleanupRole, CleanupWork, RetentionRole, SchedulerRole, SchedulerStep,
+};
 use runner_handoff::{
     constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
     HandoffIdentity,
@@ -41,7 +45,7 @@ pub use runner_handoff::{
 pub use runner_process::run as run_runner_process;
 
 const QUEUED_RUNS_MAX: i64 = 32;
-const ACTIVE_RUNS_MAX: i64 = 8;
+const ACTIVE_RUNS_MAX: i64 = 1;
 const EVENT_COUNT_MAX: i64 = 64;
 const PUBLIC_RETENTION_SECONDS: i64 = 86_400;
 const SANDBOX_DEADLINE_SECONDS: i64 = 180;
@@ -566,6 +570,7 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
+        validate_serial_capacity(&transaction)?;
         let active: i64 = transaction
             .query_row(
                 "SELECT COUNT(*) FROM cleanup_records WHERE active = 1",
@@ -599,12 +604,13 @@ impl Service {
             lease_id: lease_id.clone(),
             credential: handoff_credential,
         });
-        transaction
+        let run_changed = transaction
             .execute(
                 concat!(
                     "UPDATE runs SET active = 1, execution_state = 'running', ",
                     "dispatched_at = ?2, deadline_at = ?3, lease_id = ?4, lease_epoch = 1, ",
-                    "lease_expires_at = ?5, handoff_credential_verifier = ?6 WHERE run_id = ?1"
+                    "lease_expires_at = ?5, handoff_credential_verifier = ?6 ",
+                    "WHERE run_id = ?1 AND active = 0 AND execution_state = 'queued'"
                 ),
                 params![
                     run_id,
@@ -616,12 +622,18 @@ impl Service {
                 ],
             )
             .map_err(storage_error)?;
-        transaction
+        let cleanup_changed = transaction
             .execute(
-                "UPDATE cleanup_records SET active = 1 WHERE run_id = ?1",
+                concat!(
+                    "UPDATE cleanup_records SET active = 1 WHERE run_id = ?1 ",
+                    "AND active = 0 AND state = 'pending'"
+                ),
                 [&run_id],
             )
             .map_err(storage_error)?;
+        if run_changed != 1 || cleanup_changed != 1 {
+            return Err(ServiceError::Unavailable);
+        }
         append_event(&transaction, &run_id, "execution.started", now_unix_s)?;
         transaction.commit().map_err(storage_error)?;
         Ok(DispatchLease {
@@ -1903,6 +1915,7 @@ impl Service {
                 .map_err(storage_error)?;
         }
         migrate_cleanup_columns(&connection)?;
+        validate_serial_capacity(&connection)?;
         self.remove_orphan_receipts(&mut connection)
     }
 
@@ -3687,6 +3700,35 @@ fn commit_global_stop(connection: &Connection, stopped: bool) -> Result<(), Serv
         )
         .map_err(storage_error)?;
     if committed != stopped {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_serial_capacity(connection: &Connection) -> Result<(), ServiceError> {
+    let invalid: i64 = connection
+        .query_row(
+            concat!(
+                "SELECT (SELECT COUNT(*) FROM runs WHERE active NOT IN (0, 1)) + ",
+                "(SELECT COUNT(*) FROM cleanup_records WHERE active NOT IN (0, 1)) + ",
+                "(SELECT COUNT(*) FROM cleanup_records LEFT JOIN runs ",
+                "ON runs.run_id = cleanup_records.run_id WHERE runs.run_id IS NULL) + ",
+                "(SELECT COUNT(*) FROM runs LEFT JOIN cleanup_records ",
+                "ON cleanup_records.run_id = runs.run_id WHERE cleanup_records.run_id IS NULL ",
+                "AND NOT (runs.active = 0 AND runs.cleanup_state = 'succeeded' ",
+                "AND runs.execution_state IN ('not_attempted', 'service_failed', 'terminal'))) + ",
+                "(SELECT COUNT(*) FROM runs JOIN cleanup_records ",
+                "ON cleanup_records.run_id = runs.run_id ",
+                "WHERE runs.active != cleanup_records.active) + ",
+                "(SELECT CASE WHEN COUNT(*) > ?1 THEN 1 ELSE 0 END FROM runs WHERE active = 1) + ",
+                "(SELECT CASE WHEN COUNT(*) > ?1 THEN 1 ELSE 0 END FROM cleanup_records ",
+                "WHERE active = 1)"
+            ),
+            [ACTIVE_RUNS_MAX],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if invalid != 0 {
         return Err(ServiceError::Unavailable);
     }
     Ok(())

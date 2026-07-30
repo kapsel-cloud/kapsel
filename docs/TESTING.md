@@ -211,22 +211,25 @@ boundary:
 The retained KAP-0052 package tests use explicit times, fixed keys, temporary owner-private storage,
 and the existing deterministic Kubernetes transport. They prove atomic admission/replay/conflict,
 queue-32 saturation, global stop, oldest-first dispatch, durable lease exclusion and recovery,
-queued age beyond 180 seconds without head blocking, and exact oldest-first dispatch. Their
-historical eight-active saturation cases are implementation evidence to replace, not the selected
-capacity contract; KAP-0070 must prove active=1 through cleanup and exact absence. The retained
-tests also prove an admission-frozen policy revision/inventory digest, cleanup identity, and
-180-second duration plus an exact dispatch-relative absolute deadline. Deterministic target evidence
-includes every object identity, immutable UID, owner label, and policy-content digest; missing,
-stale, permissive, duplicate-UID, and wrong-owner evidence blocks `Application` before provider
-traffic. Cross-run UID reuse is rejected. Cleanup ownership rows are append-only across repeated
-policy verification; a mismatched observation with an extra owned object remains required even after
-later exact verification. Cleanup completion consumes absence observations for every durable
-kind/namespace/name/UID/owner row and rejects missing, mismatched, or still-present objects before
-releasing capacity. This does not claim live policy enforcement. The separate confirmed-no-resource
-setup path releases capacity without inventing a UID. An explicit periodic sweep deletes expired raw
-run data without visitor traffic, and initial-time open removes due tombstones before returning a
-service. A direct first restart after both 24-hour windows proves the same transaction deletes the
-run and skips its already-due tombstone.
+queued age beyond 180 seconds without head blocking, and exact oldest-first dispatch. KAP-0070 Gate
+1 Slice 1 replaces the historical eight-active cases with exactly one durable active reservation.
+Its focused matrix proves fail-closed reopen and dispatch for missing, inconsistent, noncanonical,
+or multi-active capacity state, active-first lease recovery, FIFO dispatch, no release after
+terminal handoff, cleanup start/failure, retry, restart, public retention, or wrong/present absence
+evidence, one durable 15-minute escalation, and release only after exact UID/owner absence. The
+retained tests also prove an admission-frozen policy revision/inventory digest, cleanup identity,
+and 180-second duration plus an exact dispatch-relative absolute deadline. Deterministic target
+evidence includes every object identity, immutable UID, owner label, and policy-content digest;
+missing, stale, permissive, duplicate-UID, and wrong-owner evidence blocks `Application` before
+provider traffic. Cross-run UID reuse is rejected. Cleanup ownership rows are append-only across
+repeated policy verification; a mismatched observation with an extra owned object remains required
+even after later exact verification. Cleanup completion consumes absence observations for every
+durable kind/namespace/name/UID/owner row and rejects missing, mismatched, or still-present objects
+before releasing capacity. This does not claim live policy enforcement. The separate
+confirmed-no-resource setup path releases capacity without inventing a UID. An explicit periodic
+sweep deletes expired raw run data without visitor traffic, and initial-time open removes due
+tombstones before returning a service. A direct first restart after both 24-hour windows proves the
+same transaction deletes the run and skips its already-due tombstone.
 
 An injected crash with only the sandbox `application_invoked` marker and no gateway journal proves
 reconciliation submits the same server-owned request; once gateway state exists, recovery remains
@@ -280,8 +283,8 @@ concurrent-run, provider fixture, and image-candidate assertions are deleted evi
 and must not run or pass as current composition proof. Gate 0 retains the exact conditional patch
 rule and source/artifact deletion boundary in `test-sandbox-preservation`, which uses only the two
 provider-neutral fixtures under `deploy/sandbox`. The current runnable preservation set is
-`test-sandbox-contract`, `test-sandbox-preservation`, `test-sandbox-service`,
-`test-sandbox-package-boundary`, and `test-sandbox-runner-handoff`.
+`test-sandbox-contract`, `test-sandbox-preservation`, `test-sandbox-serialized-capacity`,
+`test-sandbox-service`, `test-sandbox-package-boundary`, and `test-sandbox-runner-handoff`.
 
 The serialized proof matrix is:
 

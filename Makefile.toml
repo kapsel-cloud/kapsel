@@ -292,6 +292,23 @@ description = "Validate topology-neutral exact-patch and Gate 0 deletion boundar
 command = "python3"
 args = ["scripts/test-sandbox-preservation.py"]
 
+[tasks.test-sandbox-serialized-capacity]
+description = "Prove one active reservation and concrete local role sequencing through cleanup"
+script = '''
+set -eu
+for test_name in \
+  admission_is_durable_idempotent_stopped_and_bounded \
+  reopen_rejects_more_than_one_durable_active_reservation \
+  corrupt_capacity_state_fails_closed_on_reopen_and_dispatch \
+  corrupt_capacity_variants_and_late_update_rollback_are_rejected \
+  local_roles_recover_before_dispatch_and_release_only_after_exact_cleanup \
+  serialized_dispatch_waits_for_prior_object_absence \
+  application_rejection_and_cleanup_remain_separate_across_restart
+do
+  cargo test --locked -p kapsel-sandbox --test service_contract "$test_name" -- --exact
+done
+'''
+
 [tasks.test-sandbox-service]
 description = "Run deterministic sandbox package and deletion-boundary proofs"
 dependencies = [

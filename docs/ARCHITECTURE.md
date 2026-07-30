@@ -192,11 +192,13 @@ original writer and runner, permits one writer and one runnable journal, reappli
 serve, then reconciles operation, receipt, and cleanup state. Private signing and Kubernetes
 credentials retain separately owned continuity and are not copied into that backup.
 
-This is the selected production path, not completed enforcement. The retained implementation today
-is the exact public contract, KAP-0052 service semantics, real one-way `kapsel-sandbox -> kapsel`
-dependency, and KAP-0055 process handoff. KAP-0070 must implement and prove host identities,
-active=1, staging, backup, cluster policy, canary isolation, teardown, and recreation before any
-live or public claim.
+This is the selected production path, not completed enforcement. The implementation now retains the
+exact public contract, KAP-0052 service semantics, real one-way `kapsel-sandbox -> kapsel`
+dependency, KAP-0055 process handoff, and KAP-0070's durable one-active reservation with concrete
+local scheduler, retention, and cleanup roles. The scheduler recovers active work before FIFO
+dispatch; cleanup retry and escalation retain capacity until exact UID/owner absence. KAP-0070 must
+still implement and prove host identities and runner fencing, staging, backup, cluster policy,
+canary isolation, teardown, and recreation before any live or public claim.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor

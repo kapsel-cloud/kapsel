@@ -18,7 +18,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use kapsel_sandbox::{run_runner_process, serve_private_handoff, set_global_stop, Service};
+use kapsel_sandbox::{
+    run_runner_process, serve_private_handoff, set_global_stop, RetentionRole, Service,
+};
 
 const USAGE: &str = concat!(
     "usage: kapsel-sandbox <init|serve|handoff-serve|retention|stop|clear-stop|runner> ",
@@ -77,7 +79,7 @@ fn run() -> Result<(), &'static str> {
             serve_private_handoff(&listener, &std::sync::Arc::new(service))
                 .map_err(|_| "private handoff listener failed")
         },
-        Command::Retention => run_retention(&service),
+        Command::Retention => run_retention(service),
         Command::Stop | Command::ClearStop => unreachable!(),
     }
 }
@@ -88,11 +90,11 @@ fn set_origin(service: &mut Service, origin: Option<&str>) -> Result<(), &'stati
         .map_err(|_| "origin is invalid")
 }
 
-fn run_retention(service: &Service) -> Result<(), &'static str> {
+fn run_retention(service: Service) -> Result<(), &'static str> {
+    let role = RetentionRole::new(service);
     loop {
         thread::sleep(RETENTION_INTERVAL);
-        service
-            .sweep_retention(unix_time()?)
+        role.run_once(unix_time()?)
             .map_err(|_| "retention sweep failed")?;
     }
 }
