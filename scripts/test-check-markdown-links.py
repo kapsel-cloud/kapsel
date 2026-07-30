@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,10 @@ def write(path: Path, content: str) -> None:
 
 def main() -> int:
     """Exercise supported links, anchors, fences, and failures."""
+
+    # `git commit --only` gives hooks a temporary outer index. The nested fixture
+    # repository must use its own index rather than inheriting that commit state.
+    os.environ.pop("GIT_INDEX_FILE", None)
 
     with tempfile.TemporaryDirectory() as raw_root:
         root = Path(raw_root).resolve()

@@ -30,7 +30,8 @@ cargo make check
 cargo make ci
 ```
 
-The managed pre-commit hook runs this complete default gate rather than formatting alone:
+The managed pre-commit hook skips message-only amendments and rewords whose prospective tree equals
+`HEAD`. Every content-changing commit runs the complete default gate rather than formatting alone:
 
 ```sh
 cargo make hooks-install

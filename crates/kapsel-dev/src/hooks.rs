@@ -7,7 +7,17 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const PRE_COMMIT_HOOK: &str = "#!/bin/sh\nset -eu\n\ncargo make check\n";
+const PRE_COMMIT_HOOK: &str = r"#!/bin/sh
+set -eu
+
+# Content checks add no evidence when an amend or reword preserves the tree.
+if git rev-parse --verify HEAD >/dev/null 2>&1 &&
+    git diff --cached --quiet HEAD --; then
+    exit 0
+fi
+
+cargo make check
+";
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -117,10 +127,11 @@ fn report(message: &str, exit_code: ExitCode) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{install, uninstall, PRE_COMMIT_HOOK};
+    use super::{install, make_executable, uninstall, PRE_COMMIT_HOOK};
     use std::fs;
     use std::io;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
@@ -170,6 +181,88 @@ mod tests {
 
         assert!(!directory.path().join("pre-commit").exists());
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_hook_skips_only_an_unchanged_tree() -> io::Result<()> {
+        let directory = TestDirectory::create()?;
+        let repository = directory.path().join("repository");
+        let bin = directory.path().join("bin");
+        let marker = directory.path().join("cargo-called");
+        fs::create_dir_all(&repository)?;
+        fs::create_dir_all(&bin)?;
+
+        git(&repository, &["init", "-q"])?;
+        fs::write(repository.join("tracked"), "initial\n")?;
+        git(&repository, &["add", "tracked"])?;
+        git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Kapsel Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "initial",
+            ],
+        )?;
+
+        let hooks = repository.join(".git/hooks");
+        install(&hooks)?;
+        let hook = hooks.join("pre-commit");
+        let cargo = bin.join("cargo");
+        fs::write(
+            &cargo,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$KAPSEL_HOOK_MARKER\"\n",
+        )?;
+        make_executable(&cargo)?;
+
+        fs::write(repository.join("tracked"), "unstaged\n")?;
+        run_hook(&hook, &repository, &bin, &marker)?;
+        assert!(!marker.exists());
+
+        git(&repository, &["add", "tracked"])?;
+        run_hook(&hook, &repository, &bin, &marker)?;
+        assert_eq!(fs::read_to_string(&marker)?, "make check\n");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn git(repository: &Path, arguments: &[&str]) -> io::Result<()> {
+        let status = Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "git {} failed with {status}",
+                arguments.join(" ")
+            )))
+        }
+    }
+
+    #[cfg(unix)]
+    fn run_hook(hook: &Path, repository: &Path, bin: &Path, marker: &Path) -> io::Result<()> {
+        let inherited_path = std::env::var("PATH").unwrap_or_default();
+        let status = Command::new(hook)
+            .current_dir(repository)
+            .env("PATH", format!("{}:{inherited_path}", bin.display()))
+            .env("KAPSEL_HOOK_MARKER", marker)
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "{} failed with {status}",
+                hook.display()
+            )))
+        }
     }
 
     #[cfg(unix)]
