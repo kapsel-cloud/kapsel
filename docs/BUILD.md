@@ -388,12 +388,13 @@ meaning, cleanup, unsupported targets, and non-claims. Public `0.1.1` assets are
 is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence remains in
 [KAP-0045](../tasks/KAP-0045.md).
 
-## Paused sandbox preservation lanes
+## Sandbox preservation lanes
 
-The sandbox is implemented but paused, excluded from the v0.2 release unit, and not authorized for
-provider selection, deployment, credentials, spend, an endpoint, or public traffic. These commands
-preserve accepted offline evidence; they are not KAP-0065 replacement-candidate requirements unless
-a changed shared input invalidates their owning lane.
+KAP-0070 is active only for the serialized reshape selected by KAP-0069; provider selection,
+deployment, credentials, spend, an endpoint, DNS, and public traffic remain separately gated. These
+commands preserve accepted offline evidence while KAP-0070 Gate 0 corrects the contracts. Historical
+KAP-0053 Gate 1 and Gate 2 commands do not authorize or validate the selected topology and must be
+replaced or removed before implementation proceeds.
 
 Validate the demonstration-scoped public sandbox fixtures without a service or network:
 
@@ -415,7 +416,7 @@ The focused package test crosses strict HTTP translation, durable admission/rest
 `Application` against a deterministic Kubernetes transport, exact receipt publication/retrieval,
 retention, and cleanup. The boundary script also compiles the ordinary root package from a temporary
 copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
-website, or deployment provider; KAP-0053 owns those live properties.
+website, or deployment provider; KAP-0070 owns fresh serialized live evidence.
 
 Run the KAP-0055 provider-neutral private runner handoff proof with:
 
@@ -431,7 +432,7 @@ expiry, and the runner CLI state-path boundary. It binds only loopback fixtures 
 private-cluster reachability, network isolation, provider identity, storage fencing, key custody, or
 public endpoint.
 
-Run the KAP-0053 Authority Composition Proof (Gate 1) provider-neutral execution fixture with:
+Run the historical KAP-0053 Authority Composition Proof (Gate 1) preservation fixture with:
 
 ```sh
 cargo make test-sandbox-gate1
@@ -455,7 +456,7 @@ This uses the pinned builder/runtime base and no provider account. A local image
 working-tree build completed; it is not registry provenance, byte-for-byte reproducibility, a
 vulnerability result, a selected runtime, or deployment evidence.
 
-Build and inspect the separate pre-authorization `linux/amd64` Infrastructure Enforcement image
+Build and inspect the historical pre-authorization `linux/amd64` Infrastructure Enforcement image
 candidate with:
 
 ```sh
@@ -470,7 +471,8 @@ data. It creates no provider resource and is not part of the deterministic defau
 local scan is time-bound input evidence, not registry provenance, runtime compatibility, absence of
 unknown vulnerabilities, or authorization for Infrastructure Enforcement.
 
-Validate the non-executed GKE Infrastructure Enforcement authorization candidate with:
+Validate the superseded, non-executed GKE Infrastructure Enforcement fixture for historical
+consistency only with:
 
 ```sh
 cargo make test-sandbox-gate2-fixture
@@ -481,8 +483,8 @@ gVisor/Dataplane V2/private-node controls, regional `ReadWriteOncePod` storage, 
 roles, narrow provider-management-log exception, 24-hour configurable-record retention, inventory,
 teardown, cost classes, private approval placeholders, unresolved execution blockers, and negative
 mutations. It runs no provider command, reads no credential, and creates no resource, registry
-object, endpoint, DNS record, spend, or traffic. Passing means only that the authorization packet is
-internally consistent; every live property and Gate 2 authorization remains absent.
+object, endpoint, DNS record, spend, or traffic. Passing means only that the historical fixture is
+internally consistent; KAP-0069 forbids using it as KAP-0070 deployment input or authorization.
 
 ## Toolchain
 

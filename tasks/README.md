@@ -1,10 +1,10 @@
 # Technical task route
 
-Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. The active route now selects
-whether and how to continue toward one bounded public product proof. Only an accepted continuation
-route may lead to the later customer-controlled non-production integration decision. Exact-artifact
-evaluation remains supporting evidence; every deployment and resident implementation act remains
-separately gated.
+Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0069 selected one serialized
+reshape for the bounded public product proof; KAP-0070 is the sole active implementation and
+acceptance packet. Only its exact accepted public proof may lead to the later customer-controlled
+non-production integration decision. Exact-artifact evaluation remains supporting evidence; every
+provider, deployment, traffic, and resident implementation act remains separately gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -15,13 +15,16 @@ Tasks own remaining engineering work and acceptance evidence. They do not redefi
 sole `kubernetes.set_deployment_image` capability. A new explicit maintainer product-scope decision
 now authorizes two decision stages without widening that capability:
 
-1. [KAP-0069](KAP-0069.md) selects complete, reshape, preserve-and-replace, or retire, and maps
-   every accepted sandbox artifact it retains or supersedes. A continuation route must define the
-   smallest safe path to one real fixed-input public crash-recovery proof; retire creates no live
-   successor.
-2. Only after a KAP-0069 continuation route's selected public proof passes exact acceptance,
-   [KAP-0054](KAP-0054.md) decides whether CLI/MCP is sufficient for one customer-controlled
-   non-production integration or whether one smallest resident boundary is justified.
+1. Completed [KAP-0069](KAP-0069.md) selected **reshape**: one native controller host, one separate
+   per-run runner process, one dedicated synthetic Kubernetes cluster, and at most one active run
+   through complete cleanup. It explicitly supersedes the remote Kubernetes controller and
+   key-stager topology.
+2. [KAP-0070](KAP-0070.md) corrects the direct contracts, removes the superseded path, and must pass
+   offline composition, separately authorized private-live, failure-recovery, teardown/recreation,
+   and bounded-public-exposure gates for one exact revision.
+3. Only after KAP-0070's exact public proof passes acceptance, [KAP-0054](KAP-0054.md) decides
+   whether CLI/MCP is sufficient for one customer-controlled non-production integration or whether
+   one smallest resident boundary is justified.
 
 Neither decision authorizes provider use, public traffic, a daemon, transport, package, production
 compatibility, or another operation. [KAP-0047](KAP-0047.md) remains the supporting owner for
@@ -73,16 +76,17 @@ conditional future work; v0.2 does not publish crates.io or docs.rs artifacts.
 
 ## Product-cycle and deferred programs
 
-| Packet                  | Status      | Route                                                                                  |
-| ----------------------- | ----------- | -------------------------------------------------------------------------------------- |
-| [KAP-0069](KAP-0069.md) | Active      | Select complete, reshape, preserve-and-replace, or retire for the bounded public proof |
-| [KAP-0054](KAP-0054.md) | Queued      | After an accepted continuation proof, select CLI/MCP or one resident boundary          |
-| [KAP-0050](KAP-0050.md) | Paused      | Umbrella remains accepted history until KAP-0069 closes or selects a deployment owner  |
-| [KAP-0053](KAP-0053.md) | Paused      | Preserve accepted offline tranches; no old fixture or gate authorizes provider use     |
-| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs distribution requires a later explicit use and compatibility decision    |
-| [KAP-0066](KAP-0066.md) | Deferred    | Release-artifact tooling is inactive without an observed product blocker               |
-| [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling remains behind KAP-0066 and an observed product blocker          |
-| [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization waits for the selected real consumers                           |
+| Packet                  | Status      | Route                                                                                        |
+| ----------------------- | ----------- | -------------------------------------------------------------------------------------------- |
+| [KAP-0069](KAP-0069.md) | Complete    | Selected serialized reshape and mapped every retained, superseded, and historical artifact   |
+| [KAP-0070](KAP-0070.md) | Active      | Prove one serialized public sandbox through separately authorized staged gates               |
+| [KAP-0054](KAP-0054.md) | Queued      | After exact KAP-0070 public acceptance, select CLI/MCP or one resident boundary              |
+| [KAP-0050](KAP-0050.md) | Superseded  | Historical umbrella; KAP-0070 exclusively owns any deployment completion                     |
+| [KAP-0053](KAP-0053.md) | Superseded  | Preserve mapped offline evidence, but never resume its controller/stager deployment topology |
+| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs distribution requires a later explicit use and compatibility decision          |
+| [KAP-0066](KAP-0066.md) | Deferred    | Release-artifact tooling is inactive without an observed product blocker                     |
+| [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling remains behind KAP-0066 and an observed product blocker                |
+| [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization waits for the selected real consumers                                 |
 
 KAP-0051, KAP-0052, KAP-0055, and KAP-0056 remain accepted sandbox history. Their implementation and
 the shared workspace version do not make the sandbox, private controller protocols, runner handoff,

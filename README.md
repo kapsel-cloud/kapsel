@@ -100,19 +100,20 @@ The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and
 grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
 resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
-hosted dependency, second target, or production-readiness claim. KAP-0069 is the sole active
-technical decision: it selects whether and how to continue toward one bounded public proof without
-authorizing deployment. KAP-0047 remains the supporting owner for approved aggregate technical
-findings. See the [v0.2 beta design](docs/V0.2.md) and [ordered task route](tasks/README.md).
+hosted dependency, second target, or production-readiness claim. KAP-0069 selected one serialized
+reshape for the bounded public proof; KAP-0070 is the sole active implementation and acceptance
+packet and separately gates provider use, deployment, and traffic. KAP-0047 remains the supporting
+owner for approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md) and
+[ordered task route](tasks/README.md).
 
 ## Scope discipline
 
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
 a generic provider SDK, a policy language, general hosted operation, a dashboard, and a second
 capability are outside its technical scope. The sole hosted exception is one fixed non-consequential
-public sandbox. Its deterministic service package, corrected provider-neutral Authority Composition
-Proof (Gate 1), and private runner handoff are accepted offline evidence. No provider is selected
-and no sandbox deployment or public traffic is approved.
+public sandbox. KAP-0070 now reshapes its accepted deterministic service and private runner handoff
+into one serialized deployment route; the prior Kubernetes-hosted controller/stager topology is
+superseded. No provider is selected and no sandbox deployment or public traffic is approved.
 
 ## Read next
 

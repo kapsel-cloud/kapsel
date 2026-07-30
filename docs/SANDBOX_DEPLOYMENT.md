@@ -1,16 +1,25 @@
 # Public sandbox deployment contract
 
-Status: accepted deployment contract; provider and implementation selection deferred.
+Status: route transition locked. KAP-0069 selected a serialized controller-host reshape. KAP-0070
+must correct this owner before implementation; no deployment composition is currently authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
 
-Owns: The required deployment composition and fail-closed controls for KAP-0052 and KAP-0053.
+Owns: The fail-closed deployment properties inherited by KAP-0070 and the historical KAP-0053
+composition record.
 
 Does not own: A hosting provider, HTTP framework, database product, Kubernetes runtime, production
 cluster, general multi-tenancy, or KAP-0038 lifecycle/result/receipt meaning.
 
-## Required composition
+KAP-0069 supersedes every KAP-0053-specific system/controller/stager topology, eight-active live
+gate, provider fixture, and authorization path below. Those sections remain historical evidence and
+cannot be rendered, resumed, or used for provider authority. Their security, recovery, cleanup,
+retention, disclosure, and cost properties remain requirements unless KAP-0069 explicitly replaces
+them. KAP-0070 Gate 0 must replace the topology and capacity text with one exact serialized contract
+before source or deployment work begins.
+
+## Historical KAP-0053 composition
 
 ```text
 optional stateless edge admission
@@ -896,10 +905,11 @@ and RBAC are also schema-count bounded by the admitted policy revision; KAP-0052
 exact list before the scheduler accepts that revision.
 
 The dedicated cluster contains no production or customer workload and no customer credential. A
-namespace, RBAC, quota, or NetworkPolicy is not by itself a hard tenant boundary. KAP-0053 must
-prove the selected CNI enforcement, runtime boundary, metadata denial, cross-namespace denial, and
-fixed images under adversarial tests. If ordinary containers cannot satisfy that proof, deployment
-must use a documented per-Pod sandbox or VM boundary rather than weakening this contract.
+namespace, RBAC, quota, or NetworkPolicy is not by itself a hard tenant boundary. KAP-0070 must
+prove the selected CNI enforcement, runtime boundary, metadata denial, unrelated-resource denial,
+temporal prior-run isolation, and fixed images under adversarial tests. If ordinary containers
+cannot satisfy that proof, deployment must use a documented per-Pod sandbox or VM boundary rather
+than weakening this contract.
 
 ## Authority and key custody
 
@@ -915,11 +925,11 @@ transit, and be available only to the minimal signer/runner workload identity. I
 the admission database, gateway journal, receipt store, run namespace, environment dump, log,
 metric, event, error, or public fixture.
 
-KAP-0053 must select and prove the concrete custody mechanism, Ed25519 compatibility, non-export or
-narrow export boundary required by the existing `Application`, access audit, backup/deletion
-protection, outage behavior, and rotation. If the selected system cannot meet the existing signing
-interface without broad export, implementation must stop for a contract/interface review rather than
-inventing another receipt or ambient trust source.
+KAP-0070 must select and prove the serialized route's concrete custody mechanism, Ed25519
+compatibility, narrow export boundary required by the existing `Application`, access audit,
+backup/deletion protection, outage behavior, and rotation. If the selected system cannot meet the
+existing signing interface without broad export, implementation must stop for a contract/interface
+review rather than inventing another receipt or ambient trust source.
 
 Rotation creates new server-owned grants and receipts with explicit key identities. Every key and
 public trust version needed to inspect an unexpired receipt remains available through an

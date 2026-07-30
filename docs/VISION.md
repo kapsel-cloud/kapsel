@@ -49,10 +49,11 @@ platform commitment:
    non-production integration or whether one smallest resident process, interface, and installation
    boundary is required.
 
-KAP-0069 owns the sandbox continuation/reshape decision. KAP-0054 owns the later resident-boundary
-decision. Neither task may infer deployment topology, transport, packaging, authentication, storage,
-or compatibility from this direction. Provider use, public traffic, and resident implementation each
-require their own exact accepted owner.
+KAP-0069 selected a serialized sandbox reshape; KAP-0070 now owns its contract correction,
+implementation, and staged acceptance. KAP-0054 owns the later resident-boundary decision. None may
+infer a resident topology, transport, packaging, authentication, storage, or compatibility from the
+sandbox. Provider use, public traffic, and resident implementation each require their own exact
+accepted gate or owner.
 
 The cycle keeps one capability and tests two different facts: the public proof tests comprehension;
 the customer-controlled preview tests whether the authority and recovery boundary is useful enough
@@ -80,10 +81,12 @@ publication state; external beta evidence follows publication.
 One independently deployed sandbox may expose fixed non-consequential scenarios through a narrow
 Rust module that reuses the existing `Application`. Its accepted [HTTP contract](SANDBOX_API.md) and
 [deployment contract](SANDBOX_DEPLOYMENT.md) own hosted admission, isolation, reconnectable public
-projection, bounded scheduling, cleanup, and receipt presentation. KAP-0069 is active only to decide
-whether the accepted implementation and deployment route resumes, is reshaped, is preserved while a
-replacement is built, or retires. It is a product-comprehension surface, not the production resident
-interface or a hosted customer control plane.
+projection, bounded scheduling, cleanup, and receipt presentation. KAP-0069 selected reshape:
+KAP-0070 must preserve the fixed interface and semantic spine while proving one native controller
+host, separate per-run runner, dedicated synthetic cluster, and at most one active run through
+cleanup. The prior Kubernetes-hosted controller/stager topology is superseded. This remains a
+product-comprehension surface, not the production resident interface or a hosted customer control
+plane.
 
 ### Customer-resident preview and production v1
 

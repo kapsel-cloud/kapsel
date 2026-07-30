@@ -131,20 +131,20 @@ only where the ordinary binary adapters, offline inspection/provisioning composi
 and private adapter seams may change within v0.2.x without external migration support; crates.io,
 docs.rs, and `cargo install` remain unsupported.
 
-KAP-0052 implements the accepted [public sandbox API](SANDBOX_API.md) and
-[deployment composition](SANDBOX_DEPLOYMENT.md) through one one-way `kapsel-sandbox -> kapsel`
-package. The package owns bounded HTTP translation, a separate SQLite admission/projection store,
-fixed-capacity scheduling and recovery leases, an admission-frozen policy inventory, cleanup
-identity, and 180-second duration, a dispatch-established absolute deadline, deterministic exact
-per-object UID/owner/content verification, immutable receipt-file publication with durable pending
-ownership serialized against orphan collection, operator-triggered and restart-before-serve
-retention sweeps, and cleanup completion gated by exact absence evidence for every row in an
-append-only per-run kind/namespace/name/UID/owner inventory (with the separate confirmed-no-resource
-path). The SQLite entry is created 0600, opened no-follow, and checked as the same owner-private
-regular inode before and after open. These are service-model checks, not proof of live Kubernetes
-enforcement. It invokes the same exported `Application` with server-owned configuration only after
-policy verification and neither reads gateway journal rows nor introduces a provider, storage, or
-public trait seam.
+KAP-0052 implements the accepted [public sandbox API](SANDBOX_API.md) and the retained semantic
+parts of the [deployment composition](SANDBOX_DEPLOYMENT.md) through one one-way
+`kapsel-sandbox -> kapsel` package. The package owns bounded HTTP translation, a separate SQLite
+admission/projection store, fixed-capacity scheduling and recovery leases, an admission-frozen
+policy inventory, cleanup identity, and 180-second duration, a dispatch-established absolute
+deadline, deterministic exact per-object UID/owner/content verification, immutable receipt-file
+publication with durable pending ownership serialized against orphan collection, operator-triggered
+and restart-before-serve retention sweeps, and cleanup completion gated by exact absence evidence
+for every row in an append-only per-run kind/namespace/name/UID/owner inventory (with the separate
+confirmed-no-resource path). The SQLite entry is created 0600, opened no-follow, and checked as the
+same owner-private regular inode before and after open. These are service-model checks, not proof of
+live Kubernetes enforcement. It invokes the same exported `Application` with server-owned
+configuration only after policy verification and neither reads gateway journal rows nor introduces a
+provider, storage, or public trait seam.
 
 ```text
 browser -> optional edge -> kapsel-sandbox -> kapsel Application
@@ -157,11 +157,13 @@ The sandbox directly pins `http` for typed in-process translation, `httparse` fo
 HTTP/1.1 parsing without route duplication, `serde`/`serde_json` for exact bounded `v1` documents,
 `rusqlite` with bundled SQLite for one local transactional service store, `getrandom` for opaque
 128-bit run identities, `sha2` for exact receipt and keyed tombstone digests, and `rustix` for
-owner-private Unix path checks. It reuses no transitive dependency implicitly. KAP-0053 Authority
-Composition Proof (Gate 1) adds the package-local native process, private stop commands,
-provider-neutral exact-patch harness, and static-volume/backup composition lock. KAP-0053 still owns
-provider selection, live transport, durable-store placement and fencing, managed key custody,
-Kubernetes admission and isolation, and live cleanup proof.
+owner-private Unix path checks. It reuses no transitive dependency implicitly. Historical KAP-0053
+Authority Composition Proof (Gate 1) added the package-local native process, private stop commands,
+provider-neutral exact-patch harness, and static-volume/backup composition lock. KAP-0069 retained
+only the mapped listener, stop, patch, input, runner, scheduler, cleanup, and retention evidence and
+superseded the Kubernetes-hosted controller/stager topology. KAP-0070 now owns contract correction
+and fresh serialized host/cluster evidence before any provider selection, live transport,
+durable-store placement and fencing, key custody, Kubernetes admission/isolation, or cleanup claim.
 
 ## Failure structure
 

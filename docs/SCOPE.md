@@ -87,11 +87,14 @@ The beta must:
 
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
-After publication, an explicit maintainer product-scope decision activated KAP-0069 to select
-whether and how one bounded fixed-input public proof should continue. That decision does not widen
-the capability or authorize deployment. KAP-0047 remains the supporting owner for approved aggregate
-external technical findings; retained customer-controlled use is still required before production
-resident compatibility or another broader cycle.
+After publication, KAP-0069 selected one serialized reshape for the bounded fixed-input public
+proof. KAP-0070 is the sole active implementation and acceptance owner: it retains the fixed API,
+deterministic service, separate runner, and dedicated synthetic cluster while superseding the
+Kubernetes-hosted remote-controller and key-stager topology. At most one run may remain active
+through cleanup. This route does not widen the capability or authorize provider use, deployment, or
+traffic. KAP-0047 remains the supporting owner for approved aggregate external technical findings;
+retained customer-controlled use is still required before production resident compatibility or
+another broader cycle.
 
 The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
 route is owned by [the task route](../tasks/README.md).

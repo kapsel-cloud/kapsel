@@ -231,8 +231,9 @@ RBAC, and a stuck cleanup can consume resources indefinitely until operator reme
 
 The HTTP, database, Kubernetes client, base image, scenario image, CNI, runtime, cluster, receipt
 store, and key service are supply-chain inputs. Exact versions, provenance, vulnerability response,
-rollback, and image immutability are KAP-0053 deployment evidence. Pinning and scanning reduce but
-do not eliminate malicious dependencies or registry/control-plane compromise.
+rollback, and image immutability require fresh KAP-0070 serialized-deployment evidence; historical
+KAP-0053 fixtures are not authority. Pinning and scanning reduce but do not eliminate malicious
+dependencies or registry/control-plane compromise.
 
 ### Global stop misuse or failure
 
@@ -264,5 +265,6 @@ The experiment does not establish:
 - External trust supplied to offline inspection is reviewed separately from receipt bytes.
 - The public sandbox cluster contains only synthetic non-consequential workloads, and the operator
   protects admission/receipt storage, controller credentials, and key custody.
-- The selected CNI, runtime, key service, store, and cleanup controller enforce the exact deployment
-  configuration proved by KAP-0053; contract text alone cannot establish that enforcement.
+- The selected CNI, runtime, key service, store, and cleanup controller enforce the exact serialized
+  deployment configuration proved by KAP-0070; contract text and historical KAP-0053 evidence cannot
+  establish that enforcement.
