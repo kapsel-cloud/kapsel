@@ -194,6 +194,15 @@ process/descriptor/lease denial, and separate cleanup authority. The runner must
 controller SQLite, immutable receipts, backups, staged sources, prior journals, the canary, and
 unrelated cluster resources.
 
+The accepted Slice 2 boundary pins roots before dispatch, opens only fixed names no-follow, checks
+exact controller owner/group and `0400` mode plus same-inode reopen, and transfers the individual
+read-only descriptors through one fixed `SCM_RIGHTS` message. A fixed reviewed C helper clears
+supplementary groups, installs the generation's real/effective/saved UID/GID, closes unrelated file
+descriptors and the parent-death race, and enables `no_new_privs` before Rust runner runtime. One
+private cgroup-v2 generation fences descendants. Durable reopen, exact journal transition recovery,
+production composition, complete denial evidence, its x86-64 Linux execution gate, and review remain
+pending, so this is not yet accepted enforcement.
+
 OS users and a sandboxed process are not hard tenant isolation. Symlink/path substitution, parent or
 inode replacement, leaked descriptors, permissive groups, stale processes, ptrace/kernel escape, and
 local network reachability are explicit adversaries. Detection activates durable stop, preserves

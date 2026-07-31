@@ -437,58 +437,23 @@ fn runner_mode_rejects_system_state_arguments_before_opening_any_input() {
     let sentinel = root.join("system-state.sqlite3");
     fs::write(&sentinel, b"must-not-open").unwrap();
     fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o000)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
-        .args([
-            "runner",
-            "--database",
-            sentinel.to_str().unwrap(),
+    for arguments in [
+        vec!["runner", "--database", sentinel.to_str().unwrap()],
+        vec![
+            "runner-bootstrap",
             "--operator-composition",
             root.join("missing.json").to_str().unwrap(),
-            "--handoff",
-            root.join("missing-handoff").to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "kapsel-sandbox: runner arguments are invalid\n"
-    );
-    let composition = root.join("composition.json");
-    fs::write(
-        &composition,
-        serde_json::to_vec(&serde_json::json!({
-            "request": root.join("request.json"),
-            "signed_authorization_grant": root.join("grant.bin"),
-            "authorization_trust": root.join("trust.json"),
-            "kubernetes_api_server": root.join("api-server"),
-            "kubernetes_ca": root.join("ca.crt"),
-            "kubernetes_namespace": root.join("namespace"),
-            "kubernetes_token": root.join("token"),
-            "journal": sentinel,
-            "receipt_directory": root.join("receipt-outbox"),
-            "receipt_signing_seed": root.join("seed"),
-            "receipt_signing_key_id": root.join("key-id")
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    fs::set_permissions(&composition, fs::Permissions::from_mode(0o600)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
-        .args([
-            "runner",
-            "--operator-composition",
-            composition.to_str().unwrap(),
-            "--handoff",
-            root.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8(output.stderr).unwrap(),
-        "kapsel-sandbox: runner state paths are invalid\n"
-    );
+        ],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("usage") || stderr.contains("bootstrap arguments are invalid"));
+        assert!(!stderr.contains(sentinel.to_str().unwrap()));
+    }
     fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(fs::read(&sentinel).unwrap(), b"must-not-open");
     fs::remove_dir_all(root).unwrap();
@@ -513,6 +478,6 @@ fn superseded_controller_and_stager_commands_are_unreachable() {
         assert_eq!(output.status.code(), Some(2));
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(!stderr.contains(command));
-        assert!(stderr.contains("init|serve|handoff-serve|retention|stop|clear-stop|runner"));
+        assert!(stderr.contains("init|serve|handoff-serve|controller|retention|stop|clear-stop"));
     }
 }

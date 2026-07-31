@@ -1,45 +1,76 @@
-//! Native private runner process composition.
+//! Fixed descriptor-bootstrap entry point for the native private runner.
+
+#![allow(
+    clippy::similar_names,
+    reason = "paired UID/GID bindings make exact numeric identity checks auditable"
+)]
 
 use std::{
-    ffi::OsStr,
     fs,
-    io::Read,
-    net::SocketAddr,
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{MetadataExt, PermissionsExt},
+    io::{IoSliceMut, Read},
+    mem::MaybeUninit,
+    os::{
+        fd::OwnedFd,
+        unix::fs::{MetadataExt, PermissionsExt},
     },
-    path::{Component, Path, PathBuf},
+    path::Path,
 };
-
-use rustix::fs::{fstatvfs, mkdirat, openat, readlinkat, Mode, OFlags, StatVfsMountFlags, CWD};
 
 use kapsel::{
     AgentRequest, Application, ApplicationError, AuthorizationTrust, OperatorConfiguration,
 };
 use kube::{config::KubeConfigOptions, Config};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::{run_application_handoff, HandoffAssignment, HandoffError};
 
+pub(crate) const INPUT_NAMES: [&str; 12] = [
+    "request.json",
+    "signed-authorization-grant.bin",
+    "authorization-trust.json",
+    "kubernetes-api-server",
+    "kubernetes-ca.pem",
+    "kubernetes-namespace",
+    "kubernetes-token",
+    "receipt-signing-seed",
+    "receipt-signing-key-id",
+    "handoff-endpoint",
+    "handoff-lease-id",
+    "handoff-credential",
+];
 const DOCUMENT_BYTES_MAX: usize = 8 * 1024;
 const GRANT_BYTES_MAX: usize = 4 * 1024;
 const TEXT_BYTES_MAX: usize = 512;
+const BOOTSTRAP_BYTES_MAX: usize = 128 * 1024;
+const CREDENTIAL_DOMAIN: &[u8] = b"KAPSEL-SANDBOX-RUNNER-HOST-CREDENTIAL-V1\0";
+const READY: &[u8] = b"KAPSEL-SANDBOX-RUNNER-READY-V1\0";
+const RELEASE: &[u8] = b"KAPSEL-SANDBOX-RUNNER-RELEASE-V1\0";
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct Composition {
-    request: PathBuf,
-    signed_authorization_grant: PathBuf,
-    authorization_trust: PathBuf,
-    kubernetes_api_server: PathBuf,
-    kubernetes_ca: PathBuf,
-    kubernetes_namespace: PathBuf,
-    kubernetes_token: PathBuf,
-    journal: PathBuf,
-    receipt_directory: PathBuf,
-    receipt_signing_seed: PathBuf,
-    receipt_signing_key_id: PathBuf,
+pub(crate) struct Bootstrap {
+    pub(crate) version: u8,
+    pub(crate) run_id: String,
+    pub(crate) operation_id: String,
+    pub(crate) lease_id: String,
+    pub(crate) generation: u64,
+    pub(crate) process_id: u32,
+    pub(crate) controller_uid: u32,
+    pub(crate) controller_gid: u32,
+    pub(crate) runner_uid: u32,
+    pub(crate) runner_gid: u32,
+    pub(crate) credential_verifier: String,
+    pub(crate) inputs: Vec<DescriptorIdentity>,
+    pub(crate) state: DescriptorIdentity,
+}
+
+#[derive(Clone, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DescriptorIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) length: u64,
 }
 
 #[derive(Deserialize)]
@@ -59,61 +90,45 @@ struct RequestDocument {
     immutable_image_digest: String,
 }
 
-/// Runs the separate fixed native runner from exact owner-private inputs.
+/// Runs the separate runner only from the fixed inherited descriptor inventory.
 ///
 /// # Errors
 ///
-/// Returns one bounded fixed diagnostic when arguments, private files, composition, application,
-/// or handoff fail.
+/// Returns one bounded diagnostic when the descriptor boundary, application, or handoff fails.
 pub fn run(arguments: impl Iterator<Item = String>) -> Result<(), &'static str> {
-    let mut arguments = arguments;
-    let mut composition = None;
-    let mut handoff = None;
-    while let Some(flag) = arguments.next() {
-        let value = arguments.next().ok_or("runner arguments are invalid")?;
-        match flag.as_str() {
-            "--operator-composition" if composition.is_none() => {
-                composition = Some(absolute(PathBuf::from(value))?);
-            },
-            "--handoff" if handoff.is_none() => handoff = Some(absolute(PathBuf::from(value))?),
-            _ => return Err("runner arguments are invalid"),
-        }
+    if arguments.count() != 0 {
+        return Err("runner bootstrap arguments are invalid");
     }
-    let composition_path = composition.ok_or("runner arguments are invalid")?;
-    let handoff_directory = handoff.ok_or("runner arguments are invalid")?;
+    let state_identity = establish_identity_and_state()?;
+    #[cfg(target_os = "linux")]
+    validate_fixed_linux_state_path(&state_identity)?;
+    let (bootstrap, inputs) = receive_bootstrap()?;
+    validate_boundary(&bootstrap, &state_identity, &inputs)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
         .build()
         .map_err(|_| "runner runtime is unavailable")?;
-    runtime.block_on(run_async(&composition_path, &handoff_directory))
+    runtime.block_on(run_async(bootstrap, inputs))
 }
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one fixed runner composition keeps every private input and no-ambient check together"
+    reason = "one fixed descriptor composition keeps all authority checks before Application"
 )]
-async fn run_async(composition_path: &Path, handoff_directory: &Path) -> Result<(), &'static str> {
-    let composition: Composition = read_json(composition_path)?;
-    initialize_gateway_state(&composition.journal, &composition.receipt_directory)?;
-    for path in [
-        &composition.request,
-        &composition.signed_authorization_grant,
-        &composition.authorization_trust,
-        &composition.kubernetes_api_server,
-        &composition.kubernetes_ca,
-        &composition.kubernetes_namespace,
-        &composition.kubernetes_token,
-        &composition.journal,
-        &composition.receipt_directory,
-        &composition.receipt_signing_seed,
-        &composition.receipt_signing_key_id,
-    ] {
-        if !path.is_absolute() {
-            return Err("runner composition is invalid");
-        }
-    }
-    let request_document: RequestDocument = read_json(&composition.request)?;
+async fn run_async(
+    bootstrap: Bootstrap,
+    mut input_files: Vec<fs::File>,
+) -> Result<(), &'static str> {
+    let payloads = input_files
+        .iter_mut()
+        .map(|file| read_descriptor(file, 16 * 1024))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut inputs = payloads.into_iter();
+    let request_document: RequestDocument = read_json_bytes(
+        &inputs.next().ok_or("runner input is invalid")?,
+        DOCUMENT_BYTES_MAX,
+    )?;
     let request = AgentRequest {
         operation_id: request_document.operation_id,
         namespace: request_document.namespace,
@@ -121,31 +136,62 @@ async fn run_async(composition_path: &Path, handoff_directory: &Path) -> Result<
         container: request_document.container,
         immutable_image_digest: request_document.immutable_image_digest,
     };
-    let signed_authorization_grant =
-        read_bounded(&composition.signed_authorization_grant, GRANT_BYTES_MAX)?;
-    let trust: TrustDocument = read_json(&composition.authorization_trust)?;
+    if request.operation_id != bootstrap.operation_id
+        || request.operation_id != format!("sandbox-{}", bootstrap.run_id)
+    {
+        return Err("runner bootstrap identity is invalid");
+    }
+    let signed_authorization_grant = bounded_bytes(
+        inputs.next().ok_or("runner input is invalid")?,
+        GRANT_BYTES_MAX,
+    )?;
+    let trust: TrustDocument = read_json_bytes(
+        &inputs.next().ok_or("runner input is invalid")?,
+        DOCUMENT_BYTES_MAX,
+    )?;
     let authorization_public_key = decode_hex_32(&trust.public_key_hex)?;
-    let receipt_signing_seed = read_exact_32(&composition.receipt_signing_seed)?;
-    let receipt_signing_key_id = read_ascii(&composition.receipt_signing_key_id, 128)?;
-    let api_server = read_ascii(&composition.kubernetes_api_server, TEXT_BYTES_MAX)?;
-    let namespace = read_ascii(&composition.kubernetes_namespace, 63)?;
-    let token = read_ascii(&composition.kubernetes_token, 4 * 1024)?;
-    let ca = read_bounded(&composition.kubernetes_ca, 16 * 1024)?;
+    let api_server = read_ascii_bytes(
+        inputs.next().ok_or("runner input is invalid")?,
+        TEXT_BYTES_MAX,
+    )?;
+    let ca = bounded_bytes(inputs.next().ok_or("runner input is invalid")?, 16 * 1024)?;
+    let namespace = read_ascii_bytes(inputs.next().ok_or("runner input is invalid")?, 63)?;
+    let token = read_ascii_bytes(inputs.next().ok_or("runner input is invalid")?, 4 * 1024)?;
+    let receipt_signing_seed = exact_32(inputs.next().ok_or("runner input is invalid")?)?;
+    let receipt_signing_key_id =
+        read_ascii_bytes(inputs.next().ok_or("runner input is invalid")?, 128)?;
+    let endpoint = read_ascii_bytes(
+        inputs.next().ok_or("runner input is invalid")?,
+        TEXT_BYTES_MAX,
+    )?
+    .parse()
+    .map_err(|_| "runner handoff is invalid")?;
+    let lease_id = read_ascii_bytes(inputs.next().ok_or("runner input is invalid")?, 32)?;
+    let credential = exact_32(inputs.next().ok_or("runner input is invalid")?)?;
+    if inputs.next().is_some() {
+        return Err("runner input inventory is invalid");
+    }
+    if lease_id != bootstrap.lease_id
+        || credential_verifier(
+            &bootstrap.run_id,
+            &bootstrap.operation_id,
+            &lease_id,
+            &credential,
+        ) != bootstrap.credential_verifier
+    {
+        return Err("runner bootstrap authority is stale");
+    }
+
     let kubeconfig_text = serde_json::json!({
         "apiVersion": "v1",
         "kind": "Config",
         "current-context": "runner",
-        "clusters": [{
-            "name": "runner",
-            "cluster": {
-                "server": api_server,
-                "certificate-authority-data": base64(&ca)
-            }
-        }],
-        "contexts": [{
-            "name": "runner",
-            "context": {"cluster": "runner", "user": "runner", "namespace": namespace}
-        }],
+        "clusters": [{"name": "runner", "cluster": {
+            "server": api_server, "certificate-authority-data": base64(&ca)
+        }}],
+        "contexts": [{"name": "runner", "context": {
+            "cluster": "runner", "user": "runner", "namespace": namespace
+        }}],
         "users": [{"name": "runner", "user": {"token": token}}]
     })
     .to_string();
@@ -161,9 +207,22 @@ async fn run_async(composition_path: &Path, handoff_directory: &Path) -> Result<
     }
     let kubernetes_client =
         kube::Client::try_from(client_config).map_err(|_| "runner Kubernetes client is invalid")?;
+
+    #[cfg(target_os = "linux")]
+    let generation = std::path::PathBuf::from("/run/kapsel-sandbox");
+    #[cfg(not(target_os = "linux"))]
+    let generation = fs::canonicalize(".").map_err(|_| "runner state generation is invalid")?;
+    let run_directory = generation.join("run");
+    #[cfg(target_os = "linux")]
+    let receipt_directory = std::path::PathBuf::from("./run/receipt-outbox");
+    #[cfg(not(target_os = "linux"))]
+    let receipt_directory = run_directory.join("receipt-outbox");
+    let journal = run_directory.join("gateway.sqlite3");
+    validate_owner_private_directory(&run_directory)?;
+    validate_owner_private_directory(&receipt_directory)?;
     let application = Application::open(OperatorConfiguration {
-        journal_path: composition.journal,
-        receipt_output_directory: composition.receipt_directory,
+        journal_path: journal,
+        receipt_output_directory: receipt_directory,
         authorization_trust: AuthorizationTrust {
             key_id: bounded_text(&trust.key_id)?,
             public_key: authorization_public_key,
@@ -174,29 +233,14 @@ async fn run_async(composition_path: &Path, handoff_directory: &Path) -> Result<
         receipt_signing_key_id: bounded_text(&receipt_signing_key_id)?,
     })
     .map_err(|error| application_open_error(&error))?;
+    await_authority_release()?;
 
-    validate_private_directory(handoff_directory)?;
-    let endpoint_text = read_bounded(&handoff_directory.join("endpoint"), TEXT_BYTES_MAX)?;
-    let endpoint = std::str::from_utf8(&endpoint_text)
-        .map_err(|_| "runner handoff is invalid")?
-        .parse::<SocketAddr>()
-        .map_err(|_| "runner handoff is invalid")?;
-    let lease_id = String::from_utf8(read_bounded(&handoff_directory.join("lease-id"), 32)?)
-        .map_err(|_| "runner handoff is invalid")?;
-    if lease_id.len() != 32 {
-        return Err("runner handoff is invalid");
-    }
-    let credential = read_exact_32(&handoff_directory.join("credential"))?;
     run_application_handoff(
         application,
         &request,
         &HandoffAssignment {
-            run_id: request
-                .operation_id
-                .strip_prefix("sandbox-")
-                .ok_or("runner handoff is invalid")?
-                .to_owned(),
-            operation_id: request.operation_id.clone(),
+            run_id: bootstrap.run_id,
+            operation_id: bootstrap.operation_id,
             lease_id,
             credential,
             endpoint,
@@ -209,6 +253,232 @@ async fn run_async(composition_path: &Path, handoff_directory: &Path) -> Result<
         HandoffError::Application => "runner application failed",
     })?;
     Ok(())
+}
+
+fn await_authority_release() -> Result<(), &'static str> {
+    rustix::net::send(
+        rustix::stdio::stdin(),
+        READY,
+        rustix::net::SendFlags::empty(),
+    )
+    .map_err(|_| "runner bootstrap release is unavailable")?;
+    let mut release = [0_u8; RELEASE.len()];
+    let (_, received) = rustix::net::recv(
+        rustix::stdio::stdin(),
+        &mut release,
+        rustix::net::RecvFlags::empty(),
+    )
+    .map_err(|_| "runner bootstrap release is unavailable")?;
+    if received != RELEASE.len() || release != RELEASE {
+        return Err("runner bootstrap release is invalid");
+    }
+    Ok(())
+}
+
+fn receive_bootstrap() -> Result<(Bootstrap, Vec<fs::File>), &'static str> {
+    let mut bytes = vec![0_u8; BOOTSTRAP_BYTES_MAX + 1];
+    let mut input = [IoSliceMut::new(&mut bytes)];
+    let mut control_space =
+        [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(INPUT_NAMES.len()))];
+    let mut control = rustix::net::RecvAncillaryBuffer::new(&mut control_space);
+    #[cfg(target_os = "linux")]
+    let flags = rustix::net::RecvFlags::CMSG_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let flags = rustix::net::RecvFlags::empty();
+    let received = rustix::net::recvmsg(rustix::stdio::stdin(), &mut input, &mut control, flags)
+        .map_err(|_| "runner bootstrap is invalid")?;
+    if received.bytes == 0 || received.bytes > BOOTSTRAP_BYTES_MAX {
+        return Err("runner bootstrap is invalid");
+    }
+    let mut descriptors = Vec::<OwnedFd>::new();
+    let mut messages = 0_usize;
+    for message in control.drain() {
+        match message {
+            rustix::net::RecvAncillaryMessage::ScmRights(rights) => {
+                messages += 1;
+                descriptors.extend(rights);
+            },
+            _ => return Err("runner bootstrap is invalid"),
+        }
+    }
+    if messages != 1 || descriptors.len() != INPUT_NAMES.len() {
+        return Err("runner input inventory is invalid");
+    }
+    let bootstrap = serde_json::from_slice(&bytes[..received.bytes])
+        .map_err(|_| "runner bootstrap is invalid")?;
+    Ok((
+        bootstrap,
+        descriptors.into_iter().map(fs::File::from).collect(),
+    ))
+}
+
+fn establish_identity_and_state() -> Result<DescriptorIdentity, &'static str> {
+    let state = rustix::fs::fstat(rustix::stdio::stdout())
+        .map_err(|_| "runner state generation is unavailable")?;
+    let state_uid = state.st_uid;
+    let state_gid = state.st_gid;
+    if state_uid != rustix::process::getuid().as_raw()
+        || state_uid != rustix::process::geteuid().as_raw()
+        || state_gid != rustix::process::getgid().as_raw()
+        || state_gid != rustix::process::getegid().as_raw()
+        || state_uid == u32::MAX
+        || state_gid == u32::MAX
+    {
+        return Err("runner process identity is unavailable");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if rustix::process::parent_process_death_signal()
+            .ok()
+            .flatten()
+            != Some(rustix::process::Signal::KILL)
+            || !rustix::thread::no_new_privs().unwrap_or(false)
+            || !linux_status_has_fixed_identity(state_uid, state_gid)?
+        {
+            return Err("runner process authority is invalid");
+        }
+    }
+    rustix::process::fchdir(rustix::stdio::stdout())
+        .map_err(|_| "runner state generation is unavailable")?;
+    Ok(DescriptorIdentity {
+        device: u64::try_from(state.st_dev).map_err(|_| "runner state generation is invalid")?,
+        inode: state.st_ino,
+        length: u64::try_from(state.st_size).map_err(|_| "runner state generation is invalid")?,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn validate_fixed_linux_state_path(expected: &DescriptorIdentity) -> Result<(), &'static str> {
+    let fixed = fs::File::from(
+        rustix::fs::open(
+            "/run/kapsel-sandbox",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|_| "runner state generation is invalid")?,
+    );
+    let current = fs::File::from(
+        rustix::fs::open(
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|_| "runner state generation is invalid")?,
+    );
+    for directory in [&fixed, &current] {
+        let metadata = directory
+            .metadata()
+            .map_err(|_| "runner state generation is invalid")?;
+        let found = identity(&metadata);
+        if found.device != expected.device
+            || found.inode != expected.inode
+            || metadata.uid() != rustix::process::geteuid().as_raw()
+            || metadata.gid() != rustix::process::getegid().as_raw()
+            || metadata.permissions().mode() & 0o777 != 0o700
+        {
+            return Err("runner state generation is invalid");
+        }
+    }
+    Ok(())
+}
+
+fn read_descriptor(file: &mut fs::File, maximum: usize) -> Result<Vec<u8>, &'static str> {
+    let mut bytes = Vec::with_capacity(maximum.min(4096));
+    file.take(maximum as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "runner private input is invalid")?;
+    if bytes.is_empty() || bytes.len() > maximum {
+        Err("runner private input is invalid")
+    } else {
+        Ok(bytes)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_status_has_fixed_identity(uid: u32, gid: u32) -> Result<bool, &'static str> {
+    let status = fs::read_to_string("/proc/self/status")
+        .map_err(|_| "runner process identity is unavailable")?;
+    let expected_uid = format!("Uid:\t{uid}\t{uid}\t{uid}\t{uid}");
+    let expected_gid = format!("Gid:\t{gid}\t{gid}\t{gid}\t{gid}");
+    Ok(status.lines().any(|line| line == expected_uid)
+        && status.lines().any(|line| line == expected_gid)
+        && status.lines().any(|line| line.trim_end() == "Groups:"))
+}
+
+fn validate_boundary(
+    bootstrap: &Bootstrap,
+    state_identity: &DescriptorIdentity,
+    inputs: &[fs::File],
+) -> Result<(), &'static str> {
+    let state = fs::metadata(".").map_err(|_| "runner state generation is unavailable")?;
+    let found = identity(&state);
+    if bootstrap.version != 1
+        || bootstrap.generation == 0
+        || bootstrap.process_id != std::process::id()
+        || bootstrap.runner_uid != rustix::process::getuid().as_raw()
+        || bootstrap.runner_gid != rustix::process::getgid().as_raw()
+        || bootstrap.inputs.len() != INPUT_NAMES.len()
+        || inputs.len() != INPUT_NAMES.len()
+        || !state.is_dir()
+        || state.uid() != bootstrap.runner_uid
+        || state.gid() != bootstrap.runner_gid
+        || state.permissions().mode() & 0o777 != 0o700
+        || found.device != bootstrap.state.device
+        || found.inode != bootstrap.state.inode
+        || found.length != bootstrap.state.length
+        || state_identity.device != bootstrap.state.device
+        || state_identity.inode != bootstrap.state.inode
+    {
+        return Err("runner bootstrap is invalid");
+    }
+    for (file, expected) in inputs.iter().zip(&bootstrap.inputs) {
+        let metadata = file
+            .metadata()
+            .map_err(|_| "runner input descriptor binding is stale")?;
+        let found = identity(&metadata);
+        if !metadata.is_file()
+            || metadata.permissions().mode() & 0o777 != 0o400
+            || found.device != expected.device
+            || found.inode != expected.inode
+            || found.length != expected.length
+        {
+            return Err("runner input descriptor binding is stale");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn descriptor_identity(metadata: &fs::Metadata) -> DescriptorIdentity {
+    identity(metadata)
+}
+
+fn identity(metadata: &fs::Metadata) -> DescriptorIdentity {
+    DescriptorIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        length: metadata.len(),
+    }
+}
+
+pub(crate) fn credential_verifier(
+    run_id: &str,
+    operation_id: &str,
+    lease_id: &str,
+    credential: &[u8; 32],
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(CREDENTIAL_DOMAIN);
+    digest.update(run_id.as_bytes());
+    digest.update(operation_id.as_bytes());
+    digest.update(lease_id.as_bytes());
+    digest.update(credential);
+    lowercase_hex(&digest.finalize())
 }
 
 fn application_open_error(error: &ApplicationError) -> &'static str {
@@ -274,18 +544,53 @@ fn configure_explicit_kubeconfig(
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, &'static str> {
-    serde_json::from_slice(&read_bounded(path, DOCUMENT_BYTES_MAX)?)
+fn read_json_bytes<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<T, &'static str> {
+    serde_json::from_slice(bounded_slice(bytes, maximum)?)
         .map_err(|_| "runner composition is invalid")
 }
 
-fn read_ascii(path: &Path, maximum: usize) -> Result<String, &'static str> {
-    let bytes = read_bounded(path, maximum)?;
+fn read_ascii_bytes(bytes: Vec<u8>, maximum: usize) -> Result<String, &'static str> {
+    let bytes = bounded_bytes(bytes, maximum)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| "runner private input is invalid")?;
     if !text.is_ascii() || text.contains(['\r', '\n']) {
         return Err("runner private input is invalid");
     }
     Ok(text.to_owned())
+}
+
+fn exact_32(bytes: Vec<u8>) -> Result<[u8; 32], &'static str> {
+    bytes
+        .try_into()
+        .map_err(|_| "runner private input is invalid")
+}
+
+fn bounded_bytes(bytes: Vec<u8>, maximum: usize) -> Result<Vec<u8>, &'static str> {
+    bounded_slice(&bytes, maximum)?;
+    Ok(bytes)
+}
+
+fn bounded_slice(bytes: &[u8], maximum: usize) -> Result<&[u8], &'static str> {
+    if bytes.is_empty() || bytes.len() > maximum {
+        Err("runner private input is invalid")
+    } else {
+        Ok(bytes)
+    }
+}
+
+fn validate_owner_private_directory(path: &Path) -> Result<(), &'static str> {
+    let metadata = fs::metadata(path).map_err(|_| "runner state generation is unavailable")?;
+    if metadata.is_dir()
+        && metadata.uid() == rustix::process::getuid().as_raw()
+        && metadata.gid() == rustix::process::getgid().as_raw()
+        && metadata.permissions().mode() & 0o777 == 0o700
+    {
+        Ok(())
+    } else {
+        Err("runner state generation is invalid")
+    }
 }
 
 fn decode_hex_32(value: &str) -> Result<[u8; 32], &'static str> {
@@ -300,143 +605,11 @@ fn decode_hex_32(value: &str) -> Result<[u8; 32], &'static str> {
     Ok(output)
 }
 
-fn read_exact_32(path: &Path) -> Result<[u8; 32], &'static str> {
-    read_bounded(path, 32)?
-        .try_into()
-        .map_err(|_| "runner private input is invalid")
-}
-
-fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, &'static str> {
-    if !path.is_absolute() {
-        return Err("runner private input is invalid");
+fn bounded_text(value: &str) -> Result<String, &'static str> {
+    if value.is_empty() || value.len() > 128 || !value.is_ascii() {
+        return Err("runner composition is invalid");
     }
-    let mut file = open_projected_or_regular(path)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| "runner private input is unavailable")?;
-    let mode = metadata.permissions().mode() & 0o777;
-    let owner_private =
-        metadata.uid() == rustix::process::getuid().as_raw() && matches!(mode, 0o400 | 0o600);
-    let group_private =
-        metadata.gid() == rustix::process::getgid().as_raw() && matches!(mode, 0o440 | 0o640);
-    if !metadata.is_file() || (!owner_private && !group_private) {
-        return Err("runner private input is invalid");
-    }
-    let mut bytes = Vec::with_capacity(maximum.min(4096).saturating_add(1));
-    file.by_ref()
-        .take(u64::try_from(maximum).map_err(|_| "runner private input is invalid")? + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "runner private input is unavailable")?;
-    if bytes.is_empty() || bytes.len() > maximum {
-        return Err("runner private input is invalid");
-    }
-    Ok(bytes)
-}
-
-fn initialize_gateway_state(journal: &Path, receipt_directory: &Path) -> Result<(), &'static str> {
-    let run_directory = journal.parent().ok_or("runner state paths are invalid")?;
-    let volume_root = run_directory
-        .parent()
-        .ok_or("runner state paths are invalid")?;
-    if journal.file_name() != Some(OsStr::new("gateway.sqlite3"))
-        || run_directory.file_name() != Some(OsStr::new("run"))
-        || receipt_directory != run_directory.join("receipt-outbox")
-    {
-        return Err("runner state paths are invalid");
-    }
-    let volume = fs::File::from(
-        openat(CWD, volume_root, directory_flags(), Mode::empty())
-            .map_err(|_| "runner state volume is unavailable")?,
-    );
-    validate_state_volume(&volume)?;
-    let _ = mkdirat(&volume, "run", Mode::from_raw_mode(0o700));
-    let run = fs::File::from(
-        openat(&volume, "run", directory_flags(), Mode::empty())
-            .map_err(|_| "runner state initialization failed")?,
-    );
-    validate_owner_private_directory(&run)?;
-    let _ = mkdirat(&run, "receipt-outbox", Mode::from_raw_mode(0o700));
-    let outbox = fs::File::from(
-        openat(&run, "receipt-outbox", directory_flags(), Mode::empty())
-            .map_err(|_| "runner state initialization failed")?,
-    );
-    validate_owner_private_directory(&outbox)
-}
-
-fn validate_state_volume(directory: &fs::File) -> Result<(), &'static str> {
-    let metadata = directory
-        .metadata()
-        .map_err(|_| "runner state volume is unavailable")?;
-    let mode = metadata.permissions().mode() & 0o777;
-    let owner_private = metadata.uid() == rustix::process::getuid().as_raw()
-        && matches!(mode, 0o700 | 0o750 | 0o770);
-    let group_private =
-        metadata.gid() == rustix::process::getgid().as_raw() && matches!(mode, 0o750 | 0o770);
-    if metadata.is_dir() && (owner_private || group_private) {
-        Ok(())
-    } else {
-        Err("runner state volume is invalid")
-    }
-}
-
-fn validate_owner_private_directory(directory: &fs::File) -> Result<(), &'static str> {
-    let metadata = directory
-        .metadata()
-        .map_err(|_| "runner state initialization failed")?;
-    if metadata.is_dir()
-        && metadata.uid() == rustix::process::getuid().as_raw()
-        && metadata.permissions().mode() & 0o777 == 0o700
-    {
-        Ok(())
-    } else {
-        Err("runner state initialization failed")
-    }
-}
-
-pub(crate) fn open_projected_or_regular(path: &Path) -> Result<fs::File, &'static str> {
-    let parent = path.parent().ok_or("runner private input is invalid")?;
-    let name = path.file_name().ok_or("runner private input is invalid")?;
-    let directory = fs::File::from(
-        openat(CWD, parent, directory_flags(), Mode::empty())
-            .map_err(|_| "runner private input is unavailable")?,
-    );
-    if let Ok(descriptor) = openat(&directory, name, read_flags(), Mode::empty()) {
-        return Ok(fs::File::from(descriptor));
-    }
-    let expected_target = Path::new("..data").join(name);
-    let file_target = readlinkat(&directory, name, Vec::new())
-        .map_err(|_| "runner private input is unavailable")?;
-    if Path::new(OsStr::from_bytes(file_target.to_bytes())) != expected_target {
-        return Err("runner projected input escaped its mount");
-    }
-    let data_target = readlinkat(&directory, "..data", Vec::new())
-        .map_err(|_| "runner private input is unavailable")?;
-    let data_name = OsStr::from_bytes(data_target.to_bytes());
-    let mut components = Path::new(data_name).components();
-    let Some(Component::Normal(component)) = components.next() else {
-        return Err("runner projected input escaped its mount");
-    };
-    if components.next().is_some()
-        || !component.as_bytes().starts_with(b"..")
-        || component.as_bytes() == b".."
-    {
-        return Err("runner projected input escaped its mount");
-    }
-    let data_directory = fs::File::from(
-        openat(&directory, component, directory_flags(), Mode::empty())
-            .map_err(|_| "runner projected input escaped its mount")?,
-    );
-    openat(&data_directory, name, read_flags(), Mode::empty())
-        .map(fs::File::from)
-        .map_err(|_| "runner projected input escaped its mount")
-}
-
-fn directory_flags() -> OFlags {
-    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY
-}
-
-fn read_flags() -> OFlags {
-    OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK
+    Ok(value.to_owned())
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -464,112 +637,12 @@ fn base64(bytes: &[u8]) -> String {
     output
 }
 
-fn validate_private_directory(path: &Path) -> Result<(), &'static str> {
-    if !path.is_absolute() {
-        return Err("runner handoff is invalid");
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
-    let directory = fs::File::from(
-        openat(CWD, path, directory_flags(), Mode::empty())
-            .map_err(|_| "runner handoff is unavailable")?,
-    );
-    let metadata = directory
-        .metadata()
-        .map_err(|_| "runner handoff is unavailable")?;
-    let mode = metadata.permissions().mode() & 0o777;
-    let owner_private =
-        metadata.uid() == rustix::process::getuid().as_raw() && matches!(mode, 0o500 | 0o700);
-    let workload_group_private =
-        metadata.gid() == rustix::process::getgid().as_raw() && matches!(mode, 0o550 | 0o750);
-    let read_only_mount =
-        fstatvfs(&directory).is_ok_and(|status| status.f_flag.contains(StatVfsMountFlags::RDONLY));
-    if metadata.is_dir() && (owner_private || workload_group_private || read_only_mount) {
-        Ok(())
-    } else {
-        Err("runner handoff is invalid")
-    }
-}
-
-fn bounded_text(value: &str) -> Result<String, &'static str> {
-    if value.is_empty() || value.len() > 128 || !value.is_ascii() {
-        return Err("runner composition is invalid");
-    }
-    Ok(value.to_owned())
-}
-
-fn absolute(path: PathBuf) -> Result<PathBuf, &'static str> {
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Err("runner paths must be absolute")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::os::unix::fs::symlink;
-
-    use super::*;
-
-    fn private_directory(path: &Path) {
-        fs::create_dir(path).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
-
-    fn projected_file(root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
-        let generation = root.join("..2026_07_24_00_00_00.000000001");
-        if !generation.exists() {
-            private_directory(&generation);
-            symlink(generation.file_name().unwrap(), root.join("..data")).unwrap();
-        }
-        let target = generation.join(name);
-        fs::write(&target, bytes).unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-        symlink(Path::new("..data").join(name), root.join(name)).unwrap();
-        root.join(name)
-    }
-
-    #[test]
-    fn projected_atomic_writer_layout_is_accepted_without_allowing_escape_or_substitution() {
-        let root =
-            std::env::temp_dir().join(format!("kapsel-runner-projected-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        private_directory(&root);
-        let accepted = projected_file(&root, "token", b"exact-token");
-        assert_eq!(read_bounded(&accepted, 32).unwrap(), b"exact-token");
-
-        symlink("../outside", root.join("escaped-key")).unwrap();
-        assert!(read_bounded(&root.join("escaped-key"), 32).is_err());
-
-        fs::remove_file(root.join("..data")).unwrap();
-        symlink("../outside-generation", root.join("..data")).unwrap();
-        assert!(read_bounded(&accepted, 32).is_err());
-
-        fs::remove_file(root.join("..data")).unwrap();
-        symlink("..2026_07_24_00_00_00.000000001", root.join("..data")).unwrap();
-        let generation = root.join("..2026_07_24_00_00_00.000000001");
-        fs::remove_file(generation.join("token")).unwrap();
-        fs::write(root.join("outside"), b"outside").unwrap();
-        symlink(root.join("outside"), generation.join("token")).unwrap();
-        assert!(read_bounded(&accepted, 32).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn empty_gateway_volume_initializes_exact_owner_private_run_state() {
-        let root =
-            std::env::temp_dir().join(format!("kapsel-runner-empty-state-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        private_directory(&root);
-        let journal = root.join("run/gateway.sqlite3");
-        let outbox = root.join("run/receipt-outbox");
-        initialize_gateway_state(&journal, &outbox).unwrap();
-        for directory in [root.join("run"), outbox] {
-            let metadata = fs::metadata(directory).unwrap();
-            assert!(metadata.is_dir());
-            assert_eq!(metadata.uid(), rustix::process::getuid().as_raw());
-            assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
-        }
-        assert!(!journal.exists());
-        fs::remove_dir_all(root).unwrap();
-    }
+    output
 }

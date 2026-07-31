@@ -265,15 +265,30 @@ symlinks and a genuinely empty gateway volume against receipt-free and actual KA
 receipts and separately trusted inspection/classifier agreement; the actual `FAILED` Application
 path crosses the same handoff adapter in the service contract with the same byte and classifier
 checks. Production process-kill tests recover one operation from loss before invocation, after the
-durable invocation ACK, after `apply_started`, and after the durable terminal report. The
-package-private publication tests own the remaining narrower boundaries: reopening after a durable
-pending claim before final-object installation and after installation before availability commit.
-The runner owns only its initialized `run/gateway.sqlite3` and receipt outbox; the system process
-owns admission SQLite and exact immutable receipt installation. Escape/substitution layouts and a
-system-state argument fail before input or lifecycle use, and credential-bearing debug output is
-redacted. Loopback TCP and deterministic Kubernetes fixtures prove only process and state-transition
-behavior; they do not prove private-cluster reachability, network/runtime/storage isolation,
-provider identity, or live custody.
+durable invocation ACK, and after `apply_started` on the containerless host. The mandatory
+Linux/root lane additionally kills after the durable terminal report, restarts the system process,
+and replaces the runner without changing KAP-0038's frozen receipt bytes. Non-Linux tests instead
+assert terminal report and exact receipt-byte preservation across a service reopen without claiming
+host replacement. The package-private publication tests own the remaining narrower boundaries:
+reopening after a durable pending claim before final-object installation and after installation
+before availability commit. The runner owns only its initialized `run/gateway.sqlite3` and receipt
+outbox; the system process owns admission SQLite and exact immutable receipt installation.
+Escape/substitution layouts and a system-state argument fail before input or lifecycle use, and
+credential-bearing debug output is redacted. Loopback TCP and deterministic Kubernetes fixtures
+prove only process and state-transition behavior; they do not prove private-cluster reachability,
+network/runtime/storage isolation, provider identity, or live custody.
+
+Accepted KAP-0070 Slice 2 replaces copied bootstrap payloads with individually pinned read-only
+descriptors transferred through `SCM_RIGHTS`. A fixed C helper and cgroup-v2 generation establish
+the pre-runtime identity/FD/parent and descendant boundary while Rust remains
+`unsafe_code = "forbid"`. Implementation-local tests replace the pinned input parent, relax a fixed
+file mode, rotate lease/credential bytes before generation creation, cross durable
+allocation/fencing/migration crash sides, reject record/cgroup ambiguity, and fence a forked
+descendant after post-attach failure. Native process tests retain `not_attempted`, `SUCCEEDED`,
+`UNKNOWN`, the three pre-terminal loss seams, and deterministic both-sided publication with exact
+terminal/report bytes. The pinned, privileged-private-cgroup, network-disabled x86-64 Debian/Linux
+lane executes rather than skipping and passes the fixed helper, descriptor, identity, outcome, full
+retained process-loss matrix, and real terminal kill/restart/replacement.
 
 Historical KAP-0053 tests retain only topology-neutral evidence: bounded native HTTP parsing,
 durable stop behavior, the exact conditional named-container image and KAP-0038 operation-annotation

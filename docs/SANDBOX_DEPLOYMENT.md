@@ -1,9 +1,9 @@
 # Public sandbox deployment contract
 
-Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0) and Gate 1
-Slice 1 serialized capacity/local-role implementation are accepted. Gate 1 Slices 2–6 remain. No
-provider, credential, resource, spend, image push, endpoint, DNS, private live command, or public
-traffic is authorized.
+Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0), Gate 1 Slice 1
+serialized capacity/local roles, and Gate 1 Slice 2 native runner host boundary are accepted. Gate 1
+Slices 3–6 remain. No provider, credential, resource, spend, image push, endpoint, DNS, private live
+command, or public traffic is authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
@@ -46,9 +46,12 @@ They are history in Git and the task records, not deployable alternatives or KAP
 
 The fixed [public `v1` API](SANDBOX_API.md), KAP-0052 admission/projection behavior, and KAP-0055
 handoff implementation are retained evidence. Gate 1 Slice 1 implements one-active enforcement and
-concrete process-local scheduler, retention, and cleanup role sequencing. Host process composition,
-runner fencing, host key staging, cluster policy, complete backup/restore, and live isolation remain
-planned KAP-0070 work and are not established merely by this contract.
+concrete process-local scheduler, retention, and cleanup role sequencing. Accepted Slice 2 uses one
+fixed reviewed C pre-exec helper, individual `SCM_RIGHTS` input descriptors, fresh crash-convergent
+generations, and a private cgroup-v2 process-tree boundary. Its durable allocation/restart record,
+production controller composition, denial matrix, exact Linux gate, both-sided publication seams,
+and fresh reviews passed. Host key staging, cluster policy, complete backup/restore, and live
+isolation remain planned KAP-0070 work and are not established merely by this contract.
 
 ## Authorization gates
 
@@ -140,12 +143,24 @@ reference to controller SQLite, system receipts, backup snapshots, other or prio
 or unrestricted key sources.
 
 The controller opens each fixed request, grant, authorization trust, receipt-signing input,
-Kubernetes input, handoff credential, and public-trust input descriptor-relatively beneath its
-expected owner-private directory. Every component is a fixed name and regular file, with exact owner
-and mode, no symlink traversal, no parent replacement, no writable runner source, and a same-inode
-check across open. The runner receives read-only descriptors; it does not discover paths, accept
-composition through arguments/environment, or choose a destination. A stale descriptor, process,
-lease, credential, owner, generation, or replaced input fails before `Application` lifecycle work.
+Kubernetes input, and handoff input descriptor-relatively beneath its expected owner-private
+directory. Public receipt trust remains controller inspection/publication authority and is not a
+runner input. Every runner component is a fixed name and regular file, with exact owner and mode, no
+symlink traversal, no parent replacement, no writable runner source, and a same-inode check across
+open. The runner receives each individually pinned read-only descriptor through one fixed Unix
+`SCM_RIGHTS` message; bootstrap metadata contains identities and bounds, never copied input payloads
+or composition paths. It accepts no composition through arguments/environment and chooses no
+destination. A stale descriptor, process, lease, credential, owner, generation, or replaced input
+fails before `Application` lifecycle work.
+
+On Linux, one fixed non-Rust pre-exec helper is part of the bound host executable set. Before the
+Rust runner runtime, it clears supplementary groups, installs exact real/effective/saved UID and
+GID, closes every descriptor except bootstrap, state, and the pinned executable, closes the
+parent-death race, and enables `no_new_privs`. The controller places the still-authority-blocked
+child in one fresh deployment-owned cgroup-v2 generation before sending descriptors. Replacement
+writes `cgroup.kill`, waits for `populated 0`, verifies the recorded PID/start identity is absent,
+and only then releases a successor. Missing writable cgroup-v2 delegation fails closed;
+process-group or direct-child kill is not a fallback.
 
 The exact KAP-0055 private TCP framing, message grammar, connection/deadline bounds, credential
 verifier, lease rotation, durable `application_invoked` marker, report binding, and acknowledgments

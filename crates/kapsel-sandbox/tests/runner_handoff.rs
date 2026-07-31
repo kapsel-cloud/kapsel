@@ -2,6 +2,7 @@
 
 #![allow(
     clippy::panic,
+    clippy::similar_names,
     clippy::unwrap_used,
     clippy::zombie_processes,
     reason = "fixture failures stop the test; returned children are killed and waited by the owner"
@@ -30,8 +31,9 @@ use kapsel::{
     OperationState, OperatorConfiguration, ReceiptTrust, TargetRejection,
 };
 use kapsel_sandbox::{
-    run_application_handoff, DispatchLease, ExecutionState, ProvisionedObject, ProvisionedTarget,
-    ProvisioningSpecification, Scenario, Service,
+    run_application_handoff, ControllerConfiguration, ControllerRole, DispatchLease,
+    ExecutionState, ProvisionedObject, ProvisionedTarget, ProvisioningSpecification, Scenario,
+    Service,
 };
 use tower_test::mock;
 
@@ -331,10 +333,10 @@ struct PreparedProcessFixture {
     service: Service,
     digest_key: PathBuf,
     run_id: String,
+    launch_at: i64,
     handoff_address: SocketAddr,
     composition_path: PathBuf,
     handoff_path: PathBuf,
-    journal_path: PathBuf,
 }
 
 #[allow(
@@ -465,26 +467,121 @@ fn prepare_process_fixture(
         service,
         digest_key,
         run_id: admission.run_id,
+        launch_at: at + 31,
         handoff_address,
         composition_path: composition_mount.join("operator-configuration.json"),
         handoff_path: handoff_mount,
-        journal_path,
     }
 }
 
-fn runner_command(fixture: &PreparedProcessFixture) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"));
-    command
-        .args([
-            "runner",
-            "--operator-composition",
-            fixture.composition_path.to_str().unwrap(),
-            "--handoff",
-            fixture.handoff_path.to_str().unwrap(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    command
+fn fixed_controller_role(
+    root: &Path,
+    composition_path: &Path,
+    handoff_path: &Path,
+    service: &Service,
+    handoff_endpoint: SocketAddr,
+) -> ControllerRole {
+    let composition: serde_json::Value =
+        serde_json::from_slice(&fs::read(composition_path).unwrap()).unwrap();
+    let inputs = root.join("runner-host-inputs");
+    private_directory(&inputs);
+    let source = |field: &str| PathBuf::from(composition[field].as_str().unwrap());
+    for (name, bytes) in [
+        ("request.json", fs::read(source("request")).unwrap()),
+        (
+            "signed-authorization-grant.bin",
+            fs::read(source("signed_authorization_grant")).unwrap(),
+        ),
+        (
+            "authorization-trust.json",
+            fs::read(source("authorization_trust")).unwrap(),
+        ),
+        (
+            "kubernetes-api-server",
+            fs::read(source("kubernetes_api_server")).unwrap(),
+        ),
+        (
+            "kubernetes-ca.pem",
+            fs::read(source("kubernetes_ca")).unwrap(),
+        ),
+        (
+            "kubernetes-namespace",
+            fs::read(source("kubernetes_namespace")).unwrap(),
+        ),
+        (
+            "kubernetes-token",
+            fs::read(source("kubernetes_token")).unwrap(),
+        ),
+        (
+            "receipt-signing-seed",
+            fs::read(source("receipt_signing_seed")).unwrap(),
+        ),
+        (
+            "receipt-signing-key-id",
+            fs::read(source("receipt_signing_key_id")).unwrap(),
+        ),
+        (
+            "handoff-endpoint",
+            fs::read(handoff_path.join("endpoint")).unwrap(),
+        ),
+        (
+            "handoff-lease-id",
+            fs::read(handoff_path.join("lease-id")).unwrap(),
+        ),
+        (
+            "handoff-credential",
+            fs::read(handoff_path.join("credential")).unwrap(),
+        ),
+    ] {
+        fs::write(inputs.join(name), bytes).unwrap();
+        fs::set_permissions(inputs.join(name), fs::Permissions::from_mode(0o400)).unwrap();
+    }
+    let generations = root.join("runner-generations");
+    private_directory(&generations);
+    let controller_uid = rustix::process::geteuid().as_raw();
+    let controller_gid = rustix::process::getegid().as_raw();
+    #[cfg(target_os = "linux")]
+    let (runner_uid, runner_gid) = (65_532, 65_532);
+    #[cfg(not(target_os = "linux"))]
+    let (runner_uid, runner_gid) = (controller_uid, controller_gid);
+    let _ = (controller_uid, controller_gid);
+    ControllerRole::new(
+        service.clone(),
+        ControllerConfiguration::new(
+            inputs,
+            generations,
+            runner_uid,
+            runner_gid,
+            handoff_endpoint,
+        ),
+    )
+}
+
+fn reopened_controller_role(fixture: &PreparedProcessFixture) -> ControllerRole {
+    let controller_uid = rustix::process::geteuid().as_raw();
+    let controller_gid = rustix::process::getegid().as_raw();
+    #[cfg(target_os = "linux")]
+    let (runner_uid, runner_gid) = (65_532, 65_532);
+    #[cfg(not(target_os = "linux"))]
+    let (runner_uid, runner_gid) = (controller_uid, controller_gid);
+    let _ = (controller_uid, controller_gid);
+    ControllerRole::new(
+        fixture.service.clone(),
+        ControllerConfiguration::new(
+            fixture.root.join("runner-host-inputs"),
+            fixture.root.join("runner-generations"),
+            runner_uid,
+            runner_gid,
+            fixture.handoff_address,
+        ),
+    )
+}
+
+fn launch_after_lease_expiry(controller: &mut ControllerRole, now_unix_s: i64) -> u64 {
+    let Some(run) = controller.run_once(now_unix_s).unwrap() else {
+        panic!("expired scheduler lease must recover into a production launch");
+    };
+    run.generation()
 }
 
 fn wait_for_database_value(path: &Path, query: &str, expected: &str) {
@@ -567,21 +664,16 @@ fn serve_success(listener: TcpListener, run_id: &str) -> thread::JoinHandle<()> 
     })
 }
 
-fn assert_process_success(output: &std::process::Output) {
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 #[allow(
     clippy::if_not_else,
     clippy::too_many_lines,
     reason = "one native fixture locks projected inputs, empty state, both processes, and ownership"
 )]
 fn run_native_runner_case(outcome: NativeOutcome) {
+    #[cfg(target_os = "linux")]
+    if !rustix::process::geteuid().is_root() {
+        return;
+    }
     let (root, service, digest_key) = fixture();
     let at = now();
     let admission = service
@@ -705,19 +797,18 @@ fn run_native_runner_case(outcome: NativeOutcome) {
         ],
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
-        .args([
-            "runner",
-            "--operator-composition",
-            composition_mount
-                .join("operator-configuration.json")
-                .to_str()
-                .unwrap(),
-            "--handoff",
-            handoff_mount.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
+    let composition_path = composition_mount.join("operator-configuration.json");
+    let generations = root.join("runner-generations");
+    let mut controller = fixed_controller_role(
+        &root,
+        &composition_path,
+        &handoff_mount,
+        &service,
+        handoff_address,
+    );
+    let generation = launch_after_lease_expiry(&mut controller, at + 31);
+    let runner_generation = generations.join(format!("generation-{generation:020}"));
+    let runner_status = controller.wait().unwrap();
     let _ = handoff_process.kill();
     handoff_process.wait().unwrap();
     let mut handoff_stderr = String::new();
@@ -736,23 +827,16 @@ fn run_native_runner_case(outcome: NativeOutcome) {
         )
         .unwrap();
     let failed_snapshot = service.snapshot(&admission.run_id, now()).unwrap();
-    assert!(
-        output.status.success(),
-        "{}; handoff={handoff_stderr}; invoked={invoked}; snapshot={failed_snapshot:?}",
-        String::from_utf8_lossy(&output.stderr)
+    let runner_failure = format!(
+        "runner={runner_status:?}; handoff={handoff_stderr}; invoked={invoked}; \
+         snapshot={failed_snapshot:?}"
     );
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert!(runner_status.success(), "{runner_failure}");
     kubernetes_server.join().unwrap();
 
     let snapshot = service.snapshot(&admission.run_id, now()).unwrap();
-    let mut volume_entries = fs::read_dir(&state_volume)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    volume_entries.sort();
-    assert_eq!(volume_entries, ["run"]);
-    let mut run_entries = fs::read_dir(state_volume.join("run"))
+    assert!(fs::read_dir(&state_volume).unwrap().next().is_none());
+    let mut run_entries = fs::read_dir(runner_generation.join("run"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect::<Vec<_>>();
@@ -765,11 +849,11 @@ fn run_native_runner_case(outcome: NativeOutcome) {
             "receipt-outbox"
         ]
     );
-    assert!(state_volume.join("run/gateway.sqlite3").is_file());
-    assert!(!state_volume.join("sandbox.sqlite3").exists());
+    assert!(runner_generation.join("run/gateway.sqlite3").is_file());
+    assert!(!runner_generation.join("sandbox.sqlite3").exists());
     assert!(root.join("sandbox.sqlite3").is_file());
     assert!(!root.join("gateway.sqlite3").exists());
-    let outbox_files = fs::read_dir(state_volume.join("run/receipt-outbox"))
+    let outbox_files = fs::read_dir(runner_generation.join("run/receipt-outbox"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect::<Vec<_>>();
@@ -846,15 +930,22 @@ fn process_loss_before_invocation_recovers() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '5');
     let gate = TcpListener::bind(fixture.handoff_address).unwrap();
-    let mut runner = runner_command(&fixture).spawn().unwrap();
+    let mut controller = fixed_controller_role(
+        &fixture.root,
+        &fixture.composition_path,
+        &fixture.handoff_path,
+        &fixture.service,
+        fixture.handoff_address,
+    );
+    let launch_at = fixture.launch_at;
+    launch_after_lease_expiry(&mut controller, launch_at);
     let (mut uncommitted, _) = gate.accept().unwrap();
     let mut length = [0_u8; 4];
     uncommitted.read_exact(&mut length).unwrap();
     let mut request = vec![0_u8; u32::from_be_bytes(length) as usize];
     uncommitted.read_exact(&mut request).unwrap();
     assert!(!request.is_empty());
-    runner.kill().unwrap();
-    runner.wait().unwrap();
+    drop(controller);
     drop(uncommitted);
     drop(gate);
     let invoked: bool = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3"))
@@ -869,8 +960,16 @@ fn process_loss_before_invocation_recovers() {
 
     let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
-    let output = runner_command(&fixture).output().unwrap();
-    assert_process_success(&output);
+    let mut controller = reopened_controller_role(&fixture);
+    let replacement_generation = launch_after_lease_expiry(&mut controller, launch_at + 31);
+    assert_eq!(replacement_generation, 2);
+    assert!(controller.wait().unwrap().success());
+    let journal_count = fs::read_dir(fixture.root.join("runner-generations"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join("run/gateway.sqlite3").is_file())
+        .count();
+    assert_eq!(journal_count, 1);
     kubernetes.join().unwrap();
     assert_eq!(
         fixture
@@ -890,7 +989,15 @@ fn process_loss_after_invocation_ack_recovers() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '6');
     let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
-    let mut runner = runner_command(&fixture).spawn().unwrap();
+    let mut controller = fixed_controller_role(
+        &fixture.root,
+        &fixture.composition_path,
+        &fixture.handoff_path,
+        &fixture.service,
+        fixture.handoff_address,
+    );
+    let launch_at = fixture.launch_at;
+    launch_after_lease_expiry(&mut controller, launch_at);
     let (mut blocked_get, _) = kubernetes_listener.accept().unwrap();
     read_fixture_request(&mut blocked_get);
     let invoked: bool = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3"))
@@ -905,13 +1012,11 @@ fn process_loss_after_invocation_ack_recovers() {
         invoked,
         "Kubernetes cannot be called before durable invocation ACK"
     );
-    runner.kill().unwrap();
-    runner.wait().unwrap();
+    launch_after_lease_expiry(&mut controller, launch_at + 31);
     drop(blocked_get);
 
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
-    let output = runner_command(&fixture).output().unwrap();
-    assert_process_success(&output);
+    assert!(controller.wait().unwrap().success());
     kubernetes.join().unwrap();
     assert_eq!(
         fixture
@@ -951,20 +1056,30 @@ fn process_loss_after_apply_started_reconciles_without_second_patch() {
         read_fixture_request(&mut recovered_get);
         write_fixture_response(&mut recovered_get, &bodies[2]).unwrap();
     });
-    let mut runner = runner_command(&fixture).spawn().unwrap();
+    let mut controller = fixed_controller_role(
+        &fixture.root,
+        &fixture.composition_path,
+        &fixture.handoff_path,
+        &fixture.service,
+        fixture.handoff_address,
+    );
+    let launch_at = fixture.launch_at;
+    let generation = launch_after_lease_expiry(&mut controller, launch_at);
     while !patch_seen.load(Ordering::Acquire) {
         thread::sleep(Duration::from_millis(1));
     }
+    let journal = fixture
+        .root
+        .join("runner-generations")
+        .join(format!("generation-{generation:020}/run/gateway.sqlite3"));
     wait_for_database_value(
-        &fixture.journal_path,
+        &journal,
         "SELECT state FROM kubernetes_image_operations LIMIT 1",
         "apply_started",
     );
-    runner.kill().unwrap();
-    runner.wait().unwrap();
+    launch_after_lease_expiry(&mut controller, launch_at + 31);
     release_patch.store(true, Ordering::Release);
-    let output = runner_command(&fixture).output().unwrap();
-    assert_process_success(&output);
+    assert!(controller.wait().unwrap().success());
     kubernetes.join().unwrap();
     assert_eq!(
         fixture
@@ -980,26 +1095,249 @@ fn process_loss_after_apply_started_reconciles_without_second_patch() {
     fs::remove_dir_all(fixture.root).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn process_loss_after_terminal_report_replays_after_system_restart() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '8');
     let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
-    let mut runner = runner_command(&fixture).spawn().unwrap();
+    let mut controller = fixed_controller_role(
+        &fixture.root,
+        &fixture.composition_path,
+        &fixture.handoff_path,
+        &fixture.service,
+        fixture.handoff_address,
+    );
+    let receipt_directory = fixture.root.join("receipts");
+    let held_receipt_directory = fixture.root.join("receipts-held");
+    fs::rename(&receipt_directory, &held_receipt_directory).unwrap();
+    fs::write(&receipt_directory, b"block receipt object creation").unwrap();
+
+    let launch_at = fixture.launch_at;
+    let first_generation = launch_after_lease_expiry(&mut controller, launch_at);
     for _ in 0..10_000 {
-        let reports: i64 = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3"))
-            .unwrap()
+        let connection = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3")).unwrap();
+        let reports: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM application_reports WHERE run_id = ?1",
                 [&fixture.run_id],
                 |row| row.get(0),
             )
             .unwrap();
-        if reports == 1 {
+        let publications: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM receipt_publications WHERE run_id = ?1",
+                [&fixture.run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if reports == 1 && publications == 1 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let connection = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3")).unwrap();
+    let reports: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM application_reports WHERE run_id = ?1",
+            [&fixture.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let publications: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM receipt_publications WHERE run_id = ?1",
+            [&fixture.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let receipts: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM receipts WHERE run_id = ?1",
+            [&fixture.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let receipt_available: bool = connection
+        .query_row(
+            "SELECT receipt_available FROM runs WHERE run_id = ?1",
+            [&fixture.run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reports, 1);
+    assert_eq!(publications, 1);
+    assert_eq!(receipts, 0);
+    assert!(!receipt_available);
+    drop(connection);
+    let first_outbox = fixture.root.join("runner-generations").join(format!(
+        "generation-{first_generation:020}/run/receipt-outbox"
+    ));
+    let frozen_receipt = fs::read(
+        fs::read_dir(&first_outbox)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+
+    handoff.kill().unwrap();
+    handoff.wait().unwrap();
+    let _first_status = controller.wait().unwrap();
+    drop(controller);
+    kubernetes.join().unwrap();
+    fs::remove_file(&receipt_directory).unwrap();
+    fs::rename(&held_receipt_directory, &receipt_directory).unwrap();
+
+    let mut restarted = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut controller = reopened_controller_role(&fixture);
+    let replay_generation = launch_after_lease_expiry(&mut controller, launch_at + 31);
+    let outbox = fixture.root.join("runner-generations").join(format!(
+        "generation-{replay_generation:020}/run/receipt-outbox"
+    ));
+    assert!(controller.wait().unwrap().success());
+    let snapshot = fixture.service.snapshot(&fixture.run_id, now()).unwrap();
+    assert_eq!(snapshot.receiver_result.as_deref(), Some("SUCCEEDED"));
+    assert!(snapshot.receipt_available);
+    assert_eq!(
+        fixture.service.receipt(&fixture.run_id, now()).unwrap(),
+        frozen_receipt
+    );
+    assert_eq!(
+        fs::read(
+            fs::read_dir(outbox)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path()
+        )
+        .unwrap(),
+        frozen_receipt
+    );
+    let connection = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3")).unwrap();
+    let completed: (i64, i64) = connection
+        .query_row(
+            concat!(
+                "SELECT (SELECT COUNT(*) FROM receipt_publications WHERE run_id = ?1), ",
+                "(SELECT COUNT(*) FROM receipts WHERE run_id = ?1)"
+            ),
+            [&fixture.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(completed, (0, 1));
+    restarted.kill().unwrap();
+    restarted.wait().unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn controller_loss_after_receipt_publication_replays_exact_bytes() {
+    let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '9');
+    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
+    let mut controller = fixed_controller_role(
+        &fixture.root,
+        &fixture.composition_path,
+        &fixture.handoff_path,
+        &fixture.service,
+        fixture.handoff_address,
+    );
+    let launch_at = fixture.launch_at;
+    launch_after_lease_expiry(&mut controller, launch_at);
+    for _ in 0..10_000 {
+        if fixture
+            .service
+            .snapshot(&fixture.run_id, now())
+            .unwrap()
+            .receipt_available
+        {
             break;
         }
         thread::yield_now();
     }
+    let receipt = fixture.service.receipt(&fixture.run_id, now()).unwrap();
+    assert!(controller.wait().unwrap().success());
+    drop(controller);
+    kubernetes.join().unwrap();
+    handoff.kill().unwrap();
+    handoff.wait().unwrap();
+
+    let mut restarted = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut controller = reopened_controller_role(&fixture);
+    launch_after_lease_expiry(&mut controller, launch_at + 31);
+    assert!(controller.wait().unwrap().success());
+    assert_eq!(
+        fixture.service.receipt(&fixture.run_id, now()).unwrap(),
+        receipt
+    );
+    let journals = fs::read_dir(fixture.root.join("runner-generations"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().join("run/gateway.sqlite3").is_file())
+        .count();
+    assert_eq!(journals, 1);
+    restarted.kill().unwrap();
+    restarted.wait().unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn production_process_loss_matrix_converges_at_owned_handoff_seams() {
+    if !rustix::process::geteuid().is_root() {
+        return;
+    }
+    process_loss_before_invocation_recovers();
+    process_loss_after_invocation_ack_recovers();
+    process_loss_after_apply_started_reconciles_without_second_patch();
+    process_loss_after_terminal_report_replays_after_system_restart();
+    controller_loss_after_receipt_publication_replays_exact_bytes();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn production_process_loss_before_terminal_report_converges_on_non_linux() {
+    process_loss_before_invocation_recovers();
+    process_loss_after_invocation_ack_recovers();
+    process_loss_after_apply_started_reconciles_without_second_patch();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_host_replacement() {
+    let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '8');
+    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
+    let mut controller = fixed_controller_role(
+        &fixture.root,
+        &fixture.composition_path,
+        &fixture.handoff_path,
+        &fixture.service,
+        fixture.handoff_address,
+    );
+    let launch_at = fixture.launch_at;
+    let generation = launch_after_lease_expiry(&mut controller, launch_at);
+    assert!(controller.wait().unwrap().success());
+    kubernetes.join().unwrap();
+
+    let receipt_before = fixture.service.receipt(&fixture.run_id, now()).unwrap();
+    let outbox = fixture
+        .root
+        .join("runner-generations")
+        .join(format!("generation-{generation:020}/run/receipt-outbox"));
+    let outbox_path = fs::read_dir(outbox)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(fs::read(outbox_path).unwrap(), receipt_before);
     let reports: i64 = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3"))
         .unwrap()
         .query_row(
@@ -1009,40 +1347,26 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
         )
         .unwrap();
     assert_eq!(reports, 1);
+
     handoff.kill().unwrap();
     handoff.wait().unwrap();
-    runner.wait().unwrap();
-    kubernetes.join().unwrap();
-
-    let mut restarted = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
-    let replay = runner_command(&fixture).output().unwrap();
-    assert_process_success(&replay);
-    let snapshot = fixture.service.snapshot(&fixture.run_id, now()).unwrap();
+    drop(controller);
+    drop(fixture.service);
+    let reopened = Service::open(
+        fixture.root.join("sandbox.sqlite3"),
+        fixture.root.join("receipts"),
+        [7; 32],
+        now(),
+    )
+    .unwrap();
+    let snapshot = reopened.snapshot(&fixture.run_id, now()).unwrap();
     assert_eq!(snapshot.receiver_result.as_deref(), Some("SUCCEEDED"));
     assert!(snapshot.receipt_available);
     assert_eq!(
-        fixture.service.receipt(&fixture.run_id, now()).unwrap(),
-        fs::read(
-            fs::read_dir(fixture.root.join("gateway-volume/run/receipt-outbox"))
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap()
-                .path()
-        )
-        .unwrap()
+        reopened.receipt(&fixture.run_id, now()).unwrap(),
+        receipt_before
     );
-    restarted.kill().unwrap();
-    restarted.wait().unwrap();
     fs::remove_dir_all(fixture.root).unwrap();
-}
-
-#[test]
-fn production_process_loss_matrix_converges_at_owned_handoff_seams() {
-    process_loss_before_invocation_recovers();
-    process_loss_after_invocation_ack_recovers();
-    process_loss_after_apply_started_reconciles_without_second_patch();
-    process_loss_after_terminal_report_replays_after_system_restart();
 }
 
 #[tokio::test]

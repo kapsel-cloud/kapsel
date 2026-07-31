@@ -27,10 +27,15 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod controller_role;
 mod kubernetes_policy;
 mod local_roles;
 mod runner_handoff;
+mod runner_host;
 mod runner_process;
+pub use controller_role::{
+    ControllerConfiguration, ControllerError, ControllerRole, ControllerRun, ControllerWait,
+};
 pub use local_roles::{
     CleanupOwnedObject, CleanupRole, CleanupWork, RetentionRole, SchedulerRole, SchedulerStep,
 };
@@ -2172,6 +2177,25 @@ impl Service {
             return Err(ServiceError::LeaseBusy);
         }
         Ok(())
+    }
+
+    pub(crate) fn validate_runner_launch(
+        &self,
+        lease: &DispatchLease,
+        now_unix_s: i64,
+    ) -> Result<(), ServiceError> {
+        self.validate_lease(lease, now_unix_s)?;
+        let recovery: bool = self
+            .connection()?
+            .query_row(
+                "SELECT application_invoked FROM runs WHERE run_id = ?1",
+                [&lease.run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::RunNotFound)?;
+        self.validate_application_ready(lease, now_unix_s, recovery)
     }
 
     fn validate_application_ready(

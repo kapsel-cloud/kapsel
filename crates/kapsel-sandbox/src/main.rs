@@ -19,11 +19,12 @@ use std::{
 };
 
 use kapsel_sandbox::{
-    run_runner_process, serve_private_handoff, set_global_stop, RetentionRole, Service,
+    run_runner_process, serve_private_handoff, set_global_stop, ControllerConfiguration,
+    ControllerRole, RetentionRole, Service,
 };
 
 const USAGE: &str = concat!(
-    "usage: kapsel-sandbox <init|serve|handoff-serve|retention|stop|clear-stop|runner> ",
+    "usage: kapsel-sandbox <init|serve|handoff-serve|controller|retention|stop|clear-stop> ",
     "<role-specific arguments>"
 );
 const RETENTION_INTERVAL: Duration = Duration::from_mins(1);
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), &'static str> {
     let mut arguments = env::args().skip(1);
-    if arguments.next().as_deref() == Some("runner") {
+    if arguments.next().as_deref() == Some("runner-bootstrap") {
         return run_runner_process(env::args().skip(2));
     }
     let configuration = Configuration::parse(env::args().skip(1))?;
@@ -79,6 +80,16 @@ fn run() -> Result<(), &'static str> {
             serve_private_handoff(&listener, &std::sync::Arc::new(service))
                 .map_err(|_| "private handoff listener failed")
         },
+        Command::Controller => run_controller(
+            service,
+            ControllerConfiguration::new(
+                configuration.runner_inputs.ok_or(USAGE)?,
+                configuration.runner_generations.ok_or(USAGE)?,
+                configuration.runner_uid.ok_or(USAGE)?,
+                configuration.runner_gid.ok_or(USAGE)?,
+                configuration.handoff_endpoint.ok_or(USAGE)?,
+            ),
+        ),
         Command::Retention => run_retention(service),
         Command::Stop | Command::ClearStop => unreachable!(),
     }
@@ -88,6 +99,30 @@ fn set_origin(service: &mut Service, origin: Option<&str>) -> Result<(), &'stati
     service
         .set_origin(origin.unwrap_or("https://kapsel.invalid"))
         .map_err(|_| "origin is invalid")
+}
+
+fn run_controller(
+    service: Service,
+    configuration: ControllerConfiguration,
+) -> Result<(), &'static str> {
+    let mut role = ControllerRole::new(service, configuration);
+    loop {
+        match role
+            .run_once(unix_time()?)
+            .map_err(|_| "controller scheduling or runner launch failed")?
+        {
+            Some(_) => {
+                if !role
+                    .wait()
+                    .map_err(|_| "controller runner wait failed")?
+                    .success()
+                {
+                    return Err("controller runner failed");
+                }
+            },
+            None => thread::sleep(Duration::from_secs(1)),
+        }
+    }
 }
 
 fn run_retention(service: Service) -> Result<(), &'static str> {
@@ -104,6 +139,7 @@ enum Command {
     Init,
     Serve,
     HandoffServe,
+    Controller,
     Retention,
     Stop,
     ClearStop,
@@ -116,6 +152,11 @@ struct Configuration {
     digest_key_file: Option<PathBuf>,
     origin: Option<String>,
     listen: Option<std::net::SocketAddr>,
+    runner_inputs: Option<PathBuf>,
+    runner_generations: Option<PathBuf>,
+    runner_uid: Option<u32>,
+    runner_gid: Option<u32>,
+    handoff_endpoint: Option<std::net::SocketAddr>,
 }
 
 impl Configuration {
@@ -125,6 +166,7 @@ impl Configuration {
             Some("init") => Command::Init,
             Some("serve") => Command::Serve,
             Some("handoff-serve") => Command::HandoffServe,
+            Some("controller") => Command::Controller,
             Some("retention") => Command::Retention,
             Some("stop") => Command::Stop,
             Some("clear-stop") => Command::ClearStop,
@@ -137,6 +179,11 @@ impl Configuration {
             digest_key_file: None,
             origin: None,
             listen: None,
+            runner_inputs: None,
+            runner_generations: None,
+            runner_uid: None,
+            runner_gid: None,
+            handoff_endpoint: None,
         };
         while let Some(flag) = arguments.next() {
             let value = arguments.next().ok_or(USAGE)?;
@@ -155,6 +202,29 @@ impl Configuration {
                     configuration.listen =
                         Some(value.parse().map_err(|_| "listen address is invalid")?);
                 },
+                "--runner-inputs" if configuration.runner_inputs.is_none() => {
+                    configuration.runner_inputs = Some(absolute(PathBuf::from(value))?);
+                },
+                "--runner-generations" if configuration.runner_generations.is_none() => {
+                    configuration.runner_generations = Some(absolute(PathBuf::from(value))?);
+                },
+                "--runner-uid" if configuration.runner_uid.is_none() => {
+                    configuration.runner_uid =
+                        Some(value.parse().map_err(|_| "runner uid is invalid")?);
+                },
+                "--runner-gid" if configuration.runner_gid.is_none() => {
+                    configuration.runner_gid =
+                        Some(value.parse().map_err(|_| "runner gid is invalid")?);
+                },
+                "--handoff-endpoint" if configuration.handoff_endpoint.is_none() => {
+                    let endpoint = value
+                        .parse::<std::net::SocketAddr>()
+                        .map_err(|_| "handoff endpoint is invalid")?;
+                    if !endpoint.ip().is_loopback() {
+                        return Err("handoff endpoint must be loopback");
+                    }
+                    configuration.handoff_endpoint = Some(endpoint);
+                },
                 _ => return Err(USAGE),
             }
         }
@@ -168,21 +238,41 @@ impl Configuration {
                     || self.receipts.is_some()
                     || self.digest_key_file.is_some()
                     || self.origin.is_some()
-                    || self.listen.is_some() =>
+                    || self.listen.is_some()
+                    || self.has_runner_configuration() =>
             {
                 Err(USAGE)
             },
-            Command::Init if self.listen.is_some() => {
-                Err("init does not accept transport configuration")
+            Command::Init if self.listen.is_some() || self.has_runner_configuration() => {
+                Err("init does not accept transport or runner configuration")
             },
             Command::Serve if self.listen.is_none() => {
                 Err("serve transport configuration is invalid")
             },
-            Command::HandoffServe if self.origin.is_some() || self.listen.is_none() => {
+            Command::HandoffServe
+                if self.origin.is_some()
+                    || self.listen.is_none()
+                    || self.has_runner_configuration() =>
+            {
                 Err("handoff-serve transport configuration is invalid")
             },
-            Command::Retention if self.origin.is_some() || self.listen.is_some() => {
-                Err("retention does not accept transport configuration")
+            Command::Controller
+                if self.origin.is_some()
+                    || self.listen.is_some()
+                    || self.runner_inputs.is_none()
+                    || self.runner_generations.is_none()
+                    || self.runner_uid.is_none()
+                    || self.runner_gid.is_none()
+                    || self.handoff_endpoint.is_none() =>
+            {
+                Err("controller runner configuration is invalid")
+            },
+            Command::Retention
+                if self.origin.is_some()
+                    || self.listen.is_some()
+                    || self.has_runner_configuration() =>
+            {
+                Err("retention does not accept transport or runner configuration")
             },
             Command::Stop | Command::ClearStop => Ok(()),
             _ if self.database.is_none()
@@ -191,8 +281,21 @@ impl Configuration {
             {
                 Err(USAGE)
             },
+            _ if !matches!(self.command, Command::Controller)
+                && self.has_runner_configuration() =>
+            {
+                Err(USAGE)
+            },
             _ => Ok(()),
         }
+    }
+
+    fn has_runner_configuration(&self) -> bool {
+        self.runner_inputs.is_some()
+            || self.runner_generations.is_some()
+            || self.runner_uid.is_some()
+            || self.runner_gid.is_some()
+            || self.handoff_endpoint.is_some()
     }
 }
 

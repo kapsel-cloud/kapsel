@@ -107,7 +107,10 @@ locators, times, scenarios, and copied receipts can correlate activity.
   runner OS/lease identities, prior-run paths, controller volume/database/receipt paths, staged
   key/trust and Kubernetes-input paths, backup/snapshot identities, canary identity, credentials,
   private signing material, trust decisions, fault controls, generic logs, and private cluster or
-  provider identifiers are never public protocol fields.
+  provider identifiers are never public protocol fields. The accepted Slice 2 boundary also removes
+  private composition paths and payloads from runner arguments, environment, stdout, stderr, and
+  bootstrap metadata; it transfers each fixed read-only input descriptor through `SCM_RIGHTS`. Its
+  complete Linux gate and review remain pending.
 - Public fixture times and identifiers are synthetic. Public technical evidence reports only
   aggregate approved facts and exact deployed revisions, never visitor-level traces.
 
