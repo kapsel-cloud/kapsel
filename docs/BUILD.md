@@ -481,12 +481,15 @@ privileged container with a private cgroup namespace solely to provide writable 
 delegation. It runs as controller UID/GID 0 and requires the fixed helper to establish numeric real,
 effective, and saved UID/GID 65532, empty supplementary groups, `no_new_privs`, fixed descriptors,
 parent-death fencing, and cgroup process-tree fencing before authority reaches `Application`. The
-lane never skips a missing prerequisite. It is separate because the ordinary development host may be
-macOS; the containerless deterministic lane remains mandatory. On non-Linux hosts that lane crosses
-runner loss before invocation, after the durable invocation acknowledgment, and after
-`apply_started`, then separately preserves one terminal report and its exact receipt bytes across a
-service reopen without claiming host replacement. The mandatory Linux/root lane alone executes the
-terminal-report kill, system restart, and runner replacement against KAP-0038's frozen receipt path.
+lane does not yet prove the focused KAP-0070 follow-up's hostile-parent securebit/capability state,
+executable file-capability policy, filesystem-concealment boundary, syscall/path restriction
+decision, or final bundle binding. No stronger helper command exists yet. The lane never skips a
+missing prerequisite. It is separate because the ordinary development host may be macOS; the
+containerless deterministic lane remains mandatory. On non-Linux hosts that lane crosses runner loss
+before invocation, after the durable invocation acknowledgment, and after `apply_started`, then
+separately preserves one terminal report and its exact receipt bytes across a service reopen without
+claiming host replacement. The mandatory Linux/root lane alone executes the terminal-report kill,
+system restart, and runner replacement against KAP-0038's frozen receipt path.
 
 The retained handoff proof crosses the exact request/grant match check, strict binary codec,
 per-lease credential fencing, durable invocation and terminal-report transactions, separate native

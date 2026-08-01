@@ -78,6 +78,9 @@ docs: tighten the active capability contract
 - Is the host boundary explicit: one controller-state/receipt writer, a separate per-run OS
   identity, descriptor-relative no-follow fixed inputs, stale-process/descriptor/lease denial, and
   no runner access to controller state, receipts, staged sources, backups, or prior journals?
+- Does the runner boundary prove its exact Linux securebits and every capability set under hostile
+  parent state, reject unexpected executable file capabilities, distinguish mount propagation from
+  filesystem concealment, and either prove or explicitly refuse syscall/path confinement?
 - Is every run policy-complete before dispatch, does the exact conditional patch preserve every
   field except the named image and required operation annotation, and are canary/unrelated/prior-run
   denials temporal rather than simultaneous-run claims?

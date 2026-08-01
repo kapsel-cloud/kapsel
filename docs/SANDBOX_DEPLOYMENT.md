@@ -1,9 +1,9 @@
 # Public sandbox deployment contract
 
 Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0) and Gate 1
-Slices 1–3 are accepted after the focused Slice 3 correction. Slices 4–6 remain. No provider,
-credential, resource, spend, image push, endpoint, DNS, private live command, or public traffic is
-authorized.
+Slices 1–3 are accepted after the focused Slice 3 correction. A focused Slice 2 runner-hardening
+follow-up blocks Slices 4–6. No provider, credential, resource, spend, image push, endpoint, DNS,
+private live command, or public traffic is authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
@@ -163,6 +163,23 @@ child in one fresh deployment-owned cgroup-v2 generation before sending descript
 writes `cgroup.kill`, waits for `populated 0`, verifies the recorded PID/start identity is absent,
 and only then releases a successor. Missing writable cgroup-v2 delegation fails closed;
 process-group or direct-child kill is not a fallback.
+
+Before further Gate 1 work, the focused runner-hardening follow-up must prove final Linux securebits
+and effective, permitted, inheritable, ambient, and bounding capability sets at exactly zero. Its
+finite hostile-parent matrix covers the frozen production bootstrap set, one unexpected
+representative bit in each capability set, unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP`
+variants, and nonempty helper and runner `security.capability` values. Unexpected unlocked state
+must normalize to the exact final zeros or fail before authority release; an unnormalizable locked
+state and either file-capability case must fail. UID/GID transition plus `no_new_privs` alone is not
+evidence that every inherited capability is absent. The private mount namespace prevents mount
+propagation and gives the runner a fixed `/run/kapsel-sandbox` state alias; it does not hide the
+rest of the host filesystem or provide hard filesystem isolation. The follow-up must either select
+and prove a finite seccomp, Landlock, or equivalent restriction for this synthetic proof or record
+the unrestricted native syscall/path surface as an explicit non-claim and Gate 3 adversary. The
+follow-up freezes and tests the C source, compiler/toolchain, helper, and runner identities that
+exact Slice 6 bundle assembly must later authenticate; it does not require that final bundle early.
+Until independent acceptance, the existing Slice 2 evidence proves its named descriptor, identity,
+parent-death, cgroup, and recovery assertions but not a complete least-privilege process boundary.
 
 The exact KAP-0055 private TCP framing, message grammar, connection/deadline bounds, credential
 verifier, lease rotation, durable `application_invoked` marker, report binding, and acknowledgments

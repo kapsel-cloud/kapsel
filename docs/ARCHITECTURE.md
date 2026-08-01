@@ -201,12 +201,15 @@ dispatch; cleanup retry and escalation retain capacity until exact UID/owner abs
 individual read-only descriptors through `SCM_RIGHTS`, creates a fresh generation, and places the
 Linux process tree in one private cgroup-v2 generation. One fixed C helper establishes identity,
 descriptor closure, parent-death, and `no_new_privs` before the Rust runner runtime without
-weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete controller composition,
-complete seam and denial evidence, the exact x86-64 Linux gate, and fresh review passed for that
-offline host boundary. Accepted Slice 3 adds exact cluster-policy verification, one fixed-authority
-bounded cleanup role, atomic runner retirement intent, and fail-closed static policy loading. KAP-
-0070 must still implement and accept key staging, backup, teardown, and recreation before any live
-or public claim.
+weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete controller composition, the
+named descriptor/identity/cgroup/recovery denial evidence, the exact x86-64 Linux gate, and fresh
+review passed for that offline host boundary. A focused Slice 2 follow-up blocks further Gate 1 work
+until executable file capabilities, hostile-parent securebits and every final capability set are
+resolved and the filesystem/syscall confinement claim is explicit; the accepted evidence does not
+yet prove a complete least-privilege process boundary. Accepted Slice 3 adds exact cluster-policy
+verification, one fixed-authority bounded cleanup role, atomic runner retirement intent, and fail-
+closed static policy loading. KAP-0070 must still implement and accept key staging, backup,
+teardown, and recreation before any live or public claim.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor

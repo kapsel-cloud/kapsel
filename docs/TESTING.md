@@ -293,6 +293,22 @@ privileged-private-cgroup, network-disabled x86-64 Debian/Linux lane executes ra
 and passes the fixed helper, descriptor, identity, outcome, full retained process-loss matrix, and
 real terminal kill/restart/replacement.
 
+Before further Gate 1 work, the focused Slice 2 hardening follow-up must extend that mandatory Linux
+lane from a privileged parent through a finite matrix: the frozen production bootstrap capability
+set; one unexpected representative bit in each effective, permitted, inheritable, ambient, and
+bounding set; unlocked and locked `KEEP_CAPS` and `NO_SETUID_FIXUP` variants; and nonempty helper
+then runner `security.capability` values. The canonical and successfully normalized cases must
+assert securebits and all five capability sets at zero after bootstrap. Unnormalizable locked state
+and both file-capability cases must fail before launch or authority release. The lane must preserve
+the existing UID/GID, empty-group, descriptor, parent-death, cgroup, and recovery matrix. Tests must
+distinguish the mount namespace's fixed `/run` alias and propagation boundary from unproved
+host-filesystem concealment. If the owner selects seccomp, Landlock, or an equivalent restriction,
+deterministic allowed/denied syscall or path cases become mandatory; otherwise tests and review must
+not imply that restriction exists. This follow-up freezes and tests the C source,
+compiler/toolchain, helper, and runner identities that exact Slice 6 bundle assembly must later
+bind; it does not require that final bundle early. Until this matrix passes independent review, the
+current lane does not prove a complete least-privilege native process boundary.
+
 Historical KAP-0053 tests retain only topology-neutral evidence: bounded native HTTP parsing,
 durable stop behavior, the exact conditional named-container image and KAP-0038 operation-annotation
 rule, strict input non-disclosure, and Ed25519/inspector known answers. Its `ReadWriteOncePod`,

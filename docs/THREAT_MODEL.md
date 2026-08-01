@@ -204,6 +204,20 @@ production composition, complete denial evidence, its x86-64 Linux execution gat
 passed for the accepted offline Slice 2 host boundary. That proof does not establish cluster
 runtime, CNI, RBAC, admission, metadata, or network enforcement.
 
+A focused KAP-0070 follow-up blocks further Gate 1 work because UID/GID and `no_new_privs` checks do
+not by themselves prove the selected Linux securebit state or the absence of effective, permitted,
+inheritable, ambient, and bounding capabilities, and current executable checks do not establish an
+explicit file-capability policy. The final runner must have securebits and every capability set at
+exactly zero. The finite review matrix must test the production bootstrap set, one unexpected bit in
+each set, unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP` variants, and nonempty helper and runner
+file capabilities. It must normalize to the exact final state or fail closed before runner
+authority; an unnormalizable locked state and either file-capability case must fail. The mount
+namespace prevents propagation and creates the fixed state alias but does not conceal the remaining
+host filesystem. Seccomp, Landlock, or equivalent syscall/path confinement is not currently proved;
+the follow-up must either add a finite required boundary or retain this native attack surface as an
+explicit non-claim and Gate 3 adversary. The exact C source, compiler/toolchain, helper, and runner
+bytes are supply-chain inputs to the planned authenticated bundle.
+
 OS users and a sandboxed process are not hard tenant isolation. Symlink/path substitution, parent or
 inode replacement, leaked descriptors, permissive groups, stale processes, ptrace/kernel escape, and
 local network reachability are explicit adversaries. Detection activates durable stop, preserves
