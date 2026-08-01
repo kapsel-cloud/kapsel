@@ -1254,11 +1254,14 @@ impl RunnerHost {
     fn fail_attached_launch(
         &mut self,
         child: &mut Child,
-        _cgroup_name: &str,
+        cgroup_name: &str,
         state: &fs::File,
         record: &DurableGenerationRecord,
         failure: RunnerHostError,
     ) -> RunnerHostError {
+        #[cfg(not(target_os = "linux"))]
+        let _ = cgroup_name;
+
         let mut cleanup_failed = false;
         let mut retained = record.clone();
         if self.persist_record(&retained).is_err() {
@@ -1281,7 +1284,7 @@ impl RunnerHost {
                 .cgroup
                 .as_ref()
                 .ok_or(RunnerHostError::Boundary)
-                .and_then(|boundary| boundary.fence(_cgroup_name));
+                .and_then(|boundary| boundary.fence(cgroup_name));
             if fenced.is_err() {
                 let _ = self.persist_record(&retained);
                 return RunnerHostError::Process;
@@ -2282,10 +2285,12 @@ fn process_start_identity(process_id: u32) -> Result<String, RunnerHostError> {
             .split_ascii_whitespace()
             .nth(19)
             .ok_or(RunnerHostError::Process)?;
-        return Ok(format!("{process_id}:{start}"));
+        Ok(format!("{process_id}:{start}"))
     }
     #[cfg(not(target_os = "linux"))]
-    Ok(format!("{process_id}:1"))
+    {
+        Ok(format!("{process_id}:1"))
+    }
 }
 
 fn directory_flags() -> OFlags {
@@ -3409,6 +3414,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the test owns one complete descendant launch and cgroup-fencing seam"
+    )]
     fn post_attach_bootstrap_failure_fences_forked_descendant_and_empty_cgroup() {
         if !rustix::process::geteuid().is_root() {
             return;

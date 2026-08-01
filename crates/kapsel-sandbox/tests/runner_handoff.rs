@@ -594,6 +594,10 @@ fn launch_after_lease_expiry(controller: &mut ControllerRole, now_unix_s: i64) -
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the snapshot preserves independent durable retirement facts for exact comparison"
+)]
 struct RetirementSnapshot {
     lease_epoch: i64,
     operation_id: String,
@@ -1128,6 +1132,10 @@ fn process_loss_after_apply_started_reconciles_without_second_patch() {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the process proof owns one complete terminal-report restart and replay seam"
+)]
 fn process_loss_after_terminal_report_replays_after_system_restart() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '8');

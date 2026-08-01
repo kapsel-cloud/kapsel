@@ -341,10 +341,16 @@ fn establish_identity_and_state() -> Result<DescriptorIdentity, &'static str> {
     rustix::process::fchdir(rustix::stdio::stdout())
         .map_err(|_| "runner state generation is unavailable")?;
     Ok(DescriptorIdentity {
-        device: u64::try_from(state.st_dev).map_err(|_| "runner state generation is invalid")?,
+        device: descriptor_device(state.st_dev)?,
         inode: state.st_ino,
         length: u64::try_from(state.st_size).map_err(|_| "runner state generation is invalid")?,
     })
+}
+
+fn descriptor_device(device: impl TryInto<u64>) -> Result<u64, &'static str> {
+    device
+        .try_into()
+        .map_err(|_| "runner state generation is invalid")
 }
 
 #[cfg(target_os = "linux")]
