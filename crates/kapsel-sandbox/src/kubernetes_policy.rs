@@ -18,6 +18,12 @@ pub(crate) struct RenderedPolicyObject {
     pub(crate) body: Value,
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) enum PolicyBuildError {
+    InvalidEmbeddedRecord,
+    Serialization,
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the fixed baseline stays compile-time composed and directly auditable"
@@ -179,7 +185,7 @@ pub(crate) fn boundary_objects() -> Vec<RenderedPolicyObject> {
     objects
 }
 
-pub(crate) fn behavior_records() -> Result<Vec<Value>, ()> {
+pub(crate) fn behavior_records() -> Result<Vec<Value>, PolicyBuildError> {
     parse_behavior_records(&[
         include_str!("../../../deploy/sandbox/network-boundary-record.json"),
         include_str!("../../../deploy/sandbox/composition-admission-rule.json"),
@@ -188,10 +194,12 @@ pub(crate) fn behavior_records() -> Result<Vec<Value>, ()> {
     ])
 }
 
-fn parse_behavior_records(records: &[&str]) -> Result<Vec<Value>, ()> {
+fn parse_behavior_records(records: &[&str]) -> Result<Vec<Value>, PolicyBuildError> {
     records
         .iter()
-        .map(|record| serde_json::from_str(record).map_err(|_| ()))
+        .map(|record| {
+            serde_json::from_str(record).map_err(|_| PolicyBuildError::InvalidEmbeddedRecord)
+        })
         .collect()
 }
 
@@ -199,7 +207,10 @@ fn parse_behavior_records(records: &[&str]) -> Result<Vec<Value>, ()> {
     clippy::too_many_lines,
     reason = "one fixed renderer keeps the exact ten-object policy locally reviewable"
 )]
-pub(crate) fn render(run_id: &str, selected_image: &str) -> Result<Vec<RenderedPolicyObject>, ()> {
+pub(crate) fn render(
+    run_id: &str,
+    selected_image: &str,
+) -> Result<Vec<RenderedPolicyObject>, PolicyBuildError> {
     let namespace = format!("sandbox-{run_id}");
     let cleanup = format!("cleanup-{run_id}");
     let labels = json!({
@@ -496,7 +507,7 @@ pub(crate) fn canonical_deployment_digest(body: &Value) -> String {
     content_digest(&canonical)
 }
 
-fn inventory_digest(objects: &[RenderedPolicyObject]) -> Result<String, ()> {
+fn inventory_digest(objects: &[RenderedPolicyObject]) -> Result<String, PolicyBuildError> {
     let canonical = objects
         .iter()
         .map(|object| {
@@ -516,7 +527,7 @@ fn inventory_digest(objects: &[RenderedPolicyObject]) -> Result<String, ()> {
     let mut digest = Sha256::new();
     digest.update(REVISION.as_bytes());
     digest.update([0]);
-    let canonical = serde_json::to_vec(&canonical).map_err(|_| ())?;
+    let canonical = serde_json::to_vec(&canonical).map_err(|_| PolicyBuildError::Serialization)?;
     digest.update(canonical);
     Ok(hex(&digest.finalize()))
 }
@@ -701,7 +712,10 @@ mod tests {
 
     #[test]
     fn malformed_embedded_behavior_record_fails_closed() {
-        assert!(parse_behavior_records(&[r#"{"revision":"v1"}"#, "{"]).is_err());
+        assert_eq!(
+            parse_behavior_records(&[r#"{"revision":"v1"}"#, "{"]),
+            Err(PolicyBuildError::InvalidEmbeddedRecord)
+        );
         assert_eq!(behavior_records().unwrap().len(), 4);
     }
 

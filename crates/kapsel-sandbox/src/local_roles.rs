@@ -303,6 +303,27 @@ impl CleanupRole {
         }))
     }
 
+    /// Reloads the exact selected cleanup identity without selecting or transitioning work.
+    fn reload_exact(&self, work: &CleanupWork) -> Result<CleanupWork, ServiceError> {
+        let (namespace_uid, state, escalated) = self
+            .service
+            .cleanup_exact(&work.run_id, &work.cleanup_identity)?;
+        if namespace_uid != work.namespace_uid
+            || !matches!(state, CleanupState::Running | CleanupState::Failed)
+        {
+            return Err(ServiceError::OwnershipMismatch);
+        }
+        Ok(CleanupWork {
+            run_id: work.run_id.clone(),
+            cleanup_identity: work.cleanup_identity.clone(),
+            namespace_uid,
+            objects: self
+                .service
+                .cleanup_owned_objects(&work.run_id, &work.cleanup_identity)?,
+            escalated,
+        })
+    }
+
     /// Appends newly observed Deployment children by exact UID before deriving another plan.
     ///
     /// # Errors
@@ -416,12 +437,8 @@ impl CleanupRole {
         client: kube::Client,
         now_unix_s: i64,
     ) -> Result<(), ServiceError> {
-        let current = self
-            .next(now_unix_s)?
-            .ok_or(ServiceError::InvalidTransition)?;
-        if current.run_id != work.run_id || current.cleanup_identity != work.cleanup_identity {
-            return Err(ServiceError::OwnershipMismatch);
-        }
+        timestamp(now_unix_s)?;
+        let current = self.reload_exact(work)?;
         let children = observe_generated_children(client.clone(), &current).await?;
         let refreshed = self.refresh_generated_children(&current, &children)?;
         let mut observation = observe_kubernetes_cleanup(client.clone(), &refreshed).await?;
@@ -913,6 +930,42 @@ impl Service {
             .map_err(storage_error)
     }
 
+    fn cleanup_exact(
+        &self,
+        run_id: &str,
+        cleanup_identity: &str,
+    ) -> Result<(String, CleanupState, bool), ServiceError> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                concat!(
+                    "SELECT cleanup_records.namespace_uid, cleanup_records.state, ",
+                    "cleanup_records.escalated FROM cleanup_records ",
+                    "JOIN runs ON runs.run_id = cleanup_records.run_id ",
+                    "WHERE cleanup_records.run_id = ?1 AND cleanup_records.cleanup_identity = ?2 ",
+                    "AND cleanup_records.active = 1 AND cleanup_records.eligible = 1 ",
+                    "AND cleanup_records.resource_state = 'owned' ",
+                    "AND (SELECT COUNT(*) FROM cleanup_records ",
+                    "WHERE active = 1 AND eligible = 1) = 1 ",
+                    "AND runs.provisioning_closed = 1 AND runs.runner_revoked = 1 ",
+                    "AND runs.runner_process_absent = 1 AND runs.journal_handoff = 1 ",
+                    "AND runs.runner_state_retired = 1"
+                ),
+                params![run_id, cleanup_identity],
+                |row| {
+                    let state = row.get::<_, String>(1)?;
+                    Ok((
+                        row.get(0)?,
+                        CleanupState::parse(&state).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                        row.get(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::OwnershipMismatch)
+    }
+
     fn cleanup_owned_objects(
         &self,
         run_id: &str,
@@ -1188,6 +1241,42 @@ mod tests {
             ],
             escalated: false,
         }
+    }
+
+    #[test]
+    fn exact_cleanup_reload_is_read_only_and_identity_bound() {
+        let (root, service, run_id) = cleanup_service("exact-reload");
+        let role = CleanupRole::new(service);
+        let work = role.next(1_800_000_002).unwrap().unwrap();
+        let connection = rusqlite::Connection::open(root.join("sandbox.sqlite3")).unwrap();
+        let read_transition = || {
+            connection
+                .query_row(
+                    concat!(
+                        "SELECT state, started_at, escalated FROM cleanup_records ",
+                        "WHERE run_id = ?1"
+                    ),
+                    [&run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let before = read_transition();
+        assert_eq!(role.reload_exact(&work).unwrap(), work);
+        let mut wrong = work;
+        wrong.cleanup_identity.push_str("-wrong");
+        assert_eq!(
+            role.reload_exact(&wrong),
+            Err(ServiceError::OwnershipMismatch)
+        );
+        assert_eq!(before, read_transition());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

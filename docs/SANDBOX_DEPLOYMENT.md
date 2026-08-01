@@ -209,6 +209,14 @@ therefore completes an interrupted intent without launching the terminal run aga
 unexpired or expired prior lease. A different run fails closed while any retained state exists. At
 most one runnable journal and runner generation exists.
 
+Recovery and retirement permit at most four generation-root entries: the canonical durable record,
+its atomic-write temporary record, the recorded generation, and one adjacent generation used only
+while moving the same run directory. Enumeration fails closed before processing a fifth entry. Once
+the durable record advances, every older generation directory must be empty and is removed
+descriptor-relatively; any older journal, outbox, or other content fails closed rather than being
+deleted as obsolete state. This bound covers allocation, preparation, fencing, retirement, and their
+atomic-record crash sides without treating the generation root as a generic store.
+
 ## Cluster and conditional operation
 
 ### Slice 3 scope and compatibility profile

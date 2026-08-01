@@ -934,7 +934,7 @@ impl Service {
             })
             .collect();
         let records =
-            kubernetes_policy::behavior_records().map_err(|()| ServiceError::PolicyMismatch)?;
+            kubernetes_policy::behavior_records().map_err(|_| ServiceError::PolicyMismatch)?;
         Ok((objects, records))
     }
 
@@ -976,7 +976,7 @@ impl Service {
         }
         let expected_boundary = kubernetes_policy::boundary_objects();
         let expected_behavior =
-            kubernetes_policy::behavior_records().map_err(|()| ServiceError::PolicyMismatch)?;
+            kubernetes_policy::behavior_records().map_err(|_| ServiceError::PolicyMismatch)?;
         if observation.boundary.objects.len() != expected_boundary.len()
             || observation.boundary.behavior_records != expected_behavior
         {
@@ -1011,7 +1011,7 @@ impl Service {
             .server_owned_request(&lease.run_id)?
             .immutable_image_digest;
         let expected = kubernetes_policy::render(&lease.run_id, &selected_image)
-            .map_err(|()| ServiceError::PolicyMismatch)?;
+            .map_err(|_| ServiceError::PolicyMismatch)?;
         if expected.len() != specification.required_objects.len()
             || observation.run_objects.len() != expected.len()
         {
@@ -1114,7 +1114,7 @@ impl Service {
         }
         let request = self.server_owned_request(run_id)?;
         let rendered = kubernetes_policy::render(run_id, &request.immutable_image_digest)
-            .map_err(|()| ServiceError::PolicyMismatch)?;
+            .map_err(|_| ServiceError::PolicyMismatch)?;
         let deployment_template = rendered
             .iter()
             .find(|object| object.body["kind"] == "Deployment")
@@ -4645,7 +4645,7 @@ fn close_provisioning(
 
 fn policy_inventory(run_id: &str, selected_image: &str) -> Result<(String, String), ServiceError> {
     let inventory = kubernetes_policy::render(run_id, selected_image)
-        .map_err(|()| ServiceError::PolicyMismatch)?
+        .map_err(|_| ServiceError::PolicyMismatch)?
         .into_iter()
         .map(|object| PolicyObjectRequirement {
             identity: object.identity,

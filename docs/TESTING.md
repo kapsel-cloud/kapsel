@@ -281,14 +281,17 @@ network/runtime/storage isolation, provider identity, or live custody.
 Accepted KAP-0070 Slice 2 replaces copied bootstrap payloads with individually pinned read-only
 descriptors transferred through `SCM_RIGHTS`. A fixed C helper and cgroup-v2 generation establish
 the pre-runtime identity/FD/parent and descendant boundary while Rust remains
-`unsafe_code = "forbid"`. Implementation-local tests replace the pinned input parent, relax a fixed
-file mode, rotate lease/credential bytes before generation creation, cross durable
-allocation/fencing/migration crash sides, reject record/cgroup ambiguity, and fence a forked
-descendant after post-attach failure. Native process tests retain `not_attempted`, `SUCCEEDED`,
-`UNKNOWN`, the three pre-terminal loss seams, and deterministic both-sided publication with exact
-terminal/report bytes. The pinned, privileged-private-cgroup, network-disabled x86-64 Debian/Linux
-lane executes rather than skipping and passes the fixed helper, descriptor, identity, outcome, full
-retained process-loss matrix, and real terminal kill/restart/replacement.
+`unsafe_code = "forbid"`. Implementation-local tests cover input-parent replacement, fixed-file mode
+changes, lease/credential rotation, durable allocation/fencing/migration crash sides, record/cgroup
+ambiguity, and forked-descendant fencing after post-attach failure. Separate generation-root tests
+fail closed before processing a fifth entry and remove only obsolete empty directories after the
+durable record advances.
+
+Native process tests retain `not_attempted`, `SUCCEEDED`, `UNKNOWN`, the three pre-terminal loss
+seams, and deterministic both-sided publication with exact terminal/report bytes. The pinned,
+privileged-private-cgroup, network-disabled x86-64 Debian/Linux lane executes rather than skipping
+and passes the fixed helper, descriptor, identity, outcome, full retained process-loss matrix, and
+real terminal kill/restart/replacement.
 
 Historical KAP-0053 tests retain only topology-neutral evidence: bounded native HTTP parsing,
 durable stop behavior, the exact conditional named-container image and KAP-0038 operation-annotation

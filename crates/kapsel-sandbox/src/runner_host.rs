@@ -68,6 +68,7 @@ impl std::error::Error for RunnerHostError {}
 const GENERATION_RECORD_NAME: &str = "runner-generation.json";
 const GENERATION_RECORD_TEMPORARY_NAME: &str = ".runner-generation.tmp";
 const GENERATION_RECORD_BYTES_MAX: usize = 8 * 1024;
+const MAX_GENERATION_ROOT_ENTRIES: usize = 4;
 const RUNNER_READY: &[u8] = b"KAPSEL-SANDBOX-RUNNER-READY-V1\0";
 const RUNNER_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const RUNNER_RELEASE: &[u8] = b"KAPSEL-SANDBOX-RUNNER-RELEASE-V1\0";
@@ -449,16 +450,7 @@ impl RunnerHost {
         &mut self,
         record: &DurableGenerationRecord,
     ) -> Result<(), RunnerHostError> {
-        let entries = fs::read_dir(&self.generation_root_path)
-            .map_err(|_| RunnerHostError::Boundary)?
-            .map(|entry| {
-                entry
-                    .map_err(|_| RunnerHostError::Boundary)?
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| RunnerHostError::Boundary)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let entries = bounded_generation_root_entries(&self.generation_root)?;
         for entry in entries {
             if entry == GENERATION_RECORD_NAME {
                 continue;
@@ -618,16 +610,7 @@ impl RunnerHost {
         reason = "durable reopen validation is intentionally one fail-closed audit sequence"
     )]
     fn recover_durable_generation(&mut self) -> Result<(), RunnerHostError> {
-        let mut entries = fs::read_dir(&self.generation_root_path)
-            .map_err(|_| RunnerHostError::Boundary)?
-            .map(|entry| {
-                entry
-                    .map_err(|_| RunnerHostError::Boundary)?
-                    .file_name()
-                    .into_string()
-                    .map_err(|_| RunnerHostError::Boundary)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut entries = bounded_generation_root_entries(&self.generation_root)?;
         let has_temporary = entries
             .iter()
             .any(|name| name == GENERATION_RECORD_TEMPORARY_NAME);
@@ -739,6 +722,7 @@ impl RunnerHost {
         {
             return Err(RunnerHostError::Boundary);
         }
+        let mut removed_any_obsolete_generation = false;
         for (_, entry) in generation_entries
             .iter()
             .filter(|(number, _)| *number < recorded_generation)
@@ -753,11 +737,18 @@ impl RunnerHost {
                 .map_err(|_| RunnerHostError::Boundary)?,
             );
             validate_directory(&old, self.runner_uid, self.runner_gid)?;
-            if open_optional_run(&old)?.is_some()
-                || !directory_is_empty(&self.generation_root_path.join(entry))?
-            {
+            if open_optional_run(&old)?.is_some() || !directory_descriptor_is_empty(&old)? {
                 return Err(RunnerHostError::Boundary);
             }
+            drop(old);
+            rustix::fs::unlinkat(&self.generation_root, entry, rustix::fs::AtFlags::REMOVEDIR)
+                .map_err(|_| RunnerHostError::Boundary)?;
+            removed_any_obsolete_generation = true;
+        }
+        if removed_any_obsolete_generation {
+            self.generation_root
+                .sync_all()
+                .map_err(|_| RunnerHostError::Boundary)?;
         }
         let recorded = fs::File::from(
             openat(
@@ -1858,6 +1849,42 @@ fn directory_names(directory: &fs::File) -> Result<Vec<String>, RunnerHostError>
     Ok(names)
 }
 
+fn bounded_generation_root_entries(
+    generation_root: &fs::File,
+) -> Result<Vec<String>, RunnerHostError> {
+    let mut entries = Vec::new();
+    for entry in
+        rustix::fs::Dir::read_from(generation_root).map_err(|_| RunnerHostError::Boundary)?
+    {
+        let entry = entry.map_err(|_| RunnerHostError::Boundary)?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if entries.len() == MAX_GENERATION_ROOT_ENTRIES {
+            return Err(RunnerHostError::Boundary);
+        }
+        entries.push(
+            name.to_str()
+                .map(str::to_owned)
+                .map_err(|_| RunnerHostError::Boundary)?,
+        );
+    }
+    entries.sort_unstable();
+    Ok(entries)
+}
+
+fn directory_descriptor_is_empty(directory: &fs::File) -> Result<bool, RunnerHostError> {
+    for entry in rustix::fs::Dir::read_from(directory).map_err(|_| RunnerHostError::Boundary)? {
+        let entry = entry.map_err(|_| RunnerHostError::Boundary)?;
+        let name = entry.file_name();
+        if !matches!(name.to_bytes(), b"." | b"..") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn directory_entry_count(path: &Path) -> Result<usize, RunnerHostError> {
     fs::read_dir(path)
         .map_err(|_| RunnerHostError::Boundary)?
@@ -2486,6 +2513,33 @@ mod tests {
     }
 
     #[test]
+    fn generation_root_enumeration_stops_at_four_entries() {
+        let (root, _, generations, _, _) = allocation_fixture("root-entry-bound");
+        for name in [
+            GENERATION_RECORD_NAME,
+            GENERATION_RECORD_TEMPORARY_NAME,
+            "generation-00000000000000000001",
+            "generation-00000000000000000002",
+        ] {
+            fs::write(generations.join(name), b"bounded").unwrap();
+        }
+        let generation_root =
+            fs::File::from(openat(CWD, &generations, directory_flags(), Mode::empty()).unwrap());
+        assert_eq!(
+            bounded_generation_root_entries(&generation_root)
+                .unwrap()
+                .len(),
+            4
+        );
+        fs::write(generations.join("five"), b"excess").unwrap();
+        assert_eq!(
+            bounded_generation_root_entries(&generation_root),
+            Err(RunnerHostError::Boundary)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn allocating_reopen_without_generation_retries_same_generation_repeatedly() {
         let (root, inputs, generations, runner_uid, runner_gid) =
             allocation_fixture("no-generation");
@@ -2778,6 +2832,12 @@ mod tests {
 
         let (root, inputs, generations) = make("accepted");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
+        let obsolete_path = generations.join("generation-00000000000000000006");
+        private_directory(&obsolete_path);
+        let obsolete =
+            fs::File::from(openat(CWD, &obsolete_path, directory_flags(), Mode::empty()).unwrap());
+        set_directory_identity(&obsolete, runner_uid, runner_gid).unwrap();
+        drop(obsolete);
         write_durable_record(&generations, &record);
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
@@ -2789,6 +2849,10 @@ mod tests {
         .unwrap();
         assert_eq!(host.next_generation, 8);
         assert!(host.recovery_directory.is_some());
+        assert!(!obsolete_path.exists());
+        assert!(generations
+            .join("generation-00000000000000000007/run/gateway.sqlite3")
+            .is_file());
         drop(host);
         fs::remove_dir_all(root).unwrap();
 
@@ -2823,6 +2887,9 @@ mod tests {
             ),
             Err(RunnerHostError::Boundary)
         ));
+        assert!(generations
+            .join("generation-00000000000000000006/run/gateway.sqlite3")
+            .is_file());
         fs::remove_dir_all(root).unwrap();
     }
 
