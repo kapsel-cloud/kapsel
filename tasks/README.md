@@ -87,6 +87,7 @@ conditional future work; v0.2 does not publish crates.io or docs.rs artifacts.
 | [KAP-0066](KAP-0066.md) | Deferred    | Release-artifact tooling is inactive without an observed product blocker                     |
 | [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling remains behind KAP-0066 and an observed product blocker                |
 | [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization waits for the selected real consumers                                 |
+| [KAP-0071](KAP-0071.md) | Deferred    | Optional Nix development shell waits for KAP-0070 closure and accepted pilot evidence        |
 
 KAP-0051, KAP-0052, KAP-0055, and KAP-0056 remain accepted sandbox history. Their implementation and
 the shared workspace version do not make the sandbox, private controller protocols, runner handoff,
