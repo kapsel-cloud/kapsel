@@ -32,8 +32,7 @@ use kapsel::{
 };
 use kapsel_sandbox::{
     run_application_handoff, ControllerConfiguration, ControllerRole, DispatchLease,
-    ExecutionState, ProvisionedObject, ProvisionedTarget, ProvisioningSpecification, Scenario,
-    Service,
+    ExecutionState, Scenario, Service,
 };
 use tower_test::mock;
 
@@ -97,37 +96,47 @@ fn fixture() -> (PathBuf, Service, PathBuf) {
 
 fn verify_target(service: &Service, lease: &DispatchLease, at: i64) {
     let specification = service.provisioning_specification(lease, at).unwrap();
+    let (boundary, behavior_records) = Service::cluster_boundary_specification().unwrap();
+    let boundary = kapsel_sandbox::ClusterBoundaryObservation {
+        objects: boundary
+            .into_iter()
+            .enumerate()
+            .map(|(index, object)| {
+                let mut body = object.canonical_body;
+                body["metadata"]["uid"] = serde_json::json!(format!("boundary-{index}"));
+                body["metadata"]["resourceVersion"] = serde_json::json!("17");
+                kapsel_sandbox::ObservedPolicyObject { body }
+            })
+            .collect(),
+        behavior_records,
+    };
+    let run_objects = specification
+        .required_objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            let mut body = object.canonical_body.clone();
+            body["metadata"]["uid"] = serde_json::json!(if index == 0 {
+                "handoff-namespace-uid".into()
+            } else {
+                format!("handoff-object-{index}")
+            });
+            body["metadata"]["resourceVersion"] = serde_json::json!("17");
+            kapsel_sandbox::ObservedPolicyObject { body }
+        })
+        .collect();
     service
-        .verify_provisioned_target(
+        .verify_observed_cluster(
             lease,
-            &ProvisionedTarget {
-                namespace_uid: "handoff-namespace-uid".into(),
-                policy_revision: specification.policy_revision.clone(),
-                policy_inventory_digest: specification.policy_inventory_digest.clone(),
-                cleanup_identity: specification.cleanup_identity.clone(),
-                objects: provisioned_objects(&specification),
+            &kapsel_sandbox::ObservedClusterComposition {
+                boundary,
+                run_objects,
+                generated_children: Vec::new(),
+                owned_orphans: Vec::new(),
             },
             at,
         )
         .unwrap();
-}
-
-fn provisioned_objects(specification: &ProvisioningSpecification) -> Vec<ProvisionedObject> {
-    specification
-        .required_objects
-        .iter()
-        .enumerate()
-        .map(|(index, object)| ProvisionedObject {
-            identity: object.identity.clone(),
-            uid: if index == 0 {
-                "handoff-namespace-uid".into()
-            } else {
-                format!("handoff-object-{index}")
-            },
-            owner_label: specification.cleanup_identity.clone(),
-            content_digest: object.content_digest.clone(),
-        })
-        .collect()
 }
 
 fn application(
@@ -584,6 +593,51 @@ fn launch_after_lease_expiry(controller: &mut ControllerRole, now_unix_s: i64) -
     run.generation()
 }
 
+#[cfg(target_os = "linux")]
+struct RetirementSnapshot {
+    lease_epoch: i64,
+    operation_id: String,
+    application_invoked: bool,
+    report_count: i64,
+    runner_revoked: bool,
+    process_absent: bool,
+    journal_handoff: bool,
+    retiring: bool,
+    retired: bool,
+    verifier_bytes: i64,
+}
+
+#[cfg(target_os = "linux")]
+fn retirement_snapshot(database: &Path, run_id: &str) -> RetirementSnapshot {
+    rusqlite::Connection::open(database)
+        .unwrap()
+        .query_row(
+            concat!(
+                "SELECT lease_epoch, operation_id, application_invoked, ",
+                "(SELECT COUNT(*) FROM application_reports WHERE run_id = ?1), ",
+                "runner_revoked, runner_process_absent, journal_handoff, ",
+                "runner_state_retiring, runner_state_retired, ",
+                "length(handoff_credential_verifier) FROM runs WHERE run_id = ?1"
+            ),
+            [run_id],
+            |row| {
+                Ok(RetirementSnapshot {
+                    lease_epoch: row.get(0)?,
+                    operation_id: row.get(1)?,
+                    application_invoked: row.get(2)?,
+                    report_count: row.get(3)?,
+                    runner_revoked: row.get(4)?,
+                    process_absent: row.get(5)?,
+                    journal_handoff: row.get(6)?,
+                    retiring: row.get(7)?,
+                    retired: row.get(8)?,
+                    verifier_bytes: row.get(9)?,
+                })
+            },
+        )
+        .unwrap()
+}
+
 fn wait_for_database_value(path: &Path, query: &str, expected: &str) {
     for _ in 0..1_000 {
         if rusqlite::Connection::open(path)
@@ -806,8 +860,7 @@ fn run_native_runner_case(outcome: NativeOutcome) {
         &service,
         handoff_address,
     );
-    let generation = launch_after_lease_expiry(&mut controller, at + 31);
-    let runner_generation = generations.join(format!("generation-{generation:020}"));
+    launch_after_lease_expiry(&mut controller, at + 31);
     let runner_status = controller.wait().unwrap();
     let _ = handoff_process.kill();
     handoff_process.wait().unwrap();
@@ -836,27 +889,9 @@ fn run_native_runner_case(outcome: NativeOutcome) {
 
     let snapshot = service.snapshot(&admission.run_id, now()).unwrap();
     assert!(fs::read_dir(&state_volume).unwrap().next().is_none());
-    let mut run_entries = fs::read_dir(runner_generation.join("run"))
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect::<Vec<_>>();
-    run_entries.sort();
-    assert_eq!(
-        run_entries,
-        [
-            "gateway.sqlite3",
-            "gateway.sqlite3.kap0038-worker.lock",
-            "receipt-outbox"
-        ]
-    );
-    assert!(runner_generation.join("run/gateway.sqlite3").is_file());
-    assert!(!runner_generation.join("sandbox.sqlite3").exists());
+    assert!(fs::read_dir(&generations).unwrap().next().is_none());
     assert!(root.join("sandbox.sqlite3").is_file());
     assert!(!root.join("gateway.sqlite3").exists());
-    let outbox_files = fs::read_dir(runner_generation.join("run/receipt-outbox"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
     if outcome != NativeOutcome::NotAttempted {
         let expected_result = match outcome {
             NativeOutcome::Succeeded => OperationResult::Succeeded,
@@ -873,9 +908,7 @@ fn run_native_runner_case(outcome: NativeOutcome) {
             })
         );
         assert!(snapshot.receipt_available);
-        assert_eq!(outbox_files.len(), 1);
         let system_receipt = service.receipt(&admission.run_id, now()).unwrap();
-        assert_eq!(fs::read(&outbox_files[0]).unwrap(), system_receipt);
         let receipt_key = SigningKey::from_bytes(&[42_u8; 32]);
         let trust = ReceiptTrust {
             key_id: "sandbox-receipt-key".into(),
@@ -902,7 +935,6 @@ fn run_native_runner_case(outcome: NativeOutcome) {
             Some("DEPLOYMENT_NOT_FOUND")
         );
         assert!(!snapshot.receipt_available);
-        assert!(outbox_files.is_empty());
         assert!(fs::read_dir(root.join("receipts"))
             .unwrap()
             .next()
@@ -969,7 +1001,7 @@ fn process_loss_before_invocation_recovers() {
         .filter_map(Result::ok)
         .filter(|entry| entry.path().join("run/gateway.sqlite3").is_file())
         .count();
-    assert_eq!(journal_count, 1);
+    assert_eq!(journal_count, 0);
     kubernetes.join().unwrap();
     assert_eq!(
         fixture
@@ -1194,9 +1226,7 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
     let mut restarted = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
     let mut controller = reopened_controller_role(&fixture);
     let replay_generation = launch_after_lease_expiry(&mut controller, launch_at + 31);
-    let outbox = fixture.root.join("runner-generations").join(format!(
-        "generation-{replay_generation:020}/run/receipt-outbox"
-    ));
+    let _ = replay_generation;
     assert!(controller.wait().unwrap().success());
     let snapshot = fixture.service.snapshot(&fixture.run_id, now()).unwrap();
     assert_eq!(snapshot.receiver_result.as_deref(), Some("SUCCEEDED"));
@@ -1205,18 +1235,10 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
         fixture.service.receipt(&fixture.run_id, now()).unwrap(),
         frozen_receipt
     );
-    assert_eq!(
-        fs::read(
-            fs::read_dir(outbox)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap()
-                .path()
-        )
-        .unwrap(),
-        frozen_receipt
-    );
+    assert!(fs::read_dir(fixture.root.join("runner-generations"))
+        .unwrap()
+        .next()
+        .is_none());
     let connection = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3")).unwrap();
     let completed: (i64, i64) = connection
         .query_row(
@@ -1235,7 +1257,7 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
 }
 
 #[cfg(target_os = "linux")]
-fn controller_loss_after_receipt_publication_replays_exact_bytes() {
+fn controller_restart_converges_retirement_before_recovery(restart_offset_seconds: i64) {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '9');
     let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
@@ -1261,28 +1283,74 @@ fn controller_loss_after_receipt_publication_replays_exact_bytes() {
         thread::yield_now();
     }
     let receipt = fixture.service.receipt(&fixture.run_id, now()).unwrap();
-    assert!(controller.wait().unwrap().success());
+    let staged_lease = fs::read(fixture.root.join("runner-host-inputs/handoff-lease-id")).unwrap();
+    let staged_credential =
+        fs::read(fixture.root.join("runner-host-inputs/handoff-credential")).unwrap();
+    let database = fixture.root.join("sandbox.sqlite3");
+    let before = retirement_snapshot(&database, &fixture.run_id);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    // Exact crash-seam injection for the atomic Service::begin_runner_retirement transaction.
+    // The controller and retained host generation are deliberately dropped before host retirement.
+    let changed = connection
+        .execute(
+            concat!(
+                "UPDATE runs SET runner_revoked = 1, runner_process_absent = 1, ",
+                "journal_handoff = 1, handoff_credential_verifier = X'', ",
+                "runner_state_retiring = 1 WHERE run_id = ?1 AND provisioning_closed = 1 ",
+                "AND runner_revoked = 0 AND runner_state_retiring = 0 ",
+                "AND runner_state_retired = 0 AND execution_state = 'terminal' AND NOT EXISTS ",
+                "(SELECT 1 FROM receipt_publications WHERE ",
+                "receipt_publications.run_id = runs.run_id)"
+            ),
+            [&fixture.run_id],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    drop(connection);
+    let intent = retirement_snapshot(&database, &fixture.run_id);
+    assert!(intent.runner_revoked);
+    assert!(intent.process_absent);
+    assert!(intent.journal_handoff);
+    assert!(intent.retiring);
+    assert!(!intent.retired);
+    assert_eq!(intent.verifier_bytes, 0);
     drop(controller);
     kubernetes.join().unwrap();
-    handoff.kill().unwrap();
-    handoff.wait().unwrap();
 
-    let mut restarted = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
-    let mut controller = reopened_controller_role(&fixture);
-    launch_after_lease_expiry(&mut controller, launch_at + 31);
-    assert!(controller.wait().unwrap().success());
+    let mut restarted = reopened_controller_role(&fixture);
+    assert!(restarted
+        .run_once(launch_at + restart_offset_seconds)
+        .unwrap()
+        .is_none());
+    let after = retirement_snapshot(&database, &fixture.run_id);
+    assert_eq!(after.lease_epoch, before.lease_epoch);
+    assert_eq!(after.operation_id, before.operation_id);
+    assert_eq!(after.application_invoked, before.application_invoked);
+    assert_eq!(after.report_count, before.report_count);
+    assert!(after.runner_revoked);
+    assert!(after.process_absent);
+    assert!(after.journal_handoff);
+    assert!(after.retiring);
+    assert!(after.retired);
+    assert_eq!(after.verifier_bytes, 0);
+    assert_eq!(
+        fs::read(fixture.root.join("runner-host-inputs/handoff-lease-id")).unwrap(),
+        staged_lease
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("runner-host-inputs/handoff-credential")).unwrap(),
+        staged_credential
+    );
     assert_eq!(
         fixture.service.receipt(&fixture.run_id, now()).unwrap(),
         receipt
     );
-    let journals = fs::read_dir(fixture.root.join("runner-generations"))
+    assert!(fs::read_dir(fixture.root.join("runner-generations"))
         .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().join("run/gateway.sqlite3").is_file())
-        .count();
-    assert_eq!(journals, 1);
-    restarted.kill().unwrap();
-    restarted.wait().unwrap();
+        .next()
+        .is_none());
+    handoff.kill().unwrap();
+    handoff.wait().unwrap();
     fs::remove_dir_all(fixture.root).unwrap();
 }
 
@@ -1296,7 +1364,8 @@ fn production_process_loss_matrix_converges_at_owned_handoff_seams() {
     process_loss_after_invocation_ack_recovers();
     process_loss_after_apply_started_reconciles_without_second_patch();
     process_loss_after_terminal_report_replays_after_system_restart();
-    controller_loss_after_receipt_publication_replays_exact_bytes();
+    controller_restart_converges_retirement_before_recovery(1);
+    controller_restart_converges_retirement_before_recovery(31);
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1322,22 +1391,15 @@ fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_ho
         fixture.handoff_address,
     );
     let launch_at = fixture.launch_at;
-    let generation = launch_after_lease_expiry(&mut controller, launch_at);
+    launch_after_lease_expiry(&mut controller, launch_at);
     assert!(controller.wait().unwrap().success());
     kubernetes.join().unwrap();
 
     let receipt_before = fixture.service.receipt(&fixture.run_id, now()).unwrap();
-    let outbox = fixture
-        .root
-        .join("runner-generations")
-        .join(format!("generation-{generation:020}/run/receipt-outbox"));
-    let outbox_path = fs::read_dir(outbox)
+    assert!(fs::read_dir(fixture.root.join("runner-generations"))
         .unwrap()
         .next()
-        .unwrap()
-        .unwrap()
-        .path();
-    assert_eq!(fs::read(outbox_path).unwrap(), receipt_before);
+        .is_none());
     let reports: i64 = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3"))
         .unwrap()
         .query_row(

@@ -20,8 +20,8 @@ use kapsel::{
 };
 use kapsel_sandbox::{
     AdmissionDisposition, CleanupAbsenceEvidence, CleanupObjectAbsence, CleanupRole, CleanupState,
-    DispatchLease, ExecutionState, ProvisionedObject, ProvisionedTarget, ProvisioningSpecification,
-    RetentionRole, Scenario, SchedulerRole, SchedulerStep, Service, ServiceError,
+    DispatchLease, ExecutionState, ProvisionedObject, ProvisioningSpecification, RetentionRole,
+    Scenario, SchedulerRole, SchedulerStep, Service, ServiceError,
 };
 use tower_test::mock;
 
@@ -60,15 +60,43 @@ fn verify_target(
     let specification = service
         .provisioning_specification(lease, now_unix_s)
         .unwrap();
+    let (boundary, behavior_records) = Service::cluster_boundary_specification().unwrap();
+    let boundary = kapsel_sandbox::ClusterBoundaryObservation {
+        objects: boundary
+            .into_iter()
+            .enumerate()
+            .map(|(index, object)| {
+                let mut body = object.canonical_body;
+                body["metadata"]["uid"] = serde_json::json!(format!("boundary-{index}"));
+                body["metadata"]["resourceVersion"] = serde_json::json!("17");
+                kapsel_sandbox::ObservedPolicyObject { body }
+            })
+            .collect(),
+        behavior_records,
+    };
+    let run_objects = specification
+        .required_objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            let mut body = object.canonical_body.clone();
+            body["metadata"]["uid"] = serde_json::json!(if index == 0 {
+                namespace_uid.to_owned()
+            } else {
+                format!("{namespace_uid}-object-{index}")
+            });
+            body["metadata"]["resourceVersion"] = serde_json::json!("17");
+            kapsel_sandbox::ObservedPolicyObject { body }
+        })
+        .collect();
     service
-        .verify_provisioned_target(
+        .verify_observed_cluster(
             lease,
-            &ProvisionedTarget {
-                namespace_uid: namespace_uid.into(),
-                policy_revision: specification.policy_revision.clone(),
-                policy_inventory_digest: specification.policy_inventory_digest.clone(),
-                cleanup_identity: specification.cleanup_identity.clone(),
-                objects: provisioned_objects(&specification, namespace_uid),
+            &kapsel_sandbox::ObservedClusterComposition {
+                boundary,
+                run_objects,
+                generated_children: Vec::new(),
+                owned_orphans: Vec::new(),
             },
             now_unix_s,
         )
@@ -103,6 +131,25 @@ fn cleanup_absence_from_database(
     namespace_uid: &str,
 ) -> CleanupAbsenceEvidence {
     let connection = rusqlite::Connection::open(database).unwrap();
+    let plan_digest = "a".repeat(64);
+    let observation_id = format!("observation-{run_id}");
+    connection
+        .execute(
+            concat!(
+                "UPDATE runs SET cleanup_attempt = cleanup_attempt + 1, ",
+                "cleanup_plan_digest = ?2, cleanup_plan_issued = 1, ",
+                "cleanup_pending_observation_id = ?3 WHERE run_id = ?1"
+            ),
+            rusqlite::params![run_id, plan_digest, observation_id],
+        )
+        .unwrap();
+    let cleanup_attempt = connection
+        .query_row(
+            "SELECT cleanup_attempt FROM runs WHERE run_id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     let mut statement = connection
         .prepare(
             "SELECT identity, uid, owner_label FROM provisioned_object_owners WHERE run_id = ?1",
@@ -135,7 +182,12 @@ fn cleanup_absence_from_database(
         .unwrap();
     CleanupAbsenceEvidence {
         namespace_uid: namespace_uid.to_owned(),
+        cleanup_epoch: format!("cleanup-{run_id}-1"),
+        cleanup_attempt,
+        plan_digest,
+        observation_id,
         objects,
+        owned_orphans: Vec::new(),
     }
 }
 
@@ -549,7 +601,7 @@ fn local_roles_recover_before_dispatch_and_release_only_after_exact_cleanup() {
     RetentionRole::new(service.clone())
         .run_once(NOW + 35)
         .unwrap();
-    let cleanup = CleanupRole::new(service);
+    let cleanup = CleanupRole::new(service.clone());
     let work = cleanup.next(NOW + 35).unwrap().unwrap();
     assert_eq!(work.run_id, first.run_id);
     assert_eq!(work.cleanup_identity, specification.cleanup_identity);
@@ -574,7 +626,14 @@ fn local_roles_recover_before_dispatch_and_release_only_after_exact_cleanup() {
         &first.run_id,
         "local-role-namespace-uid",
     );
-    cleanup.complete(&work, &exact_absence, NOW + 37).unwrap();
+    service
+        .complete_cleanup(
+            &work.run_id,
+            &work.cleanup_identity,
+            &exact_absence,
+            NOW + 37,
+        )
+        .unwrap();
     let second_lease = match restarted_scheduler.run_once(NOW + 37).unwrap() {
         SchedulerStep::Dispatched(lease) => lease,
         other => panic!("unexpected second dispatch: {other:?}"),
@@ -612,10 +671,7 @@ fn queued_age_does_not_consume_dispatch_window_or_block_fair_order() {
         .iter()
         .map(|object| object["identity"].as_str().unwrap())
         .collect::<Vec<_>>();
-    let runner_identity = format!(
-        "ServiceAccount/kapsel-sandbox-runners/runner-{}",
-        first.run_id
-    );
+    let runner_identity = format!("Role/sandbox-{}/sandbox-runner", first.run_id);
     let binding_identity = format!("RoleBinding/sandbox-{}/sandbox-runner", first.run_id);
     assert!(identities.contains(&runner_identity.as_str()));
     assert!(identities.contains(&binding_identity.as_str()));
@@ -712,97 +768,6 @@ fn serialized_dispatch_waits_for_prior_object_absence() {
     assert_eq!(
         service.dispatch_next(NOW + 5).unwrap().run_id,
         second.run_id
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn repeated_verification_keeps_historical_cleanup_ownership() {
-    let (root, service) = fixture("append-only-cleanup-ownership");
-    let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
-    let lease = service.dispatch_next(NOW + 1).unwrap();
-    let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
-    let namespace_uid = "append-only-namespace-uid";
-    let mut first_objects = provisioned_objects(&specification, namespace_uid);
-    first_objects.push(ProvisionedObject {
-        identity: format!("ConfigMap/{}/historical-extra", specification.namespace),
-        uid: "historical-extra-uid".into(),
-        owner_label: specification.cleanup_identity.clone(),
-        content_digest: "1".repeat(64),
-    });
-    let first_target = ProvisionedTarget {
-        namespace_uid: namespace_uid.into(),
-        policy_revision: specification.policy_revision.clone(),
-        policy_inventory_digest: specification.policy_inventory_digest.clone(),
-        cleanup_identity: specification.cleanup_identity.clone(),
-        objects: first_objects,
-    };
-    assert_eq!(
-        service.verify_provisioned_target(&lease, &first_target, NOW + 1),
-        Err(ServiceError::PolicyMismatch)
-    );
-    let mut overflow_objects = provisioned_objects(&specification, namespace_uid);
-    for (index, object) in overflow_objects.iter_mut().skip(1).take(5).enumerate() {
-        object.uid = format!("overflow-uid-{index}");
-    }
-    assert_eq!(
-        service.verify_provisioned_target(
-            &lease,
-            &ProvisionedTarget {
-                namespace_uid: namespace_uid.into(),
-                policy_revision: specification.policy_revision.clone(),
-                policy_inventory_digest: specification.policy_inventory_digest.clone(),
-                cleanup_identity: specification.cleanup_identity.clone(),
-                objects: overflow_objects,
-            },
-            NOW + 1,
-        ),
-        Err(ServiceError::PolicyMismatch)
-    );
-    verify_target(&service, &lease, namespace_uid, NOW + 1);
-    service
-        .record_setup_failure(&lease, &specification.cleanup_identity, NOW + 2)
-        .unwrap();
-    service
-        .start_cleanup(
-            &admission.run_id,
-            &specification.cleanup_identity,
-            namespace_uid,
-            NOW + 3,
-        )
-        .unwrap();
-    let complete = cleanup_absence_from_database(
-        &root.join("sandbox.sqlite3"),
-        &admission.run_id,
-        namespace_uid,
-    );
-    let mut current_only = complete.clone();
-    current_only
-        .objects
-        .retain(|object| object.uid != "historical-extra-uid");
-    assert_eq!(
-        service.complete_cleanup(
-            &admission.run_id,
-            &specification.cleanup_identity,
-            &current_only,
-            NOW + 4,
-        ),
-        Err(ServiceError::OwnershipMismatch)
-    );
-    service
-        .complete_cleanup(
-            &admission.run_id,
-            &specification.cleanup_identity,
-            &complete,
-            NOW + 4,
-        )
-        .unwrap();
-    assert_eq!(
-        service
-            .snapshot(&admission.run_id, NOW + 4)
-            .unwrap()
-            .cleanup_state,
-        CleanupState::Succeeded
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -1490,10 +1455,10 @@ async fn policy_deadline_and_scheduler_lease_fail_closed_before_application() {
     let admission = service.admit(&key(1), Scenario::Healthy, NOW).unwrap();
     let lease = service.dispatch_next(NOW + 1).unwrap();
     let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
-    assert_eq!(specification.policy_revision, "sandbox-policy-v2");
+    assert_eq!(specification.policy_revision, "sandbox-policy-v3");
     assert_eq!(specification.deadline_seconds, 180);
     assert_eq!(specification.deadline_at_unix_s, NOW + 181);
-    assert_eq!(specification.required_objects.len(), 11);
+    assert_eq!(specification.required_objects.len(), 10);
     assert_eq!(
         specification.required_objects[0].identity,
         format!("Namespace/sandbox-{}", admission.run_id)
@@ -1504,10 +1469,7 @@ async fn policy_deadline_and_scheduler_lease_fail_closed_before_application() {
     );
     assert_eq!(
         specification.required_objects[2].identity,
-        format!(
-            "ServiceAccount/kapsel-sandbox-runners/runner-{}",
-            admission.run_id
-        )
+        format!("Role/sandbox-{}/sandbox-runner", admission.run_id)
     );
     assert_eq!(
         service.recover_run(&admission.run_id, None, NOW + 2),
@@ -1533,42 +1495,48 @@ async fn policy_deadline_and_scheduler_lease_fail_closed_before_application() {
         service.provisioning_specification(&lease, NOW + 2),
         Err(ServiceError::LeaseBusy)
     );
-    let target = ProvisionedTarget {
-        namespace_uid: "policy-namespace-uid".into(),
-        policy_revision: specification.policy_revision.clone(),
-        policy_inventory_digest: specification.policy_inventory_digest.clone(),
-        cleanup_identity: specification.cleanup_identity.clone(),
-        objects: provisioned_objects(&specification, "policy-namespace-uid"),
+    let (boundary_objects, behavior_records) = Service::cluster_boundary_specification().unwrap();
+    let boundary = kapsel_sandbox::ClusterBoundaryObservation {
+        objects: boundary_objects
+            .into_iter()
+            .enumerate()
+            .map(|(index, object)| {
+                let mut body = object.canonical_body;
+                body["metadata"]["uid"] = serde_json::json!(format!("boundary-{index}"));
+                body["metadata"]["resourceVersion"] = serde_json::json!("17");
+                kapsel_sandbox::ObservedPolicyObject { body }
+            })
+            .collect(),
+        behavior_records,
     };
-    let mut missing = target.clone();
-    missing.objects.pop();
+    let mut run_objects = specification
+        .required_objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| {
+            let mut body = object.canonical_body.clone();
+            body["metadata"]["uid"] = serde_json::json!(if index == 0 {
+                "policy-namespace-uid".into()
+            } else {
+                format!("policy-object-{index}")
+            });
+            body["metadata"]["resourceVersion"] = serde_json::json!("17");
+            kapsel_sandbox::ObservedPolicyObject { body }
+        })
+        .collect::<Vec<_>>();
+    run_objects[6].body["spec"]["hard"]["pods"] = serde_json::json!("2");
     assert_eq!(
-        service.verify_provisioned_target(&recovered, &missing, NOW + 2),
+        service.verify_observed_cluster(
+            &recovered,
+            &kapsel_sandbox::ObservedClusterComposition {
+                boundary,
+                run_objects,
+                generated_children: Vec::new(),
+                owned_orphans: Vec::new(),
+            },
+            NOW + 2,
+        ),
         Err(ServiceError::PolicyMismatch)
-    );
-    let mut stale = target.clone();
-    stale.policy_revision = "sandbox-policy-stale".into();
-    assert_eq!(
-        service.verify_provisioned_target(&recovered, &stale, NOW + 2),
-        Err(ServiceError::PolicyMismatch)
-    );
-    let mut permissive = target.clone();
-    permissive.objects[6].content_digest = "0".repeat(64);
-    assert_eq!(
-        service.verify_provisioned_target(&recovered, &permissive, NOW + 2),
-        Err(ServiceError::PolicyMismatch)
-    );
-    let mut duplicate_uid = target.clone();
-    duplicate_uid.objects[1].uid = duplicate_uid.objects[0].uid.clone();
-    assert_eq!(
-        service.verify_provisioned_target(&recovered, &duplicate_uid, NOW + 2),
-        Err(ServiceError::OwnershipMismatch)
-    );
-    let mut wrong_owner = target;
-    wrong_owner.objects[7].owner_label = "cleanup-other".into();
-    assert_eq!(
-        service.verify_provisioned_target(&recovered, &wrong_owner, NOW + 2),
-        Err(ServiceError::OwnershipMismatch)
     );
     let (configuration, mut handle) =
         application_configuration(&root, &admission.run_id, Scenario::Healthy);

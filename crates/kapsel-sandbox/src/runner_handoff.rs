@@ -745,6 +745,31 @@ mod tests {
         }
     }
 
+    fn assert_runner_authority_denied(
+        service: &Service,
+        lease: &crate::DispatchLease,
+        now_unix_s: i64,
+        guard: &str,
+    ) {
+        assert_eq!(
+            service.recover_run(&lease.run_id, Some(lease), now_unix_s),
+            Err(crate::ServiceError::InvalidTransition),
+            "recovery guard {guard}"
+        );
+        assert!(
+            matches!(
+                service.handoff_assignment(lease, "127.0.0.1:1".parse().unwrap(), now_unix_s),
+                Err(crate::ServiceError::InvalidTransition)
+            ),
+            "assignment guard {guard}"
+        );
+        assert_eq!(
+            service.validate_runner_launch(lease, now_unix_s),
+            Err(crate::ServiceError::InvalidTransition),
+            "launch guard {guard}"
+        );
+    }
+
     fn private_directory(path: &std::path::Path) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::create_dir(path).unwrap();
@@ -986,30 +1011,43 @@ mod tests {
         let lease = service.dispatch_next(now + 1).unwrap();
         let specification = service.provisioning_specification(&lease, now + 1).unwrap();
         let namespace_uid = "expiry-namespace-uid";
-        let objects = specification
+        let (baseline, behavior_records) = Service::cluster_boundary_specification().unwrap();
+        let boundary = crate::ClusterBoundaryObservation {
+            objects: baseline
+                .into_iter()
+                .enumerate()
+                .map(|(index, object)| {
+                    let mut body = object.canonical_body;
+                    body["metadata"]["uid"] = serde_json::json!(format!("boundary-{index}"));
+                    body["metadata"]["resourceVersion"] = serde_json::json!("17");
+                    crate::ObservedPolicyObject { body }
+                })
+                .collect(),
+            behavior_records,
+        };
+        let run_objects = specification
             .required_objects
             .iter()
             .enumerate()
-            .map(|(index, object)| crate::ProvisionedObject {
-                identity: object.identity.clone(),
-                uid: if index == 0 {
+            .map(|(index, object)| {
+                let mut body = object.canonical_body.clone();
+                body["metadata"]["uid"] = serde_json::json!(if index == 0 {
                     namespace_uid.into()
                 } else {
                     format!("expiry-object-{index}")
-                },
-                owner_label: specification.cleanup_identity.clone(),
-                content_digest: object.content_digest.clone(),
+                });
+                body["metadata"]["resourceVersion"] = serde_json::json!("17");
+                crate::ObservedPolicyObject { body }
             })
-            .collect::<Vec<_>>();
+            .collect();
         service
-            .verify_provisioned_target(
+            .verify_observed_cluster(
                 &lease,
-                &crate::ProvisionedTarget {
-                    namespace_uid: namespace_uid.into(),
-                    policy_revision: specification.policy_revision.clone(),
-                    policy_inventory_digest: specification.policy_inventory_digest.clone(),
-                    cleanup_identity: specification.cleanup_identity.clone(),
-                    objects,
+                &crate::ObservedClusterComposition {
+                    boundary,
+                    run_objects,
+                    generated_children: Vec::new(),
+                    owned_orphans: Vec::new(),
                 },
                 now + 1,
             )
@@ -1068,6 +1106,68 @@ mod tests {
         service
             .commit_application_report(&replacement.identity(), &report, now + 86_402)
             .unwrap();
+        service.begin_runner_retirement(&admission.run_id).unwrap();
+        let retirement: (bool, bool, bool, bool, bool) = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                concat!(
+                    "SELECT runner_revoked, runner_process_absent, journal_handoff, ",
+                    "runner_state_retiring, handoff_credential_verifier = X'' FROM runs ",
+                    "WHERE run_id = ?1"
+                ),
+                [&admission.run_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(retirement, (true, true, true, true, true));
+        assert_runner_authority_denied(
+            &service,
+            &recovered,
+            now + 86_402,
+            "atomic retirement intent",
+        );
+        for guard in [
+            "runner_revoked",
+            "runner_state_retiring",
+            "runner_state_retired",
+        ] {
+            rusqlite::Connection::open(&database)
+                .unwrap()
+                .execute(
+                    &format!(
+                        concat!(
+                            "UPDATE runs SET runner_revoked = 0, runner_state_retiring = 0, ",
+                            "runner_state_retired = 0, {} = 1 WHERE run_id = ?1"
+                        ),
+                        guard
+                    ),
+                    [&admission.run_id],
+                )
+                .unwrap();
+            assert_runner_authority_denied(&service, &recovered, now + 86_402, guard);
+        }
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute(
+                concat!(
+                    "UPDATE runs SET runner_revoked = 1, runner_process_absent = 1, ",
+                    "journal_handoff = 1, runner_state_retiring = 1, ",
+                    "runner_state_retired = 0 WHERE run_id = ?1"
+                ),
+                [&admission.run_id],
+            )
+            .unwrap();
+        service
+            .commit_runner_state_retired(&admission.run_id)
+            .unwrap();
         assert!(std::fs::read_dir(&receipt_directory)
             .unwrap()
             .next()
@@ -1115,9 +1215,38 @@ mod tests {
             .unwrap();
         drop(statement);
         drop(connection);
+        let plan_digest = "a".repeat(64);
+        let cleanup_attempt = service
+            .begin_cleanup_attempt(
+                &admission.run_id,
+                &specification.cleanup_identity,
+                &plan_digest,
+            )
+            .unwrap();
+        service
+            .mark_cleanup_plan_issued(
+                &admission.run_id,
+                &specification.cleanup_identity,
+                cleanup_attempt,
+                &plan_digest,
+            )
+            .unwrap();
+        let observation_id = service
+            .begin_cleanup_observation(
+                &admission.run_id,
+                &specification.cleanup_identity,
+                cleanup_attempt,
+                &plan_digest,
+            )
+            .unwrap();
         let absence = crate::CleanupAbsenceEvidence {
             namespace_uid: namespace_uid.into(),
+            cleanup_epoch: format!("cleanup-{}-1", admission.run_id),
+            cleanup_attempt,
+            plan_digest,
+            observation_id,
             objects,
+            owned_orphans: Vec::new(),
         };
         service
             .complete_cleanup(

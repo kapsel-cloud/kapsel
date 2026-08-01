@@ -1,9 +1,9 @@
 # Public sandbox deployment contract
 
-Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0), Gate 1 Slice 1
-serialized capacity/local roles, and Gate 1 Slice 2 native runner host boundary are accepted. Gate 1
-Slices 3–6 remain. No provider, credential, resource, spend, image push, endpoint, DNS, private live
-command, or public traffic is authorized.
+Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0) and Gate 1
+Slices 1–3 are accepted after the focused Slice 3 correction. Slices 4–6 remain. No provider,
+credential, resource, spend, image push, endpoint, DNS, private live command, or public traffic is
+authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
@@ -50,8 +50,10 @@ concrete process-local scheduler, retention, and cleanup role sequencing. Accept
 fixed reviewed C pre-exec helper, individual `SCM_RIGHTS` input descriptors, fresh crash-convergent
 generations, and a private cgroup-v2 process-tree boundary. Its durable allocation/restart record,
 production controller composition, denial matrix, exact Linux gate, both-sided publication seams,
-and fresh reviews passed. Host key staging, cluster policy, complete backup/restore, and live
-isolation remain planned KAP-0070 work and are not established merely by this contract.
+and fresh reviews passed. Accepted Slice 3 compiles the deterministic provider-neutral cluster-
+policy, conditional-mutation, fixed-authority bounded cleanup, atomic runner retirement, and fail-
+closed static policy composition. Host key staging, complete backup/restore, and live isolation
+remain planned KAP-0070 work; deterministic records do not establish live Kubernetes enforcement.
 
 ## Authorization gates
 
@@ -111,8 +113,8 @@ One active reservation is held from dispatch until all applicable facts are dura
 - the terminal report and, when finalized, frozen receipt bytes completed authenticated handoff;
 - operation, deadline, transport, and receipt-availability facts were projected separately;
 - cleanup has observed absence of every exact recorded UID/owner object; and
-- runner authority is revoked, the process is absent, and the journal/outbox reached its owned
-  retention handoff.
+- runner authority is revoked, the process/cgroup is absent, the journal/outbox reached its owned
+  retention handoff, and the fenced generation is explicitly retired before capacity release.
 
 No subsequent run dispatches before that release transaction. The implemented serial scheduler
 recovers the sole active reservation before considering the oldest queued run; reopen and dispatch
@@ -196,25 +198,241 @@ execution. Ambiguous acknowledgment or any gateway state requires `Application::
 same operation. Loss before invocation, after its durable acknowledgment, after `apply_started`,
 after terminal report, or on either side of receipt publication must converge without a blind second
 mutation. An old process is killed and its OS identity, lease, descriptors, and credential are
-revoked before replacement can run. At most one runnable journal and runner generation exists.
+revoked before replacement can run. Retained recovery state is accepted only for the same run and
+operation before any launch side effect. After terminal or `not_attempted` handoff, the controller
+atomically commits revocation, process absence, journal handoff, verifier clearing, and durable
+retirement intent, then removes that run's fenced journal/outbox and durable generation record, and
+finally commits runner-state retirement before cleanup may release capacity. On restart, the
+controller converges the sole active retiring or retired run before scheduler lease recovery, grants
+no authority during that preflight, and fails closed if active capacity is not singular. It
+therefore completes an interrupted intent without launching the terminal run again under either an
+unexpired or expired prior lease. A different run fails closed while any retained state exists. At
+most one runnable journal and runner generation exists.
 
 ## Cluster and conditional operation
 
-Exactly one policy-complete run namespace may exist in the dedicated synthetic cluster. Before
-`Application` invocation the controller verifies the complete admission-frozen inventory and exact
-content for namespace ownership, runtime boundary, target and service accounts, runner/cleanup RBAC,
-quota, limits, default-deny and explicitly allowed network policy, metadata denial, immutable image,
-deadline, canary separation, and object-count ceiling. Missing, stale, permissive, substituted,
-extra, or fallback policy fails closed. A sandboxed runtime or independently equivalent boundary and
-actual network enforcement require Gate 3 evidence; namespace manifests alone are insufficient.
+### Slice 3 scope and compatibility profile
 
-The runner credential may submit one conditional strategic merge patch only when namespace,
-Deployment name, Deployment UID, owner, resource version, named container, and current image match
-verified preconditions. The patch may replace only that container image with the server-selected
-immutable digest and add or preserve the required `kapsel.dev/kap0038-operation-id` Deployment
-annotation. The annotation is the sole metadata exception required for KAP-0038 recovery. Every
-other annotation, field, container, image, owner, security setting, volume, account, and object
-remains unchanged. Conflicts fail without forcing or blind retry.
+Slice 3 freezes one deterministic provider-neutral model. It performs no provider, registry, image,
+credential, cluster, endpoint, DNS, or network action. The later Gate 2 fixture must select a
+cluster that implements the stable `v1`, `apps/v1`, `rbac.authorization.k8s.io/v1`,
+`networking.k8s.io/v1`, and `node.k8s.io/v1` resources used by the model, the exact ResourceQuota
+count keys below, Pod Security `restricted` version `v1.35`, UID-preconditioned deletion, immutable
+UID/resource-version facts and one admission implementation for the three closed rules below. This
+is a required behavior profile, not a provider or Kubernetes-version selection.
+
+The dedicated cluster contains no customer or production workload and permits one run namespace at a
+time. Its exact runtime-class name and handler are `kapsel-sandbox-runtime-v1` and
+`kapsel.dev/sandbox-runtime-v1`; its fixed network-enforcement evidence identity is
+`kapsel-sandbox-network-v1`. The three exact admission rules are `composition-v1`,
+`conditional-operation-v1`, and `cleanup-v1`. Their checked-in canonical provider-neutral behavior
+records are respectively `deploy/sandbox/composition-admission-rule.json`,
+`operator-admission-rule.json`, and `cleanup-admission-rule.json`; `network-boundary-record.json`
+closes the separate network evidence identity. They are not Kubernetes objects. Their exact bytes
+and SHA-256 digests are deployment inputs, and Gate 2 must map each record and the network identity
+to one enforced implementation without fallback. The controller verifies one bounded
+`ClusterBoundaryEvidence` containing the runtime object UID and canonical digest, network
+identity/readiness digest, all three admission-rule digests, baseline digest, and canary UIDs before
+each run. Missing, renamed, unready, stale, or multiply mapped runtime, CNI, admission, account, or
+policy evidence blocks provisioning. These records and rendered objects are not live enforcement
+evidence; Gate 3 must prove the selected implementations.
+
+### Closed cluster inventory and bootstrap
+
+Policy revision `sandbox-policy-v3` owns three disjoint inventories. Every Kapsel-created object
+carries exact labels `kapsel.dev/policy-revision=sandbox-policy-v3` and
+`kapsel.dev/sandbox-owner=<owner>`. Server-created `default` ServiceAccounts are verified to have no
+binding and are never used by a Pod, but are system-owned rather than relabelled or inventoried.
+
+A separately gated `kapsel-sandbox-bootstrap` operator creates the immutable baseline in this order:
+the RuntimeClass; the three authority Namespaces; ServiceAccounts `kapsel-sandbox-provisioner`,
+`kapsel-sandbox-runner`, and `kapsel-sandbox-cleanup` in their corresponding Namespaces; the two
+ClusterRoles; then their two bindings. It then creates and verifies the canary Namespace and
+ConfigMap before recording readiness. Bootstrap verifies exact content and is absent during service
+operation. The runtime provisioner cannot create, update, patch, bind, escalate, or delete a
+RuntimeClass, ClusterRole, ClusterRoleBinding, baseline Namespace, baseline ServiceAccount, canary,
+or admission-rule record.
+
+| Inventory                  | Exact Kapsel-owned objects and canonical content                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Count and owner                                                                                                             |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Immutable cluster baseline | `RuntimeClass/kapsel-sandbox-runtime-v1` with handler `kapsel.dev/sandbox-runtime-v1` and no overhead or scheduling; Namespaces `kapsel-sandbox-provisioner`, `kapsel-sandbox-runners`, and `kapsel-sandbox-cleanup`; ServiceAccounts `kapsel-sandbox-provisioner`, `kapsel-sandbox-runner`, and `kapsel-sandbox-cleanup` in their corresponding Namespaces with `automountServiceAccountToken=false`; ClusterRoles and ClusterRoleBindings `kapsel-sandbox-provisioner-v1` and `kapsel-sandbox-cleanup-v1` with the exact rules and subjects below | Exactly 11. Owner `kapsel-cluster-baseline`. Never visitor cleanup candidates. Any drift blocks readiness.                  |
+| Operator canary            | `Namespace/kapsel-sandbox-canary`; `ConfigMap/kapsel-sandbox-canary/isolation-canary` with exact data `sentinel=kapsel-sandbox-canary-v1`                                                                                                                                                                                                                                                                                                                                                                                                           | Exactly 2. Owner `kapsel-operator-canary`. Never a provisioning, mutation, or cleanup candidate.                            |
+| One run                    | The ten explicit objects below plus at most two live Deployment-owned ReplicaSets and one live Pod                                                                                                                                                                                                                                                                                                                                                                                                                                                  | At most 13 live Kapsel-owned objects. Owner `cleanup-<run_id>`. Every observed run UID is an append-only cleanup candidate. |
+
+The peak modeled composition is 31 live objects: 26 Kapsel-owned objects plus the five
+server-created `default` ServiceAccounts for the baseline, canary, and run Namespaces. At most ten
+are cluster-scoped: one RuntimeClass, two ClusterRoles, two ClusterRoleBindings, and five
+Namespaces. The append-only per-run cleanup inventory is independently bounded to 64 unique UIDs
+over the 180-second run and cleanup lifetime. Exceeding it fails closed, holds capacity, and
+escalates; it never authorizes name-only deletion. Gate 2 must inventory unavoidable
+provider-managed objects separately; they cannot carry a Kapsel owner label or become visitor
+cleanup candidates.
+
+The provisioner ClusterRole has exactly these rules: `get/list` RuntimeClasses, ClusterRoles,
+ClusterRoleBindings, baseline/canary Namespaces and their fixed ServiceAccounts, and the canary
+ConfigMap; `get/list/create` Namespaces; `get/list/create` ServiceAccounts, ResourceQuotas,
+LimitRanges, Roles, RoleBindings, NetworkPolicies, and Deployments; `get/list` ReplicaSets and Pods;
+and the minimum `bind/escalate` authority for Roles named `sandbox-runner` and `sandbox-cleanup`.
+The composition admission rule reduces that temporary union authority to one canonical run inventory
+and rejects every baseline/canary change. After the final full observation, the controller durably
+closes the provisioning generation, revokes its raw credential, and admission rejects every further
+run create/update before runner authority or cleanup can proceed.
+
+The fixed runtime accounts are
+`system:serviceaccount:kapsel-sandbox-provisioner:kapsel-sandbox-provisioner`,
+`system:serviceaccount:kapsel-sandbox-runners:kapsel-sandbox-runner`, and
+`system:serviceaccount:kapsel-sandbox-cleanup:kapsel-sandbox-cleanup`. The run Role `sandbox-runner`
+permits exactly `get/patch` on `deployments.apps` with `resourceNames=["sandbox-target"]`. The run
+Role `sandbox-cleanup` permits `get/list/delete` only for the explicit run inventory and
+Deployment-generated children. It has no Secret, ConfigMap, Service, EndpointSlice, PVC, or Job read
+authority. Exact ResourceQuota counts and fail-closed admission establish the forbidden-kind zero
+facts without granting either runtime role payload read authority. Admission denies later creation
+throughout cleanup, so payload-bearing kinds are never exposed to the cleanup role. The fixed
+cleanup ClusterRole permits `get/delete` Namespaces and `get/delete` Roles and RoleBindings with
+`resourceNames=["sandbox-cleanup"]`; `cleanup-v1` rejects any delete without the exact closed
+cleanup epoch, namespace, owner, revision, and UID precondition. It grants no list of cluster-scoped
+objects. The cleanup subject is the fixed cleanup account. The target ServiceAccount has no Role or
+binding and receives no API token.
+
+The three admission rules fail closed and have no audit-only action. `composition-v1` permits only
+the bootstrap baseline, operator canary, one canonical provisioner generation, exact Deployment-
+controller children derived from its owner references and Pod template, and cleanup deletes; it
+rejects runtime fallback, default-account Pod use, token automount, extra fields/objects, and any
+baseline/canary mutation by a runtime identity. `conditional-operation-v1` accepts only the exact
+old/new Deployment comparison below from the fixed runner account. `cleanup-v1` accepts only exact
+UID-preconditioned deletion of a recorded object after provisioning and runner generations are
+closed. The focused rule fixtures are the normative canonical behavior records; Gate 2 owns their
+mapping to one concrete admission implementation.
+
+### Exact run namespace inventory
+
+For run `<run_id>`, the namespace is `sandbox-<run_id>`, the cleanup owner is `cleanup-<run_id>`,
+and every explicit object is canonical JSON rendered by the compile-time policy module in this exact
+semantic order:
+
+1. Namespace with the run, cleanup-owner, policy-revision, and Pod Security
+   `enforce=restricted`/`enforce-version=v1.35` labels;
+2. `ServiceAccount/sandbox-target` with `automountServiceAccountToken=false`;
+3. `Role/sandbox-runner` and `RoleBinding/sandbox-runner` for the fixed runner account and exact
+   Deployment `get`/`patch` authority;
+4. `Role/sandbox-cleanup` and `RoleBinding/sandbox-cleanup` for the fixed cleanup account and the
+   exact metadata scan and recorded-object deletion rules above;
+5. `ResourceQuota/sandbox-quota` with exact hard keys and values: `count/deployments.apps=1`,
+   `count/replicasets.apps=2`, `pods=1`, `count/serviceaccounts=2`,
+   `count/roles.rbac.authorization.k8s.io=2`, `count/rolebindings.rbac.authorization.k8s.io=2`,
+   `count/resourcequotas=1`, `count/limitranges=1`, `count/networkpolicies.networking.k8s.io=1`,
+   `count/configmaps=0`, `count/secrets=0`, `count/services=0`,
+   `count/endpointslices.discovery.k8s.io=0`, `count/jobs.batch=0`, and
+   `count/persistentvolumeclaims=0`; aggregate requests are CPU `200m`, memory `64Mi`, ephemeral
+   storage `32Mi`, and limits are CPU `500m`, memory `128Mi`, ephemeral storage `128Mi`;
+6. `LimitRange/sandbox-limits`, requiring each container to request at least CPU `10m`, memory
+   `16Mi`, and ephemeral storage `1Mi`, and limiting each to CPU `250m`, memory `64Mi`, and
+   ephemeral storage `64Mi`;
+7. one `NetworkPolicy/default-deny` selecting every Pod with both `Ingress` and `Egress` policy
+   types and no allow rules; and
+8. `Deployment/sandbox-target` as frozen below.
+
+There is no Service, DNS allowance, ConfigMap, Secret, volume, init container, ephemeral container,
+or other run object. The system-owned `default` ServiceAccount may exist only without a RoleBinding;
+admission rejects every Pod that names it or enables token automount. ResourceQuota limits live
+Deployment children to two ReplicaSets and one Pod, but does not claim a lifetime UID ceiling. Every
+child seen during provisioning, mutation observation, cleanup selection, or the fixed owner-marker
+scan is appended by exact UID; a final scan appends every then-live child before deletion.
+Historical rows already absent are valid absence facts. More than 64 unique rows fails closed and
+holds capacity.
+
+Cleanup uses exact UID-preconditioned `DeleteOptions`. It first stops the Deployment controller with
+`propagationPolicy=Orphan`, then processes ReplicaSets in ascending `(name, UID)` order with
+`propagationPolicy=Orphan`, then deletes Pods child-first, followed by the NetworkPolicy, target
+ServiceAccount, ResourceQuota, LimitRange, runner RoleBinding/Role, and cleanup RoleBinding/Role.
+The fixed cleanup ClusterRole permits the final cleanup Role/Binding deletions after their
+namespaced binding disappears. It deletes the Namespace last with its recorded UID and
+`propagationPolicy=Foreground`; the system-owned `default` ServiceAccount is removed only by that
+Namespace deletion. Every other delete uses `propagationPolicy=Background`. A replacement between
+observation and deletion conflicts on the API-server UID precondition and is never retried by name.
+
+### Fixed workload and normalization
+
+The Deployment has one replica, `progressDeadlineSeconds=30`, `revisionHistoryLimit=0`, strategy
+`Recreate`, selector `app.kubernetes.io/name=sandbox-target`, the exact target account,
+`runtimeClassName=kapsel-sandbox-runtime-v1`, no token, service links disabled, and a five-second
+termination grace period. Deployment and Pod-template labels include the app name, run ID,
+cleanup-owner, and policy revision so ReplicaSets and Pods inherit the complete owner identity. The
+Deployment annotations freeze `kapsel.dev/policy-inventory-digest` and exact
+`kapsel.dev/selected-image`; neither may change. Pod security fixes non-root UID/GID 65532 and
+`RuntimeDefault` seccomp. Its exact ordered containers are `target` then `untargeted`. Both start
+from
+`registry.k8s.io/pause@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c`, run
+only `[/pause]`, use `imagePullPolicy=IfNotPresent`, request CPU `100m`, memory `32Mi`, and
+ephemeral storage `16Mi`, and limit CPU `250m`, memory `64Mi`, and ephemeral storage `64Mi`. Each
+drops all capabilities, forbids privilege escalation, runs non-root, and has a read-only root.
+
+Only `target` may change. The healthy requested image is
+`registry.k8s.io/pause@sha256:8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c`; the
+unavailable-image request is
+`registry.k8s.io/pause@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff`.
+`untargeted` remains at the initial digest. Privileged mode, host PID/IPC/network, host paths,
+writable root, added capability, service-account token, ambient credential, mutable tag, another
+container, init/ephemeral container, volume, device, port, probe, lifecycle hook, or unapproved
+field is forbidden.
+
+Canonical observation removes only server identity/status fields `metadata.uid`, `resourceVersion`,
+`generation`, `creationTimestamp`, `managedFields`, and `selfLink`, plus `status`. It may normalize
+only these exact server defaults when they have the stated value: Namespace
+`spec.finalizers=["kubernetes"]` and label `kubernetes.io/metadata.name=<exact namespace>`;
+ServiceAccount `secrets=[]`; Deployment `minReadySeconds=0`, `paused=false`, Pod-template
+`creationTimestamp=null`, Pod `dnsPolicy=ClusterFirst`, `restartPolicy=Always`,
+`schedulerName=default-scheduler`, alias `serviceAccount=sandbox-target`, and for each fixed
+container `terminationMessagePath=/dev/termination-log` and `terminationMessagePolicy=File`. The
+explicit `Recreate` strategy is not a default and may not change. Absence of an expected field, a
+changed named default, or any unknown server-added default fails closed.
+
+### Pre-invocation composition verification
+
+The controller-owned provisioner consumes bounded deterministic Kubernetes responses, never
+caller-supplied digests. Each request has a ten-second deadline, each response is capped at 2 MiB in
+the HTTP service before kube deserialization, each list has at most the applicable closed-inventory
+count, and one complete cleanup attempt has a 30-second deadline. It derives kind, namespace, name,
+immutable UID, owner, revision, and the canonical content digest; rejects duplicate, missing, extra,
+stale-revision, wrong-digest, wrong-owner, wrong-UID, cross-run, fallback-runtime, widened-RBAC,
+quota/limit, network, workload, default, canary, baseline, or generated-child evidence. Observed
+objects are keyed by exact kind/namespace/name, duplicates are rejected before canonical identity
+sorting, and only container and cleanup-plan order are semantic. Owner-marker scans cover only run
+kinds readable by the fixed provisioner or cleanup role. Secrets, Services, EndpointSlices,
+PersistentVolumeClaims, Jobs, and other forbidden payload-bearing kinds remain zero through exact
+quota plus fail-closed admission; neither runtime role receives cluster-wide read authority merely
+to prove absence. The bootstrap baseline scan owns RuntimeClass, Namespace, ClusterRole, and
+ClusterRoleBinding drift.
+
+One transaction appends every exact run-owned UID/owner row and commits the verified revision,
+inventory digest, namespace UID, Deployment UID/resource version/current target image, complete
+canonical Deployment digest, zero-owned-orphan observation, durable baseline/canary UID digest, and
+closed provisioning generation. A later UID substitution under the same baseline/canary identity and
+body fails closed. Before that commit, the controller revokes and fences the raw provisioner
+credential; after it, `composition-v1` denies recreation or mutation by that generation. Only then
+may the Slice 2 runner host receive authority or `Application` begin. Rejection creates no
+invocation marker, gateway journal, provider request, receiver result, receipt, or capacity release;
+owned rows remain append-only for cleanup.
+
+### Exact conditional mutation
+
+The controller's final full composition verification and closed provisioner generation are durable
+pre-launch facts; the patch-time admission rule does not claim to reread other objects. The runner
+may submit one conditional strategic merge patch only when the Deployment-local frozen facts still
+match: run and operation identity; namespace and Deployment name; immutable Deployment UID;
+cleanup-owner marker; policy revision; inventory and canonical Deployment digest annotations;
+resource version; unique `target` container; current initial immutable image; and the exact
+selected-image annotation. KAP-0038 commits `apply_started` with the UID, resource version,
+strategy, and attempt marker before this request.
+
+The new canonical Deployment may differ only at `spec.template.spec.containers[name=target].image`
+and `metadata.annotations[kapsel.dev/kap0038-operation-id]`. Every other field, annotation, label,
+container, image, owner, security setting, volume, account, and object remains canonically equal.
+The response must preserve the Deployment UID and return a resource version. Missing or wrong
+precondition, unknown default, admission denial/ambiguity, conflict, timeout, or transport failure
+is never forced and never causes a second patch. After `apply_started`, recovery is
+observation-only; no request or transport fact becomes receiver `SUCCEEDED` or `FAILED`, and
+insufficient receiver facts remain `UNKNOWN`.
 
 The target carries no Kubernetes or host authority. The runner and the most compromised target
 posture must be denied metadata, other namespaces, the operator canary, unrelated objects, cleanup
@@ -279,18 +497,56 @@ reconciliation, stale-process denial, ownership scan, and cleanup before admissi
 
 ## UID- and owner-safe cleanup
 
-The controller keeps an append-only inventory of every owned cluster object with kind, namespace,
-name, immutable UID, and owner marker. The cleanup credential observes and deletes external objects
-before their namespace, only when UID and owner both match. A reused name, wrong UID/owner,
-unrecorded object, unavailable API, or stuck finalizer fails closed and retries durably. The
-operator-owned canary and unrelated resources are never cleanup candidates.
+The controller keeps the append-only 64-row maximum inventory described above with exact kind,
+namespace, name, immutable UID, and cleanup owner. Before `CleanupRole` selects work, durable
+service state must record closed/revoked provisioning authority, Slice 2 runner credential
+revocation, cgroup/process absence, journal/outbox retention handoff, and explicit fenced-generation
+retirement. `CleanupWork` contains only those durable facts, the cleanup epoch, namespace UID, and
+the complete ordered inventory; the observer accepts no caller-selected object, patch, delete,
+credential, observation, or lifecycle input. The production entry is one closed cleanup attempt: it
+lists and appends valid generated children, reloads durable work, GETs every recorded object, scans
+the exact owner marker, derives and durably binds one private canonical delete plan, recomputes its
+digest immediately before issue, executes it, and performs the fresh post-plan observation. Neither
+the plan type nor its request fields are publicly re-exported.
 
-Cleanup success requires a fresh absence observation for every inventory row, no remaining owned
-orphan, namespace absence, revoked runner credential, terminated runner process, and the journal
-retention handoff. A confirmed pre-creation failure may use the existing explicit
-confirmed-no-resource path; it cannot invent absence evidence. Public expiry and client abandonment
-never release cleanup ownership or capacity. The 15-minute escalation is an operator fact, not a
-receiver outcome or permission for unsafe deletion.
+The concrete cleanup observer uses only the fixed cleanup credential. For each child in the frozen
+order it performs a bounded observation, compares exact kind/namespace/name/UID/owner/revision, and
+only then issues deletion for that object. It never changes an image or annotation and never uses
+runner authority. The Namespace is observed and deleted last under the fixed cleanup admission
+backstop. Every delete carries `preconditions.uid=<recorded UID>` and the frozen propagation policy;
+a reused name therefore conflicts atomically. Wrong UID or owner, an observation that omits an
+inventory row, duplicate, changed order, extra current-run-owned orphan, canary or unrelated object,
+unsupported kind, response above 2 MiB before deserialization, ten-second request timeout, 30-second
+attempt timeout, unavailable API, deletion conflict, or object/finalizer still present at the
+bounded deadline fails closed through the existing coalesced `CleanupRole::fail` transition. An
+exact recorded object already absent is accepted as absence, not as missing inventory.
+
+Every retry reselects the same work from durable state and is restart-safe. The first failure emits
+at most one public cleanup-failed fact; exactly one durable operator escalation becomes due after 15
+minutes from cleanup start. Retry, timeout, API failure, and escalation never alter `not_attempted`,
+`SUCCEEDED`, `FAILED`, `UNKNOWN`, or frozen receipt bytes.
+
+Success requires a new cleanup observation after the last delete attempt. Its one bounded snapshot
+proves every append-only row absent with the exact recorded tuple, zero objects carrying the run
+cleanup-owner marker across every supported kind, and Namespace absence. Evidence is stale unless
+its cleanup epoch equals the current durable post-provisioning-fence epoch, its durable cleanup-
+attempt sequence and request-list digest equal the latest deletion plan, the role has durably
+recorded that every request in that exact plan was issued, and its service-issued post-plan
+observation identifier has not previously been consumed. Only after those checks does the concrete
+cleanup role invoke its bounded observer and derive ordered absence evidence; callers do not supply
+or relabel the plan bytes, attempt, digest, or observation identity. Execution recomputes the digest
+of the exact canonical request bytes and rejects any mismatch before a Kubernetes request. A later
+plan invalidates evidence from an earlier attempt. Whole-second time is recorded for bounded
+operations but is not causal freshness. Admission denies recreation throughout the closed epoch.
+Capacity release rechecks the provisioning fence, runner revocation, process/cgroup absence, journal
+handoff, runner-state retirement, exact-row absence, zero orphan, and Namespace absence in the same
+transaction that commits cleanup success. Present or stale evidence releases nothing.
+
+The existing confirmed-no-resource path remains valid only when the provisioner durably proves that
+failure occurred before creating any Kubernetes object, before recording a Namespace UID, and before
+`Application` invocation. It cannot invent absence. Public expiry and client abandonment never
+release cleanup ownership or capacity. The operator canary, baseline, and unrelated resources are
+never cleanup candidates.
 
 ## Crash-consistent backup, restore, and rollback
 

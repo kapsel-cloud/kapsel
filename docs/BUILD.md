@@ -418,6 +418,21 @@ all mutation beyond the selected image and operation annotation, and asserts tha
 CLI modes, artifacts, and Make tasks are absent. It uses no Docker, provider, credential, resource,
 or network.
 
+Run the focused provider-neutral cluster-policy lane with:
+
+```sh
+cargo make test-sandbox-cluster-policy
+```
+
+It derives the closed baseline, explicit and generated run inventory, conditional Deployment
+comparison, and UID-safe cleanup plan from bounded in-process object bodies. It also proves private
+plan integrity before any request, one fixed-authority closed cleanup operation, durable cleanup
+failure, ten-second request and 30-second attempt deadlines, and the 2 MiB pre-deserialization body
+cap for content-length, chunked, and close-delimited responses. In-memory mocks and loopback HTTP
+fixtures verify exact delete/observation behavior. It uses no Docker, kind, network, registry,
+provider, credential, or live cluster. It does not prove runtime, CNI, RBAC, admission, metadata, or
+network enforcement in Kubernetes.
+
 Run the focused deterministic one-active and concrete local-role proof with:
 
 ```sh

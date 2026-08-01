@@ -1,17 +1,21 @@
 # Sandbox topology-neutral preservation fixtures
 
-This directory contains only two Gate 0 fixtures. They preserve the exact conditional
-`kubernetes.set_deployment_image` mutation invariant without describing a runnable host, cluster,
-provider, image, credential, or deployment:
+This directory contains the retained Gate 0 mutation pair plus the three canonical Slice 3
+provider-neutral behavior records. They describe no runnable host, cluster, provider, image,
+credential, or deployment:
 
 - `admission-fixture.json` fixes the old Deployment, exact UID/owner/resource-version/current-image
   preconditions, selected named container, immutable replacement image, and KAP-0038 operation ID;
-- `operator-admission-rule.json` fixes the provider-neutral runner identity, required preconditions,
-  and the only two permitted changes: the selected container image and required operation
-  annotation.
+- `operator-admission-rule.json` fixes `conditional-operation-v1`, the full runner identity,
+  digest-bound old Deployment, and the only two permitted changes;
+- `composition-admission-rule.json` fixes the fail-closed admission-visible provisioner generation
+  and cleanup epoch behavior; and
+- `cleanup-admission-rule.json` fixes UID-preconditioned, propagation-bound cleanup behavior; and
+- `network-boundary-record.json` fixes ready/default-deny/metadata/API/arbitrary-egress denial with
+  no fallback.
 
-Validate both fixtures and the KAP-0070 Gate 0 deletion boundary with no Docker, provider, network,
-credential, or live resource:
+Validate the mutation fixtures and the KAP-0070 Gate 0 deletion boundary with no Docker, provider,
+network, credential, or live resource:
 
 ```sh
 cargo make test-sandbox-preservation
@@ -23,5 +27,6 @@ asserts that superseded controller/stager source, CLI modes, deployment/provider
 and Make tasks are absent while the retained public contract, service/handoff, and package boundary
 remain.
 
-These fixtures are preservation evidence only. They do not implement or authorize KAP-0070 Gate 1
-host composition, runner identity enforcement, cluster admission, an image, or live behavior.
+These records are deterministic composition evidence only. They do not prove runtime, CNI, RBAC,
+admission, metadata, or network enforcement and authorize no provider, registry, credential, image,
+cluster, endpoint, DNS, or traffic.

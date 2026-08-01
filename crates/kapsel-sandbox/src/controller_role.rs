@@ -196,17 +196,25 @@ impl ControllerRole {
             .as_ref()
             .ok_or(ControllerError::Inactive)?
             .clone();
-        // Slice 2 never provisions a target. A freshly dispatched run therefore stops here until
-        // the separately gated provisioning role has durably verified the complete target policy.
-        // Already-invoked recovery remains eligible after its ordinary execution deadline.
+        // Fresh dispatch remains blocked until Slice 3 policy verification closes provisioning.
+        // Already-invoked same-run recovery remains eligible after its ordinary deadline.
         self.service.validate_runner_launch(&lease, now_unix_s)?;
         let assignment = self.service.handoff_assignment(
             &lease,
             self.configuration.handoff_endpoint,
             now_unix_s,
         )?;
-        stage_handoff_inputs(&self.configuration.input_directory, &assignment)?;
         self.open_host()?;
+        let retained_identity = self
+            .host
+            .as_ref()
+            .and_then(crate::runner_host::RunnerHost::retained_identity);
+        if retained_identity.is_some_and(|(run_id, operation_id)| {
+            run_id != lease.run_id || operation_id != assignment.operation_id
+        }) {
+            return Err(ControllerError::Boundary);
+        }
+        stage_handoff_inputs(&self.configuration.input_directory, &assignment)?;
         let host = self.host.as_mut().ok_or(ControllerError::Boundary)?;
         let generation = if host.active().is_some() {
             host.replace(&lease.run_id, &assignment)?.generation()
@@ -233,20 +241,51 @@ impl ControllerRole {
     ///
     /// Returns a service, boundary, process, or inactive-role failure for the concrete step.
     pub fn run_once(&mut self, now_unix_s: i64) -> Result<Option<&ControllerRun>, ControllerError> {
+        if let Some(run_id) = self.service.sole_active_run()? {
+            if self.converge_runner_retirement(&run_id)? {
+                self.scheduled = None;
+                self.active = None;
+                return Ok(None);
+            }
+        }
         match self.schedule_once(now_unix_s)? {
             SchedulerStep::Waiting => Ok(None),
-            SchedulerStep::Active(_) if self.active.is_none() => {
+            SchedulerStep::Active(lease) if self.active.is_none() => {
                 // Opening the durable boundary fences any recorded generation before this role
                 // waits for a fresh recovery lease. The still-active scheduler lease is never used
                 // to launch a replacement with stale raw authority.
                 self.open_host()?;
+                self.converge_runner_retirement(&lease.run_id)?;
                 Ok(None)
             },
             SchedulerStep::Active(_) => Ok(self.active.as_ref()),
-            SchedulerStep::Recovered(_) | SchedulerStep::Dispatched(_) => {
-                self.launch_scheduled(now_unix_s).map(Some)
+            SchedulerStep::Recovered(lease) | SchedulerStep::Dispatched(lease) => {
+                if self.converge_runner_retirement(&lease.run_id)? {
+                    Ok(None)
+                } else {
+                    self.launch_scheduled(now_unix_s).map(Some)
+                }
             },
         }
+    }
+
+    fn converge_runner_retirement(&mut self, run_id: &str) -> Result<bool, ControllerError> {
+        let (retiring, retired) = self.service.runner_retirement_state(run_id)?;
+        if retired {
+            return Ok(true);
+        }
+        if !retiring {
+            return Ok(false);
+        }
+        self.open_host()?;
+        let host = self.host.as_mut().ok_or(ControllerError::Inactive)?;
+        match host.retained_identity() {
+            Some((retained_run_id, _)) if retained_run_id == run_id => host.retire(run_id)?,
+            Some(_) => return Err(ControllerError::Boundary),
+            None => {},
+        }
+        self.service.commit_runner_state_retired(run_id)?;
+        Ok(true)
     }
 
     fn open_host(&mut self) -> Result<(), ControllerError> {
@@ -274,6 +313,17 @@ impl ControllerRole {
             .as_mut()
             .ok_or(ControllerError::Inactive)?
             .wait()?;
+        match self.service.begin_runner_retirement(&run.run_id) {
+            Ok(()) => {
+                self.host
+                    .as_mut()
+                    .ok_or(ControllerError::Inactive)?
+                    .retire(&run.run_id)?;
+                self.service.commit_runner_state_retired(&run.run_id)?;
+            },
+            Err(ServiceError::InvalidTransition) => {},
+            Err(error) => return Err(error.into()),
+        }
         Ok(ControllerWait {
             run,
             success: status.success(),

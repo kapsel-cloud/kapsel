@@ -200,8 +200,9 @@ read-only descriptors through one fixed `SCM_RIGHTS` message. A fixed reviewed C
 supplementary groups, installs the generation's real/effective/saved UID/GID, closes unrelated file
 descriptors and the parent-death race, and enables `no_new_privs` before Rust runner runtime. One
 private cgroup-v2 generation fences descendants. Durable reopen, exact journal transition recovery,
-production composition, complete denial evidence, its x86-64 Linux execution gate, and review remain
-pending, so this is not yet accepted enforcement.
+production composition, complete denial evidence, its x86-64 Linux execution gate, and fresh review
+passed for the accepted offline Slice 2 host boundary. That proof does not establish cluster
+runtime, CNI, RBAC, admission, metadata, or network enforcement.
 
 OS users and a sandboxed process are not hard tenant isolation. Symlink/path substitution, parent or
 inode replacement, leaked descriptors, permissive groups, stale processes, ptrace/kernel escape, and

@@ -37,7 +37,8 @@ pub use controller_role::{
     ControllerConfiguration, ControllerError, ControllerRole, ControllerRun, ControllerWait,
 };
 pub use local_roles::{
-    CleanupOwnedObject, CleanupRole, CleanupWork, RetentionRole, SchedulerRole, SchedulerStep,
+    CleanupOwnedObject, CleanupRole, CleanupWork, KubernetesCleanupRole, RetentionRole,
+    SchedulerRole, SchedulerStep,
 };
 use runner_handoff::{
     constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
@@ -56,7 +57,8 @@ const PUBLIC_RETENTION_SECONDS: i64 = 86_400;
 const SANDBOX_DEADLINE_SECONDS: i64 = 180;
 const SCHEDULER_LEASE_SECONDS: i64 = 30;
 const RECEIPT_BYTES_MAX: usize = 16 * 1024;
-const PROVISIONED_OBJECT_OWNERS_MAX: i64 = 16;
+const PROVISIONED_OBJECT_OWNERS_MAX: i64 = 64;
+pub(crate) const PROVISIONED_OBJECT_OWNERS_MAX_USIZE: usize = 64;
 type StoredReportBinding = (
     String,
     Option<String>,
@@ -173,9 +175,14 @@ impl fmt::Debug for DispatchLease {
 pub struct PolicyObjectRequirement {
     /// Canonical kind/name identity within the per-run namespace.
     pub identity: String,
+    /// Exact revision-owned canonical object body.
+    pub canonical_body: serde_json::Value,
     /// SHA-256 digest of the revision-owned canonical policy content.
     pub content_digest: String,
 }
+
+/// Closed baseline/canary objects and provider-neutral behavior records.
+pub type ClusterBoundarySpecification = (Vec<PolicyObjectRequirement>, Vec<serde_json::Value>);
 
 /// One observed owned policy object returned by deterministic provisioning.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -212,8 +219,18 @@ pub struct CleanupObjectAbsence {
 pub struct CleanupAbsenceEvidence {
     /// Exact recorded namespace UID.
     pub namespace_uid: String,
+    /// Durable post-provisioning cleanup epoch observed after the final delete plan.
+    pub cleanup_epoch: String,
+    /// Durable deletion-plan attempt observed after its requests were issued.
+    pub cleanup_attempt: i64,
+    /// Exact digest of the durably issued delete-request list.
+    pub plan_digest: String,
+    /// Unique bounded observation identity consumed at most once.
+    pub observation_id: String,
     /// One observation for every append-only recorded provisioned object.
     pub objects: Vec<CleanupObjectAbsence>,
+    /// Objects returned by the fixed current-owner orphan scan; success requires zero.
+    pub owned_orphans: Vec<ObservedPolicyObject>,
 }
 
 /// Fixed server-owned target specification frozen at admission and completed at dispatch.
@@ -237,19 +254,59 @@ pub struct ProvisioningSpecification {
     pub required_objects: Vec<PolicyObjectRequirement>,
 }
 
-/// Observed deterministic provisioning facts supplied by the private runner adapter.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProvisionedTarget {
-    /// Exact Kubernetes namespace UID established by provisioning.
-    pub namespace_uid: String,
-    /// Policy revision actually applied to the target.
-    pub policy_revision: String,
-    /// Digest binding the applied revision to its exact inventory.
-    pub policy_inventory_digest: String,
-    /// Cleanup identity actually attached to owned resources.
-    pub cleanup_identity: String,
-    /// Complete observed per-object identity, UID, owner, and policy-content evidence.
-    pub objects: Vec<ProvisionedObject>,
+struct ProvisionedTarget {
+    namespace_uid: String,
+    policy_revision: String,
+    policy_inventory_digest: String,
+    cleanup_identity: String,
+    objects: Vec<ProvisionedObject>,
+}
+
+/// One bounded Kubernetes object response consumed by cluster-policy verification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservedPolicyObject {
+    /// Complete bounded Kubernetes response body.
+    pub body: serde_json::Value,
+}
+
+/// Provider-neutral boundary facts required before a run policy can be accepted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClusterBoundaryObservation {
+    /// Complete bounded immutable baseline and canary object responses; order is not trusted.
+    pub objects: Vec<ObservedPolicyObject>,
+    /// Complete canonical provider-neutral admission/network behavior records.
+    pub behavior_records: Vec<serde_json::Value>,
+}
+
+/// Complete bounded composition observed by the controller-owned provisioning path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObservedClusterComposition {
+    /// Fixed cluster runtime, network, admission, and canary facts.
+    pub boundary: ClusterBoundaryObservation,
+    /// Exact ten explicit current-run objects; order is not trusted.
+    pub run_objects: Vec<ObservedPolicyObject>,
+    /// At most two generated ReplicaSets and one generated Pod observed by exact UID.
+    pub generated_children: Vec<ObservedPolicyObject>,
+    /// Any extra object carrying the current cleanup owner marker.
+    pub owned_orphans: Vec<ObservedPolicyObject>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProvisioningClosureEvidence {
+    boundary_uid_digest: String,
+    deployment_uid: String,
+    deployment_resource_version: String,
+    deployment_current_image: String,
+}
+
+/// Exact old/new Deployment bodies presented to the closed conditional-operation rule.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConditionalDeploymentObservation {
+    /// Complete bounded old Deployment request object.
+    pub old_object: serde_json::Value,
+    /// Complete bounded new Deployment request object.
+    pub new_object: serde_json::Value,
 }
 
 /// Disclosure-reviewed sandbox execution state.
@@ -673,6 +730,15 @@ impl Service {
         rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
     }
 
+    pub(crate) fn sole_active_run(&self) -> Result<Option<String>, ServiceError> {
+        let runs = self.recoverable_runs()?;
+        match runs.as_slice() {
+            [] => Ok(None),
+            [run_id] => Ok(Some(run_id.clone())),
+            _ => Err(ServiceError::Unavailable),
+        }
+    }
+
     /// Claims or renews recovery after process loss without changing public projection.
     ///
     /// An unexpired lease can be renewed only with the exact previous lease. After expiry, a new
@@ -695,19 +761,37 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let (stored_id, epoch, expires_at, active): (String, i64, i64, bool) = transaction
+        let (stored_id, epoch, expires_at, active, revoked, retiring, retired): (
+            String,
+            i64,
+            i64,
+            bool,
+            bool,
+            bool,
+            bool,
+        ) = transaction
             .query_row(
                 concat!(
-                    "SELECT lease_id, lease_epoch, lease_expires_at, active ",
-                    "FROM runs WHERE run_id = ?1"
+                    "SELECT lease_id, lease_epoch, lease_expires_at, active, runner_revoked, ",
+                    "runner_state_retiring, runner_state_retired FROM runs WHERE run_id = ?1"
                 ),
                 [run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
             )
             .optional()
             .map_err(storage_error)?
             .ok_or(ServiceError::RunNotFound)?;
-        if !active {
+        if !active || revoked || retiring || retired {
             return Err(ServiceError::InvalidTransition);
         }
         let previous_matches = previous.is_some_and(|lease| {
@@ -770,6 +854,7 @@ impl Service {
         now_unix_s: i64,
     ) -> Result<HandoffAssignment, ServiceError> {
         self.validate_lease(lease, now_unix_s)?;
+        self.validate_runner_authority(&lease.run_id)?;
         let operation_id = self.server_owned_request(&lease.run_id)?.operation_id;
         Ok(HandoffAssignment {
             run_id: lease.run_id.clone(),
@@ -834,21 +919,416 @@ impl Service {
         })
     }
 
-    /// Verifies exact policy-complete provisioning before Application invocation.
+    /// Returns the compile-time closed baseline/canary and behavior-record specification.
     ///
     /// # Errors
     ///
-    /// Returns a lease/deadline failure, policy or ownership mismatch, invalid transition, or
-    /// storage failure. A mismatch changes no invocation or receiver fact.
+    /// Returns a policy failure if any compile-time embedded behavior record is malformed.
+    pub fn cluster_boundary_specification() -> Result<ClusterBoundarySpecification, ServiceError> {
+        let objects = kubernetes_policy::boundary_objects()
+            .into_iter()
+            .map(|object| PolicyObjectRequirement {
+                identity: object.identity,
+                content_digest: kubernetes_policy::content_digest(&object.body),
+                canonical_body: object.body,
+            })
+            .collect();
+        let records =
+            kubernetes_policy::behavior_records().map_err(|()| ServiceError::PolicyMismatch)?;
+        Ok((objects, records))
+    }
+
+    /// Derives and verifies exact policy evidence from bounded Kubernetes object responses.
+    ///
+    /// This is the concrete provider-neutral Slice 3 provisioning boundary. It derives identities,
+    /// immutable UIDs, owner labels, and canonical content digests rather than trusting supplied
+    /// summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns a policy, ownership, lease, deadline, or storage failure before runner launch.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one deep verification path owns boundary and complete object derivation"
+    )]
+    pub fn verify_observed_cluster(
+        &self,
+        lease: &DispatchLease,
+        observation: &ObservedClusterComposition,
+        now_unix_s: i64,
+    ) -> Result<(), ServiceError> {
+        self.validate_lease(lease, now_unix_s)?;
+        if observation
+            .boundary
+            .objects
+            .iter()
+            .chain(&observation.run_objects)
+            .chain(&observation.generated_children)
+            .chain(&observation.owned_orphans)
+            .any(|object| {
+                serde_json::to_vec(&object.body).map_or(true, |bytes| bytes.len() > 2 * 1024 * 1024)
+            })
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        if !observation.owned_orphans.is_empty() {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let expected_boundary = kubernetes_policy::boundary_objects();
+        let expected_behavior =
+            kubernetes_policy::behavior_records().map_err(|()| ServiceError::PolicyMismatch)?;
+        if observation.boundary.objects.len() != expected_boundary.len()
+            || observation.boundary.behavior_records != expected_behavior
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let mut remaining_boundary = observation.boundary.objects.iter().collect::<Vec<_>>();
+        let mut boundary_uids = Vec::with_capacity(expected_boundary.len());
+        for expected in &expected_boundary {
+            let Some(index) = remaining_boundary.iter().position(|observed| {
+                observed_policy_identity(&observed.body).as_deref()
+                    == Some(expected.identity.as_str())
+            }) else {
+                return Err(ServiceError::PolicyMismatch);
+            };
+            let observed = remaining_boundary.swap_remove(index);
+            if kubernetes_policy::observed_content_digest(&expected.body, &observed.body)
+                != Some(kubernetes_policy::content_digest(&expected.body))
+            {
+                return Err(ServiceError::PolicyMismatch);
+            }
+            boundary_uids.push((
+                expected.identity.clone(),
+                observed_policy_uid(&observed.body)?,
+            ));
+        }
+        if !remaining_boundary.is_empty() {
+            return Err(ServiceError::PolicyMismatch);
+        }
+
+        let specification = self.provisioning_specification(lease, now_unix_s)?;
+        let selected_image = self
+            .server_owned_request(&lease.run_id)?
+            .immutable_image_digest;
+        let expected = kubernetes_policy::render(&lease.run_id, &selected_image)
+            .map_err(|()| ServiceError::PolicyMismatch)?;
+        if expected.len() != specification.required_objects.len()
+            || observation.run_objects.len() != expected.len()
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let mut remaining = observation.run_objects.iter().collect::<Vec<_>>();
+        let mut objects = Vec::with_capacity(expected.len());
+        let mut deployment_facts = None;
+        for expected_object in expected {
+            let Some(index) = remaining.iter().position(|observed| {
+                observed_policy_identity(&observed.body).as_deref()
+                    == Some(expected_object.identity.as_str())
+            }) else {
+                return Err(ServiceError::PolicyMismatch);
+            };
+            let observed = remaining.swap_remove(index);
+            let content_digest = observed_or_raw_digest(&expected_object.body, &observed.body);
+            let uid = observed_policy_uid(&observed.body)?;
+            let owner_label = observed_policy_owner(&observed.body)?;
+            if expected_object.body["kind"] == "Deployment" {
+                let resource_version = observed
+                    .body
+                    .pointer("/metadata/resourceVersion")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(ServiceError::PolicyMismatch)?
+                    .to_owned();
+                bounded_identity(&resource_version)?;
+                let current_image = selected_container_mutation(&observed.body, "target")?
+                    .pointer("/image")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(ServiceError::PolicyMismatch)?
+                    .to_owned();
+                deployment_facts = Some((uid.clone(), resource_version, current_image));
+            }
+            objects.push(ProvisionedObject {
+                identity: expected_object.identity,
+                uid,
+                owner_label,
+                content_digest,
+            });
+        }
+        if !remaining.is_empty() {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let (deployment_uid, _, _) = deployment_facts
+            .as_ref()
+            .ok_or(ServiceError::PolicyMismatch)?;
+        let deployment_template = specification
+            .required_objects
+            .iter()
+            .find(|object| object.canonical_body["kind"] == "Deployment")
+            .and_then(|object| object.canonical_body.pointer("/spec/template"))
+            .ok_or(ServiceError::PolicyMismatch)?;
+        objects.extend(derive_generated_children(
+            &observation.generated_children,
+            &lease.run_id,
+            &specification.cleanup_identity,
+            deployment_uid,
+            &[deployment_template],
+            &HashSet::new(),
+        )?);
+        let namespace_uid = objects
+            .first()
+            .ok_or(ServiceError::PolicyMismatch)?
+            .uid
+            .clone();
+        boundary_uids.sort();
+        let (deployment_uid, deployment_resource_version, deployment_current_image) =
+            deployment_facts.ok_or(ServiceError::PolicyMismatch)?;
+        let closure = ProvisioningClosureEvidence {
+            boundary_uid_digest: digest_identity_uids(&boundary_uids)?,
+            deployment_uid,
+            deployment_resource_version,
+            deployment_current_image,
+        };
+        self.verify_provisioned_target(
+            lease,
+            &ProvisionedTarget {
+                namespace_uid,
+                policy_revision: specification.policy_revision,
+                policy_inventory_digest: specification.policy_inventory_digest,
+                cleanup_identity: specification.cleanup_identity,
+                objects,
+            },
+            now_unix_s,
+            &closure,
+        )
+    }
+
+    pub(crate) fn append_observed_generated_children(
+        &self,
+        run_id: &str,
+        cleanup_identity: &str,
+        children: &[ObservedPolicyObject],
+    ) -> Result<(), ServiceError> {
+        if children.iter().any(|object| {
+            serde_json::to_vec(&object.body).map_or(true, |bytes| bytes.len() > 2 * 1024 * 1024)
+        }) {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let request = self.server_owned_request(run_id)?;
+        let rendered = kubernetes_policy::render(run_id, &request.immutable_image_digest)
+            .map_err(|()| ServiceError::PolicyMismatch)?;
+        let deployment_template = rendered
+            .iter()
+            .find(|object| object.body["kind"] == "Deployment")
+            .and_then(|object| object.body.pointer("/spec/template"))
+            .ok_or(ServiceError::PolicyMismatch)?;
+        let mut selected_deployment =
+            serde_json::json!({"spec": {"template": deployment_template.clone()}});
+        selected_container_mutation_mut(&mut selected_deployment, "target")?["image"] =
+            serde_json::json!(request.immutable_image_digest);
+        let selected_template = selected_deployment["spec"]["template"].clone();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let stored: (String, String, String) = transaction
+            .query_row(
+                concat!(
+                    "SELECT cleanup_identity, deployment_uid, provisioned_objects FROM runs ",
+                    "WHERE run_id = ?1 AND provisioning_closed = 1 AND active = 1"
+                ),
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(storage_error)?;
+        if stored.0 != cleanup_identity || stored.1.is_empty() {
+            return Err(ServiceError::OwnershipMismatch);
+        }
+        let known_replica_set_uids = {
+            let mut statement = transaction
+                .prepare(concat!(
+                    "SELECT uid FROM provisioned_object_owners WHERE run_id = ?1 ",
+                    "AND identity LIKE 'ReplicaSet/%'"
+                ))
+                .map_err(storage_error)?;
+            let rows = statement
+                .query_map([run_id], |row| row.get::<_, String>(0))
+                .map_err(storage_error)?;
+            rows.collect::<Result<HashSet<_>, _>>()
+                .map_err(storage_error)?
+        };
+        let derived = derive_generated_children(
+            children,
+            run_id,
+            cleanup_identity,
+            &stored.1,
+            &[deployment_template, &selected_template],
+            &known_replica_set_uids,
+        )?;
+        let mut inventory: Vec<ProvisionedObject> =
+            serde_json::from_str(&stored.2).map_err(|_| ServiceError::Unavailable)?;
+        for object in derived {
+            if let Some(existing) = inventory.iter().find(|item| item.uid == object.uid) {
+                if existing != &object {
+                    return Err(ServiceError::OwnershipMismatch);
+                }
+                continue;
+            }
+            if inventory.len() >= PROVISIONED_OBJECT_OWNERS_MAX_USIZE {
+                return Err(ServiceError::PolicyMismatch);
+            }
+            transaction
+                .execute(
+                    "INSERT INTO provisioned_object_owners VALUES (?1, ?2, ?3, ?4)",
+                    params![object.uid, run_id, object.identity, object.owner_label],
+                )
+                .map_err(storage_error)?;
+            inventory.push(object);
+        }
+        let serialized =
+            serde_json::to_string(&inventory).map_err(|_| ServiceError::Unavailable)?;
+        transaction
+            .execute(
+                "UPDATE runs SET provisioned_objects = ?2 WHERE run_id = ?1",
+                params![run_id, serialized],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    /// Verifies the exact conditional old/new Deployment comparison without issuing a request.
+    ///
+    /// All preconditions are derived from the admission-frozen run and verified composition. The
+    /// caller supplies no digest, identity, result, retry, or force flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns a policy, lease, transition, or bound failure. It never changes receiver facts.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one closed comparison keeps every old/new Deployment invariant visible"
+    )]
+    pub fn verify_conditional_deployment(
+        &self,
+        lease: &DispatchLease,
+        observation: &ConditionalDeploymentObservation,
+        now_unix_s: i64,
+    ) -> Result<(), ServiceError> {
+        self.validate_application_ready(lease, now_unix_s, false)?;
+        for body in [&observation.old_object, &observation.new_object] {
+            if serde_json::to_vec(body).map_or(true, |bytes| bytes.len() > 2 * 1024 * 1024) {
+                return Err(ServiceError::PolicyMismatch);
+            }
+        }
+        let specification = self.provisioning_specification(lease, now_unix_s)?;
+        let expected = specification
+            .required_objects
+            .iter()
+            .find(|object| object.identity.starts_with("Deployment/"))
+            .ok_or(ServiceError::PolicyMismatch)?;
+        let old = &observation.old_object;
+        if kubernetes_policy::observed_content_digest(&expected.canonical_body, old)
+            != Some(expected.content_digest.clone())
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let old_uid = observed_policy_uid(old)?;
+        let old_resource_version = old
+            .pointer("/metadata/resourceVersion")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ServiceError::PolicyMismatch)?;
+        let retained: (String, String, String) = self
+            .connection()?
+            .query_row(
+                concat!(
+                    "SELECT deployment_uid, deployment_resource_version, ",
+                    "deployment_current_image FROM runs WHERE run_id = ?1"
+                ),
+                [&lease.run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(storage_error)?;
+        if retained.0 != old_uid
+            || retained.1 != old_resource_version
+            || old
+                .pointer("/spec/template/spec/containers/0/image")
+                .and_then(serde_json::Value::as_str)
+                != Some(retained.2.as_str())
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        if observation
+            .new_object
+            .pointer("/metadata/uid")
+            .and_then(serde_json::Value::as_str)
+            != Some(old_uid.as_str())
+            || observation
+                .new_object
+                .pointer("/metadata/resourceVersion")
+                .and_then(serde_json::Value::as_str)
+                != Some(old_resource_version)
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let request = self.server_owned_request(&lease.run_id)?;
+        let old_annotations = old
+            .pointer("/metadata/annotations")
+            .and_then(serde_json::Value::as_object)
+            .ok_or(ServiceError::PolicyMismatch)?;
+        let expected_deployment_digest =
+            kubernetes_policy::canonical_deployment_digest(&expected.canonical_body);
+        if old_annotations.contains_key("kapsel.dev/kap0038-operation-id")
+            || old_annotations
+                .get("kapsel.dev/policy-inventory-digest")
+                .and_then(serde_json::Value::as_str)
+                != Some(specification.policy_inventory_digest.as_str())
+            || old_annotations
+                .get("kapsel.dev/canonical-deployment-digest")
+                .and_then(serde_json::Value::as_str)
+                != Some(expected_deployment_digest.as_str())
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let old_target = selected_container_mutation(old, "target")?;
+        let new_target = selected_container_mutation(&observation.new_object, "target")?;
+        if old_target
+            .pointer("/image")
+            .and_then(serde_json::Value::as_str)
+            != Some(kubernetes_policy::BASE_IMAGE)
+            || new_target
+                .pointer("/image")
+                .and_then(serde_json::Value::as_str)
+                != Some(request.immutable_image_digest.as_str())
+            || observation
+                .new_object
+                .pointer("/metadata/annotations/kapsel.dev~1kap0038-operation-id")
+                .and_then(serde_json::Value::as_str)
+                != Some(request.operation_id.as_str())
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let mut normalized = observation.new_object.clone();
+        selected_container_mutation_mut(&mut normalized, "target")?["image"] =
+            serde_json::json!(kubernetes_policy::BASE_IMAGE);
+        let annotations = normalized
+            .pointer_mut("/metadata/annotations")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or(ServiceError::PolicyMismatch)?;
+        annotations.remove("kapsel.dev/kap0038-operation-id");
+        if normalized != *old {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one transaction binds exact policy and cross-run ownership evidence"
     )]
-    pub fn verify_provisioned_target(
+    fn verify_provisioned_target(
         &self,
         lease: &DispatchLease,
         target: &ProvisionedTarget,
         now_unix_s: i64,
+        closure: &ProvisioningClosureEvidence,
     ) -> Result<(), ServiceError> {
         self.validate_lease(lease, now_unix_s)?;
         bounded_identity(&target.namespace_uid)?;
@@ -878,10 +1358,12 @@ impl Service {
                 return Err(ServiceError::OwnershipMismatch);
             }
         }
-        let exact_object_count = target.objects.len() == specification.required_objects.len();
+        let exact_object_count = target.objects.len() >= specification.required_objects.len()
+            && target.objects.len() <= specification.required_objects.len() + 3;
         let exact_object_content = target
             .objects
             .iter()
+            .take(specification.required_objects.len())
             .zip(&specification.required_objects)
             .all(|(actual, expected)| {
                 actual.identity == expected.identity
@@ -932,6 +1414,7 @@ impl Service {
             {
                 return Err(ServiceError::PolicyMismatch);
             }
+            close_provisioning(&transaction, &lease.run_id, closure)?;
             transaction.commit().map_err(storage_error)?;
             return Ok(());
         }
@@ -1018,6 +1501,7 @@ impl Service {
                 params![lease.run_id, target.namespace_uid],
             )
             .map_err(storage_error)?;
+        close_provisioning(&transaction, &lease.run_id, closure)?;
         transaction.commit().map_err(storage_error)?;
         if policy_matches {
             Ok(())
@@ -1296,7 +1780,9 @@ impl Service {
     /// Production composition uses the separate native `runner` and `handoff-serve` modes. This
     /// hidden adapter crosses the same loopback codec and system transactions; it does not directly
     /// mark invocation, project reports, read a system path from the application, or define another
-    /// deployment interface.
+    /// deployment interface. Its final service-only retirement transition explicitly simulates the
+    /// host boundary; production retirement is composed only by `ControllerRole` around
+    /// `RunnerHost::retire`.
     ///
     /// # Errors
     ///
@@ -1320,7 +1806,8 @@ impl Service {
     /// Process-local deterministic recovery adapter crossing the exact private handoff.
     ///
     /// Production composition uses the separate native modes. This method remains only so the
-    /// accepted package contract matrix can exercise deterministic Kubernetes transports.
+    /// accepted package contract matrix can exercise deterministic Kubernetes transports. Its
+    /// service-only retirement completion is a host simulation, not production host evidence.
     ///
     /// # Errors
     ///
@@ -1377,6 +1864,8 @@ impl Service {
                 .map_err(RunError::Handoff)?;
         }
         result.map_err(RunError::Handoff)?;
+        self.simulate_host_retirement_for_deterministic_adapter(&lease.run_id)
+            .map_err(RunError::Service)?;
         match self.snapshot(&lease.run_id, now_unix_s) {
             Ok(snapshot) => Ok(Some(snapshot)),
             Err(ServiceError::RunExpired | ServiceError::RunNotFound) => Ok(None),
@@ -1404,9 +1893,13 @@ impl Service {
         let changed = transaction
             .execute(
                 concat!(
-                    "UPDATE runs SET execution_state = 'service_failed' ",
+                    "UPDATE runs SET execution_state = 'service_failed', runner_revoked = 1, ",
+                    "runner_process_absent = 1, journal_handoff = 1, ",
+                    "runner_state_retiring = 1, runner_state_retired = 1, ",
+                    "handoff_credential_verifier = X'' ",
                     "WHERE run_id = ?1 AND execution_state = 'running' ",
-                    "AND application_invoked = 0 AND namespace_uid IS NOT NULL ",
+                    "AND provisioning_closed = 1 AND application_invoked = 0 ",
+                    "AND namespace_uid IS NOT NULL ",
                     "AND cleanup_identity = ?2"
                 ),
                 params![lease.run_id, cleanup_identity],
@@ -1518,6 +2011,71 @@ impl Service {
             )
             .map_err(storage_error)?;
         transaction.commit().map_err(storage_error)
+    }
+
+    fn simulate_host_retirement_for_deterministic_adapter(
+        &self,
+        run_id: &str,
+    ) -> Result<(), ServiceError> {
+        self.begin_runner_retirement(run_id)?;
+        self.commit_runner_state_retired(run_id)
+    }
+
+    pub(crate) fn begin_runner_retirement(&self, run_id: &str) -> Result<(), ServiceError> {
+        let changed = self
+            .connection()?
+            .execute(
+                concat!(
+                    "UPDATE runs SET runner_revoked = 1, runner_process_absent = 1, ",
+                    "journal_handoff = 1, handoff_credential_verifier = X'', ",
+                    "runner_state_retiring = 1 WHERE run_id = ?1 AND provisioning_closed = 1 ",
+                    "AND runner_revoked = 0 AND runner_state_retiring = 0 ",
+                    "AND runner_state_retired = 0 AND ((execution_state = 'terminal' AND NOT ",
+                    "EXISTS (SELECT 1 FROM receipt_publications WHERE ",
+                    "receipt_publications.run_id = runs.run_id)) OR execution_state IN ",
+                    "('not_attempted', 'service_failed'))"
+                ),
+                [run_id],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn runner_retirement_state(
+        &self,
+        run_id: &str,
+    ) -> Result<(bool, bool), ServiceError> {
+        self.connection()?
+            .query_row(
+                "SELECT runner_state_retiring, runner_state_retired FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::RunNotFound)
+    }
+
+    pub(crate) fn commit_runner_state_retired(&self, run_id: &str) -> Result<(), ServiceError> {
+        let changed = self
+            .connection()?
+            .execute(
+                concat!(
+                    "UPDATE runs SET runner_state_retired = 1 WHERE run_id = ?1 ",
+                    "AND runner_revoked = 1 AND runner_process_absent = 1 ",
+                    "AND journal_handoff = 1 AND runner_state_retiring = 1 ",
+                    "AND runner_state_retired = 0"
+                ),
+                [run_id],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        Ok(())
     }
 
     /// Appends the independent sandbox deadline fact without classifying the receiver.
@@ -1840,9 +2398,10 @@ impl Service {
                 "PRAGMA journal_mode = DELETE;
                  PRAGMA synchronous = FULL;
                  CREATE TABLE IF NOT EXISTS service_state (
-                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), stopped INTEGER NOT NULL
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), stopped INTEGER NOT NULL,
+                   boundary_uid_digest TEXT NOT NULL DEFAULT ''
                  );
-                 INSERT OR IGNORE INTO service_state VALUES (1, 0);
+                 INSERT OR IGNORE INTO service_state (singleton, stopped) VALUES (1, 0);
                  CREATE TABLE IF NOT EXISTS runs (
                    admission_order INTEGER PRIMARY KEY AUTOINCREMENT,
                    run_id TEXT NOT NULL UNIQUE, idempotency_key TEXT NOT NULL UNIQUE,
@@ -1860,7 +2419,22 @@ impl Service {
                    cleanup_resource_state TEXT NOT NULL, dispatched_at INTEGER,
                    namespace_uid TEXT, lease_id TEXT NOT NULL,
                    lease_epoch INTEGER NOT NULL, lease_expires_at INTEGER NOT NULL,
-                   handoff_credential_verifier BLOB NOT NULL
+                   handoff_credential_verifier BLOB NOT NULL,
+                   provisioning_closed INTEGER NOT NULL DEFAULT 0,
+                   deployment_uid TEXT NOT NULL DEFAULT '',
+                   deployment_resource_version TEXT NOT NULL DEFAULT '',
+                   deployment_current_image TEXT NOT NULL DEFAULT '',
+                   cleanup_epoch TEXT NOT NULL DEFAULT '',
+                   runner_revoked INTEGER NOT NULL DEFAULT 0,
+                   runner_process_absent INTEGER NOT NULL DEFAULT 0,
+                   journal_handoff INTEGER NOT NULL DEFAULT 0,
+                   runner_state_retiring INTEGER NOT NULL DEFAULT 0,
+                   runner_state_retired INTEGER NOT NULL DEFAULT 0,
+                   cleanup_attempt INTEGER NOT NULL DEFAULT 0,
+                   cleanup_plan_digest TEXT NOT NULL DEFAULT '',
+                   cleanup_plan_issued INTEGER NOT NULL DEFAULT 0,
+                   cleanup_pending_observation_id TEXT NOT NULL DEFAULT '',
+                   cleanup_observation_id TEXT NOT NULL DEFAULT ''
                  );
                  CREATE TABLE IF NOT EXISTS cleanup_records (
                    run_id TEXT PRIMARY KEY, cleanup_identity TEXT NOT NULL,
@@ -1920,6 +2494,8 @@ impl Service {
                 .map_err(storage_error)?;
         }
         migrate_cleanup_columns(&connection)?;
+        migrate_service_state_columns(&connection)?;
+        migrate_slice3_run_columns(&connection)?;
         validate_serial_capacity(&connection)?;
         self.remove_orphan_receipts(&mut connection)
     }
@@ -2060,7 +2636,8 @@ impl Service {
         }
         let operation_id = format!("sandbox-{run_id}");
         let cleanup_identity = format!("cleanup-{run_id}");
-        let (policy_inventory, policy_inventory_digest) = policy_inventory(run_id)?;
+        let (policy_inventory, policy_inventory_digest) =
+            policy_inventory(run_id, scenario_image(scenario))?;
         let expires_at = now_unix_s
             .checked_add(PUBLIC_RETENTION_SECONDS)
             .ok_or(ServiceError::InvalidRequest)?;
@@ -2134,16 +2711,7 @@ impl Service {
             .map_err(storage_error)?
             .ok_or(ServiceError::RunNotFound)?;
         let scenario = Scenario::parse(&scenario)?;
-        let digest = match scenario {
-            Scenario::Healthy => concat!(
-                "registry.k8s.io/pause@sha256:",
-                "8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c"
-            ),
-            Scenario::UnavailableImage => concat!(
-                "registry.k8s.io/pause@sha256:",
-                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-            ),
-        };
+        let digest = scenario_image(scenario);
         Ok(AgentRequest {
             operation_id,
             namespace: format!("sandbox-{run_id}"),
@@ -2179,12 +2747,31 @@ impl Service {
         Ok(())
     }
 
+    fn validate_runner_authority(&self, run_id: &str) -> Result<(), ServiceError> {
+        let authority: (bool, bool, bool) = self
+            .connection()?
+            .query_row(
+                concat!(
+                    "SELECT runner_revoked, runner_state_retiring, runner_state_retired ",
+                    "FROM runs WHERE run_id = ?1"
+                ),
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::RunNotFound)?;
+        if authority.0 || authority.1 || authority.2 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_runner_launch(
         &self,
         lease: &DispatchLease,
         now_unix_s: i64,
     ) -> Result<(), ServiceError> {
-        self.validate_lease(lease, now_unix_s)?;
         let recovery: bool = self
             .connection()?
             .query_row(
@@ -2205,17 +2792,21 @@ impl Service {
         recovery: bool,
     ) -> Result<(), ServiceError> {
         self.validate_lease(lease, now_unix_s)?;
-        let (policy_verified, deadline_at): (bool, i64) = self
+        self.validate_runner_authority(&lease.run_id)?;
+        let (policy_verified, provisioning_closed, deadline_at): (bool, bool, i64) = self
             .connection()?
             .query_row(
-                "SELECT policy_verified, deadline_at FROM runs WHERE run_id = ?1",
+                concat!(
+                    "SELECT policy_verified, provisioning_closed, deadline_at FROM runs ",
+                    "WHERE run_id = ?1"
+                ),
                 [&lease.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(storage_error)?
             .ok_or(ServiceError::RunNotFound)?;
-        if !policy_verified {
+        if !policy_verified || !provisioning_closed {
             return Err(ServiceError::PolicyMismatch);
         }
         if !recovery && now_unix_s >= deadline_at {
@@ -2576,9 +3167,117 @@ impl Service {
         Ok(bytes)
     }
 
+    pub(crate) fn begin_cleanup_attempt(
+        &self,
+        run_id: &str,
+        cleanup_identity: &str,
+        plan_digest: &str,
+    ) -> Result<i64, ServiceError> {
+        bounded_identity(cleanup_identity)?;
+        bounded_digest(plan_digest)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                concat!(
+                    "UPDATE runs SET cleanup_attempt = cleanup_attempt + 1, ",
+                    "cleanup_plan_digest = ?3, cleanup_plan_issued = 0, ",
+                    "cleanup_pending_observation_id = '' WHERE run_id = ?1 ",
+                    "AND cleanup_attempt < 9223372036854775807 AND runner_state_retired = 1 ",
+                    "AND EXISTS (SELECT 1 FROM cleanup_records WHERE cleanup_records.run_id = ?1 ",
+                    "AND cleanup_records.cleanup_identity = ?2 AND cleanup_records.eligible = 1 ",
+                    "AND cleanup_records.state IN ('running', 'failed'))"
+                ),
+                params![run_id, cleanup_identity, plan_digest],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        let attempt = transaction
+            .query_row(
+                "SELECT cleanup_attempt FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(attempt)
+    }
+
+    pub(crate) fn mark_cleanup_plan_issued(
+        &self,
+        run_id: &str,
+        cleanup_identity: &str,
+        cleanup_attempt: i64,
+        plan_digest: &str,
+    ) -> Result<(), ServiceError> {
+        let changed = self
+            .connection()?
+            .execute(
+                concat!(
+                    "UPDATE runs SET cleanup_plan_issued = 1 WHERE run_id = ?1 ",
+                    "AND cleanup_attempt = ?3 AND cleanup_plan_digest = ?4 ",
+                    "AND cleanup_plan_issued = 0 ",
+                    "AND EXISTS (SELECT 1 FROM cleanup_records WHERE cleanup_records.run_id = ?1 ",
+                    "AND cleanup_records.cleanup_identity = ?2 AND cleanup_records.eligible = 1 ",
+                    "AND cleanup_records.state IN ('running', 'failed'))"
+                ),
+                params![run_id, cleanup_identity, cleanup_attempt, plan_digest],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn begin_cleanup_observation(
+        &self,
+        run_id: &str,
+        cleanup_identity: &str,
+        cleanup_attempt: i64,
+        plan_digest: &str,
+    ) -> Result<String, ServiceError> {
+        bounded_digest(plan_digest)?;
+        let observation_id = sha256_hex(
+            format!("KAPSEL-CLEANUP-OBSERVATION-V1\0{run_id}\0{cleanup_attempt}\0{plan_digest}")
+                .as_bytes(),
+        );
+        let changed = self
+            .connection()?
+            .execute(
+                concat!(
+                    "UPDATE runs SET cleanup_pending_observation_id = ?5 WHERE run_id = ?1 ",
+                    "AND cleanup_attempt = ?3 AND cleanup_plan_digest = ?4 ",
+                    "AND cleanup_plan_issued = 1 AND cleanup_observation_id = '' ",
+                    "AND cleanup_pending_observation_id IN ('', ?5) ",
+                    "AND EXISTS (SELECT 1 FROM cleanup_records WHERE cleanup_records.run_id = ?1 ",
+                    "AND cleanup_records.cleanup_identity = ?2 AND cleanup_records.eligible = 1 ",
+                    "AND cleanup_records.state IN ('running', 'failed'))"
+                ),
+                params![
+                    run_id,
+                    cleanup_identity,
+                    cleanup_attempt,
+                    plan_digest,
+                    observation_id
+                ],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::InvalidTransition);
+        }
+        Ok(observation_id)
+    }
+
     #[allow(
+        clippy::suspicious_operation_groupings,
         clippy::too_many_lines,
-        reason = "one transaction validates all objects before releasing cleanup ownership"
+        clippy::type_complexity,
+        reason = "tuple fields compare independent durable prerequisites and one cleanup attempt"
     )]
     fn complete_cleanup_with_evidence(
         &self,
@@ -2589,18 +3288,43 @@ impl Service {
     ) -> Result<(), ServiceError> {
         bounded_identity(cleanup_identity)?;
         bounded_identity(&evidence.namespace_uid)?;
+        bounded_identity(&evidence.cleanup_epoch)?;
+        bounded_identity(&evidence.observation_id)?;
+        bounded_digest(&evidence.plan_digest)?;
+        if !evidence.owned_orphans.is_empty() {
+            return Err(ServiceError::OwnershipMismatch);
+        }
         let mut connection = self.connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let stored: (String, Option<String>, String, String, bool, bool) = transaction
+        let stored: (
+            String,
+            Option<String>,
+            String,
+            String,
+            bool,
+            bool,
+            String,
+            String,
+            i64,
+            String,
+            bool,
+            String,
+            bool,
+        ) = transaction
             .query_row(
                 concat!(
                     "SELECT cleanup_records.cleanup_identity, cleanup_records.namespace_uid, ",
                     "cleanup_records.resource_state, cleanup_records.state, ",
-                    "cleanup_records.eligible, runs.public_retained FROM cleanup_records ",
-                    "JOIN runs ON runs.run_id = cleanup_records.run_id ",
-                    "WHERE cleanup_records.run_id = ?1"
+                    "cleanup_records.eligible, runs.public_retained, runs.cleanup_epoch, ",
+                    "runs.cleanup_observation_id, runs.cleanup_attempt, ",
+                    "runs.cleanup_plan_digest, runs.cleanup_plan_issued, ",
+                    "runs.cleanup_pending_observation_id, runs.provisioning_closed = 1 ",
+                    "AND runs.runner_revoked = 1 AND runs.runner_process_absent = 1 ",
+                    "AND runs.journal_handoff = 1 AND runs.runner_state_retired = 1 ",
+                    "FROM cleanup_records JOIN runs ",
+                    "ON runs.run_id = cleanup_records.run_id WHERE cleanup_records.run_id = ?1"
                 ),
                 [run_id],
                 |row| {
@@ -2611,6 +3335,13 @@ impl Service {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
+                        row.get(12)?,
                     ))
                 },
             )
@@ -2623,7 +3354,17 @@ impl Service {
         {
             return Err(ServiceError::OwnershipMismatch);
         }
-        if !stored.4 || !matches!(stored.3.as_str(), "running" | "failed") {
+        if !stored.4
+            || !stored.10
+            || !stored.12
+            || (stored.6 != evidence.cleanup_epoch)
+            || !stored.7.is_empty()
+            || stored.8 <= 0
+            || stored.8 != evidence.cleanup_attempt
+            || stored.9 != evidence.plan_digest
+            || stored.11 != evidence.observation_id
+            || !matches!(stored.3.as_str(), "running" | "failed")
+        {
             return Err(ServiceError::InvalidTransition);
         }
         let recorded_objects = {
@@ -2667,6 +3408,15 @@ impl Service {
             }
             consumed[index] = true;
         }
+        transaction
+            .execute(
+                concat!(
+                    "UPDATE runs SET cleanup_observation_id = ?2, ",
+                    "cleanup_pending_observation_id = '' WHERE run_id = ?1"
+                ),
+                params![run_id, evidence.observation_id],
+            )
+            .map_err(storage_error)?;
         transaction
             .execute(
                 "UPDATE cleanup_records SET state = 'succeeded', active = 0 WHERE run_id = ?1",
@@ -2717,17 +3467,23 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let (owned_cleanup, owned_uid, resource_state, cleanup_state, eligible): (
+        let (owned_cleanup, owned_uid, resource_state, cleanup_state, eligible, prerequisites): (
             String,
             Option<String>,
             String,
             String,
             bool,
+            bool,
         ) = transaction
             .query_row(
                 concat!(
-                    "SELECT cleanup_identity, namespace_uid, resource_state, state, eligible ",
-                    "FROM cleanup_records WHERE run_id = ?1"
+                    "SELECT cleanup_records.cleanup_identity, cleanup_records.namespace_uid, ",
+                    "cleanup_records.resource_state, cleanup_records.state, ",
+                    "cleanup_records.eligible, runs.provisioning_closed = 1 ",
+                    "AND runs.runner_revoked = 1 AND runs.runner_process_absent = 1 ",
+                    "AND runs.journal_handoff = 1 AND runs.runner_state_retired = 1 ",
+                    "FROM cleanup_records JOIN runs ",
+                    "ON runs.run_id = cleanup_records.run_id WHERE cleanup_records.run_id = ?1"
                 ),
                 [run_id],
                 |row| {
@@ -2737,6 +3493,7 @@ impl Service {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )
@@ -2749,7 +3506,7 @@ impl Service {
         {
             return Err(ServiceError::OwnershipMismatch);
         }
-        if !eligible {
+        if !eligible || !prerequisites {
             return Err(ServiceError::InvalidTransition);
         }
         let allowed = matches!(
@@ -3539,6 +4296,18 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
     })
 }
 
+fn bounded_digest(value: &str) -> Result<(), ServiceError> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        Ok(())
+    } else {
+        Err(ServiceError::InvalidRequest)
+    }
+}
+
 fn bounded_hex_128(value: &str) -> Result<(), ServiceError> {
     if value.len() == 32
         && value
@@ -3575,6 +4344,212 @@ fn random_credential() -> Result<[u8; 32], ServiceError> {
     Ok(bytes)
 }
 
+fn observed_or_raw_digest(expected: &serde_json::Value, observed: &serde_json::Value) -> String {
+    kubernetes_policy::observed_content_digest(expected, observed)
+        .unwrap_or_else(|| kubernetes_policy::content_digest(observed))
+}
+
+fn selected_container_mutation<'a>(
+    deployment: &'a serde_json::Value,
+    name: &str,
+) -> Result<&'a serde_json::Value, ServiceError> {
+    let containers = deployment
+        .pointer("/spec/template/spec/containers")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(ServiceError::PolicyMismatch)?;
+    let mut selected = containers.iter().filter(|container| {
+        container.get("name").and_then(serde_json::Value::as_str) == Some(name)
+    });
+    let container = selected.next().ok_or(ServiceError::PolicyMismatch)?;
+    if selected.next().is_some() {
+        return Err(ServiceError::PolicyMismatch);
+    }
+    Ok(container)
+}
+
+fn selected_container_mutation_mut<'a>(
+    deployment: &'a mut serde_json::Value,
+    name: &str,
+) -> Result<&'a mut serde_json::Value, ServiceError> {
+    let containers = deployment
+        .pointer_mut("/spec/template/spec/containers")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or(ServiceError::PolicyMismatch)?;
+    let index = containers
+        .iter()
+        .enumerate()
+        .filter(|(_, container)| {
+            container.get("name").and_then(serde_json::Value::as_str) == Some(name)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if index.len() != 1 {
+        return Err(ServiceError::PolicyMismatch);
+    }
+    Ok(&mut containers[index[0]])
+}
+
+fn observed_policy_identity(body: &serde_json::Value) -> Option<String> {
+    let kind = body.get("kind")?.as_str()?;
+    let metadata = body.get("metadata")?.as_object()?;
+    let name = metadata.get("name")?.as_str()?;
+    if matches!(
+        kind,
+        "Namespace" | "RuntimeClass" | "ClusterRole" | "ClusterRoleBinding"
+    ) {
+        Some(format!("{kind}/{name}"))
+    } else {
+        let namespace = metadata.get("namespace")?.as_str()?;
+        Some(format!("{kind}/{namespace}/{name}"))
+    }
+}
+
+fn observed_policy_uid(body: &serde_json::Value) -> Result<String, ServiceError> {
+    let uid = body
+        .pointer("/metadata/uid")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ServiceError::OwnershipMismatch)?
+        .to_owned();
+    bounded_identity(&uid)?;
+    Ok(uid)
+}
+
+fn observed_policy_owner(body: &serde_json::Value) -> Result<String, ServiceError> {
+    let owner = body
+        .pointer("/metadata/labels/kapsel.dev~1cleanup-owner")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(ServiceError::OwnershipMismatch)?
+        .to_owned();
+    bounded_identity(&owner)?;
+    Ok(owner)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one closed derivation binds generated child identity, ancestry, template, and UID"
+)]
+fn derive_generated_children(
+    children: &[ObservedPolicyObject],
+    run_id: &str,
+    cleanup_identity: &str,
+    deployment_uid: &str,
+    deployment_templates: &[&serde_json::Value],
+    known_replica_set_uids: &HashSet<String>,
+) -> Result<Vec<ProvisionedObject>, ServiceError> {
+    if children.len() > 3 {
+        return Err(ServiceError::PolicyMismatch);
+    }
+    let namespace = format!("sandbox-{run_id}");
+    let mut replica_set_uids = known_replica_set_uids.clone();
+    let mut replica_sets = 0_usize;
+    let mut pods = 0_usize;
+    for child in children {
+        let kind = child.body.get("kind").and_then(serde_json::Value::as_str);
+        if kind == Some("ReplicaSet") {
+            replica_sets += 1;
+            replica_set_uids.insert(observed_policy_uid(&child.body)?);
+        } else if kind == Some("Pod") {
+            pods += 1;
+        } else {
+            return Err(ServiceError::PolicyMismatch);
+        }
+    }
+    if replica_sets > 2 || pods > 1 {
+        return Err(ServiceError::PolicyMismatch);
+    }
+    let mut derived = Vec::with_capacity(children.len());
+    let mut identities = HashSet::new();
+    for child in children {
+        let kind = child
+            .body
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ServiceError::PolicyMismatch)?;
+        let api_version = child
+            .body
+            .get("apiVersion")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ServiceError::PolicyMismatch)?;
+        if (kind == "ReplicaSet" && api_version != "apps/v1")
+            || (kind == "Pod" && api_version != "v1")
+            || child
+                .body
+                .pointer("/metadata/namespace")
+                .and_then(serde_json::Value::as_str)
+                != Some(namespace.as_str())
+            || observed_policy_owner(&child.body)? != cleanup_identity
+            || child
+                .body
+                .pointer("/metadata/labels/kapsel.dev~1sandbox-run-id")
+                .and_then(serde_json::Value::as_str)
+                != Some(run_id)
+            || child
+                .body
+                .pointer("/metadata/labels/kapsel.dev~1policy-revision")
+                .and_then(serde_json::Value::as_str)
+                != Some(kubernetes_policy::REVISION)
+        {
+            return Err(ServiceError::OwnershipMismatch);
+        }
+        let owner_references = child
+            .body
+            .pointer("/metadata/ownerReferences")
+            .and_then(serde_json::Value::as_array)
+            .filter(|items| items.len() == 1)
+            .ok_or(ServiceError::OwnershipMismatch)?;
+        let owner = &owner_references[0];
+        let owner_uid = owner
+            .get("uid")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ServiceError::OwnershipMismatch)?;
+        let expected_owner = if kind == "ReplicaSet" {
+            owner.get("kind").and_then(serde_json::Value::as_str) == Some("Deployment")
+                && owner.get("name").and_then(serde_json::Value::as_str) == Some("sandbox-target")
+                && owner_uid == deployment_uid
+        } else {
+            owner.get("kind").and_then(serde_json::Value::as_str) == Some("ReplicaSet")
+                && replica_set_uids.contains(owner_uid)
+        };
+        if !expected_owner
+            || owner.get("controller").and_then(serde_json::Value::as_bool) != Some(true)
+        {
+            return Err(ServiceError::OwnershipMismatch);
+        }
+        let observed_template = if kind == "ReplicaSet" {
+            child
+                .body
+                .pointer("/spec/template")
+                .ok_or(ServiceError::PolicyMismatch)?
+                .clone()
+        } else {
+            serde_json::json!({
+                "metadata": {"labels": child.body.pointer("/metadata/labels")
+                    .ok_or(ServiceError::PolicyMismatch)?},
+                "spec": child.body.get("spec").ok_or(ServiceError::PolicyMismatch)?
+            })
+        };
+        if !deployment_templates.iter().any(|template| {
+            kubernetes_policy::observed_template_matches(template, &observed_template)
+        }) {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        let identity = observed_policy_identity(&child.body).ok_or(ServiceError::PolicyMismatch)?;
+        if !identities.insert(identity.clone()) {
+            return Err(ServiceError::OwnershipMismatch);
+        }
+        let (_, _, name) = object_identity_parts(&identity)?;
+        bounded_identity(&name)?;
+        derived.push(ProvisionedObject {
+            identity,
+            uid: observed_policy_uid(&child.body)?,
+            owner_label: cleanup_identity.to_owned(),
+            content_digest: kubernetes_policy::content_digest(&child.body),
+        });
+    }
+    derived.sort_by(|left, right| left.identity.cmp(&right.identity));
+    Ok(derived)
+}
+
 fn object_identity_parts(identity: &str) -> Result<(String, Option<String>, String), ServiceError> {
     let parts = identity.split('/').collect::<Vec<_>>();
     match parts.as_slice() {
@@ -3594,12 +4569,88 @@ fn object_identity_parts(identity: &str) -> Result<(String, Option<String>, Stri
     }
 }
 
-fn policy_inventory(run_id: &str) -> Result<(String, String), ServiceError> {
-    let inventory = kubernetes_policy::render(run_id)
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+fn digest_identity_uids(entries: &[(String, String)]) -> Result<String, ServiceError> {
+    let bytes = serde_json::to_vec(entries).map_err(|_| ServiceError::Unavailable)?;
+    Ok(hex(&Sha256::digest(bytes)))
+}
+
+fn close_provisioning(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    closure: &ProvisioningClosureEvidence,
+) -> Result<(), ServiceError> {
+    let retained: String = transaction
+        .query_row(
+            "SELECT boundary_uid_digest FROM service_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if !retained.is_empty() && retained != closure.boundary_uid_digest {
+        return Err(ServiceError::PolicyMismatch);
+    }
+    if retained.is_empty() {
+        transaction
+            .execute(
+                "UPDATE service_state SET boundary_uid_digest = ?1 WHERE singleton = 1",
+                [&closure.boundary_uid_digest],
+            )
+            .map_err(storage_error)?;
+    }
+    let existing: (bool, String, String, String) = transaction
+        .query_row(
+            concat!(
+                "SELECT provisioning_closed, deployment_uid, deployment_resource_version, ",
+                "deployment_current_image FROM runs WHERE run_id = ?1"
+            ),
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .map_err(storage_error)?;
+    if existing.0 {
+        if existing.1 != closure.deployment_uid
+            || existing.2 != closure.deployment_resource_version
+            || existing.3 != closure.deployment_current_image
+        {
+            return Err(ServiceError::PolicyMismatch);
+        }
+        return Ok(());
+    }
+    let changed = transaction
+        .execute(
+            concat!(
+                "UPDATE runs SET provisioning_closed = 1, cleanup_epoch = ?2, ",
+                "deployment_uid = ?3, deployment_resource_version = ?4, ",
+                "deployment_current_image = ?5 WHERE run_id = ?1 AND application_invoked = 0 ",
+                "AND provisioning_closed = 0"
+            ),
+            params![
+                run_id,
+                format!("cleanup-{run_id}-1"),
+                closure.deployment_uid,
+                closure.deployment_resource_version,
+                closure.deployment_current_image
+            ],
+        )
+        .map_err(storage_error)?;
+    if changed != 1 {
+        return Err(ServiceError::InvalidTransition);
+    }
+    Ok(())
+}
+
+fn policy_inventory(run_id: &str, selected_image: &str) -> Result<(String, String), ServiceError> {
+    let inventory = kubernetes_policy::render(run_id, selected_image)
+        .map_err(|()| ServiceError::PolicyMismatch)?
         .into_iter()
         .map(|object| PolicyObjectRequirement {
             identity: object.identity,
             content_digest: kubernetes_policy::content_digest(&object.body),
+            canonical_body: object.body,
         })
         .collect::<Vec<_>>();
     let canonical = serde_json::to_string(&inventory).map_err(|_| ServiceError::Unavailable)?;
@@ -3607,11 +4658,45 @@ fn policy_inventory(run_id: &str) -> Result<(String, String), ServiceError> {
     Ok((canonical, digest))
 }
 
+fn scenario_image(scenario: Scenario) -> &'static str {
+    match scenario {
+        Scenario::Healthy => concat!(
+            "registry.k8s.io/pause@sha256:",
+            "8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c"
+        ),
+        Scenario::UnavailableImage => concat!(
+            "registry.k8s.io/pause@sha256:",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ),
+    }
+}
+
 fn policy_binding_digest(revision: &str, canonical_inventory: &str) -> String {
+    let canonical = serde_json::from_str::<Vec<PolicyObjectRequirement>>(canonical_inventory)
+        .map(|inventory| {
+            inventory
+                .into_iter()
+                .map(|object| {
+                    let mut body = object.canonical_body;
+                    if body.get("kind").and_then(serde_json::Value::as_str) == Some("Deployment") {
+                        if let Some(annotations) = body
+                            .pointer_mut("/metadata/annotations")
+                            .and_then(serde_json::Value::as_object_mut)
+                        {
+                            annotations.remove("kapsel.dev/policy-inventory-digest");
+                            annotations.remove("kapsel.dev/canonical-deployment-digest");
+                        }
+                    }
+                    serde_json::json!({"identity": object.identity, "canonical_body": body})
+                })
+                .collect::<Vec<_>>()
+        })
+        .and_then(|inventory| serde_json::to_string(&inventory))
+        .unwrap_or_default();
     let mut digest = Sha256::new();
     digest.update(revision.as_bytes());
     digest.update([0]);
-    digest.update(canonical_inventory.as_bytes());
+    digest.update(canonical.as_bytes());
     hex(&digest.finalize())
 }
 
@@ -3754,6 +4839,70 @@ fn validate_serial_capacity(connection: &Connection) -> Result<(), ServiceError>
         .map_err(storage_error)?;
     if invalid != 0 {
         return Err(ServiceError::Unavailable);
+    }
+    Ok(())
+}
+
+fn migrate_service_state_columns(connection: &Connection) -> Result<(), ServiceError> {
+    let has_boundary_uid_digest = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(service_state)")
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?
+            .iter()
+            .any(|name| name == "boundary_uid_digest")
+    };
+    if !has_boundary_uid_digest {
+        connection
+            .execute(
+                "ALTER TABLE service_state ADD COLUMN boundary_uid_digest TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    Ok(())
+}
+
+fn migrate_slice3_run_columns(connection: &Connection) -> Result<(), ServiceError> {
+    let columns = {
+        let mut statement = connection
+            .prepare("PRAGMA table_info(runs)")
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage_error)?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(storage_error)?
+    };
+    for (name, declaration) in [
+        ("provisioning_closed", "INTEGER NOT NULL DEFAULT 0"),
+        ("deployment_uid", "TEXT NOT NULL DEFAULT ''"),
+        ("deployment_resource_version", "TEXT NOT NULL DEFAULT ''"),
+        ("deployment_current_image", "TEXT NOT NULL DEFAULT ''"),
+        ("cleanup_epoch", "TEXT NOT NULL DEFAULT ''"),
+        ("runner_revoked", "INTEGER NOT NULL DEFAULT 0"),
+        ("runner_process_absent", "INTEGER NOT NULL DEFAULT 0"),
+        ("journal_handoff", "INTEGER NOT NULL DEFAULT 0"),
+        ("runner_state_retiring", "INTEGER NOT NULL DEFAULT 0"),
+        ("runner_state_retired", "INTEGER NOT NULL DEFAULT 0"),
+        ("cleanup_attempt", "INTEGER NOT NULL DEFAULT 0"),
+        ("cleanup_plan_digest", "TEXT NOT NULL DEFAULT ''"),
+        ("cleanup_plan_issued", "INTEGER NOT NULL DEFAULT 0"),
+        ("cleanup_pending_observation_id", "TEXT NOT NULL DEFAULT ''"),
+        ("cleanup_observation_id", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if !columns.contains(name) {
+            connection
+                .execute(
+                    &format!("ALTER TABLE runs ADD COLUMN {name} {declaration}"),
+                    [],
+                )
+                .map_err(storage_error)?;
+        }
     }
     Ok(())
 }

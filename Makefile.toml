@@ -292,6 +292,17 @@ description = "Validate topology-neutral exact-patch and Gate 0 deletion boundar
 command = "python3"
 args = ["scripts/test-sandbox-preservation.py"]
 
+[tasks.test-sandbox-cleanup-kubernetes]
+description = "Prove concrete UID-preconditioned cleanup requests and bounded observations"
+command = "cargo"
+args = ["test", "--locked", "-p", "kapsel-sandbox", "--lib", "local_roles::tests"]
+
+[tasks.test-sandbox-cluster-policy]
+description = "Prove provider-neutral policy, conditional mutation, and UID-safe cleanup modeling"
+dependencies = ["test-sandbox-cleanup-kubernetes"]
+command = "cargo"
+args = ["test", "--locked", "-p", "kapsel-sandbox", "--test", "cluster_policy"]
+
 [tasks.test-sandbox-serialized-capacity]
 description = "Prove one active reservation and concrete local role sequencing through cleanup"
 script = '''

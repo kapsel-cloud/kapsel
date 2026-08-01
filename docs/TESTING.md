@@ -301,6 +301,24 @@ provider-neutral fixtures under `deploy/sandbox`. The current runnable preservat
 `test-sandbox-contract`, `test-sandbox-preservation`, `test-sandbox-serialized-capacity`,
 `test-sandbox-service`, `test-sandbox-package-boundary`, and `test-sandbox-runner-handoff`.
 
+KAP-0070 Slice 3 adds `test-sandbox-cluster-policy`. Its bounded in-process bodies prove the exact
+provider-neutral baseline/canary/run composition, generated-child UID inventory, downgrade rejection
+before runner/Application, and the only accepted old/new Deployment difference. The focused
+correction keeps cleanup observations, plans, and requests private; recomputes the canonical plan
+digest before the first request; binds one fixed Kubernetes client at role construction; and exposes
+only one closed attempt that owns generated-child refresh, pre-delete observation, exact deletion,
+post-plan observation, durable completion, and coalesced failure. Unit and loopback HTTP tests prove
+zero requests for a changed private plan, exact UID/propagation deletes, Namespace-presence
+branches, frozen-RBAC scans, ten-second request and 30-second attempt deadlines, and a 2 MiB body
+cap before kube deserialization for content-length, chunked, and close-delimited framing. Retirement
+tests prove one atomic revocation/retiring transition, independent revoked/retiring/retired
+recovery-assignment-launch denial, and fresh empty generation state after prior-run retirement. The
+ordinary Linux production `ControllerRole::run_once` regression restarts after durable retirement
+intent with both an unexpired and expired lease, proves retirement precedes scheduler recovery, and
+asserts no epoch, staged authority, invocation/report count, operation identity, receipt, or runner
+launch changes. It performs no live action and does not prove Kubernetes runtime, CNI, RBAC,
+admission, metadata, or network enforcement.
+
 The serialized proof matrix is:
 
 | Property                               | Retained Gate 0 evidence                                              | Gate 1 deterministic composition                                        | Gate 3 private-live assertion                                                              | Gate 4 public assertion                                               |

@@ -1,0 +1,15 @@
+{
+  "api_version": "kapsel.sandbox.policy/v3",
+  "kind": "ClosedCompositionRule",
+  "identity": "composition-v1",
+  "failure_policy": "Fail",
+  "validation_action": "Deny",
+  "provisioner_identity": "system:serviceaccount:kapsel-sandbox-provisioner:kapsel-sandbox-provisioner",
+  "provisioning_generation_label": "kapsel.dev/provisioning-generation",
+  "cleanup_epoch_label": "kapsel.dev/cleanup-epoch",
+  "required_generation_format": "provision-<run_id>-1",
+  "required_cleanup_epoch_format": "cleanup-<run_id>-1",
+  "closed_generation_behavior": "deny-create-update-delete",
+  "baseline_and_canary_behavior": "deny-runtime-identity-mutation",
+  "unknown_behavior": "deny"
+}

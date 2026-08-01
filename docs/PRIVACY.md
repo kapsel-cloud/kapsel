@@ -110,7 +110,8 @@ locators, times, scenarios, and copied receipts can correlate activity.
   provider identifiers are never public protocol fields. The accepted Slice 2 boundary also removes
   private composition paths and payloads from runner arguments, environment, stdout, stderr, and
   bootstrap metadata; it transfers each fixed read-only input descriptor through `SCM_RIGHTS`. Its
-  complete Linux gate and review remain pending.
+  complete offline Linux gate and fresh review passed; cluster and live disclosure enforcement
+  remain unproved.
 - Public fixture times and identifiers are synthetic. Public technical evidence reports only
   aggregate approved facts and exact deployed revisions, never visitor-level traces.
 

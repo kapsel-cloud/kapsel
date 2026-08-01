@@ -3,9 +3,12 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-pub(crate) const REVISION: &str = "sandbox-policy-v2";
+pub(crate) const REVISION: &str = "sandbox-policy-v3";
 const RUNNERS_NAMESPACE: &str = "kapsel-sandbox-runners";
-const BASE_IMAGE: &str = concat!(
+const RUNNER_ACCOUNT: &str = "kapsel-sandbox-runner";
+const CLEANUP_NAMESPACE: &str = "kapsel-sandbox-cleanup";
+const RUNTIME_CLASS: &str = "kapsel-sandbox-runtime-v1";
+pub(crate) const BASE_IMAGE: &str = concat!(
     "registry.k8s.io/pause@sha256:",
     "278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c"
 );
@@ -17,15 +20,194 @@ pub(crate) struct RenderedPolicyObject {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one fixed renderer keeps the exact eleven-object policy locally reviewable"
+    reason = "the fixed baseline stays compile-time composed and directly auditable"
 )]
-pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
+pub(crate) fn boundary_objects() -> Vec<RenderedPolicyObject> {
+    let baseline = json!({
+        "kapsel.dev/policy-revision": REVISION,
+        "kapsel.dev/sandbox-owner": "kapsel-cluster-baseline"
+    });
+    let metadata = |name: &str, namespace: Option<&str>| {
+        let mut value = json!({"name": name, "labels": baseline});
+        if let Some(namespace) = namespace {
+            value["namespace"] = json!(namespace);
+        }
+        value
+    };
+    let object = |identity: &str, body: Value| RenderedPolicyObject {
+        identity: identity.into(),
+        body,
+    };
+    let mut objects = vec![object(
+        "RuntimeClass/kapsel-sandbox-runtime-v1",
+        json!({
+            "apiVersion": "node.k8s.io/v1", "kind": "RuntimeClass",
+            "metadata": metadata("kapsel-sandbox-runtime-v1", None),
+            "handler": "kapsel.dev/sandbox-runtime-v1"
+        }),
+    )];
+    for namespace in [
+        "kapsel-sandbox-provisioner",
+        "kapsel-sandbox-runners",
+        "kapsel-sandbox-cleanup",
+    ] {
+        let mut labels = baseline.clone();
+        labels["kubernetes.io/metadata.name"] = json!(namespace);
+        objects.push(object(
+            &format!("Namespace/{namespace}"),
+            json!({
+                "apiVersion": "v1", "kind": "Namespace",
+                "metadata": {"name": namespace, "labels": labels}
+            }),
+        ));
+    }
+    for (namespace, account) in [
+        ("kapsel-sandbox-provisioner", "kapsel-sandbox-provisioner"),
+        ("kapsel-sandbox-runners", RUNNER_ACCOUNT),
+        ("kapsel-sandbox-cleanup", "kapsel-sandbox-cleanup"),
+    ] {
+        objects.push(object(
+            &format!("ServiceAccount/{namespace}/{account}"),
+            json!({
+                "apiVersion": "v1", "kind": "ServiceAccount",
+                "metadata": metadata(account, Some(namespace)),
+                "automountServiceAccountToken": false
+            }),
+        ));
+    }
+    let provisioner_rules = json!([
+        {
+            "apiGroups": ["node.k8s.io"],
+            "resources": ["runtimeclasses"],
+            "verbs": ["get", "list"]
+        },
+        {
+            "apiGroups": [""],
+            "resources": ["namespaces", "serviceaccounts", "resourcequotas", "limitranges"],
+            "verbs": ["get", "list", "create"]
+        },
+        {
+            "apiGroups": [""], "resources": ["configmaps"], "verbs": ["get", "list"]
+        },
+        {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["clusterroles", "clusterrolebindings"],
+            "verbs": ["get", "list"]
+        },
+        {
+            "apiGroups": ["apps"], "resources": ["deployments"],
+            "verbs": ["get", "list", "create"]
+        },
+        {"apiGroups": ["apps"], "resources": ["replicasets"], "verbs": ["get", "list"]},
+        {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
+        {
+            "apiGroups": ["networking.k8s.io"], "resources": ["networkpolicies"],
+            "verbs": ["get", "list", "create"]
+        },
+        {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["roles", "rolebindings"],
+            "verbs": ["get", "list", "create", "bind", "escalate"]
+        }
+    ]);
+    let cleanup_rules = json!([
+        {"apiGroups": [""], "resources": ["namespaces"], "verbs": ["get", "delete"]},
+        {
+            "apiGroups": ["rbac.authorization.k8s.io"],
+            "resources": ["roles", "rolebindings"],
+            "resourceNames": ["sandbox-cleanup"], "verbs": ["get", "delete"]
+        }
+    ]);
+    for (name, rules, namespace, account) in [
+        (
+            "kapsel-sandbox-provisioner-v1",
+            provisioner_rules,
+            "kapsel-sandbox-provisioner",
+            "kapsel-sandbox-provisioner",
+        ),
+        (
+            "kapsel-sandbox-cleanup-v1",
+            cleanup_rules,
+            "kapsel-sandbox-cleanup",
+            "kapsel-sandbox-cleanup",
+        ),
+    ] {
+        objects.push(object(
+            &format!("ClusterRole/{name}"),
+            json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
+                "metadata": metadata(name, None), "rules": rules
+            }),
+        ));
+        objects.push(object(
+            &format!("ClusterRoleBinding/{name}"),
+            json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
+                "metadata": metadata(name, None),
+                "roleRef": {
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "kind": "ClusterRole", "name": name
+                },
+                "subjects": [{"kind": "ServiceAccount", "name": account, "namespace": namespace}]
+            }),
+        ));
+    }
+    let canary_labels = json!({
+        "kapsel.dev/policy-revision": REVISION,
+        "kapsel.dev/sandbox-owner": "kapsel-operator-canary"
+    });
+    let mut canary_namespace_labels = canary_labels.clone();
+    canary_namespace_labels["kubernetes.io/metadata.name"] = json!("kapsel-sandbox-canary");
+    objects.push(object(
+        "Namespace/kapsel-sandbox-canary",
+        json!({
+            "apiVersion": "v1", "kind": "Namespace",
+            "metadata": {"name": "kapsel-sandbox-canary", "labels": canary_namespace_labels}
+        }),
+    ));
+    objects.push(object(
+        "ConfigMap/kapsel-sandbox-canary/isolation-canary",
+        json!({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": {
+                "name": "isolation-canary", "namespace": "kapsel-sandbox-canary",
+                "labels": canary_labels
+            },
+            "data": {"sentinel": "kapsel-sandbox-canary-v1"}
+        }),
+    ));
+    objects
+}
+
+pub(crate) fn behavior_records() -> Result<Vec<Value>, ()> {
+    parse_behavior_records(&[
+        include_str!("../../../deploy/sandbox/network-boundary-record.json"),
+        include_str!("../../../deploy/sandbox/composition-admission-rule.json"),
+        include_str!("../../../deploy/sandbox/operator-admission-rule.json"),
+        include_str!("../../../deploy/sandbox/cleanup-admission-rule.json"),
+    ])
+}
+
+fn parse_behavior_records(records: &[&str]) -> Result<Vec<Value>, ()> {
+    records
+        .iter()
+        .map(|record| serde_json::from_str(record).map_err(|_| ()))
+        .collect()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one fixed renderer keeps the exact ten-object policy locally reviewable"
+)]
+pub(crate) fn render(run_id: &str, selected_image: &str) -> Result<Vec<RenderedPolicyObject>, ()> {
     let namespace = format!("sandbox-{run_id}");
     let cleanup = format!("cleanup-{run_id}");
-    let runner = format!("runner-{run_id}");
     let labels = json!({
+        "kapsel.dev/cleanup-epoch": format!("cleanup-{run_id}-1"),
         "kapsel.dev/cleanup-owner": cleanup,
         "kapsel.dev/policy-revision": REVISION,
+        "kapsel.dev/provisioning-generation": format!("provision-{run_id}-1"),
+        "kapsel.dev/sandbox-owner": cleanup,
         "kapsel.dev/sandbox-run-id": run_id,
     });
     let metadata = |name: &str, object_namespace: Option<&str>| {
@@ -40,8 +222,12 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
             identity: format!("{kind}/{object_namespace}/{name}"),
             body,
         };
+    let mut deployment_metadata = metadata("sandbox-target", Some(&namespace));
+    deployment_metadata["annotations"] = json!({
+        "kapsel.dev/selected-image": selected_image
+    });
 
-    vec![
+    let mut objects = vec![
         RenderedPolicyObject {
             identity: format!("Namespace/{namespace}"),
             body: json!({
@@ -50,9 +236,13 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
                 "metadata": {
                     "name": namespace,
                     "labels": {
+                        "kapsel.dev/cleanup-epoch": format!("cleanup-{run_id}-1"),
                         "kapsel.dev/cleanup-owner": cleanup,
                         "kapsel.dev/policy-revision": REVISION,
+                        "kapsel.dev/provisioning-generation": format!("provision-{run_id}-1"),
+                        "kapsel.dev/sandbox-owner": cleanup,
                         "kapsel.dev/sandbox-run-id": run_id,
+                        "kubernetes.io/metadata.name": namespace,
                         "pod-security.kubernetes.io/enforce": "restricted",
                         "pod-security.kubernetes.io/enforce-version": "v1.35"
                     }
@@ -71,17 +261,6 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
             }),
         ),
         namespaced(
-            "ServiceAccount",
-            RUNNERS_NAMESPACE,
-            &runner,
-            json!({
-                "apiVersion": "v1",
-                "kind": "ServiceAccount",
-                "metadata": metadata(&runner, Some(RUNNERS_NAMESPACE)),
-                "automountServiceAccountToken": false
-            }),
-        ),
-        namespaced(
             "Role",
             &namespace,
             "sandbox-runner",
@@ -92,7 +271,8 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
                 "rules": [{
                     "apiGroups": ["apps"],
                     "resources": ["deployments"],
-                    "verbs": ["get", "list", "watch", "patch"]
+                    "resourceNames": ["sandbox-target"],
+                    "verbs": ["get", "patch"]
                 }]
             }),
         ),
@@ -111,8 +291,60 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
                 },
                 "subjects": [{
                     "kind": "ServiceAccount",
-                    "name": runner,
+                    "name": RUNNER_ACCOUNT,
                     "namespace": RUNNERS_NAMESPACE
+                }]
+            }),
+        ),
+        namespaced(
+            "Role",
+            &namespace,
+            "sandbox-cleanup",
+            json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": metadata("sandbox-cleanup", Some(&namespace)),
+                "rules": [
+                    {
+                        "apiGroups": [""],
+                        "resources": ["limitranges", "pods", "resourcequotas", "serviceaccounts"],
+                        "verbs": ["get", "list", "delete"]
+                    },
+                    {
+                        "apiGroups": ["apps"],
+                        "resources": ["deployments", "replicasets"],
+                        "verbs": ["get", "list", "delete"]
+                    },
+                    {
+                        "apiGroups": ["networking.k8s.io"],
+                        "resources": ["networkpolicies"],
+                        "verbs": ["get", "list", "delete"]
+                    },
+                    {
+                        "apiGroups": ["rbac.authorization.k8s.io"],
+                        "resources": ["rolebindings", "roles"],
+                        "verbs": ["get", "list", "delete"]
+                    }
+                ]
+            }),
+        ),
+        namespaced(
+            "RoleBinding",
+            &namespace,
+            "sandbox-cleanup",
+            json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": metadata("sandbox-cleanup", Some(&namespace)),
+                "roleRef": {
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "kind": "Role",
+                    "name": "sandbox-cleanup"
+                },
+                "subjects": [{
+                    "kind": "ServiceAccount",
+                    "name": "kapsel-sandbox-cleanup",
+                    "namespace": CLEANUP_NAMESPACE
                 }]
             }),
         ),
@@ -125,23 +357,27 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
                 "kind": "ResourceQuota",
                 "metadata": metadata("sandbox-quota", Some(&namespace)),
                 "spec": {"hard": {
-                    "configmaps": "2",
+                    "count/configmaps": "0",
                     "count/deployments.apps": "1",
-                    "count/endpointslices.discovery.k8s.io": "2",
+                    "count/endpointslices.discovery.k8s.io": "0",
                     "count/jobs.batch": "0",
-                    "count/networkpolicies.networking.k8s.io": "4",
+                    "count/limitranges": "1",
+                    "count/networkpolicies.networking.k8s.io": "1",
                     "count/persistentvolumeclaims": "0",
-                    "count/replicasets.apps": "4",
+                    "count/replicasets.apps": "2",
+                    "count/resourcequotas": "1",
+                    "count/rolebindings.rbac.authorization.k8s.io": "2",
+                    "count/roles.rbac.authorization.k8s.io": "2",
                     "count/secrets": "0",
-                    "count/services": "1",
-                    "limits.cpu": "4",
-                    "limits.ephemeral-storage": "8Gi",
-                    "limits.memory": "4Gi",
-                    "pods": "4",
-                    "requests.cpu": "2",
-                    "requests.ephemeral-storage": "4Gi",
-                    "requests.memory": "2Gi",
-                    "services": "1"
+                    "count/serviceaccounts": "2",
+                    "count/services": "0",
+                    "limits.cpu": "500m",
+                    "limits.ephemeral-storage": "128Mi",
+                    "limits.memory": "128Mi",
+                    "pods": "1",
+                    "requests.cpu": "200m",
+                    "requests.ephemeral-storage": "32Mi",
+                    "requests.memory": "64Mi"
                 }}
             }),
         ),
@@ -155,7 +391,7 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
                 "metadata": metadata("sandbox-limits", Some(&namespace)),
                 "spec": {"limits": [{
                     "type": "Container",
-                    "max": {"cpu": "2", "ephemeral-storage": "4Gi", "memory": "2Gi"},
+                    "max": {"cpu": "250m", "ephemeral-storage": "64Mi", "memory": "64Mi"},
                     "min": {"cpu": "10m", "ephemeral-storage": "1Mi", "memory": "16Mi"}
                 }]}
             }),
@@ -172,54 +408,33 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
             }),
         ),
         namespaced(
-            "NetworkPolicy",
-            &namespace,
-            "fixed-egress",
-            json!({
-                "apiVersion": "networking.k8s.io/v1",
-                "kind": "NetworkPolicy",
-                "metadata": metadata("fixed-egress", Some(&namespace)),
-                "spec": {
-                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "sandbox-target"}},
-                    "policyTypes": ["Egress"],
-                    "egress": [{
-                        "to": [{
-                            "namespaceSelector": {"matchLabels": {
-                                "kubernetes.io/metadata.name": "kube-system"
-                            }},
-                            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}
-                        }],
-                        "ports": [
-                            {"port": 53, "protocol": "UDP"},
-                            {"port": 53, "protocol": "TCP"}
-                        ]
-                    }]
-                }
-            }),
-        ),
-        namespaced(
             "Deployment",
             &namespace,
             "sandbox-target",
             json!({
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
-                "metadata": metadata("sandbox-target", Some(&namespace)),
+                "metadata": deployment_metadata,
                 "spec": {
                     "replicas": 1,
                     "progressDeadlineSeconds": 30,
-                    "revisionHistoryLimit": 3,
+                    "revisionHistoryLimit": 0,
+                    "strategy": {"type": "Recreate"},
                     "selector": {"matchLabels": {"app.kubernetes.io/name": "sandbox-target"}},
                     "template": {
                         "metadata": {"labels": {
                             "app.kubernetes.io/name": "sandbox-target",
+                            "kapsel.dev/cleanup-epoch": format!("cleanup-{run_id}-1"),
                             "kapsel.dev/cleanup-owner": cleanup,
+                            "kapsel.dev/policy-revision": REVISION,
+                            "kapsel.dev/provisioning-generation": format!("provision-{run_id}-1"),
+                            "kapsel.dev/sandbox-owner": cleanup,
                             "kapsel.dev/sandbox-run-id": run_id
                         }},
                         "spec": {
                             "automountServiceAccountToken": false,
                             "enableServiceLinks": false,
-                            "runtimeClassName": "gvisor",
+                            "runtimeClassName": RUNTIME_CLASS,
                             "serviceAccountName": "sandbox-target",
                             "terminationGracePeriodSeconds": 5,
                             "securityContext": {
@@ -237,27 +452,16 @@ pub(crate) fn render(run_id: &str) -> Vec<RenderedPolicyObject> {
                 }
             }),
         ),
-        namespaced(
-            "Service",
-            &namespace,
-            "sandbox-target",
-            json!({
-                "apiVersion": "v1",
-                "kind": "Service",
-                "metadata": metadata("sandbox-target", Some(&namespace)),
-                "spec": {
-                    "type": "ClusterIP",
-                    "selector": {"app.kubernetes.io/name": "sandbox-target"},
-                    "ports": [{
-                        "name": "synthetic",
-                        "port": 8080,
-                        "protocol": "TCP",
-                        "targetPort": 8080
-                    }]
-                }
-            }),
-        ),
-    ]
+    ];
+    let inventory_digest = inventory_digest(&objects)?;
+    if let Some(deployment) = objects.last_mut() {
+        deployment.body["metadata"]["annotations"]["kapsel.dev/policy-inventory-digest"] =
+            json!(inventory_digest);
+        let deployment_digest = canonical_deployment_digest(&deployment.body);
+        deployment.body["metadata"]["annotations"]["kapsel.dev/canonical-deployment-digest"] =
+            json!(deployment_digest);
+    }
+    Ok(objects)
 }
 
 fn fixed_container(name: &str) -> Value {
@@ -283,7 +487,40 @@ pub(crate) fn content_digest(body: &Value) -> String {
     hex(&Sha256::digest(body.to_string().as_bytes()))
 }
 
-#[cfg(test)]
+pub(crate) fn canonical_deployment_digest(body: &Value) -> String {
+    let mut canonical = body.clone();
+    canonical
+        .pointer_mut("/metadata/annotations")
+        .and_then(Value::as_object_mut)
+        .map(|annotations| annotations.remove("kapsel.dev/canonical-deployment-digest"));
+    content_digest(&canonical)
+}
+
+fn inventory_digest(objects: &[RenderedPolicyObject]) -> Result<String, ()> {
+    let canonical = objects
+        .iter()
+        .map(|object| {
+            let mut body = object.body.clone();
+            if body.get("kind").and_then(Value::as_str) == Some("Deployment") {
+                if let Some(annotations) = body
+                    .pointer_mut("/metadata/annotations")
+                    .and_then(Value::as_object_mut)
+                {
+                    annotations.remove("kapsel.dev/policy-inventory-digest");
+                    annotations.remove("kapsel.dev/canonical-deployment-digest");
+                }
+            }
+            json!({"identity": object.identity, "canonical_body": body})
+        })
+        .collect::<Vec<_>>();
+    let mut digest = Sha256::new();
+    digest.update(REVISION.as_bytes());
+    digest.update([0]);
+    let canonical = serde_json::to_vec(&canonical).map_err(|_| ())?;
+    digest.update(canonical);
+    Ok(hex(&digest.finalize()))
+}
+
 pub(crate) fn observed_content_digest(expected: &Value, observed: &Value) -> Option<String> {
     let mut normalized = observed.clone();
     normalized.as_object_mut()?.remove("status");
@@ -307,14 +544,6 @@ pub(crate) fn observed_content_digest(expected: &Value, observed: &Value) -> Opt
             remove_exact(&mut normalized, "/secrets", &json!([]))?;
         },
         "Deployment" => {
-            remove_exact(
-                &mut normalized,
-                "/spec/strategy",
-                &json!({
-                    "rollingUpdate": {"maxSurge": "25%", "maxUnavailable": "25%"},
-                    "type": "RollingUpdate"
-                }),
-            )?;
             remove_exact(&mut normalized, "/spec/minReadySeconds", &json!(0))?;
             remove_exact(&mut normalized, "/spec/paused", &json!(false))?;
             remove_exact(
@@ -376,7 +605,30 @@ pub(crate) fn observed_content_digest(expected: &Value, observed: &Value) -> Opt
     (normalized == *expected).then(|| content_digest(expected))
 }
 
-#[cfg(test)]
+pub(crate) fn observed_template_matches(expected: &Value, observed: &Value) -> bool {
+    let mut observed = observed.clone();
+    let Some(labels) = observed
+        .pointer_mut("/metadata/labels")
+        .and_then(Value::as_object_mut)
+    else {
+        return false;
+    };
+    labels.remove("pod-template-hash");
+    let expected_deployment = json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {},
+        "spec": {"template": expected}
+    });
+    let observed_deployment = json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {},
+        "spec": {"template": observed}
+    });
+    observed_content_digest(&expected_deployment, &observed_deployment).is_some()
+}
+
 fn remove_exact(root: &mut Value, pointer: &str, expected: &Value) -> Option<()> {
     let (parent, key) = pointer.rsplit_once('/')?;
     let Some(parent) = root.pointer_mut(parent) else {
@@ -393,7 +645,6 @@ fn remove_exact(root: &mut Value, pointer: &str, expected: &Value) -> Option<()>
     Some(())
 }
 
-#[cfg(test)]
 fn remove_empty_object(root: &mut Value, pointer: &str) -> Option<()> {
     let Some(value) = root.pointer(pointer) else {
         return Some(());
@@ -405,7 +656,6 @@ fn remove_empty_object(root: &mut Value, pointer: &str) -> Option<()> {
     }
 }
 
-#[cfg(test)]
 fn remove_string(root: &mut Value, pointer: &str) -> Option<()> {
     let Some(value) = root.pointer(pointer) else {
         return Some(());
@@ -417,7 +667,6 @@ fn remove_string(root: &mut Value, pointer: &str) -> Option<()> {
     }
 }
 
-#[cfg(test)]
 fn remove_string_array(root: &mut Value, pointer: &str) -> Option<()> {
     let Some(value) = root.pointer(pointer) else {
         return Some(());
@@ -430,7 +679,6 @@ fn remove_string_array(root: &mut Value, pointer: &str) -> Option<()> {
     }
 }
 
-#[cfg(test)]
 fn remove_pointer(root: &mut Value, pointer: &str) -> Option<()> {
     let (parent, key) = pointer.rsplit_once('/')?;
     root.pointer_mut(parent)?.as_object_mut()?.remove(key)?;
@@ -452,23 +700,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn malformed_embedded_behavior_record_fails_closed() {
+        assert!(parse_behavior_records(&[r#"{"revision":"v1"}"#, "{"]).is_err());
+        assert_eq!(behavior_records().unwrap().len(), 4);
+    }
+
+    #[test]
     fn policy_render_is_exact_bounded_and_server_owned() {
         let run_id = "0123456789abcdef0123456789abcdef";
-        let objects = render(run_id);
-        assert_eq!(objects.len(), 11);
+        let selected_image = concat!(
+            "registry.k8s.io/pause@sha256:",
+            "8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c"
+        );
+        let objects = render(run_id, selected_image).unwrap();
+        assert_eq!(objects.len(), 10);
         assert_eq!(objects[0].identity, format!("Namespace/sandbox-{run_id}"));
         assert_eq!(
             objects[1].identity,
             format!("ServiceAccount/sandbox-{run_id}/sandbox-target")
         );
         assert_eq!(
-            objects[2].identity,
-            format!("ServiceAccount/{RUNNERS_NAMESPACE}/runner-{run_id}")
+            objects[4].identity,
+            format!("Role/sandbox-{run_id}/sandbox-cleanup")
         );
         let deployment = &objects[9].body;
         assert_eq!(
             deployment["spec"]["template"]["spec"]["runtimeClassName"],
-            "gvisor"
+            RUNTIME_CLASS
         );
         assert_eq!(
             deployment["spec"]["template"]["spec"]["containers"]
@@ -491,25 +749,29 @@ mod tests {
         assert!(objects
             .iter()
             .all(|item| content_digest(&item.body).len() == 64));
-        let quota = &objects[5].body["spec"]["hard"];
-        assert_eq!(quota["pods"], "4");
-        assert_eq!(quota["count/endpointslices.discovery.k8s.io"], "2");
-        assert_eq!(quota["count/networkpolicies.networking.k8s.io"], "4");
+        let quota = &objects[6].body["spec"]["hard"];
+        assert_eq!(quota["pods"], "1");
+        assert_eq!(quota["count/endpointslices.discovery.k8s.io"], "0");
+        assert_eq!(quota["count/networkpolicies.networking.k8s.io"], "1");
         assert_eq!(quota["count/secrets"], "0");
         assert_eq!(quota["count/persistentvolumeclaims"], "0");
         assert_eq!(quota["count/jobs.batch"], "0");
-        let aggregate = content_digest(&Value::Array(
-            objects.iter().map(|item| item.body.clone()).collect(),
-        ));
         assert_eq!(
-            aggregate,
-            "d25a20dd7559178fdd33bcd2f64e9ebf86ff3da48b3796db32f79ca90f738baa"
+            deployment["metadata"]["annotations"]["kapsel.dev/selected-image"],
+            selected_image
         );
     }
 
     #[test]
     fn observed_digest_allows_only_exact_server_defaults() {
-        let expected = render("0123456789abcdef0123456789abcdef");
+        let expected = render(
+            "0123456789abcdef0123456789abcdef",
+            concat!(
+                "registry.k8s.io/pause@sha256:",
+                "8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c"
+            ),
+        )
+        .unwrap();
         let deployment = &expected[9].body;
         let mut observed = deployment.clone();
         observed["metadata"]["uid"] = json!("deployment-uid");
@@ -518,10 +780,6 @@ mod tests {
         observed["metadata"]["creationTimestamp"] = json!("2026-07-25T00:00:00Z");
         observed["metadata"]["managedFields"] = json!([]);
         observed["status"] = json!({"availableReplicas": 1});
-        observed["spec"]["strategy"] = json!({
-            "rollingUpdate": {"maxSurge": "25%", "maxUnavailable": "25%"},
-            "type": "RollingUpdate"
-        });
         observed["spec"]["minReadySeconds"] = json!(0);
         observed["spec"]["paused"] = json!(false);
         observed["spec"]["template"]["metadata"]["creationTimestamp"] = Value::Null;

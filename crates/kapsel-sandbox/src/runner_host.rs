@@ -347,6 +347,7 @@ impl RunnerHost {
         if self.active.is_some() {
             return Err(RunnerHostError::ActiveGeneration);
         }
+        self.validate_recovery_identity(run_id, &assignment.operation_id)?;
         let recovery = self
             .recovery_directory
             .as_ref()
@@ -371,6 +372,7 @@ impl RunnerHost {
         run_id: &str,
         assignment: &HandoffAssignment,
     ) -> Result<&RunnerGeneration, RunnerHostError> {
+        self.validate_recovery_identity(run_id, &assignment.operation_id)?;
         let new_verifier = credential_verifier(
             run_id,
             &format!("sandbox-{run_id}"),
@@ -392,6 +394,129 @@ impl RunnerHost {
             .transpose()
             .map_err(|_| RunnerHostError::Boundary)?;
         self.launch_fresh_from(run_id, assignment, recovery.as_ref())
+    }
+
+    fn validate_recovery_identity(
+        &self,
+        run_id: &str,
+        operation_id: &str,
+    ) -> Result<(), RunnerHostError> {
+        match (&self.durable_record, &self.recovery_directory) {
+            (None, None) => Ok(()),
+            (Some(record), Some(_))
+                if record.run_id == run_id && record.operation_id == operation_id =>
+            {
+                Ok(())
+            },
+            (Some(_), Some(_)) => Err(RunnerHostError::StaleAuthority),
+            _ => Err(RunnerHostError::Boundary),
+        }
+    }
+
+    /// Returns the run identity whose fenced journal is retained for same-run recovery.
+    pub(crate) fn retained_identity(&self) -> Option<(&str, &str)> {
+        self.durable_record
+            .as_ref()
+            .map(|record| (record.run_id.as_str(), record.operation_id.as_str()))
+    }
+
+    /// Irreversibly removes one completed run's fenced journal before another run can launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a boundary, stale-authority, or active-generation failure unless the exact retained
+    /// run is fenced and its generation can be removed durably.
+    pub(crate) fn retire(&mut self, run_id: &str) -> Result<(), RunnerHostError> {
+        if self.active.is_some() {
+            return Err(RunnerHostError::ActiveGeneration);
+        }
+        let mut record = self
+            .durable_record
+            .clone()
+            .ok_or(RunnerHostError::Boundary)?;
+        if record.run_id != run_id || record.phase != "fenced" || self.recovery_directory.is_none()
+        {
+            return Err(RunnerHostError::StaleAuthority);
+        }
+        record.phase = String::from("retiring");
+        self.persist_record(&record)?;
+        self.durable_record = Some(record.clone());
+        self.recovery_directory = None;
+        self.complete_retirement(&record)
+    }
+
+    fn complete_retirement(
+        &mut self,
+        record: &DurableGenerationRecord,
+    ) -> Result<(), RunnerHostError> {
+        let entries = fs::read_dir(&self.generation_root_path)
+            .map_err(|_| RunnerHostError::Boundary)?
+            .map(|entry| {
+                entry
+                    .map_err(|_| RunnerHostError::Boundary)?
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| RunnerHostError::Boundary)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for entry in entries {
+            if entry == GENERATION_RECORD_NAME {
+                continue;
+            }
+            if entry == GENERATION_RECORD_TEMPORARY_NAME {
+                rustix::fs::unlinkat(&self.generation_root, &entry, rustix::fs::AtFlags::empty())
+                    .map_err(|_| RunnerHostError::Boundary)?;
+                continue;
+            }
+            let generation = entry
+                .strip_prefix("generation-")
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value != 0 && entry == format!("generation-{value:020}"))
+                .ok_or(RunnerHostError::Boundary)?;
+            if generation > record.generation {
+                return Err(RunnerHostError::Boundary);
+            }
+            let directory = fs::File::from(
+                openat(
+                    &self.generation_root,
+                    &entry,
+                    directory_flags(),
+                    Mode::empty(),
+                )
+                .map_err(|_| RunnerHostError::Boundary)?,
+            );
+            validate_directory(&directory, self.runner_uid, self.runner_gid)?;
+            let metadata = directory
+                .metadata()
+                .map_err(|_| RunnerHostError::Boundary)?;
+            if generation == record.generation {
+                if metadata.dev() != record.generation_device
+                    || metadata.ino() != record.generation_inode
+                {
+                    return Err(RunnerHostError::Boundary);
+                }
+            } else if !directory_is_empty(&self.generation_root_path.join(&entry))? {
+                return Err(RunnerHostError::Boundary);
+            }
+            drop(directory);
+            fs::remove_dir_all(self.generation_root_path.join(&entry))
+                .map_err(|_| RunnerHostError::Boundary)?;
+        }
+        self.generation_root
+            .sync_all()
+            .map_err(|_| RunnerHostError::Boundary)?;
+        rustix::fs::unlinkat(
+            &self.generation_root,
+            GENERATION_RECORD_NAME,
+            rustix::fs::AtFlags::empty(),
+        )
+        .map_err(|_| RunnerHostError::Boundary)?;
+        self.generation_root
+            .sync_all()
+            .map_err(|_| RunnerHostError::Boundary)?;
+        self.durable_record = None;
+        self.recovery_directory = None;
+        Ok(())
     }
 
     /// Kills and waits for the current process before dropping its generation record.
@@ -568,6 +693,11 @@ impl RunnerHost {
         )]
         let mut record = self.read_record(GENERATION_RECORD_NAME)?;
         self.validate_record_identity(&record)?;
+        if record.phase == "retiring" {
+            self.complete_retirement(&record)?;
+            self.next_generation = record.generation;
+            return Ok(());
+        }
         if record.phase == "allocating" {
             self.recover_allocating_generation(&record, &entries)?;
             self.next_generation = record.generation;
@@ -1878,6 +2008,7 @@ fn validate_durable_phase(record: &DurableGenerationRecord) -> Result<(), Runner
             | "ready"
             | "fencing"
             | "fenced"
+            | "retiring"
     ) {
         return Err(RunnerHostError::Boundary);
     }
@@ -1910,8 +2041,9 @@ fn validate_durable_phase(record: &DurableGenerationRecord) -> Result<(), Runner
             record.cgroup_inode.is_some(),
         );
         if (record.phase == "allocating" && cgroup_fields != (true, false, false))
-            || (record.phase == "fenced" && cgroup_fields != (false, false, false))
-            || (!matches!(record.phase.as_str(), "allocating" | "fenced")
+            || (matches!(record.phase.as_str(), "fenced" | "retiring")
+                && cgroup_fields != (false, false, false))
+            || (!matches!(record.phase.as_str(), "allocating" | "fenced" | "retiring")
                 && cgroup_fields != (true, true, true))
         {
             return Err(RunnerHostError::Boundary);
@@ -3346,6 +3478,98 @@ mod tests {
             Err(RunnerHostError::Boundary)
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retained_journal_rejects_cross_run_launch_until_explicit_retirement() {
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-runner-host-cross-run-retirement-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        private_directory(&root);
+        let inputs = root.join("inputs");
+        let generations = root.join("generations");
+        let lease = "0123456789abcdef0123456789abcdef";
+        let credential = [7; 32];
+        fixed_inputs(&inputs, lease, credential);
+        private_directory(&generations);
+        let (runner_uid, runner_gid) = runner_identity();
+        let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
+        write_durable_record(&generations, &record);
+        let mut host = RunnerHost::open(
+            std::env::current_exe().unwrap(),
+            &inputs,
+            &generations,
+            runner_uid,
+            runner_gid,
+        )
+        .unwrap();
+        assert_eq!(
+            host.retained_identity(),
+            Some((record.run_id.as_str(), record.operation_id.as_str()))
+        );
+        let next_run = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let assignment = HandoffAssignment {
+            run_id: next_run.into(),
+            operation_id: format!("sandbox-{next_run}"),
+            lease_id: lease.into(),
+            credential,
+            endpoint: "127.0.0.1:1".parse().unwrap(),
+        };
+        assert!(matches!(
+            host.launch(next_run, &assignment),
+            Err(RunnerHostError::StaleAuthority)
+        ));
+        assert!(generations.join(GENERATION_RECORD_NAME).is_file());
+        assert!(generations
+            .join("generation-00000000000000000007/run/gateway.sqlite3")
+            .is_file());
+        host.retire(&record.run_id).unwrap();
+        assert_eq!(host.retained_identity(), None);
+        assert!(fs::read_dir(&generations).unwrap().next().is_none());
+        let (fresh_generation, _) = host.create_generation(8, None).unwrap();
+        assert!(!fresh_generation.join("run/gateway.sqlite3").exists());
+        assert!(fs::read_dir(fresh_generation.join("run/receipt-outbox"))
+            .unwrap()
+            .next()
+            .is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn retiring_record_converges_before_and_after_generation_removal() {
+        for generation_removed in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "kapsel-runner-host-retiring-reopen-{}-{generation_removed}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            let inputs = root.join("inputs");
+            let generations = root.join("generations");
+            fixed_inputs(&inputs, "0123456789abcdef0123456789abcdef", [7; 32]);
+            private_directory(&generations);
+            let (runner_uid, runner_gid) = runner_identity();
+            let mut record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
+            record.phase = String::from("retiring");
+            write_durable_record(&generations, &record);
+            if generation_removed {
+                fs::remove_dir_all(generations.join("generation-00000000000000000007")).unwrap();
+            }
+            let host = RunnerHost::open(
+                std::env::current_exe().unwrap(),
+                &inputs,
+                &generations,
+                runner_uid,
+                runner_gid,
+            )
+            .unwrap();
+            assert_eq!(host.retained_identity(), None);
+            assert!(fs::read_dir(&generations).unwrap().next().is_none());
+            drop(host);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

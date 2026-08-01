@@ -196,15 +196,17 @@ This is the selected production path, not completed enforcement. The implementat
 exact public contract, KAP-0052 service semantics, real one-way `kapsel-sandbox -> kapsel`
 dependency, KAP-0055 process handoff, and KAP-0070's durable one-active reservation with concrete
 local scheduler, retention, and cleanup roles. The scheduler recovers active work before FIFO
-dispatch; cleanup retry and escalation retain capacity until exact UID/owner absence. The Slice 2
-repair candidate adds one controller-owned `runner_host` deep module: it pins fixed roots and
-inputs, transfers individual read-only descriptors through `SCM_RIGHTS`, creates a fresh generation,
-and places the Linux process tree in one private cgroup-v2 generation. One fixed C helper
-establishes identity, descriptor closure, parent-death, and `no_new_privs` before the Rust runner
-runtime without weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete controller
-composition, complete seam/denial evidence, the exact x86-64 Linux gate, and review remain pending.
-KAP-0070 must still accept that candidate and implement staging, backup, cluster policy, canary
-isolation, teardown, and recreation before any live or public claim.
+dispatch; cleanup retry and escalation retain capacity until exact UID/owner absence. Accepted Slice
+2 adds one controller-owned `runner_host` deep module: it pins fixed roots and inputs, transfers
+individual read-only descriptors through `SCM_RIGHTS`, creates a fresh generation, and places the
+Linux process tree in one private cgroup-v2 generation. One fixed C helper establishes identity,
+descriptor closure, parent-death, and `no_new_privs` before the Rust runner runtime without
+weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete controller composition,
+complete seam and denial evidence, the exact x86-64 Linux gate, and fresh review passed for that
+offline host boundary. Accepted Slice 3 adds exact cluster-policy verification, one fixed-authority
+bounded cleanup role, atomic runner retirement intent, and fail-closed static policy loading. KAP-
+0070 must still implement and accept key staging, backup, teardown, and recreation before any live
+or public claim.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor

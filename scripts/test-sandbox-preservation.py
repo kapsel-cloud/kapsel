@@ -4,13 +4,18 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "deploy" / "sandbox"
-OWNER_LABEL = "kapsel.dev/sandbox-owner"
+OWNER_LABEL = "kapsel.dev/cleanup-owner"
 OPERATION_ANNOTATION = "kapsel.dev/kap0038-operation-id"
+CANONICAL_DIGEST_ANNOTATION = "kapsel.dev/canonical-deployment-digest"
+RUNNER_IDENTITY = (
+    "system:serviceaccount:kapsel-sandbox-runners:kapsel-sandbox-runner"
+)
 OLD_COMMANDS = (
     "scheduler-state-serve",
     "cleanup-state-serve",
@@ -62,16 +67,43 @@ def selected_container(deployment: dict, name: str) -> dict:
     return selected[0]
 
 
+def canonical_deployment_digest(deployment: dict) -> str:
+    canonical = copy.deepcopy(deployment)
+    metadata = canonical["metadata"]
+    for key in (
+        "uid",
+        "resourceVersion",
+        "generation",
+        "creationTimestamp",
+        "managedFields",
+        "selfLink",
+    ):
+        metadata.pop(key, None)
+    canonical.pop("status", None)
+    metadata["annotations"].pop(CANONICAL_DIGEST_ANNOTATION, None)
+    encoded = json.dumps(canonical, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
+
+
 def accepted(username: str, preconditions: dict, old: dict, new: dict) -> bool:
     try:
-        if username != "kapsel-sandbox-runner":
+        if username != RUNNER_IDENTITY:
             return False
         namespace = preconditions["namespace"]
         run_id = preconditions["run_id"]
         if (
-            preconditions["owner"] != run_id
+            preconditions["owner"] != f"cleanup-{run_id}"
             or namespace != f"sandbox-{run_id}"
             or preconditions["operation_id"] != f"sandbox-{run_id}"
+            or preconditions["policy_revision"] != "sandbox-policy-v3"
+            or not is_sha256(preconditions["policy_inventory_digest"])
+            or not is_sha256(preconditions["canonical_deployment_digest"])
         ):
             return False
         exact = {
@@ -86,9 +118,30 @@ def accepted(username: str, preconditions: dict, old: dict, new: dict) -> bool:
             return False
         if any(new_metadata.get(key) != value for key, value in exact.items()):
             return False
-        if old_metadata.get("labels", {}).get(OWNER_LABEL) != preconditions["owner"]:
+        expected_labels = {
+            "kapsel.dev/cleanup-epoch": f"cleanup-{run_id}-1",
+            OWNER_LABEL: preconditions["owner"],
+            "kapsel.dev/policy-revision": preconditions["policy_revision"],
+            "kapsel.dev/provisioning-generation": f"provision-{run_id}-1",
+            "kapsel.dev/sandbox-owner": preconditions["owner"],
+            "kapsel.dev/sandbox-run-id": run_id,
+        }
+        if any(old_metadata.get("labels", {}).get(key) != value for key, value in expected_labels.items()):
             return False
-        if new_metadata.get("labels", {}).get(OWNER_LABEL) != preconditions["owner"]:
+        if any(new_metadata.get("labels", {}).get(key) != value for key, value in expected_labels.items()):
+            return False
+        old_annotations = old_metadata.get("annotations", {})
+        if (
+            old_annotations.get("kapsel.dev/policy-inventory-digest")
+            != preconditions["policy_inventory_digest"]
+            or old_annotations.get("kapsel.dev/selected-image")
+            != preconditions["immutable_image_digest"]
+            or old_annotations.get(CANONICAL_DIGEST_ANNOTATION)
+            != preconditions["canonical_deployment_digest"]
+            or canonical_deployment_digest(old)
+            != preconditions["canonical_deployment_digest"]
+            or OPERATION_ANNOTATION in old_annotations
+        ):
             return False
         old_container = selected_container(old, preconditions["container"])
         new_container = selected_container(new, preconditions["container"])
@@ -104,7 +157,6 @@ def accepted(username: str, preconditions: dict, old: dict, new: dict) -> bool:
         selected_container(normalized, preconditions["container"])["image"] = old_container[
             "image"
         ]
-        old_annotations = old_metadata.get("annotations", {})
         normalized_annotations = normalized["metadata"].setdefault("annotations", {})
         if OPERATION_ANNOTATION in old_annotations:
             normalized_annotations[OPERATION_ANNOTATION] = old_annotations[OPERATION_ANNOTATION]
@@ -135,19 +187,32 @@ def prove_exact_patch() -> None:
     assert set(rule) == {
         "api_version",
         "kind",
+        "identity",
+        "failure_policy",
+        "validation_action",
         "runner_identity",
         "owner_label",
         "operation_annotation",
+        "canonical_digest_annotation",
+        "canonical_digest_domain",
         "required_preconditions",
         "allowed_mutations",
         "deny_unknown_mutation",
     }
     assert rule == {
-        "api_version": "kapsel.sandbox.preservation/v1",
+        "api_version": "kapsel.sandbox.policy/v3",
         "kind": "ExactDeploymentImageRule",
-        "runner_identity": "kapsel-sandbox-runner",
+        "identity": "conditional-operation-v1",
+        "failure_policy": "Fail",
+        "validation_action": "Deny",
+        "runner_identity": RUNNER_IDENTITY,
         "owner_label": OWNER_LABEL,
         "operation_annotation": OPERATION_ANNOTATION,
+        "canonical_digest_annotation": CANONICAL_DIGEST_ANNOTATION,
+        "canonical_digest_domain": (
+            "canonical-old-deployment-without-server-identity-status-or-"
+            "canonical-digest-annotation"
+        ),
         "required_preconditions": [
             "run_id",
             "namespace",
@@ -159,6 +224,9 @@ def prove_exact_patch() -> None:
             "current_image",
             "immutable_image_digest",
             "operation_id",
+            "policy_revision",
+            "policy_inventory_digest",
+            "canonical_deployment_digest",
         ],
         "allowed_mutations": [
             "selected_named_container.image",
@@ -183,6 +251,16 @@ def prove_exact_patch() -> None:
         mutation(denied)
         assert not accepted(fixture["request_username"], fixture["preconditions"], old, denied)
     assert not accepted("other", fixture["preconditions"], old, accepted_update)
+    hostile_old = copy.deepcopy(old)
+    hostile_old["spec"]["template"]["spec"]["hostNetwork"] = True
+    assert not accepted(
+        fixture["request_username"], fixture["preconditions"], hostile_old, accepted_update
+    )
+    wrong_digest = copy.deepcopy(fixture["preconditions"])
+    wrong_digest["canonical_deployment_digest"] = "z" * 64
+    assert not accepted(fixture["request_username"], wrong_digest, old, accepted_update)
+    wrong_digest["canonical_deployment_digest"] = "0" * 64
+    assert not accepted(fixture["request_username"], wrong_digest, old, accepted_update)
 
 
 def prove_deletion_boundary() -> None:

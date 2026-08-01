@@ -1,9 +1,14 @@
 {
-  "api_version": "kapsel.sandbox.preservation/v1",
+  "api_version": "kapsel.sandbox.policy/v3",
   "kind": "ExactDeploymentImageRule",
-  "runner_identity": "kapsel-sandbox-runner",
-  "owner_label": "kapsel.dev/sandbox-owner",
+  "identity": "conditional-operation-v1",
+  "failure_policy": "Fail",
+  "validation_action": "Deny",
+  "runner_identity": "system:serviceaccount:kapsel-sandbox-runners:kapsel-sandbox-runner",
+  "owner_label": "kapsel.dev/cleanup-owner",
   "operation_annotation": "kapsel.dev/kap0038-operation-id",
+  "canonical_digest_annotation": "kapsel.dev/canonical-deployment-digest",
+  "canonical_digest_domain": "canonical-old-deployment-without-server-identity-status-or-canonical-digest-annotation",
   "required_preconditions": [
     "run_id",
     "namespace",
@@ -14,7 +19,10 @@
     "container",
     "current_image",
     "immutable_image_digest",
-    "operation_id"
+    "operation_id",
+    "policy_revision",
+    "policy_inventory_digest",
+    "canonical_deployment_digest"
   ],
   "allowed_mutations": [
     "selected_named_container.image",
