@@ -21,7 +21,8 @@ docker run --rm --network none --platform linux/amd64 \
   "$IMAGE" \
   sh -eu -c '
     test "$(id -u)" = 0
-    cargo test --locked --offline -p kapsel-sandbox --lib runner_host::tests
+    cargo test --locked --offline -p kapsel-sandbox --lib runner_host::tests -- \
+      --include-ignored --test-threads=1
     cargo test --locked --offline -p kapsel-sandbox --test runner_handoff production_runner_process
     cargo test --locked --offline -p kapsel-sandbox --test runner_handoff \
       production_runner_preserves_unknown_receipt_and_separate_classifier_meaning -- --exact

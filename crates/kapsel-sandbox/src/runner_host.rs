@@ -2544,6 +2544,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn allocating_reopen_without_generation_retries_same_generation_repeatedly() {
         let (root, inputs, generations, runner_uid, runner_gid) =
@@ -2604,6 +2608,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn allocating_reopen_removes_partial_generation_and_rejects_any_content() {
         let (root, inputs, generations, runner_uid, runner_gid) =
@@ -2681,6 +2689,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn allocating_record_rejects_process_journal_and_allocated_identities() {
         let (runner_uid, runner_gid) = runner_identity();
@@ -2818,6 +2830,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn durable_reopen_derives_monotonic_generation_and_rejects_journal_ambiguity() {
         let make = |suffix: &str| {
@@ -2898,6 +2914,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn interrupted_record_temporary_is_removed_with_and_without_canonical_record() {
         let make = |suffix: &str| {
@@ -2976,6 +2996,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn complete_temporary_preparing_record_is_promoted_and_generation_is_cleaned() {
         let root = std::env::temp_dir().join(format!(
@@ -3009,6 +3033,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn partial_temporary_record_with_generation_fails_closed() {
         let root = std::env::temp_dir().join(format!(
@@ -3055,6 +3083,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn preparing_cleanup_crash_after_cgroup_fence_reopens_and_retries_same_generation() {
         let root = std::env::temp_dir().join(format!(
@@ -3094,6 +3126,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn durable_record_rejects_unknown_and_fenced_cgroup_phase_combinations() {
         let (runner_uid, runner_gid) = runner_identity();
@@ -3132,6 +3168,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3556,6 +3596,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn retained_journal_rejects_cross_run_launch_until_explicit_retirement() {
         let root = std::env::temp_dir().join(format!(
@@ -3613,6 +3657,10 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "requires the privileged private-cgroup Linux lane"
+    )]
     #[test]
     fn retiring_record_converges_before_and_after_generation_removal() {
         for generation_removed in [false, true] {
