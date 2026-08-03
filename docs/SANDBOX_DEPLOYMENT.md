@@ -1,9 +1,9 @@
 # Public sandbox deployment contract
 
 Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0) and Gate 1
-Slices 1–3 are accepted after the focused Slice 3 correction. A focused Slice 2 runner-hardening
-follow-up blocks Slices 4–6. No provider, credential, resource, spend, image push, endpoint, DNS,
-private live command, or public traffic is authorized.
+Slices 1–3 and the focused Slice 2 runner-hardening follow-up are accepted. Gate 1 Slice 4 offline
+fixed input/key staging is explicitly authorized. No provider, credential, resource, spend, image
+push, endpoint, DNS, private live command, or public traffic is authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
@@ -164,22 +164,29 @@ writes `cgroup.kill`, waits for `populated 0`, verifies the recorded PID/start i
 and only then releases a successor. Missing writable cgroup-v2 delegation fails closed;
 process-group or direct-child kill is not a fallback.
 
-Before further Gate 1 work, the focused runner-hardening follow-up must prove final Linux securebits
-and effective, permitted, inheritable, ambient, and bounding capability sets at exactly zero. Its
-finite hostile-parent matrix covers the frozen production bootstrap set, one unexpected
-representative bit in each capability set, unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP`
-variants, and nonempty helper and runner `security.capability` values. Unexpected unlocked state
-must normalize to the exact final zeros or fail before authority release; an unnormalizable locked
-state and either file-capability case must fail. UID/GID transition plus `no_new_privs` alone is not
-evidence that every inherited capability is absent. The private mount namespace prevents mount
-propagation and gives the runner a fixed `/run/kapsel-sandbox` state alias; it does not hide the
-rest of the host filesystem or provide hard filesystem isolation. The follow-up must either select
-and prove a finite seccomp, Landlock, or equivalent restriction for this synthetic proof or record
-the unrestricted native syscall/path surface as an explicit non-claim and Gate 3 adversary. The
-follow-up freezes and tests the C source, compiler/toolchain, helper, and runner identities that
-exact Slice 6 bundle assembly must later authenticate; it does not require that final bundle early.
-Until independent acceptance, the existing Slice 2 evidence proves its named descriptor, identity,
-parent-death, cgroup, and recovery assertions but not a complete least-privilege process boundary.
+The runner-hardening follow-up freezes the controller/helper bootstrap as exact
+`effective=permitted=bounding={CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_FOWNER,CAP_KILL,CAP_SETGID,CAP_SETUID,CAP_SETPCAP,CAP_SYS_ADMIN}`
+and `inheritable=ambient={}`; `CAP_NET_RAW` is the hostile representative. One fixed first helper
+stage rejects file capabilities and normalizes unlocked parent authority to that state. The second
+stage rechecks both pinned executables, verifies the bootstrap state before mount/identity work,
+drops the entire bounding set, installs the runner UID/GID, clears all other capability sets, sets
+`no_new_privs`, and verifies securebits and all five sets are exactly zero before a final runner
+file-capability check and exec. The Rust runner independently checks `/proc/self/status` before
+receiving descriptors. Linux's capability subset rules require the effective case also to carry the
+representative in permitted and the ambient case also in permitted/inheritable; the finite matrix
+names each target set separately and covers unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP`. A
+file capability present at any check fails closed. A privileged parent can still race an xattr
+change between a check and exec; zero bounding/permitted/effective sets, `no_new_privs`, and the
+Rust backstop contain that race rather than establishing independence from that parent.
+
+The private mount namespace prevents propagation and gives the runner a fixed `/run/kapsel-sandbox`
+state alias; it does not hide the rest of the host filesystem or provide hard filesystem isolation.
+This follow-up selects no seccomp, Landlock, or equivalent restriction. The remaining native
+syscall/path surface is an explicit non-claim and Gate 3 adversary. The pinned Linux lane binds the
+exact C-source digest, compiler/toolchain identity, helper digest, and runner digest as Slice 6
+inputs without assembling the final bundle. The accepted Slice 2 evidence proves its named
+descriptor, identity, parent-death, capability, cgroup, and recovery assertions, but not hard
+filesystem isolation, syscall/path confinement, or a complete least-privilege process boundary.
 
 The exact KAP-0055 private TCP framing, message grammar, connection/deadline bounds, credential
 verifier, lease rotation, durable `application_invoked` marker, report binding, and acknowledgments
@@ -467,25 +474,108 @@ canary and prior-run temporal checks. It does not claim hard tenant isolation.
 
 ## Host-owned key and trust staging
 
-Authorization-grant signing input, receipt-signing input, tombstone-digest input, and public receipt
-trust are four distinct fixed authorities. Kubernetes runner and cleanup credentials are also
-separate fixed inputs. The target receives none of them. Receipt retrieval never appoints trust;
-inspection uses the separately staged public trust, explicit time, and explicit limits.
+Slice 4 is one closed six-family staging boundary: authorization, receipt, tombstone, Kubernetes
+runner and cleanup, handoff, and public trust. One deployment-owned absolute authority root contains
+only `incoming/`, `generations/generation-<20-digit generation>/`, the regular-file `current`
+pointer, and `dispatch/<run-id>/lease-<20-digit epoch>/`. The key-staging identity owns only the
+`0700` inbox and its exact `0400` files. Activated generations are controller-owned `0500`
+directories with controller-owned `0400` files. Group and other authority are prohibited. The
+installer and controller reader are separate crate-private roles: activation requires the configured
+staging process identity and narrowly scoped create/chown/DAC deployment authority, while generation
+reads require the configured controller identity and expose only one requested authority family.
+Production configuration rejects equality of either the staging/controller UID or GID. A
+`cfg(test)`-only same-identity constructor supports ordinary unprivileged unit fixtures without
+weakening production constructors; distinct positive execution remains a later privileged Linux
+lane. Absent privilege or a role/owner/mode mismatch fails closed. The root is controller-owned
+exact `0700`; all mode checks include special bits.
 
-Gate 1 must define for each staged input one exact source identity and schema, destination directory
-and filename, installing identity, consuming identity, owner, group prohibition, mode, maximum byte
-size, no-follow/same-inode checks, refresh trigger, outage behavior, rotation overlap, restart
-behavior, and deletion rule. Installation is atomic and fail-closed. A missing, stale, malformed,
-permissive, linked, replaced, or wrong-owner input blocks the dependent transition without changing
-an existing receiver result.
+A candidate contains exactly these thirteen regular, singly linked source files; missing, extra,
+linked, replaced, wrong-owner, or wrong-mode entries fail closed:
 
-Private key, credential, request, locator, receipt, journal, and trust-decision payloads never enter
-arguments, environment, public fields, controller SQLite, generic diagnostics, access/provider logs,
-committed evidence, or a backup outside the exact crash-consistent unit. Rotation never re-signs or
-rewrites frozen receipts. An outage preserves stopped admission, retained reads, recovery from
-already durable facts, receipt retrieval, expiry, and cleanup to the extent their distinct fixed
-authorities remain available. Gate 3 must prove each denial, outage, rotation, and non-disclosure
-rule; this contract does not claim managed or non-export key custody.
+| Family             | Fixed source                    | Exact schema and bound                                                                     |
+| ------------------ | ------------------------------- | ------------------------------------------------------------------------------------------ |
+| Authorization      | `authorization-signing-seed`    | Exactly 32 nonzero binary bytes                                                            |
+| Authorization      | `authorization-signing-key-id`  | 1–128 visible ASCII bytes in the existing KAP-0038 key-id grammar                          |
+| Receipt            | `receipt-signing-seed`          | Exactly 32 nonzero binary bytes, distinct from both other private keys                     |
+| Receipt            | `receipt-signing-key-id`        | 1–128 visible ASCII bytes in the existing receipt key-id grammar                           |
+| Tombstone          | `tombstone-digest-key`          | Exactly 32 nonzero binary bytes, distinct from both signing seeds                          |
+| Kubernetes runner  | `runner-kubernetes-api-server`  | 1–512 visible ASCII bytes; absolute HTTPS URI without userinfo, query, or fragment         |
+| Kubernetes runner  | `runner-kubernetes-ca.pem`      | 1–16 KiB bounded opaque CA bytes; certificate parsing remains consumer-owned               |
+| Kubernetes runner  | `runner-kubernetes-token`       | 1–4 KiB visible non-whitespace ASCII bytes                                                 |
+| Kubernetes cleanup | `cleanup-kubernetes-api-server` | Same endpoint grammar and bound as the runner endpoint                                     |
+| Kubernetes cleanup | `cleanup-kubernetes-ca.pem`     | 1–16 KiB bounded opaque CA bytes; certificate parsing remains consumer-owned               |
+| Kubernetes cleanup | `cleanup-kubernetes-token`      | 1–4 KiB visible non-whitespace ASCII bytes, distinct from the runner token                 |
+| Handoff            | `handoff-endpoint`              | 1–64 visible ASCII bytes parsed as one loopback socket address                             |
+| Public trust       | `public-receipt-trust.json`     | At most 1 KiB; exact version 1 key ID, public key, purpose, and nonempty validity interval |
+
+Public trust must name the staged receipt key, contain the public key derived from its seed, and use
+purpose `kapsel.kap0038.kubernetes-effect-receipt.v2`. Authorization trust is derived from the
+staged authorization seed and key ID rather than supplied as another mutable source. The target
+receives no staged authority. Receipt retrieval never appoints trust. The separate authority
+controller returns unchanged validated trust bytes only for a publicly retained run with a receipt,
+using that run's durable generation rather than `current`.
+
+Installation validates the complete candidate before copying it descriptor-relatively with
+no-follow, same-inode, owner, mode, link-count, and byte-bound checks. It writes and fsyncs every
+file, then a canonical version-1 `manifest.json` containing the monotonic generation, previous
+generation, fixed ordered names, sizes, and SHA-256 digests. After directory fsync and atomic
+rename, it atomically replaces and fsyncs the regular `current` record containing only generation
+and aggregate manifest digest. A generation directory alone is never active. On restart, the
+installer descriptor-relatively validates and finishes an exactly adjacent, complete generation
+renamed before `current`. Temporary recovery accepts at most the one exact canonical
+`.generation-<20-digit generation>.tmp` implied by current, or generation 1 when current is absent;
+malformed, nonadjacent, duplicate, or excessive debris fails closed. Refresh is explicit; no watcher
+or ambient lookup exists.
+
+A controller family read first validates only the pinned canonical manifest, aggregate manifest
+digest, exact thirteen-name inventory, ordered names, declared lengths, and declared per-file
+digests. It then opens, same-inode revalidates, hashes, and parses only the requested family.
+Receipt reads additionally validate public trust; public-trust reads additionally validate the
+receipt seed and key ID needed for public-key derivation. Unrelated payload corruption therefore
+holds only its dependent family, while manifest or inventory corruption blocks every family.
+
+The controller admits at most current plus one retained complete generation. A third activation
+fails until the older generation has no run, tombstone, retained receipt, cleanup/recovery, or
+dispatch-directory reference. Before fresh dispatch, the controller validates current authority; the
+same SQLite transaction that reserves capacity stores its positive generation and 64-lowercase-hex
+manifest digest. Queued rows have no pin. Recovery and cleanup use the durable pin and ignore
+`current`; rotation affects only later dispatches. A pre-Slice-4 database may migrate only while
+stopped and drained, with no dispatched or publicly retained run and no tombstone. Migration fails
+closed rather than assigning legacy authority to current.
+
+Each dispatch or recovery atomically creates one controller-owned `0700` lease directory containing
+the accepted twelve controller-owned `0400` runner inputs. It derives the server-owned request,
+exact per-run grant, authorization trust, namespace, lease ID, and credential, and copies only the
+pinned runner, receipt, and handoff inputs. One canonical temporary lease directory is bounded,
+recovered, fully fsynced, and atomically renamed before the final directory is reopened and proved
+to be the same inode. The resulting private `PublishedRunnerInputs` owns only that descriptor;
+`RunnerHost` accepts it directly, validates and opens all twelve files before replacement fencing,
+and has no input path or shared input-root configuration. Old process/cgroup fencing and durable
+retirement precede descriptor-relative removal of every lease directory and its run directory.
+Restart retries removal when retirement was already committed.
+
+Generation collection is one Service-owned transition, not a staging or caller-selected deletion
+interface. While holding an immediate SQLite transaction it validates every authority pin, rejects
+orphan receipt/publication/cleanup/application and dispatch ownership, and proves that the exact
+noncurrent generation has no run, tombstone, retained receipt/trust, cleanup/recovery, or dispatch
+reference. It then durably records only that generation and aggregate manifest digest before the
+reader renames and descriptor-relatively removes the exact noncurrent directory. Startup resumes a
+recorded pre-rename, partial-delete, or post-delete operation before requiring the complete
+tombstone keyring. The current generation is never collectible.
+
+Tombstones store the generation and manifest digest that produced them. Admission checks candidate
+locators against the bounded current-plus-retained tombstone keyring, so rotation cannot resurrect
+an old locator. Undispatched expiry uses current; dispatched expiry uses the durable pin. Private
+key, credential, request, locator, receipt, journal, per-file digest, and trust-decision payloads
+never enter arguments, environment, public fields, controller SQLite, diagnostics, logs, or
+committed evidence. SQLite contains only generation and aggregate manifest digest.
+
+Missing or malformed authority holds and retries only the dependent transition: fresh work stays
+queued, recovery neither renews nor relaunches, cleanup starts no API attempt, and tombstone-
+dependent admission or expiry returns unavailable. It never writes `service_failed`,
+`not_attempted`, a KAP-0038 receiver result, an invocation marker, or a receipt. Frozen receipt
+bytes are never re-signed. This offline contract selects no provider or credential source and claims
+neither managed custody nor syscall/path confinement.
 
 ## Receipt, result, and public projection
 

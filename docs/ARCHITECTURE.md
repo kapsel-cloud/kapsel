@@ -203,13 +203,25 @@ Linux process tree in one private cgroup-v2 generation. One fixed C helper estab
 descriptor closure, parent-death, and `no_new_privs` before the Rust runner runtime without
 weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete controller composition, the
 named descriptor/identity/cgroup/recovery denial evidence, the exact x86-64 Linux gate, and fresh
-review passed for that offline host boundary. A focused Slice 2 follow-up blocks further Gate 1 work
-until executable file capabilities, hostile-parent securebits and every final capability set are
-resolved and the filesystem/syscall confinement claim is explicit; the accepted evidence does not
-yet prove a complete least-privilege process boundary. Accepted Slice 3 adds exact cluster-policy
-verification, one fixed-authority bounded cleanup role, atomic runner retirement intent, and fail-
-closed static policy loading. KAP-0070 must still implement and accept key staging, backup,
-teardown, and recreation before any live or public claim.
+review passed for that offline host boundary. The accepted focused Slice 2 follow-up keeps one fixed
+C helper, freezes and normalizes the exact controller/helper bootstrap, rejects executable file
+capabilities, verifies every final capability set and securebits at zero before Rust authority, and
+binds source/compiler/helper/runner identities for Slice 6. It selects no syscall/path confinement;
+remaining host-filesystem and native-syscall reach is explicit and the proof does not establish a
+complete least-privilege process boundary. The Gate 1 Slice 4 candidate keeps fixed staging as one
+private deep module: a closed thirteen-file schema, atomic complete monotonic generations, one
+durable generation/manifest pin committed at dispatch, at most current plus one retained generation,
+and atomically published per-lease twelve-file runner directories. The staging module returns one
+opened published-directory descriptor; `RunnerHost` has no input path and validates every descriptor
+before replacement fencing. Durable runner retirement precedes dispatch removal. Service-owned
+collection holds its SQLite reference proof, records recoverable collection intent, and removes only
+the exact unreferenced noncurrent generation. Recovery, cleanup, tombstones, and separately returned
+retained public trust use the durable pin rather than ambient current authority; unavailable
+authority holds without producing lifecycle or KAP-0038 outcome facts. Pre-Slice-4 state migrates
+only while stopped and drained. Accepted Slice 3 adds exact cluster-policy verification, one fixed-
+authority bounded cleanup role, atomic runner retirement intent, and fail-closed static policy
+loading. KAP-0070 must still accept staging, backup, teardown, and recreation before any live or
+public claim.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor

@@ -112,6 +112,12 @@ enum Response {
 /// # Errors
 ///
 /// Returns a fixed handoff, application, receipt, or I/O failure without reflecting private input.
+///
+/// # Cancellation safety
+///
+/// Cancellation can leave the durable invocation acknowledgement or gateway journal after an
+/// attempted operation. Reopen the same per-run journal and call this function with the same run,
+/// operation, lease assignment, and request so reconciliation converges without blind mutation.
 pub async fn run_application_handoff(
     mut application: Application,
     request: &AgentRequest,
@@ -776,6 +782,10 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
+    fn authority_identity() -> crate::GenerationIdentity {
+        crate::GenerationIdentity::new(1, crate::test_authority::manifest_digest([9; 32])).unwrap()
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -787,11 +797,13 @@ mod tests {
             "kapsel-runner-handoff-{}-{now}",
             std::process::id()
         ));
-        let _ = std::fs::remove_dir_all(&root);
+        if root.exists() {
+            crate::test_authority::remove_root(&root);
+        }
         private_directory(&root);
         private_directory(&root.join("receipts"));
         let service = Arc::new(
-            Service::open(
+            Service::open_for_test(
                 root.join("sandbox.sqlite3"),
                 root.join("receipts"),
                 [9; 32],
@@ -802,7 +814,7 @@ mod tests {
         let admission = service
             .admit(&"1".repeat(32), crate::Scenario::Healthy, now)
             .unwrap();
-        let lease = service.dispatch_next(now).unwrap();
+        let lease = service.dispatch_next(now, &authority_identity()).unwrap();
         rusqlite::Connection::open(root.join("sandbox.sqlite3"))
             .unwrap()
             .execute(
@@ -986,7 +998,7 @@ mod tests {
             .unwrap();
         assert_eq!(verifier.len(), 32);
         assert_ne!(verifier, recovered_assignment.credential);
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[test]
@@ -1000,15 +1012,20 @@ mod tests {
             "kapsel-runner-expired-pending-{}",
             std::process::id()
         ));
-        let _ = std::fs::remove_dir_all(&root);
+        if root.exists() {
+            crate::test_authority::remove_root(&root);
+        }
         private_directory(&root);
         private_directory(&root.join("receipts"));
         let database = root.join("sandbox.sqlite3");
-        let service = Service::open(&database, root.join("receipts"), [9; 32], now).unwrap();
+        let service =
+            Service::open_for_test(&database, root.join("receipts"), [9; 32], now).unwrap();
         let admission = service
             .admit(&"6".repeat(32), crate::Scenario::Healthy, now)
             .unwrap();
-        let lease = service.dispatch_next(now + 1).unwrap();
+        let lease = service
+            .dispatch_next(now + 1, &authority_identity())
+            .unwrap();
         let specification = service.provisioning_specification(&lease, now + 1).unwrap();
         let namespace_uid = "expiry-namespace-uid";
         let (baseline, behavior_records) = Service::cluster_boundary_specification().unwrap();
@@ -1087,7 +1104,8 @@ mod tests {
         assert_eq!(pending, 1);
         drop(service);
 
-        let service = Service::open(&database, &receipt_directory, [9; 32], now + 86_402).unwrap();
+        let service =
+            Service::open_for_test(&database, &receipt_directory, [9; 32], now + 86_402).unwrap();
         let pending_after_restart: i64 = rusqlite::Connection::open(&database)
             .unwrap()
             .query_row(
@@ -1186,6 +1204,7 @@ mod tests {
                 &admission.run_id,
                 &specification.cleanup_identity,
                 namespace_uid,
+                &authority_identity(),
                 now + 86_403,
             )
             .unwrap();
@@ -1277,7 +1296,7 @@ mod tests {
             .unwrap();
         assert_eq!(active, 0);
         assert_eq!(live_verifier, 0);
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[test]
@@ -1299,10 +1318,12 @@ mod tests {
                 "kapsel-runner-finalized-{}-{index}-{now}",
                 std::process::id()
             ));
-            let _ = std::fs::remove_dir_all(&root);
+            if root.exists() {
+                crate::test_authority::remove_root(&root);
+            }
             private_directory(&root);
             private_directory(&root.join("receipts"));
-            let service = Service::open(
+            let service = Service::open_for_test(
                 root.join("sandbox.sqlite3"),
                 root.join("receipts"),
                 [9; 32],
@@ -1316,7 +1337,7 @@ mod tests {
                     now,
                 )
                 .unwrap();
-            let lease = service.dispatch_next(now).unwrap();
+            let lease = service.dispatch_next(now, &authority_identity()).unwrap();
             rusqlite::Connection::open(root.join("sandbox.sqlite3"))
                 .unwrap()
                 .execute(
@@ -1375,7 +1396,7 @@ mod tests {
             );
             drop(service);
 
-            let service = Service::open(
+            let service = Service::open_for_test(
                 root.join("sandbox.sqlite3"),
                 root.join("receipts"),
                 [9; 32],
@@ -1392,7 +1413,7 @@ mod tests {
                 .commit_application_report(&replacement.identity(), &report, now + 1)
                 .unwrap();
             assert_eq!(service.receipt(&admission.run_id, now + 1).unwrap(), bytes);
-            std::fs::remove_dir_all(root).unwrap();
+            crate::test_authority::remove_root(&root);
         }
     }
 
@@ -1441,16 +1462,19 @@ mod tests {
             "kapsel-runner-cross-expiry-{}-{now}",
             std::process::id()
         ));
-        let _ = std::fs::remove_dir_all(&root);
+        if root.exists() {
+            crate::test_authority::remove_root(&root);
+        }
         private_directory(&root);
         private_directory(&root.join("receipts"));
         let database = root.join("sandbox.sqlite3");
-        let service = Service::open(&database, root.join("receipts"), [9; 32], now).unwrap();
+        let service =
+            Service::open_for_test(&database, root.join("receipts"), [9; 32], now).unwrap();
 
         let invocation_run = service
             .admit(&"4".repeat(32), crate::Scenario::Healthy, now)
             .unwrap();
-        let invocation_lease = service.dispatch_next(now).unwrap();
+        let invocation_lease = service.dispatch_next(now, &authority_identity()).unwrap();
         rusqlite::Connection::open(&database)
             .unwrap()
             .execute(
@@ -1507,7 +1531,9 @@ mod tests {
                 unix_time().unwrap(),
             )
             .unwrap();
-        let report_lease = service.dispatch_next(unix_time().unwrap()).unwrap();
+        let report_lease = service
+            .dispatch_next(unix_time().unwrap(), &authority_identity())
+            .unwrap();
         rusqlite::Connection::open(&database)
             .unwrap()
             .execute(
@@ -1547,7 +1573,7 @@ mod tests {
                 .execution_state,
             crate::ExecutionState::Running
         );
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[test]
@@ -1557,10 +1583,12 @@ mod tests {
             "kapsel-runner-trickle-{}-{now}",
             std::process::id()
         ));
-        let _ = std::fs::remove_dir_all(&root);
+        if root.exists() {
+            crate::test_authority::remove_root(&root);
+        }
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let service = Service::open(
+        let service = Service::open_for_test(
             root.join("sandbox.sqlite3"),
             root.join("receipts"),
             [9; 32],
@@ -1594,7 +1622,7 @@ mod tests {
         assert!(elapsed >= Duration::from_secs(5));
         assert!(elapsed < Duration::from_secs(7));
         assert_eq!(server.join().unwrap(), Err(HandoffError::Unavailable));
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[test]

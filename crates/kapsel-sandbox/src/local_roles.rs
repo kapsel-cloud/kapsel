@@ -6,8 +6,8 @@ use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::{
     object_identity_parts, storage_error, timestamp, CleanupAbsenceEvidence, CleanupObjectAbsence,
-    CleanupState, DispatchLease, Service, ServiceError, PROVISIONED_OBJECT_OWNERS_MAX,
-    PROVISIONED_OBJECT_OWNERS_MAX_USIZE,
+    CleanupState, DispatchLease, GenerationIdentity, Service, ServiceError,
+    PROVISIONED_OBJECT_OWNERS_MAX, PROVISIONED_OBJECT_OWNERS_MAX_USIZE,
 };
 
 const CLEANUP_ESCALATION_SECONDS: i64 = 15 * 60;
@@ -20,11 +20,19 @@ const CLEANUP_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 #[cfg(test)]
 const CLEANUP_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
-type CleanupCandidate = (String, String, String, CleanupState, Option<i64>, bool);
+type CleanupCandidate = (
+    String,
+    String,
+    String,
+    CleanupState,
+    Option<i64>,
+    bool,
+    GenerationIdentity,
+);
 
 /// One bounded scheduler reconciliation step.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SchedulerStep {
+pub(crate) enum SchedulerStep {
     /// No queued run was available or another unexpired process lease owns recovery.
     Waiting,
     /// The local role still owns the current active lease.
@@ -36,14 +44,14 @@ pub enum SchedulerStep {
 }
 
 /// Serial scheduler role over the concrete sandbox service transitions.
-pub struct SchedulerRole {
+pub(crate) struct SchedulerRole {
     service: Service,
     current: Option<DispatchLease>,
 }
 
 impl SchedulerRole {
     /// Creates one process-local scheduler role for the owner-private service state.
-    pub fn new(service: Service) -> Self {
+    pub(crate) fn new(service: Service) -> Self {
         Self {
             service,
             current: None,
@@ -56,7 +64,11 @@ impl SchedulerRole {
     ///
     /// Returns a bounded service error when durable capacity, lease, time, or storage state is
     /// invalid. An unexpired lease owned by another process returns [`SchedulerStep::Waiting`].
-    pub fn run_once(&mut self, now_unix_s: i64) -> Result<SchedulerStep, ServiceError> {
+    pub(crate) fn run_once(
+        &mut self,
+        now_unix_s: i64,
+        current_authority: Option<&GenerationIdentity>,
+    ) -> Result<SchedulerStep, ServiceError> {
         timestamp(now_unix_s)?;
         if let Some(run_id) = self.service.sole_active_run()? {
             if let Some(current) = self.current.as_ref().filter(|lease| lease.run_id == run_id) {
@@ -80,7 +92,8 @@ impl SchedulerRole {
         }
 
         self.current = None;
-        match self.service.dispatch_next(now_unix_s) {
+        let authority = current_authority.ok_or(ServiceError::Unavailable)?;
+        match self.service.dispatch_next(now_unix_s, authority) {
             Ok(lease) => {
                 self.current = Some(lease.clone());
                 Ok(SchedulerStep::Dispatched(lease))
@@ -92,13 +105,13 @@ impl SchedulerRole {
 }
 
 /// Periodic public-retention role over the concrete sandbox service transition.
-pub struct RetentionRole {
+pub(crate) struct RetentionRole {
     service: Service,
 }
 
 impl RetentionRole {
     /// Creates one local retention role.
-    pub fn new(service: Service) -> Self {
+    pub(crate) fn new(service: Service) -> Self {
         Self { service }
     }
 
@@ -107,14 +120,14 @@ impl RetentionRole {
     /// # Errors
     ///
     /// Returns a time, storage, or immutable-object deletion failure.
-    pub fn run_once(&self, now_unix_s: i64) -> Result<(), ServiceError> {
+    pub(crate) fn run_once(&self, now_unix_s: i64) -> Result<(), ServiceError> {
         self.service.sweep_retention(now_unix_s)
     }
 }
 
 /// One exact object identity owned by the active cleanup generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CleanupOwnedObject {
+pub(crate) struct CleanupOwnedObject {
     /// Exact Kubernetes kind.
     pub kind: String,
     /// Exact namespace, absent only for the owned Namespace object.
@@ -129,7 +142,7 @@ pub struct CleanupOwnedObject {
 
 /// The sole cleanup work item selected from durable state.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CleanupWork {
+pub(crate) struct CleanupWork {
     /// Public run identity.
     pub run_id: String,
     /// Exact server-owned cleanup identity.
@@ -140,6 +153,8 @@ pub struct CleanupWork {
     pub objects: Vec<CleanupOwnedObject>,
     /// Whether the one fifteen-minute escalation is durably due or already emitted.
     pub escalated: bool,
+    /// Exact durable authority generation selected for cleanup.
+    pub authority: GenerationIdentity,
 }
 
 /// One bounded API observation for a recorded cleanup row.
@@ -204,14 +219,15 @@ struct CleanupDeletePlan {
 }
 
 /// UID- and owner-safe local cleanup role over concrete service transitions.
-pub struct CleanupRole {
+pub(crate) struct CleanupRole {
     service: Service,
 }
 
 /// Concrete fixed-authority Kubernetes cleanup role.
-pub struct KubernetesCleanupRole {
+pub(crate) struct KubernetesCleanupRole {
     role: CleanupRole,
     client: kube::Client,
+    authority: GenerationIdentity,
 }
 
 impl KubernetesCleanupRole {
@@ -220,10 +236,15 @@ impl KubernetesCleanupRole {
     /// # Errors
     ///
     /// Returns an unavailable error when the fixed Kubernetes client cannot be constructed.
-    pub fn new(service: Service, configuration: kube::Config) -> Result<Self, ServiceError> {
+    pub(crate) fn new(
+        service: Service,
+        configuration: kube::Config,
+        authority: GenerationIdentity,
+    ) -> Result<Self, ServiceError> {
         Ok(Self {
             role: CleanupRole::new(service),
             client: bounded_kubernetes_client(configuration)?,
+            authority,
         })
     }
 
@@ -235,8 +256,8 @@ impl KubernetesCleanupRole {
     /// # Errors
     ///
     /// Returns a bounded API, ownership, presence, transition, time, or storage failure.
-    pub async fn run_once(&self, now_unix_s: i64) -> Result<bool, ServiceError> {
-        let Some(work) = self.role.next(now_unix_s)? else {
+    pub(crate) async fn run_once(&self, now_unix_s: i64) -> Result<bool, ServiceError> {
+        let Some(work) = self.role.next(now_unix_s, &self.authority)? else {
             return Ok(false);
         };
         let result = cleanup_attempt_deadline(self.role.run_kubernetes_attempt_with_client(
@@ -257,7 +278,7 @@ impl KubernetesCleanupRole {
 
 impl CleanupRole {
     /// Creates one local cleanup role.
-    pub fn new(service: Service) -> Self {
+    pub(crate) fn new(service: Service) -> Self {
         Self { service }
     }
 
@@ -267,17 +288,37 @@ impl CleanupRole {
     ///
     /// Returns a bounded ownership, state, time, or storage failure. More than one active cleanup
     /// item fails closed.
-    pub fn next(&self, now_unix_s: i64) -> Result<Option<CleanupWork>, ServiceError> {
+    pub(crate) fn next(
+        &self,
+        now_unix_s: i64,
+        authority: &GenerationIdentity,
+    ) -> Result<Option<CleanupWork>, ServiceError> {
         timestamp(now_unix_s)?;
+        self.service.validate_authority_state()?;
         let candidate = self.service.cleanup_candidate()?;
-        let Some((run_id, cleanup_identity, namespace_uid, state, started_at, escalated)) =
-            candidate
+        let Some((
+            run_id,
+            cleanup_identity,
+            namespace_uid,
+            state,
+            started_at,
+            escalated,
+            durable_authority,
+        )) = candidate
         else {
             return Ok(None);
         };
+        if &durable_authority != authority {
+            return Err(ServiceError::Unavailable);
+        }
         if state == CleanupState::Pending {
-            self.service
-                .start_cleanup(&run_id, &cleanup_identity, &namespace_uid, now_unix_s)?;
+            self.service.start_cleanup(
+                &run_id,
+                &cleanup_identity,
+                &namespace_uid,
+                authority,
+                now_unix_s,
+            )?;
         } else if !matches!(state, CleanupState::Running | CleanupState::Failed) {
             return Err(ServiceError::InvalidTransition);
         }
@@ -300,6 +341,7 @@ impl CleanupRole {
             cleanup_identity,
             namespace_uid,
             escalated,
+            authority: durable_authority,
         }))
     }
 
@@ -321,6 +363,7 @@ impl CleanupRole {
                 .service
                 .cleanup_owned_objects(&work.run_id, &work.cleanup_identity)?,
             escalated,
+            authority: work.authority.clone(),
         })
     }
 
@@ -404,7 +447,7 @@ impl CleanupRole {
     /// # Errors
     ///
     /// Returns a bounded ownership, transition, time, or storage failure.
-    pub fn fail(&self, work: &CleanupWork, now_unix_s: i64) -> Result<(), ServiceError> {
+    pub(crate) fn fail(&self, work: &CleanupWork, now_unix_s: i64) -> Result<(), ServiceError> {
         match self.service.fail_cleanup(
             &work.run_id,
             &work.cleanup_identity,
@@ -415,11 +458,12 @@ impl CleanupRole {
             Err(ServiceError::InvalidTransition) => {
                 let current = self.service.cleanup_candidate()?;
                 if current.as_ref().is_some_and(
-                    |(run_id, cleanup_identity, namespace_uid, state, _, _)| {
+                    |(run_id, cleanup_identity, namespace_uid, state, _, _, authority)| {
                         run_id == &work.run_id
                             && cleanup_identity == &work.cleanup_identity
                             && namespace_uid == &work.namespace_uid
                             && *state == CleanupState::Failed
+                            && authority == &work.authority
                     },
                 ) {
                     Ok(())
@@ -903,7 +947,9 @@ impl Service {
                 concat!(
                     "SELECT cleanup_records.run_id, cleanup_records.cleanup_identity, ",
                     "cleanup_records.namespace_uid, cleanup_records.state, ",
-                    "cleanup_records.started_at, cleanup_records.escalated FROM cleanup_records ",
+                    "cleanup_records.started_at, cleanup_records.escalated, ",
+                    "runs.authority_generation, runs.authority_manifest_digest ",
+                    "FROM cleanup_records ",
                     "JOIN runs ON runs.run_id = cleanup_records.run_id ",
                     "WHERE cleanup_records.active = 1 AND cleanup_records.eligible = 1 ",
                     "AND cleanup_records.resource_state = 'owned' ",
@@ -916,6 +962,10 @@ impl Service {
                 [],
                 |row| {
                     let state = row.get::<_, String>(3)?;
+                    let generation = row.get::<_, Option<i64>>(6)?;
+                    let digest = row.get::<_, String>(7)?;
+                    let authority = super::stored_authority_identity(generation, digest)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
                     Ok((
                         row.get(0)?,
                         row.get(1)?,
@@ -923,6 +973,7 @@ impl Service {
                         CleanupState::parse(&state).map_err(|_| rusqlite::Error::InvalidQuery)?,
                         row.get(4)?,
                         row.get(5)?,
+                        authority,
                     ))
                 },
             )
@@ -1160,62 +1211,7 @@ mod tests {
     }
 
     fn cleanup_service(name: &str) -> (std::path::PathBuf, Service, String) {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let root =
-            std::env::temp_dir().join(format!("kapsel-cleanup-role-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir(&root).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let receipts = root.join("receipts");
-        std::fs::create_dir(&receipts).unwrap();
-        std::fs::set_permissions(&receipts, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let database = root.join("sandbox.sqlite3");
-        let service = Service::open(&database, &receipts, [7; 32], 1_800_000_000).unwrap();
-        let admission = service
-            .admit(
-                "44444444444444444444444444444444",
-                crate::Scenario::Healthy,
-                1_800_000_000,
-            )
-            .unwrap();
-        let lease = service.dispatch_next(1_800_000_001).unwrap();
-        let specification = service
-            .provisioning_specification(&lease, 1_800_000_001)
-            .unwrap();
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute(
-                concat!(
-                    "UPDATE runs SET provisioning_closed = 1, execution_state = 'service_failed', ",
-                    "namespace_uid = 'namespace-uid', runner_revoked = 1, ",
-                    "runner_process_absent = 1, journal_handoff = 1, runner_state_retiring = 1, ",
-                    "runner_state_retired = 1 WHERE run_id = ?1"
-                ),
-                [&admission.run_id],
-            )
-            .unwrap();
-        connection
-            .execute(
-                concat!(
-                    "UPDATE cleanup_records SET eligible = 1, resource_state = 'owned', ",
-                    "namespace_uid = 'namespace-uid' WHERE run_id = ?1"
-                ),
-                [&admission.run_id],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO provisioned_object_owners VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![
-                    "namespace-uid",
-                    admission.run_id,
-                    format!("Namespace/sandbox-{}", admission.run_id),
-                    specification.cleanup_identity
-                ],
-            )
-            .unwrap();
-        (root, service, admission.run_id)
+        crate::test_authority::cleanup_service(name, None)
     }
 
     fn work() -> CleanupWork {
@@ -1240,6 +1236,7 @@ mod tests {
                 },
             ],
             escalated: false,
+            authority: crate::test_authority_identity(),
         }
     }
 
@@ -1247,7 +1244,10 @@ mod tests {
     fn exact_cleanup_reload_is_read_only_and_identity_bound() {
         let (root, service, run_id) = cleanup_service("exact-reload");
         let role = CleanupRole::new(service);
-        let work = role.next(1_800_000_002).unwrap().unwrap();
+        let work = role
+            .next(1_800_000_002, &crate::test_authority_identity())
+            .unwrap()
+            .unwrap();
         let connection = rusqlite::Connection::open(root.join("sandbox.sqlite3")).unwrap();
         let read_transition = || {
             connection
@@ -1276,7 +1276,7 @@ mod tests {
             Err(ServiceError::OwnershipMismatch)
         );
         assert_eq!(before, read_transition());
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[tokio::test]
@@ -1300,7 +1300,12 @@ mod tests {
                 .unwrap();
         });
         let configuration = kube::Config::new(format!("http://{address}").parse().unwrap());
-        let role = KubernetesCleanupRole::new(service.clone(), configuration).unwrap();
+        let role = KubernetesCleanupRole::new(
+            service.clone(),
+            configuration,
+            crate::test_authority_identity(),
+        )
+        .unwrap();
         assert_eq!(
             role.run_once(1_800_000_002).await,
             Err(ServiceError::Unavailable)
@@ -1313,7 +1318,7 @@ mod tests {
             CleanupState::Failed
         );
         server.join().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[tokio::test]
@@ -1380,6 +1385,7 @@ mod tests {
             namespace_uid: "namespace-uid".into(),
             objects: Vec::new(),
             escalated: false,
+            authority: crate::test_authority_identity(),
         };
         let requests = vec![CleanupDeleteRequest {
             kind: "Pod".into(),
@@ -1413,7 +1419,7 @@ mod tests {
                 .await,
             Ok(None) | Err(_)
         ));
-        std::fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    os::unix::fs::{symlink, PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -31,31 +31,177 @@ use kapsel::{
     OperationState, OperatorConfiguration, ReceiptTrust, TargetRejection,
 };
 use kapsel_sandbox::{
-    run_application_handoff, ControllerConfiguration, ControllerRole, DispatchLease,
-    ExecutionState, Scenario, Service,
+    run_application_handoff, AuthorityConfiguration, AuthorityController, ControllerConfiguration,
+    ControllerRole, DispatchLease, ExecutionState, Scenario, Service,
 };
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+    ServerConfig, ServerConnection, StreamOwned,
+};
+use sha2::{Digest, Sha256};
 use tower_test::mock;
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(serde::Serialize)]
+struct TestManifest {
+    version: u8,
+    generation: u64,
+    previous_generation: Option<u64>,
+    files: Vec<TestManifestFile>,
+}
+
+#[derive(serde::Serialize)]
+struct TestManifestFile {
+    name: String,
+    length: u64,
+    sha256: String,
+}
+
+#[derive(serde::Serialize)]
+struct TestCurrentRecord {
+    version: u8,
+    generation: u64,
+    manifest_digest: String,
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().fold(
+        String::with_capacity(bytes.len() * 2),
+        |mut output, byte| {
+            use std::fmt::Write as _;
+            write!(&mut output, "{byte:02x}").unwrap();
+            output
+        },
+    )
+}
+
+fn authority_payloads(
+    handoff_endpoint: SocketAddr,
+    kubernetes_endpoint: SocketAddr,
+) -> Vec<(&'static str, Vec<u8>)> {
+    let receipt_key = SigningKey::from_bytes(&[42_u8; 32]);
+    vec![
+        ("authorization-signing-seed", vec![41_u8; 32]),
+        (
+            "authorization-signing-key-id",
+            b"sandbox-authorization-key".to_vec(),
+        ),
+        ("receipt-signing-seed", vec![42_u8; 32]),
+        ("receipt-signing-key-id", b"sandbox-receipt-key".to_vec()),
+        ("tombstone-digest-key", vec![7_u8; 32]),
+        (
+            "runner-kubernetes-api-server",
+            format!("https://{kubernetes_endpoint}").into_bytes(),
+        ),
+        (
+            "runner-kubernetes-ca.pem",
+            include_bytes!("fixtures/localhost-ca.pem").to_vec(),
+        ),
+        ("runner-kubernetes-token", b"runner-token".to_vec()),
+        (
+            "cleanup-kubernetes-api-server",
+            format!("https://{kubernetes_endpoint}").into_bytes(),
+        ),
+        (
+            "cleanup-kubernetes-ca.pem",
+            include_bytes!("fixtures/localhost-ca.pem").to_vec(),
+        ),
+        ("cleanup-kubernetes-token", b"cleanup-token".to_vec()),
+        (
+            "handoff-endpoint",
+            handoff_endpoint.to_string().into_bytes(),
+        ),
+        (
+            "public-receipt-trust.json",
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1,
+                "key_id": "sandbox-receipt-key",
+                "public_key_hex": lower_hex(&receipt_key.verifying_key().to_bytes()),
+                "accepted_purpose": "kapsel.kap0038.kubernetes-effect-receipt.v2",
+                "not_before_unix_s": 1,
+                "not_after_unix_s": 4_102_444_800_i64,
+            }))
+            .unwrap(),
+        ),
+    ]
+}
+
+fn test_manifest(
+    handoff_endpoint: SocketAddr,
+    kubernetes_endpoint: SocketAddr,
+) -> (Vec<u8>, String) {
+    let payloads = authority_payloads(handoff_endpoint, kubernetes_endpoint);
+    let manifest = serde_json::to_vec(&TestManifest {
+        version: 1,
+        generation: 1,
+        previous_generation: None,
+        files: payloads
+            .iter()
+            .map(|(name, payload)| TestManifestFile {
+                name: (*name).to_owned(),
+                length: u64::try_from(payload.len()).unwrap(),
+                sha256: lower_hex(&Sha256::digest(payload)),
+            })
+            .collect(),
+    })
+    .unwrap();
+    let digest = lower_hex(&Sha256::digest(&manifest));
+    (manifest, digest)
+}
+
+fn distinct_test_identity(current: u32) -> u32 {
+    if current == 65_532 {
+        65_531
+    } else {
+        65_532
+    }
+}
+
+fn fixed_authority_root(
+    root: &Path,
+    handoff_endpoint: SocketAddr,
+    kubernetes_endpoint: SocketAddr,
+) -> PathBuf {
+    let authority = root.join("fixed-authority");
+    if authority.exists() {
+        return authority;
+    }
+    private_directory(&authority);
+    private_directory(&authority.join("incoming"));
+    private_directory(&authority.join("generations"));
+    private_directory(&authority.join("dispatch"));
+    let generation = authority
+        .join("generations")
+        .join("generation-00000000000000000001");
+    private_directory(&generation);
+    for (name, payload) in authority_payloads(handoff_endpoint, kubernetes_endpoint) {
+        fs::write(generation.join(name), payload).unwrap();
+        fs::set_permissions(generation.join(name), fs::Permissions::from_mode(0o400)).unwrap();
+    }
+    let (manifest, digest) = test_manifest(handoff_endpoint, kubernetes_endpoint);
+    fs::write(generation.join("manifest.json"), manifest).unwrap();
+    fs::set_permissions(
+        generation.join("manifest.json"),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    fs::set_permissions(&generation, fs::Permissions::from_mode(0o500)).unwrap();
+    let current = serde_json::to_vec(&TestCurrentRecord {
+        version: 1,
+        generation: 1,
+        manifest_digest: digest,
+    })
+    .unwrap();
+    fs::write(authority.join("current"), current).unwrap();
+    fs::set_permissions(authority.join("current"), fs::Permissions::from_mode(0o400)).unwrap();
+    authority
+}
+
 const IMAGE: &str = concat!(
     "registry.k8s.io/pause@sha256:",
     "8b5ea5e3a4c8c5c1d3112ca9a6df8ca4db74822e0e4d7109b1e7d1490c62058c"
 );
-const TEST_CA: &str = concat!(
-    "-----BEGIN CERTIFICATE-----\n",
-    "MIIBuDCCAWqgAwIBAgICAcgwBQYDK2VwMC4xLDAqBgNVBAMMI3Bvbnl0b3duIEVk\n",
-    "RFNBIGxldmVsIDIgaW50ZXJtZWRpYXRlMB4XDTE5MDgxNjEzMjg1MVoXDTI1MDIw\n",
-    "NTEzMjg1MVowGTEXMBUGA1UEAwwOdGVzdHNlcnZlci5jb20wKjAFBgMrZXADIQAQ\n",
-    "9M4hrE+Ucw4QUmaKOeKfphklBJi1qsqtX4u+knbseqOBwDCBvTAMBgNVHRMBAf8E\n",
-    "AjAAMAsGA1UdDwQEAwIGwDAdBgNVHQ4EFgQUa/gnV4+a22BUKTouAYX6nfLnPKYw\n",
-    "RAYDVR0jBD0wO4AUFxIwU406tG3CsPWkHWqfuUT48auhIKQeMBwxGjAYBgNVBAMM\n",
-    "EXBvbnl0b3duIEVkRFNBIENBggF7MDsGA1UdEQQ0MDKCDnRlc3RzZXJ2ZXIuY29t\n",
-    "ghVzZWNvbmQudGVzdHNlcnZlci5jb22CCWxvY2FsaG9zdDAFBgMrZXADQQApDiBQ\n",
-    "ns3fuvsWuFpIS+osj2B/gQ0b6eBAZ1UBxRyDlAo5++JZ0PtaEROyGo2t2gqi2Lyz\n",
-    "47mLyGCvqgVbC6cH\n",
-    "-----END CERTIFICATE-----\n"
-);
-
 fn now() -> i64 {
     i64::try_from(
         SystemTime::now()
@@ -71,27 +217,58 @@ fn private_directory(path: &Path) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
-fn fixture() -> (PathBuf, Service, PathBuf) {
+fn remove_fixture_root(path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    let generation = path.join("fixed-authority/generations/generation-00000000000000000001");
+    if generation.exists() {
+        fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::remove_dir_all(path).unwrap();
+}
+
+fn fixture(
+    handoff_endpoint: SocketAddr,
+    kubernetes_endpoint: SocketAddr,
+) -> (PathBuf, Service, AuthorityController) {
     let root = std::env::temp_dir().join(format!(
         "kapsel-sandbox-runner-handoff-process-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
     ));
-    let _ = fs::remove_dir_all(&root);
+    if root.exists() {
+        remove_fixture_root(&root);
+    }
     private_directory(&root);
     let root = fs::canonicalize(root).unwrap();
     private_directory(&root.join("receipts"));
-    let digest_key = root.join("digest.key");
-    fs::write(&digest_key, [7_u8; 32]).unwrap();
-    fs::set_permissions(&digest_key, fs::Permissions::from_mode(0o440)).unwrap();
+    let authority_root = fixed_authority_root(&root, handoff_endpoint, kubernetes_endpoint);
+    let controller_uid = rustix::process::geteuid().as_raw();
+    let controller_gid = rustix::process::getegid().as_raw();
+    let staging_uid = if controller_uid == 65_532 {
+        65_531
+    } else {
+        65_532
+    };
+    let staging_gid = if controller_gid == 65_532 {
+        65_531
+    } else {
+        65_532
+    };
     let service = Service::open(
         root.join("sandbox.sqlite3"),
         root.join("receipts"),
-        [7; 32],
+        &AuthorityConfiguration::new(
+            authority_root,
+            controller_uid,
+            controller_gid,
+            staging_uid,
+            staging_gid,
+        ),
         now(),
     )
     .unwrap();
-    (root, service, digest_key)
+    let authority = AuthorityController::new(service.clone());
+    (root, service, authority)
 }
 
 fn verify_target(service: &Service, lease: &DispatchLease, at: i64) {
@@ -193,56 +370,41 @@ fn application(
     (application, request, handle)
 }
 
-fn start_handoff(root: &Path, digest_key: &Path, address: std::net::SocketAddr) -> Child {
-    let child = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
-        .args([
-            "handoff-serve",
-            "--database",
-            root.join("sandbox.sqlite3").to_str().unwrap(),
-            "--receipts",
-            root.join("receipts").to_str().unwrap(),
-            "--digest-key-file",
-            digest_key.to_str().unwrap(),
-            "--listen",
-            &address.to_string(),
-        ])
+fn start_handoff(root: &Path, address: std::net::SocketAddr) -> Child {
+    let controller_uid = rustix::process::geteuid().as_raw();
+    let controller_gid = rustix::process::getegid().as_raw();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"));
+    command.args([
+        "handoff-serve",
+        "--database",
+        root.join("sandbox.sqlite3").to_str().unwrap(),
+        "--receipts",
+        root.join("receipts").to_str().unwrap(),
+        "--listen",
+        &address.to_string(),
+        "--authority-root",
+        root.join("fixed-authority").to_str().unwrap(),
+        "--controller-uid",
+        &controller_uid.to_string(),
+        "--controller-gid",
+        &controller_gid.to_string(),
+        "--staging-uid",
+        &distinct_test_identity(controller_uid).to_string(),
+        "--staging-gid",
+        &distinct_test_identity(controller_gid).to_string(),
+    ]);
+    let child = command
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    for _ in 0..100 {
+    for _ in 0..500 {
         if TcpStream::connect(address).is_ok() {
             return child;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("private handoff process did not listen")
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    output
-}
-
-fn projected_volume(root: &Path, files: &[(&str, Vec<u8>)]) {
-    private_directory(root);
-    fs::set_permissions(root, fs::Permissions::from_mode(0o750)).unwrap();
-    let generation_name = "..2026_07_24_00_00_00.000000001";
-    let generation = root.join(generation_name);
-    private_directory(&generation);
-    fs::set_permissions(&generation, fs::Permissions::from_mode(0o750)).unwrap();
-    symlink(generation_name, root.join("..data")).unwrap();
-    for (name, bytes) in files {
-        let target = generation.join(name);
-        fs::write(&target, bytes).unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o440)).unwrap();
-        symlink(Path::new("..data").join(name), root.join(name)).unwrap();
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,11 +419,10 @@ enum NativeOutcome {
     reason = "the three finalized outcomes share the long deployment response sequence"
 )]
 fn start_kubernetes_fixture(
+    listener: TcpListener,
     outcome: NativeOutcome,
     run_id: &str,
-) -> (SocketAddr, thread::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
+) -> thread::JoinHandle<()> {
     let operation_id = format!("sandbox-{run_id}");
     let responses = if outcome != NativeOutcome::NotAttempted {
         let old_image = concat!(
@@ -313,9 +474,10 @@ fn start_kubernetes_fixture(
     };
     let server = thread::spawn(move || {
         for body in responses {
-            let (mut stream, _) = listener.accept().unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = tls_server_stream(stream);
             let mut request = [0_u8; 16 * 1024];
-            let _ = stream.read(&mut request).unwrap();
+            assert!(stream.read(&mut request).unwrap() > 0);
             let status = if outcome == NativeOutcome::NotAttempted {
                 "404 Not Found"
             } else {
@@ -334,18 +496,15 @@ fn start_kubernetes_fixture(
             stream.write_all(body.as_bytes()).unwrap();
         }
     });
-    (address, server)
+    server
 }
 
 struct PreparedProcessFixture {
     root: PathBuf,
     service: Service,
-    digest_key: PathBuf,
     run_id: String,
     launch_at: i64,
     handoff_address: SocketAddr,
-    composition_path: PathBuf,
-    handoff_path: PathBuf,
 }
 
 #[allow(
@@ -356,7 +515,10 @@ fn prepare_process_fixture(
     kubernetes_address: SocketAddr,
     idempotency_digit: char,
 ) -> PreparedProcessFixture {
-    let (root, service, digest_key) = fixture();
+    let handoff_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let handoff_address = handoff_probe.local_addr().unwrap();
+    drop(handoff_probe);
+    let (root, service, authority) = fixture(handoff_address, kubernetes_address);
     let at = now();
     let admission = service
         .admit(
@@ -365,223 +527,45 @@ fn prepare_process_fixture(
             at,
         )
         .unwrap();
-    let lease = service.dispatch_next(at).unwrap();
+    let lease = authority.dispatch_next(at).unwrap();
     verify_target(&service, &lease, at);
-    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-    let handoff_address = probe.local_addr().unwrap();
-    drop(probe);
-    let assignment = service
-        .handoff_assignment(&lease, handoff_address, at)
-        .unwrap();
-
-    let input_root = root.join("projected");
-    private_directory(&input_root);
-    let composition_mount = input_root.join("composition");
-    let authorization_mount = input_root.join("authorization");
-    let kubernetes_mount = input_root.join("kubernetes");
-    let signing_mount = input_root.join("receipt-signing");
-    let handoff_mount = input_root.join("handoff");
-    let state_volume = root.join("gateway-volume");
-    private_directory(&state_volume);
-
-    let request = serde_json::to_vec(&serde_json::json!({
-        "operation_id": admission.operation_id,
-        "namespace": format!("sandbox-{}", admission.run_id),
-        "deployment": "sandbox-target",
-        "container": "target",
-        "immutable_image_digest": IMAGE
-    }))
-    .unwrap();
-    let authorization_seed = [41_u8; 32];
-    let authorization_key = SigningKey::from_bytes(&authorization_seed);
-    let grant = provision_exact_grant(&GrantProvisioning {
-        authorization: &ExactAuthorization {
-            authorization_id: format!("auth-{}", admission.run_id),
-            operation_id: admission.operation_id.clone(),
-            namespace: format!("sandbox-{}", admission.run_id),
-            deployment: "sandbox-target".into(),
-            container: "target".into(),
-            immutable_image_digest: IMAGE.into(),
-        },
-        signing_seed: &authorization_seed,
-        signing_key_id: "sandbox-authorization-key",
-    })
-    .unwrap();
-    projected_volume(
-        &authorization_mount,
-        &[
-            ("signed-grant.json", grant),
-            (
-                "trust.json",
-                serde_json::to_vec(&serde_json::json!({
-                    "key_id": "sandbox-authorization-key",
-                    "public_key_hex": hex(&authorization_key.verifying_key().to_bytes())
-                }))
-                .unwrap(),
-            ),
-        ],
-    );
-    projected_volume(
-        &kubernetes_mount,
-        &[
-            (
-                "api-server",
-                format!("http://{kubernetes_address}").into_bytes(),
-            ),
-            ("ca.crt", TEST_CA.as_bytes().to_vec()),
-            ("namespace", b"kapsel-sandbox-runners".to_vec()),
-            ("token", b"fixed-projected-token".to_vec()),
-        ],
-    );
-    projected_volume(
-        &signing_mount,
-        &[
-            ("seed", vec![42_u8; 32]),
-            ("key-id", b"sandbox-receipt-key".to_vec()),
-        ],
-    );
-    projected_volume(
-        &handoff_mount,
-        &[
-            ("credential", assignment.credential().to_vec()),
-            ("endpoint", assignment.endpoint().to_string().into_bytes()),
-            ("lease-id", assignment.lease_id().as_bytes().to_vec()),
-        ],
-    );
-    let journal_path = state_volume.join("run/gateway.sqlite3");
-    let receipt_outbox = state_volume.join("run/receipt-outbox");
-    let composition = serde_json::to_vec(&serde_json::json!({
-        "request": composition_mount.join("request.json"),
-        "signed_authorization_grant": authorization_mount.join("signed-grant.json"),
-        "authorization_trust": authorization_mount.join("trust.json"),
-        "kubernetes_api_server": kubernetes_mount.join("api-server"),
-        "kubernetes_ca": kubernetes_mount.join("ca.crt"),
-        "kubernetes_namespace": kubernetes_mount.join("namespace"),
-        "kubernetes_token": kubernetes_mount.join("token"),
-        "journal": journal_path,
-        "receipt_directory": receipt_outbox,
-        "receipt_signing_seed": signing_mount.join("seed"),
-        "receipt_signing_key_id": signing_mount.join("key-id")
-    }))
-    .unwrap();
-    projected_volume(
-        &composition_mount,
-        &[
-            ("operator-configuration.json", composition),
-            ("request.json", request),
-        ],
-    );
     PreparedProcessFixture {
         root,
         service,
-        digest_key,
         run_id: admission.run_id,
         launch_at: at + 31,
         handoff_address,
-        composition_path: composition_mount.join("operator-configuration.json"),
-        handoff_path: handoff_mount,
     }
 }
 
-fn fixed_controller_role(
-    root: &Path,
-    composition_path: &Path,
-    handoff_path: &Path,
-    service: &Service,
-    handoff_endpoint: SocketAddr,
-) -> ControllerRole {
-    let composition: serde_json::Value =
-        serde_json::from_slice(&fs::read(composition_path).unwrap()).unwrap();
-    let inputs = root.join("runner-host-inputs");
-    private_directory(&inputs);
-    let source = |field: &str| PathBuf::from(composition[field].as_str().unwrap());
-    for (name, bytes) in [
-        ("request.json", fs::read(source("request")).unwrap()),
-        (
-            "signed-authorization-grant.bin",
-            fs::read(source("signed_authorization_grant")).unwrap(),
-        ),
-        (
-            "authorization-trust.json",
-            fs::read(source("authorization_trust")).unwrap(),
-        ),
-        (
-            "kubernetes-api-server",
-            fs::read(source("kubernetes_api_server")).unwrap(),
-        ),
-        (
-            "kubernetes-ca.pem",
-            fs::read(source("kubernetes_ca")).unwrap(),
-        ),
-        (
-            "kubernetes-namespace",
-            fs::read(source("kubernetes_namespace")).unwrap(),
-        ),
-        (
-            "kubernetes-token",
-            fs::read(source("kubernetes_token")).unwrap(),
-        ),
-        (
-            "receipt-signing-seed",
-            fs::read(source("receipt_signing_seed")).unwrap(),
-        ),
-        (
-            "receipt-signing-key-id",
-            fs::read(source("receipt_signing_key_id")).unwrap(),
-        ),
-        (
-            "handoff-endpoint",
-            fs::read(handoff_path.join("endpoint")).unwrap(),
-        ),
-        (
-            "handoff-lease-id",
-            fs::read(handoff_path.join("lease-id")).unwrap(),
-        ),
-        (
-            "handoff-credential",
-            fs::read(handoff_path.join("credential")).unwrap(),
-        ),
-    ] {
-        fs::write(inputs.join(name), bytes).unwrap();
-        fs::set_permissions(inputs.join(name), fs::Permissions::from_mode(0o400)).unwrap();
-    }
+fn fixed_controller_role(root: &Path, service: &Service) -> ControllerRole {
     let generations = root.join("runner-generations");
     private_directory(&generations);
-    let controller_uid = rustix::process::geteuid().as_raw();
-    let controller_gid = rustix::process::getegid().as_raw();
+    let controller_uid = rustix::process::getuid().as_raw();
+    let controller_gid = rustix::process::getgid().as_raw();
     #[cfg(target_os = "linux")]
     let (runner_uid, runner_gid) = (65_532, 65_532);
     #[cfg(not(target_os = "linux"))]
     let (runner_uid, runner_gid) = (controller_uid, controller_gid);
-    let _ = (controller_uid, controller_gid);
     ControllerRole::new(
         service.clone(),
-        ControllerConfiguration::new(
-            inputs,
-            generations,
-            runner_uid,
-            runner_gid,
-            handoff_endpoint,
-        ),
+        ControllerConfiguration::new(generations, runner_uid, runner_gid),
     )
 }
 
 fn reopened_controller_role(fixture: &PreparedProcessFixture) -> ControllerRole {
-    let controller_uid = rustix::process::geteuid().as_raw();
-    let controller_gid = rustix::process::getegid().as_raw();
+    let controller_uid = rustix::process::getuid().as_raw();
+    let controller_gid = rustix::process::getgid().as_raw();
     #[cfg(target_os = "linux")]
     let (runner_uid, runner_gid) = (65_532, 65_532);
     #[cfg(not(target_os = "linux"))]
     let (runner_uid, runner_gid) = (controller_uid, controller_gid);
-    let _ = (controller_uid, controller_gid);
     ControllerRole::new(
         fixture.service.clone(),
         ControllerConfiguration::new(
-            fixture.root.join("runner-host-inputs"),
             fixture.root.join("runner-generations"),
             runner_uid,
             runner_gid,
-            fixture.handoff_address,
         ),
     )
 }
@@ -694,12 +678,27 @@ fn success_bodies(run_id: &str) -> [String; 3] {
     ]
 }
 
-fn read_fixture_request(stream: &mut TcpStream) {
-    let mut request = [0_u8; 16 * 1024];
-    let _ = stream.read(&mut request).unwrap();
+fn tls_server_stream(stream: TcpStream) -> StreamOwned<ServerConnection, TcpStream> {
+    let certificate = CertificateDer::from(include_bytes!("fixtures/localhost-cert.der").to_vec());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        include_bytes!("fixtures/localhost-key.der").to_vec(),
+    ));
+    let configuration = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], key)
+        .unwrap();
+    StreamOwned::new(
+        ServerConnection::new(Arc::new(configuration)).unwrap(),
+        stream,
+    )
 }
 
-fn write_fixture_response(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
+fn read_fixture_request(stream: &mut impl Read) {
+    let mut request = [0_u8; 16 * 1024];
+    assert!(stream.read(&mut request).unwrap() > 0);
+}
+
+fn write_fixture_response(stream: &mut impl Write, body: &str) -> std::io::Result<()> {
     write!(
         stream,
         concat!(
@@ -715,7 +714,8 @@ fn serve_success(listener: TcpListener, run_id: &str) -> thread::JoinHandle<()> 
     let bodies = success_bodies(run_id);
     thread::spawn(move || {
         for body in bodies {
-            let (mut stream, _) = listener.accept().unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = tls_server_stream(stream);
             read_fixture_request(&mut stream);
             write_fixture_response(&mut stream, &body).unwrap();
         }
@@ -732,7 +732,12 @@ fn run_native_runner_case(outcome: NativeOutcome) {
     if !rustix::process::geteuid().is_root() {
         return;
     }
-    let (root, service, digest_key) = fixture();
+    let handoff_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let handoff_address = handoff_probe.local_addr().unwrap();
+    drop(handoff_probe);
+    let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let kubernetes_address = kubernetes_listener.local_addr().unwrap();
+    let (root, service, authority) = fixture(handoff_address, kubernetes_address);
     let at = now();
     let admission = service
         .admit(
@@ -748,122 +753,13 @@ fn run_native_runner_case(outcome: NativeOutcome) {
             at,
         )
         .unwrap();
-    let lease = service.dispatch_next(at).unwrap();
+    let lease = authority.dispatch_next(at).unwrap();
     verify_target(&service, &lease, at);
-    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-    let handoff_address = probe.local_addr().unwrap();
-    drop(probe);
-    let mut handoff_process = start_handoff(&root, &digest_key, handoff_address);
-    let assignment = service
-        .handoff_assignment(&lease, handoff_address, at)
-        .unwrap();
-    let (kubernetes_address, kubernetes_server) =
-        start_kubernetes_fixture(outcome, &admission.run_id);
+    let mut handoff_process = start_handoff(&root, handoff_address);
+    let kubernetes_server =
+        start_kubernetes_fixture(kubernetes_listener, outcome, &admission.run_id);
 
-    let input_root = root.join("projected");
-    private_directory(&input_root);
-    let composition_mount = input_root.join("composition");
-    let authorization_mount = input_root.join("authorization");
-    let kubernetes_mount = input_root.join("kubernetes");
-    let signing_mount = input_root.join("receipt-signing");
-    let handoff_mount = input_root.join("handoff");
-    let state_volume = root.join("gateway-volume");
-    private_directory(&state_volume);
-    assert!(fs::read_dir(&state_volume).unwrap().next().is_none());
-
-    let operation_id = admission.operation_id.clone();
-    let request = serde_json::to_vec(&serde_json::json!({
-        "operation_id": operation_id,
-        "namespace": format!("sandbox-{}", admission.run_id),
-        "deployment": "sandbox-target",
-        "container": "target",
-        "immutable_image_digest": IMAGE
-    }))
-    .unwrap();
-    let authorization_seed = [41_u8; 32];
-    let authorization_key = SigningKey::from_bytes(&authorization_seed);
-    let grant = provision_exact_grant(&GrantProvisioning {
-        authorization: &ExactAuthorization {
-            authorization_id: format!("auth-{}", admission.run_id),
-            operation_id: admission.operation_id.clone(),
-            namespace: format!("sandbox-{}", admission.run_id),
-            deployment: "sandbox-target".into(),
-            container: "target".into(),
-            immutable_image_digest: IMAGE.into(),
-        },
-        signing_seed: &authorization_seed,
-        signing_key_id: "sandbox-authorization-key",
-    })
-    .unwrap();
-    let trust = serde_json::to_vec(&serde_json::json!({
-        "key_id": "sandbox-authorization-key",
-        "public_key_hex": hex(&authorization_key.verifying_key().to_bytes())
-    }))
-    .unwrap();
-    projected_volume(
-        &authorization_mount,
-        &[("signed-grant.json", grant), ("trust.json", trust)],
-    );
-    projected_volume(
-        &kubernetes_mount,
-        &[
-            (
-                "api-server",
-                format!("http://{kubernetes_address}").into_bytes(),
-            ),
-            ("ca.crt", TEST_CA.as_bytes().to_vec()),
-            ("namespace", b"kapsel-sandbox-runners".to_vec()),
-            ("token", b"fixed-projected-token".to_vec()),
-        ],
-    );
-    projected_volume(
-        &signing_mount,
-        &[
-            ("seed", vec![42_u8; 32]),
-            ("key-id", b"sandbox-receipt-key".to_vec()),
-        ],
-    );
-    projected_volume(
-        &handoff_mount,
-        &[
-            ("credential", assignment.credential().to_vec()),
-            ("endpoint", assignment.endpoint().to_string().into_bytes()),
-            ("lease-id", assignment.lease_id().as_bytes().to_vec()),
-        ],
-    );
-    let journal = state_volume.join("run/gateway.sqlite3");
-    let receipt_outbox = state_volume.join("run/receipt-outbox");
-    let composition = serde_json::to_vec(&serde_json::json!({
-        "request": composition_mount.join("request.json"),
-        "signed_authorization_grant": authorization_mount.join("signed-grant.json"),
-        "authorization_trust": authorization_mount.join("trust.json"),
-        "kubernetes_api_server": kubernetes_mount.join("api-server"),
-        "kubernetes_ca": kubernetes_mount.join("ca.crt"),
-        "kubernetes_namespace": kubernetes_mount.join("namespace"),
-        "kubernetes_token": kubernetes_mount.join("token"),
-        "journal": journal,
-        "receipt_directory": receipt_outbox,
-        "receipt_signing_seed": signing_mount.join("seed"),
-        "receipt_signing_key_id": signing_mount.join("key-id")
-    }))
-    .unwrap();
-    projected_volume(
-        &composition_mount,
-        &[
-            ("operator-configuration.json", composition),
-            ("request.json", request),
-        ],
-    );
-
-    let composition_path = composition_mount.join("operator-configuration.json");
-    let generations = root.join("runner-generations");
-    let mut controller = fixed_controller_role(
-        &root,
-        &composition_path,
-        &handoff_mount,
-        &service,
-        handoff_address,
-    );
+    let mut controller = fixed_controller_role(&root, &service);
     launch_after_lease_expiry(&mut controller, at + 31);
     let runner_status = controller.wait().unwrap();
     let _ = handoff_process.kill();
@@ -892,8 +788,6 @@ fn run_native_runner_case(outcome: NativeOutcome) {
     kubernetes_server.join().unwrap();
 
     let snapshot = service.snapshot(&admission.run_id, now()).unwrap();
-    assert!(fs::read_dir(&state_volume).unwrap().next().is_none());
-    assert!(fs::read_dir(&generations).unwrap().next().is_none());
     assert!(root.join("sandbox.sqlite3").is_file());
     assert!(!root.join("gateway.sqlite3").exists());
     if outcome != NativeOutcome::NotAttempted {
@@ -944,7 +838,7 @@ fn run_native_runner_case(outcome: NativeOutcome) {
             .next()
             .is_none());
     }
-    fs::remove_dir_all(root).unwrap();
+    remove_fixture_root(root);
 }
 
 #[test]
@@ -966,13 +860,7 @@ fn process_loss_before_invocation_recovers() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '5');
     let gate = TcpListener::bind(fixture.handoff_address).unwrap();
-    let mut controller = fixed_controller_role(
-        &fixture.root,
-        &fixture.composition_path,
-        &fixture.handoff_path,
-        &fixture.service,
-        fixture.handoff_address,
-    );
+    let mut controller = fixed_controller_role(&fixture.root, &fixture.service);
     let launch_at = fixture.launch_at;
     launch_after_lease_expiry(&mut controller, launch_at);
     let (mut uncommitted, _) = gate.accept().unwrap();
@@ -994,7 +882,7 @@ fn process_loss_before_invocation_recovers() {
         .unwrap();
     assert!(!invoked);
 
-    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut handoff = start_handoff(&fixture.root, fixture.handoff_address);
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
     let mut controller = reopened_controller_role(&fixture);
     let replacement_generation = launch_after_lease_expiry(&mut controller, launch_at + 31);
@@ -1018,23 +906,18 @@ fn process_loss_before_invocation_recovers() {
     );
     handoff.kill().unwrap();
     handoff.wait().unwrap();
-    fs::remove_dir_all(fixture.root).unwrap();
+    remove_fixture_root(fixture.root);
 }
 
 fn process_loss_after_invocation_ack_recovers() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '6');
-    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
-    let mut controller = fixed_controller_role(
-        &fixture.root,
-        &fixture.composition_path,
-        &fixture.handoff_path,
-        &fixture.service,
-        fixture.handoff_address,
-    );
+    let mut handoff = start_handoff(&fixture.root, fixture.handoff_address);
+    let mut controller = fixed_controller_role(&fixture.root, &fixture.service);
     let launch_at = fixture.launch_at;
     launch_after_lease_expiry(&mut controller, launch_at);
-    let (mut blocked_get, _) = kubernetes_listener.accept().unwrap();
+    let (blocked_get, _) = kubernetes_listener.accept().unwrap();
+    let mut blocked_get = tls_server_stream(blocked_get);
     read_fixture_request(&mut blocked_get);
     let invoked: bool = rusqlite::Connection::open(fixture.root.join("sandbox.sqlite3"))
         .unwrap()
@@ -1065,40 +948,37 @@ fn process_loss_after_invocation_ack_recovers() {
     );
     handoff.kill().unwrap();
     handoff.wait().unwrap();
-    fs::remove_dir_all(fixture.root).unwrap();
+    remove_fixture_root(fixture.root);
 }
 
 fn process_loss_after_apply_started_reconciles_without_second_patch() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '7');
-    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut handoff = start_handoff(&fixture.root, fixture.handoff_address);
     let patch_seen = Arc::new(AtomicBool::new(false));
     let release_patch = Arc::new(AtomicBool::new(false));
     let server_patch_seen = Arc::clone(&patch_seen);
     let server_release = Arc::clone(&release_patch);
     let bodies = success_bodies(&fixture.run_id);
     let kubernetes = thread::spawn(move || {
-        let (mut first_get, _) = kubernetes_listener.accept().unwrap();
+        let (first_get, _) = kubernetes_listener.accept().unwrap();
+        let mut first_get = tls_server_stream(first_get);
         read_fixture_request(&mut first_get);
         write_fixture_response(&mut first_get, &bodies[0]).unwrap();
-        let (mut patch, _) = kubernetes_listener.accept().unwrap();
+        let (patch, _) = kubernetes_listener.accept().unwrap();
+        let mut patch = tls_server_stream(patch);
         read_fixture_request(&mut patch);
         server_patch_seen.store(true, Ordering::Release);
         while !server_release.load(Ordering::Acquire) {
             thread::yield_now();
         }
         let _ = write_fixture_response(&mut patch, &bodies[1]);
-        let (mut recovered_get, _) = kubernetes_listener.accept().unwrap();
+        let (recovered_get, _) = kubernetes_listener.accept().unwrap();
+        let mut recovered_get = tls_server_stream(recovered_get);
         read_fixture_request(&mut recovered_get);
         write_fixture_response(&mut recovered_get, &bodies[2]).unwrap();
     });
-    let mut controller = fixed_controller_role(
-        &fixture.root,
-        &fixture.composition_path,
-        &fixture.handoff_path,
-        &fixture.service,
-        fixture.handoff_address,
-    );
+    let mut controller = fixed_controller_role(&fixture.root, &fixture.service);
     let launch_at = fixture.launch_at;
     let generation = launch_after_lease_expiry(&mut controller, launch_at);
     while !patch_seen.load(Ordering::Acquire) {
@@ -1128,7 +1008,7 @@ fn process_loss_after_apply_started_reconciles_without_second_patch() {
     );
     handoff.kill().unwrap();
     handoff.wait().unwrap();
-    fs::remove_dir_all(fixture.root).unwrap();
+    remove_fixture_root(fixture.root);
 }
 
 #[cfg(target_os = "linux")]
@@ -1139,15 +1019,9 @@ fn process_loss_after_apply_started_reconciles_without_second_patch() {
 fn process_loss_after_terminal_report_replays_after_system_restart() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '8');
-    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut handoff = start_handoff(&fixture.root, fixture.handoff_address);
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
-    let mut controller = fixed_controller_role(
-        &fixture.root,
-        &fixture.composition_path,
-        &fixture.handoff_path,
-        &fixture.service,
-        fixture.handoff_address,
-    );
+    let mut controller = fixed_controller_role(&fixture.root, &fixture.service);
     let receipt_directory = fixture.root.join("receipts");
     let held_receipt_directory = fixture.root.join("receipts-held");
     fs::rename(&receipt_directory, &held_receipt_directory).unwrap();
@@ -1231,7 +1105,7 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
     fs::remove_file(&receipt_directory).unwrap();
     fs::rename(&held_receipt_directory, &receipt_directory).unwrap();
 
-    let mut restarted = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut restarted = start_handoff(&fixture.root, fixture.handoff_address);
     let mut controller = reopened_controller_role(&fixture);
     let replay_generation = launch_after_lease_expiry(&mut controller, launch_at + 31);
     let _ = replay_generation;
@@ -1261,22 +1135,16 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
     assert_eq!(completed, (0, 1));
     restarted.kill().unwrap();
     restarted.wait().unwrap();
-    fs::remove_dir_all(fixture.root).unwrap();
+    remove_fixture_root(fixture.root);
 }
 
 #[cfg(target_os = "linux")]
 fn controller_restart_converges_retirement_before_recovery(restart_offset_seconds: i64) {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '9');
-    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut handoff = start_handoff(&fixture.root, fixture.handoff_address);
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
-    let mut controller = fixed_controller_role(
-        &fixture.root,
-        &fixture.composition_path,
-        &fixture.handoff_path,
-        &fixture.service,
-        fixture.handoff_address,
-    );
+    let mut controller = fixed_controller_role(&fixture.root, &fixture.service);
     let launch_at = fixture.launch_at;
     launch_after_lease_expiry(&mut controller, launch_at);
     for _ in 0..10_000 {
@@ -1291,9 +1159,11 @@ fn controller_restart_converges_retirement_before_recovery(restart_offset_second
         thread::yield_now();
     }
     let receipt = fixture.service.receipt(&fixture.run_id, now()).unwrap();
-    let staged_lease = fs::read(fixture.root.join("runner-host-inputs/handoff-lease-id")).unwrap();
-    let staged_credential =
-        fs::read(fixture.root.join("runner-host-inputs/handoff-credential")).unwrap();
+    let dispatch_run = fixture
+        .root
+        .join("fixed-authority/dispatch")
+        .join(&fixture.run_id);
+    assert_eq!(fs::read_dir(&dispatch_run).unwrap().count(), 1);
     let database = fixture.root.join("sandbox.sqlite3");
     let before = retirement_snapshot(&database, &fixture.run_id);
     let connection = rusqlite::Connection::open(&database).unwrap();
@@ -1341,14 +1211,7 @@ fn controller_restart_converges_retirement_before_recovery(restart_offset_second
     assert!(after.retiring);
     assert!(after.retired);
     assert_eq!(after.verifier_bytes, 0);
-    assert_eq!(
-        fs::read(fixture.root.join("runner-host-inputs/handoff-lease-id")).unwrap(),
-        staged_lease
-    );
-    assert_eq!(
-        fs::read(fixture.root.join("runner-host-inputs/handoff-credential")).unwrap(),
-        staged_credential
-    );
+    assert!(!dispatch_run.exists());
     assert_eq!(
         fixture.service.receipt(&fixture.run_id, now()).unwrap(),
         receipt
@@ -1359,7 +1222,7 @@ fn controller_restart_converges_retirement_before_recovery(restart_offset_second
         .is_none());
     handoff.kill().unwrap();
     handoff.wait().unwrap();
-    fs::remove_dir_all(fixture.root).unwrap();
+    remove_fixture_root(fixture.root);
 }
 
 #[cfg(target_os = "linux")]
@@ -1389,15 +1252,9 @@ fn production_process_loss_before_terminal_report_converges_on_non_linux() {
 fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_host_replacement() {
     let kubernetes_listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = prepare_process_fixture(kubernetes_listener.local_addr().unwrap(), '8');
-    let mut handoff = start_handoff(&fixture.root, &fixture.digest_key, fixture.handoff_address);
+    let mut handoff = start_handoff(&fixture.root, fixture.handoff_address);
     let kubernetes = serve_success(kubernetes_listener, &fixture.run_id);
-    let mut controller = fixed_controller_role(
-        &fixture.root,
-        &fixture.composition_path,
-        &fixture.handoff_path,
-        &fixture.service,
-        fixture.handoff_address,
-    );
+    let mut controller = fixed_controller_role(&fixture.root, &fixture.service);
     let launch_at = fixture.launch_at;
     launch_after_lease_expiry(&mut controller, launch_at);
     assert!(controller.wait().unwrap().success());
@@ -1422,10 +1279,26 @@ fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_ho
     handoff.wait().unwrap();
     drop(controller);
     drop(fixture.service);
+    let controller_uid = rustix::process::geteuid().as_raw();
+    let controller_gid = rustix::process::getegid().as_raw();
     let reopened = Service::open(
         fixture.root.join("sandbox.sqlite3"),
         fixture.root.join("receipts"),
-        [7; 32],
+        &AuthorityConfiguration::new(
+            fixture.root.join("fixed-authority"),
+            controller_uid,
+            controller_gid,
+            if controller_uid == 65_532 {
+                65_531
+            } else {
+                65_532
+            },
+            if controller_gid == 65_532 {
+                65_531
+            } else {
+                65_532
+            },
+        ),
         now(),
     )
     .unwrap();
@@ -1436,22 +1309,25 @@ fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_ho
         reopened.receipt(&fixture.run_id, now()).unwrap(),
         receipt_before
     );
-    fs::remove_dir_all(fixture.root).unwrap();
+    remove_fixture_root(fixture.root);
 }
 
 #[tokio::test]
 async fn separate_system_process_commits_invocation_and_receipt_free_rejection() {
-    let (root, service, digest_key) = fixture();
+    let handoff_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = handoff_probe.local_addr().unwrap();
+    drop(handoff_probe);
+    let kubernetes_probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let kubernetes_address = kubernetes_probe.local_addr().unwrap();
+    drop(kubernetes_probe);
+    let (root, service, authority) = fixture(address, kubernetes_address);
     let at = now();
     let admission = service
         .admit(&"1".repeat(32), Scenario::Healthy, at)
         .unwrap();
-    let lease = service.dispatch_next(at).unwrap();
+    let lease = authority.dispatch_next(at).unwrap();
     verify_target(&service, &lease, at);
-    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = probe.local_addr().unwrap();
-    drop(probe);
-    let mut child = start_handoff(&root, &digest_key, address);
+    let mut child = start_handoff(&root, address);
     let assignment = service.handoff_assignment(&lease, address, at).unwrap();
     let (application, request, mut handle) = application(&root, &admission.run_id);
     let responder = tokio::spawn(async move {
@@ -1490,5 +1366,5 @@ async fn separate_system_process_commits_invocation_and_receipt_free_rejection()
     assert!(service.receipt(&admission.run_id, now()).is_err());
     child.kill().unwrap();
     child.wait().unwrap();
-    fs::remove_dir_all(root).unwrap();
+    remove_fixture_root(root);
 }

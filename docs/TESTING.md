@@ -293,21 +293,21 @@ privileged-private-cgroup, network-disabled x86-64 Debian/Linux lane executes ra
 and passes the fixed helper, descriptor, identity, outcome, full retained process-loss matrix, and
 real terminal kill/restart/replacement.
 
-Before further Gate 1 work, the focused Slice 2 hardening follow-up must extend that mandatory Linux
-lane from a privileged parent through a finite matrix: the frozen production bootstrap capability
-set; one unexpected representative bit in each effective, permitted, inheritable, ambient, and
-bounding set; unlocked and locked `KEEP_CAPS` and `NO_SETUID_FIXUP` variants; and nonempty helper
-then runner `security.capability` values. The canonical and successfully normalized cases must
-assert securebits and all five capability sets at zero after bootstrap. Unnormalizable locked state
-and both file-capability cases must fail before launch or authority release. The lane must preserve
-the existing UID/GID, empty-group, descriptor, parent-death, cgroup, and recovery matrix. Tests must
-distinguish the mount namespace's fixed `/run` alias and propagation boundary from unproved
-host-filesystem concealment. If the owner selects seccomp, Landlock, or an equivalent restriction,
-deterministic allowed/denied syscall or path cases become mandatory; otherwise tests and review must
-not imply that restriction exists. This follow-up freezes and tests the C source,
-compiler/toolchain, helper, and runner identities that exact Slice 6 bundle assembly must later
-bind; it does not require that final bundle early. Until this matrix passes independent review, the
-current lane does not prove a complete least-privilege native process boundary.
+The Slice 2 hardening lane compiles the production C normalization logic into a finite
+hostile-parent matrix. It tests the exact eight-capability `E=P=B` bootstrap with empty `I/A`,
+independently named `CAP_NET_RAW` effective, permitted, inheritable, ambient, and bounding cases,
+unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP`, and nonempty helper and runner
+`security.capability` values. Linux subset constraints are explicit in the effective and ambient
+fixtures. Canonical and unlocked cases must normalize to the exact bootstrap state; locked cases
+exit before authority. The composed runner then proves securebits and all five sets zero,
+`no_new_privs=1`, UID/GID, empty groups, descriptors, parent-death, cgroup, and recovery. A safe
+Rust `/proc/self/status` backstop checks the post-exec state before descriptor receipt.
+
+The lane also rejects C-source or pinned compiler identity drift and hashes the C source, built
+helper, and runner bytes as Slice 6 inputs. It does not assemble or prove the final bundle. No
+seccomp, Landlock, or equivalent restriction is selected, so tests and review must not imply host
+filesystem concealment or syscall/path confinement. The accepted matrix proves the named capability
+boundary but not a complete least-privilege native process boundary.
 
 Historical KAP-0053 tests retain only topology-neutral evidence: bounded native HTTP parsing,
 durable stop behavior, the exact conditional named-container image and KAP-0038 operation-annotation
@@ -337,6 +337,16 @@ intent with both an unexpired and expired lease, proves retirement precedes sche
 asserts no epoch, staged authority, invocation/report count, operation identity, receipt, or runner
 launch changes. It performs no live action and does not prove Kubernetes runtime, CNI, RBAC,
 admission, metadata, or network enforcement.
+
+The Slice 4 offline matrix adds fixed-staging activation/recovery and family-isolation tests; atomic
+per-lease publication, canonical debris, inode substitution, and post-retirement deletion tests;
+descriptor-bound `RunnerHost` replacement; exact generation-pinned trust and cleanup tests; and a
+Service reference matrix for runs, tombstones, receipt ownership, dispatch ownership, malformed
+pins, and crash-recovered noncurrent collection. `CleanupController` is exercised through staged TLS
+and token authority, and missing old authority must leave lifecycle, cleanup, and event facts
+unchanged. `cargo make test-sandbox-fixed-staging-identities-linux` is a separate root-only,
+network-namespace lane for the production distinct-UID/GID split; ordinary macOS and unprivileged
+runs do not claim that evidence.
 
 The serialized proof matrix is:
 

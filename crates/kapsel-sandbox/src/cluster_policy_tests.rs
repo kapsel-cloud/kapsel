@@ -15,7 +15,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use kapsel_sandbox::{
+use crate::{
     ClusterBoundaryObservation, ConditionalDeploymentObservation, ExecutionState,
     ObservedClusterComposition, ObservedPolicyObject, ProvisioningSpecification, Scenario, Service,
     ServiceError,
@@ -23,6 +23,10 @@ use kapsel_sandbox::{
 use serde_json::{json, Value};
 
 const NOW: i64 = 1_800_000_000;
+
+fn test_authority_identity() -> crate::GenerationIdentity {
+    crate::test_authority_identity()
+}
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn fixture(name: &str) -> (PathBuf, Service) {
@@ -31,11 +35,13 @@ fn fixture(name: &str) -> (PathBuf, Service) {
         "kapsel-sandbox-cluster-policy-{}-{name}-{suffix}",
         std::process::id()
     ));
-    let _ = fs::remove_dir_all(&root);
+    if root.exists() {
+        crate::test_authority::remove_root(&root);
+    }
     fs::create_dir_all(root.join("receipts")).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     fs::set_permissions(root.join("receipts"), fs::Permissions::from_mode(0o700)).unwrap();
-    let service = Service::open(
+    let service = Service::open_for_test(
         root.join("sandbox.sqlite3"),
         root.join("receipts"),
         [7; 32],
@@ -88,7 +94,9 @@ fn weakened_cluster_policy_rejects_before_application_and_holds_capacity() {
     let queued = service
         .admit("22222222222222222222222222222222", Scenario::Healthy, NOW)
         .unwrap();
-    let lease = service.dispatch_next(NOW + 1).unwrap();
+    let lease = service
+        .dispatch_next(NOW + 1, &test_authority_identity())
+        .unwrap();
     let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
     let mut run_objects = exact_run_objects(&specification);
     let default_deny = run_objects
@@ -115,11 +123,11 @@ fn weakened_cluster_policy_rejects_before_application_and_holds_capacity() {
     assert_eq!(snapshot.receiver_result, None);
     assert!(!snapshot.receipt_available);
     assert_eq!(
-        service.dispatch_next(NOW + 1),
+        service.dispatch_next(NOW + 1, &test_authority_identity()),
         Err(ServiceError::ActiveSaturated)
     );
     assert_eq!(queued.run_id.len(), 32);
-    fs::remove_dir_all(root).unwrap();
+    crate::test_authority::remove_root(&root);
 }
 
 #[test]
@@ -248,7 +256,9 @@ fn complete_composition_downgrade_matrix_fails_closed_before_invocation() {
         let (root, service) = fixture(name);
         let key = format!("{index:032x}");
         let admission = service.admit(&key, Scenario::Healthy, NOW).unwrap();
-        let lease = service.dispatch_next(NOW + 1).unwrap();
+        let lease = service
+            .dispatch_next(NOW + 1, &test_authority_identity())
+            .unwrap();
         let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
         let mut composition = ObservedClusterComposition {
             boundary: boundary(),
@@ -268,7 +278,7 @@ fn complete_composition_downgrade_matrix_fails_closed_before_invocation() {
         assert_eq!(snapshot.execution_state, ExecutionState::Running);
         assert_eq!(snapshot.receiver_result, None);
         assert!(!snapshot.receipt_available);
-        fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 }
 
@@ -278,7 +288,9 @@ fn exact_conditional_old_new_comparison_allows_only_image_and_operation_annotati
     service
         .admit("33333333333333333333333333333333", Scenario::Healthy, NOW)
         .unwrap();
-    let lease = service.dispatch_next(NOW + 1).unwrap();
+    let lease = service
+        .dispatch_next(NOW + 1, &test_authority_identity())
+        .unwrap();
     let specification = service.provisioning_specification(&lease, NOW + 1).unwrap();
     let exact_composition = ObservedClusterComposition {
         boundary: boundary(),
@@ -380,5 +392,5 @@ fn exact_conditional_old_new_comparison_allows_only_image_and_operation_annotati
             Err(ServiceError::PolicyMismatch)
         );
     }
-    fs::remove_dir_all(root).unwrap();
+    crate::test_authority::remove_root(&root);
 }

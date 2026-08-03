@@ -204,19 +204,23 @@ production composition, complete denial evidence, its x86-64 Linux execution gat
 passed for the accepted offline Slice 2 host boundary. That proof does not establish cluster
 runtime, CNI, RBAC, admission, metadata, or network enforcement.
 
-A focused KAP-0070 follow-up blocks further Gate 1 work because UID/GID and `no_new_privs` checks do
-not by themselves prove the selected Linux securebit state or the absence of effective, permitted,
-inheritable, ambient, and bounding capabilities, and current executable checks do not establish an
-explicit file-capability policy. The final runner must have securebits and every capability set at
-exactly zero. The finite review matrix must test the production bootstrap set, one unexpected bit in
-each set, unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP` variants, and nonempty helper and runner
-file capabilities. It must normalize to the exact final state or fail closed before runner
-authority; an unnormalizable locked state and either file-capability case must fail. The mount
-namespace prevents propagation and creates the fixed state alias but does not conceal the remaining
-host filesystem. Seccomp, Landlock, or equivalent syscall/path confinement is not currently proved;
-the follow-up must either add a finite required boundary or retain this native attack surface as an
-explicit non-claim and Gate 3 adversary. The exact C source, compiler/toolchain, helper, and runner
-bytes are supply-chain inputs to the planned authenticated bundle.
+The focused KAP-0070 follow-up freezes the privileged controller/helper bootstrap at exact
+`E=P=B={CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_FOWNER,CAP_KILL,CAP_SETGID,CAP_SETUID,CAP_SETPCAP,CAP_SYS_ADMIN}`
+and `I=A={}`. `CAP_NET_RAW` represents unexpected inherited authority. The helper rejects a helper
+or runner `security.capability` observed at each pinned check, normalizes unlocked supersets,
+refuses locked `KEEP_CAPS` or `NO_SETUID_FIXUP`, and verifies securebits and all five capability
+sets at zero with `no_new_privs=1` before the Rust runtime can receive descriptors. A Rust
+`/proc/self/status` backstop independently rejects nonzero inherited capability state. A privileged
+parent can race a file-capability xattr between checks; the zero bounding/permitted/effective sets,
+`no_new_privs`, and Rust backstop contain resulting authority rather than proving independence from
+that parent. Linux subset constraints mean some hostile cases necessarily carry the representative
+in prerequisite sets; this does not weaken the separately asserted target-set coverage.
+
+The mount namespace prevents propagation and creates the fixed state alias but does not conceal the
+remaining host filesystem. This follow-up selects no seccomp, Landlock, or equivalent syscall/path
+confinement; the unrestricted native path/syscall surface remains an explicit non-claim and Gate 3
+adversary. The pinned C-source/compiler identity and exact helper/runner bytes remain supply-chain
+inputs to the planned authenticated bundle rather than proof of final bundle reproducibility.
 
 OS users and a sandboxed process are not hard tenant isolation. Symlink/path substitution, parent or
 inode replacement, leaked descriptors, permissive groups, stale processes, ptrace/kernel escape, and
@@ -240,13 +244,22 @@ cleanup, substitute runner inputs, or deny all service; one writer reduces races
 radius. Compromise of authorization- or receipt-signing material permits forged grants or receipts;
 store compromise can alter projection; loss or rollback can omit runs or resurrect expired state.
 
-Authorization, receipt, tombstone, public trust, runner Kubernetes, and cleanup Kubernetes inputs
-have separate fixed owners and host staging paths. Path substitution, key export, backup/diagnostic
-leakage, rotation gaps, and outage are explicit threats. Exact source/destination/schema,
-owner/mode/no-follow checks, atomic install, rotation overlap, restart, denial, and non-disclosure
-require Gate 1/3 proof. Receipt storage accepts only frozen bytes and refuses replacement. An outage
-may block admission or publication but cannot change receiver classification. Receipt retrieval does
-not appoint trust.
+Authorization, receipt, tombstone, public trust, runner Kubernetes, cleanup Kubernetes, and handoff
+inputs have separate fixed owners inside one closed staged generation. Path/root substitution,
+linked or replaced files, key/token exchange, permissive ownership, partial activation, early old-
+generation deletion, key export, backup/diagnostic leakage, rotation gaps, and outage are explicit
+threats. Slice 4 uses exact schemas and bounds, descriptor-relative no-follow/same-inode checks,
+atomic complete-generation and per-lease activation, a dispatch-time durable generation/manifest
+pin, current plus one retained generation, and redacted failures. `RunnerHost` receives an opened
+lease-directory descriptor and validates replacement input before fencing old work. Durable
+retirement precedes dispatch deletion. Noncurrent collection requires a SQLite-locked complete
+reference proof and a restart-recoverable collection record; malformed or orphan ownership blocks it
+and current is never collectible. Missing authority holds dependent transitions and cannot
+manufacture a lifecycle or KAP-0038 outcome. Legacy state without a provable pin is rejected unless
+the service is stopped and drained; it is never rebound to current. Gate 1/3 must prove restart,
+denial, collection, and non-disclosure. Receipt storage accepts only frozen bytes and refuses
+replacement. An outage may block admission or publication but cannot change receiver classification.
+Receipt retrieval does not appoint trust; separately returned retained trust uses the run's pin.
 
 One crash-consistent unit covers admission state, immutable receipts, active journal/outbox,
 capacity, leases, ownership inventory, deployment metadata, and required public trust. A stale or

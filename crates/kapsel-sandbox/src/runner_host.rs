@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 
 use crate::{
+    fixed_staging::PublishedRunnerInputs,
     runner_process::{credential_verifier, descriptor_identity, Bootstrap, INPUT_NAMES},
     HandoffAssignment,
 };
@@ -257,9 +258,7 @@ impl Drop for CgroupBoundary {
 /// One controller-owned host for at most one native runner generation.
 pub(crate) struct RunnerHost {
     executable: PathBuf,
-    input_directory: PathBuf,
     generation_root_path: PathBuf,
-    input_root: fs::File,
     generation_root: fs::File,
     controller_uid: u32,
     controller_gid: u32,
@@ -274,7 +273,7 @@ pub(crate) struct RunnerHost {
 }
 
 impl RunnerHost {
-    /// Opens and pins the two exact controller roots before any per-run input is accepted.
+    /// Opens and pins the generation root before any per-run input is accepted.
     ///
     /// On Linux, the runner UID and GID must both differ from the controller's effective numeric
     /// identity. The caller must have authority to chown the fresh generation and drop the child
@@ -282,22 +281,17 @@ impl RunnerHost {
     ///
     /// # Errors
     ///
-    /// Returns [`RunnerHostError`] unless the executable is absolute and both roots are exact
-    /// owner-private, non-symlink directories under the controller identity.
+    /// Returns [`RunnerHostError`] unless the executable is absolute and the generation root is an
+    /// exact owner-private, non-symlink directory under the controller identity.
     pub(crate) fn open(
         executable: impl AsRef<Path>,
-        input_directory: impl AsRef<Path>,
         generation_root: impl AsRef<Path>,
         runner_uid: u32,
         runner_gid: u32,
     ) -> Result<Self, RunnerHostError> {
         let executable = executable.as_ref();
-        let input_directory = input_directory.as_ref();
         let generation_root_path = generation_root.as_ref();
-        if !executable.is_absolute()
-            || !input_directory.is_absolute()
-            || !generation_root_path.is_absolute()
-        {
+        if !executable.is_absolute() || !generation_root_path.is_absolute() {
             return Err(RunnerHostError::Boundary);
         }
         let controller_uid = rustix::process::geteuid().as_raw();
@@ -310,14 +304,11 @@ impl RunnerHost {
         if (runner_uid != controller_uid || runner_gid != controller_gid) && controller_uid != 0 {
             return Err(RunnerHostError::Identity);
         }
-        let input_root = open_private_root(input_directory, controller_uid, controller_gid)?;
         let generation_root =
             open_private_root(generation_root_path, controller_uid, controller_gid)?;
         let mut host = Self {
             executable: executable.to_owned(),
-            input_directory: input_directory.to_owned(),
             generation_root_path: generation_root_path.to_owned(),
-            input_root,
             generation_root,
             controller_uid,
             controller_gid,
@@ -344,18 +335,20 @@ impl RunnerHost {
         &mut self,
         run_id: &str,
         assignment: &HandoffAssignment,
+        published_inputs: &PublishedRunnerInputs,
     ) -> Result<&RunnerGeneration, RunnerHostError> {
         if self.active.is_some() {
             return Err(RunnerHostError::ActiveGeneration);
         }
         self.validate_recovery_identity(run_id, &assignment.operation_id)?;
+        let input_files = self.open_inputs(published_inputs, assignment)?;
         let recovery = self
             .recovery_directory
             .as_ref()
             .map(fs::File::try_clone)
             .transpose()
             .map_err(|_| RunnerHostError::Boundary)?;
-        self.launch_fresh_from(run_id, assignment, recovery.as_ref())
+        self.launch_fresh_from(run_id, assignment, recovery.as_ref(), &input_files)
     }
 
     /// Replaces the current runner only after a different lease and credential are already staged.
@@ -372,6 +365,7 @@ impl RunnerHost {
         &mut self,
         run_id: &str,
         assignment: &HandoffAssignment,
+        published_inputs: &PublishedRunnerInputs,
     ) -> Result<&RunnerGeneration, RunnerHostError> {
         self.validate_recovery_identity(run_id, &assignment.operation_id)?;
         let new_verifier = credential_verifier(
@@ -387,6 +381,7 @@ impl RunnerHost {
         if active.lease_id == assignment.lease_id() || active.credential_verifier == new_verifier {
             return Err(RunnerHostError::StaleAuthority);
         }
+        let input_files = self.open_inputs(published_inputs, assignment)?;
         self.terminate()?;
         let recovery = self
             .recovery_directory
@@ -394,7 +389,7 @@ impl RunnerHost {
             .map(fs::File::try_clone)
             .transpose()
             .map_err(|_| RunnerHostError::Boundary)?;
-        self.launch_fresh_from(run_id, assignment, recovery.as_ref())
+        self.launch_fresh_from(run_id, assignment, recovery.as_ref(), &input_files)
     }
 
     fn validate_recovery_identity(
@@ -1313,13 +1308,13 @@ impl RunnerHost {
         run_id: &str,
         assignment: &HandoffAssignment,
         previous_directory: Option<&fs::File>,
+        input_files: &[fs::File],
     ) -> Result<&RunnerGeneration, RunnerHostError> {
         if assignment.operation_id != format!("sandbox-{run_id}") || assignment.run_id != run_id {
             return Err(RunnerHostError::StaleAuthority);
         }
         validate_hex_identity(run_id)?;
         self.require_trusted_roots()?;
-        let input_files = self.open_inputs(assignment)?;
         let input_identities = input_files
             .iter()
             .map(|file| {
@@ -1632,12 +1627,6 @@ impl RunnerHost {
 
     fn require_trusted_roots(&self) -> Result<(), RunnerHostError> {
         require_same_root(
-            &self.input_directory,
-            &self.input_root,
-            self.controller_uid,
-            self.controller_gid,
-        )?;
-        require_same_root(
             &self.generation_root_path,
             &self.generation_root,
             self.controller_uid,
@@ -1647,23 +1636,24 @@ impl RunnerHost {
 
     fn open_inputs(
         &self,
+        published: &PublishedRunnerInputs,
         assignment: &HandoffAssignment,
     ) -> Result<Vec<fs::File>, RunnerHostError> {
+        let root = published.directory();
+        validate_directory(root, self.controller_uid, self.controller_gid)?;
+        let mut names = INPUT_NAMES
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        if directory_names(root)? != names {
+            return Err(RunnerHostError::Boundary);
+        }
         let mut files = Vec::with_capacity(INPUT_NAMES.len());
         for name in INPUT_NAMES {
-            let file = open_fixed_file(
-                &self.input_root,
-                name,
-                self.controller_uid,
-                self.controller_gid,
-            )?;
+            let file = open_fixed_file(root, name, self.controller_uid, self.controller_gid)?;
             let metadata = file.metadata().map_err(|_| RunnerHostError::Boundary)?;
-            let reopened = open_fixed_file(
-                &self.input_root,
-                name,
-                self.controller_uid,
-                self.controller_gid,
-            )?;
+            let reopened = open_fixed_file(root, name, self.controller_uid, self.controller_gid)?;
             let reopened_metadata = reopened.metadata().map_err(|_| RunnerHostError::Boundary)?;
             if reopened_metadata.dev() != metadata.dev()
                 || reopened_metadata.ino() != metadata.ino()
@@ -1942,6 +1932,8 @@ fn open_executable(
     let descriptor =
         openat(CWD, path, read_flags(), Mode::empty()).map_err(|_| RunnerHostError::Boundary)?;
     let mut file = fs::File::from(descriptor);
+    #[cfg(target_os = "linux")]
+    reject_file_capabilities(&file)?;
     let metadata = file.metadata().map_err(|_| RunnerHostError::Boundary)?;
     if !metadata.is_file()
         || metadata.uid() != owner_uid
@@ -1966,6 +1958,15 @@ fn open_executable(
     let _bound_digest = digest.finalize();
     file.rewind().map_err(|_| RunnerHostError::Boundary)?;
     Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn reject_file_capabilities(file: &fs::File) -> Result<(), RunnerHostError> {
+    let mut value = Vec::<u8>::with_capacity(64);
+    match rustix::fs::fgetxattr(file, "security.capability", &mut value) {
+        Err(rustix::io::Errno::NODATA) => Ok(()),
+        Ok(_) | Err(_) => Err(RunnerHostError::Boundary),
+    }
 }
 
 fn set_directory_identity(directory: &fs::File, uid: u32, gid: u32) -> Result<(), RunnerHostError> {
@@ -2502,24 +2503,24 @@ mod tests {
         (uid, gid)
     }
 
-    fn allocation_fixture(suffix: &str) -> (PathBuf, PathBuf, PathBuf, u32, u32) {
+    fn allocation_state_fixture(suffix: &str) -> (PathBuf, PathBuf, u32, u32) {
         let root = std::env::temp_dir().join(format!(
             "kapsel-runner-host-allocation-{suffix}-{}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&root);
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
         private_directory(&root);
-        let inputs = root.join("inputs");
         let generations = root.join("generations");
-        fixed_inputs(&inputs, "0123456789abcdef0123456789abcdef", [7; 32]);
         private_directory(&generations);
         let (runner_uid, runner_gid) = runner_identity();
-        (root, inputs, generations, runner_uid, runner_gid)
+        (root, generations, runner_uid, runner_gid)
     }
 
     #[test]
     fn generation_root_enumeration_stops_at_four_entries() {
-        let (root, _, generations, _, _) = allocation_fixture("root-entry-bound");
+        let (root, generations, _, _) = allocation_state_fixture("root-entry-bound");
         for name in [
             GENERATION_RECORD_NAME,
             GENERATION_RECORD_TEMPORARY_NAME,
@@ -2550,8 +2551,7 @@ mod tests {
     )]
     #[test]
     fn allocating_reopen_without_generation_retries_same_generation_repeatedly() {
-        let (root, inputs, generations, runner_uid, runner_gid) =
-            allocation_fixture("no-generation");
+        let (root, generations, runner_uid, runner_gid) = allocation_state_fixture("no-generation");
         #[allow(unused_mut)]
         let mut record = allocating_record_layout(runner_uid, runner_gid);
         #[cfg(target_os = "linux")]
@@ -2560,7 +2560,6 @@ mod tests {
 
         let first = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2571,7 +2570,6 @@ mod tests {
         drop(first);
         let second = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2614,8 +2612,8 @@ mod tests {
     )]
     #[test]
     fn allocating_reopen_removes_partial_generation_and_rejects_any_content() {
-        let (root, inputs, generations, runner_uid, runner_gid) =
-            allocation_fixture("partial-generation");
+        let (root, generations, runner_uid, runner_gid) =
+            allocation_state_fixture("partial-generation");
         #[allow(unused_mut)]
         let mut record = allocating_record_layout(runner_uid, runner_gid);
         #[cfg(target_os = "linux")]
@@ -2625,7 +2623,6 @@ mod tests {
 
         let first = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2636,7 +2633,6 @@ mod tests {
         drop(first);
         let second = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2651,7 +2647,7 @@ mod tests {
             ("outbox-content", "run/receipt-outbox/receipt"),
             ("other", "unexpected"),
         ] {
-            let (root, inputs, generations, runner_uid, runner_gid) = allocation_fixture(suffix);
+            let (root, generations, runner_uid, runner_gid) = allocation_state_fixture(suffix);
             #[allow(unused_mut)]
             let mut record = allocating_record_layout(runner_uid, runner_gid);
             #[cfg(target_os = "linux")]
@@ -2676,7 +2672,6 @@ mod tests {
             assert!(matches!(
                 RunnerHost::open(
                     std::env::current_exe().unwrap(),
-                    &inputs,
                     &generations,
                     runner_uid,
                     runner_gid,
@@ -2728,8 +2723,7 @@ mod tests {
         if !rustix::process::geteuid().is_root() {
             return;
         }
-        let (root, inputs, generations, runner_uid, runner_gid) =
-            allocation_fixture("empty-cgroup");
+        let (root, generations, runner_uid, runner_gid) = allocation_state_fixture("empty-cgroup");
         let mut record = allocating_record_layout(runner_uid, runner_gid);
         let boundary = bind_allocating_cgroup(&mut record);
         partial_allocation_generation(&generations, runner_uid, runner_gid, true);
@@ -2737,7 +2731,6 @@ mod tests {
         write_durable_record(&generations, &record);
         let first = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2748,7 +2741,6 @@ mod tests {
         drop(first);
         let second = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2759,8 +2751,8 @@ mod tests {
         drop(boundary);
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations, runner_uid, runner_gid) =
-            allocation_fixture("populated-cgroup");
+        let (root, generations, runner_uid, runner_gid) =
+            allocation_state_fixture("populated-cgroup");
         let mut record = allocating_record_layout(runner_uid, runner_gid);
         let boundary = bind_allocating_cgroup(&mut record);
         let name = boundary.prepare(record.generation).unwrap();
@@ -2773,7 +2765,6 @@ mod tests {
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -2789,7 +2780,7 @@ mod tests {
     }
 
     #[test]
-    fn substituted_fixed_input_parent_is_rejected_before_generation_or_application() {
+    fn published_input_descriptor_ignores_later_path_substitution() {
         let root = std::env::temp_dir().join(format!(
             "kapsel-runner-host-parent-substitution-{}",
             std::process::id()
@@ -2803,16 +2794,16 @@ mod tests {
         fixed_inputs(&inputs, lease, credential);
         private_directory(&generations);
         let (runner_uid, runner_gid) = runner_identity();
-        let mut host = RunnerHost::open(
+        let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
         )
         .unwrap();
+        let published = PublishedRunnerInputs::open_for_test(&inputs).unwrap();
         fs::rename(&inputs, root.join("replaced-inputs")).unwrap();
-        fixed_inputs(&inputs, lease, credential);
+        fixed_inputs(&inputs, "ffffffffffffffffffffffffffffffff", [9; 32]);
         let run_id = "fedcba9876543210fedcba9876543210";
         let assignment = HandoffAssignment {
             run_id: run_id.into(),
@@ -2821,12 +2812,12 @@ mod tests {
             credential,
             endpoint: "127.0.0.1:1".parse().unwrap(),
         };
-        assert!(matches!(
-            host.launch(run_id, &assignment),
-            Err(RunnerHostError::Boundary)
-        ));
+        let mut opened = host.open_inputs(&published, &assignment).unwrap();
+        assert_eq!(
+            read_input(&mut opened.remove(10)).unwrap(),
+            lease.as_bytes()
+        );
         assert!(fs::read_dir(&generations).unwrap().next().is_none());
-        assert!(host.active().is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2843,15 +2834,13 @@ mod tests {
             ));
             let _ = fs::remove_dir_all(&root);
             private_directory(&root);
-            let inputs = root.join("inputs");
             let generations = root.join("generations");
-            fixed_inputs(&inputs, "0123456789abcdef0123456789abcdef", [7; 32]);
             private_directory(&generations);
-            (root, inputs, generations)
+            (root, generations)
         };
         let (runner_uid, runner_gid) = runner_identity();
 
-        let (root, inputs, generations) = make("accepted");
+        let (root, generations) = make("accepted");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         let obsolete_path = generations.join("generation-00000000000000000006");
         private_directory(&obsolete_path);
@@ -2862,7 +2851,6 @@ mod tests {
         write_durable_record(&generations, &record);
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2877,7 +2865,7 @@ mod tests {
         drop(host);
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations) = make("missing");
+        let (root, generations) = make("missing");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         write_durable_record(&generations, &record);
         fs::remove_file(generations.join("generation-00000000000000000007/run/gateway.sqlite3"))
@@ -2885,7 +2873,6 @@ mod tests {
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -2894,14 +2881,13 @@ mod tests {
         ));
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations) = make("duplicate");
+        let (root, generations) = make("duplicate");
         durable_record_layout(&generations, runner_uid, runner_gid, 6, true);
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         write_durable_record(&generations, &record);
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -2927,15 +2913,13 @@ mod tests {
             ));
             let _ = fs::remove_dir_all(&root);
             private_directory(&root);
-            let inputs = root.join("inputs");
             let generations = root.join("generations");
-            fixed_inputs(&inputs, "0123456789abcdef0123456789abcdef", [7; 32]);
             private_directory(&generations);
-            (root, inputs, generations)
+            (root, generations)
         };
         let (runner_uid, runner_gid) = runner_identity();
 
-        let (root, inputs, generations) = make("without-canonical");
+        let (root, generations) = make("without-canonical");
         fs::write(
             generations.join(GENERATION_RECORD_TEMPORARY_NAME),
             b"partial",
@@ -2943,7 +2927,6 @@ mod tests {
         .unwrap();
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2954,7 +2937,7 @@ mod tests {
         drop(host);
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations) = make("with-canonical");
+        let (root, generations) = make("with-canonical");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         write_durable_record(&generations, &record);
         fs::write(
@@ -2964,7 +2947,6 @@ mod tests {
         .unwrap();
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -2975,7 +2957,7 @@ mod tests {
         drop(host);
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations) = make("other-entry");
+        let (root, generations) = make("other-entry");
         fs::write(
             generations.join(GENERATION_RECORD_TEMPORARY_NAME),
             b"partial",
@@ -2985,7 +2967,6 @@ mod tests {
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -3021,7 +3002,6 @@ mod tests {
 
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3069,7 +3049,6 @@ mod tests {
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -3111,7 +3090,6 @@ mod tests {
 
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3157,7 +3135,6 @@ mod tests {
             assert!(matches!(
                 RunnerHost::open(
                     std::env::current_exe().unwrap(),
-                    &inputs,
                     &generations,
                     runner_uid,
                     runner_gid,
@@ -3185,21 +3162,18 @@ mod tests {
             ));
             let _ = fs::remove_dir_all(&root);
             private_directory(&root);
-            let inputs = root.join("inputs");
             let generations = root.join("generations");
-            fixed_inputs(&inputs, "0123456789abcdef0123456789abcdef", [7; 32]);
             private_directory(&generations);
-            (root, inputs, generations)
+            (root, generations)
         };
         let (runner_uid, runner_gid) = runner_identity();
 
-        let (root, inputs, generations) = make("before-rename");
+        let (root, generations) = make("before-rename");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         empty_generation_layout(&generations, runner_uid, runner_gid, 8);
         write_durable_record(&generations, &record);
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3215,7 +3189,6 @@ mod tests {
         empty_generation_layout(&generations, runner_uid, runner_gid, 8);
         let reopened = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3226,7 +3199,7 @@ mod tests {
         drop(reopened);
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations) = make("after-rename");
+        let (root, generations) = make("after-rename");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         empty_generation_layout(&generations, runner_uid, runner_gid, 8);
         fs::rename(
@@ -3237,7 +3210,6 @@ mod tests {
         write_durable_record(&generations, &record);
         let host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3258,7 +3230,6 @@ mod tests {
         empty_generation_layout(&generations, runner_uid, runner_gid, 9);
         let before_rename_again = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3276,7 +3247,6 @@ mod tests {
         .unwrap();
         let after_rename_again = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3294,7 +3264,7 @@ mod tests {
         drop(after_rename_again);
         fs::remove_dir_all(root).unwrap();
 
-        let (root, inputs, generations) = make("ambiguous");
+        let (root, generations) = make("ambiguous");
         let record = durable_record_layout(&generations, runner_uid, runner_gid, 7, true);
         empty_generation_layout(&generations, runner_uid, runner_gid, 8);
         fs::write(
@@ -3306,7 +3276,6 @@ mod tests {
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -3423,7 +3392,6 @@ mod tests {
 
         let first = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3440,7 +3408,6 @@ mod tests {
 
         let second = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3477,7 +3444,6 @@ mod tests {
         write_durable_record(&generations, &record);
         let mut host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3586,7 +3552,6 @@ mod tests {
         assert!(matches!(
             RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -3619,7 +3584,6 @@ mod tests {
         write_durable_record(&generations, &record);
         let mut host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3638,7 +3602,11 @@ mod tests {
             endpoint: "127.0.0.1:1".parse().unwrap(),
         };
         assert!(matches!(
-            host.launch(next_run, &assignment),
+            host.launch(
+                next_run,
+                &assignment,
+                &PublishedRunnerInputs::open_for_test(&inputs).unwrap(),
+            ),
             Err(RunnerHostError::StaleAuthority)
         ));
         assert!(generations.join(GENERATION_RECORD_NAME).is_file());
@@ -3683,7 +3651,6 @@ mod tests {
             }
             let host = RunnerHost::open(
                 std::env::current_exe().unwrap(),
-                &inputs,
                 &generations,
                 runner_uid,
                 runner_gid,
@@ -3713,7 +3680,6 @@ mod tests {
         let (runner_uid, runner_gid) = runner_identity();
         let mut host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3729,7 +3695,11 @@ mod tests {
                 endpoint: endpoint.parse().unwrap(),
             };
             assert!(matches!(
-                host.launch(run_id, &assignment),
+                host.launch(
+                    run_id,
+                    &assignment,
+                    &PublishedRunnerInputs::open_for_test(&inputs).unwrap(),
+                ),
                 Err(RunnerHostError::StaleAuthority)
             ));
             assert!(fs::read_dir(&generations).unwrap().next().is_none());
@@ -3773,6 +3743,44 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn helper_and_runner_file_capabilities_are_rejected_before_launch() {
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-runner-host-file-capability-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        private_directory(&root);
+        let owner_uid = rustix::process::geteuid().as_raw();
+        let owner_gid = rustix::process::getegid().as_raw();
+        // Linux VFS capability revision 2 with CAP_CHOWN in the permitted/effective set.
+        let capability = [
+            1_u8, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        for name in ["helper", "runner"] {
+            let path = root.join(name);
+            fs::copy(std::env::current_exe().unwrap(), &path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            let file = fs::File::open(&path).unwrap();
+            rustix::fs::fsetxattr(
+                &file,
+                "security.capability",
+                &capability,
+                rustix::fs::XattrFlags::empty(),
+            )
+            .unwrap();
+            assert!(matches!(
+                open_executable(&path, owner_uid, owner_gid),
+                Err(RunnerHostError::Boundary)
+            ));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn substituted_executable_is_rejected_without_stranding_a_generation() {
         let root = std::env::temp_dir().join(format!(
@@ -3791,8 +3799,7 @@ mod tests {
         fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         let (runner_uid, runner_gid) = runner_identity();
-        let mut host =
-            RunnerHost::open(&executable, &inputs, &generations, runner_uid, runner_gid).unwrap();
+        let mut host = RunnerHost::open(&executable, &generations, runner_uid, runner_gid).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o777)).unwrap();
         let run_id = "fedcba9876543210fedcba9876543210";
         let assignment = HandoffAssignment {
@@ -3803,7 +3810,11 @@ mod tests {
             endpoint: "127.0.0.1:1".parse().unwrap(),
         };
         assert!(matches!(
-            host.launch(run_id, &assignment),
+            host.launch(
+                run_id,
+                &assignment,
+                &PublishedRunnerInputs::open_for_test(&inputs).unwrap(),
+            ),
             Err(RunnerHostError::Boundary)
         ));
         assert!(fs::read_dir(&generations).unwrap().next().is_none());
@@ -3826,7 +3837,6 @@ mod tests {
         let (runner_uid, runner_gid) = runner_identity();
         let mut host = RunnerHost::open(
             std::env::current_exe().unwrap(),
-            &inputs,
             &generations,
             runner_uid,
             runner_gid,
@@ -3846,7 +3856,11 @@ mod tests {
             endpoint: "127.0.0.1:1".parse().unwrap(),
         };
         assert!(matches!(
-            host.launch(run_id, &assignment),
+            host.launch(
+                run_id,
+                &assignment,
+                &PublishedRunnerInputs::open_for_test(&inputs).unwrap(),
+            ),
             Err(RunnerHostError::Boundary)
         ));
         fs::set_permissions(
@@ -3855,7 +3869,11 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            host.launch(run_id, &assignment),
+            host.launch(
+                run_id,
+                &assignment,
+                &PublishedRunnerInputs::open_for_test(&inputs).unwrap(),
+            ),
             Err(RunnerHostError::StaleAuthority)
         ));
         assert!(fs::read_dir(&generations).unwrap().next().is_none());

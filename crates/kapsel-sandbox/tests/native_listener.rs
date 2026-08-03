@@ -19,6 +19,8 @@ use std::{
 
 use kapsel_sandbox::{Scenario, Service};
 
+mod common;
+
 const REQUEST_HEAD_OVERFLOW_PADDING: usize = 8 * 1024;
 
 fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
@@ -26,7 +28,9 @@ fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
         "kapsel-sandbox-listener-{}-{name}",
         std::process::id()
     ));
-    let _ = fs::remove_dir_all(&root);
+    if root.exists() {
+        common::remove_root(&root);
+    }
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let receipts = root.join("receipts");
@@ -35,18 +39,19 @@ fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let key = root.join("digest.key");
     fs::write(&key, [7_u8; 32]).unwrap();
     fs::set_permissions(&key, fs::Permissions::from_mode(0o440)).unwrap();
+    common::authority_root(&root, [7; 32]);
     (root.join("sandbox.db"), receipts, key)
 }
 
-fn arguments(database: &Path, receipts: &Path, key: &Path) -> Vec<String> {
-    vec![
+fn arguments(database: &Path, receipts: &Path, _key: &Path) -> Vec<String> {
+    let mut arguments = vec![
         "--database".into(),
         database.display().to_string(),
         "--receipts".into(),
         receipts.display().to_string(),
-        "--digest-key-file".into(),
-        key.display().to_string(),
-    ]
+    ];
+    arguments.extend(common::authority_arguments(database.parent().unwrap()));
+    arguments
 }
 
 fn start(database: &Path, receipts: &Path, key: &Path) -> (Child, String) {
@@ -181,7 +186,7 @@ fn native_listener_and_operator_stop_preserve_the_public_boundary() {
 
     child.kill().unwrap();
     child.wait().unwrap();
-    fs::remove_dir_all(root).unwrap();
+    common::remove_root(&root);
 }
 
 #[test]
@@ -258,7 +263,7 @@ fn raw_framing_and_body_bounds_fail_before_admission() {
 
     child.kill().unwrap();
     child.wait().unwrap();
-    fs::remove_dir_all(root).unwrap();
+    common::remove_root(&root);
 }
 
 #[test]
@@ -327,7 +332,7 @@ fn exact_raw_limits_are_accepted() {
 
     child.kill().unwrap();
     child.wait().unwrap();
-    fs::remove_dir_all(root).unwrap();
+    common::remove_root(&root);
 }
 
 #[test]
@@ -354,7 +359,7 @@ fn receive_deadlines_close_partial_headers_and_bodies() {
 
     child.kill().unwrap();
     child.wait().unwrap();
-    fs::remove_dir_all(root).unwrap();
+    common::remove_root(&root);
 }
 
 #[test]
@@ -369,7 +374,13 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
             .as_secs(),
     )
     .unwrap();
-    let service = Service::open(&database, &receipts, [7; 32], now - 172_800).unwrap();
+    let service = Service::open(
+        &database,
+        &receipts,
+        &common::authority_configuration(database.parent().unwrap(), [7; 32]),
+        now - 172_800,
+    )
+    .unwrap();
     service
         .admit(
             "09090909090909090909090909090909",
@@ -422,7 +433,7 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
 
-    fs::remove_dir_all(root).unwrap();
+    common::remove_root(&root);
 }
 
 #[test]
@@ -456,7 +467,7 @@ fn runner_mode_rejects_system_state_arguments_before_opening_any_input() {
     }
     fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(fs::read(&sentinel).unwrap(), b"must-not-open");
-    fs::remove_dir_all(root).unwrap();
+    common::remove_root(&root);
 }
 
 #[test]

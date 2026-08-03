@@ -690,6 +690,7 @@ dependencies = [
  "kube",
  "rusqlite",
  "rustix",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

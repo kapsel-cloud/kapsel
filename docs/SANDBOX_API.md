@@ -276,7 +276,9 @@ range requests are unsupported.
 
 Receipt retrieval does not publish or appoint trust. A consumer that inspects the receipt must
 obtain a KAP-0038 trust document, evaluation time, and limits through a separately reviewed channel.
-The receipt never appoints its own trust.
+The owner-private authority controller is that local composition seam for the sandbox prototype: it
+returns unchanged validated trust bytes only for a retained receipt's durable generation. It is not
+an HTTP route, ambient lookup, or receipt field. The receipt never appoints its own trust.
 
 The unchanged receipt intentionally discloses only server-chosen synthetic KAP-0038 classifier
 fields, including namespace, Deployment and receiver UIDs, resource versions, operation marker,

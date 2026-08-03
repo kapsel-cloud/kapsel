@@ -292,6 +292,10 @@ description = "Validate topology-neutral exact-patch and Gate 0 deletion boundar
 command = "python3"
 args = ["scripts/test-sandbox-preservation.py"]
 
+[tasks.test-sandbox-fixed-staging-identities-linux]
+description = "Privileged Linux-only proof of distinct fixed-staging identities without networking"
+command = "./scripts/test-sandbox-fixed-staging-identities-linux.sh"
+
 [tasks.test-sandbox-cleanup-kubernetes]
 description = "Prove concrete UID-preconditioned cleanup requests and bounded observations"
 command = "cargo"
@@ -301,7 +305,7 @@ args = ["test", "--locked", "-p", "kapsel-sandbox", "--lib", "local_roles::tests
 description = "Prove provider-neutral policy, conditional mutation, and UID-safe cleanup modeling"
 dependencies = ["test-sandbox-cleanup-kubernetes"]
 command = "cargo"
-args = ["test", "--locked", "-p", "kapsel-sandbox", "--test", "cluster_policy"]
+args = ["test", "--locked", "-p", "kapsel-sandbox", "--lib", "cluster_policy_tests"]
 
 [tasks.test-sandbox-serialized-capacity]
 description = "Prove one active reservation and concrete local role sequencing through cleanup"
@@ -316,7 +320,7 @@ for test_name in \
   serialized_dispatch_waits_for_prior_object_absence \
   application_rejection_and_cleanup_remain_separate_across_restart
 do
-  cargo test --locked -p kapsel-sandbox --test service_contract "$test_name" -- --exact
+  cargo test --locked -p kapsel-sandbox --lib "service_contract_tests::$test_name" -- --exact
 done
 '''
 

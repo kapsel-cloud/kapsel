@@ -478,26 +478,43 @@ cargo make test-sandbox-runner-host-linux
 
 The Linux lane remains digest-pinned and network-disabled, and uses an explicitly reviewed
 privileged container with a private cgroup namespace solely to provide writable cgroup-v2
-delegation. It runs as controller UID/GID 0 and requires the fixed helper to establish numeric real,
-effective, and saved UID/GID 65532, empty supplementary groups, `no_new_privs`, fixed descriptors,
-parent-death fencing, and cgroup process-tree fencing before authority reaches `Application`. The
-lane does not yet prove the focused KAP-0070 follow-up's hostile-parent securebit/capability state,
-executable file-capability policy, filesystem-concealment boundary, syscall/path restriction
-decision, or final bundle binding. No stronger helper command exists yet. The lane never skips a
-missing prerequisite. It is separate because the ordinary development host may be macOS; the
-containerless deterministic lane remains mandatory. On non-Linux hosts that lane crosses runner loss
-before invocation, after the durable invocation acknowledgment, and after `apply_started`, then
-separately preserves one terminal report and its exact receipt bytes across a service reopen without
-claiming host replacement. The mandatory Linux/root lane alone executes the terminal-report kill,
-system restart, and runner replacement against KAP-0038's frozen receipt path.
+delegation. It runs the finite hostile-parent matrix against the same production C normalization
+logic, rejects helper/runner file capabilities, and requires final securebits and all five
+capability sets zero, `no_new_privs=1`, numeric real/effective/saved UID/GID 65532, empty groups,
+fixed descriptors, parent-death fencing, and cgroup process-tree fencing before authority reaches
+`Application`. It rejects drift from the pinned C-source digest and Debian compiler identity, then
+records C-source/helper/runner SHA-256 identities as private Slice 6 input evidence. It neither
+assembles the Slice 6 bundle nor proves seccomp, Landlock, host-filesystem concealment, or native
+syscall/path confinement. The lane never skips a missing prerequisite. It is separate because the
+ordinary development host may be macOS; the containerless deterministic lane remains mandatory. On
+non-Linux hosts that lane crosses runner loss before invocation, after the durable invocation
+acknowledgment, and after `apply_started`, then separately preserves one terminal report and its
+exact receipt bytes across a service reopen without claiming host replacement. The mandatory
+Linux/root lane alone executes the terminal-report kill, system restart, and runner replacement
+against KAP-0038's frozen receipt path.
 
 The retained handoff proof crosses the exact request/grant match check, strict binary codec,
 per-lease credential fencing, durable invocation and terminal-report transactions, separate native
-runner and system processes, deployment-faithful projected-input symlinks, empty gateway-volume
+runner and system processes, atomically published per-lease input directories, empty gateway-volume
 initialization, receipt-free and finalized deterministic Kubernetes fixtures, exact receipt
 publication/replay including public expiry, and the runner CLI state-path boundary. It binds only
 loopback fixtures and proves no private-cluster reachability, network isolation, provider identity,
 storage fencing, key custody, or public endpoint.
+
+On a root-controlled Linux host, run the separate container-free distinct fixed-staging identity
+lane with:
+
+```sh
+cargo make test-sandbox-fixed-staging-identities-linux
+```
+
+This lane creates synthetic controller `65530:65530` and staging `65531:65531` identities inside a
+network namespace, gives only the installer process `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, and
+`CAP_FOWNER`, activates one production generation, and reads it from a separate capability-free
+controller process. A no-capability installer must fail. The lane emits source and launcher hashes
+but no authority bytes. It requires Linux root and `unshare`; it uses no Docker, Kubernetes,
+provider, credential, DNS, endpoint, or network traffic. It proves only the production ownership and
+role split, not managed custody or runner syscall/path confinement.
 
 Run the root-package deletion and one-way dependency proof directly when needed:
 

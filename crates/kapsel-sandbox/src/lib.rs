@@ -12,6 +12,7 @@ use std::{
     io::Write,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use http::{
@@ -28,18 +29,27 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod controller_role;
+mod fixed_staging;
+pub use fixed_staging::GenerationIdentity;
 mod kubernetes_policy;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "Slice 4 cleanup composition follows accepted dispatch and retention integration"
+    )
+)]
 mod local_roles;
 mod runner_handoff;
 mod runner_host;
 mod runner_process;
 pub use controller_role::{
-    ControllerConfiguration, ControllerError, ControllerRole, ControllerRun, ControllerWait,
+    AuthorityController, CleanupController, ControllerConfiguration, ControllerError,
+    ControllerRole, ControllerRun, ControllerWait, RetentionController,
 };
-pub use local_roles::{
-    CleanupOwnedObject, CleanupRole, CleanupWork, KubernetesCleanupRole, RetentionRole,
-    SchedulerRole, SchedulerStep,
-};
+#[cfg(test)]
+pub(crate) use local_roles::CleanupRole;
+pub(crate) use local_roles::{RetentionRole, SchedulerRole, SchedulerStep};
 use runner_handoff::{
     constant_time_equal, credential_verifier, handle_connection_at, report_payload_digest,
     HandoffIdentity,
@@ -50,6 +60,13 @@ pub use runner_handoff::{
 };
 pub use runner_process::run as run_runner_process;
 
+#[cfg(test)]
+mod cluster_policy_tests;
+#[cfg(test)]
+mod service_contract_tests;
+#[cfg(test)]
+mod test_authority;
+
 const QUEUED_RUNS_MAX: i64 = 32;
 const ACTIVE_RUNS_MAX: i64 = 1;
 const EVENT_COUNT_MAX: i64 = 64;
@@ -57,6 +74,12 @@ const PUBLIC_RETENTION_SECONDS: i64 = 86_400;
 const SANDBOX_DEADLINE_SECONDS: i64 = 180;
 const SCHEDULER_LEASE_SECONDS: i64 = 30;
 const RECEIPT_BYTES_MAX: usize = 16 * 1024;
+
+#[cfg(test)]
+pub(crate) fn test_authority_identity() -> GenerationIdentity {
+    GenerationIdentity::new(1, test_authority::manifest_digest([7; 32]))
+        .expect("fixed test authority identity")
+}
 const PROVISIONED_OBJECT_OWNERS_MAX: i64 = 64;
 pub(crate) const PROVISIONED_OBJECT_OWNERS_MAX_USIZE: usize = 64;
 type StoredReportBinding = (
@@ -155,6 +178,14 @@ pub struct DispatchLease {
     expires_at_unix_s: i64,
     /// Raw private runner credential, never retained in system state.
     handoff_credential: [u8; 32],
+    /// Durable authority generation pinned by the dispatch transaction.
+    authority: GenerationIdentity,
+}
+
+impl DispatchLease {
+    pub(crate) fn epoch(&self) -> i64 {
+        self.epoch
+    }
 }
 
 impl fmt::Debug for DispatchLease {
@@ -165,6 +196,7 @@ impl fmt::Debug for DispatchLease {
             .field("lease_id", &self.lease_id)
             .field("epoch", &self.epoch)
             .field("expires_at_unix_s", &self.expires_at_unix_s)
+            .field("authority", &self.authority)
             .field("handoff_credential", &"[REDACTED]")
             .finish()
     }
@@ -480,12 +512,78 @@ pub enum ServiceError {
     InvalidTransition,
 }
 
+/// Non-secret fixed authority-root configuration for one service process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityConfiguration {
+    root: PathBuf,
+    controller_uid: u32,
+    controller_gid: u32,
+    staging_uid: u32,
+    staging_gid: u32,
+}
+
+impl AuthorityConfiguration {
+    /// Binds the one fixed authority root and its separate numeric owners.
+    #[must_use]
+    #[allow(
+        clippy::similar_names,
+        reason = "the fixed controller and staging UID/GID pairs remain deliberately explicit"
+    )]
+    pub fn new(
+        root: PathBuf,
+        controller_uid: u32,
+        controller_gid: u32,
+        staging_uid: u32,
+        staging_gid: u32,
+    ) -> Self {
+        Self {
+            root,
+            controller_uid,
+            controller_gid,
+            staging_uid,
+            staging_gid,
+        }
+    }
+
+    /// Validates and atomically activates the fixed incoming authority generation.
+    ///
+    /// This operation must run under the configured staging identity. It accepts no authority
+    /// payload through the process interface; the fixed owner-private inbox is its sole source.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable unless the complete incoming inventory, role identities, ownership,
+    /// modes, monotonic generation, and crash-recovery state are valid.
+    pub fn activate_incoming(&self) -> Result<GenerationIdentity, ServiceError> {
+        fixed_staging::FixedStagingInstaller::open(
+            &self.root,
+            self.controller_uid,
+            self.controller_gid,
+            self.staging_uid,
+            self.staging_gid,
+        )
+        .and_then(|installer| installer.activate_incoming())
+        .map_err(|_| ServiceError::Unavailable)
+    }
+
+    fn open_reader(&self) -> Result<fixed_staging::FixedStagingReader, ServiceError> {
+        fixed_staging::FixedStagingReader::open(
+            &self.root,
+            self.controller_uid,
+            self.controller_gid,
+            self.staging_uid,
+            self.staging_gid,
+        )
+        .map_err(|_| ServiceError::Unavailable)
+    }
+}
+
 /// SQLite-backed fixed sandbox service.
 #[derive(Clone)]
 pub struct Service {
     database_path: PathBuf,
     receipt_directory: PathBuf,
-    digest_key: [u8; 32],
+    authority: Arc<fixed_staging::FixedStagingReader>,
     origin: String,
 }
 
@@ -523,7 +621,7 @@ impl Service {
     pub fn open(
         database_path: impl AsRef<Path>,
         receipt_directory: impl AsRef<Path>,
-        digest_key: [u8; 32],
+        authority: &AuthorityConfiguration,
         now_unix_s: i64,
     ) -> Result<Self, ServiceError> {
         let database_path = database_path.as_ref();
@@ -539,18 +637,51 @@ impl Service {
         let database_path = database_parent.join(database_name);
         let receipt_directory =
             fs::canonicalize(receipt_directory).map_err(|_| ServiceError::Unavailable)?;
-        if digest_key == [0; 32] {
-            return Err(ServiceError::Unavailable);
+        let authority = Arc::new(authority.open_reader()?);
+        let pending_collection = pending_authority_collection(&database_path)?;
+        if let Some(identity) = pending_collection.as_ref() {
+            authority
+                .validate_collection_recovery(identity)
+                .map_err(|_| ServiceError::Unavailable)?;
+        } else {
+            authority
+                .tombstone_keyring()
+                .map_err(|_| ServiceError::Unavailable)?;
         }
         let service = Self {
             database_path,
             receipt_directory,
-            digest_key,
+            authority,
             origin: "https://kapsel.invalid".into(),
         };
         service.initialize()?;
-        service.sweep_retention(now_unix_s)?;
+        service.recover_authority_collection()?;
+        service
+            .authority
+            .tombstone_keyring()
+            .map_err(|_| ServiceError::Unavailable)?;
         Ok(service)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(
+        database_path: impl AsRef<Path>,
+        receipt_directory: impl AsRef<Path>,
+        digest_key: [u8; 32],
+        now_unix_s: i64,
+    ) -> Result<Self, ServiceError> {
+        if digest_key == [0; 32] {
+            return Err(ServiceError::Unavailable);
+        }
+        let database_path = database_path.as_ref().to_owned();
+        let receipt_directory = receipt_directory.as_ref().to_owned();
+        let parent = database_path.parent().ok_or(ServiceError::Unavailable)?;
+        Self::open(
+            &database_path,
+            &receipt_directory,
+            &test_authority::configuration(parent, digest_key),
+            now_unix_s,
+        )
     }
 
     /// Runs the operator-owned periodic retention and tombstone deletion sweep.
@@ -560,7 +691,7 @@ impl Service {
     /// # Errors
     ///
     /// Returns a time, storage, or immutable-object deletion failure.
-    pub fn sweep_retention(&self, now_unix_s: i64) -> Result<(), ServiceError> {
+    pub(crate) fn sweep_retention(&self, now_unix_s: i64) -> Result<(), ServiceError> {
         timestamp(now_unix_s)?;
         self.expire(now_unix_s)
     }
@@ -625,7 +756,12 @@ impl Service {
     ///
     /// Returns a storage, entropy, [`ServiceError::ActiveSaturated`], or
     /// [`ServiceError::RunNotFound`] failure.
-    pub fn dispatch_next(&self, now_unix_s: i64) -> Result<DispatchLease, ServiceError> {
+    pub(crate) fn dispatch_next(
+        &self,
+        now_unix_s: i64,
+        authority: &GenerationIdentity,
+    ) -> Result<DispatchLease, ServiceError> {
+        validate_authority_identity(authority)?;
         let lease_id = random_identity()?;
         let handoff_credential = random_credential()?;
         let mut connection = self.connection()?;
@@ -671,8 +807,10 @@ impl Service {
                 concat!(
                     "UPDATE runs SET active = 1, execution_state = 'running', ",
                     "dispatched_at = ?2, deadline_at = ?3, lease_id = ?4, lease_epoch = 1, ",
-                    "lease_expires_at = ?5, handoff_credential_verifier = ?6 ",
-                    "WHERE run_id = ?1 AND active = 0 AND execution_state = 'queued'"
+                    "lease_expires_at = ?5, handoff_credential_verifier = ?6, ",
+                    "authority_generation = ?7, authority_manifest_digest = ?8 ",
+                    "WHERE run_id = ?1 AND active = 0 AND execution_state = 'queued' ",
+                    "AND authority_generation IS NULL AND authority_manifest_digest = ''"
                 ),
                 params![
                     run_id,
@@ -680,7 +818,9 @@ impl Service {
                     deadline_at,
                     lease_id,
                     lease_expires_at,
-                    verifier.as_slice()
+                    verifier.as_slice(),
+                    i64::try_from(authority.generation).map_err(|_| ServiceError::Unavailable)?,
+                    authority.manifest_digest
                 ],
             )
             .map_err(storage_error)?;
@@ -704,6 +844,7 @@ impl Service {
             epoch: 1,
             expires_at_unix_s: lease_expires_at,
             handoff_credential,
+            authority: authority.clone(),
         })
     }
 
@@ -739,6 +880,55 @@ impl Service {
         }
     }
 
+    pub(crate) fn sole_cleanup_authority_identity(
+        &self,
+    ) -> Result<Option<GenerationIdentity>, ServiceError> {
+        let connection = self.connection()?;
+        validate_authority_pins(&connection)?;
+        let mut statement = connection
+            .prepare(concat!(
+                "SELECT runs.authority_generation, runs.authority_manifest_digest FROM ",
+                "cleanup_records JOIN runs ON runs.run_id = cleanup_records.run_id WHERE ",
+                "cleanup_records.active = 1 AND cleanup_records.eligible = 1 ORDER BY ",
+                "runs.admission_order"
+            ))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [(generation, digest)] => {
+                stored_authority_identity(*generation, digest.clone()).map(Some)
+            },
+            _ => Err(ServiceError::Unavailable),
+        }
+    }
+
+    pub(crate) fn sole_active_authority_identity(
+        &self,
+    ) -> Result<Option<GenerationIdentity>, ServiceError> {
+        let Some(run_id) = self.sole_active_run()? else {
+            return Ok(None);
+        };
+        let (generation, manifest_digest): (Option<i64>, String) = self
+            .connection()?
+            .query_row(
+                concat!(
+                    "SELECT authority_generation, authority_manifest_digest FROM runs ",
+                    "WHERE run_id = ?1"
+                ),
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(storage_error)?;
+        stored_authority_identity(generation, manifest_digest).map(Some)
+    }
+
     /// Claims or renews recovery after process loss without changing public projection.
     ///
     /// An unexpired lease can be renewed only with the exact previous lease. After expiry, a new
@@ -748,7 +938,11 @@ impl Service {
     ///
     /// Returns missing-run, inactive-run, lease-busy, entropy, or storage failures. Recovery leases
     /// remain available after the ordinary execution deadline.
-    pub fn recover_run(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one recovery transaction validates and preserves the durable authority pin"
+    )]
+    pub(crate) fn recover_run(
         &self,
         run_id: &str,
         previous: Option<&DispatchLease>,
@@ -761,7 +955,17 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let (stored_id, epoch, expires_at, active, revoked, retiring, retired): (
+        let (
+            stored_id,
+            epoch,
+            expires_at,
+            active,
+            revoked,
+            retiring,
+            retired,
+            generation,
+            manifest_digest,
+        ): (
             String,
             i64,
             i64,
@@ -769,11 +973,14 @@ impl Service {
             bool,
             bool,
             bool,
+            Option<i64>,
+            String,
         ) = transaction
             .query_row(
                 concat!(
                     "SELECT lease_id, lease_epoch, lease_expires_at, active, runner_revoked, ",
-                    "runner_state_retiring, runner_state_retired FROM runs WHERE run_id = ?1"
+                    "runner_state_retiring, runner_state_retired, authority_generation, ",
+                    "authority_manifest_digest FROM runs WHERE run_id = ?1"
                 ),
                 [run_id],
                 |row| {
@@ -785,6 +992,8 @@ impl Service {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
                     ))
                 },
             )
@@ -794,6 +1003,7 @@ impl Service {
         if !active || revoked || retiring || retired {
             return Err(ServiceError::InvalidTransition);
         }
+        let authority = stored_authority_identity(generation, manifest_digest)?;
         let previous_matches = previous.is_some_and(|lease| {
             lease.run_id == run_id && lease.lease_id == stored_id && lease.epoch == epoch
         });
@@ -838,6 +1048,7 @@ impl Service {
             epoch: next_epoch,
             expires_at_unix_s: next_expiry,
             handoff_credential,
+            authority,
         })
     }
 
@@ -2060,8 +2271,8 @@ impl Service {
     }
 
     pub(crate) fn commit_runner_state_retired(&self, run_id: &str) -> Result<(), ServiceError> {
-        let changed = self
-            .connection()?
+        let connection = self.connection()?;
+        let changed = connection
             .execute(
                 concat!(
                     "UPDATE runs SET runner_state_retired = 1 WHERE run_id = ?1 ",
@@ -2073,9 +2284,39 @@ impl Service {
             )
             .map_err(storage_error)?;
         if changed != 1 {
+            let retired = connection
+                .query_row(
+                    "SELECT runner_state_retired FROM runs WHERE run_id = ?1",
+                    [run_id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .optional()
+                .map_err(storage_error)?;
+            if retired != Some(true) {
+                return Err(ServiceError::InvalidTransition);
+            }
+        }
+        self.authority
+            .remove_retired_dispatch(run_id)
+            .map_err(|_| ServiceError::Unavailable)
+    }
+
+    pub(crate) fn converge_retired_dispatch(&self, run_id: &str) -> Result<(), ServiceError> {
+        let retired = self
+            .connection()?
+            .query_row(
+                "SELECT runner_state_retired FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        if retired != Some(true) {
             return Err(ServiceError::InvalidTransition);
         }
-        Ok(())
+        self.authority
+            .remove_retired_dispatch(run_id)
+            .map_err(|_| ServiceError::Unavailable)
     }
 
     /// Appends the independent sandbox deadline fact without classifying the receiver.
@@ -2121,17 +2362,20 @@ impl Service {
     /// # Errors
     ///
     /// Returns an ownership, state, missing-run, or storage error.
-    pub fn start_cleanup(
+    pub(crate) fn start_cleanup(
         &self,
         run_id: &str,
         cleanup_identity: &str,
         observed_namespace_uid: &str,
+        authority: &GenerationIdentity,
         now_unix_s: i64,
     ) -> Result<(), ServiceError> {
+        validate_authority_identity(authority)?;
         self.cleanup_transition(
             run_id,
             cleanup_identity,
             observed_namespace_uid,
+            Some(authority),
             CleanupState::Running,
             "cleanup.started",
             now_unix_s,
@@ -2154,6 +2398,7 @@ impl Service {
             run_id,
             cleanup_identity,
             observed_namespace_uid,
+            None,
             CleanupState::Failed,
             "cleanup.failed",
             now_unix_s,
@@ -2234,6 +2479,29 @@ impl Service {
             last_sequence: snapshot.last_sequence,
             next_after,
         })
+    }
+
+    pub(crate) fn retained_public_trust(&self, run_id: &str) -> Result<Vec<u8>, ServiceError> {
+        bounded_hex_128(run_id)?;
+        let pin = self
+            .connection()?
+            .query_row(
+                concat!(
+                    "SELECT runs.authority_generation, runs.authority_manifest_digest FROM runs ",
+                    "JOIN receipts ON receipts.run_id = runs.run_id WHERE runs.run_id = ?1 ",
+                    "AND runs.public_retained = 1 AND runs.receipt_available = 1"
+                ),
+                [run_id],
+                |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(ServiceError::ReceiptNotAvailable)?;
+        let identity = stored_authority_identity(pin.0, pin.1)?;
+        self.authority
+            .public_trust(&identity)
+            .map(|trust| trust.bytes)
+            .map_err(|_| ServiceError::Unavailable)
     }
 
     /// Retrieves exact unchanged KAP-0038 receipt bytes.
@@ -2393,6 +2661,7 @@ impl Service {
         validate_private_directory(&self.receipt_directory)?;
         prepare_database_file(&self.database_path)?;
         let mut connection = self.connection()?;
+        preflight_existing_authority_schema(&connection)?;
         connection
             .execute_batch(
                 "PRAGMA journal_mode = DELETE;
@@ -2402,6 +2671,10 @@ impl Service {
                    boundary_uid_digest TEXT NOT NULL DEFAULT ''
                  );
                  INSERT OR IGNORE INTO service_state (singleton, stopped) VALUES (1, 0);
+                 CREATE TABLE IF NOT EXISTS authority_collection (
+                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                   generation INTEGER NOT NULL, manifest_digest TEXT NOT NULL
+                 );
                  CREATE TABLE IF NOT EXISTS runs (
                    admission_order INTEGER PRIMARY KEY AUTOINCREMENT,
                    run_id TEXT NOT NULL UNIQUE, idempotency_key TEXT NOT NULL UNIQUE,
@@ -2434,7 +2707,9 @@ impl Service {
                    cleanup_plan_digest TEXT NOT NULL DEFAULT '',
                    cleanup_plan_issued INTEGER NOT NULL DEFAULT 0,
                    cleanup_pending_observation_id TEXT NOT NULL DEFAULT '',
-                   cleanup_observation_id TEXT NOT NULL DEFAULT ''
+                   cleanup_observation_id TEXT NOT NULL DEFAULT '',
+                   authority_generation INTEGER,
+                   authority_manifest_digest TEXT NOT NULL DEFAULT ''
                  );
                  CREATE TABLE IF NOT EXISTS cleanup_records (
                    run_id TEXT PRIMARY KEY, cleanup_identity TEXT NOT NULL,
@@ -2466,7 +2741,9 @@ impl Service {
                  );
                  CREATE TABLE IF NOT EXISTS tombstones (
                    run_digest TEXT PRIMARY KEY, key_digest TEXT NOT NULL UNIQUE,
-                   delete_at INTEGER NOT NULL
+                   delete_at INTEGER NOT NULL,
+                   authority_generation INTEGER NOT NULL,
+                   authority_manifest_digest TEXT NOT NULL
                  );",
             )
             .map_err(storage_error)?;
@@ -2496,6 +2773,8 @@ impl Service {
         migrate_cleanup_columns(&connection)?;
         migrate_service_state_columns(&connection)?;
         migrate_slice3_run_columns(&connection)?;
+        migrate_authority_columns(&mut connection)?;
+        validate_authority_pins(&connection)?;
         validate_serial_capacity(&connection)?;
         self.remove_orphan_receipts(&mut connection)
     }
@@ -2572,6 +2851,166 @@ impl Service {
         open_database_connection(&self.database_path)
     }
 
+    pub(crate) fn authority_reader(&self) -> Arc<fixed_staging::FixedStagingReader> {
+        Arc::clone(&self.authority)
+    }
+
+    fn recover_authority_collection(&self) -> Result<(), ServiceError> {
+        let connection = self.connection()?;
+        let pending = connection
+            .query_row(
+                "SELECT generation, manifest_digest FROM authority_collection WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        let Some((generation, manifest_digest)) = pending else {
+            return Ok(());
+        };
+        let identity = stored_authority_identity(Some(generation), manifest_digest)?;
+        self.authority
+            .recover_collection(&identity)
+            .map_err(|_| ServiceError::Unavailable)?;
+        connection
+            .execute("DELETE FROM authority_collection WHERE singleton = 1", [])
+            .map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub(crate) fn collect_unused_authority(&self) -> Result<bool, ServiceError> {
+        self.recover_authority_collection()?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        validate_authority_pins(&transaction)?;
+        let Some(identity) = self
+            .authority
+            .noncurrent_identity()
+            .map_err(|_| ServiceError::Unavailable)?
+        else {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(false);
+        };
+        let current = self
+            .authority
+            .current_identity()
+            .map_err(|_| ServiceError::Unavailable)?;
+        let referenced =
+            Self::noncurrent_authority_is_referenced(&transaction, &current, &identity)?;
+        let generation =
+            i64::try_from(identity.generation).map_err(|_| ServiceError::Unavailable)?;
+        self.validate_authority_reference_owners(&transaction)?;
+        if referenced {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(false);
+        }
+        transaction
+            .execute(
+                "INSERT INTO authority_collection VALUES (1, ?1, ?2)",
+                params![generation, identity.manifest_digest],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        self.authority
+            .collect_noncurrent(&identity)
+            .map_err(|_| ServiceError::Unavailable)?;
+        self.connection()?
+            .execute("DELETE FROM authority_collection WHERE singleton = 1", [])
+            .map_err(storage_error)?;
+        Ok(true)
+    }
+
+    fn noncurrent_authority_is_referenced(
+        transaction: &rusqlite::Transaction<'_>,
+        current: &GenerationIdentity,
+        noncurrent: &GenerationIdentity,
+    ) -> Result<bool, ServiceError> {
+        let mut statement = transaction
+            .prepare(concat!(
+                "SELECT authority_generation, authority_manifest_digest FROM runs ",
+                "WHERE authority_generation IS NOT NULL UNION ALL SELECT authority_generation, ",
+                "authority_manifest_digest FROM tombstones"
+            ))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?;
+        let mut referenced = false;
+        for row in rows {
+            let (generation, digest) = row.map_err(storage_error)?;
+            let identity = stored_authority_identity(generation, digest)?;
+            if &identity == noncurrent {
+                referenced = true;
+            } else if &identity != current {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        Ok(referenced)
+    }
+
+    fn validate_authority_reference_owners(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> Result<(), ServiceError> {
+        for table in [
+            "receipts",
+            "receipt_publications",
+            "cleanup_records",
+            "application_reports",
+        ] {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM {table} LEFT JOIN runs USING (run_id) \
+                 WHERE runs.run_id IS NULL)"
+            );
+            let orphaned: bool = transaction
+                .query_row(&sql, [], |row| row.get(0))
+                .map_err(storage_error)?;
+            if orphaned {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        let dispatch_references = self
+            .authority
+            .dispatch_references()
+            .map_err(|_| ServiceError::Unavailable)?;
+        for (run_id, published_epoch) in dispatch_references {
+            let owner = transaction
+                .query_row(
+                    concat!(
+                        "SELECT execution_state, authority_generation, ",
+                        "authority_manifest_digest, lease_epoch FROM runs WHERE run_id = ?1"
+                    ),
+                    [&run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(storage_error)?;
+            let Some((state, generation, digest, durable_epoch)) = owner else {
+                return Err(ServiceError::Unavailable);
+            };
+            stored_authority_identity(generation, digest)?;
+            if state == "queued" || durable_epoch <= 0 || published_epoch != durable_epoch {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_authority_state(&self) -> Result<(), ServiceError> {
+        validate_authority_pins(&self.connection()?)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one transaction keeps all immutable admission and capacity facts auditable"
@@ -2591,11 +3030,28 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let key_digest = self.keyed_digest(idempotency_key);
+        let keyring = self
+            .authority
+            .tombstone_keyring()
+            .map_err(|_| ServiceError::Unavailable)?;
+        let first_key = keyring
+            .entries
+            .first()
+            .ok_or(ServiceError::Unavailable)?
+            .digest_key;
+        let second_key = keyring
+            .entries
+            .get(1)
+            .map_or(first_key, |entry| entry.digest_key);
+        let first_digest = keyed_digest(&first_key, idempotency_key);
+        let second_digest = keyed_digest(&second_key, idempotency_key);
         let tombstoned: bool = transaction
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM tombstones WHERE key_digest = ?1 AND delete_at > ?2)",
-                params![key_digest, now_unix_s],
+                concat!(
+                    "SELECT EXISTS(SELECT 1 FROM tombstones WHERE key_digest IN (?1, ?2) ",
+                    "AND delete_at > ?3)"
+                ),
+                params![first_digest, second_digest, now_unix_s],
                 |row| row.get(0),
             )
             .map_err(storage_error)?;
@@ -2699,7 +3155,7 @@ impl Service {
         })
     }
 
-    fn server_owned_request(&self, run_id: &str) -> Result<AgentRequest, ServiceError> {
+    pub(crate) fn server_owned_request(&self, run_id: &str) -> Result<AgentRequest, ServiceError> {
         let connection = self.connection()?;
         let (operation_id, scenario): (String, String) = connection
             .query_row(
@@ -2724,14 +3180,24 @@ impl Service {
     fn validate_lease(&self, lease: &DispatchLease, now: i64) -> Result<(), ServiceError> {
         bounded_hex_128(&lease.run_id)?;
         let connection = self.connection()?;
-        let stored: (String, i64, i64, bool) = connection
+        let stored: (String, i64, i64, bool, Option<i64>, String) = connection
             .query_row(
                 concat!(
-                    "SELECT lease_id, lease_epoch, lease_expires_at, active ",
+                    "SELECT lease_id, lease_epoch, lease_expires_at, active, ",
+                    "authority_generation, authority_manifest_digest ",
                     "FROM runs WHERE run_id = ?1"
                 ),
                 [&lease.run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .optional()
             .map_err(storage_error)?
@@ -2741,6 +3207,7 @@ impl Service {
             || stored.1 != lease.epoch
             || stored.2 != lease.expires_at_unix_s
             || now >= stored.2
+            || stored_authority_identity(stored.4, stored.5)? != lease.authority
         {
             return Err(ServiceError::LeaseBusy);
         }
@@ -3214,8 +3681,9 @@ impl Service {
         cleanup_attempt: i64,
         plan_digest: &str,
     ) -> Result<(), ServiceError> {
-        let changed = self
-            .connection()?
+        let mut connection = self.connection()?;
+        let transaction = guarded_immediate_transaction(&mut connection)?;
+        let changed = transaction
             .execute(
                 concat!(
                     "UPDATE runs SET cleanup_plan_issued = 1 WHERE run_id = ?1 ",
@@ -3231,7 +3699,7 @@ impl Service {
         if changed != 1 {
             return Err(ServiceError::InvalidTransition);
         }
-        Ok(())
+        transaction.commit().map_err(storage_error)
     }
 
     pub(crate) fn begin_cleanup_observation(
@@ -3246,8 +3714,9 @@ impl Service {
             format!("KAPSEL-CLEANUP-OBSERVATION-V1\0{run_id}\0{cleanup_attempt}\0{plan_digest}")
                 .as_bytes(),
         );
-        let changed = self
-            .connection()?
+        let mut connection = self.connection()?;
+        let transaction = guarded_immediate_transaction(&mut connection)?;
+        let changed = transaction
             .execute(
                 concat!(
                     "UPDATE runs SET cleanup_pending_observation_id = ?5 WHERE run_id = ?1 ",
@@ -3270,6 +3739,7 @@ impl Service {
         if changed != 1 {
             return Err(ServiceError::InvalidTransition);
         }
+        transaction.commit().map_err(storage_error)?;
         Ok(observation_id)
     }
 
@@ -3452,11 +3922,17 @@ impl Service {
         transaction.commit().map_err(storage_error)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one cleanup transition validates the complete authority-bound durable identity"
+    )]
     fn cleanup_transition(
         &self,
         run_id: &str,
         cleanup_identity: &str,
         observed_uid: &str,
+        expected_authority: Option<&GenerationIdentity>,
         state: CleanupState,
         kind: &str,
         now_unix_s: i64,
@@ -3467,13 +3943,24 @@ impl Service {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
-        let (owned_cleanup, owned_uid, resource_state, cleanup_state, eligible, prerequisites): (
+        let (
+            owned_cleanup,
+            owned_uid,
+            resource_state,
+            cleanup_state,
+            eligible,
+            prerequisites,
+            generation,
+            manifest_digest,
+        ): (
             String,
             Option<String>,
             String,
             String,
             bool,
             bool,
+            Option<i64>,
+            String,
         ) = transaction
             .query_row(
                 concat!(
@@ -3481,7 +3968,8 @@ impl Service {
                     "cleanup_records.resource_state, cleanup_records.state, ",
                     "cleanup_records.eligible, runs.provisioning_closed = 1 ",
                     "AND runs.runner_revoked = 1 AND runs.runner_process_absent = 1 ",
-                    "AND runs.journal_handoff = 1 AND runs.runner_state_retired = 1 ",
+                    "AND runs.journal_handoff = 1 AND runs.runner_state_retired = 1, ",
+                    "runs.authority_generation, runs.authority_manifest_digest ",
                     "FROM cleanup_records JOIN runs ",
                     "ON runs.run_id = cleanup_records.run_id WHERE cleanup_records.run_id = ?1"
                 ),
@@ -3494,6 +3982,8 @@ impl Service {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
@@ -3508,6 +3998,10 @@ impl Service {
         }
         if !eligible || !prerequisites {
             return Err(ServiceError::InvalidTransition);
+        }
+        let stored_authority = stored_authority_identity(generation, manifest_digest)?;
+        if expected_authority.is_some_and(|expected| expected != &stored_authority) {
+            return Err(ServiceError::Unavailable);
         }
         let allowed = matches!(
             (cleanup_state.as_str(), state),
@@ -3551,7 +4045,26 @@ impl Service {
         reason = "one retention transaction erases public, receipt, cleanup, and ownership rows"
     )]
     fn expire(&self, now_unix_s: i64) -> Result<(), ServiceError> {
+        let keyring = self
+            .authority
+            .tombstone_keyring()
+            .map_err(|_| ServiceError::Unavailable)?;
         let mut connection = self.connection()?;
+        validate_authority_pins(&connection)?;
+        validate_tombstone_dependencies(&connection, &keyring)?;
+        let queued_expired: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT EXISTS(SELECT 1 FROM runs WHERE expires_at <= ?1 ",
+                    "AND public_retained = 1 AND execution_state = 'queued')"
+                ),
+                [now_unix_s],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if queued_expired {
+            validate_authority_identity(&keyring.current)?;
+        }
         self.remove_orphan_receipts(&mut connection)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -3563,8 +4076,11 @@ impl Service {
             let mut statement = transaction
                 .prepare(concat!(
                     "SELECT runs.run_id, runs.idempotency_key, runs.expires_at, ",
-                    "receipts.digest, receipts.object_name, receipt_publications.digest, ",
-                    "receipt_publications.object_name FROM runs LEFT JOIN receipts ",
+                    "runs.execution_state, receipts.digest, receipts.object_name, ",
+                    "receipt_publications.digest, ",
+                    "receipt_publications.object_name, runs.authority_generation, ",
+                    "runs.authority_manifest_digest, runs.runner_state_retired FROM runs ",
+                    "LEFT JOIN receipts ",
                     "ON receipts.run_id = runs.run_id LEFT JOIN receipt_publications ON ",
                     "receipt_publications.run_id = runs.run_id WHERE runs.expires_at <= ?1 ",
                     "AND runs.public_retained = 1"
@@ -3576,18 +4092,49 @@ impl Service {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(3)?,
                         row.get::<_, Option<String>>(4)?,
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, bool>(10)?,
                     ))
                 })
                 .map_err(storage_error)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)?
         };
+        let dispatch_runs = self
+            .authority
+            .dispatch_run_ids()
+            .map_err(|_| ServiceError::Unavailable)?;
         let mut expired_objects = Vec::new();
-        for (run_id, key, expires_at, digest, object_name, pending_digest, pending_name) in expired
+        for (
+            run_id,
+            key,
+            expires_at,
+            execution_state,
+            digest,
+            object_name,
+            pending_digest,
+            pending_name,
+            authority_generation,
+            authority_manifest_digest,
+            runner_retired,
+        ) in expired
         {
+            let authority = if execution_state == "queued" {
+                if authority_generation.is_some() || !authority_manifest_digest.is_empty() {
+                    return Err(ServiceError::Unavailable);
+                }
+                keyring.current.clone()
+            } else {
+                stored_authority_identity(authority_generation, authority_manifest_digest)?
+            };
+            let digest_key = keyring
+                .key_for(&authority)
+                .ok_or(ServiceError::Unavailable)?;
             if let (Some(digest), Some(object_name)) = (digest, object_name) {
                 expired_objects.push((run_id.clone(), digest, object_name));
             }
@@ -3598,11 +4145,18 @@ impl Service {
             if tombstone_delete_at > now_unix_s {
                 transaction
                     .execute(
-                        "INSERT OR REPLACE INTO tombstones VALUES (?1, ?2, ?3)",
+                        concat!(
+                            "INSERT OR REPLACE INTO tombstones (run_digest, key_digest, ",
+                            "delete_at, authority_generation, authority_manifest_digest) ",
+                            "VALUES (?1, ?2, ?3, ?4, ?5)"
+                        ),
                         params![
-                            self.keyed_digest(&run_id),
-                            self.keyed_digest(&key),
-                            tombstone_delete_at
+                            keyed_digest(&digest_key, &run_id),
+                            keyed_digest(&digest_key, &key),
+                            tombstone_delete_at,
+                            i64::try_from(authority.generation)
+                                .map_err(|_| ServiceError::Unavailable)?,
+                            authority.manifest_digest
                         ],
                     )
                     .map_err(storage_error)?;
@@ -3641,10 +4195,17 @@ impl Service {
                             "UPDATE runs SET public_retained = 0, idempotency_key = ?2, ",
                             "receipt_available = 0, last_sequence = 0 WHERE run_id = ?1"
                         ),
-                        params![run_id, self.keyed_digest(&key)],
+                        params![run_id, keyed_digest(&digest_key, &key)],
                     )
                     .map_err(storage_error)?;
             } else {
+                if execution_state != "queued" && !runner_retired && dispatch_runs.contains(&run_id)
+                {
+                    return Err(ServiceError::Unavailable);
+                }
+                self.authority
+                    .remove_retired_dispatch(&run_id)
+                    .map_err(|_| ServiceError::Unavailable)?;
                 transaction
                     .execute("DELETE FROM cleanup_records WHERE run_id = ?1", [&run_id])
                     .map_err(storage_error)?;
@@ -3706,21 +4267,67 @@ impl Service {
         run_id: &str,
         now_unix_s: i64,
     ) -> Result<bool, ServiceError> {
+        let keyring = self
+            .authority
+            .tombstone_keyring()
+            .map_err(|_| ServiceError::Unavailable)?;
+        let first_key = keyring
+            .entries
+            .first()
+            .ok_or(ServiceError::Unavailable)?
+            .digest_key;
+        let second_key = keyring
+            .entries
+            .get(1)
+            .map_or(first_key, |entry| entry.digest_key);
         connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM tombstones WHERE run_digest = ?1 AND delete_at > ?2)",
-                params![self.keyed_digest(run_id), now_unix_s],
+                concat!(
+                    "SELECT EXISTS(SELECT 1 FROM tombstones WHERE run_digest IN (?1, ?2) ",
+                    "AND delete_at > ?3)"
+                ),
+                params![
+                    keyed_digest(&first_key, run_id),
+                    keyed_digest(&second_key, run_id),
+                    now_unix_s
+                ],
                 |row| row.get(0),
             )
             .map_err(storage_error)
     }
+}
 
-    fn keyed_digest(&self, value: &str) -> String {
-        let mut digest = Sha256::new();
-        digest.update(self.digest_key);
-        digest.update(value.as_bytes());
-        hex(&digest.finalize())
+fn validate_tombstone_dependencies(
+    connection: &Connection,
+    keyring: &fixed_staging::TombstoneKeyring,
+) -> Result<(), ServiceError> {
+    let mut statement = connection
+        .prepare(concat!(
+            "SELECT authority_generation, authority_manifest_digest FROM tombstones UNION ",
+            "SELECT authority_generation, authority_manifest_digest FROM runs ",
+            "WHERE execution_state != 'queued' AND public_retained = 1"
+        ))
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(storage_error)?;
+    for row in rows {
+        let (generation, digest) = row.map_err(storage_error)?;
+        let identity = stored_authority_identity(generation, digest)?;
+        if keyring.key_for(&identity).is_none() {
+            return Err(ServiceError::Unavailable);
+        }
     }
+    Ok(())
+}
+
+fn keyed_digest(key: &[u8; 32], value: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(key);
+    digest.update(value.as_bytes());
+    hex(&digest.finalize())
 }
 
 #[derive(Deserialize)]
@@ -4718,6 +5325,31 @@ fn recovery_lease_expiry(now_unix_s: i64) -> Result<i64, ServiceError> {
         .ok_or(ServiceError::Unavailable)
 }
 
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(char::from(ALPHABET[usize::from(first >> 2)]));
+        output.push(char::from(
+            ALPHABET[usize::from(((first & 0x03) << 4) | (second >> 4))],
+        ));
+        output.push(if chunk.len() > 1 {
+            char::from(ALPHABET[usize::from(((second & 0x0f) << 2) | (third >> 6))])
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            char::from(ALPHABET[usize::from(third & 0x3f)])
+        } else {
+            '='
+        });
+    }
+    output
+}
+
 fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -4771,6 +5403,82 @@ fn validate_private_directory(path: &Path) -> Result<(), ServiceError> {
         Ok(())
     } else {
         Err(ServiceError::Unavailable)
+    }
+}
+
+fn pending_authority_collection(
+    database_path: &Path,
+) -> Result<Option<GenerationIdentity>, ServiceError> {
+    if !database_path.exists() {
+        return Ok(None);
+    }
+    let connection = open_database_connection(database_path)?;
+    let table_exists: bool = connection
+        .query_row(
+            concat!(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' ",
+                "AND name = 'authority_collection')"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if !table_exists {
+        return Ok(None);
+    }
+    let mut columns = connection
+        .prepare("PRAGMA table_info(authority_collection)")
+        .map_err(storage_error)?;
+    let columns = columns
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    let expected = vec![
+        ("singleton".into(), "INTEGER".into(), 0, 1),
+        ("generation".into(), "INTEGER".into(), 1, 0),
+        ("manifest_digest".into(), "TEXT".into(), 1, 0),
+    ];
+    if columns != expected {
+        return Err(ServiceError::Unavailable);
+    }
+    let mut rows = connection
+        .prepare(concat!(
+            "SELECT singleton, typeof(singleton), generation, typeof(generation), ",
+            "manifest_digest, typeof(manifest_digest) FROM authority_collection"
+        ))
+        .map_err(storage_error)?;
+    let rows = rows
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    match rows.as_slice() {
+        [] => Ok(None),
+        [(1, singleton_type, generation, generation_type, digest, digest_type)]
+            if singleton_type == "integer"
+                && generation_type == "integer"
+                && digest_type == "text" =>
+        {
+            stored_authority_identity(Some(*generation), digest.clone()).map(Some)
+        },
+        _ => Err(ServiceError::Unavailable),
     }
 }
 
@@ -4907,6 +5615,233 @@ fn migrate_slice3_run_columns(connection: &Connection) -> Result<(), ServiceErro
     Ok(())
 }
 
+fn guarded_immediate_transaction(
+    connection: &mut Connection,
+) -> Result<rusqlite::Transaction<'_>, ServiceError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    validate_authority_pins(&transaction)?;
+    Ok(transaction)
+}
+
+fn validate_authority_identity(identity: &GenerationIdentity) -> Result<(), ServiceError> {
+    if identity.generation == 0
+        || identity.manifest_digest.len() != 64
+        || !identity
+            .manifest_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(())
+}
+
+fn stored_authority_identity(
+    generation: Option<i64>,
+    manifest_digest: String,
+) -> Result<GenerationIdentity, ServiceError> {
+    let generation = generation
+        .and_then(|value| u64::try_from(value).ok())
+        .ok_or(ServiceError::Unavailable)?;
+    let identity = GenerationIdentity {
+        generation,
+        manifest_digest,
+    };
+    validate_authority_identity(&identity)?;
+    Ok(identity)
+}
+
+fn preflight_existing_authority_schema(connection: &Connection) -> Result<(), ServiceError> {
+    let core_tables: i64 = connection
+        .query_row(
+            concat!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' ",
+                "AND name IN ('service_state', 'runs', 'tombstones')"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if core_tables == 0 {
+        return Ok(());
+    }
+    if core_tables != 3 {
+        return Err(ServiceError::Unavailable);
+    }
+    let table_columns = |table: &str| -> Result<HashSet<String>, ServiceError> {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage_error)?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(storage_error)
+    };
+    let run_columns = table_columns("runs")?;
+    let tombstone_columns = table_columns("tombstones")?;
+    let authority_column_count = [
+        run_columns.contains("authority_generation"),
+        run_columns.contains("authority_manifest_digest"),
+        tombstone_columns.contains("authority_generation"),
+        tombstone_columns.contains("authority_manifest_digest"),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if authority_column_count == 4 {
+        return validate_authority_pins(connection);
+    }
+    if authority_column_count != 0 {
+        return Err(ServiceError::Unavailable);
+    }
+    let stopped: bool = connection
+        .query_row(
+            "SELECT stopped FROM service_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    let non_drained: i64 = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM runs) + (SELECT COUNT(*) FROM tombstones)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if stopped && non_drained == 0 {
+        Ok(())
+    } else {
+        Err(ServiceError::Unavailable)
+    }
+}
+
+fn migrate_authority_columns(connection: &mut Connection) -> Result<(), ServiceError> {
+    let table_columns = |table: &str| -> Result<HashSet<String>, ServiceError> {
+        let mut statement = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(storage_error)?;
+        rows.collect::<Result<HashSet<_>, _>>()
+            .map_err(storage_error)
+    };
+    let run_columns = table_columns("runs")?;
+    let tombstone_columns = table_columns("tombstones")?;
+    let authority_column_count = [
+        run_columns.contains("authority_generation"),
+        run_columns.contains("authority_manifest_digest"),
+        tombstone_columns.contains("authority_generation"),
+        tombstone_columns.contains("authority_manifest_digest"),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if authority_column_count == 4 {
+        return Ok(());
+    }
+    if authority_column_count != 0 {
+        return Err(ServiceError::Unavailable);
+    }
+    let stopped: bool = connection
+        .query_row(
+            "SELECT stopped FROM service_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    let non_drained: i64 = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM runs) + (SELECT COUNT(*) FROM tombstones)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if !stopped || non_drained != 0 {
+        return Err(ServiceError::Unavailable);
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(storage_error)?;
+    if !run_columns.contains("authority_generation") {
+        transaction
+            .execute(
+                "ALTER TABLE runs ADD COLUMN authority_generation INTEGER",
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    if !run_columns.contains("authority_manifest_digest") {
+        transaction
+            .execute(
+                "ALTER TABLE runs ADD COLUMN authority_manifest_digest TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    if !tombstone_columns.contains("authority_generation") {
+        transaction
+            .execute(
+                concat!(
+                    "ALTER TABLE tombstones ADD COLUMN authority_generation ",
+                    "INTEGER NOT NULL DEFAULT 0"
+                ),
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    if !tombstone_columns.contains("authority_manifest_digest") {
+        transaction
+            .execute(
+                concat!(
+                    "ALTER TABLE tombstones ADD COLUMN authority_manifest_digest ",
+                    "TEXT NOT NULL DEFAULT ''"
+                ),
+                [],
+            )
+            .map_err(storage_error)?;
+    }
+    transaction.commit().map_err(storage_error)
+}
+
+fn validate_authority_pins(connection: &Connection) -> Result<(), ServiceError> {
+    let invalid_runs: i64 = connection
+        .query_row(
+            concat!(
+                "SELECT COUNT(*) FROM runs WHERE ",
+                "(execution_state = 'queued' AND (authority_generation IS NOT NULL OR ",
+                "typeof(authority_manifest_digest) != 'text' OR authority_manifest_digest != '')) ",
+                "OR (execution_state != 'queued' AND (typeof(authority_generation) != 'integer' ",
+                "OR authority_generation <= 0 OR typeof(authority_manifest_digest) != 'text' OR ",
+                "length(authority_manifest_digest) != 64 OR ",
+                "authority_manifest_digest GLOB '*[^0-9a-f]*'))"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    let invalid_tombstones: i64 = connection
+        .query_row(
+            concat!(
+                "SELECT COUNT(*) FROM tombstones WHERE ",
+                "typeof(authority_generation) != 'integer' OR authority_generation <= 0 OR ",
+                "typeof(authority_manifest_digest) != 'text' OR ",
+                "length(authority_manifest_digest) != 64 OR ",
+                "authority_manifest_digest GLOB '*[^0-9a-f]*'"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if invalid_runs != 0 || invalid_tombstones != 0 {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(())
+}
+
 fn migrate_cleanup_columns(connection: &Connection) -> Result<(), ServiceError> {
     let columns = {
         let mut statement = connection
@@ -4967,14 +5902,16 @@ mod tests {
     fn receipt_install_is_exact_immutable_restart_safe_and_expiring() {
         let root =
             std::env::temp_dir().join(format!("kapsel-sandbox-receipt-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        if root.exists() {
+            crate::test_authority::remove_root(&root);
+        }
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let receipts = root.join("receipts");
         fs::create_dir(&receipts).unwrap();
         fs::set_permissions(&receipts, fs::Permissions::from_mode(0o700)).unwrap();
         let database = root.join("sandbox.sqlite3");
-        let service = Service::open(&database, &receipts, [9; 32], 1_774_051_200).unwrap();
+        let service = Service::open_for_test(&database, &receipts, [9; 32], 1_774_051_200).unwrap();
         let admission = service
             .admit_with_run_id(
                 "00000000000000000000000000000001",
@@ -4983,7 +5920,12 @@ mod tests {
                 "0123456789abcdef0123456789abcdef",
             )
             .unwrap();
-        service.dispatch_next(1_774_051_201).unwrap();
+        service
+            .dispatch_next(
+                1_774_051_201,
+                &GenerationIdentity::new(1, test_authority::manifest_digest([9; 32])).unwrap(),
+            )
+            .unwrap();
         service
             .terminal_transition(
                 &admission.run_id,
@@ -5022,7 +5964,7 @@ mod tests {
         );
         drop(service);
 
-        let service = Service::open(&database, &receipts, [9; 32], 1_774_051_205).unwrap();
+        let service = Service::open_for_test(&database, &receipts, [9; 32], 1_774_051_205).unwrap();
         assert_eq!(
             service.receipt(&admission.run_id, 1_774_051_205).unwrap(),
             bytes
@@ -5031,7 +5973,7 @@ mod tests {
             service.receipt(&admission.run_id, 1_774_137_600),
             Err(ServiceError::RunExpired)
         );
-        fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 
     #[test]
@@ -5044,14 +5986,16 @@ mod tests {
             "kapsel-sandbox-receipt-publication-{}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&root);
+        if root.exists() {
+            crate::test_authority::remove_root(&root);
+        }
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         let receipts = root.join("receipts");
         fs::create_dir(&receipts).unwrap();
         fs::set_permissions(&receipts, fs::Permissions::from_mode(0o700)).unwrap();
         let database = root.join("sandbox.sqlite3");
-        let service = Service::open(&database, &receipts, [9; 32], 1_774_051_200).unwrap();
+        let service = Service::open_for_test(&database, &receipts, [9; 32], 1_774_051_200).unwrap();
         let admission = service
             .admit_with_run_id(
                 "00000000000000000000000000000002",
@@ -5060,7 +6004,12 @@ mod tests {
                 "1123456789abcdef0123456789abcdef",
             )
             .unwrap();
-        service.dispatch_next(1_774_051_201).unwrap();
+        service
+            .dispatch_next(
+                1_774_051_201,
+                &GenerationIdentity::new(1, test_authority::manifest_digest([9; 32])).unwrap(),
+            )
+            .unwrap();
         service
             .terminal_transition(
                 &admission.run_id,
@@ -5083,7 +6032,7 @@ mod tests {
                 1_774_051_203,
             )
             .unwrap());
-        Service::open(&database, &receipts, [9; 32], 1_774_051_203).unwrap();
+        Service::open_for_test(&database, &receipts, [9; 32], 1_774_051_203).unwrap();
         assert!(!receipts.join(&object_name).exists());
         let pending_before_install: i64 = rusqlite::Connection::open(&database)
             .unwrap()
@@ -5102,7 +6051,7 @@ mod tests {
         let collector_receipts = receipts.clone();
         let collector = std::thread::spawn(move || {
             collector_barrier.wait();
-            Service::open(
+            Service::open_for_test(
                 collector_database,
                 collector_receipts,
                 [9; 32],
@@ -5159,7 +6108,7 @@ mod tests {
         service
             .install_receipt_object(&stale_name, stale_bytes)
             .unwrap();
-        Service::open(&database, &receipts, [9; 32], 1_774_051_204).unwrap();
+        Service::open_for_test(&database, &receipts, [9; 32], 1_774_051_204).unwrap();
         assert!(!receipts.join(&stale_name).exists());
         let stale_pending: i64 = rusqlite::Connection::open(&database)
             .unwrap()
@@ -5170,6 +6119,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stale_pending, 0);
-        fs::remove_dir_all(root).unwrap();
+        crate::test_authority::remove_root(&root);
     }
 }

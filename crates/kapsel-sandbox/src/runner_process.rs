@@ -187,7 +187,7 @@ async fn run_async(
         "kind": "Config",
         "current-context": "runner",
         "clusters": [{"name": "runner", "cluster": {
-            "server": api_server, "certificate-authority-data": base64(&ca)
+            "server": api_server, "certificate-authority-data": crate::encode_base64(&ca)
         }}],
         "contexts": [{"name": "runner", "context": {
             "cluster": "runner", "user": "runner", "namespace": namespace
@@ -414,7 +414,17 @@ fn linux_status_has_fixed_identity(uid: u32, gid: u32) -> Result<bool, &'static 
     let expected_gid = format!("Gid:\t{gid}\t{gid}\t{gid}\t{gid}");
     Ok(status.lines().any(|line| line == expected_uid)
         && status.lines().any(|line| line == expected_gid)
-        && status.lines().any(|line| line.trim_end() == "Groups:"))
+        && status.lines().any(|line| line.trim_end() == "Groups:")
+        && [
+            "CapInh:\t0000000000000000",
+            "CapPrm:\t0000000000000000",
+            "CapEff:\t0000000000000000",
+            "CapBnd:\t0000000000000000",
+            "CapAmb:\t0000000000000000",
+            "NoNewPrivs:\t1",
+        ]
+        .iter()
+        .all(|expected| status.lines().any(|line| line == *expected)))
 }
 
 fn validate_boundary(
@@ -616,31 +626,6 @@ fn bounded_text(value: &str) -> Result<String, &'static str> {
         return Err("runner composition is invalid");
     }
     Ok(value.to_owned())
-}
-
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(char::from(ALPHABET[usize::from(first >> 2)]));
-        output.push(char::from(
-            ALPHABET[usize::from(((first & 0x03) << 4) | (second >> 4))],
-        ));
-        output.push(if chunk.len() > 1 {
-            char::from(ALPHABET[usize::from(((second & 0x0f) << 2) | (third >> 6))])
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            char::from(ALPHABET[usize::from(third & 0x3f)])
-        } else {
-            '='
-        });
-    }
-    output
 }
 
 fn lowercase_hex(bytes: &[u8]) -> String {

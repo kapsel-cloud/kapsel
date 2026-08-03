@@ -8,50 +8,38 @@
     reason = "paired UID/GID bindings make exact numeric identity checks auditable"
 )]
 
-use std::{
-    fmt, fs,
-    io::Write,
-    net::SocketAddr,
-    os::unix::fs::{MetadataExt, PermissionsExt},
-    path::{Path, PathBuf},
-};
+use std::{fmt, path::PathBuf, sync::Arc};
 
-use rustix::fs::{openat, Mode, OFlags, CWD};
+use ed25519_dalek::SigningKey;
+use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+use kube::{config::KubeConfigOptions, Config};
 
 use crate::{
+    fixed_staging::{FixedStagingError, FixedStagingReader},
+    local_roles::KubernetesCleanupRole,
     runner_host::{RunnerHost, RunnerHostError},
-    DispatchLease, SchedulerRole, SchedulerStep, Service, ServiceError,
+    DispatchLease, RetentionRole, SchedulerRole, SchedulerStep, Service, ServiceError,
 };
 
 /// Fixed deployment configuration for the serialized controller role.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControllerConfiguration {
-    input_directory: PathBuf,
     generation_directory: PathBuf,
     runner_uid: u32,
     runner_gid: u32,
-    handoff_endpoint: SocketAddr,
 }
 
 impl ControllerConfiguration {
-    /// Names the deployment-owned runner roots, numeric identity, and private loopback handoff.
+    /// Names the deployment-owned runner generation root and numeric identity.
     ///
     /// The runner executable is deliberately not configurable. The role binds the current
-    /// `kapsel-sandbox` program image.
+    /// `kapsel-sandbox` program image and opens the crate-private authority reader itself.
     #[must_use]
-    pub fn new(
-        input_directory: PathBuf,
-        generation_directory: PathBuf,
-        runner_uid: u32,
-        runner_gid: u32,
-        handoff_endpoint: SocketAddr,
-    ) -> Self {
+    pub fn new(generation_directory: PathBuf, runner_uid: u32, runner_gid: u32) -> Self {
         Self {
-            input_directory,
             generation_directory,
             runner_uid,
             runner_gid,
-            handoff_endpoint,
         }
     }
 }
@@ -85,6 +73,15 @@ impl std::error::Error for ControllerError {}
 impl From<ServiceError> for ControllerError {
     fn from(error: ServiceError) -> Self {
         Self::Service(error)
+    }
+}
+
+fn controller_staging_error(error: FixedStagingError) -> ControllerError {
+    match error {
+        FixedStagingError::Unavailable => ControllerError::Service(ServiceError::Unavailable),
+        FixedStagingError::Boundary | FixedStagingError::RotationCeiling => {
+            ControllerError::Boundary
+        },
     }
 }
 
@@ -137,28 +134,176 @@ impl ControllerWait {
     }
 }
 
+struct PreparedRunnerInputs {
+    assignment: crate::HandoffAssignment,
+    files: Vec<(&'static str, Vec<u8>)>,
+}
+
 /// One concrete local scheduler/controller owning at most one runner generation.
 pub struct ControllerRole {
     service: Service,
     scheduler: SchedulerRole,
     configuration: ControllerConfiguration,
+    staging: Arc<FixedStagingReader>,
     host: Option<RunnerHost>,
     scheduled: Option<DispatchLease>,
     active: Option<ControllerRun>,
 }
 
-impl ControllerRole {
-    /// Opens the concrete role without touching the runner boundary.
+/// Fixed authority-bound service transitions that do not launch a runner.
+pub struct AuthorityController {
+    service: Service,
+    staging: Arc<FixedStagingReader>,
+}
+
+impl AuthorityController {
+    /// Uses the reader already bound into the service; no second authority root can be supplied.
+    #[must_use]
+    pub fn new(service: Service) -> Self {
+        let staging = service.authority_reader();
+        Self { service, staging }
+    }
+
+    /// Validates the complete current generation before atomically dispatching one queued run.
     ///
-    /// [`Self::run_once`] always recovers durable active capacity before it opens or fences the
-    /// durable runner generation.
+    /// # Errors
+    ///
+    /// Returns before mutation when current authority or durable scheduling fails closed.
+    pub fn dispatch_next(&self, now_unix_s: i64) -> Result<DispatchLease, ControllerError> {
+        let authority = self
+            .staging
+            .current_identity()
+            .map_err(controller_staging_error)?;
+        self.service
+            .dispatch_next(now_unix_s, &authority)
+            .map_err(ControllerError::Service)
+    }
+
+    /// Returns the unchanged staged trust document for one retained receipt's durable generation.
+    ///
+    /// This channel remains separate from receipt retrieval; the receipt never appoints trust.
+    ///
+    /// # Errors
+    ///
+    /// Returns unavailable unless the retained run has a receipt and its exact pinned trust remains
+    /// complete and valid.
+    pub fn retained_receipt_trust(&self, run_id: &str) -> Result<Vec<u8>, ControllerError> {
+        self.service
+            .retained_public_trust(run_id)
+            .map_err(ControllerError::Service)
+    }
+}
+
+/// Fixed cleanup composition that selects only the run-pinned staged Kubernetes family.
+pub struct CleanupController {
+    service: Service,
+    staging: Arc<FixedStagingReader>,
+}
+
+impl CleanupController {
+    /// Uses the reader already bound into the service; no endpoint or credential can be supplied.
+    #[must_use]
+    pub fn new(service: Service) -> Self {
+        let staging = service.authority_reader();
+        Self { service, staging }
+    }
+
+    /// Runs at most one cleanup attempt after validating the exact durable generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns before cleanup mutation or API use when the pin or staged family is unavailable.
+    ///
+    /// # Cancellation safety
+    ///
+    /// Cancellation may leave a durably started cleanup attempt before or during Kubernetes I/O.
+    /// The next invocation reselects the same authority-bound work and converges through the
+    /// existing cleanup retry state; cancellation never creates a receiver result.
+    pub async fn run_once(&self, now_unix_s: i64) -> Result<bool, ControllerError> {
+        let Some(identity) = self.service.sole_cleanup_authority_identity()? else {
+            return Ok(false);
+        };
+        let material = self
+            .staging
+            .cleanup_kubernetes(&identity)
+            .map_err(controller_staging_error)?;
+        let kubeconfig_text = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Config",
+            "current-context": "cleanup",
+            "clusters": [{"name": "cleanup", "cluster": {
+                "server": material.api_server,
+                "certificate-authority-data": crate::encode_base64(&material.ca_bytes),
+            }}],
+            "contexts": [{"name": "cleanup", "context": {
+                "cluster": "cleanup", "user": "cleanup",
+            }}],
+            "users": [{"name": "cleanup", "user": {"token": material.token}}],
+        })
+        .to_string();
+        let kubeconfig = kube::config::Kubeconfig::from_yaml(&kubeconfig_text)
+            .map_err(|_| ControllerError::Boundary)?;
+        let mut configuration =
+            Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
+                .await
+                .map_err(|_| ControllerError::Boundary)?;
+        configuration.proxy_url = None;
+        let role = KubernetesCleanupRole::new(self.service.clone(), configuration, identity)?;
+        role.run_once(now_unix_s)
+            .await
+            .map_err(ControllerError::Service)
+    }
+}
+
+/// Periodic retention composition backed by the same fixed authority root.
+pub struct RetentionController {
+    service: Service,
+    role: RetentionRole,
+    staging: Arc<FixedStagingReader>,
+}
+
+impl RetentionController {
+    /// Uses the reader already bound into the service; no second authority root can be supplied.
+    #[must_use]
+    pub fn new(service: Service) -> Self {
+        let staging = service.authority_reader();
+        Self {
+            service: service.clone(),
+            role: RetentionRole::new(service),
+            staging,
+        }
+    }
+
+    /// Reads the current complete generation and performs one authority-bound retention sweep.
+    ///
+    /// # Errors
+    ///
+    /// Returns before mutation when current authority is missing or invalid.
+    pub fn run_once(&self, now_unix_s: i64) -> Result<(), ControllerError> {
+        self.staging
+            .tombstone_keyring()
+            .map_err(controller_staging_error)?;
+        self.role.run_once(now_unix_s)?;
+        self.service.collect_unused_authority()?;
+        Ok(())
+    }
+}
+
+impl ControllerRole {
+    /// Opens the concrete role and fixed authority reader without touching the runner boundary.
+    ///
+    /// [`Self::run_once`] always validates durable active authority before recovery and validates
+    /// current authority before fresh dispatch.
+    ///
     #[must_use]
     pub fn new(service: Service, configuration: ControllerConfiguration) -> Self {
+        let staging = service.authority_reader();
         let scheduler = SchedulerRole::new(service.clone());
         Self {
             service,
             scheduler,
             configuration,
+            staging,
             host: None,
             scheduled: None,
             active: None,
@@ -174,7 +319,22 @@ impl ControllerRole {
     ///
     /// Returns a bounded service failure when durable scheduling cannot be read or advanced.
     fn schedule_once(&mut self, now_unix_s: i64) -> Result<SchedulerStep, ControllerError> {
-        let step = self.scheduler.run_once(now_unix_s)?;
+        let current_authority =
+            if let Some(pinned) = self.service.sole_active_authority_identity()? {
+                self.staging
+                    .validate_identity(&pinned)
+                    .map_err(controller_staging_error)?;
+                None
+            } else {
+                Some(
+                    self.staging
+                        .current_identity()
+                        .map_err(controller_staging_error)?,
+                )
+            };
+        let step = self
+            .scheduler
+            .run_once(now_unix_s, current_authority.as_ref())?;
         self.scheduled = match &step {
             SchedulerStep::Active(lease)
             | SchedulerStep::Recovered(lease)
@@ -184,7 +344,89 @@ impl ControllerRole {
         Ok(step)
     }
 
-    /// Obtains the exact current assignment from `Service`, stages its three fixed handoff inputs,
+    fn runner_inputs(
+        &self,
+        lease: &DispatchLease,
+        now_unix_s: i64,
+    ) -> Result<PreparedRunnerInputs, ControllerError> {
+        let authorization = self
+            .staging
+            .authorization(&lease.authority)
+            .map_err(controller_staging_error)?;
+        let receipt = self
+            .staging
+            .receipt(&lease.authority)
+            .map_err(controller_staging_error)?;
+        let kubernetes = self
+            .staging
+            .runner_kubernetes(&lease.authority)
+            .map_err(controller_staging_error)?;
+        let handoff = self
+            .staging
+            .handoff(&lease.authority)
+            .map_err(controller_staging_error)?;
+        let request = self.service.server_owned_request(&lease.run_id)?;
+        let grant = provision_exact_grant(&GrantProvisioning {
+            authorization: &ExactAuthorization {
+                authorization_id: format!("auth-{}", lease.run_id),
+                operation_id: request.operation_id.clone(),
+                namespace: request.namespace.clone(),
+                deployment: request.deployment.clone(),
+                container: request.container.clone(),
+                immutable_image_digest: request.immutable_image_digest.clone(),
+            },
+            signing_seed: &authorization.signing_seed,
+            signing_key_id: &authorization.signing_key_id,
+        })
+        .map_err(|_| ControllerError::Boundary)?;
+        let authorization_public_key =
+            SigningKey::from_bytes(&authorization.signing_seed).verifying_key();
+        let trust = serde_json::to_vec(&serde_json::json!({
+            "key_id": authorization.signing_key_id,
+            "public_key_hex": lower_hex(&authorization_public_key.to_bytes()),
+        }))
+        .map_err(|_| ControllerError::Boundary)?;
+        let assignment = self
+            .service
+            .handoff_assignment(lease, handoff.endpoint, now_unix_s)?;
+        let request_document = serde_json::to_vec(&serde_json::json!({
+            "operation_id": &request.operation_id,
+            "namespace": &request.namespace,
+            "deployment": &request.deployment,
+            "container": &request.container,
+            "immutable_image_digest": &request.immutable_image_digest,
+        }))
+        .map_err(|_| ControllerError::Boundary)?;
+        let inputs = vec![
+            ("request.json", request_document),
+            ("signed-authorization-grant.bin", grant),
+            ("authorization-trust.json", trust),
+            ("kubernetes-api-server", kubernetes.api_server.into_bytes()),
+            ("kubernetes-ca.pem", kubernetes.ca_bytes),
+            ("kubernetes-namespace", request.namespace.into_bytes()),
+            ("kubernetes-token", kubernetes.token.into_bytes()),
+            ("receipt-signing-seed", receipt.signing_seed.to_vec()),
+            (
+                "receipt-signing-key-id",
+                receipt.signing_key_id.into_bytes(),
+            ),
+            (
+                "handoff-endpoint",
+                assignment.endpoint().to_string().into_bytes(),
+            ),
+            (
+                "handoff-lease-id",
+                assignment.lease_id().as_bytes().to_vec(),
+            ),
+            ("handoff-credential", assignment.credential().to_vec()),
+        ];
+        Ok(PreparedRunnerInputs {
+            assignment,
+            files: inputs,
+        })
+    }
+
+    /// Obtains the exact current assignment from `Service`, stages all twelve fixed runner inputs,
     /// and launches or replaces the same run and operation behind the crate-private host.
     ///
     /// # Errors
@@ -199,27 +441,28 @@ impl ControllerRole {
         // Fresh dispatch remains blocked until Slice 3 policy verification closes provisioning.
         // Already-invoked same-run recovery remains eligible after its ordinary deadline.
         self.service.validate_runner_launch(&lease, now_unix_s)?;
-        let assignment = self.service.handoff_assignment(
-            &lease,
-            self.configuration.handoff_endpoint,
-            now_unix_s,
-        )?;
+        let prepared = self.runner_inputs(&lease, now_unix_s)?;
+        let published = self
+            .staging
+            .publish_runner_inputs(&lease.run_id, lease.epoch(), &prepared.files)
+            .map_err(controller_staging_error)?;
         self.open_host()?;
         let retained_identity = self
             .host
             .as_ref()
             .and_then(crate::runner_host::RunnerHost::retained_identity);
         if retained_identity.is_some_and(|(run_id, operation_id)| {
-            run_id != lease.run_id || operation_id != assignment.operation_id
+            run_id != lease.run_id || operation_id != prepared.assignment.operation_id
         }) {
             return Err(ControllerError::Boundary);
         }
-        stage_handoff_inputs(&self.configuration.input_directory, &assignment)?;
         let host = self.host.as_mut().ok_or(ControllerError::Boundary)?;
         let generation = if host.active().is_some() {
-            host.replace(&lease.run_id, &assignment)?.generation()
+            host.replace(&lease.run_id, &prepared.assignment, &published)?
+                .generation()
         } else {
-            host.launch(&lease.run_id, &assignment)?.generation()
+            host.launch(&lease.run_id, &prepared.assignment, &published)?
+                .generation()
         };
         let run = ControllerRun {
             run_id: lease.run_id.clone(),
@@ -272,6 +515,7 @@ impl ControllerRole {
     fn converge_runner_retirement(&mut self, run_id: &str) -> Result<bool, ControllerError> {
         let (retiring, retired) = self.service.runner_retirement_state(run_id)?;
         if retired {
+            self.service.converge_retired_dispatch(run_id)?;
             return Ok(true);
         }
         if !retiring {
@@ -292,7 +536,6 @@ impl ControllerRole {
         if self.host.is_none() {
             self.host = Some(RunnerHost::open(
                 fixed_current_executable()?,
-                &self.configuration.input_directory,
                 &self.configuration.generation_directory,
                 self.configuration.runner_uid,
                 self.configuration.runner_gid,
@@ -343,60 +586,14 @@ impl From<RunnerHostError> for ControllerError {
     }
 }
 
-fn stage_handoff_inputs(
-    input_directory: &Path,
-    assignment: &crate::HandoffAssignment,
-) -> Result<(), ControllerError> {
-    if !input_directory.is_absolute() || !assignment.endpoint().ip().is_loopback() {
-        return Err(ControllerError::Boundary);
+fn lower_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
-    let root = fs::File::from(
-        openat(
-            CWD,
-            input_directory,
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
-            Mode::empty(),
-        )
-        .map_err(|_| ControllerError::Boundary)?,
-    );
-    let metadata = root.metadata().map_err(|_| ControllerError::Boundary)?;
-    if !metadata.is_dir()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.gid() != rustix::process::getegid().as_raw()
-        || metadata.permissions().mode() & 0o777 != 0o700
-    {
-        return Err(ControllerError::Boundary);
-    }
-    for (name, bytes) in [
-        (
-            "handoff-endpoint",
-            assignment.endpoint().to_string().into_bytes(),
-        ),
-        (
-            "handoff-lease-id",
-            assignment.lease_id().as_bytes().to_vec(),
-        ),
-        ("handoff-credential", assignment.credential().to_vec()),
-    ] {
-        let temporary = format!(".{name}.controller-stage");
-        let _ = rustix::fs::unlinkat(&root, &temporary, rustix::fs::AtFlags::empty());
-        let mut output = fs::File::from(
-            openat(
-                &root,
-                &temporary,
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::from_raw_mode(0o400),
-            )
-            .map_err(|_| ControllerError::Boundary)?,
-        );
-        output
-            .write_all(&bytes)
-            .map_err(|_| ControllerError::Boundary)?;
-        output.sync_all().map_err(|_| ControllerError::Boundary)?;
-        rustix::fs::renameat(&root, &temporary, &root, name)
-            .map_err(|_| ControllerError::Boundary)?;
-    }
-    root.sync_all().map_err(|_| ControllerError::Boundary)
+    output
 }
 
 fn fixed_current_executable() -> Result<PathBuf, ControllerError> {
@@ -415,4 +612,121 @@ fn fixed_current_executable() -> Result<PathBuf, ControllerError> {
         }
     }
     Err(ControllerError::Boundary)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        io::{Read, Write},
+        net::TcpListener,
+        os::unix::fs::PermissionsExt,
+        sync::mpsc,
+        thread,
+    };
+
+    use rustls::{
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+        ServerConfig, ServerConnection, StreamOwned,
+    };
+
+    use super::*;
+
+    fn cleanup_failure_server(
+        listener: TcpListener,
+    ) -> (mpsc::Receiver<bool>, thread::JoinHandle<()>) {
+        const FAILURE_RESPONSE: &[u8] = concat!(
+            "HTTP/1.1 500 Internal Server Error\r\n",
+            "Content-Length: 2\r\n",
+            "Connection: close\r\n\r\n{}"
+        )
+        .as_bytes();
+        let (sender, receiver) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let configuration = ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![CertificateDer::from(
+                        include_bytes!("../tests/fixtures/localhost-cert.der").to_vec(),
+                    )],
+                    PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
+                        include_bytes!("../tests/fixtures/localhost-key.der").to_vec(),
+                    )),
+                )
+                .unwrap();
+            let connection = ServerConnection::new(Arc::new(configuration)).unwrap();
+            let (stream, _) = listener.accept().unwrap();
+            let mut stream = StreamOwned::new(connection, stream);
+            let mut request = [0_u8; 8192];
+            let length = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            sender
+                .send(request.contains("authorization: Bearer cleanup-token\r\n"))
+                .unwrap();
+            stream.write_all(FAILURE_RESPONSE).unwrap();
+            stream.flush().unwrap();
+        });
+        (receiver, server)
+    }
+
+    #[tokio::test]
+    async fn cleanup_controller_uses_the_run_pinned_staged_tls_authority() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap());
+        let (root, service, run_id) =
+            crate::test_authority::cleanup_service("staged-composition", Some(&endpoint));
+        crate::test_authority::rotate(&root, [8; 32]);
+        let (authorization, server) = cleanup_failure_server(listener);
+        let controller = CleanupController::new(service.clone());
+        assert!(controller.run_once(1_800_000_002).await.is_err());
+        assert!(authorization.recv().unwrap());
+        server.join().unwrap();
+        assert_eq!(
+            service
+                .snapshot(&run_id, 1_800_000_002)
+                .unwrap()
+                .cleanup_state,
+            crate::CleanupState::Failed
+        );
+        crate::test_authority::remove_root(&root);
+    }
+
+    #[tokio::test]
+    async fn missing_pinned_cleanup_authority_holds_before_cleanup_mutation() {
+        let (root, service, run_id) = crate::test_authority::cleanup_service(
+            "missing-staged-composition",
+            Some("https://localhost:9"),
+        );
+        crate::test_authority::rotate(&root, [8; 32]);
+        let database = root.join("sandbox.sqlite3");
+        let facts = || {
+            rusqlite::Connection::open(&database)
+                .unwrap()
+                .query_row(
+                    concat!(
+                        "SELECT runs.execution_state, runs.cleanup_state, ",
+                        "(SELECT COUNT(*) FROM events WHERE events.run_id = runs.run_id) ",
+                        "FROM runs WHERE run_id = ?1"
+                    ),
+                    [&run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let before = facts();
+        let old_generation =
+            root.join("fixed-authority/generations/generation-00000000000000000001");
+        fs::set_permissions(&old_generation, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&old_generation).unwrap();
+        let controller = CleanupController::new(service);
+        assert!(controller.run_once(1_800_000_002).await.is_err());
+        assert_eq!(facts(), before);
+        crate::test_authority::remove_root(&root);
+    }
 }
