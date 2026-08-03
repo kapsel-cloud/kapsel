@@ -516,6 +516,16 @@ but no authority bytes. It requires Linux root and `unshare`; it uses no Docker,
 provider, credential, DNS, endpoint, or network traffic. It proves only the production ownership and
 role split, not managed custody or runner syscall/path confinement.
 
+The accepted Slice 5 contract reserves `test-sandbox-backup-restore` as its focused offline gate; it
+is not a runnable command until the implementation packet adds the task and the closed backup/
+restore module together. The gate must use the fixed 256-MiB generation and inventory limits, all
+capture/restore crash seams, thirteen lifecycle snapshots, secret-byte exclusions, exact authority
+reference lifetime, and restore-before-serve denials from the deployment owner. A separate Linux
+root lane must prove backup identity `65529:65529`, capture-only `CAP_DAC_READ_SEARCH`, and
+restore-only `CAP_CHOWN`/`CAP_DAC_OVERRIDE`/`CAP_FOWNER` inside a network namespace. Neither lane
+uses Docker, a provider, credentials, cluster, endpoint, DNS, or traffic, and neither claims
+cross-host or provider-volume fencing.
+
 Run the root-package deletion and one-way dependency proof directly when needed:
 
 ```sh

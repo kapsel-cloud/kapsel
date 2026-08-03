@@ -208,7 +208,7 @@ C helper, freezes and normalizes the exact controller/helper bootstrap, rejects 
 capabilities, verifies every final capability set and securebits at zero before Rust authority, and
 binds source/compiler/helper/runner identities for Slice 6. It selects no syscall/path confinement;
 remaining host-filesystem and native-syscall reach is explicit and the proof does not establish a
-complete least-privilege process boundary. The Gate 1 Slice 4 candidate keeps fixed staging as one
+complete least-privilege process boundary. Accepted Gate 1 Slice 4 keeps fixed staging as one
 private deep module: a closed thirteen-file schema, atomic complete monotonic generations, one
 durable generation/manifest pin committed at dispatch, at most current plus one retained generation,
 and atomically published per-lease twelve-file runner directories. The staging module returns one
@@ -220,8 +220,18 @@ retained public trust use the durable pin rather than ambient current authority;
 authority holds without producing lifecycle or KAP-0038 outcome facts. Pre-Slice-4 state migrates
 only while stopped and drained. Accepted Slice 3 adds exact cluster-policy verification, one fixed-
 authority bounded cleanup role, atomic runner retirement intent, and fail-closed static policy
-loading. KAP-0070 must still accept staging, backup, teardown, and recreation before any live or
-public claim.
+loading.
+
+Gate 1 Slice 5 is frozen as one private quiesced-offline backup/restore module over one fixed state
+root and one fixed backup root. Its canonical bounded generation contains service state, immutable
+receipts, at most one semantic runner recovery unit, closed deployment compatibility, and public
+trust; it references but never copies private staged authority. Service-owned pending/published/
+replacement/deletion references prevent Slice 4 collection from making a backup unrestorable.
+Restore builds a new stopped state root, reconstructs local runner identities, and keeps every role
+behind a durable incomplete marker until expiry, receipt, same-operation, cleanup, and capacity
+reconciliation finish. It adds no storage/provider trait, online snapshot, daemon, second database,
+or cross-host anti-cloning claim. KAP-0070 must still implement and accept this backup boundary, the
+Slice 6 bundle, teardown, and recreation before any live or public claim.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor

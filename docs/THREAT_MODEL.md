@@ -261,11 +261,22 @@ denial, collection, and non-disclosure. Receipt storage accepts only frozen byte
 replacement. An outage may block admission or publication but cannot change receiver classification.
 Receipt retrieval does not appoint trust; separately returned retained trust uses the run's pin.
 
-One crash-consistent unit covers admission state, immutable receipts, active journal/outbox,
-capacity, leases, ownership inventory, deployment metadata, and required public trust. A stale or
-parallel restore can create a second writer/journal/reservation, resurrect deleted visitor state, or
-duplicate cleanup. Original-writer fencing, one runnable journal, restore-before-serve deletion, and
-identity/digest verification are mandatory. Backup is not an external witness or complete history.
+Slice 5 freezes one bounded quiesced-offline unit covering admission state, immutable receipts, at
+most one semantic active journal/outbox, capacity, leases, ownership inventory, deployment
+compatibility, and required public trust. It references exact staged authority but never copies
+private generations or credentials. A stale or parallel restore can create a second writer/journal/
+reservation, make an otherwise valid backup unrestorable after authority collection, resurrect
+deleted visitor state, or duplicate cleanup. Service-owned pending and published backup references
+therefore block collection until backup bytes are durably removed. Local process/cgroup fencing, one
+runnable journal, forced stop, restore-incomplete denial, deletion/reconciliation before readiness,
+and exact identity/digest/compatibility validation are mandatory. Missing authority fails closed and
+never rebinds to `current`.
+
+A backup artifact cannot prove that another host, volume, or clone is absent. Gate 1 proves only the
+fixed local lock, process/cgroup absence, destination absence, authority continuity, and
+restore-before-serve state machine. Provider volume detachment and destruction of the original host
+remain mandatory Gate 3 evidence. Backup is not an external witness, complete history, generic
+archive, online snapshot, or anti-cloning mechanism.
 
 ### Cleanup failure and unsafe deletion
 

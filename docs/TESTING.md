@@ -348,6 +348,30 @@ unchanged. `cargo make test-sandbox-fixed-staging-identities-linux` is a separat
 network-namespace lane for the production distinct-UID/GID split; ordinary macOS and unprivileged
 runs do not claim that evidence.
 
+The accepted Slice 5 contract reserves `test-sandbox-backup-restore`; implementation must add the
+Make task and module together before this guide may present it as runnable. The focused lane is
+offline and uses one fixed state root, backup root, compile-time compatibility record, and injected
+test clock. It crosses the thirteen lifecycle states named by the deployment owner and every durable
+side of pending authority references, component copies/fsyncs, generation/current publication,
+old-byte removal, destination publication, forced stop, expiry, pending receipt convergence,
+semantic runner reconstruction, fresh lease publication, cleanup resumption, and readiness. Only
+P1/P2/P3 backup-reference transactions, named stopped-restore transactions, temporary/new/deleting
+generation bytes, and atomic `current` may change at their exact seams; every other source fact and
+the selected old generation remain byte-identical. Every seam asserts no selectable partial
+generation, early serving/mutation, second runnable journal or capacity owner, changed KAP-0038
+result/receipt, invented absence, and retry convergence. A clean stopped/drained vector proves empty
+authority/trust arrays and no ambient-current pin.
+
+Closed hostile matrices exhaust manifest field/order/canonicalization, path inventory, count/size,
+digest/length, symlink/hardlink/special file, owner/group/mode/special bits, root/inode
+substitution, SQLite DELETE-journal sidecars and malformed rows, duplicate identities, stale
+process/inode/cgroup facts, incompatible bundle/architecture/clock, missing public trust/private
+authority, nonempty destination, and source changes during capture. Fixture-byte scans prove that
+private staged seeds, tombstone keys, Kubernetes and handoff credentials, dispatch inputs, logs, and
+diagnostics never enter a generation. A separate root-only network-namespace identity lane proves
+backup `65529:65529` with exact capture/restore capability sets against controller `65530:65530`;
+ordinary tests do not claim provider-volume detachment or original-host destruction.
+
 The serialized proof matrix is:
 
 | Property                               | Retained Gate 0 evidence                                              | Gate 1 deterministic composition                                        | Gate 3 private-live assertion                                                              | Gate 4 public assertion                                               |
