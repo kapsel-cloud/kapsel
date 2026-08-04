@@ -1190,6 +1190,14 @@ fn validate_pre_slice_inventory(
     Ok(actual.contains(std::ffi::OsStr::new(STATE_LOCK)))
 }
 
+fn checked_mode(mode: u32) -> Result<Mode, ()> {
+    #[cfg(target_os = "linux")]
+    let raw_mode = mode;
+    #[cfg(not(target_os = "linux"))]
+    let raw_mode = mode.try_into().map_err(|_| ())?;
+    Mode::from_bits(raw_mode).ok_or(())
+}
+
 fn create_directory_at(
     parent: &File,
     name: &str,
@@ -1197,12 +1205,7 @@ fn create_directory_at(
     gid: u32,
     mode: u32,
 ) -> Result<File, ()> {
-    rustix::fs::mkdirat(
-        parent,
-        name,
-        Mode::from_raw_mode(u16::try_from(mode).map_err(|_| ())?),
-    )
-    .map_err(|_| ())?;
+    rustix::fs::mkdirat(parent, name, checked_mode(mode)?).map_err(|_| ())?;
     open_fixed_directory_at(parent, name, uid, gid, mode)
 }
 
@@ -1212,7 +1215,7 @@ fn create_file_at(parent: &File, name: &str, uid: u32, gid: u32, mode: u32) -> R
             parent,
             name,
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::from_raw_mode(u16::try_from(mode).map_err(|_| ())?),
+            checked_mode(mode)?,
         )
         .map_err(|_| ())?,
     );
@@ -1242,7 +1245,7 @@ fn write_canonical_at(
             parent,
             name,
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::from_raw_mode(u16::try_from(mode).map_err(|_| ())?),
+            checked_mode(mode)?,
         )
         .map_err(|_| ())?,
     );

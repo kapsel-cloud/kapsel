@@ -2562,24 +2562,37 @@ mod tests {
     #[test]
     #[ignore = "requires the privileged network-disabled distinct-identity lane"]
     fn production_distinct_identity_installs_and_reads() {
+        struct TestIdentity {
+            uid: u32,
+            gid: u32,
+        }
+
         let root = PathBuf::from(std::env::var_os("KAPSEL_STAGING_TEST_ROOT").unwrap());
-        let controller_uid = std::env::var("KAPSEL_CONTROLLER_UID")
-            .unwrap()
-            .parse::<u32>()
-            .unwrap();
-        let controller_gid = std::env::var("KAPSEL_CONTROLLER_GID")
-            .unwrap()
-            .parse::<u32>()
-            .unwrap();
-        let staging_uid = std::env::var("KAPSEL_STAGING_UID")
-            .unwrap()
-            .parse::<u32>()
-            .unwrap();
-        let staging_gid = std::env::var("KAPSEL_STAGING_GID")
-            .unwrap()
-            .parse::<u32>()
-            .unwrap();
+        let controller = TestIdentity {
+            uid: std::env::var("KAPSEL_CONTROLLER_UID")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap(),
+            gid: std::env::var("KAPSEL_CONTROLLER_GID")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap(),
+        };
+        let staging = TestIdentity {
+            uid: std::env::var("KAPSEL_STAGING_UID")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap(),
+            gid: std::env::var("KAPSEL_STAGING_GID")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap(),
+        };
         let role = std::env::var("KAPSEL_STAGING_TEST_ROLE").unwrap();
+        assert!(
+            matches!(role.as_str(), "prepare" | "installer" | "reader"),
+            "unexpected staging test role: {role}"
+        );
         match role.as_str() {
             "prepare" | "installer" => {
                 let incoming = root.join(INCOMING_DIRECTORY);
@@ -2593,10 +2606,10 @@ mod tests {
                 }
                 let installer = FixedStagingInstaller::open(
                     &root,
-                    controller_uid,
-                    controller_gid,
-                    staging_uid,
-                    staging_gid,
+                    controller.uid,
+                    controller.gid,
+                    staging.uid,
+                    staging.gid,
                 )
                 .unwrap();
                 assert_eq!(installer.activate_incoming().unwrap().generation(), 1);
@@ -2604,10 +2617,10 @@ mod tests {
             "reader" => {
                 let reader = FixedStagingReader::open(
                     &root,
-                    controller_uid,
-                    controller_gid,
-                    staging_uid,
-                    staging_gid,
+                    controller.uid,
+                    controller.gid,
+                    staging.uid,
+                    staging.gid,
                 )
                 .unwrap();
                 let current = reader.current_identity().unwrap();
@@ -2617,7 +2630,7 @@ mod tests {
                     [41; 32]
                 );
             },
-            role => panic!("unexpected staging test role: {role}"),
+            _ => {},
         }
     }
 
