@@ -19,6 +19,7 @@ use std::{
 
 pub use authorization::AuthorizationTrust;
 pub(crate) use authorization::{sign_authorization_grant, verify_authorization_grant};
+pub(crate) use journal::sandbox_schema_digest;
 use journal::Journal;
 use kubernetes::{
     ApplyOutcome, KubernetesDeploymentImageAdapter, ReceiverObservation, TargetIdentity,

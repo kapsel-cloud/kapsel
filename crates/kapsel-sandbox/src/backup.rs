@@ -1,0 +1,2438 @@
+//! Descriptor-pinned backup-root inventory and complete clean-generation validation.
+
+use std::{
+    collections::BTreeSet,
+    ffi::OsString,
+    fs::File,
+    io::{Read as _, Seek as _, SeekFrom, Write as _},
+    os::unix::fs::MetadataExt as _,
+    path::Path,
+};
+
+use rustix::fs::{fchmod, flock, mkdirat, open, openat, renameat, FlockOperation, Mode, OFlags};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+use crate::{
+    state_root::{BackupStateGuard, DeploymentSnapshot},
+    AuthorityConfiguration, BackupPublicationState,
+};
+
+const BACKUP_ID: u32 = 65_529;
+const LOCK: &str = ".backup.lock";
+const GENERATIONS: &str = "generations";
+const DEPLOYMENT: &str = "deployment.json";
+const MANIFEST: &str = "manifest.json";
+const CURRENT: &str = "current";
+const CURRENT_TMP: &str = ".current.tmp";
+const GENERATION_TMP: &str = ".generation-00000000000000000001.tmp";
+const GENERATION_ONE: &str = "backup-00000000000000000001";
+const DATABASE: &str = "sandbox.sqlite3";
+const DATABASE_MAX: u64 = 64 * 1024 * 1024;
+const JSON_MAX: u64 = 256 * 1024;
+const GENERATION_MAX: u64 = 256 * 1024 * 1024;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct Identity {
+    device: u64,
+    inode: u64,
+}
+
+impl Identity {
+    fn of(file: &File) -> Result<Self, ()> {
+        let metadata = file.metadata().map_err(|_| ())?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BackupIdentity {
+    uid: u32,
+    gid: u32,
+}
+
+impl BackupIdentity {
+    #[allow(
+        dead_code,
+        reason = "the shipped backup command follows this foundation"
+    )]
+    pub(crate) fn production(uid: u32, gid: u32) -> Result<Self, ()> {
+        if uid == BACKUP_ID && gid == BACKUP_ID {
+            Ok(Self { uid, gid })
+        } else {
+            Err(())
+        }
+    }
+
+    #[cfg(test)]
+    fn current_process() -> Self {
+        Self {
+            uid: rustix::process::geteuid().as_raw(),
+            gid: rustix::process::getegid().as_raw(),
+        }
+    }
+}
+
+/// Pins one backup root and holds its exclusive lock after the borrowed state guard's locks.
+#[allow(
+    dead_code,
+    reason = "the generation publisher follows this accepted foundation"
+)]
+pub(crate) struct BackupRootGuard<'state> {
+    state: &'state BackupStateGuard,
+    name: OsString,
+    identity: BackupIdentity,
+    parent: File,
+    root: File,
+    lock: File,
+    generations: File,
+}
+
+#[allow(
+    dead_code,
+    reason = "the generation publisher follows this accepted foundation"
+)]
+impl<'state> BackupRootGuard<'state> {
+    /// Opens only the exact initial root. The lock is acquired before either inventory is read.
+    pub(crate) fn open_initial(
+        state: &'state BackupStateGuard,
+        path: &Path,
+        identity: BackupIdentity,
+    ) -> Result<Self, ()> {
+        state.verify()?;
+        if !path.is_absolute() {
+            return Err(());
+        }
+        let parent_path = path.parent().ok_or(())?;
+        let name = path.file_name().ok_or(())?.to_owned();
+        let parent = directory_path(parent_path, identity.uid, identity.gid, 0o700)?;
+        let root = directory_at(&parent, &name, identity.uid, identity.gid, 0o700)?;
+        let lock = file_at(&root, LOCK, identity.uid, identity.gid, 0o600, true, 0)?;
+        flock(&lock, FlockOperation::NonBlockingLockExclusive).map_err(|_| ())?;
+
+        let expected = [OsString::from(LOCK), OsString::from(GENERATIONS)]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut selected = expected.clone();
+        selected.insert(OsString::from(CURRENT));
+        let mut publishing = expected.clone();
+        publishing.insert(OsString::from(CURRENT_TMP));
+        let root_names = names(&root, 4)?;
+        if root_names != expected && root_names != selected && root_names != publishing {
+            return Err(());
+        }
+        let generations = directory_at(&root, GENERATIONS, identity.uid, identity.gid, 0o700)?;
+        let generation_names = names(&generations, 2)?;
+        let empty = BTreeSet::new();
+        let temporary = std::iter::once(OsString::from(GENERATION_TMP)).collect();
+        let complete = std::iter::once(OsString::from(GENERATION_ONE)).collect();
+        if generation_names != empty
+            && generation_names != temporary
+            && generation_names != complete
+        {
+            return Err(());
+        }
+        if generation_names.contains(std::ffi::OsStr::new(GENERATION_TMP)) {
+            let temporary = directory_at_modes(
+                &generations,
+                GENERATION_TMP,
+                identity.uid,
+                identity.gid,
+                &[0o700, 0o500],
+            )?;
+            let _ = names(&temporary, 7)?;
+        }
+        let guard = Self {
+            state,
+            name,
+            identity,
+            parent,
+            root,
+            lock,
+            generations,
+        };
+        guard.verify_pins()?;
+        Ok(guard)
+    }
+
+    fn verify_pins(&self) -> Result<(), ()> {
+        self.state.verify()?;
+        validate_directory(&self.parent, self.identity.uid, self.identity.gid, 0o700)?;
+        let root = directory_at(
+            &self.parent,
+            &self.name,
+            self.identity.uid,
+            self.identity.gid,
+            0o700,
+        )?;
+        same(&root, &self.root)?;
+        let lock = file_at(
+            &root,
+            LOCK,
+            self.identity.uid,
+            self.identity.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        same(&lock, &self.lock)?;
+        let generations = directory_at(
+            &root,
+            GENERATIONS,
+            self.identity.uid,
+            self.identity.gid,
+            0o700,
+        )?;
+        same(&generations, &self.generations)?;
+        Ok(())
+    }
+
+    fn verify_root_inventory(&self, selected: bool) -> Result<(), ()> {
+        self.verify_pins()?;
+        let mut expected = [OsString::from(LOCK), OsString::from(GENERATIONS)]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if selected {
+            expected.insert(OsString::from(CURRENT));
+        }
+        (names(&self.root, 4)? == expected).then_some(()).ok_or(())
+    }
+
+    fn verify_publishing_root_inventory(&self) -> Result<(), ()> {
+        self.verify_pins()?;
+        let expected = [LOCK, GENERATIONS, CURRENT_TMP]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<BTreeSet<_>>();
+        (names(&self.root, 4)? == expected).then_some(()).ok_or(())
+    }
+
+    /// Reopens and validates the sole complete clean generation without publishing `current`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed generation inventory and retained descriptor set stay visibly ordered"
+    )]
+    pub(crate) fn validate_clean_generation(
+        &self,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        self.validate_generation(false)
+    }
+
+    pub(crate) fn validate_selected_clean_generation(
+        &self,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        let current_file = file_at(
+            &self.root,
+            CURRENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        let current_bytes = read_bounded(&current_file, 1024)?;
+        let current: CurrentRecord = serde_json::from_slice(&current_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&current).map_err(|_| ())? != current_bytes
+            || current.schema != "kapsel.sandbox.backup.current.v1"
+            || current.generation != 1
+            || !valid_digest(&current.manifest_sha256)
+        {
+            return Err(());
+        }
+        let mut generation = self.validate_generation(true)?;
+        if generation.manifest_sha256 != current.manifest_sha256 {
+            return Err(());
+        }
+        generation.selected = true;
+        generation.current_descriptor = Some(current_file);
+        Ok(generation)
+    }
+
+    fn validate_generation(
+        &self,
+        selected: bool,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        self.validate_generation_named(GENERATION_ONE, selected, false)
+    }
+
+    fn validate_sealed_temporary(&self) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        self.validate_generation_named(GENERATION_TMP, false, false)
+    }
+
+    fn validate_generation_during_current_publication(
+        &self,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        self.validate_generation_named(GENERATION_ONE, false, true)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed generation inventory and retained descriptor set stay visibly ordered"
+    )]
+    fn validate_generation_named(
+        &self,
+        generation_name: &str,
+        selected: bool,
+        current_temporary: bool,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        if current_temporary {
+            self.verify_publishing_root_inventory()?;
+        } else {
+            self.verify_root_inventory(selected)?;
+        }
+        if names(&self.generations, 2)?
+            != std::iter::once(OsString::from(generation_name)).collect()
+        {
+            return Err(());
+        }
+        let generation_number = if generation_name == GENERATION_TMP {
+            1
+        } else {
+            generation_number(generation_name)?
+        };
+        if generation_number != 1 {
+            return Err(());
+        }
+        let generation = directory_at(
+            &self.generations,
+            generation_name,
+            self.identity.uid,
+            self.identity.gid,
+            0o500,
+        )?;
+        let expected = [
+            DEPLOYMENT, MANIFEST, "receipts", "runner", "service", "trust",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        if names(&generation, 7)? != expected {
+            return Err(());
+        }
+        let service = directory_at(
+            &generation,
+            "service",
+            self.identity.uid,
+            self.identity.gid,
+            0o500,
+        )?;
+        let receipts = directory_at(
+            &generation,
+            "receipts",
+            self.identity.uid,
+            self.identity.gid,
+            0o500,
+        )?;
+        let runner = directory_at(
+            &generation,
+            "runner",
+            self.identity.uid,
+            self.identity.gid,
+            0o500,
+        )?;
+        let trust = directory_at(
+            &generation,
+            "trust",
+            self.identity.uid,
+            self.identity.gid,
+            0o500,
+        )?;
+        if names(&service, 2)? != std::iter::once(OsString::from(DATABASE)).collect()
+            || !names(&receipts, 1)?.is_empty()
+            || !names(&runner, 1)?.is_empty()
+            || !names(&trust, 1)?.is_empty()
+        {
+            return Err(());
+        }
+        let database = file_at(
+            &service,
+            DATABASE,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            DATABASE_MAX,
+        )?;
+        let deployment = file_at(
+            &generation,
+            DEPLOYMENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            16 * 1024,
+        )?;
+        let manifest_file = file_at(
+            &generation,
+            MANIFEST,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            JSON_MAX,
+        )?;
+        let source_deployment = self.state.deployment_snapshot()?;
+        if read_bounded(&deployment, 16 * 1024)? != source_deployment.bytes {
+            return Err(());
+        }
+        let manifest_bytes = read_bounded(&manifest_file, JSON_MAX)?;
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&manifest).map_err(|_| ())? != manifest_bytes {
+            return Err(());
+        }
+        validate_manifest(
+            &manifest,
+            generation_number,
+            &source_deployment,
+            &deployment,
+            &database,
+        )?;
+        let total = deployment
+            .metadata()
+            .map_err(|_| ())?
+            .len()
+            .checked_add(database.metadata().map_err(|_| ())?.len())
+            .and_then(|value| value.checked_add(manifest_file.metadata().ok()?.len()))
+            .ok_or(())?;
+        if total > GENERATION_MAX {
+            return Err(());
+        }
+        revalidate_generation(
+            self,
+            generation_name,
+            &generation,
+            &service,
+            &receipts,
+            &runner,
+            &trust,
+            &database,
+            &deployment,
+            &manifest_file,
+            selected,
+            current_temporary,
+        )?;
+        Ok(ValidatedCleanGeneration {
+            generation: generation_number,
+            captured_at: manifest.captured_at,
+            manifest_sha256: digest_bytes(&manifest_bytes),
+            compatibility_sha256: manifest.compatibility_sha256,
+            name: generation_name.to_owned(),
+            guard: self,
+            generation_descriptor: generation,
+            service_descriptor: service,
+            receipts_descriptor: receipts,
+            runner_descriptor: runner,
+            trust_descriptor: trust,
+            database_descriptor: database,
+            deployment_descriptor: deployment,
+            manifest_descriptor: manifest_file,
+            selected,
+            current_descriptor: None,
+        })
+    }
+
+    fn publish_initial_current(&self) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        let unselected = self.validate_clean_generation()?;
+        let current = CurrentRecord {
+            schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+            generation: 1,
+            manifest_sha256: unselected.manifest_sha256.clone(),
+        };
+        drop(unselected);
+        let current_file = write_new_file(
+            &self.root,
+            CURRENT_TMP,
+            &serde_json::to_vec(&current).map_err(|_| ())?,
+            self.identity,
+            1024,
+        )?;
+        fchmod(&current_file, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+        validate_file(&current_file, self.identity, 0o400, 1024)?;
+        current_file.sync_all().map_err(|_| ())?;
+        renameat(&self.root, CURRENT_TMP, &self.root, CURRENT).map_err(|_| ())?;
+        self.root.sync_all().map_err(|_| ())?;
+        self.validate_selected_clean_generation()
+    }
+
+    fn finish_initial_p2<'guard, F>(
+        &'guard self,
+        authority: &AuthorityConfiguration,
+        pending: &crate::BackupPublication,
+        selected: ValidatedCleanGeneration<'guard, 'state>,
+        before_p2: F,
+    ) -> Result<ValidatedCleanGeneration<'guard, 'state>, ()>
+    where
+        F: FnOnce() -> Result<bool, ()>,
+    {
+        if selected.generation != pending.generation || selected.captured_at != pending.captured_at
+        {
+            return Err(());
+        }
+        let _ = before_p2()?;
+        selected.verify()?;
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        if service.resume_pending().map_err(|_| ())? != *pending
+            || service
+                .finish_publication(1, &selected.manifest_sha256)
+                .map_err(|_| ())?
+                .is_some()
+        {
+            return Err(());
+        }
+        match service.publication_state().map_err(|_| ())? {
+            BackupPublicationState::Current(current)
+                if current.generation == 1
+                    && current.captured_at == pending.captured_at
+                    && current.manifest_digest == selected.manifest_sha256
+                    && current.authorities.is_empty() => {},
+            _ => return Err(()),
+        }
+        drop(service);
+        Ok(selected)
+    }
+
+    pub(crate) fn capture_initial_clean(
+        &self,
+        authority: &AuthorityConfiguration,
+        captured_at: i64,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        self.capture_initial_clean_with_barrier(authority, captured_at, || Ok(false))
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the initial P1-filesystem-P2 durability order remains explicit"
+    )]
+    fn capture_initial_clean_with_barrier<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        captured_at: i64,
+        before_p2: F,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()>
+    where
+        F: FnOnce() -> Result<bool, ()>,
+    {
+        self.verify_pins()?;
+        let root_names = names(&self.root, 4)?;
+        let initial_root = [OsString::from(LOCK), OsString::from(GENERATIONS)]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut selected_root = initial_root.clone();
+        selected_root.insert(OsString::from(CURRENT));
+        let mut publishing_root = initial_root.clone();
+        publishing_root.insert(OsString::from(CURRENT_TMP));
+        if root_names != initial_root
+            && root_names != selected_root
+            && root_names != publishing_root
+        {
+            return Err(());
+        }
+        let generation_names = names(&self.generations, 2)?;
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        let publication_state = service.publication_state().map_err(|_| ())?;
+        if let BackupPublicationState::Current(current) = publication_state {
+            drop(service);
+            if root_names != selected_root
+                || current.generation != 1
+                || current.captured_at <= 0
+                || !current.authorities.is_empty()
+            {
+                return Err(());
+            }
+            let selected = self.validate_selected_clean_generation()?;
+            let generation_matches = selected.generation == current.generation;
+            let capture_matches = selected.captured_at == current.captured_at;
+            let digest_matches = selected.manifest_sha256 == current.manifest_digest;
+            if !generation_matches || !capture_matches || !digest_matches {
+                return Err(());
+            }
+            return Ok(selected);
+        }
+        let pending = match publication_state {
+            BackupPublicationState::Empty => {
+                if captured_at <= 0 || root_names != initial_root || !generation_names.is_empty() {
+                    return Err(());
+                }
+                service.begin_publication(1, captured_at).map_err(|_| ())?
+            },
+            BackupPublicationState::Pending(pending) => {
+                let resumed = service.resume_pending().map_err(|_| ())?;
+                (resumed == pending).then_some(resumed).ok_or(())?
+            },
+            _ => return Err(()),
+        };
+        if pending.generation != 1
+            || pending.captured_at <= 0
+            || pending.predecessor.is_some()
+            || !pending.authorities.is_empty()
+        {
+            return Err(());
+        }
+        drop(service);
+        let captured_at = pending.captured_at;
+
+        if root_names == selected_root {
+            let selected = self.validate_selected_clean_generation()?;
+            self.root.sync_all().map_err(|_| ())?;
+            return self.finish_initial_p2(authority, &pending, selected, before_p2);
+        }
+        if root_names == publishing_root {
+            let generation = self.validate_generation_during_current_publication()?;
+            let current_file = file_at_modes(
+                &self.root,
+                CURRENT_TMP,
+                self.identity,
+                &[0o600, 0o400],
+                1024,
+            )?;
+            let expected_current = CurrentRecord {
+                schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+                generation: generation.generation,
+                manifest_sha256: generation.manifest_sha256.clone(),
+            };
+            let expected_bytes = serde_json::to_vec(&expected_current).map_err(|_| ())?;
+            let current_bytes = read_bounded(&current_file, 1024)?;
+            let current_mode = current_file.metadata().map_err(|_| ())?.mode() & 0o7777;
+            if generation.captured_at != pending.captured_at {
+                return Err(());
+            }
+            if current_bytes != expected_bytes {
+                if current_mode != 0o600
+                    || current_bytes.len() >= expected_bytes.len()
+                    || !expected_bytes.starts_with(&current_bytes)
+                {
+                    return Err(());
+                }
+                drop(generation);
+                drop(current_file);
+                rustix::fs::unlinkat(&self.root, CURRENT_TMP, rustix::fs::AtFlags::empty())
+                    .map_err(|_| ())?;
+                self.root.sync_all().map_err(|_| ())?;
+                self.generations.sync_all().map_err(|_| ())?;
+                let selected = self.publish_initial_current()?;
+                return self.finish_initial_p2(authority, &pending, selected, before_p2);
+            }
+            drop(generation);
+            self.generations.sync_all().map_err(|_| ())?;
+            fchmod(&current_file, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+            validate_file(&current_file, self.identity, 0o400, 1024)?;
+            current_file.sync_all().map_err(|_| ())?;
+            renameat(&self.root, CURRENT_TMP, &self.root, CURRENT).map_err(|_| ())?;
+            self.root.sync_all().map_err(|_| ())?;
+            let selected = self.validate_selected_clean_generation()?;
+            return self.finish_initial_p2(authority, &pending, selected, before_p2);
+        }
+        if generation_names == std::iter::once(OsString::from(GENERATION_ONE)).collect() {
+            let complete = self.validate_clean_generation()?;
+            if complete.captured_at != pending.captured_at {
+                return Err(());
+            }
+            drop(complete);
+            self.generations.sync_all().map_err(|_| ())?;
+            let selected = self.publish_initial_current()?;
+            return self.finish_initial_p2(authority, &pending, selected, before_p2);
+        }
+        if generation_names == std::iter::once(OsString::from(GENERATION_TMP)).collect() {
+            let temporary = directory_at_modes(
+                &self.generations,
+                GENERATION_TMP,
+                self.identity.uid,
+                self.identity.gid,
+                &[0o700, 0o500],
+            )?;
+            if temporary.metadata().map_err(|_| ())?.mode() & 0o7777 == 0o500 {
+                let validated = self.validate_sealed_temporary()?;
+                if validated.captured_at != pending.captured_at {
+                    return Err(());
+                }
+                drop(validated);
+                renameat(
+                    &self.generations,
+                    GENERATION_TMP,
+                    &self.generations,
+                    GENERATION_ONE,
+                )
+                .map_err(|_| ())?;
+                self.generations.sync_all().map_err(|_| ())?;
+                let selected = self.publish_initial_current()?;
+                return self.finish_initial_p2(authority, &pending, selected, before_p2);
+            }
+        }
+
+        let source = self.state.backup_source_descriptors()?;
+        if !names(&source.receipts, 1)?.is_empty() || !names(&source.runner, 1)?.is_empty() {
+            return Err(());
+        }
+        let generation_names = names(&self.generations, 2)?;
+        if generation_names == std::iter::once(OsString::from(GENERATION_TMP)).collect() {
+            remove_incomplete_initial_temporary(&self.generations, self.identity)?;
+        } else if !generation_names.is_empty() {
+            return Err(());
+        }
+        let temporary = create_directory(&self.generations, GENERATION_TMP, self.identity)?;
+        let service_directory = create_directory(&temporary, "service", self.identity)?;
+        let receipts = create_directory(&temporary, "receipts", self.identity)?;
+        let runner = create_directory(&temporary, "runner", self.identity)?;
+        let trust = create_directory(&temporary, "trust", self.identity)?;
+        let database = copy_file(
+            &source.database,
+            &service_directory,
+            DATABASE,
+            self.identity,
+            DATABASE_MAX,
+        )?;
+        let deployment = copy_file(
+            &source.deployment,
+            &temporary,
+            DEPLOYMENT,
+            self.identity,
+            16 * 1024,
+        )?;
+        if read_bounded(&deployment, 16 * 1024)? != source.deployment_snapshot.bytes {
+            return Err(());
+        }
+        let manifest = Manifest {
+            schema: "kapsel.sandbox.backup.v1".to_owned(),
+            generation: 1,
+            predecessor: None,
+            captured_at,
+            stopped: true,
+            compatibility_sha256: source.deployment_snapshot.identity.compatibility_sha256,
+            authorities: Vec::new(),
+            trust: Vec::new(),
+            files: vec![
+                record(DEPLOYMENT, &deployment, 16 * 1024)?,
+                record("service/sandbox.sqlite3", &database, DATABASE_MAX)?,
+            ],
+        };
+        let manifest_file = write_new_file(
+            &temporary,
+            MANIFEST,
+            &serde_json::to_vec(&manifest).map_err(|_| ())?,
+            self.identity,
+            JSON_MAX,
+        )?;
+        for file in [&database, &deployment, &manifest_file] {
+            fchmod(file, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+            validate_file(file, self.identity, 0o400, GENERATION_MAX)?;
+            file.sync_all().map_err(|_| ())?;
+        }
+        for directory in [&service_directory, &receipts, &runner, &trust] {
+            directory.sync_all().map_err(|_| ())?;
+            fchmod(directory, Mode::from_raw_mode(0o500)).map_err(|_| ())?;
+            validate_directory(directory, self.identity.uid, self.identity.gid, 0o500)?;
+            directory.sync_all().map_err(|_| ())?;
+        }
+        temporary.sync_all().map_err(|_| ())?;
+        fchmod(&temporary, Mode::from_raw_mode(0o500)).map_err(|_| ())?;
+        validate_directory(&temporary, self.identity.uid, self.identity.gid, 0o500)?;
+        temporary.sync_all().map_err(|_| ())?;
+        renameat(
+            &self.generations,
+            GENERATION_TMP,
+            &self.generations,
+            GENERATION_ONE,
+        )
+        .map_err(|_| ())?;
+        self.generations.sync_all().map_err(|_| ())?;
+        let selected = self.publish_initial_current()?;
+        self.finish_initial_p2(authority, &pending, selected, before_p2)
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "the generation publisher consumes this validated identity and pinned unit"
+)]
+pub(crate) struct ValidatedCleanGeneration<'guard, 'state> {
+    pub(crate) generation: u64,
+    pub(crate) captured_at: i64,
+    pub(crate) manifest_sha256: String,
+    pub(crate) compatibility_sha256: String,
+    name: String,
+    guard: &'guard BackupRootGuard<'state>,
+    generation_descriptor: File,
+    service_descriptor: File,
+    receipts_descriptor: File,
+    runner_descriptor: File,
+    trust_descriptor: File,
+    database_descriptor: File,
+    deployment_descriptor: File,
+    manifest_descriptor: File,
+    selected: bool,
+    current_descriptor: Option<File>,
+}
+
+#[allow(
+    dead_code,
+    reason = "the generation publisher rechecks immediately before its transition"
+)]
+impl ValidatedCleanGeneration<'_, '_> {
+    pub(crate) fn verify(&self) -> Result<(), ()> {
+        let reopened = if self.selected {
+            self.guard.validate_selected_clean_generation()?
+        } else {
+            self.guard.validate_clean_generation()?
+        };
+        if reopened.generation != self.generation
+            || reopened.captured_at != self.captured_at
+            || reopened.manifest_sha256 != self.manifest_sha256
+            || reopened.compatibility_sha256 != self.compatibility_sha256
+            || reopened.name != self.name
+        {
+            return Err(());
+        }
+        for (left, right) in [
+            (&reopened.generation_descriptor, &self.generation_descriptor),
+            (&reopened.service_descriptor, &self.service_descriptor),
+            (&reopened.receipts_descriptor, &self.receipts_descriptor),
+            (&reopened.runner_descriptor, &self.runner_descriptor),
+            (&reopened.trust_descriptor, &self.trust_descriptor),
+            (&reopened.database_descriptor, &self.database_descriptor),
+            (&reopened.deployment_descriptor, &self.deployment_descriptor),
+            (&reopened.manifest_descriptor, &self.manifest_descriptor),
+        ] {
+            same(left, right)?;
+        }
+        match (&reopened.current_descriptor, &self.current_descriptor) {
+            (Some(left), Some(right)) => same(left, right),
+            (None, None) => Ok(()),
+            _ => Err(()),
+        }
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the closed generation inventory is deliberately explicit"
+)]
+fn revalidate_generation(
+    guard: &BackupRootGuard<'_>,
+    name: &str,
+    generation: &File,
+    service: &File,
+    receipts: &File,
+    runner: &File,
+    trust: &File,
+    database: &File,
+    deployment: &File,
+    manifest: &File,
+    selected: bool,
+    current_temporary: bool,
+) -> Result<(), ()> {
+    if current_temporary {
+        guard.verify_publishing_root_inventory()?;
+    } else {
+        guard.verify_root_inventory(selected)?;
+    }
+    let identity = guard.identity;
+    let reopened_generation =
+        directory_at(&guard.generations, name, identity.uid, identity.gid, 0o500)?;
+    same(&reopened_generation, generation)?;
+    for (child_name, pinned) in [
+        ("service", service),
+        ("receipts", receipts),
+        ("runner", runner),
+        ("trust", trust),
+    ] {
+        let reopened = directory_at(
+            &reopened_generation,
+            child_name,
+            identity.uid,
+            identity.gid,
+            0o500,
+        )?;
+        same(&reopened, pinned)?;
+    }
+    let reopened_database = file_at(
+        service,
+        DATABASE,
+        identity.uid,
+        identity.gid,
+        0o400,
+        false,
+        DATABASE_MAX,
+    )?;
+    same(&reopened_database, database)?;
+    for (file_name, pinned, maximum) in [
+        (DEPLOYMENT, deployment, 16 * 1024),
+        (MANIFEST, manifest, JSON_MAX),
+    ] {
+        let reopened = file_at(
+            &reopened_generation,
+            file_name,
+            identity.uid,
+            identity.gid,
+            0o400,
+            false,
+            maximum,
+        )?;
+        same(&reopened, pinned)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentRecord {
+    schema: String,
+    generation: u64,
+    manifest_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Manifest {
+    schema: String,
+    generation: u64,
+    predecessor: Option<Predecessor>,
+    captured_at: i64,
+    stopped: bool,
+    compatibility_sha256: String,
+    authorities: Vec<Authority>,
+    trust: Vec<Trust>,
+    files: Vec<ManifestFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Predecessor {
+    generation: u64,
+    manifest_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Authority {
+    generation: u64,
+    manifest_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Trust {
+    generation: u64,
+    key_id: String,
+    path: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestFile {
+    path: String,
+    kind: String,
+    bytes: u64,
+    sha256: String,
+}
+
+fn validate_manifest(
+    manifest: &Manifest,
+    generation: u64,
+    deployment_snapshot: &DeploymentSnapshot,
+    deployment: &File,
+    database: &File,
+) -> Result<(), ()> {
+    if manifest.schema != "kapsel.sandbox.backup.v1"
+        || manifest.generation != generation
+        || manifest.predecessor.is_some()
+        || manifest.captured_at <= 0
+        || !manifest.stopped
+        || manifest.compatibility_sha256 != deployment_snapshot.identity.compatibility_sha256
+        || !manifest.authorities.is_empty()
+        || !manifest.trust.is_empty()
+    {
+        return Err(());
+    }
+    let expected = [
+        record(DEPLOYMENT, deployment, 16 * 1024)?,
+        record("service/sandbox.sqlite3", database, DATABASE_MAX)?,
+    ];
+    if manifest.files.len() != expected.len() {
+        return Err(());
+    }
+    for (actual, expected) in manifest.files.iter().zip(expected) {
+        if actual.path != expected.path
+            || actual.kind != "file"
+            || actual.bytes != expected.bytes
+            || actual.sha256 != expected.sha256
+            || !valid_relative_path(&actual.path)
+        {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn record(path: &str, file: &File, maximum: u64) -> Result<ManifestFile, ()> {
+    let length = file.metadata().map_err(|_| ())?.len();
+    if length > maximum {
+        return Err(());
+    }
+    Ok(ManifestFile {
+        path: path.to_owned(),
+        kind: "file".to_owned(),
+        bytes: length,
+        sha256: digest_file(file, maximum)?,
+    })
+}
+
+fn valid_relative_path(path: &str) -> bool {
+    path.len() <= 512
+        && path.split('/').all(|component| {
+            !component.is_empty()
+                && component.len() <= 128
+                && component
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+                && component.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'.' | b'-')
+                })
+        })
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn generation_number(name: &str) -> Result<u64, ()> {
+    let digits = name.strip_prefix("backup-").ok_or(())?;
+    if digits.len() != 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(());
+    }
+    let value = digits.parse::<u64>().map_err(|_| ())?;
+    (value > 0).then_some(value).ok_or(())
+}
+
+fn remove_incomplete_initial_temporary(
+    generations: &File,
+    identity: BackupIdentity,
+) -> Result<(), ()> {
+    let temporary = directory_at(
+        generations,
+        GENERATION_TMP,
+        identity.uid,
+        identity.gid,
+        0o700,
+    )?;
+    let allowed = [
+        "service", "receipts", "runner", "trust", DEPLOYMENT, MANIFEST,
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<BTreeSet<_>>();
+    let root_names = names(&temporary, 7)?;
+    if !root_names.is_subset(&allowed) {
+        return Err(());
+    }
+    for (directory_name, allowed_file) in [
+        ("service", Some((DATABASE, DATABASE_MAX))),
+        ("receipts", None),
+        ("runner", None),
+        ("trust", None),
+    ] {
+        if !root_names.contains(std::ffi::OsStr::new(directory_name)) {
+            continue;
+        }
+        let directory = directory_at_modes(
+            &temporary,
+            directory_name,
+            identity.uid,
+            identity.gid,
+            &[0o700, 0o500],
+        )?;
+        let child_names = names(&directory, 2)?;
+        match allowed_file {
+            Some((file_name, maximum)) => {
+                let allowed_child = std::iter::once(OsString::from(file_name)).collect();
+                if !child_names.is_subset(&allowed_child) {
+                    return Err(());
+                }
+                if child_names.contains(std::ffi::OsStr::new(file_name)) {
+                    file_at_modes(&directory, file_name, identity, &[0o600, 0o400], maximum)?;
+                }
+            },
+            None if !child_names.is_empty() => return Err(()),
+            None => {},
+        }
+    }
+    for (file_name, maximum) in [(DEPLOYMENT, 16 * 1024), (MANIFEST, JSON_MAX)] {
+        if root_names.contains(std::ffi::OsStr::new(file_name)) {
+            file_at_modes(&temporary, file_name, identity, &[0o600, 0o400], maximum)?;
+        }
+    }
+    for directory_name in ["service", "receipts", "runner", "trust"] {
+        if !root_names.contains(std::ffi::OsStr::new(directory_name)) {
+            continue;
+        }
+        let directory = directory_at_modes(
+            &temporary,
+            directory_name,
+            identity.uid,
+            identity.gid,
+            &[0o700, 0o500],
+        )?;
+        fchmod(&directory, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+        for child in names(&directory, 2)? {
+            rustix::fs::unlinkat(&directory, &child, rustix::fs::AtFlags::empty())
+                .map_err(|_| ())?;
+        }
+        directory.sync_all().map_err(|_| ())?;
+        rustix::fs::unlinkat(&temporary, directory_name, rustix::fs::AtFlags::REMOVEDIR)
+            .map_err(|_| ())?;
+    }
+    for file_name in [DEPLOYMENT, MANIFEST] {
+        if root_names.contains(std::ffi::OsStr::new(file_name)) {
+            rustix::fs::unlinkat(&temporary, file_name, rustix::fs::AtFlags::empty())
+                .map_err(|_| ())?;
+        }
+    }
+    temporary.sync_all().map_err(|_| ())?;
+    rustix::fs::unlinkat(generations, GENERATION_TMP, rustix::fs::AtFlags::REMOVEDIR)
+        .map_err(|_| ())?;
+    generations.sync_all().map_err(|_| ())
+}
+
+fn create_directory(parent: &File, name: &str, identity: BackupIdentity) -> Result<File, ()> {
+    mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+    directory_at(parent, name, identity.uid, identity.gid, 0o700)
+}
+
+fn write_new_file(
+    parent: &File,
+    name: &str,
+    bytes: &[u8],
+    identity: BackupIdentity,
+    maximum: u64,
+) -> Result<File, ()> {
+    if u64::try_from(bytes.len()).map_err(|_| ())? > maximum {
+        return Err(());
+    }
+    let mut file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|_| ())?,
+    );
+    file.write_all(bytes).map_err(|_| ())?;
+    file.sync_all().map_err(|_| ())?;
+    validate_file(&file, identity, 0o600, maximum)?;
+    Ok(file)
+}
+
+fn copy_file(
+    source: &File,
+    destination: &File,
+    name: &str,
+    identity: BackupIdentity,
+    maximum: u64,
+) -> Result<File, ()> {
+    let bytes = read_bounded(source, maximum)?;
+    write_new_file(destination, name, &bytes, identity, maximum)
+}
+
+fn directory_path(path: &Path, uid: u32, gid: u32, mode: u32) -> Result<File, ()> {
+    let file = File::from(
+        open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    validate_directory(&file, uid, gid, mode)?;
+    Ok(file)
+}
+
+fn directory_at(
+    parent: &File,
+    name: impl rustix::path::Arg,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+) -> Result<File, ()> {
+    let file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    validate_directory(&file, uid, gid, mode)?;
+    Ok(file)
+}
+
+fn directory_at_modes(
+    parent: &File,
+    name: impl rustix::path::Arg,
+    uid: u32,
+    gid: u32,
+    modes: &[u32],
+) -> Result<File, ()> {
+    let file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    let metadata = file.metadata().map_err(|_| ())?;
+    if metadata.is_dir()
+        && metadata.uid() == uid
+        && metadata.gid() == gid
+        && modes.contains(&(metadata.mode() & 0o7777))
+    {
+        Ok(file)
+    } else {
+        Err(())
+    }
+}
+
+fn validate_directory(file: &File, uid: u32, gid: u32, mode: u32) -> Result<(), ()> {
+    let metadata = file.metadata().map_err(|_| ())?;
+    (metadata.is_dir()
+        && metadata.uid() == uid
+        && metadata.gid() == gid
+        && metadata.mode() & 0o7777 == mode)
+        .then_some(())
+        .ok_or(())
+}
+
+fn validate_file(file: &File, identity: BackupIdentity, mode: u32, maximum: u64) -> Result<(), ()> {
+    let metadata = file.metadata().map_err(|_| ())?;
+    if metadata.is_file()
+        && metadata.uid() == identity.uid
+        && metadata.gid() == identity.gid
+        && metadata.mode() & 0o7777 == mode
+        && metadata.nlink() == 1
+        && metadata.len() <= maximum
+    {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+fn file_at_modes(
+    parent: &File,
+    name: impl rustix::path::Arg,
+    identity: BackupIdentity,
+    modes: &[u32],
+    maximum: u64,
+) -> Result<File, ()> {
+    let file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    let metadata = file.metadata().map_err(|_| ())?;
+    if metadata.is_file()
+        && metadata.uid() == identity.uid
+        && metadata.gid() == identity.gid
+        && modes.contains(&(metadata.mode() & 0o7777))
+        && metadata.nlink() == 1
+        && metadata.len() <= maximum
+    {
+        Ok(file)
+    } else {
+        Err(())
+    }
+}
+
+fn file_at(
+    parent: &File,
+    name: impl rustix::path::Arg,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    writable: bool,
+    maximum: u64,
+) -> Result<File, ()> {
+    let access = if writable {
+        OFlags::RDWR
+    } else {
+        OFlags::RDONLY
+    };
+    let file = File::from(
+        openat(
+            parent,
+            name,
+            access | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    let maximum = if maximum == 0 { u64::MAX } else { maximum };
+    validate_file(&file, BackupIdentity { uid, gid }, mode, maximum)?;
+    Ok(file)
+}
+
+fn same(left: &File, right: &File) -> Result<(), ()> {
+    (Identity::of(left)? == Identity::of(right)?)
+        .then_some(())
+        .ok_or(())
+}
+
+fn names(directory: &File, maximum: usize) -> Result<BTreeSet<OsString>, ()> {
+    let mut reopened = directory.try_clone().map_err(|_| ())?;
+    reopened.seek(SeekFrom::Start(0)).map_err(|_| ())?;
+    let mut result = BTreeSet::new();
+    for entry in rustix::fs::Dir::read_from(&reopened).map_err(|_| ())? {
+        let entry = entry.map_err(|_| ())?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        if result.len() == maximum {
+            return Err(());
+        }
+        result.insert(OsString::from(name.to_str().map_err(|_| ())?));
+    }
+    Ok(result)
+}
+
+fn read_bounded(file: &File, maximum: u64) -> Result<Vec<u8>, ()> {
+    let mut file = file.try_clone().map_err(|_| ())?;
+    file.seek(SeekFrom::Start(0)).map_err(|_| ())?;
+    let mut bytes = Vec::new();
+    file.take(maximum + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ())?;
+    (u64::try_from(bytes.len()).map_err(|_| ())? <= maximum)
+        .then_some(bytes)
+        .ok_or(())
+}
+
+fn digest_file(file: &File, maximum: u64) -> Result<String, ()> {
+    let mut file = file.try_clone().map_err(|_| ())?;
+    file.seek(SeekFrom::Start(0)).map_err(|_| ())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let count = file.read(&mut buffer).map_err(|_| ())?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(u64::try_from(count).map_err(|_| ())?)
+            .ok_or(())?;
+        if total > maximum {
+            return Err(());
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(hex(&digest.finalize()))
+}
+
+fn digest_bytes(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        result.push(char::from(HEX[usize::from(byte >> 4)]));
+        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        os::unix::fs::{symlink, OpenOptionsExt as _, PermissionsExt as _},
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use super::*;
+    use crate::{
+        service_schema,
+        state_root::{DeploymentProfile, RoleIdentities, StateInitializer},
+        AuthorityConfiguration,
+    };
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn initialized(name: &str) -> (PathBuf, BackupStateGuard) {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "kapsel-backup-unit-{}-{name}-{id}",
+            std::process::id()
+        ));
+        fs::create_dir(&base).unwrap();
+        mode(&base, 0o700);
+        let state_parent = base.join("state-parent");
+        fs::create_dir(&state_parent).unwrap();
+        mode(&state_parent, 0o700);
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(state_parent.join(".kapsel-sandbox-restore.lock"))
+            .unwrap();
+        let identities = RoleIdentities::test_controller();
+        let state_root = state_parent.join("state");
+        let authority = AuthorityConfiguration::new(
+            state_parent.join("unopened-authority"),
+            identities.controller_uid,
+            identities.controller_gid,
+            identities.staging_uid,
+            identities.staging_gid,
+        );
+        let initializer =
+            StateInitializer::begin(&state_root, identities, &authority, DeploymentProfile::Test)
+                .unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(initializer.database().unwrap())
+            .unwrap();
+        initializer.publish(1_774_051_200).unwrap();
+        let connection = rusqlite::Connection::open(state_root.join(DATABASE)).unwrap();
+        for ddl in service_schema::TABLES_BY_NAME {
+            connection.execute_batch(ddl).unwrap();
+        }
+        connection
+            .execute(
+                concat!(
+                    "INSERT INTO service_state (singleton, stopped, ",
+                    "boundary_uid_digest) VALUES (1, 1, '')"
+                ),
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let state =
+            BackupStateGuard::open_clean(&state_root, identities, DeploymentProfile::Test).unwrap();
+        (base, state)
+    }
+
+    fn reopen_state(base: &Path) -> BackupStateGuard {
+        BackupStateGuard::open_capture(
+            &base.join("state-parent/state"),
+            RoleIdentities::test_controller(),
+            DeploymentProfile::Test,
+        )
+        .unwrap()
+    }
+
+    fn initial_root(base: &Path) -> PathBuf {
+        let parent = base.join("backup-parent");
+        fs::create_dir(&parent).unwrap();
+        mode(&parent, 0o700);
+        let root = parent.join("backup");
+        fs::create_dir(&root).unwrap();
+        mode(&root, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(root.join(LOCK))
+            .unwrap();
+        fs::create_dir(root.join(GENERATIONS)).unwrap();
+        mode(&root.join(GENERATIONS), 0o700);
+        root
+    }
+
+    fn mode(path: &Path, value: u32) {
+        fs::set_permissions(path, fs::Permissions::from_mode(value)).unwrap();
+    }
+
+    fn install_generation(root: &Path, state: &BackupStateGuard) -> PathBuf {
+        let generation = root.join(GENERATIONS).join("backup-00000000000000000001");
+        fs::create_dir(&generation).unwrap();
+        for name in ["service", "receipts", "runner", "trust"] {
+            fs::create_dir(generation.join(name)).unwrap();
+        }
+        let deployment = state.deployment_snapshot().unwrap();
+        fs::write(generation.join(DEPLOYMENT), &deployment.bytes).unwrap();
+        let state_database = root
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("state-parent/state")
+            .join(DATABASE);
+        fs::copy(state_database, generation.join("service").join(DATABASE)).unwrap();
+        let deployment_file = File::open(generation.join(DEPLOYMENT)).unwrap();
+        let database_file = File::open(generation.join("service").join(DATABASE)).unwrap();
+        let manifest = Manifest {
+            schema: "kapsel.sandbox.backup.v1".to_owned(),
+            generation: 1,
+            predecessor: None,
+            captured_at: 1_774_051_201,
+            stopped: true,
+            compatibility_sha256: deployment.identity.compatibility_sha256,
+            authorities: Vec::new(),
+            trust: Vec::new(),
+            files: vec![
+                record(DEPLOYMENT, &deployment_file, 16 * 1024).unwrap(),
+                record("service/sandbox.sqlite3", &database_file, DATABASE_MAX).unwrap(),
+            ],
+        };
+        fs::write(
+            generation.join(MANIFEST),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        for path in [
+            generation.join(DEPLOYMENT),
+            generation.join(MANIFEST),
+            generation.join("service").join(DATABASE),
+        ] {
+            mode(&path, 0o400);
+        }
+        for name in ["service", "receipts", "runner", "trust"] {
+            mode(&generation.join(name), 0o500);
+        }
+        mode(&generation, 0o500);
+        generation
+    }
+
+    fn cleanup(base: &Path) {
+        let generations = base.join("backup-parent/backup/generations");
+        if let Ok(entries) = fs::read_dir(&generations) {
+            for entry in entries.flatten() {
+                writable_tree(&entry.path());
+            }
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn writable_tree(path: &Path) {
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    writable_tree(&entry.path());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn initial_clean_capture_crosses_p1_selected_validation_then_p2() {
+        let (base, state) = initialized("capture-initial");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        assert_eq!(selected.generation, 1);
+        assert_eq!(selected.captured_at, 1_774_051_201);
+        let current_bytes = fs::read(root.join(CURRENT)).unwrap();
+        let current: CurrentRecord = serde_json::from_slice(&current_bytes).unwrap();
+        assert_eq!(current.manifest_sha256, selected.manifest_sha256);
+        let copied = rusqlite::Connection::open(
+            root.join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join("service")
+                .join(DATABASE),
+        )
+        .unwrap();
+        assert_eq!(
+            copied
+                .query_row(
+                    concat!(
+                        "SELECT generation, state, captured_at FROM backup_generations ",
+                        "WHERE slot = 'pending'"
+                    ),
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            (1, "pending".to_owned(), 1_774_051_201)
+        );
+        assert_eq!(
+            copied
+                .query_row(
+                    "SELECT COUNT(*) FROM backup_authority_references",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        let service = state.open_stopped_service(&authority).unwrap();
+        let publication = service.publication_state().unwrap();
+        assert!(matches!(
+            publication,
+            BackupPublicationState::Current(ref current)
+                if current.manifest_digest == selected.manifest_sha256
+        ));
+        drop(service);
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_without_bytes_retries_same_initial_generation() {
+        let (base, state) = initialized("recover-p1-no-bytes");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.generation, pending.generation);
+        assert_eq!(selected.captured_at, pending.captured_at);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert_eq!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(crate::PublishedBackup {
+                generation: pending.generation,
+                captured_at: pending.captured_at,
+                manifest_digest: selected.manifest_sha256.clone(),
+                authorities: Vec::new(),
+            })
+        );
+        drop(service);
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_with_exact_incomplete_temporary_restarts_same_generation() {
+        let (base, state) = initialized("recover-partial-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        fs::create_dir(root.join(GENERATIONS).join(GENERATION_TMP)).unwrap();
+        mode(&root.join(GENERATIONS).join(GENERATION_TMP), 0o700);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.generation, pending.generation);
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert!(!root.join(GENERATIONS).join(GENERATION_TMP).exists());
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_with_closed_partial_temporary_restarts_same_generation() {
+        let (base, state) = initialized("recover-populated-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let temporary = root.join(GENERATIONS).join(GENERATION_TMP);
+        fs::create_dir(&temporary).unwrap();
+        mode(&temporary, 0o700);
+        fs::create_dir(temporary.join("service")).unwrap();
+        mode(&temporary.join("service"), 0o700);
+        fs::copy(
+            base.join("state-parent/state").join(DATABASE),
+            temporary.join("service").join(DATABASE),
+        )
+        .unwrap();
+        mode(&temporary.join("service").join(DATABASE), 0o400);
+        fs::create_dir(temporary.join("receipts")).unwrap();
+        mode(&temporary.join("receipts"), 0o500);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert!(!root.join(GENERATIONS).join(GENERATION_TMP).exists());
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_with_sealed_temporary_finishes_generation_publication() {
+        let (base, state) = initialized("recover-sealed-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let complete = install_generation(&root, &state);
+        fs::rename(&complete, root.join(GENERATIONS).join(GENERATION_TMP)).unwrap();
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert!(root.join(GENERATIONS).join(GENERATION_ONE).is_dir());
+        assert!(!root.join(GENERATIONS).join(GENERATION_TMP).exists());
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_with_complete_generation_publishes_current_then_finishes_p2() {
+        let (base, state) = initialized("recover-complete-generation");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        install_generation(&root, &state);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert!(root.join(CURRENT).is_file());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current)
+                if current.generation == 1
+                    && current.captured_at == pending.captured_at
+                    && current.manifest_digest == selected.manifest_sha256
+        ));
+        drop(service);
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn empty_writable_current_temporary_is_republished_before_initial_p2() {
+        let (base, state) = initialized("recover-empty-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let manifest_sha256 = digest_bytes(&fs::read(generation.join(MANIFEST)).unwrap());
+        fs::write(root.join(CURRENT_TMP), b"").unwrap();
+        mode(&root.join(CURRENT_TMP), 0o600);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert_eq!(selected.manifest_sha256, manifest_sha256);
+        assert!(root.join(CURRENT).is_file());
+        assert!(!root.join(CURRENT_TMP).exists());
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn strict_prefix_current_temporary_is_republished_before_initial_p2() {
+        let (base, state) = initialized("recover-prefix-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let manifest_sha256 = digest_bytes(&fs::read(generation.join(MANIFEST)).unwrap());
+        let expected = serde_json::to_vec(&CurrentRecord {
+            schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+            generation: 1,
+            manifest_sha256: manifest_sha256.clone(),
+        })
+        .unwrap();
+        fs::write(root.join(CURRENT_TMP), &expected[..expected.len() / 2]).unwrap();
+        mode(&root.join(CURRENT_TMP), 0o600);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert_eq!(selected.manifest_sha256, manifest_sha256);
+        assert!(root.join(CURRENT).is_file());
+        assert!(!root.join(CURRENT_TMP).exists());
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn canonical_current_temporary_is_finished_before_initial_p2() {
+        let (base, state) = initialized("recover-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let manifest_sha256 = digest_bytes(&fs::read(generation.join(MANIFEST)).unwrap());
+        fs::write(
+            root.join(CURRENT_TMP),
+            serde_json::to_vec(&CurrentRecord {
+                schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+                generation: 1,
+                manifest_sha256: manifest_sha256.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        mode(&root.join(CURRENT_TMP), 0o600);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.captured_at, pending.captured_at);
+        assert_eq!(selected.manifest_sha256, manifest_sha256);
+        assert!(root.join(CURRENT).is_file());
+        assert!(!root.join(CURRENT_TMP).exists());
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn nonprefix_current_temporary_fails_without_mutation() {
+        let (base, state) = initialized("reject-nonprefix-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        install_generation(&root, &state);
+        fs::write(root.join(CURRENT_TMP), b"not-a-canonical-prefix").unwrap();
+        mode(&root.join(CURRENT_TMP), 0o600);
+        let database_before = fs::read(base.join("state-parent/state").join(DATABASE)).unwrap();
+        let temporary_before = fs::read(root.join(CURRENT_TMP)).unwrap();
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .is_err());
+        assert_eq!(fs::read(root.join(CURRENT_TMP)).unwrap(), temporary_before);
+        assert_eq!(
+            fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
+            database_before
+        );
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Pending(ref actual) if actual == &pending
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn selected_generation_with_pending_finishes_initial_p2() {
+        let (base, state) = initialized("recover-selected-pending");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let manifest_sha256 = digest_bytes(&fs::read(generation.join(MANIFEST)).unwrap());
+        fs::write(
+            root.join(CURRENT),
+            serde_json::to_vec(&CurrentRecord {
+                schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+                generation: 1,
+                manifest_sha256: manifest_sha256.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        mode(&root.join(CURRENT), 0o400);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.manifest_sha256, manifest_sha256);
+        assert_eq!(selected.captured_at, pending.captured_at);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current)
+                if current.manifest_digest == selected.manifest_sha256
+        ));
+        drop(service);
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_partial_complete_generation_fails_without_publication() {
+        let (base, state) = initialized("reject-partial-complete");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let database = generation.join("service").join(DATABASE);
+        mode(&generation.join("service"), 0o700);
+        mode(&database, 0o600);
+        let mut bytes = fs::read(&database).unwrap();
+        bytes[0] ^= 1;
+        fs::write(&database, bytes).unwrap();
+        mode(&database, 0o400);
+        mode(&generation.join("service"), 0o500);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .is_err());
+        assert!(!root.join(CURRENT).exists());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Pending(ref actual) if actual == &pending
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn pending_complete_generation_with_different_capture_time_fails_before_current() {
+        let (base, state) = initialized("reject-mismatched-capture-time");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_202).unwrap();
+        drop(service);
+        install_generation(&root, &state);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .is_err());
+        assert!(!root.join(CURRENT).exists());
+        assert!(!root.join(CURRENT_TMP).exists());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Pending(ref actual) if actual == &pending
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn hostile_partial_temporary_fails_without_deletion_or_p2() {
+        let (base, state) = initialized("reject-hostile-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let temporary = root.join(GENERATIONS).join(GENERATION_TMP);
+        fs::create_dir(&temporary).unwrap();
+        mode(&temporary, 0o700);
+        fs::write(temporary.join("private-seed"), b"must-not-delete").unwrap();
+        mode(&temporary.join("private-seed"), 0o400);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .is_err());
+        assert_eq!(
+            fs::read(temporary.join("private-seed")).unwrap(),
+            b"must-not-delete"
+        );
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Pending(ref actual) if actual == &pending
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn steady_service_digest_mismatch_fails_without_filesystem_mutation() {
+        let (base, state) = initialized("reject-steady-digest-mismatch");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let digest = digest_bytes(&fs::read(generation.join(MANIFEST)).unwrap());
+        fs::write(
+            root.join(CURRENT),
+            serde_json::to_vec(&CurrentRecord {
+                schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+                generation: 1,
+                manifest_sha256: digest.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        mode(&root.join(CURRENT), 0o400);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(service.finish_publication(1, &digest).unwrap().is_none());
+        drop(service);
+        drop(state);
+        let database = base.join("state-parent/state").join(DATABASE);
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute(
+                "UPDATE backup_generations SET manifest_digest = ?1 WHERE slot = 'current'",
+                ["0".repeat(64)],
+            )
+            .unwrap();
+        drop(connection);
+        let current_before = fs::read(root.join(CURRENT)).unwrap();
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .is_err());
+        assert_eq!(fs::read(root.join(CURRENT)).unwrap(), current_before);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current)
+                if current.manifest_digest == "0".repeat(64)
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn complete_generation_without_pending_fails_without_creating_rows() {
+        let (base, state) = initialized("reject-complete-without-pending");
+        let root = initial_root(&base);
+        install_generation(&root, &state);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .is_err());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert_eq!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Empty
+        );
+        drop(service);
+        assert!(!root.join(CURRENT).exists());
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn exact_initial_steady_state_is_idempotent() {
+        let (base, state) = initialized("recover-steady");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
+        drop(service);
+        let generation = install_generation(&root, &state);
+        let digest = digest_bytes(&fs::read(generation.join(MANIFEST)).unwrap());
+        fs::write(
+            root.join(CURRENT),
+            serde_json::to_vec(&CurrentRecord {
+                schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+                generation: 1,
+                manifest_sha256: digest.clone(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        mode(&root.join(CURRENT), 0o400);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert_eq!(service.resume_pending().unwrap(), pending);
+        assert!(service.finish_publication(1, &digest).unwrap().is_none());
+        drop(service);
+        drop(state);
+        let before_current = fs::read(root.join(CURRENT)).unwrap();
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let selected = guard
+            .capture_initial_clean(&authority, 1_774_051_299)
+            .unwrap();
+        assert_eq!(selected.manifest_sha256, digest);
+        assert_eq!(selected.captured_at, 1_774_051_201);
+        assert_eq!(fs::read(root.join(CURRENT)).unwrap(), before_current);
+        selected.verify().unwrap();
+        drop(selected);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn selected_substitution_before_p2_leaves_pending_source_unchanged() {
+        let (base, state) = initialized("capture-pre-p2-substitution");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let current_path = root.join(CURRENT);
+
+        assert!(guard
+            .capture_initial_clean_with_barrier(&authority, 1_774_051_201, || {
+                let original = root.join("original-current");
+                fs::rename(&current_path, &original).map_err(|_| ())?;
+                fs::copy(&original, &current_path).map_err(|_| ())?;
+                mode(&current_path, 0o400);
+                Ok(true)
+            })
+            .is_err());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Pending(ref pending) if pending.generation == 1
+        ));
+        drop(service);
+        assert!(root.join(CURRENT).exists());
+        assert!(root.join("original-current").exists());
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn production_backup_identity_is_closed() {
+        assert!(BackupIdentity::production(BACKUP_ID, BACKUP_ID).is_ok());
+        assert!(BackupIdentity::production(BACKUP_ID + 1, BACKUP_ID).is_err());
+        assert!(BackupIdentity::production(BACKUP_ID, BACKUP_ID + 1).is_err());
+    }
+
+    #[test]
+    fn initial_guard_locks_and_pins_closed_root() {
+        let (base, state) = initialized("initial");
+        let root = initial_root(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let competing = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(LOCK))
+            .unwrap();
+        assert!(flock(&competing, FlockOperation::NonBlockingLockExclusive).is_err());
+        let moved = root.with_file_name("moved");
+        fs::rename(&root, &moved).unwrap();
+        symlink(&moved, &root).unwrap();
+        assert!(guard.verify_pins().is_err());
+        fs::remove_file(&root).unwrap();
+        fs::rename(&moved, &root).unwrap();
+        assert!(guard.verify_pins().is_ok());
+        drop(guard);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn canonical_clean_generation_is_reopened_and_validated() {
+        let (base, state) = initialized("canonical");
+        let root = initial_root(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        install_generation(&root, &state);
+        let validated = guard.validate_clean_generation().unwrap();
+        assert_eq!(validated.generation, 1);
+        assert_eq!(validated.captured_at, 1_774_051_201);
+        assert_eq!(validated.manifest_sha256.len(), 64);
+        assert_eq!(validated.compatibility_sha256.len(), 64);
+        validated.verify().unwrap();
+        drop(validated);
+        drop(guard);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn validated_generation_rejects_generation_and_file_substitution() {
+        let (base, state) = initialized("substitution");
+        let root = initial_root(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let generation = install_generation(&root, &state);
+        let validated = guard.validate_clean_generation().unwrap();
+
+        let moved = generation.with_file_name("moved-generation");
+        fs::rename(&generation, &moved).unwrap();
+        symlink(&moved, &generation).unwrap();
+        assert!(validated.verify().is_err());
+        fs::remove_file(&generation).unwrap();
+        fs::rename(&moved, &generation).unwrap();
+        validated.verify().unwrap();
+
+        mode(&generation, 0o700);
+        let manifest = generation.join(MANIFEST);
+        let moved_manifest = generation.join("moved-manifest.json");
+        fs::rename(&manifest, &moved_manifest).unwrap();
+        fs::copy(&moved_manifest, &manifest).unwrap();
+        mode(&manifest, 0o400);
+        mode(&generation, 0o500);
+        assert!(validated.verify().is_err());
+        mode(&generation, 0o700);
+        fs::remove_file(&manifest).unwrap();
+        fs::rename(&moved_manifest, &manifest).unwrap();
+        mode(&generation, 0o500);
+        validated.verify().unwrap();
+
+        mode(&generation.join("receipts"), 0o700);
+        fs::write(generation.join("receipts/extra"), b"extra").unwrap();
+        mode(&generation.join("receipts/extra"), 0o400);
+        mode(&generation.join("receipts"), 0o500);
+        assert!(validated.verify().is_err());
+        mode(&generation.join("receipts"), 0o700);
+        fs::remove_file(generation.join("receipts/extra")).unwrap();
+        mode(&generation.join("receipts"), 0o500);
+        validated.verify().unwrap();
+
+        let database = generation.join("service").join(DATABASE);
+        mode(&generation.join("service"), 0o700);
+        mode(&database, 0o600);
+        let mut bytes = fs::read(&database).unwrap();
+        bytes[0] ^= 1;
+        fs::write(&database, bytes).unwrap();
+        mode(&database, 0o400);
+        mode(&generation.join("service"), 0o500);
+        assert!(validated.verify().is_err());
+        drop(validated);
+        drop(guard);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn initial_clean_generation_rejects_generation_two() {
+        let (base, state) = initialized("generation-two");
+        let root = initial_root(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let generation = install_generation(&root, &state);
+        let second = generation.with_file_name("backup-00000000000000000002");
+        fs::rename(&generation, &second).unwrap();
+        assert!(guard.validate_clean_generation().is_err());
+        drop(guard);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn guards_reject_inventory_mode_manifest_digest_link_and_special_type() {
+        let (base, state) = initialized("negative");
+        let root = initial_root(&base);
+        let identity = BackupIdentity::current_process();
+        mode(&root.join(LOCK), 0o640);
+        assert!(BackupRootGuard::open_initial(&state, &root, identity).is_err());
+        mode(&root.join(LOCK), 0o600);
+        let guard = BackupRootGuard::open_initial(&state, &root, identity).unwrap();
+        let generation = install_generation(&root, &state);
+
+        mode(&generation.join("receipts"), 0o700);
+        assert!(guard.validate_clean_generation().is_err());
+        mode(&generation.join("receipts"), 0o500);
+
+        mode(&generation.join(MANIFEST), 0o600);
+        let original_manifest = fs::read(generation.join(MANIFEST)).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+        value["unknown"] = serde_json::json!(true);
+        fs::write(
+            generation.join(MANIFEST),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        mode(&generation.join(MANIFEST), 0o400);
+        assert!(guard.validate_clean_generation().is_err());
+        mode(&generation.join(MANIFEST), 0o600);
+        fs::write(generation.join(MANIFEST), &original_manifest).unwrap();
+        mode(&generation.join(MANIFEST), 0o400);
+
+        mode(&generation.join("service"), 0o700);
+        let database = generation.join("service").join(DATABASE);
+        let original_database = fs::read(&database).unwrap();
+        mode(&database, 0o600);
+        fs::write(&database, b"changed").unwrap();
+        mode(&database, 0o400);
+        mode(&generation.join("service"), 0o500);
+        assert!(guard.validate_clean_generation().is_err());
+        mode(&generation.join("service"), 0o700);
+        mode(&database, 0o600);
+        fs::write(&database, original_database).unwrap();
+        mode(&database, 0o400);
+        mode(&generation.join("service"), 0o500);
+
+        let outside_link = root.parent().unwrap().join("linked-deployment");
+        fs::hard_link(generation.join(DEPLOYMENT), &outside_link).unwrap();
+        assert!(guard.validate_clean_generation().is_err());
+        fs::remove_file(outside_link).unwrap();
+
+        mode(&generation.join("service"), 0o700);
+        fs::remove_file(&database).unwrap();
+        symlink(generation.join(MANIFEST), &database).unwrap();
+        mode(&generation.join("service"), 0o500);
+        assert!(guard.validate_clean_generation().is_err());
+        drop(guard);
+        cleanup(&base);
+    }
+}

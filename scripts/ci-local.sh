@@ -40,7 +40,8 @@ echo "==> rustdoc"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
 echo "==> deterministic Rust tests"
-cargo test --locked --workspace --lib --bins --tests
+cargo test --locked --workspace --lib --bins --tests \
+  --features kapsel-sandbox/state-root-test-harness
 
 echo "==> documentation tests"
 cargo test --locked --doc --workspace

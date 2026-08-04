@@ -720,11 +720,17 @@ process lifetime. Missing, incomplete, duplicate, malformed, or incompatible rea
 before state mutation or service. `init`, migration, and restore all take the same
 descriptor-relative nonblocking exclusive parent restore lock; only one may create or transform a
 destination. `init` requires an absent root, writes and fsyncs the initial ready record inside a
-complete temporary root, then renames and parent-fsyncs it. One stopped-and- drained migration
-additionally holds the exclusive state lock while adding exact initialized deployment/readiness
-records to an accepted pre-Slice-5 root; it requires no active run, pending receipt publication,
-cleanup owner, runner generation, authority collection, or backup reference, validates any retained
-receipt/tombstone authority exactly, and changes no other byte.
+complete temporary root, then renames and parent-fsyncs it. The one stopped-and-drained migration
+accepts only the exact pre-Slice-5 predecessor or an exact resumable crash prefix. Before its first
+source mutation it validates the complete predecessor inventory and schema, durable stop, absence of
+every active run, pending receipt publication, cleanup owner, runner generation, authority
+collection, and backup reference, exact receipt inventory, and every retained receipt/tombstone
+authority reference. It may then add or finish only the controller-owned `.backup.lock`, the exact
+empty `backup_generations` and `backup_authority_references` tables, canonical `deployment.json`,
+and initialized `restore.ready`, with the required fsyncs. It changes no pre-existing table row,
+receipt byte, runner byte, lifecycle, cleanup, result, event, or authority fact. Failure before
+publication may leave only an exact resumable prefix of those additions; retry validates that prefix
+and never performs generic service recovery or orphan cleanup.
 
 The universal lock order is parent restore lock, state lock when a state exists, then backup-root
 lock. `backup` starts under controller authority, takes the parent lock shared, the state lock
@@ -770,9 +776,15 @@ pre-readiness state machine. Gate 1 Kubernetes reconciliation uses deterministic
 real request remains Gate 3 work. Both child modes have empty groups, zero securebits, and
 `no_new_privs=1` before authority. Every lock uses descriptor-relative `flock(LOCK_NB)` in the
 universal order; busy, substituted, wrong-owner/mode, closed/lost descriptor, or order violation
-fails before mutation. The crash matrix crosses contention at each lock. A failed precondition
-changes no source, lifecycle, receipt, cleanup, authority, or backup fact except the explicitly
-named backup- reference transactions. Capture never reconciles source state.
+fails before mutation. State and backup roots, their writable ancestors, and every SQLite
+main/sidecar name remain under the one trusted controller or backup authority for the complete open
+lifetime; stock SQLite pathname and sidecar opens do not establish descriptor-relative confinement
+against a malicious same-authority rename. Descriptor pinning, no-follow validation, and
+revalidation deny other roles and detect stable substitution, while compromise of the controller
+authority retains the concentrated blast radius named by the threat model. The crash matrix crosses
+contention at each lock. A failed precondition changes no source, lifecycle, receipt, cleanup,
+authority, or backup fact except the explicitly named backup-reference transactions. Capture never
+reconciles source state.
 
 One canonical `kapsel.sandbox.backup.v1` manifest inventories fixed paths in bytewise lexical order.
 Unknown fields are denied and canonical reserialization must equal the stored bytes. Each entry
@@ -786,13 +798,18 @@ generation/key/version identity. The compatibility identity is SHA-256 over the 
 bytes for package version, target architecture/OS, service schema digest, KAP-0038 gateway schema
 digest, fixed-staging schema `v1`, and policy `sandbox-policy-v3`; Slice 6 must consume rather than
 reinterpret it. Production vocabulary is exactly `x86_64-linux`; tests may substitute
-`test-architecture` only through a crate-private seam. Service and gateway schema digests are
-SHA-256 of their domain (`KAPSEL-SANDBOX-SERVICE-SCHEMA-V1\0` or
-`KAPSEL-SANDBOX-GATEWAY-SCHEMA-V1\0`) followed by the exact UTF-8 compile-time DDL literals in
-bytewise table-name order, each prefixed by its 64-bit big-endian byte length. The Slice 2 source,
-compiler, helper, and runner values come from `deployment.json`: build-time source/compiler
-identity, the opened helper digest, and `/proc/self/exe` digest. They are not caller strings; Slice
-6 must produce the same closed record.
+`test-architecture` only through a crate-private seam. The service schema digest is SHA-256 of
+`KAPSEL-SANDBOX-SERVICE-SCHEMA-V1\0` followed by its exact UTF-8 compile-time DDL literals in
+bytewise table-name order, each prefixed by its 64-bit big-endian byte length. The gateway schema
+digest remains root-`kapsel`-owned: it is SHA-256 of `KAPSEL-SANDBOX-GATEWAY-SCHEMA-V1\0` followed
+by the exact UTF-8 literals `CREATE_OPERATION_TABLE`, `LEGACY_OPERATION_TABLE`, and
+`MIGRATED_LEGACY_OPERATION_TABLE` in that order, each prefixed by its 64-bit big-endian byte length.
+The unpublished workspace consumer may obtain only those resulting 32 bytes through one no-input,
+doc-hidden, explicitly unsupported root Rust export. The DDL remains private; the sandbox must not
+copy it, parse root source, accept it as input, or generalize the export into a schema, backup,
+storage, or provider interface. The Slice 2 source, compiler, helper, and runner values come from
+`deployment.json`: build-time source/compiler identity, the opened helper digest, and
+`/proc/self/exe` digest. They are not caller strings; Slice 6 must produce the same closed record.
 
 All JSON is UTF-8 ASCII, one line with no trailing newline or insignificant whitespace. Struct field
 order below is serialization order; integers are positive decimal without leading zero, optional

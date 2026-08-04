@@ -436,6 +436,9 @@ fn doc_attribute_lines(attributes: &[Attribute]) -> (Vec<(usize, String)>, bool)
             continue;
         }
         let Meta::NameValue(name_value) = &attribute.meta else {
+            if matches!(&attribute.meta, Meta::List(list) if list.tokens.to_string() == "hidden") {
+                continue;
+            }
             has_dynamic_doc = true;
             continue;
         };
@@ -944,6 +947,20 @@ mod tests {
 
         assert!(codes.contains(&"rustdoc-heading-name"));
         assert!(codes.contains(&"rustdoc-dynamic-content"));
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_public_docs_remain_statically_inspectable() -> Result<(), String> {
+        let fixture = Fixture::new("hidden_public_docs")?;
+        fixture.write(
+            "src/lib.rs",
+            "/// Fixed hidden bridge.\n#[doc(hidden)]\npub fn hidden_bridge() {}\n",
+        )?;
+
+        let codes = hard_codes(fixture.path())?;
+
+        assert!(!codes.contains(&"rustdoc-dynamic-content"));
         Ok(())
     }
 

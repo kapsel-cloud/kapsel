@@ -9,6 +9,14 @@ rust-version.workspace = true
 description = "Deterministic service package for the fixed Kapsel public sandbox"
 publish = false
 
+[features]
+state-root-test-harness = []
+
+[[bin]]
+name = "kapsel-sandbox-test-harness"
+path = "src/test_harness.rs"
+required-features = ["state-root-test-harness"]
+
 [dependencies]
 ed25519-dalek = { version = "=3.0.0", default-features = false }
 getrandom = "=0.3.4"
@@ -30,6 +38,14 @@ ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["sig
 rustls = { version = "=0.23.41", default-features = false, features = ["ring", "std"] }
 tokio = { version = "=1.52.3", features = ["macros"] }
 tower-test = "=0.4.0"
+
+[[test]]
+name = "native_listener"
+required-features = ["state-root-test-harness"]
+
+[[test]]
+name = "runner_handoff"
+required-features = ["state-root-test-harness"]
 
 [lints]
 workspace = true

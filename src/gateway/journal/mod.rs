@@ -24,6 +24,10 @@ use super::{
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
 
+pub(crate) fn sandbox_schema_digest() -> [u8; 32] {
+    schema::sandbox_schema_digest()
+}
+
 #[cfg(test)]
 pub(crate) fn qualification_storage_limits() -> (usize, i32, u64) {
     (

@@ -10,6 +10,7 @@ use std::{
     fmt, fs,
     fs::OpenOptions,
     io::Write,
+    marker::PhantomData,
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::Arc,
@@ -28,6 +29,7 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod backup;
 mod controller_role;
 mod fixed_staging;
 pub use fixed_staging::GenerationIdentity;
@@ -40,9 +42,12 @@ mod kubernetes_policy;
     )
 )]
 mod local_roles;
+mod native_process;
 mod runner_handoff;
 mod runner_host;
 mod runner_process;
+mod service_schema;
+mod state_root;
 pub use controller_role::{
     AuthorityController, CleanupController, ControllerConfiguration, ControllerError,
     ControllerRole, ControllerRun, ControllerWait, RetentionController,
@@ -59,6 +64,27 @@ pub use runner_handoff::{
     TerminalHandoffReport,
 };
 pub use runner_process::run as run_runner_process;
+
+/// Runs the one fixed native sandbox process composition.
+///
+/// This doc-hidden unsupported package-to-binary bridge accepts only the shipped command grammar.
+/// It does not expose state, storage, backup, or lifecycle sequencing.
+#[doc(hidden)]
+#[must_use]
+pub fn run_native_process() -> std::process::ExitCode {
+    native_process::main(state_root::DeploymentProfile::Production)
+}
+
+/// Runs the fixed unprivileged state-root process test harness.
+///
+/// This no-input bridge is compiled only for the separately named integration-test executable. The
+/// ordinary `kapsel-sandbox` binary always uses fixed production identities and architecture.
+#[cfg(feature = "state-root-test-harness")]
+#[doc(hidden)]
+#[must_use]
+pub fn run_state_root_test_harness() -> std::process::ExitCode {
+    native_process::main(state_root::DeploymentProfile::Test)
+}
 
 #[cfg(test)]
 mod cluster_policy_tests;
@@ -578,13 +604,186 @@ impl AuthorityConfiguration {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "the accepted stopped backup boundary precedes its private generation coordinator"
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BackupPublication {
+    pub(crate) generation: u64,
+    pub(crate) captured_at: i64,
+    pub(crate) authorities: Vec<GenerationIdentity>,
+    pub(crate) predecessor: Option<(u64, String)>,
+}
+
 /// SQLite-backed fixed sandbox service.
 #[derive(Clone)]
 pub struct Service {
     database_path: PathBuf,
     receipt_directory: PathBuf,
+    pinned_state: Option<Arc<PinnedServiceState>>,
     authority: Arc<fixed_staging::FixedStagingReader>,
     origin: String,
+}
+
+struct PinnedServiceState {
+    state_directory: fs::File,
+    database: fs::File,
+    receipts: fs::File,
+}
+
+#[allow(
+    dead_code,
+    reason = "the accepted stopped backup boundary precedes its private generation coordinator"
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PublishedBackup {
+    pub(crate) generation: u64,
+    pub(crate) captured_at: i64,
+    pub(crate) manifest_digest: String,
+    pub(crate) authorities: Vec<GenerationIdentity>,
+}
+
+#[allow(
+    dead_code,
+    reason = "the accepted stopped backup boundary precedes its private generation coordinator"
+)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BackupPublicationState {
+    Empty,
+    Pending(BackupPublication),
+    Current(PublishedBackup),
+    Replacing {
+        current: PublishedBackup,
+        pending: BackupPublication,
+    },
+    Deleting {
+        current: PublishedBackup,
+        deleting: PublishedBackup,
+    },
+}
+
+#[allow(
+    dead_code,
+    reason = "the accepted stopped backup boundary precedes its private generation coordinator"
+)]
+pub(crate) struct StoppedBackupService<'guard> {
+    service: Service,
+    _guard: PhantomData<&'guard ()>,
+}
+
+#[allow(
+    dead_code,
+    reason = "the accepted stopped backup boundary precedes its private generation coordinator"
+)]
+impl StoppedBackupService<'_> {
+    fn open_internal(
+        database_path: &Path,
+        receipt_directory: &Path,
+        authority: &AuthorityConfiguration,
+        pinned_state: Option<PinnedServiceState>,
+    ) -> Result<Self, ServiceError> {
+        if !database_path.is_absolute() || !receipt_directory.is_absolute() {
+            return Err(ServiceError::Unavailable);
+        }
+        let database_name = database_path.file_name().ok_or(ServiceError::Unavailable)?;
+        let database_parent =
+            fs::canonicalize(database_path.parent().ok_or(ServiceError::Unavailable)?)
+                .map_err(|_| ServiceError::Unavailable)?;
+        let database_path = database_parent.join(database_name);
+        let receipt_directory =
+            fs::canonicalize(receipt_directory).map_err(|_| ServiceError::Unavailable)?;
+        if let Some(pinned) = pinned_state.as_ref() {
+            validate_pinned_state(&database_path, &receipt_directory, pinned)?;
+        }
+        let authority = Arc::new(authority.open_reader()?);
+        let service = Service {
+            database_path,
+            receipt_directory,
+            pinned_state: pinned_state.map(Arc::new),
+            authority,
+            origin: "https://kapsel.invalid".into(),
+        };
+        let connection = service.read_only_connection()?;
+        validate_exact_service_schema(&connection)?;
+        validate_authority_pins(&connection)?;
+        preflight_backup_schema(&connection)?;
+        validate_serial_capacity(&connection)?;
+        let stopped: bool = connection
+            .query_row(
+                "SELECT stopped = 1 FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped {
+            return Err(ServiceError::Unavailable);
+        }
+        service.validate_authority_reference_owners(&connection)?;
+        service.validate_pinned_paths()?;
+        Ok(Self {
+            service,
+            _guard: PhantomData,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(
+        database_path: impl AsRef<Path>,
+        receipt_directory: impl AsRef<Path>,
+        digest_key: [u8; 32],
+    ) -> Result<Self, ServiceError> {
+        if digest_key == [0; 32] {
+            return Err(ServiceError::Unavailable);
+        }
+        let database_path = database_path.as_ref();
+        let parent = database_path.parent().ok_or(ServiceError::Unavailable)?;
+        Self::open_internal(
+            database_path,
+            receipt_directory.as_ref(),
+            &test_authority::configuration(parent, digest_key),
+            None,
+        )
+    }
+
+    pub(crate) fn publication_state(&self) -> Result<BackupPublicationState, ServiceError> {
+        self.service.backup_publication_state()
+    }
+
+    pub(crate) fn resume_pending(&self) -> Result<BackupPublication, ServiceError> {
+        self.service.resume_pending_backup_publication()
+    }
+
+    pub(crate) fn begin_publication(
+        &self,
+        generation: u64,
+        captured_at: i64,
+    ) -> Result<BackupPublication, ServiceError> {
+        self.service
+            .begin_backup_publication(generation, captured_at)
+    }
+
+    pub(crate) fn finish_publication(
+        &self,
+        generation: u64,
+        manifest_digest: &str,
+    ) -> Result<Option<u64>, ServiceError> {
+        self.service
+            .finish_backup_publication(generation, manifest_digest)
+    }
+
+    pub(crate) fn finish_deletion(&self, generation: u64) -> Result<(), ServiceError> {
+        self.service.finish_backup_deletion(generation)
+    }
+
+    pub(crate) fn restore_publication(
+        &self,
+        selected: &BackupPublication,
+        manifest_digest: &str,
+    ) -> Result<(), ServiceError> {
+        self.service
+            .restore_backup_publication(selected, manifest_digest)
+    }
 }
 
 /// Commits the operator-owned admission stop using only the existing private admission database.
@@ -597,7 +796,14 @@ pub struct Service {
 /// Returns [`ServiceError::Unavailable`] unless the existing owner-private database and singleton
 /// control row can be opened, updated, and read back safely.
 pub fn set_global_stop(database_path: impl AsRef<Path>, stopped: bool) -> Result<(), ServiceError> {
-    let database_path = database_path.as_ref();
+    set_global_stop_internal(database_path.as_ref(), stopped, None)
+}
+
+fn set_global_stop_internal(
+    database_path: &Path,
+    stopped: bool,
+    pinned: Option<(&Path, &PinnedServiceState)>,
+) -> Result<(), ServiceError> {
     if !database_path.is_absolute() {
         return Err(ServiceError::Unavailable);
     }
@@ -607,8 +813,17 @@ pub fn set_global_stop(database_path: impl AsRef<Path>, stopped: bool) -> Result
             .map_err(|_| ServiceError::Unavailable)?;
     validate_private_directory(&database_parent)?;
     let database_path = database_parent.join(database_name);
+    if let Some((receipts, pinned)) = pinned {
+        let receipts = fs::canonicalize(receipts).map_err(|_| ServiceError::Unavailable)?;
+        validate_pinned_state(&database_path, &receipts, pinned)?;
+    }
     let connection = open_database_connection(&database_path)?;
-    commit_global_stop(&connection, stopped)
+    commit_global_stop(&connection, stopped)?;
+    if let Some((receipts, pinned)) = pinned {
+        let receipts = fs::canonicalize(receipts).map_err(|_| ServiceError::Unavailable)?;
+        validate_pinned_state(&database_path, &receipts, pinned)?;
+    }
+    Ok(())
 }
 
 impl Service {
@@ -624,8 +839,22 @@ impl Service {
         authority: &AuthorityConfiguration,
         now_unix_s: i64,
     ) -> Result<Self, ServiceError> {
-        let database_path = database_path.as_ref();
-        let receipt_directory = receipt_directory.as_ref();
+        Self::open_internal(
+            database_path.as_ref(),
+            receipt_directory.as_ref(),
+            authority,
+            now_unix_s,
+            None,
+        )
+    }
+
+    fn open_internal(
+        database_path: &Path,
+        receipt_directory: &Path,
+        authority: &AuthorityConfiguration,
+        now_unix_s: i64,
+        pinned_state: Option<PinnedServiceState>,
+    ) -> Result<Self, ServiceError> {
         timestamp(now_unix_s)?;
         if !database_path.is_absolute() || !receipt_directory.is_absolute() {
             return Err(ServiceError::Unavailable);
@@ -637,6 +866,9 @@ impl Service {
         let database_path = database_parent.join(database_name);
         let receipt_directory =
             fs::canonicalize(receipt_directory).map_err(|_| ServiceError::Unavailable)?;
+        if let Some(pinned) = pinned_state.as_ref() {
+            validate_pinned_state(&database_path, &receipt_directory, pinned)?;
+        }
         let authority = Arc::new(authority.open_reader()?);
         let pending_collection = pending_authority_collection(&database_path)?;
         if let Some(identity) = pending_collection.as_ref() {
@@ -651,6 +883,7 @@ impl Service {
         let service = Self {
             database_path,
             receipt_directory,
+            pinned_state: pinned_state.map(Arc::new),
             authority,
             origin: "https://kapsel.invalid".into(),
         };
@@ -682,6 +915,250 @@ impl Service {
             &test_authority::configuration(parent, digest_key),
             now_unix_s,
         )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one closed read-only predecessor, authority, and owner audit precedes migration"
+    )]
+    fn preflight_stopped_state_root_migration(
+        database_path: &Path,
+        authority: &AuthorityConfiguration,
+    ) -> Result<(), ServiceError> {
+        let database_path =
+            fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(storage_error)?;
+        preflight_existing_authority_schema(&connection)?;
+        validate_authority_pins(&connection)?;
+        let backup_tables: i64 = connection
+            .query_row(
+                concat!(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ",
+                    "('backup_generations', 'backup_authority_references')"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !matches!(backup_tables, 0 | 2) {
+            return Err(ServiceError::Unavailable);
+        }
+        validate_migration_schema(&connection, backup_tables == 2)?;
+        if backup_tables == 2 {
+            preflight_backup_schema(&connection)?;
+            let rows: i64 = connection
+                .query_row(
+                    concat!(
+                        "SELECT (SELECT COUNT(*) FROM backup_generations) + ",
+                        "(SELECT COUNT(*) FROM backup_authority_references)"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if rows != 0 {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        let valid: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT stopped = 1 ",
+                    "AND NOT EXISTS(SELECT 1 FROM runs WHERE active = 1) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipt_publications) ",
+                    "AND NOT EXISTS(SELECT 1 FROM cleanup_records WHERE active = 1) ",
+                    "AND NOT EXISTS(SELECT 1 FROM authority_collection) ",
+                    "FROM service_state WHERE singleton = 1"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !valid {
+            return Err(ServiceError::Unavailable);
+        }
+        for table in [
+            "receipts",
+            "receipt_publications",
+            "cleanup_records",
+            "application_reports",
+        ] {
+            let orphaned: bool = connection
+                .query_row(
+                    &format!(
+                        "SELECT EXISTS(SELECT 1 FROM {table} LEFT JOIN runs USING (run_id) \
+                         WHERE runs.run_id IS NULL)"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if orphaned {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        let reader = authority.open_reader()?;
+        let mut identities = HashSet::new();
+        for table in ["runs", "tombstones"] {
+            let predicate = if table == "runs" {
+                " WHERE authority_generation IS NOT NULL"
+            } else {
+                ""
+            };
+            let mut statement = connection
+                .prepare(&format!(
+                    "SELECT authority_generation, authority_manifest_digest FROM {table}{predicate}"
+                ))
+                .map_err(storage_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage_error)?;
+            for row in rows {
+                let (generation, digest) = row.map_err(storage_error)?;
+                let identity = stored_authority_identity(generation, digest)?;
+                reader
+                    .validate_identity(&identity)
+                    .map_err(|_| ServiceError::Unavailable)?;
+                identities.insert((identity.generation, identity.manifest_digest));
+            }
+        }
+        if identities.len() > 2 {
+            return Err(ServiceError::Unavailable);
+        }
+        for (run_id, published_epoch) in reader
+            .dispatch_references()
+            .map_err(|_| ServiceError::Unavailable)?
+        {
+            let owner = connection
+                .query_row(
+                    concat!(
+                        "SELECT execution_state, authority_generation, ",
+                        "authority_manifest_digest, lease_epoch FROM runs WHERE run_id = ?1"
+                    ),
+                    [&run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(storage_error)?;
+            let Some((state, generation, digest, durable_epoch)) = owner else {
+                return Err(ServiceError::Unavailable);
+            };
+            stored_authority_identity(generation, digest)?;
+            if state == "queued" || durable_epoch <= 0 || published_epoch != durable_epoch {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preflight_stopped_backup_source(
+        database_path: &Path,
+    ) -> Result<(), ServiceError> {
+        let database_path =
+            fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
+        let before = validate_database_file(&database_path)?;
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(storage_error)?;
+        if validate_database_file(&database_path)? != before {
+            return Err(ServiceError::Unavailable);
+        }
+        validate_exact_service_schema(&connection)?;
+        validate_authority_pins(&connection)?;
+        preflight_backup_schema(&connection)?;
+        validate_serial_capacity(&connection)?;
+        let stopped: bool = connection
+            .query_row(
+                "SELECT stopped = 1 FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped || validate_database_file(&database_path)? != before {
+            return Err(ServiceError::Unavailable);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preflight_clean_backup_source(database_path: &Path) -> Result<(), ServiceError> {
+        Self::preflight_stopped_backup_source(database_path)?;
+        let database_path =
+            fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
+        let before = validate_database_file(&database_path)?;
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(storage_error)?;
+        let clean: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT stopped = 1 AND boundary_uid_digest = '' ",
+                    "AND NOT EXISTS(SELECT 1 FROM runs) ",
+                    "AND NOT EXISTS(SELECT 1 FROM tombstones) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipts) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipt_publications) ",
+                    "AND NOT EXISTS(SELECT 1 FROM cleanup_records) ",
+                    "AND NOT EXISTS(SELECT 1 FROM application_reports) ",
+                    "AND NOT EXISTS(SELECT 1 FROM provisioned_object_owners) ",
+                    "AND NOT EXISTS(SELECT 1 FROM events) ",
+                    "AND NOT EXISTS(SELECT 1 FROM authority_collection) ",
+                    "AND NOT EXISTS(SELECT 1 FROM backup_generations) ",
+                    "AND NOT EXISTS(SELECT 1 FROM backup_authority_references) ",
+                    "FROM service_state WHERE singleton = 1"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !clean || validate_database_file(&database_path)? != before {
+            return Err(ServiceError::Unavailable);
+        }
+        Ok(())
+    }
+
+    fn migrate_stopped_state_root(database_path: &Path) -> Result<(), ServiceError> {
+        let database_path =
+            fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
+        let before = validate_database_file(&database_path)?;
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(storage_error)?;
+        if validate_database_file(&database_path)? != before {
+            return Err(ServiceError::Unavailable);
+        }
+        let sql = format!(
+            "BEGIN IMMEDIATE; {} {} COMMIT;",
+            service_schema::BACKUP_GENERATIONS,
+            service_schema::BACKUP_AUTHORITY_REFERENCES
+        );
+        connection.execute_batch(&sql).map_err(storage_error)
     }
 
     /// Runs the operator-owned periodic retention and tombstone deletion sweep.
@@ -2662,89 +3139,17 @@ impl Service {
         prepare_database_file(&self.database_path)?;
         let mut connection = self.connection()?;
         preflight_existing_authority_schema(&connection)?;
+        preflight_backup_schema(&connection)?;
         connection
-            .execute_batch(
-                "PRAGMA journal_mode = DELETE;
-                 PRAGMA synchronous = FULL;
-                 CREATE TABLE IF NOT EXISTS service_state (
-                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), stopped INTEGER NOT NULL,
-                   boundary_uid_digest TEXT NOT NULL DEFAULT ''
-                 );
-                 INSERT OR IGNORE INTO service_state (singleton, stopped) VALUES (1, 0);
-                 CREATE TABLE IF NOT EXISTS authority_collection (
-                   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                   generation INTEGER NOT NULL, manifest_digest TEXT NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS runs (
-                   admission_order INTEGER PRIMARY KEY AUTOINCREMENT,
-                   run_id TEXT NOT NULL UNIQUE, idempotency_key TEXT NOT NULL UNIQUE,
-                   scenario TEXT NOT NULL, operation_id TEXT NOT NULL UNIQUE,
-                   admitted_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-                   execution_state TEXT NOT NULL, receiver_result TEXT,
-                   target_rejection TEXT, receipt_available INTEGER NOT NULL,
-                   cleanup_state TEXT NOT NULL, last_sequence INTEGER NOT NULL,
-                   active INTEGER NOT NULL, deadline_emitted INTEGER NOT NULL,
-                   application_invoked INTEGER NOT NULL, public_retained INTEGER NOT NULL,
-                   policy_revision TEXT NOT NULL, policy_inventory TEXT NOT NULL,
-                   policy_inventory_digest TEXT NOT NULL, cleanup_identity TEXT NOT NULL,
-                   deadline_seconds INTEGER NOT NULL, deadline_at INTEGER,
-                   policy_verified INTEGER NOT NULL, provisioned_objects TEXT,
-                   cleanup_resource_state TEXT NOT NULL, dispatched_at INTEGER,
-                   namespace_uid TEXT, lease_id TEXT NOT NULL,
-                   lease_epoch INTEGER NOT NULL, lease_expires_at INTEGER NOT NULL,
-                   handoff_credential_verifier BLOB NOT NULL,
-                   provisioning_closed INTEGER NOT NULL DEFAULT 0,
-                   deployment_uid TEXT NOT NULL DEFAULT '',
-                   deployment_resource_version TEXT NOT NULL DEFAULT '',
-                   deployment_current_image TEXT NOT NULL DEFAULT '',
-                   cleanup_epoch TEXT NOT NULL DEFAULT '',
-                   runner_revoked INTEGER NOT NULL DEFAULT 0,
-                   runner_process_absent INTEGER NOT NULL DEFAULT 0,
-                   journal_handoff INTEGER NOT NULL DEFAULT 0,
-                   runner_state_retiring INTEGER NOT NULL DEFAULT 0,
-                   runner_state_retired INTEGER NOT NULL DEFAULT 0,
-                   cleanup_attempt INTEGER NOT NULL DEFAULT 0,
-                   cleanup_plan_digest TEXT NOT NULL DEFAULT '',
-                   cleanup_plan_issued INTEGER NOT NULL DEFAULT 0,
-                   cleanup_pending_observation_id TEXT NOT NULL DEFAULT '',
-                   cleanup_observation_id TEXT NOT NULL DEFAULT '',
-                   authority_generation INTEGER,
-                   authority_manifest_digest TEXT NOT NULL DEFAULT ''
-                 );
-                 CREATE TABLE IF NOT EXISTS cleanup_records (
-                   run_id TEXT PRIMARY KEY, cleanup_identity TEXT NOT NULL,
-                   namespace_uid TEXT, resource_state TEXT NOT NULL, state TEXT NOT NULL,
-                   active INTEGER NOT NULL, eligible INTEGER NOT NULL,
-                   started_at INTEGER, escalated INTEGER NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS provisioned_object_owners (
-                   uid TEXT PRIMARY KEY, run_id TEXT NOT NULL, identity TEXT NOT NULL,
-                   owner_label TEXT NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS events (
-                   run_id TEXT NOT NULL, sequence INTEGER NOT NULL, kind TEXT NOT NULL,
-                   occurred_at INTEGER NOT NULL, execution_state TEXT NOT NULL,
-                   receiver_result TEXT, target_rejection TEXT,
-                   receipt_available INTEGER NOT NULL, cleanup_state TEXT NOT NULL,
-                   PRIMARY KEY (run_id, sequence)
-                 );
-                 CREATE TABLE IF NOT EXISTS receipts (
-                   run_id TEXT PRIMARY KEY, digest TEXT NOT NULL, object_name TEXT NOT NULL UNIQUE
-                 );
-                 CREATE TABLE IF NOT EXISTS receipt_publications (
-                   run_id TEXT PRIMARY KEY, digest TEXT NOT NULL, object_name TEXT NOT NULL UNIQUE,
-                   started_at INTEGER NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS application_reports (
-                   run_id TEXT PRIMARY KEY, kind TEXT NOT NULL, receiver_result TEXT,
-                   target_rejection TEXT, receipt_digest TEXT, payload_digest BLOB NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS tombstones (
-                   run_digest TEXT PRIMARY KEY, key_digest TEXT NOT NULL UNIQUE,
-                   delete_at INTEGER NOT NULL,
-                   authority_generation INTEGER NOT NULL,
-                   authority_manifest_digest TEXT NOT NULL
-                 );",
+            .execute_batch("PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;")
+            .map_err(storage_error)?;
+        for ddl in service_schema::TABLES_BY_NAME {
+            connection.execute_batch(ddl).map_err(storage_error)?;
+        }
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO service_state (singleton, stopped) VALUES (1, 0)",
+                [],
             )
             .map_err(storage_error)?;
         let has_handoff_verifier = {
@@ -2775,11 +3180,13 @@ impl Service {
         migrate_slice3_run_columns(&connection)?;
         migrate_authority_columns(&mut connection)?;
         validate_authority_pins(&connection)?;
+        preflight_backup_schema(&connection)?;
         validate_serial_capacity(&connection)?;
         self.remove_orphan_receipts(&mut connection)
     }
 
     fn remove_orphan_receipts(&self, connection: &mut Connection) -> Result<(), ServiceError> {
+        self.validate_pinned_paths()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
@@ -2848,7 +3255,34 @@ impl Service {
     }
 
     fn connection(&self) -> Result<Connection, ServiceError> {
-        open_database_connection(&self.database_path)
+        self.validate_pinned_paths()?;
+        let connection = open_database_connection(&self.database_path)?;
+        self.validate_pinned_paths()?;
+        Ok(connection)
+    }
+
+    fn read_only_connection(&self) -> Result<Connection, ServiceError> {
+        self.validate_pinned_paths()?;
+        let before = validate_database_file(&self.database_path)?;
+        let connection = Connection::open_with_flags(
+            &self.database_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(storage_error)?;
+        if validate_database_file(&self.database_path)? != before {
+            return Err(ServiceError::Unavailable);
+        }
+        self.validate_pinned_paths()?;
+        Ok(connection)
+    }
+
+    fn validate_pinned_paths(&self) -> Result<(), ServiceError> {
+        if let Some(pinned) = self.pinned_state.as_deref() {
+            validate_pinned_state(&self.database_path, &self.receipt_directory, pinned)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn authority_reader(&self) -> Arc<fixed_staging::FixedStagingReader> {
@@ -2876,6 +3310,428 @@ impl Service {
             .execute("DELETE FROM authority_collection WHERE singleton = 1", [])
             .map_err(storage_error)?;
         Ok(())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "the closed read state is consumed by the following private backup foundation"
+    )]
+    fn backup_publication_state(&self) -> Result<BackupPublicationState, ServiceError> {
+        let connection = self.read_only_connection()?;
+        validate_exact_service_schema(&connection)?;
+        validate_authority_pins(&connection)?;
+        preflight_backup_schema(&connection)?;
+        self.validate_authority_reference_owners(&connection)?;
+        let stopped: bool = connection
+            .query_row(
+                "SELECT stopped = 1 FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped {
+            return Err(ServiceError::Unavailable);
+        }
+        let mut statement = connection
+            .prepare(concat!(
+                "SELECT slot, generation, manifest_digest, captured_at FROM backup_generations ",
+                "ORDER BY slot"
+            ))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        drop(statement);
+        let find = |slot: &str| rows.iter().find(|(candidate, _, _, _)| candidate == slot);
+        let published = |slot: &str| -> Result<Option<PublishedBackup>, ServiceError> {
+            let Some((_, generation, digest, captured_at)) = find(slot) else {
+                return Ok(None);
+            };
+            Ok(Some(PublishedBackup {
+                generation: u64::try_from(*generation).map_err(|_| ServiceError::Unavailable)?,
+                captured_at: *captured_at,
+                manifest_digest: digest.clone().ok_or(ServiceError::Unavailable)?,
+                authorities: backup_references_for_slot(&connection, slot)?,
+            }))
+        };
+        let current = published("current")?;
+        let deleting = published("deleting")?;
+        let pending = find("pending")
+            .map(|(_, generation, digest, captured_at)| {
+                if digest.is_some() {
+                    return Err(ServiceError::Unavailable);
+                }
+                Ok(BackupPublication {
+                    generation: u64::try_from(*generation)
+                        .map_err(|_| ServiceError::Unavailable)?,
+                    captured_at: *captured_at,
+                    authorities: backup_references_for_slot(&connection, "pending")?,
+                    predecessor: current
+                        .as_ref()
+                        .map(|record| (record.generation, record.manifest_digest.clone())),
+                })
+            })
+            .transpose()?;
+        match (pending, current, deleting) {
+            (None, None, None) => Ok(BackupPublicationState::Empty),
+            (Some(pending), None, None) => Ok(BackupPublicationState::Pending(pending)),
+            (None, Some(current), None) => Ok(BackupPublicationState::Current(current)),
+            (Some(pending), Some(current), None) => {
+                Ok(BackupPublicationState::Replacing { current, pending })
+            },
+            (None, Some(current), Some(deleting)) => {
+                Ok(BackupPublicationState::Deleting { current, deleting })
+            },
+            _ => Err(ServiceError::Unavailable),
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "exact pending resume is consumed by the following private backup foundation"
+    )]
+    fn resume_pending_backup_publication(&self) -> Result<BackupPublication, ServiceError> {
+        let (BackupPublicationState::Pending(pending)
+        | BackupPublicationState::Replacing { pending, .. }) = self.backup_publication_state()?
+        else {
+            return Err(ServiceError::Unavailable);
+        };
+        let connection = self.read_only_connection()?;
+        let retained = backup_authority_references(&connection, &self.authority)?;
+        if retained != pending.authorities {
+            return Err(ServiceError::Unavailable);
+        }
+        Ok(pending)
+    }
+
+    fn begin_backup_publication(
+        &self,
+        generation: u64,
+        captured_at: i64,
+    ) -> Result<BackupPublication, ServiceError> {
+        if generation == 0 || captured_at <= 0 {
+            return Err(ServiceError::Unavailable);
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        validate_authority_pins(&transaction)?;
+        preflight_backup_schema(&transaction)?;
+        self.validate_authority_reference_owners(&transaction)?;
+        let stopped: bool = transaction
+            .query_row(
+                "SELECT stopped FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped {
+            return Err(ServiceError::Unavailable);
+        }
+        let existing = transaction
+            .query_row(
+                "SELECT generation, manifest_digest FROM backup_generations WHERE slot = 'current'",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        let transitional: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM backup_generations WHERE slot != 'current')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if transitional {
+            return Err(ServiceError::Unavailable);
+        }
+        let predecessor = match existing {
+            Some((stored_generation, digest)) => {
+                let stored_generation =
+                    u64::try_from(stored_generation).map_err(|_| ServiceError::Unavailable)?;
+                if stored_generation.checked_add(1) != Some(generation) || !valid_sha256(&digest) {
+                    return Err(ServiceError::Unavailable);
+                }
+                Some((stored_generation, digest))
+            },
+            None if generation == 1 => None,
+            None => return Err(ServiceError::Unavailable),
+        };
+        let authorities = backup_authority_references(&transaction, &self.authority)?;
+        let generation_i64 = i64::try_from(generation).map_err(|_| ServiceError::Unavailable)?;
+        transaction
+            .execute(
+                "INSERT INTO backup_generations VALUES ('pending', ?1, NULL, 'pending', ?2)",
+                params![generation_i64, captured_at],
+            )
+            .map_err(storage_error)?;
+        for identity in &authorities {
+            let authority_generation =
+                i64::try_from(identity.generation).map_err(|_| ServiceError::Unavailable)?;
+            transaction
+                .execute(
+                    "INSERT INTO backup_authority_references VALUES ('pending', ?1, ?2)",
+                    params![authority_generation, identity.manifest_digest],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction.commit().map_err(storage_error)?;
+        Ok(BackupPublication {
+            generation,
+            captured_at,
+            authorities,
+            predecessor,
+        })
+    }
+
+    fn finish_backup_publication(
+        &self,
+        generation: u64,
+        manifest_digest: &str,
+    ) -> Result<Option<u64>, ServiceError> {
+        if generation == 0 || !valid_sha256(manifest_digest) {
+            return Err(ServiceError::Unavailable);
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        preflight_backup_schema(&transaction)?;
+        self.validate_authority_reference_owners(&transaction)?;
+        let stopped: bool = transaction
+            .query_row(
+                "SELECT stopped = 1 FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped {
+            return Err(ServiceError::Unavailable);
+        }
+        let pending: (i64, i64) = transaction
+            .query_row(
+                concat!(
+                    "SELECT generation, captured_at FROM backup_generations ",
+                    "WHERE slot = 'pending' AND manifest_digest IS NULL"
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(storage_error)?;
+        if u64::try_from(pending.0).ok() != Some(generation) {
+            return Err(ServiceError::Unavailable);
+        }
+        let current = transaction
+            .query_row(
+                "SELECT generation FROM backup_generations WHERE slot = 'current'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        if current.is_some() {
+            transaction
+                .execute(
+                    concat!(
+                        "UPDATE backup_generations SET slot = 'deleting', state = 'deleting' ",
+                        "WHERE slot = 'current'"
+                    ),
+                    [],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    concat!(
+                        "UPDATE backup_authority_references SET slot = 'deleting' ",
+                        "WHERE slot = 'current'"
+                    ),
+                    [],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction
+            .execute(
+                concat!(
+                    "UPDATE backup_generations SET slot = 'current', state = 'current', ",
+                    "manifest_digest = ?2 WHERE slot = 'pending' AND generation = ?1"
+                ),
+                params![pending.0, manifest_digest],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute(
+                "UPDATE backup_authority_references SET slot = 'current' WHERE slot = 'pending'",
+                [],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        current
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| ServiceError::Unavailable)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one stopped transaction keeps restored backup references continuously owned"
+    )]
+    fn restore_backup_publication(
+        &self,
+        selected: &BackupPublication,
+        manifest_digest: &str,
+    ) -> Result<(), ServiceError> {
+        if selected.generation == 0
+            || selected.captured_at <= 0
+            || selected.authorities.len() > 2
+            || !valid_sha256(manifest_digest)
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        preflight_backup_schema(&transaction)?;
+        self.validate_authority_reference_owners(&transaction)?;
+        let stopped: bool = transaction
+            .query_row(
+                "SELECT stopped FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped {
+            return Err(ServiceError::Unavailable);
+        }
+        let pending = transaction
+            .query_row(
+                concat!(
+                    "SELECT generation, captured_at FROM backup_generations ",
+                    "WHERE slot = 'pending' AND manifest_digest IS NULL"
+                ),
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(storage_error)?;
+        if u64::try_from(pending.0).ok() != Some(selected.generation)
+            || pending.1 != selected.captured_at
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        let predecessor = transaction
+            .query_row(
+                concat!(
+                    "SELECT generation, manifest_digest FROM backup_generations ",
+                    "WHERE slot = 'current'"
+                ),
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .map(|(generation, digest)| {
+                Ok((
+                    u64::try_from(generation).map_err(|_| ServiceError::Unavailable)?,
+                    digest,
+                ))
+            })
+            .transpose()?;
+        if predecessor != selected.predecessor {
+            return Err(ServiceError::Unavailable);
+        }
+        let mut statement = transaction
+            .prepare(concat!(
+                "SELECT authority_generation, authority_manifest_digest FROM ",
+                "backup_authority_references WHERE slot = 'pending' ",
+                "ORDER BY authority_generation"
+            ))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?;
+        let mut authorities = Vec::new();
+        for row in rows {
+            let (generation, digest) = row.map_err(storage_error)?;
+            authorities.push(stored_authority_identity(Some(generation), digest)?);
+        }
+        drop(statement);
+        if authorities != selected.authorities {
+            return Err(ServiceError::Unavailable);
+        }
+        transaction
+            .execute("DELETE FROM backup_authority_references", [])
+            .map_err(storage_error)?;
+        transaction
+            .execute("DELETE FROM backup_generations", [])
+            .map_err(storage_error)?;
+        let generation =
+            i64::try_from(selected.generation).map_err(|_| ServiceError::Unavailable)?;
+        transaction
+            .execute(
+                "INSERT INTO backup_generations VALUES ('current', ?1, ?2, 'current', ?3)",
+                params![generation, manifest_digest, selected.captured_at],
+            )
+            .map_err(storage_error)?;
+        for identity in &authorities {
+            let authority_generation =
+                i64::try_from(identity.generation).map_err(|_| ServiceError::Unavailable)?;
+            transaction
+                .execute(
+                    "INSERT INTO backup_authority_references VALUES ('current', ?1, ?2)",
+                    params![authority_generation, identity.manifest_digest],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction.commit().map_err(storage_error)
+    }
+
+    fn finish_backup_deletion(&self, generation: u64) -> Result<(), ServiceError> {
+        let generation = i64::try_from(generation).map_err(|_| ServiceError::Unavailable)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        preflight_backup_schema(&transaction)?;
+        self.validate_authority_reference_owners(&transaction)?;
+        let stopped: bool = transaction
+            .query_row(
+                "SELECT stopped = 1 FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !stopped {
+            return Err(ServiceError::Unavailable);
+        }
+        transaction
+            .execute(
+                "DELETE FROM backup_authority_references WHERE slot = 'deleting'",
+                [],
+            )
+            .map_err(storage_error)?;
+        let changed = transaction
+            .execute(
+                "DELETE FROM backup_generations WHERE slot = 'deleting' AND generation = ?1",
+                [generation],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(ServiceError::Unavailable);
+        }
+        transaction.commit().map_err(storage_error)
     }
 
     pub(crate) fn collect_unused_authority(&self) -> Result<bool, ServiceError> {
@@ -2931,7 +3787,8 @@ impl Service {
             .prepare(concat!(
                 "SELECT authority_generation, authority_manifest_digest FROM runs ",
                 "WHERE authority_generation IS NOT NULL UNION ALL SELECT authority_generation, ",
-                "authority_manifest_digest FROM tombstones"
+                "authority_manifest_digest FROM tombstones UNION ALL SELECT authority_generation, ",
+                "authority_manifest_digest FROM backup_authority_references"
             ))
             .map_err(storage_error)?;
         let rows = statement
@@ -2954,7 +3811,7 @@ impl Service {
 
     fn validate_authority_reference_owners(
         &self,
-        transaction: &rusqlite::Transaction<'_>,
+        connection: &Connection,
     ) -> Result<(), ServiceError> {
         for table in [
             "receipts",
@@ -2966,19 +3823,61 @@ impl Service {
                 "SELECT EXISTS(SELECT 1 FROM {table} LEFT JOIN runs USING (run_id) \
                  WHERE runs.run_id IS NULL)"
             );
-            let orphaned: bool = transaction
+            let orphaned: bool = connection
                 .query_row(&sql, [], |row| row.get(0))
                 .map_err(storage_error)?;
             if orphaned {
                 return Err(ServiceError::Unavailable);
             }
         }
+        let orphaned_backup_reference: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT EXISTS(SELECT 1 FROM backup_authority_references r ",
+                    "LEFT JOIN backup_generations g USING (slot) WHERE g.slot IS NULL)"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if orphaned_backup_reference {
+            return Err(ServiceError::Unavailable);
+        }
+        let current = self
+            .authority
+            .current_identity()
+            .map_err(|_| ServiceError::Unavailable)?;
+        let noncurrent = self
+            .authority
+            .noncurrent_identity()
+            .map_err(|_| ServiceError::Unavailable)?;
+        let mut statement = connection
+            .prepare(concat!(
+                "SELECT authority_generation, authority_manifest_digest FROM runs ",
+                "WHERE authority_generation IS NOT NULL UNION SELECT authority_generation, ",
+                "authority_manifest_digest FROM tombstones UNION SELECT authority_generation, ",
+                "authority_manifest_digest FROM backup_authority_references"
+            ))
+            .map_err(storage_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_error)?;
+        for row in rows {
+            let (generation, digest) = row.map_err(storage_error)?;
+            let identity = stored_authority_identity(generation, digest)?;
+            if identity != current && noncurrent.as_ref() != Some(&identity) {
+                return Err(ServiceError::Unavailable);
+            }
+        }
+        drop(statement);
         let dispatch_references = self
             .authority
             .dispatch_references()
             .map_err(|_| ServiceError::Unavailable)?;
         for (run_id, published_epoch) in dispatch_references {
-            let owner = transaction
+            let owner = connection
                 .query_row(
                     concat!(
                         "SELECT execution_state, authority_generation, ",
@@ -3559,6 +4458,7 @@ impl Service {
     }
 
     fn install_receipt_object(&self, object_name: &str, bytes: &[u8]) -> Result<(), ServiceError> {
+        self.validate_pinned_paths()?;
         let final_path = self.receipt_directory.join(object_name);
         if final_path.exists() {
             let existing = fs::read(&final_path).map_err(|_| ServiceError::Unavailable)?;
@@ -3587,12 +4487,21 @@ impl Service {
             let _ = fs::remove_file(&pending_path);
             return write_result;
         }
-        match fs::hard_link(&pending_path, &final_path) {
+        let directory =
+            fs::File::open(&self.receipt_directory).map_err(|_| ServiceError::Unavailable)?;
+        let pending_name = pending_path.file_name().ok_or(ServiceError::Unavailable)?;
+        match rustix::fs::renameat_with(
+            &directory,
+            pending_name,
+            &directory,
+            object_name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
             Ok(()) => {},
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(rustix::io::Errno::EXIST) => {
                 let existing = fs::read(&final_path).map_err(|_| ServiceError::Unavailable)?;
+                fs::remove_file(&pending_path).map_err(|_| ServiceError::Unavailable)?;
                 if existing != bytes {
-                    let _ = fs::remove_file(&pending_path);
                     return Err(ServiceError::Unavailable);
                 }
             },
@@ -3601,9 +4510,7 @@ impl Service {
                 return Err(ServiceError::Unavailable);
             },
         }
-        fs::remove_file(&pending_path).map_err(|_| ServiceError::Unavailable)?;
-        let directory =
-            fs::File::open(&self.receipt_directory).map_err(|_| ServiceError::Unavailable)?;
+        self.validate_pinned_paths()?;
         directory.sync_all().map_err(|_| ServiceError::Unavailable)
     }
 
@@ -3613,6 +4520,7 @@ impl Service {
         digest: &str,
         object_name: &str,
     ) -> Result<Vec<u8>, ServiceError> {
+        self.validate_pinned_paths()?;
         let expected_name = format!("sandbox-{run_id}-{digest}.receipt");
         if object_name != expected_name {
             return Err(ServiceError::Unavailable);
@@ -4247,6 +5155,7 @@ impl Service {
         digest: &str,
         object_name: &str,
     ) -> Result<(), ServiceError> {
+        self.validate_pinned_paths()?;
         let expected = format!("sandbox-{run_id}-{digest}.receipt");
         if object_name != expected {
             return Err(ServiceError::Unavailable);
@@ -5395,6 +6304,45 @@ fn validate_database_file(path: &Path) -> Result<(u64, u64), ServiceError> {
     Ok((metadata.dev(), metadata.ino()))
 }
 
+fn validate_pinned_state(
+    database_path: &Path,
+    receipt_directory: &Path,
+    pinned: &PinnedServiceState,
+) -> Result<(), ServiceError> {
+    let state_path = database_path.parent().ok_or(ServiceError::Unavailable)?;
+    if receipt_directory.parent() != Some(state_path)
+        || receipt_directory.file_name() != Some(std::ffi::OsStr::new("receipts"))
+        || database_path.file_name() != Some(std::ffi::OsStr::new("sandbox.sqlite3"))
+    {
+        return Err(ServiceError::Unavailable);
+    }
+    let path_identity = |path: &Path, directory: bool| {
+        let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::Unavailable)?;
+        if (directory && !metadata.is_dir())
+            || (!directory && (!metadata.is_file() || metadata.nlink() != 1))
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        Ok((metadata.dev(), metadata.ino()))
+    };
+    let descriptor_identity = |file: &fs::File, directory: bool| {
+        let metadata = file.metadata().map_err(|_| ServiceError::Unavailable)?;
+        if (directory && !metadata.is_dir())
+            || (!directory && (!metadata.is_file() || metadata.nlink() != 1))
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        Ok((metadata.dev(), metadata.ino()))
+    };
+    if path_identity(state_path, true)? != descriptor_identity(&pinned.state_directory, true)?
+        || path_identity(database_path, false)? != descriptor_identity(&pinned.database, false)?
+        || path_identity(receipt_directory, true)? != descriptor_identity(&pinned.receipts, true)?
+    {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(())
+}
+
 fn validate_private_directory(path: &Path) -> Result<(), ServiceError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::Unavailable)?;
     let owner_matches = metadata.uid() == rustix::process::geteuid().as_raw();
@@ -5636,6 +6584,297 @@ fn validate_authority_identity(identity: &GenerationIdentity) -> Result<(), Serv
         return Err(ServiceError::Unavailable);
     }
     Ok(())
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn validate_exact_service_schema(connection: &Connection) -> Result<(), ServiceError> {
+    fn signature(
+        connection: &Connection,
+    ) -> Result<Vec<(String, String, String, String)>, ServiceError> {
+        connection
+            .prepare(concat!(
+                "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master ",
+                "ORDER BY type, name, tbl_name, sql"
+            ))
+            .map_err(storage_error)?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)
+    }
+
+    let expected = Connection::open_in_memory().map_err(storage_error)?;
+    for ddl in service_schema::TABLES_BY_NAME {
+        expected.execute_batch(ddl).map_err(storage_error)?;
+    }
+    if signature(connection)? == signature(&expected)? {
+        Ok(())
+    } else {
+        Err(ServiceError::Unavailable)
+    }
+}
+
+fn validate_migration_schema(
+    connection: &Connection,
+    includes_backup: bool,
+) -> Result<(), ServiceError> {
+    fn signature(connection: &Connection) -> Result<Vec<(String, Vec<String>)>, ServiceError> {
+        let mut tables = connection
+            .prepare(concat!(
+                "SELECT name FROM sqlite_master WHERE type = 'table' ",
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ))
+            .map_err(storage_error)?
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        tables.sort();
+        let mut output = Vec::with_capacity(tables.len());
+        for table in tables {
+            let columns = connection
+                .prepare(&format!("PRAGMA table_info('{table}')"))
+                .map_err(storage_error)?
+                .query_map([], |row| {
+                    Ok(format!(
+                        "{}|{}|{}|{}|{}",
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                        row.get::<_, i64>(5)?
+                    ))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?;
+            output.push((table, columns));
+        }
+        Ok(output)
+    }
+
+    let expected = Connection::open_in_memory().map_err(storage_error)?;
+    for ddl in service_schema::TABLES_BY_NAME {
+        let backup = ddl == service_schema::BACKUP_GENERATIONS
+            || ddl == service_schema::BACKUP_AUTHORITY_REFERENCES;
+        if includes_backup || !backup {
+            expected.execute_batch(ddl).map_err(storage_error)?;
+        }
+    }
+    if signature(connection)? == signature(&expected)? {
+        Ok(())
+    } else {
+        Err(ServiceError::Unavailable)
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the closed two-table backup storage and transition preflight stays visibly atomic"
+)]
+fn preflight_backup_schema(connection: &Connection) -> Result<(), ServiceError> {
+    let table_count: i64 = connection
+        .query_row(
+            concat!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ",
+                "('backup_generations', 'backup_authority_references')"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if table_count == 0 {
+        return Ok(());
+    }
+    if table_count != 2 {
+        return Err(ServiceError::Unavailable);
+    }
+
+    let mut statement = connection
+        .prepare(concat!(
+            "SELECT slot, generation, manifest_digest, state, captured_at, ",
+            "typeof(generation), typeof(manifest_digest), typeof(captured_at) ",
+            "FROM backup_generations ORDER BY slot"
+        ))
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(storage_error)?;
+    let mut generations = Vec::new();
+    for row in rows {
+        let (slot, generation, digest, state, captured_at, gen_type, digest_type, time_type) =
+            row.map_err(storage_error)?;
+        let valid_digest = match (&*slot, digest.as_deref(), digest_type.as_str()) {
+            ("pending", None, "null") => true,
+            ("current" | "deleting", Some(value), "text") => valid_sha256(value),
+            _ => false,
+        };
+        if !matches!(slot.as_str(), "pending" | "current" | "deleting")
+            || state != slot
+            || generation <= 0
+            || captured_at <= 0
+            || gen_type != "integer"
+            || time_type != "integer"
+            || !valid_digest
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        generations.push((slot, generation));
+    }
+    if generations.len() > 3 {
+        return Err(ServiceError::Unavailable);
+    }
+    let generation_for = |slot: &str| {
+        generations
+            .iter()
+            .find_map(|(candidate, generation)| (candidate == slot).then_some(*generation))
+    };
+    let pending = generation_for("pending");
+    let current = generation_for("current");
+    let deleting = generation_for("deleting");
+    let valid_state = match (pending, current, deleting) {
+        (None | Some(1), None, None) | (None, Some(_), None) => true,
+        (Some(next), Some(previous), None) | (None, Some(next), Some(previous)) => {
+            previous.checked_add(1) == Some(next)
+        },
+        _ => false,
+    };
+    if !valid_state {
+        return Err(ServiceError::Unavailable);
+    }
+
+    let mut statement = connection
+        .prepare(concat!(
+            "SELECT slot, authority_generation, authority_manifest_digest, ",
+            "typeof(authority_generation), typeof(authority_manifest_digest) ",
+            "FROM backup_authority_references ORDER BY slot, authority_generation"
+        ))
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(storage_error)?;
+    let mut reference_counts = [("pending", 0_u8), ("current", 0), ("deleting", 0)];
+    for row in rows {
+        let (slot, generation, digest, generation_type, digest_type) =
+            row.map_err(storage_error)?;
+        let Some((_, count)) = reference_counts
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == slot)
+        else {
+            return Err(ServiceError::Unavailable);
+        };
+        *count = count.checked_add(1).ok_or(ServiceError::Unavailable)?;
+        if *count > 2
+            || generation <= 0
+            || generation_type != "integer"
+            || digest_type != "text"
+            || !valid_sha256(&digest)
+            || generation_for(&slot).is_none()
+        {
+            return Err(ServiceError::Unavailable);
+        }
+    }
+    Ok(())
+}
+
+fn backup_references_for_slot(
+    connection: &Connection,
+    slot: &str,
+) -> Result<Vec<GenerationIdentity>, ServiceError> {
+    if !matches!(slot, "pending" | "current" | "deleting") {
+        return Err(ServiceError::Unavailable);
+    }
+    let mut statement = connection
+        .prepare(concat!(
+            "SELECT authority_generation, authority_manifest_digest FROM ",
+            "backup_authority_references WHERE slot = ?1 ORDER BY authority_generation"
+        ))
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map([slot], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(storage_error)?;
+    let mut identities = Vec::new();
+    for row in rows {
+        let (generation, digest) = row.map_err(storage_error)?;
+        identities.push(stored_authority_identity(Some(generation), digest)?);
+    }
+    if identities.len() > 2 {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(identities)
+}
+
+fn backup_authority_references(
+    transaction: &Connection,
+    authority: &fixed_staging::FixedStagingReader,
+) -> Result<Vec<GenerationIdentity>, ServiceError> {
+    let current = authority
+        .current_identity()
+        .map_err(|_| ServiceError::Unavailable)?;
+    let noncurrent = authority
+        .noncurrent_identity()
+        .map_err(|_| ServiceError::Unavailable)?;
+    let mut statement = transaction
+        .prepare(concat!(
+            "SELECT authority_generation, authority_manifest_digest FROM runs ",
+            "WHERE authority_generation IS NOT NULL UNION SELECT authority_generation, ",
+            "authority_manifest_digest FROM tombstones ORDER BY authority_generation"
+        ))
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(storage_error)?;
+    let mut identities = Vec::new();
+    for row in rows {
+        let (generation, digest) = row.map_err(storage_error)?;
+        let identity = stored_authority_identity(generation, digest)?;
+        if identity != current && noncurrent.as_ref() != Some(&identity) {
+            return Err(ServiceError::Unavailable);
+        }
+        if identities.last() != Some(&identity) {
+            identities.push(identity);
+        }
+    }
+    if identities.len() > 2 {
+        return Err(ServiceError::Unavailable);
+    }
+    Ok(identities)
 }
 
 fn stored_authority_identity(

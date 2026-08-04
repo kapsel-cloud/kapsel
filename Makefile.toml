@@ -332,7 +332,14 @@ dependencies = [
   "test-sandbox-package-boundary",
 ]
 command = "cargo"
-args = ["test", "--locked", "-p", "kapsel-sandbox"]
+args = [
+  "test",
+  "--locked",
+  "-p",
+  "kapsel-sandbox",
+  "--features",
+  "state-root-test-harness",
+]
 
 [tasks.test-sandbox-runner-handoff]
 description = "Run the KAP-0055 private runner handoff process and state proof"
@@ -353,7 +360,7 @@ description = "Prove the fixed native runner host boundary and retained process-
 script = '''
 set -eu
 cargo test --locked -p kapsel-sandbox --lib runner_host::tests
-cargo test --locked -p kapsel-sandbox --test runner_handoff
+cargo test --locked -p kapsel-sandbox --features state-root-test-harness --test runner_handoff
 '''
 
 [tasks.test-sandbox-runner-host-linux]

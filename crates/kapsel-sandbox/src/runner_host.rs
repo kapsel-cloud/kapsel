@@ -74,6 +74,15 @@ const RUNNER_READY: &[u8] = b"KAPSEL-SANDBOX-RUNNER-READY-V1\0";
 const RUNNER_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const RUNNER_RELEASE: &[u8] = b"KAPSEL-SANDBOX-RUNNER-RELEASE-V1\0";
 
+fn parse_generation_name(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix("generation-")?;
+    if digits.len() != 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let generation = digits.parse().ok()?;
+    (generation > 0).then_some(generation)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DurableGenerationRecord {
@@ -97,6 +106,333 @@ struct DurableGenerationRecord {
     cgroup_device: Option<u64>,
     cgroup_inode: Option<u64>,
     phase: String,
+}
+
+/// Controller record for the one running process and authority generation.
+pub(crate) fn validate_state_root_inventory(
+    generation_root: &fs::File,
+    controller_uid: u32,
+    controller_gid: u32,
+    runner_uid: u32,
+    runner_gid: u32,
+) -> Result<(), RunnerHostError> {
+    let entries = bounded_generation_root_entries(generation_root)?;
+    let canonical = entries.iter().any(|name| name == GENERATION_RECORD_NAME);
+    let temporary = entries
+        .iter()
+        .any(|name| name == GENERATION_RECORD_TEMPORARY_NAME);
+    let mut generations = entries
+        .iter()
+        .filter_map(|name| parse_generation_name(name).map(|generation| (generation, name)))
+        .collect::<Vec<_>>();
+    generations.sort_by_key(|(generation, _)| *generation);
+    if !canonical {
+        if !generations.is_empty() {
+            return Err(RunnerHostError::Boundary);
+        }
+        if temporary {
+            let record = validate_generation_record_file(
+                generation_root,
+                GENERATION_RECORD_TEMPORARY_NAME,
+                controller_uid,
+                controller_gid,
+                runner_uid,
+                runner_gid,
+                false,
+            )?;
+            if record.is_some_and(|record| record.phase != "allocating") {
+                return Err(RunnerHostError::Boundary);
+            }
+        }
+        return Ok(());
+    }
+    let record = validate_generation_record_file(
+        generation_root,
+        GENERATION_RECORD_NAME,
+        controller_uid,
+        controller_gid,
+        runner_uid,
+        runner_gid,
+        true,
+    )?
+    .ok_or(RunnerHostError::Boundary)?;
+    if temporary {
+        validate_generation_record_file(
+            generation_root,
+            GENERATION_RECORD_TEMPORARY_NAME,
+            controller_uid,
+            controller_gid,
+            runner_uid,
+            runner_gid,
+            false,
+        )?;
+    }
+    let adjacent_generation = record
+        .generation
+        .checked_add(1)
+        .ok_or(RunnerHostError::Boundary)?;
+    if generations.len() > 2
+        || generations.iter().any(|(generation, _)| {
+            (record.phase == "allocating" || *generation != adjacent_generation)
+                && *generation != record.generation
+        })
+        || (record.phase != "allocating"
+            && !generations
+                .iter()
+                .any(|(generation, _)| *generation == record.generation))
+    {
+        return Err(RunnerHostError::Boundary);
+    }
+    for (generation, name) in &generations {
+        let directory = fs::File::from(
+            openat(generation_root, *name, directory_flags(), Mode::empty())
+                .map_err(|_| RunnerHostError::Boundary)?,
+        );
+        let metadata = directory
+            .metadata()
+            .map_err(|_| RunnerHostError::Boundary)?;
+        let owner = (metadata.uid() == controller_uid && metadata.gid() == controller_gid)
+            || (metadata.uid() == runner_uid && metadata.gid() == runner_gid);
+        if !metadata.is_dir() || !owner || metadata.permissions().mode() & 0o7777 != 0o700 {
+            return Err(RunnerHostError::Boundary);
+        }
+        if *generation == record.generation
+            && record.phase != "allocating"
+            && (metadata.dev() != record.generation_device
+                || metadata.ino() != record.generation_inode)
+        {
+            return Err(RunnerHostError::Boundary);
+        }
+    }
+    validate_recorded_state_tree(
+        generation_root,
+        &record,
+        &generations,
+        controller_uid,
+        controller_gid,
+        runner_uid,
+        runner_gid,
+    )
+}
+
+fn validate_allocating_state_tree(
+    generation_root: &fs::File,
+    record: &DurableGenerationRecord,
+    generations: &[(u64, &String)],
+    controller_uid: u32,
+    controller_gid: u32,
+    runner_uid: u32,
+    runner_gid: u32,
+) -> Result<(), RunnerHostError> {
+    let Some((_, name)) = generations.first() else {
+        return Ok(());
+    };
+    if generations.len() != 1 || generations[0].0 != record.generation {
+        return Err(RunnerHostError::Boundary);
+    }
+    let generation = fs::File::from(
+        openat(generation_root, *name, directory_flags(), Mode::empty())
+            .map_err(|_| RunnerHostError::Boundary)?,
+    );
+    validate_allocating_directory(
+        &generation,
+        controller_uid,
+        controller_gid,
+        runner_uid,
+        runner_gid,
+    )?;
+    match directory_names(&generation)?.as_slice() {
+        [] => Ok(()),
+        [entry] if entry == "run" => {
+            let run = fs::File::from(
+                openat(&generation, "run", directory_flags(), Mode::empty())
+                    .map_err(|_| RunnerHostError::Boundary)?,
+            );
+            validate_allocating_directory(
+                &run,
+                controller_uid,
+                controller_gid,
+                runner_uid,
+                runner_gid,
+            )?;
+            match directory_names(&run)?.as_slice() {
+                [] => Ok(()),
+                [entry] if entry == "receipt-outbox" => {
+                    let outbox = fs::File::from(
+                        openat(&run, "receipt-outbox", directory_flags(), Mode::empty())
+                            .map_err(|_| RunnerHostError::Boundary)?,
+                    );
+                    validate_allocating_directory(
+                        &outbox,
+                        controller_uid,
+                        controller_gid,
+                        runner_uid,
+                        runner_gid,
+                    )?;
+                    if directory_descriptor_is_empty(&outbox)? {
+                        Ok(())
+                    } else {
+                        Err(RunnerHostError::Boundary)
+                    }
+                },
+                _ => Err(RunnerHostError::Boundary),
+            }
+        },
+        _ => Err(RunnerHostError::Boundary),
+    }
+}
+
+fn validate_recorded_state_tree(
+    generation_root: &fs::File,
+    record: &DurableGenerationRecord,
+    generations: &[(u64, &String)],
+    controller_uid: u32,
+    controller_gid: u32,
+    runner_uid: u32,
+    runner_gid: u32,
+) -> Result<(), RunnerHostError> {
+    if record.phase == "allocating" {
+        return validate_allocating_state_tree(
+            generation_root,
+            record,
+            generations,
+            controller_uid,
+            controller_gid,
+            runner_uid,
+            runner_gid,
+        );
+    }
+    let recorded_name = format!("generation-{:020}", record.generation);
+    let recorded = fs::File::from(
+        openat(
+            generation_root,
+            &recorded_name,
+            directory_flags(),
+            Mode::empty(),
+        )
+        .map_err(|_| RunnerHostError::Boundary)?,
+    );
+    validate_directory(&recorded, runner_uid, runner_gid)?;
+    let recorded_run = open_optional_run(&recorded)?;
+    let adjacent_generation = record
+        .generation
+        .checked_add(1)
+        .ok_or(RunnerHostError::Boundary)?;
+    let adjacent = if generations
+        .iter()
+        .any(|(generation, _)| *generation == adjacent_generation)
+    {
+        let adjacent = fs::File::from(
+            openat(
+                generation_root,
+                format!("generation-{adjacent_generation:020}"),
+                directory_flags(),
+                Mode::empty(),
+            )
+            .map_err(|_| RunnerHostError::Boundary)?,
+        );
+        validate_directory(&adjacent, runner_uid, runner_gid)?;
+        Some(adjacent)
+    } else {
+        None
+    };
+    let run = match (recorded_run, adjacent) {
+        (Some(run), None) if directory_names(&recorded)? == [String::from("run")] => run,
+        (Some(run), Some(adjacent))
+            if record.phase == "fenced"
+                && directory_names(&recorded)? == [String::from("run")]
+                && directory_descriptor_is_empty(&adjacent)? =>
+        {
+            run
+        },
+        (None, Some(adjacent))
+            if record.phase == "fenced" && directory_descriptor_is_empty(&recorded)? =>
+        {
+            let run = open_optional_run(&adjacent)?.ok_or(RunnerHostError::Boundary)?;
+            if directory_names(&adjacent)? != [String::from("run")] {
+                return Err(RunnerHostError::Boundary);
+            }
+            run
+        },
+        _ => return Err(RunnerHostError::Boundary),
+    };
+    validate_directory(&run, runner_uid, runner_gid)?;
+    let run_metadata = run.metadata().map_err(|_| RunnerHostError::Boundary)?;
+    if run_metadata.dev() != record.run_device || run_metadata.ino() != record.run_inode {
+        return Err(RunnerHostError::Boundary);
+    }
+    match (record.journal_device, record.journal_inode) {
+        (Some(device), Some(inode)) => {
+            let journal = fs::File::from(
+                openat(&run, "gateway.sqlite3", read_flags(), Mode::empty())
+                    .map_err(|_| RunnerHostError::Boundary)?,
+            );
+            let metadata = journal.metadata().map_err(|_| RunnerHostError::Boundary)?;
+            if !metadata.is_file()
+                || metadata.dev() != device
+                || metadata.ino() != inode
+                || metadata.nlink() != 1
+            {
+                return Err(RunnerHostError::Boundary);
+            }
+        },
+        (None, None) => {},
+        _ => return Err(RunnerHostError::Boundary),
+    }
+    Ok(())
+}
+
+fn validate_generation_record_file(
+    generation_root: &fs::File,
+    name: &str,
+    controller_uid: u32,
+    controller_gid: u32,
+    runner_uid: u32,
+    runner_gid: u32,
+    require_complete: bool,
+) -> Result<Option<DurableGenerationRecord>, RunnerHostError> {
+    let mut file = fs::File::from(
+        openat(generation_root, name, read_flags(), Mode::empty())
+            .map_err(|_| RunnerHostError::Boundary)?,
+    );
+    let metadata = file.metadata().map_err(|_| RunnerHostError::Boundary)?;
+    if !metadata.is_file()
+        || metadata.uid() != controller_uid
+        || metadata.gid() != controller_gid
+        || metadata.permissions().mode() & 0o7777 != 0o600
+        || metadata.nlink() != 1
+    {
+        return Err(RunnerHostError::Boundary);
+    }
+    let bytes = read_exact(&mut file, GENERATION_RECORD_BYTES_MAX)?;
+    let Ok(record) = serde_json::from_slice::<DurableGenerationRecord>(&bytes) else {
+        return if require_complete {
+            Err(RunnerHostError::Boundary)
+        } else {
+            Ok(None)
+        };
+    };
+    if serde_json::to_vec(&record).map_err(|_| RunnerHostError::Boundary)? != bytes
+        || record.version != 1
+        || record.generation == 0
+        || record.runner_uid != runner_uid
+        || record.runner_gid != runner_gid
+        || record.operation_id != format!("sandbox-{}", record.run_id)
+    {
+        return Err(RunnerHostError::Boundary);
+    }
+    match (record.process_id, record.start_identity.as_deref()) {
+        (Some(process_id), Some(start_identity)) => {
+            let (recorded_process, _) = process_start_identity_from_record(start_identity)?;
+            if recorded_process != process_id {
+                return Err(RunnerHostError::Boundary);
+            }
+        },
+        (None, None) => {},
+        _ => return Err(RunnerHostError::Boundary),
+    }
+    validate_durable_phase(&record)?;
+    Ok(Some(record))
 }
 
 /// Controller record for the one running process and authority generation.

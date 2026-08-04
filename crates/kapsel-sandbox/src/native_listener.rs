@@ -11,8 +11,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::Service;
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri};
-use kapsel_sandbox::Service;
 
 const REQUEST_HEAD_MAX: usize = 8 * 1024;
 const REQUEST_LINE_MAX: usize = 512;

@@ -4,6 +4,7 @@
 //! marker, migration step, or durable transition.
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
+use sha2::{Digest, Sha256};
 
 use super::{GatewayError, OPERATION_COUNT_MAX};
 use crate::gateway::receipt::RECEIPT_BYTES_MAX;
@@ -239,6 +240,21 @@ const MIGRATED_LEGACY_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_ope
     rollout_condition_status TEXT,
     rollout_condition_reason TEXT
 ) STRICT;";
+
+pub(super) fn sandbox_schema_digest() -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"KAPSEL-SANDBOX-GATEWAY-SCHEMA-V1\0");
+    for ddl in [
+        CREATE_OPERATION_TABLE,
+        LEGACY_OPERATION_TABLE,
+        MIGRATED_LEGACY_OPERATION_TABLE,
+    ] {
+        let length = u64::try_from(ddl.len()).unwrap_or(u64::MAX);
+        digest.update(length.to_be_bytes());
+        digest.update(ddl.as_bytes());
+    }
+    digest.finalize().into()
+}
 
 pub(super) fn initialize_schema(
     transaction: &Transaction<'_>,
@@ -593,4 +609,19 @@ fn migrate_receipt_schema(transaction: &Transaction<'_>) -> Result<(), GatewayEr
         )
         .map_err(GatewayError::Database)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod sandbox_digest_tests {
+    #[test]
+    fn fixed_gateway_schema_digest_covers_current_legacy_and_migrated_ddl() {
+        assert_eq!(
+            super::sandbox_schema_digest(),
+            [
+                0x00, 0x62, 0xa6, 0x7e, 0x9b, 0xb0, 0x9b, 0x60, 0xbb, 0x94, 0x72, 0x38, 0x6b, 0x51,
+                0xb5, 0x75, 0x52, 0xf1, 0x7f, 0xb8, 0xaa, 0x74, 0x9d, 0xac, 0xe3, 0x21, 0x10, 0x09,
+                0x51, 0xd6, 0x65, 0x21,
+            ]
+        );
+    }
 }

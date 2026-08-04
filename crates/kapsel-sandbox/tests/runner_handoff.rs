@@ -219,11 +219,16 @@ fn private_directory(path: &Path) {
 
 fn remove_fixture_root(path: impl AsRef<Path>) {
     let path = path.as_ref();
-    let generation = path.join("fixed-authority/generations/generation-00000000000000000001");
+    let root = if path.parent().and_then(Path::file_name) == Some("state-parent".as_ref()) {
+        path.parent().unwrap().parent().unwrap()
+    } else {
+        path
+    };
+    let generation = root.join("fixed-authority/generations/generation-00000000000000000001");
     if generation.exists() {
         fs::set_permissions(&generation, fs::Permissions::from_mode(0o700)).unwrap();
     }
-    fs::remove_dir_all(path).unwrap();
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn fixture(
@@ -239,9 +244,14 @@ fn fixture(
         remove_fixture_root(&root);
     }
     private_directory(&root);
-    let root = fs::canonicalize(root).unwrap();
-    private_directory(&root.join("receipts"));
-    let authority_root = fixed_authority_root(&root, handoff_endpoint, kubernetes_endpoint);
+    let outer = fs::canonicalize(root).unwrap();
+    let state_parent = outer.join("state-parent");
+    private_directory(&state_parent);
+    let restore_lock = state_parent.join(".kapsel-sandbox-restore.lock");
+    fs::write(&restore_lock, []).unwrap();
+    fs::set_permissions(&restore_lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let root = state_parent.join("state");
+    let authority_root = fixed_authority_root(&outer, handoff_endpoint, kubernetes_endpoint);
     let controller_uid = rustix::process::geteuid().as_raw();
     let controller_gid = rustix::process::getegid().as_raw();
     let staging_uid = if controller_uid == 65_532 {
@@ -254,6 +264,29 @@ fn fixture(
     } else {
         65_532
     };
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .args([
+            "init",
+            "--state-root",
+            root.to_str().unwrap(),
+            "--authority-root",
+            authority_root.to_str().unwrap(),
+            "--controller-uid",
+            &controller_uid.to_string(),
+            "--controller-gid",
+            &controller_gid.to_string(),
+            "--staging-uid",
+            &staging_uid.to_string(),
+            "--staging-gid",
+            &staging_gid.to_string(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let service = Service::open(
         root.join("sandbox.sqlite3"),
         root.join("receipts"),
@@ -373,17 +406,21 @@ fn application(
 fn start_handoff(root: &Path, address: std::net::SocketAddr) -> Child {
     let controller_uid = rustix::process::geteuid().as_raw();
     let controller_gid = rustix::process::getegid().as_raw();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"));
     command.args([
         "handoff-serve",
-        "--database",
-        root.join("sandbox.sqlite3").to_str().unwrap(),
-        "--receipts",
-        root.join("receipts").to_str().unwrap(),
+        "--state-root",
+        root.to_str().unwrap(),
         "--listen",
         &address.to_string(),
         "--authority-root",
-        root.join("fixed-authority").to_str().unwrap(),
+        root.parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fixed-authority")
+            .to_str()
+            .unwrap(),
         "--controller-uid",
         &controller_uid.to_string(),
         "--controller-gid",
@@ -393,7 +430,7 @@ fn start_handoff(root: &Path, address: std::net::SocketAddr) -> Child {
         "--staging-gid",
         &distinct_test_identity(controller_gid).to_string(),
     ]);
-    let child = command
+    let mut child = command
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -404,7 +441,15 @@ fn start_handoff(root: &Path, address: std::net::SocketAddr) -> Child {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("private handoff process did not listen")
+    let status = child.try_wait().unwrap();
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    panic!("private handoff process did not listen: status={status:?}; stderr={stderr}")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -539,8 +584,7 @@ fn prepare_process_fixture(
 }
 
 fn fixed_controller_role(root: &Path, service: &Service) -> ControllerRole {
-    let generations = root.join("runner-generations");
-    private_directory(&generations);
+    let generations = root.join("runner");
     let controller_uid = rustix::process::getuid().as_raw();
     let controller_gid = rustix::process::getgid().as_raw();
     #[cfg(target_os = "linux")]
@@ -562,11 +606,7 @@ fn reopened_controller_role(fixture: &PreparedProcessFixture) -> ControllerRole 
     let (runner_uid, runner_gid) = (controller_uid, controller_gid);
     ControllerRole::new(
         fixture.service.clone(),
-        ControllerConfiguration::new(
-            fixture.root.join("runner-generations"),
-            runner_uid,
-            runner_gid,
-        ),
+        ControllerConfiguration::new(fixture.root.join("runner"), runner_uid, runner_gid),
     )
 }
 
@@ -888,7 +928,7 @@ fn process_loss_before_invocation_recovers() {
     let replacement_generation = launch_after_lease_expiry(&mut controller, launch_at + 31);
     assert_eq!(replacement_generation, 2);
     assert!(controller.wait().unwrap().success());
-    let journal_count = fs::read_dir(fixture.root.join("runner-generations"))
+    let journal_count = fs::read_dir(fixture.root.join("runner"))
         .unwrap()
         .filter_map(Result::ok)
         .filter(|entry| entry.path().join("run/gateway.sqlite3").is_file())
@@ -986,7 +1026,7 @@ fn process_loss_after_apply_started_reconciles_without_second_patch() {
     }
     let journal = fixture
         .root
-        .join("runner-generations")
+        .join("runner")
         .join(format!("generation-{generation:020}/run/gateway.sqlite3"));
     wait_for_database_value(
         &journal,
@@ -1084,7 +1124,7 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
     assert_eq!(receipts, 0);
     assert!(!receipt_available);
     drop(connection);
-    let first_outbox = fixture.root.join("runner-generations").join(format!(
+    let first_outbox = fixture.root.join("runner").join(format!(
         "generation-{first_generation:020}/run/receipt-outbox"
     ));
     let frozen_receipt = fs::read(
@@ -1117,7 +1157,7 @@ fn process_loss_after_terminal_report_replays_after_system_restart() {
         fixture.service.receipt(&fixture.run_id, now()).unwrap(),
         frozen_receipt
     );
-    assert!(fs::read_dir(fixture.root.join("runner-generations"))
+    assert!(fs::read_dir(fixture.root.join("runner"))
         .unwrap()
         .next()
         .is_none());
@@ -1161,6 +1201,10 @@ fn controller_restart_converges_retirement_before_recovery(restart_offset_second
     let receipt = fixture.service.receipt(&fixture.run_id, now()).unwrap();
     let dispatch_run = fixture
         .root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("fixed-authority/dispatch")
         .join(&fixture.run_id);
     assert_eq!(fs::read_dir(&dispatch_run).unwrap().count(), 1);
@@ -1216,7 +1260,7 @@ fn controller_restart_converges_retirement_before_recovery(restart_offset_second
         fixture.service.receipt(&fixture.run_id, now()).unwrap(),
         receipt
     );
-    assert!(fs::read_dir(fixture.root.join("runner-generations"))
+    assert!(fs::read_dir(fixture.root.join("runner"))
         .unwrap()
         .next()
         .is_none());
@@ -1261,7 +1305,7 @@ fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_ho
     kubernetes.join().unwrap();
 
     let receipt_before = fixture.service.receipt(&fixture.run_id, now()).unwrap();
-    assert!(fs::read_dir(fixture.root.join("runner-generations"))
+    assert!(fs::read_dir(fixture.root.join("runner"))
         .unwrap()
         .next()
         .is_none());
@@ -1285,7 +1329,13 @@ fn terminal_report_and_receipt_bytes_survive_non_linux_service_reopen_without_ho
         fixture.root.join("sandbox.sqlite3"),
         fixture.root.join("receipts"),
         &AuthorityConfiguration::new(
-            fixture.root.join("fixed-authority"),
+            fixture
+                .root
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("fixed-authority"),
             controller_uid,
             controller_gid,
             if controller_uid == 65_532 {

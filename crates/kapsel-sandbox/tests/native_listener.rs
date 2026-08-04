@@ -7,17 +7,19 @@
 )]
 
 use std::{
+    collections::BTreeSet,
     fmt::Write as _,
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{symlink, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use kapsel_sandbox::{Scenario, Service};
+use sha2::{Digest, Sha256};
 
 mod common;
 
@@ -33,29 +35,43 @@ fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     }
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let receipts = root.join("receipts");
-    fs::create_dir(&receipts).unwrap();
-    fs::set_permissions(&receipts, fs::Permissions::from_mode(0o700)).unwrap();
+    let state_parent = root.join("state-parent");
+    fs::create_dir(&state_parent).unwrap();
+    fs::set_permissions(&state_parent, fs::Permissions::from_mode(0o700)).unwrap();
+    let restore_lock = state_parent.join(".kapsel-sandbox-restore.lock");
+    fs::write(&restore_lock, []).unwrap();
+    fs::set_permissions(&restore_lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let state_root = state_parent.join("state");
+    let receipts = state_root.join("receipts");
     let key = root.join("digest.key");
     fs::write(&key, [7_u8; 32]).unwrap();
     fs::set_permissions(&key, fs::Permissions::from_mode(0o440)).unwrap();
     common::authority_root(&root, [7; 32]);
-    (root.join("sandbox.db"), receipts, key)
+    (state_root.join("sandbox.sqlite3"), receipts, key)
 }
 
-fn arguments(database: &Path, receipts: &Path, _key: &Path) -> Vec<String> {
+fn arguments(database: &Path, _receipts: &Path, _key: &Path) -> Vec<String> {
     let mut arguments = vec![
-        "--database".into(),
-        database.display().to_string(),
-        "--receipts".into(),
-        receipts.display().to_string(),
+        "--state-root".into(),
+        database.parent().unwrap().display().to_string(),
     ];
-    arguments.extend(common::authority_arguments(database.parent().unwrap()));
+    arguments.extend(common::authority_arguments(
+        database
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap(),
+    ));
     arguments
 }
 
 fn start(database: &Path, receipts: &Path, key: &Path) -> (Child, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"));
+    if !database.exists() {
+        initialize(database, receipts, key);
+    }
+    let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"));
     command
         .arg("serve")
         .args(arguments(database, receipts, key))
@@ -127,26 +143,579 @@ fn admission(key: &str) -> Vec<u8> {
     .collect()
 }
 
+fn prepare_pre_slice_state(name: &str, stopped: bool) -> (PathBuf, PathBuf, PathBuf, Vec<u8>) {
+    let (database, receipts, key) = fixture(name);
+    let state_root = database.parent().unwrap();
+    fs::create_dir(state_root).unwrap();
+    fs::set_permissions(state_root, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(&receipts).unwrap();
+    fs::set_permissions(&receipts, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir(state_root.join("runner")).unwrap();
+    fs::set_permissions(state_root.join("runner"), fs::Permissions::from_mode(0o700)).unwrap();
+    let service = Service::open(
+        &database,
+        &receipts,
+        &common::authority_configuration(state_root.parent().unwrap().parent().unwrap(), [7; 32]),
+        1_774_051_200,
+    )
+    .unwrap();
+    service.set_global_stop(stopped).unwrap();
+    drop(service);
+    let database_bytes = fs::read(&database).unwrap();
+    (database, receipts, key, database_bytes)
+}
+
 fn initialize(database: &Path, receipts: &Path, key: &Path) {
-    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
         .arg("init")
         .args(arguments(database, receipts, key))
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
 }
 
-fn operate(command_name: &str, database: &Path) {
-    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+fn state_command(command_name: &str, database: &Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
         .arg(command_name)
-        .args(["--database", &database.display().to_string()])
+        .args([
+            "--state-root",
+            &database.parent().unwrap().display().to_string(),
+        ])
         .output()
-        .unwrap();
-    assert!(output.status.success());
+        .unwrap()
+}
+
+fn operate(command_name: &str, database: &Path) {
+    let output = state_command(command_name, database);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
+    let (database, receipts, digest_key) = fixture("state-root-contract");
+    initialize(&database, &receipts, &digest_key);
+    let state_root = database.parent().unwrap();
+    let entries = fs::read_dir(state_root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        entries,
+        [
+            ".backup.lock",
+            "deployment.json",
+            "receipts",
+            "restore.ready",
+            "runner",
+            "sandbox.sqlite3",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+    for name in ["deployment.json", "restore.ready"] {
+        let bytes = fs::read(state_root.join(name)).unwrap();
+        assert!(!bytes.ends_with(b"\n"));
+        let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    }
+    let deployment: serde_json::Value =
+        serde_json::from_slice(&fs::read(state_root.join("deployment.json")).unwrap()).unwrap();
+    assert_eq!(deployment["target"], "test-architecture");
+    let runner_digest =
+        Sha256::digest(fs::read(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness")).unwrap())
+            .iter()
+            .fold(String::new(), |mut output, byte| {
+                write!(&mut output, "{byte:02x}").unwrap();
+                output
+            });
+    assert_eq!(deployment["runner_sha256"], runner_digest);
+    assert_eq!(
+        deployment["gateway_schema_sha256"],
+        "0062a67e9bb09b60bb9472386b51b57552f17fb8aa749dace321100951d66521"
+    );
+    for legacy in [
+        "--database",
+        "--receipts",
+        "--runner-generation-root",
+        "--runner-generations",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+            .args([
+                "stop",
+                "--state-root",
+                state_root.to_str().unwrap(),
+                legacy,
+                database.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+    for lock in [
+        state_root
+            .parent()
+            .unwrap()
+            .join(".kapsel-sandbox-restore.lock"),
+        state_root.join(".backup.lock"),
+    ] {
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(lock)
+            .unwrap();
+        rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+            .args(["stop", "--state-root", state_root.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        drop(held);
+    }
+    fs::remove_file(state_root.join("restore.ready")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .args(["stop", "--state-root", state_root.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stopped: bool = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row(
+            "SELECT stopped FROM service_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!stopped);
+    common::remove_root(state_root);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one hostile matrix restores every exact state-root corruption before the next case"
+)]
+fn hostile_state_inventory_and_records_fail_before_database_mutation() {
+    let (database, receipts, key) = fixture("state-root-hostile");
+    initialize(&database, &receipts, &key);
+    let root = database.parent().unwrap();
+    let assert_rejected = || {
+        assert_eq!(state_command("stop", &database).status.code(), Some(2));
+        let stopped: bool = rusqlite::Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT stopped FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!stopped);
+    };
+
+    let deployment = root.join("deployment.json");
+    let deployment_bytes = fs::read(&deployment).unwrap();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o4400)).unwrap();
+    assert_rejected();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&deployment, [&deployment_bytes[..], b"\n"].concat()).unwrap();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o400)).unwrap();
+    assert_rejected();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&deployment, &deployment_bytes).unwrap();
+    let mut incompatible: serde_json::Value = serde_json::from_slice(&deployment_bytes).unwrap();
+    incompatible["policy"] = serde_json::json!("sandbox-policy-v2");
+    fs::write(&deployment, serde_json::to_vec(&incompatible).unwrap()).unwrap();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o400)).unwrap();
+    assert_rejected();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&deployment, &deployment_bytes).unwrap();
+    fs::set_permissions(&deployment, fs::Permissions::from_mode(0o400)).unwrap();
+
+    let ready = root.join("restore.ready");
+    let ready_bytes = fs::read(&ready).unwrap();
+    let mut malformed: serde_json::Value = serde_json::from_slice(&ready_bytes).unwrap();
+    malformed["unknown"] = serde_json::json!(true);
+    fs::write(&ready, serde_json::to_vec(&malformed).unwrap()).unwrap();
+    fs::set_permissions(&ready, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected();
+    fs::write(&ready, &ready_bytes).unwrap();
+    let mut zero_time: serde_json::Value = serde_json::from_slice(&ready_bytes).unwrap();
+    zero_time["completed_at"] = serde_json::json!(0);
+    fs::write(&ready, serde_json::to_vec(&zero_time).unwrap()).unwrap();
+    assert_rejected();
+    fs::write(&ready, &ready_bytes).unwrap();
+    let mut zero_generation: serde_json::Value = serde_json::from_slice(&ready_bytes).unwrap();
+    zero_generation["source"] = serde_json::json!("restored");
+    zero_generation["generation"] = serde_json::json!(0);
+    zero_generation["manifest_sha256"] = serde_json::json!("ab".repeat(32));
+    fs::write(&ready, serde_json::to_vec(&zero_generation).unwrap()).unwrap();
+    assert_rejected();
+    fs::write(&ready, &ready_bytes).unwrap();
+
+    let incomplete = root.join("restore.incomplete");
+    fs::write(&incomplete, b"{}").unwrap();
+    fs::set_permissions(&incomplete, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected();
+    fs::remove_file(incomplete).unwrap();
+
+    let external_database = root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("external.sqlite3");
+    fs::hard_link(&database, &external_database).unwrap();
+    assert_rejected();
+    fs::remove_file(&external_database).unwrap();
+    fs::rename(&database, &external_database).unwrap();
+    symlink(&external_database, &database).unwrap();
+    assert_rejected();
+    fs::remove_file(&database).unwrap();
+    fs::rename(&external_database, &database).unwrap();
+
+    let receipt = receipts.join(format!(
+        "sandbox-{}-{}.receipt",
+        "01".repeat(16),
+        "ab".repeat(32)
+    ));
+    fs::write(&receipt, b"receipt").unwrap();
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_rejected();
+    fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
+    let receipt_link = receipt.with_file_name("sandbox-hardlink.receipt");
+    fs::hard_link(&receipt, &receipt_link).unwrap();
+    assert_rejected();
+    fs::remove_file(receipt_link).unwrap();
+    fs::remove_file(receipt).unwrap();
+    let receipt_extra = receipts.join("sandbox-hostile.receipt");
+    fs::write(&receipt_extra, b"receipt").unwrap();
+    fs::set_permissions(&receipt_extra, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected();
+    fs::remove_file(receipt_extra).unwrap();
+    let receipt_symlink = receipts.join("sandbox-symlink.receipt");
+    symlink(&deployment, &receipt_symlink).unwrap();
+    assert_rejected();
+    fs::remove_file(receipt_symlink).unwrap();
+
+    let runner_file = root.join("runner/runner-generation.json");
+    fs::write(&runner_file, b"runner").unwrap();
+    fs::set_permissions(&runner_file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_rejected();
+    fs::set_permissions(&runner_file, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected();
+    fs::remove_file(runner_file).unwrap();
+    let runner_extra = root.join("runner/hostile");
+    fs::write(&runner_extra, b"runner").unwrap();
+    fs::set_permissions(&runner_extra, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_rejected();
+    fs::remove_file(runner_extra).unwrap();
+    let runner_symlink = root.join("runner/hostile-link");
+    symlink(&deployment, &runner_symlink).unwrap();
+    assert_rejected();
+    fs::remove_file(runner_symlink).unwrap();
+    let short_socket =
+        std::env::temp_dir().join(format!("kapsel-hostile-{}.sock", std::process::id()));
+    let _ = fs::remove_file(&short_socket);
+    let socket = std::os::unix::net::UnixListener::bind(&short_socket).unwrap();
+    let runner_socket = root.join("runner/hostile.sock");
+    fs::rename(&short_socket, &runner_socket).unwrap();
+    assert_rejected();
+    drop(socket);
+    fs::remove_file(runner_socket).unwrap();
+
+    let external_link = root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("deployment-hardlink");
+    fs::hard_link(&deployment, &external_link).unwrap();
+    assert_rejected();
+    fs::remove_file(external_link).unwrap();
+
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn exact_incomplete_init_temporary_recovers_and_converges() {
+    let (database, receipts, key) = fixture("state-root-init-recovery");
+    let state_root = database.parent().unwrap();
+    let outer = state_root.parent().unwrap().parent().unwrap();
+    let authority = outer.join("fixed-authority");
+    let held_authority = outer.join("held-authority");
+    fs::rename(&authority, &held_authority).unwrap();
+    let first = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .arg("init")
+        .args(arguments(&database, &receipts, &key))
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(2));
+    assert!(!state_root.exists());
+    assert!(state_root
+        .parent()
+        .unwrap()
+        .join(".state.initializing")
+        .is_dir());
+    fs::rename(&held_authority, &authority).unwrap();
+    initialize(&database, &receipts, &key);
+    assert!(state_root.join("restore.ready").is_file());
+    assert!(!state_root
+        .parent()
+        .unwrap()
+        .join(".state.initializing")
+        .exists());
+    common::remove_root(outer);
+}
+
+#[test]
+fn stopped_drained_pre_slice_state_migrates_without_changing_existing_rows() {
+    let (database, receipts, key, _) = prepare_pre_slice_state("state-root-migration", true);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "DROP TABLE backup_authority_references; DROP TABLE backup_generations; VACUUM;",
+        )
+        .unwrap();
+    let stopped_before: i64 = connection
+        .query_row(
+            "SELECT stopped FROM service_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(connection);
+    initialize(&database, &receipts, &key);
+    let root = database.parent().unwrap();
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT stopped FROM service_state WHERE singleton = 1",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
+            .unwrap(),
+        stopped_before
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                concat!(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ",
+                    "('backup_generations', 'backup_authority_references')"
+                ),
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2
+    );
+    assert!(root.join(".backup.lock").is_file());
+    assert!(root.join("deployment.json").is_file());
+    assert!(root.join("restore.ready").is_file());
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn stopped_migration_resumes_exact_table_and_deployment_prefixes() {
+    for (name, keep_deployment) in [("tables", false), ("deployment", true)] {
+        let (database, receipts, key, _) =
+            prepare_pre_slice_state(&format!("state-root-migration-prefix-{name}"), true);
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE backup_authority_references; DROP TABLE backup_generations; VACUUM;",
+            )
+            .unwrap();
+        drop(connection);
+        initialize(&database, &receipts, &key);
+        let root = database.parent().unwrap();
+        fs::remove_file(root.join("restore.ready")).unwrap();
+        if !keep_deployment {
+            fs::remove_file(root.join("deployment.json")).unwrap();
+        }
+        initialize(&database, &receipts, &key);
+        assert!(root.join("deployment.json").is_file());
+        assert!(root.join("restore.ready").is_file());
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    concat!(
+                        "SELECT (SELECT COUNT(*) FROM backup_generations) + ",
+                        "(SELECT COUNT(*) FROM backup_authority_references)"
+                    ),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        common::remove_root(root.parent().unwrap().parent().unwrap());
+    }
+}
+
+#[test]
+fn pre_slice_runner_generation_refuses_without_migration_markers() {
+    let (database, receipts, key, before) =
+        prepare_pre_slice_state("state-root-migration-runner", true);
+    let runner_entry = database
+        .parent()
+        .unwrap()
+        .join("runner/generation-00000000000000000001");
+    fs::create_dir(&runner_entry).unwrap();
+    fs::set_permissions(&runner_entry, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .arg("init")
+        .args(arguments(&database, &receipts, &key))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read(&database).unwrap(), before);
+    let root = database.parent().unwrap();
+    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join("deployment.json").exists());
+    assert!(!root.join("restore.ready").exists());
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn unreferenced_pre_slice_receipt_refuses_without_cleanup() {
+    let (database, receipts, key, before) =
+        prepare_pre_slice_state("state-root-migration-orphan-receipt", true);
+    let orphan = receipts.join(format!(
+        "sandbox-{}-{}.receipt",
+        "01".repeat(16),
+        "ab".repeat(32)
+    ));
+    fs::write(&orphan, b"orphan").unwrap();
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .arg("init")
+        .args(arguments(&database, &receipts, &key))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read(&database).unwrap(), before);
+    assert_eq!(fs::read(&orphan).unwrap(), b"orphan");
+    let root = database.parent().unwrap();
+    assert!(!root.join(".backup.lock").exists());
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn transitional_pre_slice_state_refuses_before_cleanup_or_marker_mutation() {
+    let (database, receipts, key, _) =
+        prepare_pre_slice_state("state-root-migration-hostile", true);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute(
+            "INSERT INTO receipt_publications VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "01".repeat(16),
+                "ab".repeat(32),
+                "sandbox-pending.receipt",
+                1_774_051_200_i64,
+            ],
+        )
+        .unwrap();
+    drop(connection);
+    let before = fs::read(&database).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .arg("init")
+        .args(arguments(&database, &receipts, &key))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read(&database).unwrap(), before);
+    let pending: i64 = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM receipt_publications", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(pending, 1);
+    let root = database.parent().unwrap();
+    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join("deployment.json").exists());
+    assert!(!root.join("restore.ready").exists());
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn malformed_pre_slice_schema_refuses_before_migration_mutation() {
+    let (database, receipts, key, _) = prepare_pre_slice_state("state-root-migration-schema", true);
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch("CREATE TABLE shadow_state(value INTEGER);")
+        .unwrap();
+    drop(connection);
+    let before = fs::read(&database).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .arg("init")
+        .args(arguments(&database, &receipts, &key))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read(&database).unwrap(), before);
+    let root = database.parent().unwrap();
+    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join("deployment.json").exists());
+    assert!(!root.join("restore.ready").exists());
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn nonstopped_pre_slice_state_refuses_without_leaving_migration_bytes() {
+    let (database, receipts, key, database_before) =
+        prepare_pre_slice_state("state-root-migration-rejected", false);
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
+        .arg("init")
+        .args(arguments(&database, &receipts, &key))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(fs::read(&database).unwrap(), database_before);
+    let root = database.parent().unwrap();
+    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join("deployment.json").exists());
+    assert!(!root.join("restore.ready").exists());
+    common::remove_root(root.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn running_service_refuses_state_root_path_substitution_before_admission() {
+    let (database, receipts, key) = fixture("running-substitution");
+    let root = database.parent().unwrap().to_owned();
+    let (mut child, address) = start(&database, &receipts, &key);
+    let moved = root.with_file_name("moved-state");
+    fs::rename(&root, &moved).unwrap();
+    symlink(&moved, &root).unwrap();
+    let response = request(&address, &admission("abababababababababababababababab"));
+    assert!(response.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
+    let runs: i64 = rusqlite::Connection::open(moved.join("sandbox.sqlite3"))
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(runs, 0);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    fs::remove_file(&root).unwrap();
+    fs::rename(&moved, &root).unwrap();
+    common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
 #[test]
@@ -160,12 +729,9 @@ fn native_listener_and_operator_stop_preserve_the_public_boundary() {
     assert!(first.starts_with(b"HTTP/1.1 201 Created\r\n"));
     assert!(!String::from_utf8_lossy(&first).contains(first_key));
 
-    let unavailable_receipts = root.join("receipts-unavailable");
-    let unavailable_key = root.join("digest-key-unavailable");
-    fs::rename(&receipts, &unavailable_receipts).unwrap();
+    let unavailable_key = digest_key.with_file_name("digest-key-unavailable");
     fs::rename(&digest_key, &unavailable_key).unwrap();
     operate("stop", &database);
-    fs::rename(&unavailable_receipts, &receipts).unwrap();
     fs::rename(&unavailable_key, &digest_key).unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
@@ -176,10 +742,8 @@ fn native_listener_and_operator_stop_preserve_the_public_boundary() {
 
     let replay = request(&address, &admission(first_key));
     assert!(replay.starts_with(b"HTTP/1.1 200 OK\r\n"));
-    fs::rename(&receipts, &unavailable_receipts).unwrap();
     fs::rename(&digest_key, &unavailable_key).unwrap();
     operate("clear-stop", &database);
-    fs::rename(&unavailable_receipts, &receipts).unwrap();
     fs::rename(&unavailable_key, &digest_key).unwrap();
     let resumed = request(&address, &admission("03030303030303030303030303030303"));
     assert!(resumed.starts_with(b"HTTP/1.1 201 Created\r\n"));
@@ -377,7 +941,16 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
     let service = Service::open(
         &database,
         &receipts,
-        &common::authority_configuration(database.parent().unwrap(), [7; 32]),
+        &common::authority_configuration(
+            database
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap(),
+            [7; 32],
+        ),
         now - 172_800,
     )
     .unwrap();
@@ -394,7 +967,7 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
         ["--origin", "https://kapsel.invalid"],
         ["--listen", "127.0.0.1:0"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
             .arg("retention")
             .args(arguments(&database, &receipts, &digest_key))
             .args(extra)
@@ -408,7 +981,7 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
         assert_eq!(retained, 1);
     }
 
-    let mut role = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+    let mut role = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
         .arg("retention")
         .args(arguments(&database, &receipts, &digest_key))
         .stdout(Stdio::piped())
@@ -456,7 +1029,7 @@ fn runner_mode_rejects_system_state_arguments_before_opening_any_input() {
             root.join("missing.json").to_str().unwrap(),
         ],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
             .args(arguments)
             .output()
             .unwrap();
@@ -482,7 +1055,7 @@ fn superseded_controller_and_stager_commands_are_unreachable() {
         "stage-authorization-grant",
         "stage-receipt-signing",
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox"))
+        let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
             .arg(command)
             .output()
             .unwrap();
