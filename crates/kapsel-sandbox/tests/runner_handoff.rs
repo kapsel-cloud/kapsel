@@ -583,14 +583,23 @@ fn prepare_process_fixture(
     }
 }
 
+fn test_runner_identity() -> (u32, u32) {
+    #[cfg(target_os = "linux")]
+    {
+        (65_532, 65_532)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        )
+    }
+}
+
 fn fixed_controller_role(root: &Path, service: &Service) -> ControllerRole {
     let generations = root.join("runner");
-    let controller_uid = rustix::process::getuid().as_raw();
-    let controller_gid = rustix::process::getgid().as_raw();
-    #[cfg(target_os = "linux")]
-    let (runner_uid, runner_gid) = (65_532, 65_532);
-    #[cfg(not(target_os = "linux"))]
-    let (runner_uid, runner_gid) = (controller_uid, controller_gid);
+    let (runner_uid, runner_gid) = test_runner_identity();
     ControllerRole::new(
         service.clone(),
         ControllerConfiguration::new(generations, runner_uid, runner_gid),
@@ -598,12 +607,7 @@ fn fixed_controller_role(root: &Path, service: &Service) -> ControllerRole {
 }
 
 fn reopened_controller_role(fixture: &PreparedProcessFixture) -> ControllerRole {
-    let controller_uid = rustix::process::getuid().as_raw();
-    let controller_gid = rustix::process::getgid().as_raw();
-    #[cfg(target_os = "linux")]
-    let (runner_uid, runner_gid) = (65_532, 65_532);
-    #[cfg(not(target_os = "linux"))]
-    let (runner_uid, runner_gid) = (controller_uid, controller_gid);
+    let (runner_uid, runner_gid) = test_runner_identity();
     ControllerRole::new(
         fixture.service.clone(),
         ControllerConfiguration::new(fixture.root.join("runner"), runner_uid, runner_gid),
