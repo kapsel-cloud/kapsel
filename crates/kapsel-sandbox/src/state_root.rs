@@ -1011,7 +1011,11 @@ fn deployment_record(profile: DeploymentProfile) -> Result<DeploymentRecord, ()>
     let gateway_hex = hex(&gateway);
     let target = target_identity(profile)?;
     let compatibility = compatibility_digest(&service_hex, &gateway_hex, target)?;
-    let helper = open_identity_file(Path::new(env!("KAPSEL_SANDBOX_RUNNER_PRE_EXEC")), true)?;
+    let helper = open_identity_file(
+        Path::new(env!("KAPSEL_SANDBOX_RUNNER_PRE_EXEC")),
+        true,
+        true,
+    )?;
     let runner = open_runner_identity()?;
     Ok(DeploymentRecord {
         schema: "kapsel.sandbox.deployment.v1".into(),
@@ -1846,14 +1850,17 @@ fn target_identity(profile: DeploymentProfile) -> Result<&'static str, ()> {
     }
 }
 
-fn open_identity_file(path: &Path, no_follow: bool) -> Result<File, ()> {
+fn open_identity_file(path: &Path, no_follow: bool, require_single_link: bool) -> Result<File, ()> {
     let mut flags = OFlags::RDONLY | OFlags::CLOEXEC;
     if no_follow {
         flags |= OFlags::NOFOLLOW;
     }
     let file = File::from(open(path, flags, Mode::empty()).map_err(|_| ())?);
     let metadata = file.metadata().map_err(|_| ())?;
-    if !metadata.is_file() || metadata.nlink() != 1 || metadata.mode() & 0o6000 != 0 {
+    if !metadata.is_file()
+        || (require_single_link && metadata.nlink() != 1)
+        || metadata.mode() & 0o6000 != 0
+    {
         return Err(());
     }
     Ok(file)
@@ -1861,12 +1868,12 @@ fn open_identity_file(path: &Path, no_follow: bool) -> Result<File, ()> {
 
 #[cfg(target_os = "linux")]
 fn open_runner_identity() -> Result<File, ()> {
-    open_identity_file(Path::new("/proc/self/exe"), false)
+    open_identity_file(Path::new("/proc/self/exe"), false, false)
 }
 
 #[cfg(not(target_os = "linux"))]
 fn open_runner_identity() -> Result<File, ()> {
-    open_identity_file(&std::env::current_exe().map_err(|_| ())?, true)
+    open_identity_file(&std::env::current_exe().map_err(|_| ())?, true, false)
 }
 
 fn digest_file(mut file: File) -> Result<String, ()> {

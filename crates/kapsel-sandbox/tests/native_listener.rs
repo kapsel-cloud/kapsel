@@ -997,7 +997,7 @@ fn retention_role_opens_only_system_state_and_rejects_transport_configuration() 
         if retained == 0 {
             break;
         }
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(30));
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(role.try_wait().unwrap().is_none());

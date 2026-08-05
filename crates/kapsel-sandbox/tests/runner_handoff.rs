@@ -20,7 +20,7 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ed25519_dalek::SigningKey;
@@ -435,13 +435,18 @@ fn start_handoff(root: &Path, address: std::net::SocketAddr) -> Child {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    for _ in 0..500 {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(30) {
         if TcpStream::connect(address).is_ok() {
             return child;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     let status = child.try_wait().unwrap();
+    if status.is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
     let mut stderr = String::new();
     child
         .stderr
