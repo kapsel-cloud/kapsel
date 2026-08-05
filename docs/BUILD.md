@@ -321,22 +321,22 @@ MCP, evaluator, release, upgrade, security, and privacy documentation, license, 
 provenance metadata. It contains no evaluator authority, credentials, journals, receipts, or
 outputs.
 
-Run the artifact-only deterministic lane with Docker:
+Run the complete artifact-only proof from a clean checkout with Docker while keeping A outside the
+worktree:
 
 ```sh
-cargo make test-release-artifact
+a_dir=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-release-a.XXXXXX")
+archive_a=$(python3 scripts/assemble-release-artifact.py --output-directory "$a_dir")
+python3 scripts/test-release-artifact.py --archive "$archive_a"
+python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
 ```
 
-It assembles and validates the archive, then exercises only extracted files in the pinned clean
-container. See the [testing strategy](TESTING.md#release-artifact-proof) for the exact proof and
+The first verifier preserves the synthetic hostile-archive matrix, validates exact A, and exercises
+only extracted A files in the pinned clean container. The second performs exactly one independent
+strict assembly B in separate target/output storage and compares archive, checksum, SBOM, and
+digest-manifest bytes. Remove `"$a_dir"` after use. See the
+[testing strategy](TESTING.md#release-artifact-proof) for the exact proof and
 [release artifact contract](RELEASE.md) for the owned format and bounds.
-
-Verify two isolated builds produce identical archive, checksum, SBOM, and digest-manifest bytes
-with:
-
-```sh
-cargo make test-release-reproducibility
-```
 
 Scan one exact SPDX sidecar with the KAP-0061-frozen Trivy 0.72.0 policy and a vulnerability
 database no older than 24 hours:
@@ -365,17 +365,18 @@ KAPSEL_V011_ARCHIVE=/absolute/kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz \
 The historical archive must match the immutable accepted v0.1.1 SHA-256. This artifact-only lane
 complements rather than replaces the nine-state, 54-process-seam source fixture matrix.
 
-After those lanes pass on a push, hosted CI performs one strict clean assembly and uploads the four
-deterministic files as a workflow artifact named with the source revision. The GitHub-generated
-download wrapper is transport only.
+On every push and pull request, hosted CI runs the same two-assembly proof. A stays outside the
+worktree through smoke and A/B comparison. On a push only, the workflow then copies the exact four A
+files byte-for-byte to `dist/` and uploads them under the source revision. Pull requests perform no
+upload. The GitHub-generated download wrapper is transport only.
 
 The unpublished authenticated candidate is produced only by manually dispatching
 `.github/workflows/release-candidate.yml` on `master` at the exact candidate revision. That
-least-privilege workflow repeats artifact smoke and reproducibility, assembles once more, installs
-Cosign v3.1.2 through a commit-pinned action, keylessly signs the exact `.SHA256SUMS` bytes,
-verifies the issuer plus repository/workflow/ref/SHA/trigger certificate identity, and uploads the
-resulting bounded `.sigstore.json` bundle with the four deterministic files. The bundle is
-intentionally nondeterministic and publication remains KAP-0063-owned. See
+least-privilege workflow runs the same two-assembly A-smoke/A-B-comparison proof, copies exact A to
+`dist/`, installs Cosign v3.1.2 through a commit-pinned action, keylessly signs the exact
+`.SHA256SUMS` bytes, verifies the issuer plus repository/workflow/ref/SHA/trigger certificate
+identity, and uploads the resulting bounded `.sigstore.json` bundle with the four deterministic
+files. The bundle is intentionally nondeterministic and publication remains KAP-0063-owned. See
 [Release artifacts](RELEASE.md) for connected/offline trust, expiry, compromise, withdrawal, and
 replacement rules. A dependent clean job downloads that workflow artifact, re-authenticates the
 exact bytes, drives operation/restart/MCP/inspection/cleanup/uninstall in the pinned smoke

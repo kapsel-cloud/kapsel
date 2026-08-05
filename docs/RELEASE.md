@@ -62,10 +62,19 @@ adjacent checksum, and SBOM. A checksum proves byte identity only; publisher aut
 with the separately signed `SHA256SUMS` manifest.
 
 The gzip header has timestamp zero and no source filename. The USTAR stream has stable lexical
-ordering, owner/group `0`, empty names, timestamp zero, and fixed modes. Two clean assemblies of the
-same revision and pinned inputs must produce byte-identical archives, checksums, SBOMs, and digest
-manifests. This is a bounded reproducibility claim for those files, not a general Rust reproducible
-build, reviewed-source, or builder-integrity guarantee.
+ordering, owner/group `0`, empty names, timestamp zero, and fixed modes.
+
+The release proof uses exactly two strict isolated assemblies of the same clean revision and pinned
+inputs. Assembly A remains outside the worktree, passes exact layout and hostile-archive
+verification, and is smoke-tested only through extracted files. Independent assembly B uses a
+separate target and output directory. The archive, checksum, SBOM, and digest manifest from A and B
+must be byte-identical. Only after smoke and comparison pass are the exact four A files copied
+byte-for-byte to `dist/` for upload; B is never uploaded. Neither target directory nor compiled
+output is shared between A and B. An immutable Cargo registry/download cache may be shared because
+it supplies inputs rather than compiled output.
+
+This is a bounded reproducibility claim for those files, not a general Rust reproducible build,
+reviewed-source, or builder-integrity guarantee.
 
 ## Exact archive
 
@@ -229,14 +238,20 @@ python3 scripts/smoke-release-artifact.py \
   --expected-revision <40-lowercase-hex Git revision>
 ```
 
-`cargo make test-release-artifact` assembles and validates a candidate and then runs only extracted
-files in the pinned clean container. It proves safe extraction, installed identity, grant
-provisioning, ordinary operation/restart, offline inspection, MCP initialization/list/call/EOF,
-bounded output, cleanup, demo-binary separation, and uninstall. `cargo make test-release-upgrade`
-consumes the exact immutable v0.1.1 archive and candidate archive, then uses only their safely
-extracted executables to prove a finalized historical journal backup, migration-only open/reopen,
-retained receipt inspection, restore/re-mark, and direct exact-v0.1.1 downgrade. It complements the
-complete source-fixture state/process matrix and reads no checkout or `target/` candidate binary.
+`scripts/test-release-artifact.py --archive <A>` validates one already assembled A and then runs
+only extracted files in the pinned clean container. It proves safe extraction, installed identity,
+grant provisioning, ordinary operation/restart, offline inspection, MCP
+initialization/list/call/EOF, bounded output, cleanup, demo-binary separation, and uninstall. Its
+synthetic hostile-archive matrix remains independent of the producer.
+`scripts/test-release-reproducibility.py --reference-archive <A>` performs the one independent
+strict assembly B and compares all four deterministic outputs byte-for-byte. Neither verifier hides
+another A assembly.
+
+`cargo make test-release-upgrade` consumes the exact immutable v0.1.1 archive and candidate archive,
+then uses only their safely extracted executables to prove a finalized historical journal backup,
+migration-only open/reopen, retained receipt inspection, restore/re-mark, and direct exact-v0.1.1
+downgrade. It complements the complete source-fixture state/process matrix and reads no checkout or
+`target/` candidate binary.
 
 The live artifact demo uses only the extracted script, feature-gated executable, and public vector
 against its uniquely owned disposable `kind` cluster. The ordinary binary contains no demonstration

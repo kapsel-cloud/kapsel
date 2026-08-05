@@ -139,14 +139,19 @@ and startup authority separation are transport behavior.
 The release artifact lane crosses a fixed `x86_64-unknown-linux-gnu` archive rather than a Cargo
 test binary. Assembly runs in a pinned x86-64 Debian 12 Rust container, records exact source, tree,
 lockfile, builder, and binary provenance, normalizes archive metadata, and writes deterministic
-checksum, SPDX 2.3, and signed-manifest inputs over the final downloadable bytes. Two isolated
-builds must produce byte-identical archives, checksums, SBOMs, and digest manifests. The separate
-keyless Sigstore bundle is event-derived and receives semantic identity/failure tests instead of a
-false byte-reproducibility requirement.
+checksum, SPDX 2.3, and signed-manifest inputs over the final downloadable bytes.
+
+The proof assembles strict isolated A once outside the worktree, runs exact layout and hostile
+archive verification plus extracted smoke against A, then assembles B once with a separate target
+and output directory. Archive, checksum, SBOM, and digest-manifest bytes must match exactly. No
+compiled output or target directory is shared. Only after smoke and comparison pass may the exact A
+bytes be copied to `dist/` and uploaded; B is discarded. Pull requests run the same two-build proof
+without upload. The separate keyless Sigstore bundle is event-derived and receives semantic
+identity/failure tests instead of a false byte-reproducibility requirement.
 
 The clean smoke verifies checksum and digest manifest, SPDX/archive/binary/source bindings, exact
 entries, ordering, types, modes, metadata, target, revision, license, binary digests, and traversal,
-link, special-file, unsafe-mode, and size rejection before executing only extracted files in a
+link, special-file, unsafe-mode, and size rejection before executing only extracted A files in a
 pinned x86-64 Debian 12 Python container. A deterministic HTTP Kubernetes fixture proves installed
 version identity, grant provisioning, operation and restart, offline inspection, MCP discovery and
 call equivalence, bounded output, cleanup, and uninstall. The separately extracted demo executable
