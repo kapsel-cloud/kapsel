@@ -101,6 +101,12 @@ window.
 ## Coverage interpretation
 
 CI publishes source-based coverage for the deterministic Rust suite as an informational review aid.
+The hosted lane starts independently of the default gate, keeps its instrumented target and cache
+separate, and bounds report generation to ten minutes. It uploads only a nonempty completed report;
+generation failure or timeout emits a visible warning and completes without changing the default
+gate's correctness result. The outer job remains explicitly non-blocking if setup itself fails or
+exceeds its separate safety bound.
+
 Coverage can reveal unexecuted branches or unexpected regressions, but its percentage is not a
 correctness, crash-safety, Kubernetes-semantics, release-integrity, or production-readiness claim.
 It does not represent the separate live-kind, artifact, shell, Python, fuzz, or long-simulation

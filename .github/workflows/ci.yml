@@ -30,12 +30,14 @@ jobs:
 
   coverage:
     name: Rust coverage (informational)
-    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    continue-on-error: true
     permissions:
       contents: read
       id-token: write
+    env:
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-target
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -47,9 +49,28 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.8.7
           fallback: none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+          workspaces: ". -> target/llvm-cov-target"
       - name: Generate deterministic Rust coverage
-        run: cargo llvm-cov --locked --workspace --codecov --output-path codecov.json
+        id: coverage
+        shell: bash
+        run: |
+          rm -f codecov.json
+          if timeout --signal=TERM --kill-after=30s 10m \
+            cargo llvm-cov --locked --workspace --codecov --output-path codecov.json \
+            && test -s codecov.json
+          then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            status=$?
+            rm -f codecov.json
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Coverage unavailable::Coverage generation failed or exceeded its 10-minute bound (status $status); correctness remains owned by the default gate."
+          fi
       - name: Upload informational coverage
+        if: steps.coverage.outputs.available == 'true'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           use_oidc: true

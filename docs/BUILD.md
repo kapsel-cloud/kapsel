@@ -46,6 +46,24 @@ cargo make fmt-check
 
 `cargo make fmt` formats Rust and Markdown. `cargo make fmt-check` checks both without rewriting.
 
+## Hosted informational coverage
+
+Run the same complete deterministic Rust coverage command locally with:
+
+```sh
+cargo llvm-cov --locked --workspace --codecov --output-path codecov.json
+```
+
+Hosted coverage starts in parallel with the default gate and uses only `target/llvm-cov-target`,
+including its separate dependency cache. Report generation has a command-level ten-minute bound;
+failure or timeout removes any partial report, emits a workflow warning, and does not change the
+default gate result. Codecov upload runs only for a nonempty completed report. An outer non-blocking
+15-minute job bound covers setup failures without turning coverage into correctness evidence.
+
+On the clean x86-64 Linux Slice 1 candidate, cargo-llvm-cov 0.8.7 completed a cold compile, the full
+suite, and Codecov report in 2m22.791s; compilation took 39.93s and the sandbox library portion took
+99.87s. This is a diagnostic measurement on the verification host, not a duration guarantee.
+
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:
