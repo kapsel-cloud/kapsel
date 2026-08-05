@@ -29,6 +29,12 @@ const INCOMPLETE: &str = "restore.incomplete";
 const JSON_MAX: u64 = 16 * 1024;
 const STAGING_ID: u32 = 65_531;
 
+#[cfg(test)]
+std::thread_local! {
+    static DEPLOYMENT_EXECUTABLE_IDENTITY_ACCESS_COUNT: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum DeploymentProfile {
     Production,
@@ -1005,25 +1011,24 @@ struct ReadyRecord {
 }
 
 fn deployment_record(profile: DeploymentProfile) -> Result<DeploymentRecord, ()> {
-    let service = service_schema::digest();
-    let gateway = kapsel::sandbox_gateway_schema_digest();
-    let service_hex = hex(&service);
-    let gateway_hex = hex(&gateway);
-    let target = target_identity(profile)?;
-    let compatibility = compatibility_digest(&service_hex, &gateway_hex, target)?;
+    let compatibility = compatibility_identity(profile)?;
+    #[cfg(test)]
+    record_deployment_executable_identity_access();
     let helper = open_identity_file(
         Path::new(env!("KAPSEL_SANDBOX_RUNNER_PRE_EXEC")),
         true,
         true,
     )?;
+    #[cfg(test)]
+    record_deployment_executable_identity_access();
     let runner = open_runner_identity()?;
     Ok(DeploymentRecord {
         schema: "kapsel.sandbox.deployment.v1".into(),
-        compatibility_sha256: hex(&compatibility),
+        compatibility_sha256: compatibility.sha256,
         package_version: env!("CARGO_PKG_VERSION").into(),
-        target: target.into(),
-        service_schema_sha256: service_hex,
-        gateway_schema_sha256: gateway_hex,
+        target: compatibility.target.into(),
+        service_schema_sha256: compatibility.service_sha256,
+        gateway_schema_sha256: compatibility.gateway_sha256,
         staging_schema: "v1".into(),
         policy: "sandbox-policy-v3".into(),
         pre_exec_source_sha256: hex(&Sha256::digest(include_bytes!("runner_pre_exec.c"))),
@@ -1033,21 +1038,41 @@ fn deployment_record(profile: DeploymentProfile) -> Result<DeploymentRecord, ()>
     })
 }
 
-fn compatibility_digest(service: &str, gateway: &str, target: &str) -> Result<[u8; 32], ()> {
+#[cfg(test)]
+fn record_deployment_executable_identity_access() {
+    DEPLOYMENT_EXECUTABLE_IDENTITY_ACCESS_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+struct CompatibilityIdentity {
+    sha256: String,
+    service_sha256: String,
+    gateway_sha256: String,
+    target: &'static str,
+}
+
+fn compatibility_identity(profile: DeploymentProfile) -> Result<CompatibilityIdentity, ()> {
+    let service_sha256 = hex(&service_schema::digest());
+    let gateway_sha256 = hex(&kapsel::sandbox_gateway_schema_digest());
+    let target = target_identity(profile)?;
     let mut digest = Sha256::new();
     digest.update(b"KAPSEL-SANDBOX-BACKUP-COMPATIBILITY-V1\0");
     for value in [
         env!("CARGO_PKG_VERSION"),
         target,
-        service,
-        gateway,
+        &service_sha256,
+        &gateway_sha256,
         "v1",
         "sandbox-policy-v3",
     ] {
         digest.update(u64::try_from(value.len()).map_err(|_| ())?.to_be_bytes());
         digest.update(value.as_bytes());
     }
-    Ok(digest.finalize().into())
+    Ok(CompatibilityIdentity {
+        sha256: hex(&digest.finalize()),
+        service_sha256,
+        gateway_sha256,
+        target,
+    })
 }
 
 fn preflight_migration_database(database: &Path, state: &File) -> Result<(), ()> {
@@ -1732,9 +1757,10 @@ fn open_ready_at(root: &File, uid: u32, gid: u32, profile: DeploymentProfile) ->
 fn validate_ready_file(file: &File, profile: DeploymentProfile) -> Result<(), ()> {
     let bytes = read_descriptor_bounded(file, 1024)?;
     let stored: ReadyRecord = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let compatibility = compatibility_identity(profile)?;
     if serde_json::to_vec(&stored).map_err(|_| ())? != bytes
         || stored.schema != "kapsel.sandbox.restore-ready.v1"
-        || stored.compatibility_sha256 != deployment_record(profile)?.compatibility_sha256
+        || stored.compatibility_sha256 != compatibility.sha256
         || stored.completed_at <= 0
     {
         return Err(());
@@ -1989,6 +2015,37 @@ mod tests {
         fs::write(&record, b"{}").unwrap();
         fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(StateGuard::open(&root, identities, DeploymentProfile::Test).is_err());
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn readiness_uses_compatibility_while_deployment_checks_executable_identity() {
+        let (root, identities) = initialized("readiness-compatibility");
+        DEPLOYMENT_EXECUTABLE_IDENTITY_ACCESS_COUNT.with(|count| count.set(0));
+        let deployment_path = root.join(DEPLOYMENT);
+        let mut deployment: DeploymentRecord =
+            serde_json::from_slice(&fs::read(&deployment_path).unwrap()).unwrap();
+        deployment.runner_sha256 = "0".repeat(64);
+        fs::set_permissions(&deployment_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&deployment_path, serde_json::to_vec(&deployment).unwrap()).unwrap();
+        fs::set_permissions(&deployment_path, fs::Permissions::from_mode(0o400)).unwrap();
+
+        assert!(validate_ready_at(
+            &open_fixed_directory_path(
+                &root,
+                identities.controller_uid,
+                identities.controller_gid,
+                0o700,
+            )
+            .unwrap(),
+            identities.controller_uid,
+            identities.controller_gid,
+            DeploymentProfile::Test,
+        )
+        .is_ok());
+        DEPLOYMENT_EXECUTABLE_IDENTITY_ACCESS_COUNT.with(|count| assert_eq!(count.get(), 0));
+        assert!(StateGuard::open(&root, identities, DeploymentProfile::Test).is_err());
+        DEPLOYMENT_EXECUTABLE_IDENTITY_ACCESS_COUNT.with(|count| assert_eq!(count.get(), 2));
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
