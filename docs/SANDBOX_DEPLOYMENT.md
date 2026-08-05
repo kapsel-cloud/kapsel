@@ -1,9 +1,10 @@
 # Public sandbox deployment contract
 
 Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0), Gate 1 Slices
-1–4, and the focused Slice 2 runner-hardening follow-up are accepted. Gate 1 Slice 5's docs-only
-contract correction is accepted and authorizes only offline implementation. No provider, credential,
-resource, spend, image push, endpoint, DNS, private live command, or public traffic is authorized.
+1–4, and the focused Slice 2 runner-hardening follow-up are accepted. Gate 1 Slice 5's original
+docs-only contract correction and its focused bootstrap/lock choreography correction are accepted
+and authorize only offline implementation. No provider, credential, resource, spend, image push,
+endpoint, DNS, private live command, or public traffic is authorized.
 
 Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
 stop, and cleanup for the fixed public sandbox.
@@ -672,8 +673,9 @@ never cleanup candidates.
 
 Gate 1 Slice 5 selects one **quiesced offline** backup path. It does not select online SQLite
 snapshotting, a generic archive/storage interface, a second state service, or a coordinator. One
-private compile-time-composed backup/restore module owns two shipped operations: publish one fixed
-backup generation and restore the selected `current` generation. The exact command grammars are:
+private compile-time-composed backup/restore module will own two shipped operations: publish one
+fixed backup generation and restore the selected `current` generation. The exact command grammars
+are:
 
 ```text
 kapsel-sandbox backup --state-root ABS --backup-root ABS --authority-root ABS \
@@ -733,26 +735,44 @@ publication may leave only an exact resumable prefix of those additions; retry v
 and never performs generic service recovery or orphan cleanup.
 
 The universal lock order is parent restore lock, state lock when a state exists, then backup-root
-lock. `backup` starts under controller authority, takes the parent lock shared, the state lock
-exclusive, and the backup-root `.backup.lock` exclusive before opening `Service`, and holds all
-three through recovery and P1/P2/P3. It thereby proves every fixed role and SQLite handle absent
-without PID files. Under that lock it derives the exact authority set, commits the pending
-backup-reference transaction, and reads only each reference's validated public receipt trust. It
-places each non-secret trust document in a sealed anonymous descriptor, closes SQLite and every
-staged-authority descriptor, then launches the fixed backup helper with only the source
-database/journal, receipt directory, semantic runner unit, deployment record, trust descriptors,
-backup root, and held lock descriptors. The child normalizes to backup identity with only
-`CAP_DAC_READ_SEARCH` effective/permitted/bounding and empty inheritable/ambient sets. No private
-staged descriptor crosses this boundary.
+lock. The `backup` and `restore` command entry is one fixed, non-resident launcher and begins only
+under the exact bootstrap frozen below; neither command begins as the capability-free controller or
+backup identity. Before any identity reduction it validates the fixed absolute roots and numeric
+identities, opens the roots descriptor-relatively, and acquires the required locks in universal
+order. This initial phase may use its bootstrap DAC authority only to cross the separately owned
+controller and backup roots. It opens no SQLite handle, receipt, runner unit, staged authority,
+backup generation, or destination component and performs no content mutation. After lock and root
+pinning it creates only the fixed controller phase and the selected fixed helper phase, closes every
+unassigned descriptor, and relinquishes all bootstrap authority before either phase may inspect or
+copy content. There is no request loop, reusable privileged process, daemon, generic descriptor
+broker, caller-selected descriptor message, or alternate launch route.
 
-Both helpers use one fixed reviewed launcher source. Its only initial bootstrap is
+For `backup`, the launcher holds the parent lock shared, state lock exclusive, and backup-root lock
+exclusive before phase separation and all three remain held through recovery and P1/P2/P3. The
+capability-free controller phase runs as controller `65530:65530`; it receives only the pinned
+controller state, authority root, and held lock descriptors required by the closed composition, not
+the backup-root or generation descriptors. It opens `Service`, proves every other fixed role and
+SQLite handle absent, derives the exact authority set, commits the pending backup-reference
+transaction, and reads only each reference's validated public receipt trust. It places each
+non-secret trust document in a sealed anonymous descriptor and closes SQLite and every
+staged-authority descriptor before sending the one fixed indexed source/trust descriptor message
+directly to the already reduced backup helper. The helper receives only the source database/journal,
+receipt directory, semantic runner unit, deployment record, trust descriptors, backup root, and held
+lock descriptors. It runs as backup `65529:65529` with only `CAP_DAC_READ_SEARCH`
+effective/permitted/bounding and empty inheritable and ambient sets. No private staged descriptor
+crosses this boundary.
+
+Both helpers and the capability-free controller phase use one fixed reviewed launcher source. Its
+only initial bootstrap is
 `E=P=B={CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_DAC_READ_SEARCH,CAP_FOWNER,CAP_SETGID,CAP_SETUID,CAP_SETPCAP}`
 and `I=A={}` under real/effective/saved root. It rejects file capabilities, supplementary groups,
-unexpected or locked securebits, or any other initial set; sets real/effective/saved backup UID/GID;
-selects exactly the capture or restore final set above; clears every other bounding bit, securebits,
-inheritable and ambient set; sets `no_new_privs`; and verifies the final IDs and all five sets
-before releasing descriptors. The Linux lane pins source/compiler/launcher hashes and every
-rejection.
+unexpected or locked securebits, or any other initial set. For each fixed phase it sets the required
+real/effective/saved UID/GID, selects exactly that phase's closed final capability set, clears every
+other bounding bit plus securebits, inheritable, and ambient sets, sets `no_new_privs`, and verifies
+the final IDs and all five sets before releasing descriptors. The capability-free controller phase
+has all five capability sets empty. The Linux lane pins source/compiler/launcher hashes and every
+rejection, proves the phase-specific descriptor inventories and direct fixed message, and proves no
+bootstrap-authority process survives phase release.
 
 Each public trust descriptor is `memfd_create(MFD_CLOEXEC|MFD_ALLOW_SEALING)`, written once,
 fsynced, rewound, and sealed with `F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`. Descriptors
@@ -764,27 +784,39 @@ locks recreates the same trust set and generation; it may remove that pending ro
 no temporary, complete, or current backup names that generation and leaves every other Service byte
 unchanged.
 
-`restore` takes the nonblocking exclusive parent restore lock, then the backup-root lock shared,
-before opening `current` or testing destination absence. It retains both descriptors through
-complete backup validation, destination readiness, and final parent fsync, so replacement cannot
-change or remove selected bytes or release their references. Its filesystem child receives only the
-validated opened backup, authority identity list, parent and lock descriptors; it normalizes to
-backup identity with only `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, and `CAP_FOWNER`, constructs the stopped
-incomplete destination, closes those capabilities, and exits. The same command then resumes under
-capability-free controller authority, opens exact staged authority, and performs only the fixed
-pre-readiness state machine. Gate 1 Kubernetes reconciliation uses deterministic transports; any
-real request remains Gate 3 work. Both child modes have empty groups, zero securebits, and
-`no_new_privs=1` before authority. Every lock uses descriptor-relative `flock(LOCK_NB)` in the
-universal order; busy, substituted, wrong-owner/mode, closed/lost descriptor, or order violation
-fails before mutation. State and backup roots, their writable ancestors, and every SQLite
-main/sidecar name remain under the one trusted controller or backup authority for the complete open
-lifetime; stock SQLite pathname and sidecar opens do not establish descriptor-relative confinement
-against a malicious same-authority rename. Descriptor pinning, no-follow validation, and
-revalidation deny other roles and detect stable substitution, while compromise of the controller
-authority retains the concentrated blast radius named by the threat model. The crash matrix crosses
-contention at each lock. A failed precondition changes no source, lifecycle, receipt, cleanup,
-authority, or backup fact except the explicitly named backup-reference transactions. Capture never
-reconciles source state.
+For `restore`, the initial launcher takes the nonblocking exclusive parent restore lock and then the
+backup-root lock shared before phase separation or testing destination absence. Those descriptors
+remain held through complete backup validation, destination readiness, and final parent fsync, so
+replacement cannot change or remove selected bytes or release their references. The filesystem
+helper receives only the pinned backup root, parent, and held lock descriptors. Running as backup
+`65529:65529` with only `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, and `CAP_FOWNER`, it opens and completely
+validates `current` and the selected generation without mutating the destination, then sends the
+capability-free controller phase one sealed fixed preflight record binding generation, manifest
+digest, compatibility, capture time, and the ordered authority identities. The controller receives
+no backup-root, generation, or component descriptor. It validates the record against compile-time
+compatibility and the exact separately staged authority, proves local controller-role and
+runner/cgroup absence, samples the one trusted realtime value, and tests destination absence. Only
+if every precondition passes does it return one fixed approval bound to the preflight digest and
+sampled time. The helper revalidates its pinned backup and lock descriptors after approval, then
+constructs the stopped incomplete destination, closes its capabilities, and exits. A denial, closed
+channel, changed pin, or malformed, duplicate, extra, replayed, or mismatched record/approval exits
+without destination mutation. No private authority byte crosses either message.
+
+Only after helper success does the already capability-free controller phase open the destination and
+perform the fixed pre-readiness state machine with the exact staged authority it already validated.
+Gate 1 Kubernetes reconciliation uses deterministic transports; any real request remains Gate 3
+work. Every reduced phase has empty groups, zero securebits, and `no_new_privs=1` before content
+authority. Every lock uses descriptor-relative `flock(LOCK_NB)` in the universal order; busy,
+substituted, wrong-owner/mode, closed/lost descriptor, or order violation fails before mutation.
+State and backup roots, their writable ancestors, and every SQLite main/sidecar name remain under
+the one trusted controller or backup authority for the complete open lifetime; stock SQLite pathname
+and sidecar opens do not establish descriptor-relative confinement against a malicious
+same-authority rename. Descriptor pinning, no-follow validation, and revalidation deny other roles
+and detect stable substitution, while compromise of the controller authority retains the
+concentrated blast radius named by the threat model. The crash matrix crosses contention at each
+lock and phase boundary, including both sides of preflight and approval. A failed precondition
+changes no source, lifecycle, receipt, cleanup, authority, or backup fact except the explicitly
+named backup-reference transactions. Capture never reconciles source state.
 
 One canonical `kapsel.sandbox.backup.v1` manifest inventories fixed paths in bytewise lexical order.
 Unknown fields are denied and canonical reserialization must equal the stored bytes. Each entry

@@ -379,9 +379,16 @@ substitution, SQLite DELETE-journal sidecars and malformed rows, duplicate ident
 process/inode/cgroup facts, incompatible bundle/architecture/clock, missing public trust/private
 authority, nonempty destination, and source changes during capture. Fixture-byte scans prove that
 private staged seeds, tombstone keys, Kubernetes and handoff credentials, dispatch inputs, logs, and
-diagnostics never enter a generation. A separate root-only network-namespace identity lane proves
-backup `65529:65529` with exact capture/restore capability sets against controller `65530:65530`;
-ordinary tests do not claim provider-volume detachment or original-host destruction.
+diagnostics never enter a generation. A separate root-only network-namespace identity lane starts
+from the exact fixed bootstrap and proves root/lock pinning before phase release, capability-free
+controller `65530:65530`, backup `65529:65529` with the exact capture/restore capability sets, each
+phase's closed descriptor inventory, the one direct fixed controller-to-helper capture message, the
+restore helper's sealed preflight and digest-bound approval handshake before destination mutation,
+and no surviving bootstrap-authority process. It rejects a capability-free attempt to cross the
+backup-owned root, an alternate initial set, file capabilities, extra groups, reordered locks,
+extra/caller-selected descriptors, every cross-phase descriptor, and malformed, changed, replayed,
+or mismatched restore preflight/approval. Ordinary tests do not claim provider-volume detachment or
+original-host destruction.
 
 The serialized proof matrix is:
 
