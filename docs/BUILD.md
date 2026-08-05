@@ -30,6 +30,10 @@ cargo make check
 cargo make ci
 ```
 
+Hosted CI invokes the same script as three non-overlapping timed steps: `static`, `rust`, and `doc`.
+The ordinary no-argument and `check` forms run all three in that order, so step visibility does not
+create a second gate or duplicate compilation.
+
 The managed pre-commit hook skips message-only amendments and rewords whose prospective tree equals
 `HEAD`. Every content-changing commit runs the complete default gate rather than formatting alone:
 
@@ -337,6 +341,10 @@ strict assembly B in separate target/output storage and compares archive, checks
 digest-manifest bytes. Remove `"$a_dir"` after use. See the
 [testing strategy](TESTING.md#release-artifact-proof) for the exact proof and
 [release artifact contract](RELEASE.md) for the owned format and bounds.
+
+On clean x86-64 Linux revision `0f86e7c`, a cold two-assembly proof took 5m11s: A assembly 2m31s,
+exact-A hostile/layout/smoke 11s, and B assembly plus four-file comparison 2m29s. The prior hosted
+four-assembly job took 11m55s. These are diagnostic measurements, not duration guarantees.
 
 Scan one exact SPDX sidecar with the KAP-0061-frozen Trivy 0.72.0 policy and a vulnerability
 database no older than 24 hours:

@@ -25,8 +25,12 @@ jobs:
       - name: Install Markdown formatter
         run: npm install --global prettier@3.6.2
       - uses: Swatinem/rust-cache@v2
-      - name: Run deterministic containerless gate
-        run: ./scripts/ci-local.sh
+      - name: Run static repository checks
+        run: ./scripts/ci-local.sh static
+      - name: Run Rust checks and deterministic tests
+        run: ./scripts/ci-local.sh rust
+      - name: Run documentation tests
+        run: ./scripts/ci-local.sh doc
 
   coverage:
     name: Rust coverage (informational)
