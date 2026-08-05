@@ -1710,7 +1710,7 @@ fn open_deployment_snapshot_at(
     Ok((file, snapshot))
 }
 
-fn deployment_snapshot_from_file(
+pub(crate) fn deployment_snapshot_from_file(
     file: &File,
     profile: DeploymentProfile,
 ) -> Result<DeploymentSnapshot, ()> {

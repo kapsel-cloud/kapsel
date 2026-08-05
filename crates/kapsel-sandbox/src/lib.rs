@@ -1069,9 +1069,16 @@ impl Service {
     pub(crate) fn preflight_stopped_backup_source(
         database_path: &Path,
     ) -> Result<(), ServiceError> {
+        Self::preflight_stopped_backup_source_mode(database_path, 0o600)
+    }
+
+    fn preflight_stopped_backup_source_mode(
+        database_path: &Path,
+        mode: u32,
+    ) -> Result<(), ServiceError> {
         let database_path =
             fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
-        let before = validate_database_file(&database_path)?;
+        let before = validate_database_file_mode(&database_path, mode)?;
         let connection = Connection::open_with_flags(
             &database_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -1079,7 +1086,7 @@ impl Service {
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )
         .map_err(storage_error)?;
-        if validate_database_file(&database_path)? != before {
+        if validate_database_file_mode(&database_path, mode)? != before {
             return Err(ServiceError::Unavailable);
         }
         validate_exact_service_schema(&connection)?;
@@ -1093,7 +1100,7 @@ impl Service {
                 |row| row.get(0),
             )
             .map_err(storage_error)?;
-        if !stopped || validate_database_file(&database_path)? != before {
+        if !stopped || validate_database_file_mode(&database_path, mode)? != before {
             return Err(ServiceError::Unavailable);
         }
         Ok(())
@@ -1133,6 +1140,59 @@ impl Service {
             )
             .map_err(storage_error)?;
         if !clean || validate_database_file(&database_path)? != before {
+            return Err(ServiceError::Unavailable);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn preflight_clean_restore_source(
+        database_path: &Path,
+        generation: u64,
+        captured_at: i64,
+    ) -> Result<(), ServiceError> {
+        if generation == 0 || captured_at <= 0 {
+            return Err(ServiceError::Unavailable);
+        }
+        Self::preflight_stopped_backup_source_mode(database_path, 0o400)?;
+        let database_path =
+            fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
+        let before = validate_database_file_mode(&database_path, 0o400)?;
+        let connection = Connection::open_with_flags(
+            &database_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(storage_error)?;
+        let clean: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT stopped = 1 AND boundary_uid_digest = '' ",
+                    "AND NOT EXISTS(SELECT 1 FROM runs) ",
+                    "AND NOT EXISTS(SELECT 1 FROM tombstones) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipts) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipt_publications) ",
+                    "AND NOT EXISTS(SELECT 1 FROM cleanup_records) ",
+                    "AND NOT EXISTS(SELECT 1 FROM application_reports) ",
+                    "AND NOT EXISTS(SELECT 1 FROM provisioned_object_owners) ",
+                    "AND NOT EXISTS(SELECT 1 FROM events) ",
+                    "AND NOT EXISTS(SELECT 1 FROM authority_collection) ",
+                    "AND (SELECT COUNT(*) FROM backup_generations) = 1 ",
+                    "AND EXISTS(SELECT 1 FROM backup_generations ",
+                    "WHERE slot = 'pending' AND generation = ?1 ",
+                    "AND manifest_digest IS NULL AND state = 'pending' ",
+                    "AND captured_at = ?2) ",
+                    "AND NOT EXISTS(SELECT 1 FROM backup_authority_references) ",
+                    "FROM service_state WHERE singleton = 1"
+                ),
+                rusqlite::params![
+                    i64::try_from(generation).map_err(|_| ServiceError::Unavailable)?,
+                    captured_at
+                ],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !clean || validate_database_file_mode(&database_path, 0o400)? != before {
             return Err(ServiceError::Unavailable);
         }
         Ok(())
@@ -6292,12 +6352,19 @@ fn prepare_database_file(path: &Path) -> Result<(), ServiceError> {
 }
 
 fn validate_database_file(path: &Path) -> Result<(u64, u64), ServiceError> {
+    validate_database_file_mode(path, 0o600)
+}
+
+fn validate_database_file_mode(
+    path: &Path,
+    expected_mode: u32,
+) -> Result<(u64, u64), ServiceError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| ServiceError::Unavailable)?;
     let mode = metadata.permissions().mode() & 0o7777;
     if !metadata.file_type().is_file()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.nlink() != 1
-        || mode != 0o600
+        || mode != expected_mode
     {
         return Err(ServiceError::Unavailable);
     }

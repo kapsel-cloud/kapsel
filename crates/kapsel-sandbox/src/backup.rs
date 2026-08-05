@@ -6,7 +6,7 @@ use std::{
     fs::File,
     io::{Read as _, Seek as _, SeekFrom, Write as _},
     os::unix::fs::MetadataExt as _,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use rustix::fs::{fchmod, flock, mkdirat, open, openat, renameat, FlockOperation, Mode, OFlags};
@@ -15,11 +15,14 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     state_root::{BackupStateGuard, DeploymentSnapshot},
-    AuthorityConfiguration, BackupPublicationState,
+    AuthorityConfiguration, BackupPublicationState, Service,
 };
 
 const BACKUP_ID: u32 = 65_529;
 const LOCK: &str = ".backup.lock";
+const PARENT_RESTORE_LOCK: &str = ".kapsel-sandbox-restore.lock";
+const RESTORE_TEMPORARY: &str = ".kapsel-sandbox-restore.tmp";
+const RESTORE_INCOMPLETE: &str = "restore.incomplete";
 const GENERATIONS: &str = "generations";
 const DEPLOYMENT: &str = "deployment.json";
 const MANIFEST: &str = "manifest.json";
@@ -743,6 +746,544 @@ impl<'state> BackupRootGuard<'state> {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreIncomplete {
+    schema: String,
+    generation: u64,
+    manifest_sha256: String,
+    compatibility_sha256: String,
+    started_at: i64,
+    step: String,
+}
+
+/// Pins one selected clean backup after exclusively fencing an absent destination.
+#[allow(
+    dead_code,
+    reason = "the shipped restore command will compose this private filesystem phase"
+)]
+struct RestoreGuard {
+    destination_name: OsString,
+    controller: BackupIdentity,
+    destination_parent: File,
+    destination_lock: File,
+    backup_name: OsString,
+    backup_identity: BackupIdentity,
+    backup_parent: File,
+    backup_root: File,
+    backup_lock: File,
+    generations: File,
+    generation: File,
+    service: File,
+    receipts: File,
+    runner: File,
+    trust: File,
+    database: File,
+    database_path: PathBuf,
+    deployment: File,
+    manifest_file: File,
+    current_file: File,
+    manifest: Manifest,
+    manifest_sha256: String,
+    profile: crate::state_root::DeploymentProfile,
+}
+
+#[allow(
+    dead_code,
+    clippy::too_many_lines,
+    reason = "the restore tracer keeps its ordered filesystem proof explicit"
+)]
+impl RestoreGuard {
+    fn open_selected_clean(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        if !destination.is_absolute() || !backup_path.is_absolute() {
+            return Err(());
+        }
+        let destination_parent_path = destination.parent().ok_or(())?;
+        let destination_name = destination.file_name().ok_or(())?.to_owned();
+        if destination_name == PARENT_RESTORE_LOCK || destination_name == RESTORE_TEMPORARY {
+            return Err(());
+        }
+        let destination_parent = directory_path(
+            destination_parent_path,
+            controller.uid,
+            controller.gid,
+            0o700,
+        )?;
+        let destination_lock = file_at(
+            &destination_parent,
+            PARENT_RESTORE_LOCK,
+            controller.uid,
+            controller.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        flock(&destination_lock, FlockOperation::NonBlockingLockExclusive).map_err(|_| ())?;
+        let expected_parent = std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect();
+        if names(&destination_parent, 2)? != expected_parent {
+            return Err(());
+        }
+
+        let backup_parent_path = backup_path.parent().ok_or(())?;
+        let backup_name = backup_path.file_name().ok_or(())?.to_owned();
+        let backup_parent = directory_path(
+            backup_parent_path,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o700,
+        )?;
+        let backup_root = directory_at(
+            &backup_parent,
+            &backup_name,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o700,
+        )?;
+        let backup_lock = file_at(
+            &backup_root,
+            LOCK,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        flock(&backup_lock, FlockOperation::NonBlockingLockShared).map_err(|_| ())?;
+        let expected_backup = [LOCK, GENERATIONS, CURRENT]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        if names(&backup_root, 4)? != expected_backup {
+            return Err(());
+        }
+        let generations = directory_at(
+            &backup_root,
+            GENERATIONS,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o700,
+        )?;
+        if names(&generations, 2)? != std::iter::once(OsString::from(GENERATION_ONE)).collect() {
+            return Err(());
+        }
+        let generation = directory_at(
+            &generations,
+            GENERATION_ONE,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o500,
+        )?;
+        let expected_generation = [
+            DEPLOYMENT, MANIFEST, "receipts", "runner", "service", "trust",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        if names(&generation, 7)? != expected_generation {
+            return Err(());
+        }
+        let service = directory_at(
+            &generation,
+            "service",
+            backup_identity.uid,
+            backup_identity.gid,
+            0o500,
+        )?;
+        let receipts = directory_at(
+            &generation,
+            "receipts",
+            backup_identity.uid,
+            backup_identity.gid,
+            0o500,
+        )?;
+        let runner = directory_at(
+            &generation,
+            "runner",
+            backup_identity.uid,
+            backup_identity.gid,
+            0o500,
+        )?;
+        let trust = directory_at(
+            &generation,
+            "trust",
+            backup_identity.uid,
+            backup_identity.gid,
+            0o500,
+        )?;
+        if names(&service, 2)? != std::iter::once(OsString::from(DATABASE)).collect()
+            || !names(&receipts, 1)?.is_empty()
+            || !names(&runner, 1)?.is_empty()
+            || !names(&trust, 1)?.is_empty()
+        {
+            return Err(());
+        }
+        let database = file_at(
+            &service,
+            DATABASE,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o400,
+            false,
+            DATABASE_MAX,
+        )?;
+        let deployment = file_at(
+            &generation,
+            DEPLOYMENT,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o400,
+            false,
+            16 * 1024,
+        )?;
+        let manifest_file = file_at(
+            &generation,
+            MANIFEST,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o400,
+            false,
+            JSON_MAX,
+        )?;
+        let current_file = file_at(
+            &backup_root,
+            CURRENT,
+            backup_identity.uid,
+            backup_identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        let manifest_bytes = read_bounded(&manifest_file, JSON_MAX)?;
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&manifest).map_err(|_| ())? != manifest_bytes {
+            return Err(());
+        }
+        let deployment_snapshot =
+            crate::state_root::deployment_snapshot_from_file(&deployment, profile)?;
+        validate_manifest(&manifest, 1, &deployment_snapshot, &deployment, &database)?;
+        Service::preflight_clean_restore_source(
+            &backup_path
+                .join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join("service")
+                .join(DATABASE),
+            manifest.generation,
+            manifest.captured_at,
+        )
+        .map_err(|_| ())?;
+        let manifest_sha256 = digest_bytes(&manifest_bytes);
+        let current_bytes = read_bounded(&current_file, 1024)?;
+        let current: CurrentRecord = serde_json::from_slice(&current_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&current).map_err(|_| ())? != current_bytes
+            || current.schema != "kapsel.sandbox.backup.current.v1"
+            || current.generation != 1
+            || current.manifest_sha256 != manifest_sha256
+        {
+            return Err(());
+        }
+        let guard = Self {
+            destination_name,
+            controller,
+            destination_parent,
+            destination_lock,
+            backup_name,
+            backup_identity,
+            backup_parent,
+            backup_root,
+            backup_lock,
+            generations,
+            generation,
+            service,
+            receipts,
+            runner,
+            trust,
+            database,
+            database_path: backup_path
+                .join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join("service")
+                .join(DATABASE),
+            deployment,
+            manifest_file,
+            current_file,
+            manifest,
+            manifest_sha256,
+            profile,
+        };
+        guard.verify(false, false)?;
+        Ok(guard)
+    }
+
+    fn verify(&self, installed: bool, temporary: bool) -> Result<(), ()> {
+        let mut expected_parent =
+            std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect::<BTreeSet<_>>();
+        if installed {
+            expected_parent.insert(self.destination_name.clone());
+        }
+        if temporary {
+            expected_parent.insert(OsString::from(RESTORE_TEMPORARY));
+        }
+        if names(&self.destination_parent, 3)? != expected_parent {
+            return Err(());
+        }
+        let expected_backup = [LOCK, GENERATIONS, CURRENT]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        if names(&self.backup_root, 4)? != expected_backup
+            || names(&self.generations, 2)?
+                != std::iter::once(OsString::from(GENERATION_ONE)).collect()
+        {
+            return Err(());
+        }
+        let expected_generation = [
+            DEPLOYMENT, MANIFEST, "receipts", "runner", "service", "trust",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        if names(&self.generation, 7)? != expected_generation
+            || names(&self.service, 2)? != std::iter::once(OsString::from(DATABASE)).collect()
+            || !names(&self.receipts, 1)?.is_empty()
+            || !names(&self.runner, 1)?.is_empty()
+            || !names(&self.trust, 1)?.is_empty()
+        {
+            return Err(());
+        }
+        let destination_lock = file_at(
+            &self.destination_parent,
+            PARENT_RESTORE_LOCK,
+            self.controller.uid,
+            self.controller.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        same(&destination_lock, &self.destination_lock)?;
+        let backup_root = directory_at(
+            &self.backup_parent,
+            &self.backup_name,
+            self.backup_identity.uid,
+            self.backup_identity.gid,
+            0o700,
+        )?;
+        same(&backup_root, &self.backup_root)?;
+        let backup_lock = file_at(
+            &backup_root,
+            LOCK,
+            self.backup_identity.uid,
+            self.backup_identity.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        same(&backup_lock, &self.backup_lock)?;
+        let generations = directory_at(
+            &backup_root,
+            GENERATIONS,
+            self.backup_identity.uid,
+            self.backup_identity.gid,
+            0o700,
+        )?;
+        same(&generations, &self.generations)?;
+        let generation = directory_at(
+            &generations,
+            GENERATION_ONE,
+            self.backup_identity.uid,
+            self.backup_identity.gid,
+            0o500,
+        )?;
+        same(&generation, &self.generation)?;
+        for (name, reopened, pinned) in [
+            ("service", &generation, &self.service),
+            ("receipts", &generation, &self.receipts),
+            ("runner", &generation, &self.runner),
+            ("trust", &generation, &self.trust),
+        ] {
+            let directory = directory_at(
+                reopened,
+                name,
+                self.backup_identity.uid,
+                self.backup_identity.gid,
+                0o500,
+            )?;
+            same(&directory, pinned)?;
+        }
+        for (parent, name, pinned, maximum) in [
+            (&self.service, DATABASE, &self.database, DATABASE_MAX),
+            (&self.generation, DEPLOYMENT, &self.deployment, 16 * 1024),
+            (&self.generation, MANIFEST, &self.manifest_file, JSON_MAX),
+            (&self.backup_root, CURRENT, &self.current_file, 1024),
+        ] {
+            let file = file_at(
+                parent,
+                name,
+                self.backup_identity.uid,
+                self.backup_identity.gid,
+                0o400,
+                false,
+                maximum,
+            )?;
+            same(&file, pinned)?;
+        }
+        let manifest_bytes = read_bounded(&self.manifest_file, JSON_MAX)?;
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| ())?;
+        if digest_bytes(&manifest_bytes) != self.manifest_sha256
+            || serde_json::to_vec(&manifest).map_err(|_| ())? != manifest_bytes
+        {
+            return Err(());
+        }
+        let deployment =
+            crate::state_root::deployment_snapshot_from_file(&self.deployment, self.profile)?;
+        validate_manifest(&manifest, 1, &deployment, &self.deployment, &self.database)?;
+        Service::preflight_clean_restore_source(
+            &self.database_path,
+            manifest.generation,
+            manifest.captured_at,
+        )
+        .map_err(|_| ())?;
+        let current_bytes = read_bounded(&self.current_file, 1024)?;
+        let current: CurrentRecord = serde_json::from_slice(&current_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&current).map_err(|_| ())? != current_bytes
+            || current.schema != "kapsel.sandbox.backup.current.v1"
+            || current.generation != 1
+            || current.manifest_sha256 != self.manifest_sha256
+        {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the closed installed-prefix inventory stays explicit before publication"
+    )]
+    fn verify_restore_temporary(
+        &self,
+        temporary: &File,
+        database: &File,
+        deployment: &File,
+        receipts: &File,
+        runner: &File,
+        state_lock: &File,
+        incomplete_file: &File,
+        incomplete: &RestoreIncomplete,
+    ) -> Result<(), ()> {
+        let expected = [
+            DATABASE,
+            DEPLOYMENT,
+            LOCK,
+            RESTORE_INCOMPLETE,
+            "receipts",
+            "runner",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        if names(temporary, 7)? != expected {
+            return Err(());
+        }
+        validate_directory(temporary, self.controller.uid, self.controller.gid, 0o700)?;
+        validate_directory(receipts, self.controller.uid, self.controller.gid, 0o700)?;
+        validate_directory(runner, self.controller.uid, self.controller.gid, 0o700)?;
+        if !names(receipts, 1)?.is_empty() || !names(runner, 1)?.is_empty() {
+            return Err(());
+        }
+        validate_file(database, self.controller, 0o600, DATABASE_MAX)?;
+        validate_file(deployment, self.controller, 0o400, 16 * 1024)?;
+        validate_file(state_lock, self.controller, 0o600, 0)?;
+        validate_file(incomplete_file, self.controller, 0o600, 1024)?;
+        if read_bounded(database, DATABASE_MAX)? != read_bounded(&self.database, DATABASE_MAX)?
+            || read_bounded(deployment, 16 * 1024)? != read_bounded(&self.deployment, 16 * 1024)?
+        {
+            return Err(());
+        }
+        let incomplete_bytes = read_bounded(incomplete_file, 1024)?;
+        if serde_json::to_vec(incomplete).map_err(|_| ())? != incomplete_bytes {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn install_incomplete(&self, started_at: i64) -> Result<(), ()> {
+        if started_at < self.manifest.captured_at {
+            return Err(());
+        }
+        self.verify(false, false)?;
+        let temporary = create_restored_directory(
+            &self.destination_parent,
+            RESTORE_TEMPORARY,
+            self.controller,
+        )?;
+        let database = copy_restored_file(
+            &self.database,
+            &temporary,
+            DATABASE,
+            self.controller,
+            DATABASE_MAX,
+        )?;
+        let deployment = copy_restored_file(
+            &self.deployment,
+            &temporary,
+            DEPLOYMENT,
+            self.controller,
+            16 * 1024,
+        )?;
+        fchmod(&deployment, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+        let receipts = create_restored_directory(&temporary, "receipts", self.controller)?;
+        let runner = create_restored_directory(&temporary, "runner", self.controller)?;
+        let state_lock = write_restored_file(&temporary, LOCK, b"", self.controller, 0)?;
+        let incomplete = RestoreIncomplete {
+            schema: "kapsel.sandbox.restore-incomplete.v1".to_owned(),
+            generation: self.manifest.generation,
+            manifest_sha256: self.manifest_sha256.clone(),
+            compatibility_sha256: self.manifest.compatibility_sha256.clone(),
+            started_at,
+            step: "installed".to_owned(),
+        };
+        let incomplete_file = write_restored_file(
+            &temporary,
+            RESTORE_INCOMPLETE,
+            &serde_json::to_vec(&incomplete).map_err(|_| ())?,
+            self.controller,
+            1024,
+        )?;
+        for file in [&database, &deployment, &state_lock, &incomplete_file] {
+            file.sync_all().map_err(|_| ())?;
+        }
+        for directory in [&receipts, &runner] {
+            directory.sync_all().map_err(|_| ())?;
+        }
+        temporary.sync_all().map_err(|_| ())?;
+        self.verify_restore_temporary(
+            &temporary,
+            &database,
+            &deployment,
+            &receipts,
+            &runner,
+            &state_lock,
+            &incomplete_file,
+            &incomplete,
+        )?;
+        self.verify(false, true)?;
+        renameat(
+            &self.destination_parent,
+            RESTORE_TEMPORARY,
+            &self.destination_parent,
+            &self.destination_name,
+        )
+        .map_err(|_| ())?;
+        self.destination_parent.sync_all().map_err(|_| ())?;
+        self.verify(true, false)
+    }
+}
+
 #[allow(
     dead_code,
     reason = "the generation publisher consumes this validated identity and pinned unit"
@@ -1107,6 +1648,31 @@ fn create_directory(parent: &File, name: &str, identity: BackupIdentity) -> Resu
     directory_at(parent, name, identity.uid, identity.gid, 0o700)
 }
 
+fn create_restored_directory(
+    parent: &File,
+    name: &str,
+    controller: BackupIdentity,
+) -> Result<File, ()> {
+    mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+    let directory = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    rustix::fs::fchown(
+        &directory,
+        Some(rustix::process::Uid::from_raw(controller.uid)),
+        Some(rustix::process::Gid::from_raw(controller.gid)),
+    )
+    .map_err(|_| ())?;
+    validate_directory(&directory, controller.uid, controller.gid, 0o700)?;
+    Ok(directory)
+}
+
 fn write_new_file(
     parent: &File,
     name: &str,
@@ -1130,6 +1696,48 @@ fn write_new_file(
     file.sync_all().map_err(|_| ())?;
     validate_file(&file, identity, 0o600, maximum)?;
     Ok(file)
+}
+
+fn write_restored_file(
+    parent: &File,
+    name: &str,
+    bytes: &[u8],
+    controller: BackupIdentity,
+    maximum: u64,
+) -> Result<File, ()> {
+    if u64::try_from(bytes.len()).map_err(|_| ())? > maximum {
+        return Err(());
+    }
+    let mut file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|_| ())?,
+    );
+    file.write_all(bytes).map_err(|_| ())?;
+    rustix::fs::fchown(
+        &file,
+        Some(rustix::process::Uid::from_raw(controller.uid)),
+        Some(rustix::process::Gid::from_raw(controller.gid)),
+    )
+    .map_err(|_| ())?;
+    file.sync_all().map_err(|_| ())?;
+    validate_file(&file, controller, 0o600, maximum)?;
+    Ok(file)
+}
+
+fn copy_restored_file(
+    source: &File,
+    destination: &File,
+    name: &str,
+    controller: BackupIdentity,
+    maximum: u64,
+) -> Result<File, ()> {
+    let bytes = read_bounded(source, maximum)?;
+    write_restored_file(destination, name, &bytes, controller, maximum)
 }
 
 fn copy_file(
@@ -1534,6 +2142,171 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the restore tracer keeps its complete evidence together"
+    )]
+    fn selected_clean_backup_installs_incomplete_destination_without_early_readiness() {
+        let (base, state) = initialized("restore-installed");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let manifest_digest = selected.manifest_sha256.clone();
+        let source_database = fs::read(base.join("state-parent/state").join(DATABASE)).unwrap();
+        let source_deployment = fs::read(base.join("state-parent/state").join(DEPLOYMENT)).unwrap();
+        let backup_database = fs::read(
+            backup_root
+                .join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join("service")
+                .join(DATABASE),
+        )
+        .unwrap();
+        let backup_current = fs::read(backup_root.join(CURRENT)).unwrap();
+        let backup_manifest = fs::read(
+            backup_root
+                .join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join(MANIFEST),
+        )
+        .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        let restore_parent = base.join("restore-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(".kapsel-sandbox-restore.lock"))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let identities = RoleIdentities::test_controller();
+        for reserved in [PARENT_RESTORE_LOCK, RESTORE_TEMPORARY] {
+            assert!(RestoreGuard::open_selected_clean(
+                &restore_parent.join(reserved),
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+            assert_eq!(
+                fs::read_dir(&restore_parent)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<BTreeSet<_>>(),
+                std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect()
+            );
+        }
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+
+        assert!(restore.install_incomplete(1_774_051_200).is_err());
+        assert!(!destination.exists());
+        restore.install_incomplete(1_774_051_201).unwrap();
+        let expected = [
+            ".backup.lock",
+            DEPLOYMENT,
+            "receipts",
+            "restore.incomplete",
+            "runner",
+            DATABASE,
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<BTreeSet<_>>();
+        assert_eq!(
+            fs::read_dir(&destination)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        assert_eq!(
+            fs::read(destination.join(DATABASE)).unwrap(),
+            backup_database
+        );
+        assert_eq!(
+            fs::read(destination.join(DEPLOYMENT)).unwrap(),
+            source_deployment
+        );
+        assert!(fs::read_dir(destination.join("receipts"))
+            .unwrap()
+            .next()
+            .is_none());
+        assert!(fs::read_dir(destination.join("runner"))
+            .unwrap()
+            .next()
+            .is_none());
+        let incomplete_bytes = fs::read(destination.join("restore.incomplete")).unwrap();
+        let incomplete: RestoreIncomplete = serde_json::from_slice(&incomplete_bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&incomplete).unwrap(), incomplete_bytes);
+        assert_eq!(incomplete.generation, 1);
+        assert_eq!(incomplete.manifest_sha256, manifest_digest);
+        assert_eq!(incomplete.started_at, 1_774_051_201);
+        assert_eq!(incomplete.step, "installed");
+        assert!(!destination.join("restore.ready").exists());
+        for (path, expected_mode) in [
+            (destination.clone(), 0o700),
+            (destination.join(DATABASE), 0o600),
+            (destination.join(DEPLOYMENT), 0o400),
+            (destination.join("receipts"), 0o700),
+            (destination.join("runner"), 0o700),
+            (destination.join(".backup.lock"), 0o600),
+            (destination.join("restore.incomplete"), 0o600),
+        ] {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o7777, expected_mode);
+            if metadata.is_file() {
+                assert_eq!(metadata.nlink(), 1);
+            }
+        }
+        drop(restore);
+        assert!(crate::state_root::StateGuard::open(
+            &destination,
+            identities,
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
+            source_database
+        );
+        assert_eq!(fs::read(backup_root.join(CURRENT)).unwrap(), backup_current);
+        assert_eq!(
+            fs::read(
+                backup_root
+                    .join(GENERATIONS)
+                    .join(GENERATION_ONE)
+                    .join(MANIFEST)
+            )
+            .unwrap(),
+            backup_manifest
+        );
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
     }
 
     #[test]
