@@ -27,6 +27,7 @@ const DEPLOYMENT: &str = "deployment.json";
 const READY: &str = "restore.ready";
 const INCOMPLETE: &str = "restore.incomplete";
 const JSON_MAX: u64 = 16 * 1024;
+#[cfg(any(test, feature = "state-root-test-harness"))]
 const STAGING_ID: u32 = 65_531;
 
 #[cfg(test)]
