@@ -79,8 +79,10 @@ The exact local evaluator grammar and file separation are owned by the
 cargo test --locked --test e2e_mcp_adapter
 ./scripts/ci-local.sh
 cargo make test-demo-harness
-cargo make test-release-artifact
-cargo make test-release-reproducibility
+a_dir=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-release-a.XXXXXX")
+archive_a=$(python3 scripts/assemble-release-artifact.py --output-directory "$a_dir")
+python3 scripts/test-release-artifact.py --archive "$archive_a"
+python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
 cargo make demo-kind  # requires Docker, kind 0.32+, and kubectl 1.30+
 ```
 

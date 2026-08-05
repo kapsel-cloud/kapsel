@@ -101,15 +101,21 @@ command = "python3"
 args = ["scripts/test-scan-release-sbom.py"]
 
 [tasks.test-release-artifact]
-description = "Assemble and smoke-test the extracted release artifact"
+description = "Verify and smoke-test one already assembled release artifact"
 dependencies = ["test-release-sbom-scan"]
-command = "python3"
-args = ["scripts/test-release-artifact.py"]
+script = '''
+set -eu
+: "${KAPSEL_RELEASE_ARCHIVE:?set KAPSEL_RELEASE_ARCHIVE to strict artifact A}"
+python3 scripts/test-release-artifact.py --archive "$KAPSEL_RELEASE_ARCHIVE"
+'''
 
 [tasks.test-release-reproducibility]
-description = "Compare two isolated archive and deterministic-sidecar assemblies byte for byte"
-command = "python3"
-args = ["scripts/test-release-reproducibility.py"]
+description = "Assemble B and compare it byte-for-byte with strict artifact A"
+script = '''
+set -eu
+: "${KAPSEL_RELEASE_ARCHIVE:?set KAPSEL_RELEASE_ARCHIVE to strict artifact A}"
+python3 scripts/test-release-reproducibility.py --reference-archive "$KAPSEL_RELEASE_ARCHIVE"
+'''
 
 [tasks.scan-release-sbom]
 description = "Scan one exact release SBOM with the frozen fresh Trivy policy"

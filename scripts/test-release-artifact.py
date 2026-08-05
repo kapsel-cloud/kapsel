@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import gzip
 import hashlib
 import importlib.util
@@ -13,6 +15,7 @@ import pathlib
 import re
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -27,6 +30,13 @@ BUILDER_IMAGE = (
 SMOKE_IMAGE = (
     "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 )
+RELEASE_ARCHIVE: pathlib.Path | None = None
+
+
+def release_archive() -> pathlib.Path:
+    if RELEASE_ARCHIVE is None:
+        raise RuntimeError("--archive is required")
+    return RELEASE_ARCHIVE
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -257,7 +267,7 @@ class ReleaseArtifactTests(unittest.TestCase):
         finally:
             sentinel.unlink(missing_ok=True)
 
-    def test_assembly_produces_verified_exact_layout(self) -> None:
+    def test_reference_archive_has_verified_exact_layout_and_smoke(self) -> None:
         expected_dirty = bool(
             subprocess.run(
                 ["git", "status", "--porcelain=v1", "--untracked-files=all"],
@@ -266,36 +276,28 @@ class ReleaseArtifactTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
             ).stdout
         )
-        with tempfile.TemporaryDirectory(prefix="kapsel-release-artifact-") as temporary:
-            output = pathlib.Path(temporary)
-            subprocess.run(
-                [
-                    "python3",
-                    str(ASSEMBLER),
-                    "--output-directory",
-                    str(output),
-                    "--allow-dirty",
-                ],
-                cwd=ROOT,
-                check=True,
-                timeout=900,
-            )
+        archive = release_archive()
+        SMOKE.read_bounded_regular(archive, 32 * 1024 * 1024)
+        with contextlib.nullcontext(archive.parent) as output:
             version = tomllib.loads(ROOT.joinpath("Cargo.toml").read_text())["workspace"][
                 "package"
             ]["version"]
             basename = f"kapsel-{version}-{TARGET}"
-            archive = output / f"{basename}.tar.gz"
+            self.assertEqual(archive.name, f"{basename}.tar.gz")
             checksum = output / f"{archive.name}.sha256"
             sbom = output / f"{archive.name}.spdx.json"
             manifest = output / f"{archive.name}.SHA256SUMS"
-            self.assertTrue(archive.is_file())
-            self.assertTrue(sbom.is_file())
-            self.assertEqual(checksum.read_text(), f"{sha256(archive)}  {archive.name}\n")
+            checksum_bytes = SMOKE.read_bounded_regular(checksum, 1024)
+            sbom_bytes = SMOKE.read_bounded_regular(sbom, 2 * 1024 * 1024)
+            manifest_bytes = SMOKE.read_bounded_regular(manifest, 1024)
+            self.assertEqual(
+                checksum_bytes.decode(), f"{sha256(archive)}  {archive.name}\n"
+            )
             expected_manifest = "".join(
                 f"{sha256(path)}  {path.name}\n"
                 for path in sorted([archive, checksum, sbom], key=lambda path: path.name)
             )
-            self.assertEqual(manifest.read_text(), expected_manifest)
+            self.assertEqual(manifest_bytes.decode(), expected_manifest)
 
             expected = {
                 f"{basename}/",
@@ -449,7 +451,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     self.assertEqual(binary[4:6], b"\x02\x01")
                     self.assertEqual(int.from_bytes(binary[18:20], "little"), 62)
 
-            sbom_document = json.loads(sbom.read_text())
+            sbom_document = json.loads(sbom_bytes)
             self.assertEqual(sbom_document["spdxVersion"], "SPDX-2.3")
             self.assertEqual(
                 sbom_document["documentNamespace"],
@@ -492,4 +494,8 @@ class ReleaseArtifactTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--archive", required=True, type=pathlib.Path)
+    arguments, unittest_arguments = parser.parse_known_args()
+    RELEASE_ARCHIVE = pathlib.Path(os.path.abspath(arguments.archive))
+    unittest.main(argv=[sys.argv[0], *unittest_arguments])

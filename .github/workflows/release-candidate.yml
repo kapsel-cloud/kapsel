@@ -24,12 +24,30 @@ jobs:
           set -eu
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
-      - name: Smoke-test extracted artifact
-        run: python3 scripts/test-release-artifact.py
-      - name: Verify deterministic archive and sidecars
-        run: python3 scripts/test-release-reproducibility.py
-      - name: Assemble candidate files
-        run: python3 scripts/assemble-release-artifact.py --output-directory dist
+      - name: Assemble strict candidate A
+        id: artifact-a
+        shell: bash
+        run: |
+          archive=$(python3 scripts/assemble-release-artifact.py \
+            --output-directory "$RUNNER_TEMP/kapsel-release-a")
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Verify and smoke-test exact candidate A
+        run: python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+      - name: Assemble B and compare deterministic bytes
+        run: python3 scripts/test-release-reproducibility.py --reference-archive "${{ steps.artifact-a.outputs.archive }}"
+      - name: Stage exact candidate A
+        env:
+          ARCHIVE_A: ${{ steps.artifact-a.outputs.archive }}
+        shell: bash
+        run: |
+          set -eu
+          mkdir dist
+          for suffix in '' .sha256 .spdx.json .SHA256SUMS; do
+            source="$ARCHIVE_A$suffix"
+            destination="dist/$(basename "$source")"
+            cp -- "$source" "$destination"
+            cmp -- "$source" "$destination"
+          done
       - name: Install pinned Trivy
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:

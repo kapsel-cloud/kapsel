@@ -90,13 +90,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Smoke-test extracted artifact
-        run: python3 scripts/test-release-artifact.py
-      - name: Verify reproducible assembly
-        run: python3 scripts/test-release-reproducibility.py
-      - name: Assemble downloadable artifact
+      - name: Assemble strict artifact A
+        id: artifact-a
+        shell: bash
+        run: |
+          archive=$(python3 scripts/assemble-release-artifact.py \
+            --output-directory "$RUNNER_TEMP/kapsel-release-a")
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+      - name: Verify and smoke-test exact artifact A
+        run: python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+      - name: Assemble B and compare deterministic bytes
+        run: python3 scripts/test-release-reproducibility.py --reference-archive "${{ steps.artifact-a.outputs.archive }}"
+      - name: Stage exact artifact A for upload
         if: github.event_name == 'push'
-        run: python3 scripts/assemble-release-artifact.py --output-directory dist
+        env:
+          ARCHIVE_A: ${{ steps.artifact-a.outputs.archive }}
+        shell: bash
+        run: |
+          set -eu
+          mkdir dist
+          for suffix in '' .sha256 .spdx.json .SHA256SUMS; do
+            source="$ARCHIVE_A$suffix"
+            destination="dist/$(basename "$source")"
+            cp -- "$source" "$destination"
+            cmp -- "$source" "$destination"
+          done
       - name: Upload deterministic archive and sidecars
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
