@@ -15,7 +15,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     state_root::{BackupStateGuard, DeploymentSnapshot},
-    AuthorityConfiguration, BackupPublication, BackupPublicationState, Service,
+    AuthorityConfiguration, BackupPublication, BackupPublicationState, ExpiryTransactionBarrier,
+    Service,
 };
 
 const BACKUP_ID: u32 = 65_529;
@@ -769,6 +770,29 @@ enum RestoreStopBarrier {
     AfterRename,
 }
 
+#[derive(Clone, Copy)]
+enum RestoreExpiryBarrier {
+    BeforeExpiryCommit,
+    AfterExpiryCommit,
+    AfterTemporarySync,
+    AfterRename,
+}
+
+#[derive(Clone, Copy)]
+enum RestoreTransition {
+    InstalledToStopped,
+    StoppedToExpired,
+}
+
+impl RestoreTransition {
+    fn steps(self) -> (&'static str, &'static str) {
+        match self {
+            Self::InstalledToStopped => ("installed", "stopped"),
+            Self::StoppedToExpired => ("stopped", "expired"),
+        }
+    }
+}
+
 #[allow(
     dead_code,
     reason = "opened destination descriptors remain pinned through the stopped transition"
@@ -1397,11 +1421,39 @@ impl RestoreGuard {
             profile,
             true,
         )?;
-        guard.open_restored_clean_prefix()?;
+        let prefix = guard.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
+        if !matches!(prefix.record.step.as_str(), "installed" | "stopped") {
+            return Err(());
+        }
         Ok(guard)
     }
 
-    fn open_restored_clean_prefix(&self) -> Result<RestoredCleanPrefix, ()> {
+    fn reopen_stopped_to_expired(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        let guard = Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            true,
+        )?;
+        let prefix = guard.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+        if !matches!(prefix.record.step.as_str(), "stopped" | "expired") {
+            return Err(());
+        }
+        Ok(guard)
+    }
+
+    fn open_restored_clean_prefix(
+        &self,
+        transition: RestoreTransition,
+    ) -> Result<RestoredCleanPrefix, ()> {
         self.verify(true, false)?;
         let root = directory_at(
             &self.destination_parent,
@@ -1496,8 +1548,11 @@ impl RestoreGuard {
             || record.manifest_sha256 != self.manifest_sha256
             || record.compatibility_sha256 != self.manifest.compatibility_sha256
             || record.started_at < self.manifest.captured_at
-            || !matches!(record.step.as_str(), "installed" | "stopped")
         {
+            return Err(());
+        }
+        let (current_step, next_step) = transition.steps();
+        if record.step != current_step && record.step != next_step {
             return Err(());
         }
         let current_publication = Service::preflight_clean_restored_source(
@@ -1507,16 +1562,19 @@ impl RestoreGuard {
             Some(&self.manifest_sha256),
         )
         .map_err(|_| ())?;
-        if record.step == "stopped" && (!current_publication || has_temporary) {
+        if record.step == next_step && (!current_publication || has_temporary) {
             return Err(());
         }
-        let expected_stopped = RestoreIncomplete {
-            step: "stopped".to_owned(),
+        if current_step == "stopped" && !current_publication {
+            return Err(());
+        }
+        let expected_next = RestoreIncomplete {
+            step: next_step.to_owned(),
             ..record.clone()
         };
-        let expected_stopped_bytes = serde_json::to_vec(&expected_stopped).map_err(|_| ())?;
+        let expected_next_bytes = serde_json::to_vec(&expected_next).map_err(|_| ())?;
         let temporary = if has_temporary {
-            if record.step != "installed" || !current_publication {
+            if record.step != current_step || !current_publication {
                 return Err(());
             }
             let file = file_at(
@@ -1529,9 +1587,7 @@ impl RestoreGuard {
                 1024,
             )?;
             let bytes = read_bounded(&file, 1024)?;
-            if bytes.len() > expected_stopped_bytes.len()
-                || !expected_stopped_bytes.starts_with(&bytes)
-            {
+            if bytes.len() > expected_next_bytes.len() || !expected_next_bytes.starts_with(&bytes) {
                 return Err(());
             }
             Some(file)
@@ -1560,10 +1616,10 @@ impl RestoreGuard {
     where
         F: FnMut(RestoreStopBarrier) -> Result<(), ()>,
     {
-        let mut prefix = self.open_restored_clean_prefix()?;
+        let mut prefix = self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
         if prefix.record.step == "stopped" {
             prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix()?;
+            self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
             return Ok(());
         }
         if !prefix.current_publication {
@@ -1584,7 +1640,7 @@ impl RestoreGuard {
                 .map_err(|_| ())?;
             drop(service);
             barrier(RestoreStopBarrier::AfterPublication)?;
-            prefix = self.open_restored_clean_prefix()?;
+            prefix = self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
             if !prefix.current_publication || prefix.record.step != "installed" {
                 return Err(());
             }
@@ -1617,7 +1673,7 @@ impl RestoreGuard {
             )?;
             barrier(RestoreStopBarrier::AfterTemporarySync)?;
         }
-        self.open_restored_clean_prefix()?;
+        self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
         renameat(
             &prefix.root,
             RESTORE_STATE_TEMPORARY,
@@ -1627,8 +1683,93 @@ impl RestoreGuard {
         .map_err(|_| ())?;
         barrier(RestoreStopBarrier::AfterRename)?;
         prefix.root.sync_all().map_err(|_| ())?;
-        let stopped_prefix = self.open_restored_clean_prefix()?;
+        let stopped_prefix =
+            self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
         if stopped_prefix.record.step != "stopped" || !stopped_prefix.current_publication {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn advance_stopped_to_expired_with_barrier<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        mut barrier: F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreExpiryBarrier) -> Result<(), ()>,
+    {
+        let mut prefix = self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+        if prefix.record.step == "expired" {
+            prefix.root.sync_all().map_err(|_| ())?;
+            self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+            return Ok(());
+        }
+        let service = crate::StoppedBackupService::open_restored(
+            &self.destination_path.join(DATABASE),
+            &self.destination_path.join("receipts"),
+            authority,
+        )
+        .map_err(|_| ())?;
+        service
+            .apply_restore_expiry_with_barrier(prefix.record.started_at, |phase| {
+                let phase = match phase {
+                    ExpiryTransactionBarrier::BeforeCommit => {
+                        RestoreExpiryBarrier::BeforeExpiryCommit
+                    },
+                    ExpiryTransactionBarrier::AfterCommit => {
+                        RestoreExpiryBarrier::AfterExpiryCommit
+                    },
+                };
+                barrier(phase).map_err(|()| crate::ServiceError::Unavailable)
+            })
+            .map_err(|_| ())?;
+        drop(service);
+        prefix = self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+        if prefix.record.step != "stopped" || !prefix.current_publication {
+            return Err(());
+        }
+        let expired = RestoreIncomplete {
+            step: "expired".to_owned(),
+            ..prefix.record.clone()
+        };
+        let expired_bytes = serde_json::to_vec(&expired).map_err(|_| ())?;
+        if let Some(temporary) = prefix.temporary.take() {
+            let bytes = read_bounded(&temporary, 1024)?;
+            drop(temporary);
+            if bytes != expired_bytes {
+                rustix::fs::unlinkat(
+                    &prefix.root,
+                    RESTORE_STATE_TEMPORARY,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .map_err(|_| ())?;
+                prefix.root.sync_all().map_err(|_| ())?;
+            }
+        }
+        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
+            write_restored_file(
+                &prefix.root,
+                RESTORE_STATE_TEMPORARY,
+                &expired_bytes,
+                self.controller,
+                1024,
+            )?;
+            barrier(RestoreExpiryBarrier::AfterTemporarySync)?;
+        }
+        self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+        renameat(
+            &prefix.root,
+            RESTORE_STATE_TEMPORARY,
+            &prefix.root,
+            RESTORE_INCOMPLETE,
+        )
+        .map_err(|_| ())?;
+        barrier(RestoreExpiryBarrier::AfterRename)?;
+        prefix.root.sync_all().map_err(|_| ())?;
+        let expired_prefix =
+            self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+        if expired_prefix.record.step != "expired" || !expired_prefix.current_publication {
             return Err(());
         }
         Ok(())
@@ -2886,6 +3027,315 @@ mod tests {
             .unwrap(),
             backup_manifest
         );
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the expired restore tracer crosses every durable transaction and record side"
+    )]
+    fn selected_stopped_restore_applies_expiry_and_advances_expired_without_readiness() {
+        let (base, state) = initialized("restore-expired");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let source_database = fs::read(base.join("state-parent/state").join(DATABASE)).unwrap();
+        let backup_database_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join("service")
+            .join(DATABASE);
+        let backup_deployment_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join(DEPLOYMENT);
+        let backup_manifest_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join(MANIFEST);
+        let backup_database = fs::read(&backup_database_path).unwrap();
+        let backup_current = fs::read(backup_root.join(CURRENT)).unwrap();
+        let backup_deployment = fs::read(&backup_deployment_path).unwrap();
+        let backup_manifest = fs::read(&backup_manifest_path).unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        let restore_parent = base.join("restore-expired-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let identities = RoleIdentities::test_controller();
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore.install_incomplete(1_774_051_201).unwrap();
+        drop(restore);
+        let restore = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_installed_to_stopped_with_barrier(&authority, |_| Ok(()))
+            .unwrap();
+        drop(restore);
+
+        let stopped_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let stopped: RestoreIncomplete = serde_json::from_slice(&stopped_bytes).unwrap();
+        assert_eq!(stopped.step, "stopped");
+        let destination_database = fs::read(destination.join(DATABASE)).unwrap();
+        let destination_deployment = fs::read(destination.join(DEPLOYMENT)).unwrap();
+        let assert_not_ready = || {
+            assert!(!destination.join("restore.ready").exists());
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                identities,
+                DeploymentProfile::Test,
+            )
+            .is_err());
+        };
+        let assert_empty_public_state = || {
+            let connection = rusqlite::Connection::open(destination.join(DATABASE)).unwrap();
+            for table in [
+                "runs",
+                "tombstones",
+                "receipts",
+                "receipt_publications",
+                "cleanup_records",
+                "application_reports",
+                "provisioned_object_owners",
+                "events",
+                "authority_collection",
+                "backup_authority_references",
+            ] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "unexpected restored row in {table}");
+            }
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM backup_generations", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                1
+            );
+            assert!(fs::read_dir(destination.join("receipts"))
+                .unwrap()
+                .next()
+                .is_none());
+            assert!(fs::read_dir(destination.join("runner"))
+                .unwrap()
+                .next()
+                .is_none());
+        };
+        assert_not_ready();
+        assert_empty_public_state();
+
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_stopped_to_expired_with_barrier(&authority, |phase| {
+                assert!(matches!(phase, RestoreExpiryBarrier::BeforeExpiryCommit));
+                Err(())
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            stopped_bytes
+        );
+        assert!(!destination.join(RESTORE_STATE_TEMPORARY).exists());
+        assert_not_ready();
+        assert_empty_public_state();
+
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_stopped_to_expired_with_barrier(&authority, |phase| {
+                if matches!(phase, RestoreExpiryBarrier::BeforeExpiryCommit) {
+                    Ok(())
+                } else {
+                    assert!(matches!(phase, RestoreExpiryBarrier::AfterExpiryCommit));
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            stopped_bytes
+        );
+        assert_not_ready();
+        assert_empty_public_state();
+
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_stopped_to_expired_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreExpiryBarrier::BeforeExpiryCommit
+                        | RestoreExpiryBarrier::AfterExpiryCommit
+                ) {
+                    Ok(())
+                } else {
+                    assert!(matches!(phase, RestoreExpiryBarrier::AfterTemporarySync));
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        let temporary_path = destination.join(RESTORE_STATE_TEMPORARY);
+        let temporary_bytes = fs::read(&temporary_path).unwrap();
+        fs::write(
+            &temporary_path,
+            &temporary_bytes[..temporary_bytes.len() / 2],
+        )
+        .unwrap();
+        assert_not_ready();
+
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_stopped_to_expired_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreExpiryBarrier::BeforeExpiryCommit
+                        | RestoreExpiryBarrier::AfterExpiryCommit
+                ) {
+                    Ok(())
+                } else {
+                    assert!(matches!(phase, RestoreExpiryBarrier::AfterTemporarySync));
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(fs::read(&temporary_path).unwrap(), temporary_bytes);
+        assert_not_ready();
+
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_stopped_to_expired_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreExpiryBarrier::BeforeExpiryCommit
+                        | RestoreExpiryBarrier::AfterExpiryCommit
+                ) {
+                    Ok(())
+                } else {
+                    assert!(matches!(phase, RestoreExpiryBarrier::AfterRename));
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert!(!temporary_path.exists());
+        let expired_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let expired: RestoreIncomplete = serde_json::from_slice(&expired_bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&expired).unwrap(), expired_bytes);
+        assert_eq!(expired.step, "expired");
+        assert_not_ready();
+        assert_empty_public_state();
+
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_stopped_to_expired_with_barrier(&authority, |_| Err(()))
+            .unwrap();
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            expired_bytes
+        );
+        assert_eq!(
+            fs::read(destination.join(DATABASE)).unwrap(),
+            destination_database
+        );
+        assert_eq!(
+            fs::read(destination.join(DEPLOYMENT)).unwrap(),
+            destination_deployment
+        );
+        assert_eq!(
+            fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
+            source_database
+        );
+        assert_eq!(fs::read(backup_root.join(CURRENT)).unwrap(), backup_current);
+        assert_eq!(fs::read(&backup_database_path).unwrap(), backup_database);
+        assert_eq!(
+            fs::read(&backup_deployment_path).unwrap(),
+            backup_deployment
+        );
+        assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
+        assert_not_ready();
+        assert_empty_public_state();
         crate::test_authority::remove_root(&authority_root);
         cleanup(&base);
     }
