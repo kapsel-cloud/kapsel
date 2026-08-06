@@ -727,6 +727,14 @@ impl StoppedBackupService<'_> {
         })
     }
 
+    pub(crate) fn open_restored(
+        database_path: &Path,
+        receipt_directory: &Path,
+        authority: &AuthorityConfiguration,
+    ) -> Result<Self, ServiceError> {
+        Self::open_internal(database_path, receipt_directory, authority, None)
+    }
+
     #[cfg(test)]
     pub(crate) fn open_for_test(
         database_path: impl AsRef<Path>,
@@ -1150,13 +1158,33 @@ impl Service {
         generation: u64,
         captured_at: i64,
     ) -> Result<(), ServiceError> {
-        if generation == 0 || captured_at <= 0 {
+        if Self::preflight_clean_restored_source(database_path, generation, captured_at, None)? {
             return Err(ServiceError::Unavailable);
         }
-        Self::preflight_stopped_backup_source_mode(database_path, 0o400)?;
+        Ok(())
+    }
+
+    pub(crate) fn preflight_clean_restored_source(
+        database_path: &Path,
+        generation: u64,
+        captured_at: i64,
+        manifest_digest: Option<&str>,
+    ) -> Result<bool, ServiceError> {
+        if generation == 0
+            || captured_at <= 0
+            || manifest_digest.is_some_and(|digest| !valid_sha256(digest))
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        let mode = if manifest_digest.is_some() {
+            0o600
+        } else {
+            0o400
+        };
+        Self::preflight_stopped_backup_source_mode(database_path, mode)?;
         let database_path =
             fs::canonicalize(database_path).map_err(|_| ServiceError::Unavailable)?;
-        let before = validate_database_file_mode(&database_path, 0o400)?;
+        let before = validate_database_file_mode(&database_path, mode)?;
         let connection = Connection::open_with_flags(
             &database_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -1178,24 +1206,48 @@ impl Service {
                     "AND NOT EXISTS(SELECT 1 FROM events) ",
                     "AND NOT EXISTS(SELECT 1 FROM authority_collection) ",
                     "AND (SELECT COUNT(*) FROM backup_generations) = 1 ",
-                    "AND EXISTS(SELECT 1 FROM backup_generations ",
-                    "WHERE slot = 'pending' AND generation = ?1 ",
-                    "AND manifest_digest IS NULL AND state = 'pending' ",
-                    "AND captured_at = ?2) ",
                     "AND NOT EXISTS(SELECT 1 FROM backup_authority_references) ",
                     "FROM service_state WHERE singleton = 1"
                 ),
-                rusqlite::params![
-                    i64::try_from(generation).map_err(|_| ServiceError::Unavailable)?,
-                    captured_at
-                ],
+                [],
                 |row| row.get(0),
             )
             .map_err(storage_error)?;
-        if !clean || validate_database_file_mode(&database_path, 0o400)? != before {
+        let publication = connection
+            .query_row(
+                concat!(
+                    "SELECT slot, generation, manifest_digest, state, captured_at ",
+                    "FROM backup_generations"
+                ),
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?;
+        let current = match (publication.0.as_str(), publication.2.as_deref()) {
+            ("pending", None) if publication.3 == "pending" => false,
+            ("current", Some(digest))
+                if publication.3 == "current" && manifest_digest == Some(digest) =>
+            {
+                true
+            },
+            _ => return Err(ServiceError::Unavailable),
+        };
+        if !clean
+            || u64::try_from(publication.1).ok() != Some(generation)
+            || publication.4 != captured_at
+            || validate_database_file_mode(&database_path, mode)? != before
+        {
             return Err(ServiceError::Unavailable);
         }
-        Ok(())
+        Ok(current)
     }
 
     fn migrate_stopped_state_root(database_path: &Path) -> Result<(), ServiceError> {

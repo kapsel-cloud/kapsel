@@ -15,7 +15,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     state_root::{BackupStateGuard, DeploymentSnapshot},
-    AuthorityConfiguration, BackupPublicationState, Service,
+    AuthorityConfiguration, BackupPublication, BackupPublicationState, Service,
 };
 
 const BACKUP_ID: u32 = 65_529;
@@ -23,6 +23,7 @@ const LOCK: &str = ".backup.lock";
 const PARENT_RESTORE_LOCK: &str = ".kapsel-sandbox-restore.lock";
 const RESTORE_TEMPORARY: &str = ".kapsel-sandbox-restore.tmp";
 const RESTORE_INCOMPLETE: &str = "restore.incomplete";
+const RESTORE_STATE_TEMPORARY: &str = "restore.state.tmp";
 const GENERATIONS: &str = "generations";
 const DEPLOYMENT: &str = "deployment.json";
 const MANIFEST: &str = "manifest.json";
@@ -746,7 +747,7 @@ impl<'state> BackupRootGuard<'state> {
     }
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RestoreIncomplete {
     schema: String,
@@ -757,16 +758,47 @@ struct RestoreIncomplete {
     step: String,
 }
 
+#[derive(Clone, Copy)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "fault barriers name the durable side reached before simulated process loss"
+)]
+enum RestoreStopBarrier {
+    AfterPublication,
+    AfterTemporarySync,
+    AfterRename,
+}
+
+#[allow(
+    dead_code,
+    reason = "opened destination descriptors remain pinned through the stopped transition"
+)]
+struct RestoredCleanPrefix {
+    root: File,
+    database: File,
+    deployment: File,
+    receipts: File,
+    runner: File,
+    state_lock: File,
+    incomplete: File,
+    temporary: Option<File>,
+    record: RestoreIncomplete,
+    current_publication: bool,
+}
+
 /// Pins one selected clean backup after exclusively fencing an absent destination.
 #[allow(
     dead_code,
     reason = "the shipped restore command will compose this private filesystem phase"
 )]
 struct RestoreGuard {
+    destination_path: PathBuf,
     destination_name: OsString,
     controller: BackupIdentity,
     destination_parent: File,
     destination_lock: File,
+    destination_state: Option<File>,
+    destination_state_lock: Option<File>,
     backup_name: OsString,
     backup_identity: BackupIdentity,
     backup_parent: File,
@@ -801,6 +833,24 @@ impl RestoreGuard {
         backup_identity: BackupIdentity,
         profile: crate::state_root::DeploymentProfile,
     ) -> Result<Self, ()> {
+        Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            false,
+        )
+    }
+
+    fn open_selected_clean_prefix(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+        installed: bool,
+    ) -> Result<Self, ()> {
         if !destination.is_absolute() || !backup_path.is_absolute() {
             return Err(());
         }
@@ -825,10 +875,28 @@ impl RestoreGuard {
             0,
         )?;
         flock(&destination_lock, FlockOperation::NonBlockingLockExclusive).map_err(|_| ())?;
-        let expected_parent = std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect();
-        if names(&destination_parent, 2)? != expected_parent {
+        let mut expected_parent =
+            std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect::<BTreeSet<_>>();
+        if installed {
+            expected_parent.insert(destination_name.clone());
+        }
+        if names(&destination_parent, 3)? != expected_parent {
             return Err(());
         }
+        let (destination_state, destination_state_lock) = if installed {
+            let state = directory_at(
+                &destination_parent,
+                &destination_name,
+                controller.uid,
+                controller.gid,
+                0o700,
+            )?;
+            let state_lock = file_at(&state, LOCK, controller.uid, controller.gid, 0o600, true, 0)?;
+            flock(&state_lock, FlockOperation::NonBlockingLockExclusive).map_err(|_| ())?;
+            (Some(state), Some(state_lock))
+        } else {
+            (None, None)
+        };
 
         let backup_parent_path = backup_path.parent().ok_or(())?;
         let backup_name = backup_path.file_name().ok_or(())?.to_owned();
@@ -988,10 +1056,13 @@ impl RestoreGuard {
             return Err(());
         }
         let guard = Self {
+            destination_path: destination.to_owned(),
             destination_name,
             controller,
             destination_parent,
             destination_lock,
+            destination_state,
+            destination_state_lock,
             backup_name,
             backup_identity,
             backup_parent,
@@ -1016,7 +1087,7 @@ impl RestoreGuard {
             manifest_sha256,
             profile,
         };
-        guard.verify(false, false)?;
+        guard.verify(installed, false)?;
         Ok(guard)
     }
 
@@ -1066,6 +1137,34 @@ impl RestoreGuard {
             0,
         )?;
         same(&destination_lock, &self.destination_lock)?;
+        match (
+            installed,
+            self.destination_state.as_ref(),
+            self.destination_state_lock.as_ref(),
+        ) {
+            (true, Some(pinned_state), Some(pinned_lock)) => {
+                let state = directory_at(
+                    &self.destination_parent,
+                    &self.destination_name,
+                    self.controller.uid,
+                    self.controller.gid,
+                    0o700,
+                )?;
+                same(&state, pinned_state)?;
+                let state_lock = file_at(
+                    &state,
+                    LOCK,
+                    self.controller.uid,
+                    self.controller.gid,
+                    0o600,
+                    true,
+                    0,
+                )?;
+                same(&state_lock, pinned_lock)?;
+            },
+            (true | false, None, None) => {},
+            _ => return Err(()),
+        }
         let backup_root = directory_at(
             &self.backup_parent,
             &self.backup_name,
@@ -1281,6 +1380,258 @@ impl RestoreGuard {
         .map_err(|_| ())?;
         self.destination_parent.sync_all().map_err(|_| ())?;
         self.verify(true, false)
+    }
+
+    fn reopen_installed_to_stopped(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        let guard = Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            true,
+        )?;
+        guard.open_restored_clean_prefix()?;
+        Ok(guard)
+    }
+
+    fn open_restored_clean_prefix(&self) -> Result<RestoredCleanPrefix, ()> {
+        self.verify(true, false)?;
+        let root = directory_at(
+            &self.destination_parent,
+            &self.destination_name,
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        same(&root, self.destination_state.as_ref().ok_or(())?)?;
+        let base_names = [
+            DATABASE,
+            DEPLOYMENT,
+            LOCK,
+            RESTORE_INCOMPLETE,
+            "receipts",
+            "runner",
+        ];
+        let mut expected = base_names
+            .into_iter()
+            .map(OsString::from)
+            .collect::<BTreeSet<_>>();
+        let actual = names(&root, 8)?;
+        let has_temporary = actual.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY));
+        if has_temporary {
+            expected.insert(OsString::from(RESTORE_STATE_TEMPORARY));
+        }
+        if actual != expected {
+            return Err(());
+        }
+        let database = file_at(
+            &root,
+            DATABASE,
+            self.controller.uid,
+            self.controller.gid,
+            0o600,
+            true,
+            DATABASE_MAX,
+        )?;
+        let deployment = file_at(
+            &root,
+            DEPLOYMENT,
+            self.controller.uid,
+            self.controller.gid,
+            0o400,
+            false,
+            16 * 1024,
+        )?;
+        let state_lock = file_at(
+            &root,
+            LOCK,
+            self.controller.uid,
+            self.controller.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        same(&state_lock, self.destination_state_lock.as_ref().ok_or(())?)?;
+        let incomplete = file_at(
+            &root,
+            RESTORE_INCOMPLETE,
+            self.controller.uid,
+            self.controller.gid,
+            0o600,
+            true,
+            1024,
+        )?;
+        let receipts = directory_at(
+            &root,
+            "receipts",
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        let runner = directory_at(
+            &root,
+            "runner",
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        if !names(&receipts, 1)?.is_empty()
+            || !names(&runner, 1)?.is_empty()
+            || read_bounded(&deployment, 16 * 1024)? != read_bounded(&self.deployment, 16 * 1024)?
+        {
+            return Err(());
+        }
+        let record_bytes = read_bounded(&incomplete, 1024)?;
+        let record: RestoreIncomplete = serde_json::from_slice(&record_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&record).map_err(|_| ())? != record_bytes
+            || record.schema != "kapsel.sandbox.restore-incomplete.v1"
+            || record.generation != self.manifest.generation
+            || record.manifest_sha256 != self.manifest_sha256
+            || record.compatibility_sha256 != self.manifest.compatibility_sha256
+            || record.started_at < self.manifest.captured_at
+            || !matches!(record.step.as_str(), "installed" | "stopped")
+        {
+            return Err(());
+        }
+        let current_publication = Service::preflight_clean_restored_source(
+            &self.destination_path.join(DATABASE),
+            self.manifest.generation,
+            self.manifest.captured_at,
+            Some(&self.manifest_sha256),
+        )
+        .map_err(|_| ())?;
+        if record.step == "stopped" && (!current_publication || has_temporary) {
+            return Err(());
+        }
+        let expected_stopped = RestoreIncomplete {
+            step: "stopped".to_owned(),
+            ..record.clone()
+        };
+        let expected_stopped_bytes = serde_json::to_vec(&expected_stopped).map_err(|_| ())?;
+        let temporary = if has_temporary {
+            if record.step != "installed" || !current_publication {
+                return Err(());
+            }
+            let file = file_at(
+                &root,
+                RESTORE_STATE_TEMPORARY,
+                self.controller.uid,
+                self.controller.gid,
+                0o600,
+                true,
+                1024,
+            )?;
+            let bytes = read_bounded(&file, 1024)?;
+            if bytes.len() > expected_stopped_bytes.len()
+                || !expected_stopped_bytes.starts_with(&bytes)
+            {
+                return Err(());
+            }
+            Some(file)
+        } else {
+            None
+        };
+        Ok(RestoredCleanPrefix {
+            root,
+            database,
+            deployment,
+            receipts,
+            runner,
+            state_lock,
+            incomplete,
+            temporary,
+            record,
+            current_publication,
+        })
+    }
+
+    fn advance_installed_to_stopped_with_barrier<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        mut barrier: F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreStopBarrier) -> Result<(), ()>,
+    {
+        let mut prefix = self.open_restored_clean_prefix()?;
+        if prefix.record.step == "stopped" {
+            prefix.root.sync_all().map_err(|_| ())?;
+            self.open_restored_clean_prefix()?;
+            return Ok(());
+        }
+        if !prefix.current_publication {
+            let selected = BackupPublication {
+                generation: self.manifest.generation,
+                captured_at: self.manifest.captured_at,
+                authorities: Vec::new(),
+                predecessor: None,
+            };
+            let service = crate::StoppedBackupService::open_restored(
+                &self.destination_path.join(DATABASE),
+                &self.destination_path.join("receipts"),
+                authority,
+            )
+            .map_err(|_| ())?;
+            service
+                .restore_publication(&selected, &self.manifest_sha256)
+                .map_err(|_| ())?;
+            drop(service);
+            barrier(RestoreStopBarrier::AfterPublication)?;
+            prefix = self.open_restored_clean_prefix()?;
+            if !prefix.current_publication || prefix.record.step != "installed" {
+                return Err(());
+            }
+        }
+        let stopped = RestoreIncomplete {
+            step: "stopped".to_owned(),
+            ..prefix.record.clone()
+        };
+        let stopped_bytes = serde_json::to_vec(&stopped).map_err(|_| ())?;
+        if let Some(temporary) = prefix.temporary.take() {
+            let bytes = read_bounded(&temporary, 1024)?;
+            drop(temporary);
+            if bytes != stopped_bytes {
+                rustix::fs::unlinkat(
+                    &prefix.root,
+                    RESTORE_STATE_TEMPORARY,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .map_err(|_| ())?;
+                prefix.root.sync_all().map_err(|_| ())?;
+            }
+        }
+        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
+            write_restored_file(
+                &prefix.root,
+                RESTORE_STATE_TEMPORARY,
+                &stopped_bytes,
+                self.controller,
+                1024,
+            )?;
+            barrier(RestoreStopBarrier::AfterTemporarySync)?;
+        }
+        self.open_restored_clean_prefix()?;
+        renameat(
+            &prefix.root,
+            RESTORE_STATE_TEMPORARY,
+            &prefix.root,
+            RESTORE_INCOMPLETE,
+        )
+        .map_err(|_| ())?;
+        barrier(RestoreStopBarrier::AfterRename)?;
+        prefix.root.sync_all().map_err(|_| ())?;
+        let stopped_prefix = self.open_restored_clean_prefix()?;
+        if stopped_prefix.record.step != "stopped" || !stopped_prefix.current_publication {
+            return Err(());
+        }
+        Ok(())
     }
 }
 
@@ -2149,7 +2500,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "the restore tracer keeps its complete evidence together"
     )]
-    fn selected_clean_backup_installs_incomplete_destination_without_early_readiness() {
+    fn selected_clean_backup_reopens_installed_and_advances_stopped_without_readiness() {
         let (base, state) = initialized("restore-installed");
         let backup_root = initial_root(&base);
         let authority_root = base.join("authority");
@@ -2174,6 +2525,13 @@ mod tests {
         )
         .unwrap();
         let backup_current = fs::read(backup_root.join(CURRENT)).unwrap();
+        let backup_deployment = fs::read(
+            backup_root
+                .join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join(DEPLOYMENT),
+        )
+        .unwrap();
         let backup_manifest = fs::read(
             backup_root
                 .join(GENERATIONS)
@@ -2268,6 +2626,45 @@ mod tests {
         assert_eq!(incomplete.started_at, 1_774_051_201);
         assert_eq!(incomplete.step, "installed");
         assert!(!destination.join("restore.ready").exists());
+        let copied = rusqlite::Connection::open(destination.join(DATABASE)).unwrap();
+        assert_eq!(
+            copied
+                .query_row(
+                    concat!(
+                        "SELECT slot, generation, manifest_digest, state, captured_at ",
+                        "FROM backup_generations"
+                    ),
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            (
+                "pending".to_owned(),
+                1,
+                None,
+                "pending".to_owned(),
+                1_774_051_201,
+            )
+        );
+        assert_eq!(
+            copied
+                .query_row(
+                    "SELECT COUNT(*) FROM backup_authority_references",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        drop(copied);
         for (path, expected_mode) in [
             (destination.clone(), 0o700),
             (destination.join(DATABASE), 0o600),
@@ -2290,11 +2687,195 @@ mod tests {
             DeploymentProfile::Test,
         )
         .is_err());
+
+        let reopened = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        let competing_state_lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(destination.join(LOCK))
+            .unwrap();
+        assert!(flock(&competing_state_lock, FlockOperation::NonBlockingLockShared).is_err());
+        drop(competing_state_lock);
+        assert!(reopened
+            .advance_installed_to_stopped_with_barrier(&authority, |phase| {
+                assert!(matches!(phase, RestoreStopBarrier::AfterPublication));
+                Err(())
+            })
+            .is_err());
+        drop(reopened);
+        let connection = rusqlite::Connection::open(destination.join(DATABASE)).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    concat!(
+                        "SELECT slot, generation, manifest_digest, state, captured_at ",
+                        "FROM backup_generations"
+                    ),
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            (
+                "current".to_owned(),
+                1,
+                manifest_digest,
+                "current".to_owned(),
+                1_774_051_201,
+            )
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM backup_authority_references",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        drop(connection);
+        let incomplete_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let incomplete: RestoreIncomplete = serde_json::from_slice(&incomplete_bytes).unwrap();
+        assert_eq!(incomplete.step, "installed");
+        assert!(crate::state_root::StateGuard::open(
+            &destination,
+            identities,
+            DeploymentProfile::Test,
+        )
+        .is_err());
+
+        let reopened = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(reopened
+            .advance_installed_to_stopped_with_barrier(&authority, |phase| {
+                assert!(matches!(phase, RestoreStopBarrier::AfterTemporarySync));
+                Err(())
+            })
+            .is_err());
+        drop(reopened);
+        let temporary_path = destination.join(RESTORE_STATE_TEMPORARY);
+        let temporary_bytes = fs::read(&temporary_path).unwrap();
+        assert!(!temporary_bytes.is_empty());
+        fs::write(
+            &temporary_path,
+            &temporary_bytes[..temporary_bytes.len() / 2],
+        )
+        .unwrap();
+        assert!(crate::state_root::StateGuard::open(
+            &destination,
+            identities,
+            DeploymentProfile::Test,
+        )
+        .is_err());
+
+        let reopened = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(reopened
+            .advance_installed_to_stopped_with_barrier(&authority, |phase| {
+                assert!(matches!(phase, RestoreStopBarrier::AfterTemporarySync));
+                Err(())
+            })
+            .is_err());
+        drop(reopened);
+        assert!(temporary_path.exists());
+
+        let reopened = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(reopened
+            .advance_installed_to_stopped_with_barrier(&authority, |phase| {
+                assert!(matches!(phase, RestoreStopBarrier::AfterRename));
+                Err(())
+            })
+            .is_err());
+        drop(reopened);
+        assert!(!destination.join(RESTORE_STATE_TEMPORARY).exists());
+        let stopped_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let stopped: RestoreIncomplete = serde_json::from_slice(&stopped_bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&stopped).unwrap(), stopped_bytes);
+        assert_eq!(stopped.step, "stopped");
+        assert!(!destination.join("restore.ready").exists());
+        assert!(crate::state_root::StateGuard::open(
+            &destination,
+            identities,
+            DeploymentProfile::Test,
+        )
+        .is_err());
+
+        let reopened = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        reopened
+            .advance_installed_to_stopped_with_barrier(&authority, |_| Err(()))
+            .unwrap();
+        drop(reopened);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            stopped_bytes
+        );
         assert_eq!(
             fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
             source_database
         );
         assert_eq!(fs::read(backup_root.join(CURRENT)).unwrap(), backup_current);
+        assert_eq!(
+            fs::read(
+                backup_root
+                    .join(GENERATIONS)
+                    .join(GENERATION_ONE)
+                    .join("service")
+                    .join(DATABASE)
+            )
+            .unwrap(),
+            backup_database
+        );
+        assert_eq!(
+            fs::read(
+                backup_root
+                    .join(GENERATIONS)
+                    .join(GENERATION_ONE)
+                    .join(DEPLOYMENT)
+            )
+            .unwrap(),
+            backup_deployment
+        );
         assert_eq!(
             fs::read(
                 backup_root
