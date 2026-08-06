@@ -778,10 +778,19 @@ enum RestoreExpiryBarrier {
     AfterRename,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreReceiptBarrier {
+    BeforeConvergence,
+    AfterConvergence,
+    AfterTemporarySync,
+    AfterRename,
+}
+
 #[derive(Clone, Copy)]
 enum RestoreTransition {
     InstalledToStopped,
     StoppedToExpired,
+    ExpiredToReceipts,
 }
 
 impl RestoreTransition {
@@ -789,6 +798,7 @@ impl RestoreTransition {
         match self {
             Self::InstalledToStopped => ("installed", "stopped"),
             Self::StoppedToExpired => ("stopped", "expired"),
+            Self::ExpiredToReceipts => ("expired", "receipts"),
         }
     }
 }
@@ -1450,6 +1460,28 @@ impl RestoreGuard {
         Ok(guard)
     }
 
+    fn reopen_expired_to_receipts(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        let guard = Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            true,
+        )?;
+        let prefix = guard.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+        if !matches!(prefix.record.step.as_str(), "expired" | "receipts") {
+            return Err(());
+        }
+        Ok(guard)
+    }
+
     fn open_restored_clean_prefix(
         &self,
         transition: RestoreTransition,
@@ -1770,6 +1802,80 @@ impl RestoreGuard {
         let expired_prefix =
             self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
         if expired_prefix.record.step != "expired" || !expired_prefix.current_publication {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn advance_expired_to_receipts_with_barrier<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        mut barrier: F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreReceiptBarrier) -> Result<(), ()>,
+    {
+        let mut prefix = self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+        if prefix.record.step == "receipts" {
+            prefix.root.sync_all().map_err(|_| ())?;
+            self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+            return Ok(());
+        }
+        barrier(RestoreReceiptBarrier::BeforeConvergence)?;
+        let service = crate::StoppedBackupService::open_restored(
+            &self.destination_path.join(DATABASE),
+            &self.destination_path.join("receipts"),
+            authority,
+        )
+        .map_err(|_| ())?;
+        service.converge_clean_restore_receipts().map_err(|_| ())?;
+        drop(service);
+        barrier(RestoreReceiptBarrier::AfterConvergence)?;
+        prefix = self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+        if prefix.record.step != "expired" || !prefix.current_publication {
+            return Err(());
+        }
+        let receipts = RestoreIncomplete {
+            step: "receipts".to_owned(),
+            ..prefix.record.clone()
+        };
+        let receipts_bytes = serde_json::to_vec(&receipts).map_err(|_| ())?;
+        if let Some(temporary) = prefix.temporary.take() {
+            let bytes = read_bounded(&temporary, 1024)?;
+            drop(temporary);
+            if bytes != receipts_bytes {
+                rustix::fs::unlinkat(
+                    &prefix.root,
+                    RESTORE_STATE_TEMPORARY,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .map_err(|_| ())?;
+                prefix.root.sync_all().map_err(|_| ())?;
+            }
+        }
+        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
+            write_restored_file(
+                &prefix.root,
+                RESTORE_STATE_TEMPORARY,
+                &receipts_bytes,
+                self.controller,
+                1024,
+            )?;
+            barrier(RestoreReceiptBarrier::AfterTemporarySync)?;
+        }
+        self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+        renameat(
+            &prefix.root,
+            RESTORE_STATE_TEMPORARY,
+            &prefix.root,
+            RESTORE_INCOMPLETE,
+        )
+        .map_err(|_| ())?;
+        barrier(RestoreReceiptBarrier::AfterRename)?;
+        prefix.root.sync_all().map_err(|_| ())?;
+        let receipts_prefix =
+            self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+        if receipts_prefix.record.step != "receipts" || !receipts_prefix.current_publication {
             return Err(());
         }
         Ok(())
@@ -3336,6 +3442,312 @@ mod tests {
         assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
         assert_not_ready();
         assert_empty_public_state();
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the receipt restore tracer crosses convergence and every record side"
+    )]
+    fn selected_expired_restore_converges_empty_receipts_and_advances_without_readiness() {
+        let (base, state) = initialized("restore-receipts");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let source_database = fs::read(base.join("state-parent/state").join(DATABASE)).unwrap();
+        let backup_database_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join("service")
+            .join(DATABASE);
+        let backup_deployment_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join(DEPLOYMENT);
+        let backup_manifest_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join(MANIFEST);
+        let backup_database = fs::read(&backup_database_path).unwrap();
+        let backup_current = fs::read(backup_root.join(CURRENT)).unwrap();
+        let backup_deployment = fs::read(&backup_deployment_path).unwrap();
+        let backup_manifest = fs::read(&backup_manifest_path).unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        let restore_parent = base.join("restore-receipts-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let identities = RoleIdentities::test_controller();
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore.install_incomplete(1_774_051_201).unwrap();
+        drop(restore);
+        let restore = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_installed_to_stopped_with_barrier(&authority, |_| Ok(()))
+            .unwrap();
+        drop(restore);
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_stopped_to_expired_with_barrier(&authority, |_| Ok(()))
+            .unwrap();
+        drop(restore);
+
+        let expired_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let expired: RestoreIncomplete = serde_json::from_slice(&expired_bytes).unwrap();
+        assert_eq!(expired.step, "expired");
+        let destination_database = fs::read(destination.join(DATABASE)).unwrap();
+        let destination_deployment = fs::read(destination.join(DEPLOYMENT)).unwrap();
+        let assert_not_ready = || {
+            assert!(!destination.join("restore.ready").exists());
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                identities,
+                DeploymentProfile::Test,
+            )
+            .is_err());
+        };
+        let assert_empty_receipt_state = || {
+            let connection = rusqlite::Connection::open(destination.join(DATABASE)).unwrap();
+            for table in [
+                "runs",
+                "tombstones",
+                "receipts",
+                "receipt_publications",
+                "cleanup_records",
+                "application_reports",
+                "provisioned_object_owners",
+                "events",
+                "authority_collection",
+                "backup_authority_references",
+            ] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "unexpected restored row in {table}");
+            }
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM backup_generations", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                1
+            );
+            assert!(fs::read_dir(destination.join("receipts"))
+                .unwrap()
+                .next()
+                .is_none());
+            assert!(fs::read_dir(destination.join("runner"))
+                .unwrap()
+                .next()
+                .is_none());
+        };
+        assert_not_ready();
+        assert_empty_receipt_state();
+
+        for stopped_at in [
+            RestoreReceiptBarrier::BeforeConvergence,
+            RestoreReceiptBarrier::AfterConvergence,
+        ] {
+            let restore = RestoreGuard::reopen_expired_to_receipts(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .advance_expired_to_receipts_with_barrier(&authority, |phase| {
+                    if phase == stopped_at {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err());
+            drop(restore);
+            assert_eq!(
+                fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+                expired_bytes
+            );
+            assert!(!destination.join(RESTORE_STATE_TEMPORARY).exists());
+            assert_not_ready();
+            assert_empty_receipt_state();
+        }
+
+        let restore = RestoreGuard::reopen_expired_to_receipts(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_expired_to_receipts_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreReceiptBarrier::BeforeConvergence
+                        | RestoreReceiptBarrier::AfterConvergence
+                ) {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreReceiptBarrier::AfterTemporarySync);
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        let temporary_path = destination.join(RESTORE_STATE_TEMPORARY);
+        let temporary_bytes = fs::read(&temporary_path).unwrap();
+        fs::write(
+            &temporary_path,
+            &temporary_bytes[..temporary_bytes.len() / 2],
+        )
+        .unwrap();
+        assert_not_ready();
+        assert_empty_receipt_state();
+
+        let restore = RestoreGuard::reopen_expired_to_receipts(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_expired_to_receipts_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreReceiptBarrier::BeforeConvergence
+                        | RestoreReceiptBarrier::AfterConvergence
+                ) {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreReceiptBarrier::AfterTemporarySync);
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(fs::read(&temporary_path).unwrap(), temporary_bytes);
+        assert_not_ready();
+        assert_empty_receipt_state();
+
+        let restore = RestoreGuard::reopen_expired_to_receipts(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_expired_to_receipts_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreReceiptBarrier::BeforeConvergence
+                        | RestoreReceiptBarrier::AfterConvergence
+                        | RestoreReceiptBarrier::AfterTemporarySync
+                ) {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreReceiptBarrier::AfterRename);
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert!(!temporary_path.exists());
+        let receipts_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let receipts: RestoreIncomplete = serde_json::from_slice(&receipts_bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&receipts).unwrap(), receipts_bytes);
+        assert_eq!(receipts.step, "receipts");
+        assert_not_ready();
+        assert_empty_receipt_state();
+
+        let restore = RestoreGuard::reopen_expired_to_receipts(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_expired_to_receipts_with_barrier(&authority, |_| Err(()))
+            .unwrap();
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            receipts_bytes
+        );
+        assert_eq!(
+            fs::read(destination.join(DATABASE)).unwrap(),
+            destination_database
+        );
+        assert_eq!(
+            fs::read(destination.join(DEPLOYMENT)).unwrap(),
+            destination_deployment
+        );
+        assert_eq!(
+            fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
+            source_database
+        );
+        assert_eq!(fs::read(backup_root.join(CURRENT)).unwrap(), backup_current);
+        assert_eq!(fs::read(&backup_database_path).unwrap(), backup_database);
+        assert_eq!(
+            fs::read(&backup_deployment_path).unwrap(),
+            backup_deployment
+        );
+        assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
+        assert_not_ready();
+        assert_empty_receipt_state();
         crate::test_authority::remove_root(&authority_root);
         cleanup(&base);
     }
