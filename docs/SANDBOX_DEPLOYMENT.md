@@ -702,9 +702,14 @@ is controller-owned `0700` and contains precreated `.kapsel-sandbox-restore.lock
 `0600`, plus absent or one state root. The state root is controller-owned `0700` and has exactly
 `sandbox.sqlite3` (`0600`), `receipts/` (`0700`, receipt files `0600`), `runner/` (`0700`),
 `deployment.json` (`0400`), `.backup.lock` (`0600`), exactly one of `restore.incomplete` or
-`restore.ready` (`0600`), and zero or one `sandbox.sqlite3-journal` (`0600`). Every regular file has
-link count one; every object has no special bits and its named owner/group. Directory link counts
-are not treated as identity and inventory is descriptor-enumerated.
+`restore.ready` (`0600`), and zero or one `sandbox.sqlite3-journal` (`0600`). Steady state contains
+no restore-record temporary. While restore alone holds the exclusive parent lock, one
+controller-owned `restore.state.tmp` regular file (`0600`) may coexist with the previous canonical
+restore record only as the closed replacement prefix defined below. During final readiness only, the
+exact canonical `restore.incomplete` and `restore.ready` pair defined below may coexist after the
+temporary rename and before incomplete-record removal; ordinary open rejects that pair. Every
+regular file has link count one; every object has no special bits and its named owner/group.
+Directory link counts are not treated as identity and inventory is descriptor-enumerated.
 
 The backup root is backup-owned `0700`. Initial state contains exactly `.backup.lock` (`0600`) and
 `generations/` (`0700`) with no `current`. Capturing state adds exactly one
@@ -785,22 +790,28 @@ no temporary, complete, or current backup names that generation and leaves every
 unchanged.
 
 For `restore`, the initial launcher takes the nonblocking exclusive parent restore lock and then the
-backup-root lock shared before phase separation or testing destination absence. Those descriptors
-remain held through complete backup validation, destination readiness, and final parent fsync, so
-replacement cannot change or remove selected bytes or release their references. The filesystem
-helper receives only the pinned backup root, parent, and held lock descriptors. Running as backup
-`65529:65529` with only `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, and `CAP_FOWNER`, it opens and completely
-validates `current` and the selected generation without mutating the destination, then sends the
-capability-free controller phase one sealed fixed preflight record binding generation, manifest
-digest, compatibility, capture time, and the ordered authority identities. The controller receives
-no backup-root, generation, or component descriptor. It validates the record against compile-time
-compatibility and the exact separately staged authority, proves local controller-role and
-runner/cgroup absence, samples the one trusted realtime value, and tests destination absence. Only
-if every precondition passes does it return one fixed approval bound to the preflight digest and
-sampled time. The helper revalidates its pinned backup and lock descriptors after approval, then
-constructs the stopped incomplete destination, closes its capabilities, and exits. A denial, closed
-channel, changed pin, or malformed, duplicate, extra, replayed, or mismatched record/approval exits
-without destination mutation. No private authority byte crosses either message.
+backup-root lock shared before phase separation or testing destination absence. The parent
+restore-lock descriptor remains with the controller through destination readiness and final parent
+fsync. The shared backup-lock file description is duplicated once across the controller and helper
+before phase release; the capability-free controller retains only that held lock descriptor, never a
+backup root, generation, or component descriptor. The helper holds its copy through selected-
+generation validation and incomplete-destination construction, then closes it on exit; the
+controller's copy alone preserves the shared lock through destination readiness and final
+synchronization. Thus a conforming replacement cannot change or remove selected bytes or release
+their references. The filesystem helper receives only the pinned backup root, parent, and held lock
+descriptors. Running as backup `65529:65529` with only `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, and
+`CAP_FOWNER`, it opens and completely validates `current` and the selected generation without
+mutating the destination, then sends the capability-free controller phase one sealed fixed preflight
+record binding generation, manifest digest, compatibility, capture time, and the ordered authority
+identities. The controller receives no backup-root, generation, or component descriptor. It
+validates the record against compile-time compatibility and the exact separately staged authority,
+proves local controller-role and runner/cgroup absence, samples the one trusted realtime value, and
+tests destination absence. Only if every precondition passes does it return one fixed approval bound
+to the preflight digest and sampled time. The helper revalidates its pinned backup and lock
+descriptors after approval, then constructs the stopped incomplete destination, closes its
+capabilities, and exits. A denial, closed channel, changed pin, or malformed, duplicate, extra,
+replayed, or mismatched record/approval exits without destination mutation. No private authority
+byte crosses either message.
 
 Only after helper success does the already capability-free controller phase open the destination and
 perform the fixed pre-readiness state machine with the exact staged authority it already validated.
@@ -987,11 +998,29 @@ publication; reconstruct and reconcile the same active run/operation without bli
 republish fresh lease inputs from its pinned staged generation; resume exact cleanup ownership
 without inventing absence; and prove one active capacity owner, at most one runnable journal, no
 duplicate receipt identity, no stale runner generation, and complete backup-reference ownership.
-After each phase it atomically replaces and parent-fsyncs the canonical incomplete record with the
-next named step. It atomically replaces `restore.incomplete` with `restore.ready` only after
-`validated` is durable, then fsyncs the state root and parent. Restart under the same exclusive
-parent lock resumes the exact step or refuses; retained reads may serve only after readiness, and
-mutation remains stopped until ordinary later operator authorization.
+After each phase it creates and opens `restore.state.tmp` descriptor-relatively to the pinned state
+root with `O_CREAT|O_EXCL|O_NOFOLLOW`, controller ownership, and `0600` mode; writes exactly the
+canonical next incomplete record; fsyncs the file; revalidates the previous record, temporary,
+destination inventory and component pins, and held parent/backup lock descriptors; renames the
+temporary descriptor-relatively over `restore.incomplete`; and fsyncs the state root. Thus the old
+step remains canonical until atomic replacement. A restart under the same exclusive parent lock
+accepts only no temporary or one same-owner, same-mode, link-count-one regular temporary whose
+zero-to-complete bytes are an exact prefix of the uniquely expected next canonical record while the
+old step remains in place. It unlinks an incomplete prefix descriptor-relatively from the pinned
+state root and state-root-fsyncs before recreating it, may finish an exact complete temporary after
+revalidation, and refuses every other temporary, record pair, or inventory. A crash after rename
+observes the next canonical step and no temporary; retry treats that step as completed. Final
+readiness uses a separate closed two-name publication because POSIX rename cannot atomically change
+both the record bytes and filename: only after `validated` is durable, restore writes and fsyncs
+canonical ready bytes as `restore.state.tmp`, revalidates all pins and locks, renames it
+descriptor-relatively to `restore.ready`, and fsyncs the state root while preserving
+`restore.incomplete`. This exact two-record prefix is not ready and is the only accepted
+final-publication intermediate. Restore then revalidates both canonical records, unlinks
+`restore.incomplete` descriptor-relatively, fsyncs the state root and parent, and only that exact
+one-record inventory becomes ready. Retry with both records validates their exact relationship and
+resumes only the unlink; every other pair refuses. Ordinary open refuses every temporary, incomplete
+record, or two-record prefix. Retained reads may serve only after readiness, and mutation remains
+stopped until ordinary later operator authorization.
 
 The deterministic Slice 5 capture matrix names both sides of: pending-reference commit; temporary
 generation creation; service database/journal, each receipt slot, semantic runner record/database/
@@ -1000,7 +1029,8 @@ manifest write/fsync; generation rename and `generations/` fsync; `.current.tmp`
 `current` rename and root fsync; Service publication commit; old-generation file/directory removal;
 and deleting-reference release. Restore names both sides of: parent lock/preflight; temporary root;
 each component install/fsync; incomplete write/fsync; complete-root fsync; destination rename and
-parent fsync; forced-stop commit; expiry/tombstone commit; pending receipt convergence; semantic
+parent fsync; forced-stop commit; each restore-record temporary create/write/fsync, atomic step
+replacement, and state-root fsync; expiry/tombstone commit; pending receipt convergence; semantic
 runner reconstruction; same-operation reconciliation; fresh lease publication; cleanup resumption;
 `validated` commit; ready rename; and final state-root/parent fsync.
 

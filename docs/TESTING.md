@@ -364,20 +364,27 @@ Make task and module together before this guide may present it as runnable. The 
 offline and uses one fixed state root, backup root, compile-time compatibility record, and injected
 test clock. It crosses the thirteen lifecycle states named by the deployment owner and every durable
 side of pending authority references, component copies/fsyncs, generation/current publication,
-old-byte removal, destination publication, forced stop, expiry, pending receipt convergence,
-semantic runner reconstruction, fresh lease publication, cleanup resumption, and readiness. Only
-P1/P2/P3 backup-reference transactions, named stopped-restore transactions, temporary/new/deleting
-generation bytes, and atomic `current` may change at their exact seams; every other source fact and
-the selected old generation remain byte-identical. Every seam asserts no selectable partial
-generation, early serving/mutation, second runnable journal or capacity owner, changed KAP-0038
-result/receipt, invented absence, and retry convergence. A clean stopped/drained vector proves empty
-authority/trust arrays and no ambient-current pin.
+old-byte removal, destination publication, forced stop, every restore-record temporary
+prefix/fsync/replacement, expiry, pending receipt convergence, semantic runner reconstruction, fresh
+lease publication, cleanup resumption, and readiness. Only P1/P2/P3 backup-reference transactions,
+named stopped-restore transactions, temporary/new/deleting generation bytes, and atomic `current`
+may change at their exact seams; every other source fact and the selected old generation remain
+byte-identical. Every seam asserts no selectable partial generation, early serving/mutation, second
+runnable journal or capacity owner, changed KAP-0038 result/receipt, invented absence, and retry
+convergence. A clean stopped/drained vector proves empty authority/trust arrays and no
+ambient-current pin.
 
 Closed hostile matrices exhaust manifest field/order/canonicalization, path inventory, count/size,
 digest/length, symlink/hardlink/special file, owner/group/mode/special bits, root/inode
 substitution, SQLite DELETE-journal sidecars and malformed rows, duplicate identities, stale
 process/inode/cgroup facts, incompatible bundle/architecture/clock, missing public trust/private
-authority, nonempty destination, and source changes during capture. Fixture-byte scans prove that
+authority, nonempty destination, and source changes during capture. Restore-step tests accept only
+an absent temporary or the uniquely expected zero-to-complete canonical prefix in controller-owned
+`restore.state.tmp` beside the previous record; they cross partial write, file fsync, rename, and
+state-root fsync, then require retry convergence and no ordinary open at every side. The final
+readiness matrix separately crosses ready-file rename/fsync, the exact two-record non-ready prefix,
+incomplete-file unlink, and final state-root/parent fsync. All temporary create, open, rename, and
+unlink operations are descriptor-relative to the pinned state root. Fixture-byte scans prove that
 private staged seeds, tombstone keys, Kubernetes and handoff credentials, dispatch inputs, logs, and
 diagnostics never enter a generation. A separate root-only network-namespace identity lane starts
 from the exact fixed bootstrap and proves root/lock pinning before phase release, capability-free
