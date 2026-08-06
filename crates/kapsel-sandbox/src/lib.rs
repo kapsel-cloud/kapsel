@@ -672,6 +672,12 @@ pub(crate) struct StoppedBackupService<'guard> {
     _guard: PhantomData<&'guard ()>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ExpiryTransactionBarrier {
+    BeforeCommit,
+    AfterCommit,
+}
+
 #[allow(
     dead_code,
     reason = "the accepted stopped backup boundary precedes its private generation coordinator"
@@ -791,6 +797,19 @@ impl StoppedBackupService<'_> {
     ) -> Result<(), ServiceError> {
         self.service
             .restore_backup_publication(selected, manifest_digest)
+    }
+
+    pub(crate) fn apply_restore_expiry_with_barrier<F>(
+        &self,
+        now_unix_s: i64,
+        barrier: F,
+    ) -> Result<(), ServiceError>
+    where
+        F: FnMut(ExpiryTransactionBarrier) -> Result<(), ServiceError>,
+    {
+        timestamp(now_unix_s)?;
+        self.service
+            .expire_transaction_with_barrier(now_unix_s, false, barrier)
     }
 }
 
@@ -5060,11 +5079,23 @@ impl Service {
         transaction.commit().map_err(storage_error)
     }
 
+    fn expire(&self, now_unix_s: i64) -> Result<(), ServiceError> {
+        self.expire_transaction_with_barrier(now_unix_s, true, |_| Ok(()))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one retention transaction erases public, receipt, cleanup, and ownership rows"
     )]
-    fn expire(&self, now_unix_s: i64) -> Result<(), ServiceError> {
+    fn expire_transaction_with_barrier<F>(
+        &self,
+        now_unix_s: i64,
+        remove_orphans: bool,
+        mut barrier: F,
+    ) -> Result<(), ServiceError>
+    where
+        F: FnMut(ExpiryTransactionBarrier) -> Result<(), ServiceError>,
+    {
         let keyring = self
             .authority
             .tombstone_keyring()
@@ -5085,7 +5116,9 @@ impl Service {
         if queued_expired {
             validate_authority_identity(&keyring.current)?;
         }
-        self.remove_orphan_receipts(&mut connection)?;
+        if remove_orphans {
+            self.remove_orphan_receipts(&mut connection)?;
+        }
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
@@ -5254,7 +5287,9 @@ impl Service {
                     .map_err(storage_error)?;
             }
         }
+        barrier(ExpiryTransactionBarrier::BeforeCommit)?;
         transaction.commit().map_err(storage_error)?;
+        barrier(ExpiryTransactionBarrier::AfterCommit)?;
         for (run_id, digest, object_name) in expired_objects {
             self.remove_receipt_object(&run_id, &digest, &object_name)?;
         }
