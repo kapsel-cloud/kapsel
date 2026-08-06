@@ -811,6 +811,32 @@ impl StoppedBackupService<'_> {
         self.service
             .expire_transaction_with_barrier(now_unix_s, false, barrier)
     }
+
+    pub(crate) fn converge_clean_restore_receipts(&self) -> Result<(), ServiceError> {
+        self.service.validate_pinned_paths()?;
+        let connection = self.service.read_only_connection()?;
+        let pending_or_published: i64 = connection
+            .query_row(
+                concat!(
+                    "SELECT (SELECT COUNT(*) FROM receipt_publications) + ",
+                    "(SELECT COUNT(*) FROM receipts)"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if pending_or_published != 0
+            || fs::read_dir(&self.service.receipt_directory)
+                .map_err(|_| ServiceError::Unavailable)?
+                .next()
+                .is_some()
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        self.service
+            .validate_authority_reference_owners(&connection)?;
+        self.service.validate_pinned_paths()
+    }
 }
 
 /// Commits the operator-owned admission stop using only the existing private admission database.
