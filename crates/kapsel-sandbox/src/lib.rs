@@ -837,6 +837,37 @@ impl StoppedBackupService<'_> {
             .validate_authority_reference_owners(&connection)?;
         self.service.validate_pinned_paths()
     }
+
+    pub(crate) fn reconstruct_clean_restore_runner(
+        &self,
+        runner: &fs::File,
+        identities: state_root::RoleIdentities,
+    ) -> Result<(), ServiceError> {
+        self.service.validate_pinned_paths()?;
+        runner_host::validate_state_root_inventory(
+            runner,
+            identities.controller_uid,
+            identities.controller_gid,
+            identities.runner_uid,
+            identities.runner_gid,
+        )
+        .map_err(|_| ServiceError::Unavailable)?;
+        if self.service.sole_active_run()?.is_some() {
+            return Err(ServiceError::Unavailable);
+        }
+        self.service.validate_pinned_paths()
+    }
+
+    pub(crate) fn reconcile_clean_restore_operation(&self) -> Result<(), ServiceError> {
+        self.service.validate_pinned_paths()?;
+        if self.service.sole_active_run()?.is_some() {
+            return Err(ServiceError::Unavailable);
+        }
+        let connection = self.service.read_only_connection()?;
+        self.service
+            .validate_authority_reference_owners(&connection)?;
+        self.service.validate_pinned_paths()
+    }
 }
 
 /// Commits the operator-owned admission stop using only the existing private admission database.

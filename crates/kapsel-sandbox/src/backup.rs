@@ -786,11 +786,22 @@ enum RestoreReceiptBarrier {
     AfterRename,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreRunnerBarrier {
+    BeforeReconstruction,
+    AfterReconstruction,
+    BeforeReconciliation,
+    AfterReconciliation,
+    AfterTemporarySync,
+    AfterRename,
+}
+
 #[derive(Clone, Copy)]
 enum RestoreTransition {
     InstalledToStopped,
     StoppedToExpired,
     ExpiredToReceipts,
+    ReceiptsToRunner,
 }
 
 impl RestoreTransition {
@@ -799,6 +810,7 @@ impl RestoreTransition {
             Self::InstalledToStopped => ("installed", "stopped"),
             Self::StoppedToExpired => ("stopped", "expired"),
             Self::ExpiredToReceipts => ("expired", "receipts"),
+            Self::ReceiptsToRunner => ("receipts", "runner"),
         }
     }
 }
@@ -1482,6 +1494,28 @@ impl RestoreGuard {
         Ok(guard)
     }
 
+    fn reopen_receipts_to_runner(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        let guard = Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            true,
+        )?;
+        let prefix = guard.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+        if !matches!(prefix.record.step.as_str(), "receipts" | "runner") {
+            return Err(());
+        }
+        Ok(guard)
+    }
+
     fn open_restored_clean_prefix(
         &self,
         transition: RestoreTransition,
@@ -1876,6 +1910,95 @@ impl RestoreGuard {
         let receipts_prefix =
             self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
         if receipts_prefix.record.step != "receipts" || !receipts_prefix.current_publication {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn advance_receipts_to_runner_with_barrier<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        mut barrier: F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreRunnerBarrier) -> Result<(), ()>,
+    {
+        let mut prefix = self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+        if prefix.record.step == "runner" {
+            prefix.root.sync_all().map_err(|_| ())?;
+            self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+            return Ok(());
+        }
+        let identities = match self.profile {
+            crate::state_root::DeploymentProfile::Production => {
+                crate::state_root::RoleIdentities::controller()
+            },
+            #[cfg(any(test, feature = "state-root-test-harness"))]
+            crate::state_root::DeploymentProfile::Test => {
+                crate::state_root::RoleIdentities::test_controller()
+            },
+        };
+        barrier(RestoreRunnerBarrier::BeforeReconstruction)?;
+        let service = crate::StoppedBackupService::open_restored(
+            &self.destination_path.join(DATABASE),
+            &self.destination_path.join("receipts"),
+            authority,
+        )
+        .map_err(|_| ())?;
+        service
+            .reconstruct_clean_restore_runner(&prefix.runner, identities)
+            .map_err(|_| ())?;
+        barrier(RestoreRunnerBarrier::AfterReconstruction)?;
+        barrier(RestoreRunnerBarrier::BeforeReconciliation)?;
+        service
+            .reconcile_clean_restore_operation()
+            .map_err(|_| ())?;
+        drop(service);
+        barrier(RestoreRunnerBarrier::AfterReconciliation)?;
+        prefix = self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+        if prefix.record.step != "receipts" || !prefix.current_publication {
+            return Err(());
+        }
+        let runner = RestoreIncomplete {
+            step: "runner".to_owned(),
+            ..prefix.record.clone()
+        };
+        let runner_bytes = serde_json::to_vec(&runner).map_err(|_| ())?;
+        if let Some(temporary) = prefix.temporary.take() {
+            let bytes = read_bounded(&temporary, 1024)?;
+            drop(temporary);
+            if bytes != runner_bytes {
+                rustix::fs::unlinkat(
+                    &prefix.root,
+                    RESTORE_STATE_TEMPORARY,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .map_err(|_| ())?;
+                prefix.root.sync_all().map_err(|_| ())?;
+            }
+        }
+        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
+            write_restored_file(
+                &prefix.root,
+                RESTORE_STATE_TEMPORARY,
+                &runner_bytes,
+                self.controller,
+                1024,
+            )?;
+            barrier(RestoreRunnerBarrier::AfterTemporarySync)?;
+        }
+        self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+        renameat(
+            &prefix.root,
+            RESTORE_STATE_TEMPORARY,
+            &prefix.root,
+            RESTORE_INCOMPLETE,
+        )
+        .map_err(|_| ())?;
+        barrier(RestoreRunnerBarrier::AfterRename)?;
+        prefix.root.sync_all().map_err(|_| ())?;
+        let runner_prefix = self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+        if runner_prefix.record.step != "runner" || !runner_prefix.current_publication {
             return Err(());
         }
         Ok(())
@@ -3748,6 +3871,332 @@ mod tests {
         assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
         assert_not_ready();
         assert_empty_receipt_state();
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the runner restore tracer crosses every semantic and record side"
+    )]
+    fn selected_receipts_restore_reconstructs_no_runner_and_advances_without_readiness() {
+        let (base, state) = initialized("restore-runner");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let source_database = fs::read(base.join("state-parent/state").join(DATABASE)).unwrap();
+        let backup_database_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join("service")
+            .join(DATABASE);
+        let backup_deployment_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join(DEPLOYMENT);
+        let backup_manifest_path = backup_root
+            .join(GENERATIONS)
+            .join(GENERATION_ONE)
+            .join(MANIFEST);
+        let backup_database = fs::read(&backup_database_path).unwrap();
+        let backup_current = fs::read(backup_root.join(CURRENT)).unwrap();
+        let backup_deployment = fs::read(&backup_deployment_path).unwrap();
+        let backup_manifest = fs::read(&backup_manifest_path).unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        let restore_parent = base.join("restore-runner-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let identities = RoleIdentities::test_controller();
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore.install_incomplete(1_774_051_201).unwrap();
+        drop(restore);
+        let restore = RestoreGuard::reopen_installed_to_stopped(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_installed_to_stopped_with_barrier(&authority, |_| Ok(()))
+            .unwrap();
+        drop(restore);
+        let restore = RestoreGuard::reopen_stopped_to_expired(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_stopped_to_expired_with_barrier(&authority, |_| Ok(()))
+            .unwrap();
+        drop(restore);
+        let restore = RestoreGuard::reopen_expired_to_receipts(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_expired_to_receipts_with_barrier(&authority, |_| Ok(()))
+            .unwrap();
+        drop(restore);
+
+        let receipts_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let receipts: RestoreIncomplete = serde_json::from_slice(&receipts_bytes).unwrap();
+        assert_eq!(receipts.step, "receipts");
+        let destination_database = fs::read(destination.join(DATABASE)).unwrap();
+        let destination_deployment = fs::read(destination.join(DEPLOYMENT)).unwrap();
+        let assert_not_ready = || {
+            assert!(!destination.join("restore.ready").exists());
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                identities,
+                DeploymentProfile::Test,
+            )
+            .is_err());
+        };
+        let assert_empty_runner_state = || {
+            let connection = rusqlite::Connection::open(destination.join(DATABASE)).unwrap();
+            for table in [
+                "runs",
+                "tombstones",
+                "receipts",
+                "receipt_publications",
+                "cleanup_records",
+                "application_reports",
+                "provisioned_object_owners",
+                "events",
+                "authority_collection",
+                "backup_authority_references",
+            ] {
+                let count: i64 = connection
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "unexpected restored row in {table}");
+            }
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM backup_generations", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                1
+            );
+            assert!(fs::read_dir(destination.join("receipts"))
+                .unwrap()
+                .next()
+                .is_none());
+            assert!(fs::read_dir(destination.join("runner"))
+                .unwrap()
+                .next()
+                .is_none());
+        };
+        assert_not_ready();
+        assert_empty_runner_state();
+
+        for stopped_at in [
+            RestoreRunnerBarrier::BeforeReconstruction,
+            RestoreRunnerBarrier::AfterReconstruction,
+            RestoreRunnerBarrier::BeforeReconciliation,
+            RestoreRunnerBarrier::AfterReconciliation,
+        ] {
+            let restore = RestoreGuard::reopen_receipts_to_runner(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .advance_receipts_to_runner_with_barrier(&authority, |phase| {
+                    if phase == stopped_at {
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err());
+            drop(restore);
+            assert_eq!(
+                fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+                receipts_bytes
+            );
+            assert!(!destination.join(RESTORE_STATE_TEMPORARY).exists());
+            assert_not_ready();
+            assert_empty_runner_state();
+        }
+
+        let restore = RestoreGuard::reopen_receipts_to_runner(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_receipts_to_runner_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreRunnerBarrier::BeforeReconstruction
+                        | RestoreRunnerBarrier::AfterReconstruction
+                        | RestoreRunnerBarrier::BeforeReconciliation
+                        | RestoreRunnerBarrier::AfterReconciliation
+                ) {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreRunnerBarrier::AfterTemporarySync);
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        let temporary_path = destination.join(RESTORE_STATE_TEMPORARY);
+        let temporary_bytes = fs::read(&temporary_path).unwrap();
+        fs::write(
+            &temporary_path,
+            &temporary_bytes[..temporary_bytes.len() / 2],
+        )
+        .unwrap();
+        assert_not_ready();
+        assert_empty_runner_state();
+
+        let restore = RestoreGuard::reopen_receipts_to_runner(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_receipts_to_runner_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreRunnerBarrier::BeforeReconstruction
+                        | RestoreRunnerBarrier::AfterReconstruction
+                        | RestoreRunnerBarrier::BeforeReconciliation
+                        | RestoreRunnerBarrier::AfterReconciliation
+                ) {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreRunnerBarrier::AfterTemporarySync);
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(fs::read(&temporary_path).unwrap(), temporary_bytes);
+        assert_not_ready();
+        assert_empty_runner_state();
+
+        let restore = RestoreGuard::reopen_receipts_to_runner(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_receipts_to_runner_with_barrier(&authority, |phase| {
+                if matches!(
+                    phase,
+                    RestoreRunnerBarrier::BeforeReconstruction
+                        | RestoreRunnerBarrier::AfterReconstruction
+                        | RestoreRunnerBarrier::BeforeReconciliation
+                        | RestoreRunnerBarrier::AfterReconciliation
+                        | RestoreRunnerBarrier::AfterTemporarySync
+                ) {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreRunnerBarrier::AfterRename);
+                    Err(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert!(!temporary_path.exists());
+        let runner_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let runner: RestoreIncomplete = serde_json::from_slice(&runner_bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&runner).unwrap(), runner_bytes);
+        assert_eq!(runner.step, "runner");
+        assert_not_ready();
+        assert_empty_runner_state();
+
+        let restore = RestoreGuard::reopen_receipts_to_runner(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_receipts_to_runner_with_barrier(&authority, |_| Err(()))
+            .unwrap();
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            runner_bytes
+        );
+        assert_eq!(
+            fs::read(destination.join(DATABASE)).unwrap(),
+            destination_database
+        );
+        assert_eq!(
+            fs::read(destination.join(DEPLOYMENT)).unwrap(),
+            destination_deployment
+        );
+        assert_eq!(
+            fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
+            source_database
+        );
+        assert_eq!(fs::read(backup_root.join(CURRENT)).unwrap(), backup_current);
+        assert_eq!(fs::read(&backup_database_path).unwrap(), backup_database);
+        assert_eq!(
+            fs::read(&backup_deployment_path).unwrap(),
+            backup_deployment
+        );
+        assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
+        assert_not_ready();
+        assert_empty_runner_state();
         crate::test_authority::remove_root(&authority_root);
         cleanup(&base);
     }
