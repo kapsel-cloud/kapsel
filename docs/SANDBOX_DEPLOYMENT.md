@@ -1015,12 +1015,20 @@ both the record bytes and filename: only after `validated` is durable, restore w
 canonical ready bytes as `restore.state.tmp`, revalidates all pins and locks, renames it
 descriptor-relatively to `restore.ready`, and fsyncs the state root while preserving
 `restore.incomplete`. This exact two-record prefix is not ready and is the only accepted
-final-publication intermediate. Restore then revalidates both canonical records, unlinks
-`restore.incomplete` descriptor-relatively, fsyncs the state root and parent, and only that exact
-one-record inventory becomes ready. Retry with both records validates their exact relationship and
-resumes only the unlink; every other pair refuses. Ordinary open refuses every temporary, incomplete
-record, or two-record prefix. Retained reads may serve only after readiness, and mutation remains
-stopped until ordinary later operator authorization.
+final-publication intermediate. Restore then revalidates both canonical records and unlinks
+`restore.incomplete` descriptor-relatively. The exact one-record `restore.ready` inventory is the
+recoverable readiness point because process loss after unlink releases the process-scoped locks and
+leaves no observable bit that distinguishes pre-fsync from post-fsync completion. It also leaves the
+ready record as the sole durable copy of the already frozen trusted time: ready-only retry treats
+its canonical bytes as authoritative, preserves them exactly, and neither samples nor infers another
+time. The publishing or retrying restore must revalidate that ready record and its destination,
+source, selected-generation, and held-lock pins, fsync the state root and parent, and return only
+after both fsyncs. Retry with both records validates their exact relationship and resumes only the
+unlink; retry with the exact one-record inventory performs the final revalidation and fsyncs
+idempotently. Every other pair or inventory refuses. Ordinary open refuses every temporary,
+incomplete record, or two-record prefix; it may accept the exact one-record inventory while restore
+is absent or only after the exclusive restore lock is released. Retained reads may serve only after
+readiness, and mutation remains stopped until ordinary later operator authorization.
 
 The deterministic Slice 5 capture matrix names both sides of: pending-reference commit; temporary
 generation creation; service database/journal, each receipt slot, semantic runner record/database/
@@ -1032,7 +1040,8 @@ each component install/fsync; incomplete write/fsync; complete-root fsync; desti
 parent fsync; forced-stop commit; each restore-record temporary create/write/fsync, atomic step
 replacement, and state-root fsync; expiry/tombstone commit; pending receipt convergence; semantic
 runner reconstruction; same-operation reconciliation; fresh lease publication; cleanup resumption;
-`validated` commit; ready rename; and final state-root/parent fsync.
+`validated` commit; ready rename; incomplete-record unlink into recoverable readiness; and the
+publisher/retry final state-root/parent fsync.
 
 A separate clean-state vector captures and restores empty authority/trust arrays from a stopped,
 drained initialized service and proves that ambient `current` is not pinned. Every other seam

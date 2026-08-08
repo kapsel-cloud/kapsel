@@ -760,6 +760,14 @@ impl StoppedBackupService<'_> {
         Self::open_internal(database_path, receipt_directory, authority, None, false)
     }
 
+    pub(crate) fn open_restored_validation_fixed_point(
+        database_path: &Path,
+        receipt_directory: &Path,
+        authority: &AuthorityConfiguration,
+    ) -> Result<Self, ServiceError> {
+        Self::open_internal(database_path, receipt_directory, authority, None, false)
+    }
+
     #[cfg(test)]
     pub(crate) fn open_for_test(
         database_path: impl AsRef<Path>,
@@ -938,6 +946,67 @@ impl StoppedBackupService<'_> {
             )
             .map_err(storage_error)?;
         if cleanup_owners != 0
+            || !self
+                .service
+                .authority
+                .dispatch_references()
+                .map_err(|_| ServiceError::Unavailable)?
+                .is_empty()
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        self.service.validate_pinned_paths()
+    }
+
+    pub(crate) fn validate_clean_restore_uniqueness_and_references(
+        &self,
+        runner: &fs::File,
+        identities: state_root::RoleIdentities,
+    ) -> Result<(), ServiceError> {
+        self.service.validate_pinned_paths()?;
+        runner_host::validate_state_root_inventory(
+            runner,
+            identities.controller_uid,
+            identities.controller_gid,
+            identities.runner_uid,
+            identities.runner_gid,
+        )
+        .map_err(|_| ServiceError::Unavailable)?;
+        if self.service.sole_active_run()?.is_some()
+            || self.service.sole_cleanup_authority_identity()?.is_some()
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        let connection = self.service.read_only_connection()?;
+        validate_authority_pins(&connection)?;
+        preflight_backup_schema(&connection)?;
+        validate_serial_capacity(&connection)?;
+        let closed: bool = connection
+            .query_row(
+                concat!(
+                    "SELECT stopped = 1 AND boundary_uid_digest = '' ",
+                    "AND NOT EXISTS(SELECT 1 FROM runs) ",
+                    "AND NOT EXISTS(SELECT 1 FROM tombstones) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipts) ",
+                    "AND NOT EXISTS(SELECT 1 FROM receipt_publications) ",
+                    "AND NOT EXISTS(SELECT 1 FROM cleanup_records) ",
+                    "AND NOT EXISTS(SELECT 1 FROM application_reports) ",
+                    "AND NOT EXISTS(SELECT 1 FROM provisioned_object_owners) ",
+                    "AND NOT EXISTS(SELECT 1 FROM events) ",
+                    "AND NOT EXISTS(SELECT 1 FROM authority_collection) ",
+                    "AND (SELECT COUNT(*) FROM backup_generations) = 1 ",
+                    "AND NOT EXISTS(SELECT 1 FROM backup_authority_references) ",
+                    "FROM service_state WHERE singleton = 1"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if !closed
+            || fs::read_dir(&self.service.receipt_directory)
+                .map_err(|_| ServiceError::Unavailable)?
+                .next()
+                .is_some()
             || !self
                 .service
                 .authority
