@@ -653,6 +653,7 @@ impl BackupStateGuard {
                     .try_clone()
                     .map_err(|_| ServiceError::Unavailable)?,
             }),
+            true,
         )
     }
 }

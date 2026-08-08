@@ -688,6 +688,7 @@ impl StoppedBackupService<'_> {
         receipt_directory: &Path,
         authority: &AuthorityConfiguration,
         pinned_state: Option<PinnedServiceState>,
+        validate_authority_references: bool,
     ) -> Result<Self, ServiceError> {
         if !database_path.is_absolute() || !receipt_directory.is_absolute() {
             return Err(ServiceError::Unavailable);
@@ -725,7 +726,9 @@ impl StoppedBackupService<'_> {
         if !stopped {
             return Err(ServiceError::Unavailable);
         }
-        service.validate_authority_reference_owners(&connection)?;
+        if validate_authority_references {
+            service.validate_authority_reference_owners(&connection)?;
+        }
         service.validate_pinned_paths()?;
         Ok(Self {
             service,
@@ -738,7 +741,15 @@ impl StoppedBackupService<'_> {
         receipt_directory: &Path,
         authority: &AuthorityConfiguration,
     ) -> Result<Self, ServiceError> {
-        Self::open_internal(database_path, receipt_directory, authority, None)
+        Self::open_internal(database_path, receipt_directory, authority, None, true)
+    }
+
+    pub(crate) fn open_restored_lease_fixed_point(
+        database_path: &Path,
+        receipt_directory: &Path,
+        authority: &AuthorityConfiguration,
+    ) -> Result<Self, ServiceError> {
+        Self::open_internal(database_path, receipt_directory, authority, None, false)
     }
 
     #[cfg(test)]
@@ -757,6 +768,7 @@ impl StoppedBackupService<'_> {
             receipt_directory.as_ref(),
             &test_authority::configuration(parent, digest_key),
             None,
+            true,
         )
     }
 
@@ -866,6 +878,34 @@ impl StoppedBackupService<'_> {
         let connection = self.service.read_only_connection()?;
         self.service
             .validate_authority_reference_owners(&connection)?;
+        self.service.validate_pinned_paths()
+    }
+
+    pub(crate) fn converge_clean_restore_lease_publication(&self) -> Result<(), ServiceError> {
+        self.service.validate_pinned_paths()?;
+        let connection = self.service.read_only_connection()?;
+        let owners: i64 = connection
+            .query_row(
+                concat!(
+                    "SELECT (SELECT COUNT(*) FROM runs) + ",
+                    "(SELECT COUNT(*) FROM tombstones) + ",
+                    "(SELECT COUNT(*) FROM authority_collection) + ",
+                    "(SELECT COUNT(*) FROM backup_authority_references)"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if owners != 0
+            || !self
+                .service
+                .authority
+                .dispatch_references()
+                .map_err(|_| ServiceError::Unavailable)?
+                .is_empty()
+        {
+            return Err(ServiceError::Unavailable);
+        }
         self.service.validate_pinned_paths()
     }
 }
