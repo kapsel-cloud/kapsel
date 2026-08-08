@@ -752,6 +752,14 @@ impl StoppedBackupService<'_> {
         Self::open_internal(database_path, receipt_directory, authority, None, false)
     }
 
+    pub(crate) fn open_restored_cleanup_fixed_point(
+        database_path: &Path,
+        receipt_directory: &Path,
+        authority: &AuthorityConfiguration,
+    ) -> Result<Self, ServiceError> {
+        Self::open_internal(database_path, receipt_directory, authority, None, false)
+    }
+
     #[cfg(test)]
     pub(crate) fn open_for_test(
         database_path: impl AsRef<Path>,
@@ -897,6 +905,39 @@ impl StoppedBackupService<'_> {
             )
             .map_err(storage_error)?;
         if owners != 0
+            || !self
+                .service
+                .authority
+                .dispatch_references()
+                .map_err(|_| ServiceError::Unavailable)?
+                .is_empty()
+        {
+            return Err(ServiceError::Unavailable);
+        }
+        self.service.validate_pinned_paths()
+    }
+
+    pub(crate) fn converge_clean_restore_cleanup(&self) -> Result<(), ServiceError> {
+        self.service.validate_pinned_paths()?;
+        if self.service.sole_cleanup_authority_identity()?.is_some() {
+            return Err(ServiceError::Unavailable);
+        }
+        let connection = self.service.read_only_connection()?;
+        let cleanup_owners: i64 = connection
+            .query_row(
+                concat!(
+                    "SELECT (SELECT COUNT(*) FROM runs) + ",
+                    "(SELECT COUNT(*) FROM cleanup_records) + ",
+                    "(SELECT COUNT(*) FROM provisioned_object_owners) + ",
+                    "(SELECT COUNT(*) FROM events) + ",
+                    "(SELECT COUNT(*) FROM authority_collection) + ",
+                    "(SELECT COUNT(*) FROM backup_authority_references)"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)?;
+        if cleanup_owners != 0
             || !self
                 .service
                 .authority
