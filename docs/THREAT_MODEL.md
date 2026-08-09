@@ -278,19 +278,24 @@ the fixed roots and acquire the universal lock sequence before creating the clos
 phases. It cannot inspect content, accept caller-selected descriptors, remain as a reusable broker,
 or survive with bootstrap authority after phase release. The controller phase has no capabilities
 and receives no backup-root or generation descriptor; the backup helper receives only its
-operation-specific closed set. Restore cannot mutate the destination until the helper's sealed
-backup preflight is checked against compile-time compatibility, exact staged authority, local
-fencing, one trusted clock sample, and destination absence, then approved through the fixed
-digest-bound reply. A substituted launcher, widened initial set, leaked descriptor, reordered lock,
-cross-phase descriptor, surviving privileged process, malformed or replayed preflight/approval, or
-alternate command route fails before content mutation. This one-shot bootstrap narrows but does not
-remove the controller host's concentrated compromise boundary.
+operation-specific closed set. Fresh restore construction cannot mutate the destination until the
+helper's sealed backup preflight is checked against compile-time compatibility, exact staged
+authority, local fencing, one trusted clock sample, and destination absence, then approved through
+the fixed digest-bound reply. Recovery may remove an exactly validated incomplete private prefix
+only after a cleanup-only approval binds its inventory digest, then must repeat the full preflight
+and obtain a separate construction approval. Exact complete-temporary and installed recovery instead
+validate the frozen incomplete record and matching parent inventory, receive a digest-bound approval
+without resampling time, and perform only their bounded publication or synchronization branch. A
+substituted launcher, widened initial set, leaked descriptor, reordered lock, cross-phase
+descriptor, surviving privileged process, malformed or replayed preflight/approval, or alternate
+command route fails before content mutation. This one-shot bootstrap narrows but does not remove the
+controller host's concentrated compromise boundary.
 
 A backup artifact cannot prove that another host, volume, or clone is absent. Gate 1 proves only the
-fixed local lock, process/cgroup absence, destination absence, authority continuity, and
-restore-before-serve state machine. Provider volume detachment and destruction of the original host
-remain mandatory Gate 3 evidence. Backup is not an external witness, complete history, generic
-archive, online snapshot, or anti-cloning mechanism.
+fixed local lock, process/cgroup absence, exact absent/private-temporary/installed destination
+inventory, authority continuity, and restore-before-serve state machine. Provider volume detachment
+and destruction of the original host remain mandatory Gate 3 evidence. Backup is not an external
+witness, complete history, generic archive, online snapshot, or anti-cloning mechanism.
 
 ### Cleanup failure and unsafe deletion
 

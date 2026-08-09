@@ -378,26 +378,48 @@ Closed hostile matrices exhaust manifest field/order/canonicalization, path inve
 digest/length, symlink/hardlink/special file, owner/group/mode/special bits, root/inode
 substitution, SQLite DELETE-journal sidecars and malformed rows, duplicate identities, stale
 process/inode/cgroup facts, incompatible bundle/architecture/clock, missing public trust/private
-authority, nonempty destination, and source changes during capture. Restore-step tests accept only
-an absent temporary or the uniquely expected zero-to-complete canonical prefix in controller-owned
-`restore.state.tmp` beside the previous record; they cross partial write, file fsync, rename, and
-state-root fsync, then require retry convergence and no ordinary open at every side. The final
-readiness matrix separately crosses ready-file rename/fsync, the exact two-record non-ready prefix,
-incomplete-file unlink into exact recoverable readiness, and the publisher/retry final state-root/
-parent fsync. A retry from ready-only must revalidate and repeat both fsyncs before returning; tests
-do not claim that process-scoped locks encode whether those fsyncs preceded a prior process loss.
-All temporary create, open, rename, and unlink operations are descriptor-relative to the pinned
-state root. Fixture-byte scans prove that private staged seeds, tombstone keys, Kubernetes and
-handoff credentials, dispatch inputs, logs, and diagnostics never enter a generation. A separate
-root-only network-namespace identity lane starts from the exact fixed bootstrap and proves root/lock
-pinning before phase release, capability-free controller `65530:65530`, backup `65529:65529` with
-the exact capture/restore capability sets, each phase's closed descriptor inventory, the one direct
-fixed controller-to-helper capture message, the restore helper's sealed preflight and digest-bound
-approval handshake before destination mutation, and no surviving bootstrap-authority process. It
-rejects a capability-free attempt to cross the backup-owned root, an alternate initial set, file
-capabilities, extra groups, reordered locks, extra/caller-selected descriptors, every cross-phase
-descriptor, and malformed, changed, replayed, or mismatched restore preflight/approval. Ordinary
-tests do not claim provider-volume detachment or original-host destruction.
+authority, an unexpected or nonrecoverable nonempty destination, and source changes during capture.
+Destination-installation tests cross the exact ordered private temporary-tree prefixes, every
+component install and fsync, validated prefix removal and parent fsync, complete-tree fsync, atomic
+destination rename, retry from the exact installed destination, and publisher/retry parent fsync. An
+incomplete accepted prefix, including the empty-root helper/controller sides and each exact
+create/namespace-fsync/write/fsync/chown/chmod/final-fsync component side, is validated read-only,
+removed under the narrow private-prefix exception with each containing-directory fsync and final
+parent fsync, and rebuilt only after repeated preflight and a new trusted clock sample; an exact
+complete tree preserves its installed record and frozen sample. Each accepted source component must
+match its exact selected byte prefix; an incomplete-record prefix must match the owner's
+fixed-field, bounded decimal-time, and fixed-suffix language. Out-of-order, nonprefix, or extra
+objects, simultaneous temporary and destination, and every unexpected ownership, mode, type,
+link-count, descriptor, source, selected backup generation, or lock substitution and every
+off-sequence owner/mode combination fail closed without deletion. Tests prove the prospective lock
+inside a private temporary is never flocked under the exclusive parent fence and explicitly prove
+restore never accepts or deletes an init prefix and init never accepts or deletes a restore prefix.
+Tests must not infer pre-fsync durability merely from complete bytes.
+
+Restore-step tests accept only an absent temporary or the uniquely expected zero-to-complete
+canonical prefix in controller-owned `restore.state.tmp` beside the previous record; they cross
+partial write, file fsync, rename, and state-root fsync, then require retry convergence and no
+ordinary open at every side. The final readiness matrix separately crosses ready-file rename/fsync,
+the exact two-record non-ready prefix, incomplete-file unlink into exact recoverable readiness, and
+the publisher/retry final state-root/parent fsync. A retry from ready-only must revalidate and
+repeat both fsyncs before returning; tests do not claim that process-scoped locks encode whether
+those fsyncs preceded a prior process loss. Restore-step temporary create, open, rename, and unlink
+operations are descriptor-relative to the pinned state root; installation-tree operations are
+relative to the pinned parent. Fixture-byte scans prove that private staged seeds, tombstone keys,
+Kubernetes and handoff credentials, dispatch inputs, logs, and diagnostics never enter a generation.
+A separate root-only network-namespace identity lane starts from the exact fixed bootstrap and
+proves root/lock pinning before phase release, capability-free controller `65530:65530`, backup
+`65529:65529` with the exact capture/restore capability sets, each phase's closed descriptor
+inventory, the one direct fixed controller-to-helper capture message, the restore helper's sealed
+preflight and branch-bound approval before every destination mutation, including cleanup-only prefix
+removal followed by a distinct fresh-construction approval, and no surviving bootstrap-authority
+process. Installed recovery proves the bootstrap opens only the canonical destination root and state
+lock needed for ordered locking, transfers both held locks only to the capability-free controller,
+and opens no other destination component. It rejects a capability-free attempt to cross the
+backup-owned root, an alternate initial set, file capabilities, extra groups, reordered locks,
+extra/caller-selected descriptors, every cross-phase descriptor, and malformed, changed, replayed,
+or mismatched restore preflight/approval. Ordinary tests do not claim provider-volume detachment or
+original-host destruction.
 
 The serialized proof matrix is:
 

@@ -24,6 +24,7 @@ const LOCK: &str = ".backup.lock";
 const PARENT_RESTORE_LOCK: &str = ".kapsel-sandbox-restore.lock";
 const RESTORE_TEMPORARY: &str = ".kapsel-sandbox-restore.tmp";
 const RESTORE_INCOMPLETE: &str = "restore.incomplete";
+const RESTORE_READY: &str = "restore.ready";
 const RESTORE_STATE_TEMPORARY: &str = "restore.state.tmp";
 const GENERATIONS: &str = "generations";
 const DEPLOYMENT: &str = "deployment.json";
@@ -759,6 +760,17 @@ struct RestoreIncomplete {
     step: String,
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreReady {
+    schema: String,
+    source: String,
+    generation: Option<u64>,
+    manifest_sha256: Option<String>,
+    compatibility_sha256: String,
+    completed_at: i64,
+}
+
 #[derive(Clone, Copy)]
 #[allow(
     clippy::enum_variant_names,
@@ -820,6 +832,20 @@ enum RestoreValidationBarrier {
     AfterRename,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "fault barriers name the durable side reached before simulated process loss"
+)]
+enum RestoreReadinessBarrier {
+    AfterTemporarySync,
+    AfterReadyRename,
+    AfterPairSync,
+    AfterIncompleteUnlink,
+    AfterFinalStateSync,
+    AfterParentSync,
+}
+
 #[derive(Clone, Copy)]
 enum RestoreTransition {
     InstalledToStopped,
@@ -860,6 +886,15 @@ struct RestoredCleanPrefix {
     temporary: Option<File>,
     record: RestoreIncomplete,
     current_publication: bool,
+}
+
+struct RestoredReadinessPrefix {
+    root: File,
+    incomplete: Option<File>,
+    ready: Option<File>,
+    temporary: Option<File>,
+    incomplete_record: Option<RestoreIncomplete>,
+    ready_record: Option<RestoreReady>,
 }
 
 /// Pins one selected clean backup after exclusively fencing an absent destination.
@@ -1612,6 +1647,219 @@ impl RestoreGuard {
         Ok(guard)
     }
 
+    fn reopen_validated_to_ready(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        let guard = Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            true,
+        )?;
+        guard.open_restored_readiness_prefix()?;
+        Ok(guard)
+    }
+
+    fn expected_ready(&self, completed_at: i64) -> RestoreReady {
+        RestoreReady {
+            schema: "kapsel.sandbox.restore-ready.v1".to_owned(),
+            source: "restored".to_owned(),
+            generation: Some(self.manifest.generation),
+            manifest_sha256: Some(self.manifest_sha256.clone()),
+            compatibility_sha256: self.manifest.compatibility_sha256.clone(),
+            completed_at,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the three accepted readiness inventories are validated as one closed prefix"
+    )]
+    fn open_restored_readiness_prefix(&self) -> Result<RestoredReadinessPrefix, ()> {
+        self.verify(true, false)?;
+        let root = directory_at(
+            &self.destination_parent,
+            &self.destination_name,
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        same(&root, self.destination_state.as_ref().ok_or(())?)?;
+        let actual = names(&root, 8)?;
+        let base = [DATABASE, DEPLOYMENT, LOCK, "receipts", "runner"]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<BTreeSet<_>>();
+        let has_incomplete = actual.contains(std::ffi::OsStr::new(RESTORE_INCOMPLETE));
+        let has_ready = actual.contains(std::ffi::OsStr::new(RESTORE_READY));
+        let has_temporary = actual.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY));
+        let mut expected = base;
+        match (has_incomplete, has_ready, has_temporary) {
+            (true, false, temporary) => {
+                expected.insert(OsString::from(RESTORE_INCOMPLETE));
+                if temporary {
+                    expected.insert(OsString::from(RESTORE_STATE_TEMPORARY));
+                }
+            },
+            (true, true, false) => {
+                expected.insert(OsString::from(RESTORE_INCOMPLETE));
+                expected.insert(OsString::from(RESTORE_READY));
+            },
+            (false, true, false) => {
+                expected.insert(OsString::from(RESTORE_READY));
+            },
+            _ => return Err(()),
+        }
+        if actual != expected {
+            return Err(());
+        }
+        file_at(
+            &root,
+            DATABASE,
+            self.controller.uid,
+            self.controller.gid,
+            0o600,
+            true,
+            DATABASE_MAX,
+        )?;
+        let deployment = file_at(
+            &root,
+            DEPLOYMENT,
+            self.controller.uid,
+            self.controller.gid,
+            0o400,
+            false,
+            16 * 1024,
+        )?;
+        let state_lock = file_at(
+            &root,
+            LOCK,
+            self.controller.uid,
+            self.controller.gid,
+            0o600,
+            true,
+            0,
+        )?;
+        same(&state_lock, self.destination_state_lock.as_ref().ok_or(())?)?;
+        let receipts = directory_at(
+            &root,
+            "receipts",
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        let runner = directory_at(
+            &root,
+            "runner",
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        if !names(&receipts, 1)?.is_empty()
+            || !names(&runner, 1)?.is_empty()
+            || read_bounded(&deployment, 16 * 1024)? != read_bounded(&self.deployment, 16 * 1024)?
+            || !Service::preflight_clean_restored_source(
+                &self.destination_path.join(DATABASE),
+                self.manifest.generation,
+                self.manifest.captured_at,
+                Some(&self.manifest_sha256),
+            )
+            .map_err(|_| ())?
+        {
+            return Err(());
+        }
+        let (incomplete, incomplete_record) = if has_incomplete {
+            let file = file_at(
+                &root,
+                RESTORE_INCOMPLETE,
+                self.controller.uid,
+                self.controller.gid,
+                0o600,
+                true,
+                1024,
+            )?;
+            let bytes = read_bounded(&file, 1024)?;
+            let record: RestoreIncomplete = serde_json::from_slice(&bytes).map_err(|_| ())?;
+            if serde_json::to_vec(&record).map_err(|_| ())? != bytes
+                || record.schema != "kapsel.sandbox.restore-incomplete.v1"
+                || record.generation != self.manifest.generation
+                || record.manifest_sha256 != self.manifest_sha256
+                || record.compatibility_sha256 != self.manifest.compatibility_sha256
+                || record.started_at < self.manifest.captured_at
+                || record.step != "validated"
+            {
+                return Err(());
+            }
+            (Some(file), Some(record))
+        } else {
+            (None, None)
+        };
+        let (ready, ready_record) = if has_ready {
+            let file = file_at(
+                &root,
+                RESTORE_READY,
+                self.controller.uid,
+                self.controller.gid,
+                0o600,
+                true,
+                1024,
+            )?;
+            let bytes = read_bounded(&file, 1024)?;
+            let record: RestoreReady = serde_json::from_slice(&bytes).map_err(|_| ())?;
+            if serde_json::to_vec(&record).map_err(|_| ())? != bytes
+                || record.schema != "kapsel.sandbox.restore-ready.v1"
+                || record.source != "restored"
+                || record.generation != Some(self.manifest.generation)
+                || record.manifest_sha256.as_deref() != Some(self.manifest_sha256.as_str())
+                || record.compatibility_sha256 != self.manifest.compatibility_sha256
+                || record.completed_at < self.manifest.captured_at
+                || incomplete_record
+                    .as_ref()
+                    .is_some_and(|old| record.completed_at != old.started_at)
+            {
+                return Err(());
+            }
+            (Some(file), Some(record))
+        } else {
+            (None, None)
+        };
+        let temporary = if has_temporary {
+            let file = file_at(
+                &root,
+                RESTORE_STATE_TEMPORARY,
+                self.controller.uid,
+                self.controller.gid,
+                0o600,
+                true,
+                1024,
+            )?;
+            let completed_at = incomplete_record.as_ref().ok_or(())?.started_at;
+            let expected_bytes =
+                serde_json::to_vec(&self.expected_ready(completed_at)).map_err(|_| ())?;
+            let bytes = read_bounded(&file, 1024)?;
+            if bytes.len() > expected_bytes.len() || !expected_bytes.starts_with(&bytes) {
+                return Err(());
+            }
+            Some(file)
+        } else {
+            None
+        };
+        Ok(RestoredReadinessPrefix {
+            root,
+            incomplete,
+            ready,
+            temporary,
+            incomplete_record,
+            ready_record,
+        })
+    }
+
     fn open_restored_clean_prefix(
         &self,
         transition: RestoreTransition,
@@ -2330,6 +2578,147 @@ impl RestoreGuard {
         if validated_prefix.record.step != "validated" || !validated_prefix.current_publication {
             return Err(());
         }
+        Ok(())
+    }
+
+    fn advance_validated_to_ready_with_barrier<F>(&self, mut barrier: F) -> Result<(), ()>
+    where
+        F: FnMut(RestoreReadinessBarrier) -> Result<(), ()>,
+    {
+        let mut prefix = self.open_restored_readiness_prefix()?;
+        let ready_bytes = if let Some(incomplete) = prefix.incomplete_record.as_ref() {
+            serde_json::to_vec(&self.expected_ready(incomplete.started_at)).map_err(|_| ())?
+        } else {
+            serde_json::to_vec(prefix.ready_record.as_ref().ok_or(())?).map_err(|_| ())?
+        };
+        let pinned_incomplete = prefix
+            .incomplete
+            .as_ref()
+            .map(File::try_clone)
+            .transpose()
+            .map_err(|_| ())?;
+        let mut pinned_ready = prefix
+            .ready
+            .as_ref()
+            .map(File::try_clone)
+            .transpose()
+            .map_err(|_| ())?;
+        if let Some(ready) = prefix.ready.as_ref() {
+            if read_bounded(ready, 1024)? != ready_bytes {
+                return Err(());
+            }
+        }
+        if prefix.ready.is_none() {
+            let mut pinned_temporary = None;
+            if let Some(temporary) = prefix.temporary.take() {
+                let bytes = read_bounded(&temporary, 1024)?;
+                if bytes == ready_bytes {
+                    pinned_temporary = Some(temporary);
+                } else {
+                    let reopened = file_at(
+                        &prefix.root,
+                        RESTORE_STATE_TEMPORARY,
+                        self.controller.uid,
+                        self.controller.gid,
+                        0o600,
+                        true,
+                        1024,
+                    )?;
+                    same(&reopened, &temporary)?;
+                    drop(reopened);
+                    drop(temporary);
+                    rustix::fs::unlinkat(
+                        &prefix.root,
+                        RESTORE_STATE_TEMPORARY,
+                        rustix::fs::AtFlags::empty(),
+                    )
+                    .map_err(|_| ())?;
+                    prefix.root.sync_all().map_err(|_| ())?;
+                }
+            }
+            if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
+                pinned_temporary = Some(write_restored_file(
+                    &prefix.root,
+                    RESTORE_STATE_TEMPORARY,
+                    &ready_bytes,
+                    self.controller,
+                    1024,
+                )?);
+                barrier(RestoreReadinessBarrier::AfterTemporarySync)?;
+            }
+            prefix = self.open_restored_readiness_prefix()?;
+            let temporary = prefix.temporary.as_ref().ok_or(())?;
+            let pinned_temporary = pinned_temporary.as_ref().ok_or(())?;
+            same(temporary, pinned_temporary)?;
+            if read_bounded(temporary, 1024)? != ready_bytes {
+                return Err(());
+            }
+            match (&prefix.incomplete, &pinned_incomplete) {
+                (Some(reopened), Some(pinned)) => same(reopened, pinned)?,
+                _ => return Err(()),
+            }
+            pinned_ready = Some(pinned_temporary.try_clone().map_err(|_| ())?);
+            renameat(
+                &prefix.root,
+                RESTORE_STATE_TEMPORARY,
+                &prefix.root,
+                RESTORE_READY,
+            )
+            .map_err(|_| ())?;
+            barrier(RestoreReadinessBarrier::AfterReadyRename)?;
+            prefix = self.open_restored_readiness_prefix()?;
+        }
+        let verify_publication = |prefix: &RestoredReadinessPrefix| -> Result<(), ()> {
+            let ready = prefix.ready.as_ref().ok_or(())?;
+            same(ready, pinned_ready.as_ref().ok_or(())?)?;
+            if read_bounded(ready, 1024)? != ready_bytes {
+                return Err(());
+            }
+            match (&prefix.incomplete, &pinned_incomplete) {
+                (Some(reopened), Some(pinned)) => same(reopened, pinned),
+                (None, None | Some(_)) => Ok(()),
+                _ => Err(()),
+            }
+        };
+        verify_publication(&prefix)?;
+        if prefix.incomplete.is_some() {
+            if prefix.temporary.is_some()
+                || prefix.incomplete_record.is_none()
+                || prefix.ready_record.is_none()
+            {
+                return Err(());
+            }
+            prefix.root.sync_all().map_err(|_| ())?;
+            barrier(RestoreReadinessBarrier::AfterPairSync)?;
+            prefix = self.open_restored_readiness_prefix()?;
+            verify_publication(&prefix)?;
+            if prefix.incomplete.is_none() {
+                return Err(());
+            }
+            rustix::fs::unlinkat(
+                &prefix.root,
+                RESTORE_INCOMPLETE,
+                rustix::fs::AtFlags::empty(),
+            )
+            .map_err(|_| ())?;
+            barrier(RestoreReadinessBarrier::AfterIncompleteUnlink)?;
+        }
+        prefix = self.open_restored_readiness_prefix()?;
+        verify_publication(&prefix)?;
+        if prefix.incomplete.is_some()
+            || prefix.temporary.is_some()
+            || prefix.ready_record.is_none()
+        {
+            return Err(());
+        }
+        prefix.root.sync_all().map_err(|_| ())?;
+        barrier(RestoreReadinessBarrier::AfterFinalStateSync)?;
+        prefix = self.open_restored_readiness_prefix()?;
+        verify_publication(&prefix)?;
+        self.destination_parent.sync_all().map_err(|_| ())?;
+        barrier(RestoreReadinessBarrier::AfterParentSync)?;
+        prefix = self.open_restored_readiness_prefix()?;
+        verify_publication(&prefix)?;
         Ok(())
     }
 }
@@ -5550,6 +5939,581 @@ mod tests {
         );
         assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
         assert_closed();
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the readiness tracer crosses the temporary, two-record, unlink, and fsync sides"
+    )]
+    fn selected_validated_restore_publishes_exact_ready_with_recoverable_retry() {
+        let (base, state) = initialized("restore-readiness");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let selected_manifest = selected.manifest_sha256.clone();
+        let selected_compatibility = selected.compatibility_sha256.clone();
+        let source_database = fs::read(base.join("state-parent/state").join(DATABASE)).unwrap();
+        let generation = backup_root.join(GENERATIONS).join(GENERATION_ONE);
+        let backup_database_path = generation.join("service").join(DATABASE);
+        let backup_deployment_path = generation.join(DEPLOYMENT);
+        let backup_manifest_path = generation.join(MANIFEST);
+        let backup_database = fs::read(&backup_database_path).unwrap();
+        let backup_current = fs::read(backup_root.join(CURRENT)).unwrap();
+        let backup_deployment = fs::read(&backup_deployment_path).unwrap();
+        let backup_manifest = fs::read(&backup_manifest_path).unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        let restore_parent = base.join("restore-readiness-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let identities = RoleIdentities::test_controller();
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore.install_incomplete(1_774_051_201).unwrap();
+        drop(restore);
+        macro_rules! advance {
+            ($reopen:ident, $advance:ident) => {{
+                let restore = RestoreGuard::$reopen(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                restore.$advance(&authority, |_| Ok(())).unwrap();
+                drop(restore);
+            }};
+        }
+        advance!(
+            reopen_installed_to_stopped,
+            advance_installed_to_stopped_with_barrier
+        );
+        advance!(
+            reopen_stopped_to_expired,
+            advance_stopped_to_expired_with_barrier
+        );
+        advance!(
+            reopen_expired_to_receipts,
+            advance_expired_to_receipts_with_barrier
+        );
+        advance!(
+            reopen_receipts_to_runner,
+            advance_receipts_to_runner_with_barrier
+        );
+        advance!(reopen_runner_to_lease, advance_runner_to_lease_with_barrier);
+        advance!(
+            reopen_lease_to_cleanup,
+            advance_lease_to_cleanup_with_barrier
+        );
+        advance!(
+            reopen_cleanup_to_validated,
+            advance_cleanup_to_validated_with_barrier
+        );
+
+        let validated_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+        let validated: RestoreIncomplete = serde_json::from_slice(&validated_bytes).unwrap();
+        assert_eq!(validated.step, "validated");
+        let destination_database = fs::read(destination.join(DATABASE)).unwrap();
+        let destination_deployment = fs::read(destination.join(DEPLOYMENT)).unwrap();
+        let assert_preserved = || {
+            assert_eq!(
+                fs::read(destination.join(DATABASE)).unwrap(),
+                destination_database
+            );
+            assert_eq!(
+                fs::read(destination.join(DEPLOYMENT)).unwrap(),
+                destination_deployment
+            );
+            assert_eq!(
+                fs::read(base.join("state-parent/state").join(DATABASE)).unwrap(),
+                source_database
+            );
+            assert_eq!(fs::read(backup_root.join(CURRENT)).unwrap(), backup_current);
+            assert_eq!(fs::read(&backup_database_path).unwrap(), backup_database);
+            assert_eq!(
+                fs::read(&backup_deployment_path).unwrap(),
+                backup_deployment
+            );
+            assert_eq!(fs::read(&backup_manifest_path).unwrap(), backup_manifest);
+        };
+        let assert_not_ready = || {
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                identities,
+                DeploymentProfile::Test,
+            )
+            .is_err());
+        };
+        assert_not_ready();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                assert_eq!(phase, RestoreReadinessBarrier::AfterTemporarySync);
+                Err(())
+            })
+            .is_err());
+        drop(restore);
+        let temporary_path = destination.join(RESTORE_STATE_TEMPORARY);
+        let ready_bytes = fs::read(&temporary_path).unwrap();
+        let ready: serde_json::Value = serde_json::from_slice(&ready_bytes).unwrap();
+        assert_eq!(ready["schema"], "kapsel.sandbox.restore-ready.v1");
+        assert_eq!(ready["source"], "restored");
+        assert_eq!(ready["generation"], 1);
+        assert_eq!(ready["manifest_sha256"], selected_manifest);
+        assert_eq!(ready["compatibility_sha256"], selected_compatibility);
+        assert_eq!(ready["completed_at"], 1_774_051_201_i64);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        fs::remove_file(&temporary_path).unwrap();
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                assert_eq!(phase, RestoreReadinessBarrier::AfterTemporarySync);
+                fs::remove_file(&temporary_path).unwrap();
+                fs::write(&temporary_path, &ready_bytes).unwrap();
+                fs::set_permissions(&temporary_path, fs::Permissions::from_mode(0o600)).unwrap();
+                Ok(())
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        fs::remove_file(&temporary_path).unwrap();
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                assert_eq!(phase, RestoreReadinessBarrier::AfterTemporarySync);
+                fs::remove_file(destination.join(RESTORE_INCOMPLETE)).unwrap();
+                fs::write(destination.join(RESTORE_INCOMPLETE), &validated_bytes).unwrap();
+                fs::set_permissions(
+                    destination.join(RESTORE_INCOMPLETE),
+                    fs::Permissions::from_mode(0o600),
+                )
+                .unwrap();
+                Ok(())
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(fs::read(&temporary_path).unwrap(), ready_bytes);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        fs::write(&temporary_path, &ready_bytes[..ready_bytes.len() / 2]).unwrap();
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                assert_eq!(phase, RestoreReadinessBarrier::AfterTemporarySync);
+                Err(())
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(fs::read(&temporary_path).unwrap(), ready_bytes);
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterReadyRename {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert!(!temporary_path.exists());
+        assert_eq!(
+            fs::read(destination.join("restore.ready")).unwrap(),
+            ready_bytes
+        );
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterPairSync {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join("restore.ready")).unwrap(),
+            ready_bytes
+        );
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        let ready_path = destination.join(RESTORE_READY);
+        let mut mismatched_ready: RestoreReady = serde_json::from_slice(&ready_bytes).unwrap();
+        mismatched_ready.completed_at += 1;
+        fs::write(&ready_path, serde_json::to_vec(&mismatched_ready).unwrap()).unwrap();
+        assert!(RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        fs::write(&ready_path, &ready_bytes).unwrap();
+        fs::set_permissions(&ready_path, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        fs::set_permissions(&ready_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::hard_link(&ready_path, destination.join("unexpected-ready-link")).unwrap();
+        assert!(RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        fs::remove_file(destination.join("unexpected-ready-link")).unwrap();
+        fs::write(destination.join("unexpected-state-entry"), b"unexpected").unwrap();
+        assert!(RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        fs::remove_file(destination.join("unexpected-state-entry")).unwrap();
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterPairSync {
+                    fs::set_permissions(
+                        destination.join(DEPLOYMENT),
+                        fs::Permissions::from_mode(0o600),
+                    )
+                    .unwrap();
+                }
+                Ok(())
+            })
+            .is_err());
+        drop(restore);
+        fs::set_permissions(
+            destination.join(DEPLOYMENT),
+            fs::Permissions::from_mode(0o400),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterPairSync {
+                    fs::set_permissions(
+                        backup_root.join(CURRENT),
+                        fs::Permissions::from_mode(0o600),
+                    )
+                    .unwrap();
+                }
+                Ok(())
+            })
+            .is_err());
+        drop(restore);
+        fs::set_permissions(backup_root.join(CURRENT), fs::Permissions::from_mode(0o400)).unwrap();
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterPairSync {
+                    fs::set_permissions(destination.join(LOCK), fs::Permissions::from_mode(0o400))
+                        .unwrap();
+                }
+                Ok(())
+            })
+            .is_err());
+        drop(restore);
+        fs::set_permissions(destination.join(LOCK), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterPairSync {
+                    fs::remove_file(&ready_path).unwrap();
+                    fs::write(&ready_path, &ready_bytes).unwrap();
+                    fs::set_permissions(&ready_path, fs::Permissions::from_mode(0o600)).unwrap();
+                }
+                Ok(())
+            })
+            .is_err());
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap(),
+            validated_bytes
+        );
+        assert_not_ready();
+        assert_preserved();
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .advance_validated_to_ready_with_barrier(|phase| {
+                if phase == RestoreReadinessBarrier::AfterIncompleteUnlink {
+                    assert!(crate::state_root::StateGuard::open(
+                        &destination,
+                        identities,
+                        DeploymentProfile::Test,
+                    )
+                    .is_err());
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err());
+        drop(restore);
+        assert!(!destination.join(RESTORE_INCOMPLETE).exists());
+        assert!(crate::state_root::StateGuard::open(
+            &destination,
+            identities,
+            DeploymentProfile::Test,
+        )
+        .is_ok());
+        assert_preserved();
+
+        for substituted_at in [
+            RestoreReadinessBarrier::AfterFinalStateSync,
+            RestoreReadinessBarrier::AfterParentSync,
+        ] {
+            let restore = RestoreGuard::reopen_validated_to_ready(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .advance_validated_to_ready_with_barrier(|phase| {
+                    if phase == substituted_at {
+                        fs::remove_file(&ready_path).unwrap();
+                        fs::write(&ready_path, &ready_bytes).unwrap();
+                        fs::set_permissions(&ready_path, fs::Permissions::from_mode(0o600))
+                            .unwrap();
+                    }
+                    Ok(())
+                })
+                .is_err());
+            drop(restore);
+            assert_eq!(fs::read(&ready_path).unwrap(), ready_bytes);
+            assert_preserved();
+        }
+
+        for stopped_at in [
+            RestoreReadinessBarrier::AfterFinalStateSync,
+            RestoreReadinessBarrier::AfterParentSync,
+        ] {
+            let restore = RestoreGuard::reopen_validated_to_ready(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            let result = restore.advance_validated_to_ready_with_barrier(|phase| {
+                if phase == stopped_at {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            });
+            drop(restore);
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read(destination.join("restore.ready")).unwrap(),
+                ready_bytes
+            );
+            assert_preserved();
+        }
+
+        let restore = RestoreGuard::reopen_validated_to_ready(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore
+            .advance_validated_to_ready_with_barrier(|_| Ok(()))
+            .unwrap();
+        drop(restore);
+        assert_eq!(
+            fs::read(destination.join("restore.ready")).unwrap(),
+            ready_bytes
+        );
+        assert!(crate::state_root::StateGuard::open(
+            &destination,
+            identities,
+            DeploymentProfile::Test,
+        )
+        .is_ok());
+        assert_preserved();
         crate::test_authority::remove_root(&authority_root);
         cleanup(&base);
     }
