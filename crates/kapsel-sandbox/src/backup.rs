@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeSet,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs::File,
     io::{Read as _, Seek as _, SeekFrom, Write as _},
     os::unix::fs::MetadataExt as _,
@@ -771,23 +771,64 @@ struct RestoreReady {
     completed_at: i64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreInstallComponent {
+    Database,
+    Deployment,
+    Receipts,
+    Runner,
+    StateLock,
+    Incomplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "installation barriers name the durable side reached before simulated process loss"
+)]
+enum RestoreInstallBarrier {
+    AfterTemporaryCreate,
+    AfterTemporaryOwnership,
+    AfterTemporaryInodeSync,
+    AfterTemporaryParentSync,
+    AfterComponentCreate(RestoreInstallComponent),
+    AfterComponentNamespaceSync(RestoreInstallComponent),
+    AfterComponentPartialWrite(RestoreInstallComponent),
+    AfterComponentWrite(RestoreInstallComponent),
+    AfterComponentContentSync(RestoreInstallComponent),
+    AfterComponentOwnership(RestoreInstallComponent),
+    AfterComponentMode(RestoreInstallComponent),
+    AfterComponentFinalSync(RestoreInstallComponent),
+    AfterComponentUnlink(RestoreInstallComponent),
+    AfterComponentRemovalSync(RestoreInstallComponent),
+    AfterTreeSync,
+    AfterTemporaryUnlink,
+    AfterCleanupParentSync,
+    BeforeRenameRace,
+    AfterRename,
+    AfterParentSync,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(
     clippy::enum_variant_names,
     reason = "fault barriers name the durable side reached before simulated process loss"
 )]
 enum RestoreStopBarrier {
+    BeforePublication,
     AfterPublication,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RestoreExpiryBarrier {
     BeforeExpiryCommit,
     AfterExpiryCommit,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -796,6 +837,7 @@ enum RestoreReceiptBarrier {
     AfterConvergence,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -806,6 +848,7 @@ enum RestoreRunnerBarrier {
     AfterReconciliation,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -814,6 +857,7 @@ enum RestoreLeaseBarrier {
     AfterPublicationFixedPoint,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -822,6 +866,7 @@ enum RestoreCleanupBarrier {
     AfterCleanupFixedPoint,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -830,6 +875,7 @@ enum RestoreValidationBarrier {
     AfterValidationFixedPoint,
     AfterTemporarySync,
     AfterRename,
+    AfterStateRootSync,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -846,7 +892,14 @@ enum RestoreReadinessBarrier {
     AfterParentSync,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CleanStepPublicationBarrier {
+    TemporarySynced,
+    Renamed,
+    StateRootSynced,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RestoreTransition {
     InstalledToStopped,
     StoppedToExpired,
@@ -855,6 +908,22 @@ enum RestoreTransition {
     RunnerToLease,
     LeaseToCleanup,
     CleanupToValidated,
+}
+
+fn map_stop_publication_barrier(phase: CleanStepPublicationBarrier) -> RestoreStopBarrier {
+    match phase {
+        CleanStepPublicationBarrier::TemporarySynced => RestoreStopBarrier::AfterTemporarySync,
+        CleanStepPublicationBarrier::Renamed => RestoreStopBarrier::AfterRename,
+        CleanStepPublicationBarrier::StateRootSynced => RestoreStopBarrier::AfterStateRootSync,
+    }
+}
+
+fn map_expiry_publication_barrier(phase: CleanStepPublicationBarrier) -> RestoreExpiryBarrier {
+    match phase {
+        CleanStepPublicationBarrier::TemporarySynced => RestoreExpiryBarrier::AfterTemporarySync,
+        CleanStepPublicationBarrier::Renamed => RestoreExpiryBarrier::AfterRename,
+        CleanStepPublicationBarrier::StateRootSynced => RestoreExpiryBarrier::AfterStateRootSync,
+    }
 }
 
 impl RestoreTransition {
@@ -886,6 +955,24 @@ struct RestoredCleanPrefix {
     temporary: Option<File>,
     record: RestoreIncomplete,
     current_publication: bool,
+}
+
+struct RestoreInstallationComplete {
+    root: File,
+    database: File,
+    deployment: File,
+    receipts: File,
+    runner: File,
+    state_lock: File,
+    incomplete_file: File,
+    record: RestoreIncomplete,
+}
+
+struct RestoreInstallationPrefix {
+    root: File,
+    components: Vec<RestoreInstallComponent>,
+    pinned_components: Vec<(RestoreInstallComponent, File)>,
+    complete: Option<RestoreInstallationComplete>,
 }
 
 struct RestoredReadinessPrefix {
@@ -951,6 +1038,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             false,
+            false,
         )
     }
 
@@ -961,6 +1049,7 @@ impl RestoreGuard {
         backup_identity: BackupIdentity,
         profile: crate::state_root::DeploymentProfile,
         installed: bool,
+        temporary: bool,
     ) -> Result<Self, ()> {
         if !destination.is_absolute() || !backup_path.is_absolute() {
             return Err(());
@@ -990,6 +1079,9 @@ impl RestoreGuard {
             std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect::<BTreeSet<_>>();
         if installed {
             expected_parent.insert(destination_name.clone());
+        }
+        if temporary {
+            expected_parent.insert(OsString::from(RESTORE_TEMPORARY));
         }
         if names(&destination_parent, 3)? != expected_parent {
             return Err(());
@@ -1198,7 +1290,7 @@ impl RestoreGuard {
             manifest_sha256,
             profile,
         };
-        guard.verify(installed, false)?;
+        guard.verify(installed, temporary)?;
         Ok(guard)
     }
 
@@ -1385,6 +1477,43 @@ impl RestoreGuard {
         incomplete_file: &File,
         incomplete: &RestoreIncomplete,
     ) -> Result<(), ()> {
+        self.verify_installation_tree(
+            OsStr::new(RESTORE_TEMPORARY),
+            temporary,
+            database,
+            deployment,
+            receipts,
+            runner,
+            state_lock,
+            incomplete_file,
+            incomplete,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "published installation validation keeps every pinned component explicit"
+    )]
+    fn verify_installation_tree(
+        &self,
+        name: &OsStr,
+        root: &File,
+        database: &File,
+        deployment: &File,
+        receipts: &File,
+        runner: &File,
+        state_lock: &File,
+        incomplete_file: &File,
+        incomplete: &RestoreIncomplete,
+    ) -> Result<(), ()> {
+        let reopened_root = directory_at(
+            &self.destination_parent,
+            name,
+            self.controller.uid,
+            self.controller.gid,
+            0o700,
+        )?;
+        same(&reopened_root, root)?;
         let expected = [
             DATABASE,
             DEPLOYMENT,
@@ -1396,10 +1525,10 @@ impl RestoreGuard {
         .into_iter()
         .map(OsString::from)
         .collect();
-        if names(temporary, 7)? != expected {
+        if names(root, 7)? != expected {
             return Err(());
         }
-        validate_directory(temporary, self.controller.uid, self.controller.gid, 0o700)?;
+        validate_directory(root, self.controller.uid, self.controller.gid, 0o700)?;
         validate_directory(receipts, self.controller.uid, self.controller.gid, 0o700)?;
         validate_directory(runner, self.controller.uid, self.controller.gid, 0o700)?;
         if !names(receipts, 1)?.is_empty() || !names(runner, 1)?.is_empty() {
@@ -1409,6 +1538,33 @@ impl RestoreGuard {
         validate_file(deployment, self.controller, 0o400, 16 * 1024)?;
         validate_file(state_lock, self.controller, 0o600, 0)?;
         validate_file(incomplete_file, self.controller, 0o600, 1024)?;
+        for (child_name, pinned) in [("receipts", receipts), ("runner", runner)] {
+            let reopened = directory_at(
+                root,
+                child_name,
+                self.controller.uid,
+                self.controller.gid,
+                0o700,
+            )?;
+            same(&reopened, pinned)?;
+        }
+        for (child_name, pinned, mode, maximum) in [
+            (DATABASE, database, 0o600, DATABASE_MAX),
+            (DEPLOYMENT, deployment, 0o400, 16 * 1024),
+            (LOCK, state_lock, 0o600, 0),
+            (RESTORE_INCOMPLETE, incomplete_file, 0o600, 1024),
+        ] {
+            let reopened = file_at(
+                root,
+                child_name,
+                self.controller.uid,
+                self.controller.gid,
+                mode,
+                false,
+                maximum,
+            )?;
+            same(&reopened, pinned)?;
+        }
         if read_bounded(database, DATABASE_MAX)? != read_bounded(&self.database, DATABASE_MAX)?
             || read_bounded(deployment, 16 * 1024)? != read_bounded(&self.deployment, 16 * 1024)?
         {
@@ -1421,34 +1577,236 @@ impl RestoreGuard {
         Ok(())
     }
 
+    fn verify_published_clean_prefix(&self, prefix: &RestoredCleanPrefix) -> Result<(), ()> {
+        self.verify_installation_tree(
+            &self.destination_name,
+            &prefix.root,
+            &prefix.database,
+            &prefix.deployment,
+            &prefix.receipts,
+            &prefix.runner,
+            &prefix.state_lock,
+            &prefix.incomplete,
+            &prefix.record,
+        )
+    }
+
+    fn open_installation_prefix(&self) -> Result<RestoreInstallationPrefix, ()> {
+        self.verify(false, true)?;
+        let root = File::from(
+            openat(
+                &self.destination_parent,
+                RESTORE_TEMPORARY,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(|_| ())?,
+        );
+        let ordered = [
+            (DATABASE, RestoreInstallComponent::Database),
+            (DEPLOYMENT, RestoreInstallComponent::Deployment),
+            ("receipts", RestoreInstallComponent::Receipts),
+            ("runner", RestoreInstallComponent::Runner),
+            (LOCK, RestoreInstallComponent::StateLock),
+            (RESTORE_INCOMPLETE, RestoreInstallComponent::Incomplete),
+        ];
+        let root_names = names(&root, 7)?;
+        let count = (0..=ordered.len())
+            .find(|count| {
+                ordered[..*count]
+                    .iter()
+                    .map(|(name, _)| OsString::from(name))
+                    .collect::<BTreeSet<_>>()
+                    == root_names
+            })
+            .ok_or(())?;
+        let root_metadata = root.metadata().map_err(|_| ())?;
+        let root_owner = BackupIdentity {
+            uid: root_metadata.uid(),
+            gid: root_metadata.gid(),
+        };
+        if !reachable_installation_root_state(
+            root_owner,
+            root_metadata.mode() & 0o7777,
+            count == 0,
+            self.backup_identity,
+            self.controller,
+        ) {
+            return Err(());
+        }
+
+        let database_bytes = read_bounded(&self.database, DATABASE_MAX)?;
+        let deployment_bytes = read_bounded(&self.deployment, 16 * 1024)?;
+        let mut database = None;
+        let mut deployment = None;
+        let mut receipts = None;
+        let mut runner = None;
+        let mut state_lock = None;
+        let mut incomplete_file = None;
+        let mut incomplete_record = None;
+        let mut pinned_components = Vec::with_capacity(count);
+        let mut all_final = true;
+
+        for (index, (_, component)) in ordered[..count].iter().enumerate() {
+            let current = index + 1 == count;
+            let final_state = match component {
+                RestoreInstallComponent::Database => {
+                    let file = open_installation_file(&root, DATABASE, DATABASE_MAX)?;
+                    let bytes = read_bounded(&file, DATABASE_MAX)?;
+                    if !database_bytes.starts_with(&bytes) {
+                        return Err(());
+                    }
+                    let final_state = validate_installation_file_state(
+                        &file,
+                        self.backup_identity,
+                        self.controller,
+                        0o600,
+                        bytes.len() == database_bytes.len(),
+                    )?;
+                    pinned_components.push((*component, file.try_clone().map_err(|_| ())?));
+                    database = Some(file);
+                    final_state
+                },
+                RestoreInstallComponent::Deployment => {
+                    let file = open_installation_file(&root, DEPLOYMENT, 16 * 1024)?;
+                    let bytes = read_bounded(&file, 16 * 1024)?;
+                    if !deployment_bytes.starts_with(&bytes) {
+                        return Err(());
+                    }
+                    let final_state = validate_installation_file_state(
+                        &file,
+                        self.backup_identity,
+                        self.controller,
+                        0o400,
+                        bytes.len() == deployment_bytes.len(),
+                    )?;
+                    pinned_components.push((*component, file.try_clone().map_err(|_| ())?));
+                    deployment = Some(file);
+                    final_state
+                },
+                RestoreInstallComponent::Receipts | RestoreInstallComponent::Runner => {
+                    let name = if *component == RestoreInstallComponent::Receipts {
+                        "receipts"
+                    } else {
+                        "runner"
+                    };
+                    let directory = open_installation_directory(&root, name)?;
+                    if !names(&directory, 1)?.is_empty() {
+                        return Err(());
+                    }
+                    let final_state = validate_installation_directory_state(
+                        &directory,
+                        self.backup_identity,
+                        self.controller,
+                    )?;
+                    pinned_components.push((*component, directory.try_clone().map_err(|_| ())?));
+                    if *component == RestoreInstallComponent::Receipts {
+                        receipts = Some(directory);
+                    } else {
+                        runner = Some(directory);
+                    }
+                    final_state
+                },
+                RestoreInstallComponent::StateLock => {
+                    let file = open_installation_file(&root, LOCK, 0)?;
+                    let final_state = validate_installation_file_state(
+                        &file,
+                        self.backup_identity,
+                        self.controller,
+                        0o600,
+                        true,
+                    )?;
+                    pinned_components.push((*component, file.try_clone().map_err(|_| ())?));
+                    state_lock = Some(file);
+                    final_state
+                },
+                RestoreInstallComponent::Incomplete => {
+                    let file = open_installation_file(&root, RESTORE_INCOMPLETE, 1024)?;
+                    let bytes = read_bounded(&file, 1024)?;
+                    let record = canonical_installed_record(
+                        &bytes,
+                        self.manifest.generation,
+                        &self.manifest_sha256,
+                        &self.manifest.compatibility_sha256,
+                        self.manifest.captured_at,
+                    );
+                    if record.is_none()
+                        && !valid_installed_record_prefix(
+                            &bytes,
+                            self.manifest.generation,
+                            &self.manifest_sha256,
+                            &self.manifest.compatibility_sha256,
+                            self.manifest.captured_at,
+                        )
+                    {
+                        return Err(());
+                    }
+                    let final_state = validate_installation_file_state(
+                        &file,
+                        self.backup_identity,
+                        self.controller,
+                        0o600,
+                        record.is_some(),
+                    )?;
+                    pinned_components.push((*component, file.try_clone().map_err(|_| ())?));
+                    incomplete_record = record;
+                    incomplete_file = Some(file);
+                    final_state
+                },
+            };
+            if !current && !final_state {
+                return Err(());
+            }
+            all_final &= final_state;
+        }
+
+        let components = ordered[..count]
+            .iter()
+            .map(|(_, component)| *component)
+            .collect::<Vec<_>>();
+        let complete = if count == ordered.len() && all_final {
+            Some(RestoreInstallationComplete {
+                root: root.try_clone().map_err(|_| ())?,
+                database: database.ok_or(())?,
+                deployment: deployment.ok_or(())?,
+                receipts: receipts.ok_or(())?,
+                runner: runner.ok_or(())?,
+                state_lock: state_lock.ok_or(())?,
+                incomplete_file: incomplete_file.ok_or(())?,
+                record: incomplete_record.ok_or(())?,
+            })
+        } else {
+            None
+        };
+        Ok(RestoreInstallationPrefix {
+            root,
+            components,
+            pinned_components,
+            complete,
+        })
+    }
+
     fn install_incomplete(&self, started_at: i64) -> Result<(), ()> {
+        self.install_incomplete_with_barrier(started_at, |_| Ok(()))
+    }
+
+    fn install_incomplete_with_barrier<F>(&self, started_at: i64, mut barrier: F) -> Result<(), ()>
+    where
+        F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+    {
+        self.construct_installation(started_at, &mut barrier)
+    }
+
+    fn construct_installation<F>(&self, started_at: i64, barrier: &mut F) -> Result<(), ()>
+    where
+        F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+    {
         if started_at < self.manifest.captured_at {
             return Err(());
         }
         self.verify(false, false)?;
-        let temporary = create_restored_directory(
-            &self.destination_parent,
-            RESTORE_TEMPORARY,
-            self.controller,
-        )?;
-        let database = copy_restored_file(
-            &self.database,
-            &temporary,
-            DATABASE,
-            self.controller,
-            DATABASE_MAX,
-        )?;
-        let deployment = copy_restored_file(
-            &self.deployment,
-            &temporary,
-            DEPLOYMENT,
-            self.controller,
-            16 * 1024,
-        )?;
-        fchmod(&deployment, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
-        let receipts = create_restored_directory(&temporary, "receipts", self.controller)?;
-        let runner = create_restored_directory(&temporary, "runner", self.controller)?;
-        let state_lock = write_restored_file(&temporary, LOCK, b"", self.controller, 0)?;
+        let database_bytes = read_bounded(&self.database, DATABASE_MAX)?;
+        let deployment_bytes = read_bounded(&self.deployment, 16 * 1024)?;
         let incomplete = RestoreIncomplete {
             schema: "kapsel.sandbox.restore-incomplete.v1".to_owned(),
             generation: self.manifest.generation,
@@ -1457,20 +1815,73 @@ impl RestoreGuard {
             started_at,
             step: "installed".to_owned(),
         };
-        let incomplete_file = write_restored_file(
+        let incomplete_bytes = serde_json::to_vec(&incomplete).map_err(|_| ())?;
+        let temporary = create_restore_installation_root(
+            &self.destination_parent,
+            self.backup_identity,
+            self.controller,
+            barrier,
+        )?;
+        let database = install_restore_file(
+            &temporary,
+            DATABASE,
+            &database_bytes,
+            self.backup_identity,
+            self.controller,
+            0o600,
+            DATABASE_MAX,
+            RestoreInstallComponent::Database,
+            barrier,
+        )?;
+        let deployment = install_restore_file(
+            &temporary,
+            DEPLOYMENT,
+            &deployment_bytes,
+            self.backup_identity,
+            self.controller,
+            0o400,
+            16 * 1024,
+            RestoreInstallComponent::Deployment,
+            barrier,
+        )?;
+        let receipts = install_restore_directory(
+            &temporary,
+            "receipts",
+            self.backup_identity,
+            self.controller,
+            RestoreInstallComponent::Receipts,
+            barrier,
+        )?;
+        let runner = install_restore_directory(
+            &temporary,
+            "runner",
+            self.backup_identity,
+            self.controller,
+            RestoreInstallComponent::Runner,
+            barrier,
+        )?;
+        let state_lock = install_restore_file(
+            &temporary,
+            LOCK,
+            b"",
+            self.backup_identity,
+            self.controller,
+            0o600,
+            0,
+            RestoreInstallComponent::StateLock,
+            barrier,
+        )?;
+        let incomplete_file = install_restore_file(
             &temporary,
             RESTORE_INCOMPLETE,
-            &serde_json::to_vec(&incomplete).map_err(|_| ())?,
+            &incomplete_bytes,
+            self.backup_identity,
             self.controller,
+            0o600,
             1024,
+            RestoreInstallComponent::Incomplete,
+            barrier,
         )?;
-        for file in [&database, &deployment, &state_lock, &incomplete_file] {
-            file.sync_all().map_err(|_| ())?;
-        }
-        for directory in [&receipts, &runner] {
-            directory.sync_all().map_err(|_| ())?;
-        }
-        temporary.sync_all().map_err(|_| ())?;
         self.verify_restore_temporary(
             &temporary,
             &database,
@@ -1482,14 +1893,321 @@ impl RestoreGuard {
             &incomplete,
         )?;
         self.verify(false, true)?;
-        renameat(
+        temporary.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterTreeSync)?;
+        self.verify_restore_temporary(
+            &temporary,
+            &database,
+            &deployment,
+            &receipts,
+            &runner,
+            &state_lock,
+            &incomplete_file,
+            &incomplete,
+        )?;
+        self.verify(false, true)?;
+        // Production performs no work in this interval; the private seam models a destination name
+        // racing final validation so NOREPLACE itself remains covered.
+        barrier(RestoreInstallBarrier::BeforeRenameRace)?;
+        rustix::fs::renameat_with(
             &self.destination_parent,
             RESTORE_TEMPORARY,
             &self.destination_parent,
             &self.destination_name,
+            rustix::fs::RenameFlags::NOREPLACE,
         )
         .map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterRename)?;
+        self.verify_installation_tree(
+            &self.destination_name,
+            &temporary,
+            &database,
+            &deployment,
+            &receipts,
+            &runner,
+            &state_lock,
+            &incomplete_file,
+            &incomplete,
+        )?;
+        self.verify(true, false)?;
         self.destination_parent.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterParentSync)?;
+        self.verify_installation_tree(
+            &self.destination_name,
+            &temporary,
+            &database,
+            &deployment,
+            &receipts,
+            &runner,
+            &state_lock,
+            &incomplete_file,
+            &incomplete,
+        )?;
+        self.verify(true, false)
+    }
+
+    fn reopen_temporary_installation(
+        destination: &Path,
+        backup_path: &Path,
+        controller: BackupIdentity,
+        backup_identity: BackupIdentity,
+        profile: crate::state_root::DeploymentProfile,
+    ) -> Result<Self, ()> {
+        let guard = Self::open_selected_clean_prefix(
+            destination,
+            backup_path,
+            controller,
+            backup_identity,
+            profile,
+            false,
+            true,
+        )?;
+        guard.open_installation_prefix()?;
+        Ok(guard)
+    }
+
+    fn resume_temporary_installation_with_barrier<F>(
+        &self,
+        replacement_started_at: i64,
+        mut barrier: F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+    {
+        let prefix = self.open_installation_prefix()?;
+        if let Some(complete) = prefix.complete.as_ref() {
+            return self.publish_complete_installation(complete, &mut barrier);
+        }
+        self.remove_installation_prefix(&prefix, &mut barrier)?;
+        self.verify(false, false)?;
+        self.construct_installation(replacement_started_at, &mut barrier)
+    }
+
+    fn remove_installation_prefix<F>(
+        &self,
+        prefix: &RestoreInstallationPrefix,
+        barrier: &mut F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+    {
+        let mut remaining = prefix.components.clone();
+        while let Some(component) = remaining.last().copied() {
+            self.verify(false, true)?;
+            let reopened_root =
+                open_installation_directory(&self.destination_parent, RESTORE_TEMPORARY)?;
+            same(&reopened_root, &prefix.root)?;
+            let expected_names = remaining
+                .iter()
+                .map(|component| {
+                    OsString::from(match component {
+                        RestoreInstallComponent::Database => DATABASE,
+                        RestoreInstallComponent::Deployment => DEPLOYMENT,
+                        RestoreInstallComponent::Receipts => "receipts",
+                        RestoreInstallComponent::Runner => "runner",
+                        RestoreInstallComponent::StateLock => LOCK,
+                        RestoreInstallComponent::Incomplete => RESTORE_INCOMPLETE,
+                    })
+                })
+                .collect::<BTreeSet<_>>();
+            if names(&prefix.root, 7)? != expected_names {
+                return Err(());
+            }
+            let (name, flags) = match component {
+                RestoreInstallComponent::Database => (DATABASE, rustix::fs::AtFlags::empty()),
+                RestoreInstallComponent::Deployment => (DEPLOYMENT, rustix::fs::AtFlags::empty()),
+                RestoreInstallComponent::Receipts => ("receipts", rustix::fs::AtFlags::REMOVEDIR),
+                RestoreInstallComponent::Runner => ("runner", rustix::fs::AtFlags::REMOVEDIR),
+                RestoreInstallComponent::StateLock => (LOCK, rustix::fs::AtFlags::empty()),
+                RestoreInstallComponent::Incomplete => {
+                    (RESTORE_INCOMPLETE, rustix::fs::AtFlags::empty())
+                },
+            };
+            let pinned = prefix
+                .pinned_components
+                .iter()
+                .find_map(|(pinned_component, file)| {
+                    (*pinned_component == component).then_some(file)
+                })
+                .ok_or(())?;
+            let reopened = if flags.contains(rustix::fs::AtFlags::REMOVEDIR) {
+                open_installation_directory(&prefix.root, name)?
+            } else {
+                open_installation_file(
+                    &prefix.root,
+                    name,
+                    match component {
+                        RestoreInstallComponent::Database => DATABASE_MAX,
+                        RestoreInstallComponent::Deployment => 16 * 1024,
+                        RestoreInstallComponent::StateLock => 0,
+                        RestoreInstallComponent::Incomplete => 1024,
+                        RestoreInstallComponent::Receipts | RestoreInstallComponent::Runner => {
+                            return Err(());
+                        },
+                    },
+                )?
+            };
+            same(&reopened, pinned)?;
+            rustix::fs::unlinkat(&prefix.root, name, flags).map_err(|_| ())?;
+            // The exclusive parent fence excludes conforming peers. Regular-file unlink is also
+            // visible on the pinned descriptor; directory link counts are intentionally not
+            // identity, so the exact post-unlink namespace inventory below is their evidence.
+            let removed_metadata = pinned.metadata().map_err(|_| ())?;
+            if removed_metadata.is_file() && removed_metadata.nlink() != 0 {
+                return Err(());
+            }
+            remaining.pop();
+            let remaining_names = remaining
+                .iter()
+                .map(|component| {
+                    OsString::from(match component {
+                        RestoreInstallComponent::Database => DATABASE,
+                        RestoreInstallComponent::Deployment => DEPLOYMENT,
+                        RestoreInstallComponent::Receipts => "receipts",
+                        RestoreInstallComponent::Runner => "runner",
+                        RestoreInstallComponent::StateLock => LOCK,
+                        RestoreInstallComponent::Incomplete => RESTORE_INCOMPLETE,
+                    })
+                })
+                .collect::<BTreeSet<_>>();
+            if names(&prefix.root, 7)? != remaining_names {
+                return Err(());
+            }
+            barrier(RestoreInstallBarrier::AfterComponentUnlink(component))?;
+            prefix.root.sync_all().map_err(|_| ())?;
+            barrier(RestoreInstallBarrier::AfterComponentRemovalSync(component))?;
+        }
+        self.verify(false, true)?;
+        let reopened_root =
+            open_installation_directory(&self.destination_parent, RESTORE_TEMPORARY)?;
+        same(&reopened_root, &prefix.root)?;
+        if !names(&prefix.root, 1)?.is_empty() {
+            return Err(());
+        }
+        rustix::fs::unlinkat(
+            &self.destination_parent,
+            RESTORE_TEMPORARY,
+            rustix::fs::AtFlags::REMOVEDIR,
+        )
+        .map_err(|_| ())?;
+        if names(&self.destination_parent, 2)?
+            != std::iter::once(OsString::from(PARENT_RESTORE_LOCK)).collect()
+        {
+            return Err(());
+        }
+        barrier(RestoreInstallBarrier::AfterTemporaryUnlink)?;
+        self.destination_parent.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterCleanupParentSync)
+    }
+
+    fn publish_complete_installation<F>(
+        &self,
+        complete: &RestoreInstallationComplete,
+        barrier: &mut F,
+    ) -> Result<(), ()>
+    where
+        F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+    {
+        self.verify_restore_temporary(
+            &complete.root,
+            &complete.database,
+            &complete.deployment,
+            &complete.receipts,
+            &complete.runner,
+            &complete.state_lock,
+            &complete.incomplete_file,
+            &complete.record,
+        )?;
+        for file in [
+            &complete.database,
+            &complete.deployment,
+            &complete.state_lock,
+            &complete.incomplete_file,
+        ] {
+            file.sync_all().map_err(|_| ())?;
+        }
+        for directory in [&complete.receipts, &complete.runner] {
+            directory.sync_all().map_err(|_| ())?;
+        }
+        complete.root.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterTreeSync)?;
+        self.verify_restore_temporary(
+            &complete.root,
+            &complete.database,
+            &complete.deployment,
+            &complete.receipts,
+            &complete.runner,
+            &complete.state_lock,
+            &complete.incomplete_file,
+            &complete.record,
+        )?;
+        self.verify(false, true)?;
+        // Production performs no work in this interval; the private seam models a destination name
+        // racing final validation so NOREPLACE itself remains covered.
+        barrier(RestoreInstallBarrier::BeforeRenameRace)?;
+        rustix::fs::renameat_with(
+            &self.destination_parent,
+            RESTORE_TEMPORARY,
+            &self.destination_parent,
+            &self.destination_name,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterRename)?;
+        self.verify_installation_tree(
+            &self.destination_name,
+            &complete.root,
+            &complete.database,
+            &complete.deployment,
+            &complete.receipts,
+            &complete.runner,
+            &complete.state_lock,
+            &complete.incomplete_file,
+            &complete.record,
+        )?;
+        self.verify(true, false)?;
+        self.destination_parent.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterParentSync)?;
+        self.verify_installation_tree(
+            &self.destination_name,
+            &complete.root,
+            &complete.database,
+            &complete.deployment,
+            &complete.receipts,
+            &complete.runner,
+            &complete.state_lock,
+            &complete.incomplete_file,
+            &complete.record,
+        )?;
+        self.verify(true, false)
+    }
+
+    fn retry_installed_installation_with_barrier<F>(&self, mut barrier: F) -> Result<(), ()>
+    where
+        F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+    {
+        let prefix = self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
+        if prefix.record.step != "installed" {
+            return Err(());
+        }
+        for file in [
+            &prefix.database,
+            &prefix.deployment,
+            &prefix.state_lock,
+            &prefix.incomplete,
+        ] {
+            file.sync_all().map_err(|_| ())?;
+        }
+        for directory in [&prefix.receipts, &prefix.runner] {
+            directory.sync_all().map_err(|_| ())?;
+        }
+        prefix.root.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterTreeSync)?;
+        self.verify_published_clean_prefix(&prefix)?;
+        self.verify(true, false)?;
+        self.destination_parent.sync_all().map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterParentSync)?;
+        self.verify_published_clean_prefix(&prefix)?;
         self.verify(true, false)
     }
 
@@ -1507,6 +2225,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
         if !matches!(prefix.record.step.as_str(), "installed" | "stopped") {
@@ -1529,6 +2248,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
         if !matches!(prefix.record.step.as_str(), "stopped" | "expired") {
@@ -1551,6 +2271,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
         if !matches!(prefix.record.step.as_str(), "expired" | "receipts") {
@@ -1573,6 +2294,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
         if !matches!(prefix.record.step.as_str(), "receipts" | "runner") {
@@ -1595,6 +2317,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::RunnerToLease)?;
         if !matches!(prefix.record.step.as_str(), "runner" | "lease") {
@@ -1617,6 +2340,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::LeaseToCleanup)?;
         if !matches!(prefix.record.step.as_str(), "lease" | "cleanup") {
@@ -1639,6 +2363,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         let prefix = guard.open_restored_clean_prefix(RestoreTransition::CleanupToValidated)?;
         if !matches!(prefix.record.step.as_str(), "cleanup" | "validated") {
@@ -1661,6 +2386,7 @@ impl RestoreGuard {
             backup_identity,
             profile,
             true,
+            false,
         )?;
         guard.open_restored_readiness_prefix()?;
         Ok(guard)
@@ -2018,6 +2744,90 @@ impl RestoreGuard {
         })
     }
 
+    fn publish_clean_restore_step<Barrier>(
+        &self,
+        mut prefix: RestoredCleanPrefix,
+        transition: RestoreTransition,
+        next_bytes: &[u8],
+        mut barrier: Barrier,
+    ) -> Result<RestoredCleanPrefix, ()>
+    where
+        Barrier: FnMut(CleanStepPublicationBarrier) -> Result<(), ()>,
+    {
+        let (_, next_step) = transition.steps();
+        if prefix.record.step == next_step {
+            let pinned_incomplete = prefix.incomplete.try_clone().map_err(|_| ())?;
+            prefix.root.sync_all().map_err(|_| ())?;
+            let synced = self.open_restored_clean_prefix(transition)?;
+            same(&synced.incomplete, &pinned_incomplete)?;
+            barrier(CleanStepPublicationBarrier::StateRootSynced)?;
+            return Ok(synced);
+        }
+
+        let mut pinned_temporary = prefix
+            .temporary
+            .as_ref()
+            .map(File::try_clone)
+            .transpose()
+            .map_err(|_| ())?;
+        if let Some(temporary) = prefix.temporary.take() {
+            let pinned = pinned_temporary.as_ref().ok_or(())?;
+            same(&temporary, pinned)?;
+            if read_bounded(pinned, 1024)? != next_bytes {
+                let cleanup = self.open_restored_clean_prefix(transition)?;
+                same(cleanup.temporary.as_ref().ok_or(())?, pinned)?;
+                rustix::fs::unlinkat(
+                    &cleanup.root,
+                    RESTORE_STATE_TEMPORARY,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .map_err(|_| ())?;
+                if pinned.metadata().map_err(|_| ())?.nlink() != 0 {
+                    return Err(());
+                }
+                cleanup.root.sync_all().map_err(|_| ())?;
+                pinned_temporary = None;
+            }
+        }
+        if pinned_temporary.is_none() {
+            pinned_temporary = Some(write_restored_file(
+                &prefix.root,
+                RESTORE_STATE_TEMPORARY,
+                next_bytes,
+                self.controller,
+                1024,
+            )?);
+            barrier(CleanStepPublicationBarrier::TemporarySynced)?;
+        }
+        let pinned_temporary = pinned_temporary.as_ref().ok_or(())?;
+        if read_bounded(pinned_temporary, 1024)? != next_bytes {
+            return Err(());
+        }
+
+        let publication = self.open_restored_clean_prefix(transition)?;
+        let named_temporary = publication.temporary.as_ref().ok_or(())?;
+        same(named_temporary, pinned_temporary)?;
+        if read_bounded(named_temporary, 1024)? != next_bytes {
+            return Err(());
+        }
+        renameat(
+            &publication.root,
+            RESTORE_STATE_TEMPORARY,
+            &publication.root,
+            RESTORE_INCOMPLETE,
+        )
+        .map_err(|_| ())?;
+        barrier(CleanStepPublicationBarrier::Renamed)?;
+
+        let renamed = self.open_restored_clean_prefix(transition)?;
+        same(&renamed.incomplete, pinned_temporary)?;
+        renamed.root.sync_all().map_err(|_| ())?;
+        let synced = self.open_restored_clean_prefix(transition)?;
+        same(&synced.incomplete, pinned_temporary)?;
+        barrier(CleanStepPublicationBarrier::StateRootSynced)?;
+        Ok(synced)
+    }
+
     fn advance_installed_to_stopped_with_barrier<F>(
         &self,
         authority: &AuthorityConfiguration,
@@ -2028,11 +2838,17 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
         if prefix.record.step == "stopped" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
+            let stopped_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::InstalledToStopped,
+                &stopped_bytes,
+                |phase| barrier(map_stop_publication_barrier(phase)),
+            )?;
             return Ok(());
         }
         if !prefix.current_publication {
+            barrier(RestoreStopBarrier::BeforePublication)?;
             let selected = BackupPublication {
                 generation: self.manifest.generation,
                 captured_at: self.manifest.captured_at,
@@ -2060,41 +2876,12 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let stopped_bytes = serde_json::to_vec(&stopped).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != stopped_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &stopped_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreStopBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreStopBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let stopped_prefix =
-            self.open_restored_clean_prefix(RestoreTransition::InstalledToStopped)?;
+        let stopped_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::InstalledToStopped,
+            &stopped_bytes,
+            |phase| barrier(map_stop_publication_barrier(phase)),
+        )?;
         if stopped_prefix.record.step != "stopped" || !stopped_prefix.current_publication {
             return Err(());
         }
@@ -2111,8 +2898,13 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
         if prefix.record.step == "expired" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+            let expired_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::StoppedToExpired,
+                &expired_bytes,
+                |phase| barrier(map_expiry_publication_barrier(phase)),
+            )?;
             return Ok(());
         }
         let service = crate::StoppedBackupService::open_restored(
@@ -2144,41 +2936,12 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let expired_bytes = serde_json::to_vec(&expired).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != expired_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &expired_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreExpiryBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreExpiryBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let expired_prefix =
-            self.open_restored_clean_prefix(RestoreTransition::StoppedToExpired)?;
+        let expired_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::StoppedToExpired,
+            &expired_bytes,
+            |phase| barrier(map_expiry_publication_barrier(phase)),
+        )?;
         if expired_prefix.record.step != "expired" || !expired_prefix.current_publication {
             return Err(());
         }
@@ -2195,8 +2958,23 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
         if prefix.record.step == "receipts" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+            let receipts_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::ExpiredToReceipts,
+                &receipts_bytes,
+                |phase| {
+                    barrier(match phase {
+                        CleanStepPublicationBarrier::TemporarySynced => {
+                            RestoreReceiptBarrier::AfterTemporarySync
+                        },
+                        CleanStepPublicationBarrier::Renamed => RestoreReceiptBarrier::AfterRename,
+                        CleanStepPublicationBarrier::StateRootSynced => {
+                            RestoreReceiptBarrier::AfterStateRootSync
+                        },
+                    })
+                },
+            )?;
             return Ok(());
         }
         barrier(RestoreReceiptBarrier::BeforeConvergence)?;
@@ -2218,41 +2996,22 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let receipts_bytes = serde_json::to_vec(&receipts).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != receipts_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &receipts_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreReceiptBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreReceiptBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let receipts_prefix =
-            self.open_restored_clean_prefix(RestoreTransition::ExpiredToReceipts)?;
+        let receipts_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::ExpiredToReceipts,
+            &receipts_bytes,
+            |phase| {
+                barrier(match phase {
+                    CleanStepPublicationBarrier::TemporarySynced => {
+                        RestoreReceiptBarrier::AfterTemporarySync
+                    },
+                    CleanStepPublicationBarrier::Renamed => RestoreReceiptBarrier::AfterRename,
+                    CleanStepPublicationBarrier::StateRootSynced => {
+                        RestoreReceiptBarrier::AfterStateRootSync
+                    },
+                })
+            },
+        )?;
         if receipts_prefix.record.step != "receipts" || !receipts_prefix.current_publication {
             return Err(());
         }
@@ -2269,8 +3028,23 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
         if prefix.record.step == "runner" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+            let runner_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::ReceiptsToRunner,
+                &runner_bytes,
+                |phase| {
+                    barrier(match phase {
+                        CleanStepPublicationBarrier::TemporarySynced => {
+                            RestoreRunnerBarrier::AfterTemporarySync
+                        },
+                        CleanStepPublicationBarrier::Renamed => RestoreRunnerBarrier::AfterRename,
+                        CleanStepPublicationBarrier::StateRootSynced => {
+                            RestoreRunnerBarrier::AfterStateRootSync
+                        },
+                    })
+                },
+            )?;
             return Ok(());
         }
         let identities = match self.profile {
@@ -2308,40 +3082,22 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let runner_bytes = serde_json::to_vec(&runner).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != runner_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &runner_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreRunnerBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreRunnerBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let runner_prefix = self.open_restored_clean_prefix(RestoreTransition::ReceiptsToRunner)?;
+        let runner_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::ReceiptsToRunner,
+            &runner_bytes,
+            |phase| {
+                barrier(match phase {
+                    CleanStepPublicationBarrier::TemporarySynced => {
+                        RestoreRunnerBarrier::AfterTemporarySync
+                    },
+                    CleanStepPublicationBarrier::Renamed => RestoreRunnerBarrier::AfterRename,
+                    CleanStepPublicationBarrier::StateRootSynced => {
+                        RestoreRunnerBarrier::AfterStateRootSync
+                    },
+                })
+            },
+        )?;
         if runner_prefix.record.step != "runner" || !runner_prefix.current_publication {
             return Err(());
         }
@@ -2358,8 +3114,23 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::RunnerToLease)?;
         if prefix.record.step == "lease" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::RunnerToLease)?;
+            let lease_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::RunnerToLease,
+                &lease_bytes,
+                |phase| {
+                    barrier(match phase {
+                        CleanStepPublicationBarrier::TemporarySynced => {
+                            RestoreLeaseBarrier::AfterTemporarySync
+                        },
+                        CleanStepPublicationBarrier::Renamed => RestoreLeaseBarrier::AfterRename,
+                        CleanStepPublicationBarrier::StateRootSynced => {
+                            RestoreLeaseBarrier::AfterStateRootSync
+                        },
+                    })
+                },
+            )?;
             return Ok(());
         }
         barrier(RestoreLeaseBarrier::BeforePublicationFixedPoint)?;
@@ -2383,40 +3154,22 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let lease_bytes = serde_json::to_vec(&lease).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != lease_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &lease_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreLeaseBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::RunnerToLease)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreLeaseBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let lease_prefix = self.open_restored_clean_prefix(RestoreTransition::RunnerToLease)?;
+        let lease_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::RunnerToLease,
+            &lease_bytes,
+            |phase| {
+                barrier(match phase {
+                    CleanStepPublicationBarrier::TemporarySynced => {
+                        RestoreLeaseBarrier::AfterTemporarySync
+                    },
+                    CleanStepPublicationBarrier::Renamed => RestoreLeaseBarrier::AfterRename,
+                    CleanStepPublicationBarrier::StateRootSynced => {
+                        RestoreLeaseBarrier::AfterStateRootSync
+                    },
+                })
+            },
+        )?;
         if lease_prefix.record.step != "lease" || !lease_prefix.current_publication {
             return Err(());
         }
@@ -2433,8 +3186,23 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::LeaseToCleanup)?;
         if prefix.record.step == "cleanup" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::LeaseToCleanup)?;
+            let cleanup_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::LeaseToCleanup,
+                &cleanup_bytes,
+                |phase| {
+                    barrier(match phase {
+                        CleanStepPublicationBarrier::TemporarySynced => {
+                            RestoreCleanupBarrier::AfterTemporarySync
+                        },
+                        CleanStepPublicationBarrier::Renamed => RestoreCleanupBarrier::AfterRename,
+                        CleanStepPublicationBarrier::StateRootSynced => {
+                            RestoreCleanupBarrier::AfterStateRootSync
+                        },
+                    })
+                },
+            )?;
             return Ok(());
         }
         barrier(RestoreCleanupBarrier::BeforeCleanupFixedPoint)?;
@@ -2456,40 +3224,22 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let cleanup_bytes = serde_json::to_vec(&cleanup).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != cleanup_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &cleanup_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreCleanupBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::LeaseToCleanup)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreCleanupBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let cleanup_prefix = self.open_restored_clean_prefix(RestoreTransition::LeaseToCleanup)?;
+        let cleanup_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::LeaseToCleanup,
+            &cleanup_bytes,
+            |phase| {
+                barrier(match phase {
+                    CleanStepPublicationBarrier::TemporarySynced => {
+                        RestoreCleanupBarrier::AfterTemporarySync
+                    },
+                    CleanStepPublicationBarrier::Renamed => RestoreCleanupBarrier::AfterRename,
+                    CleanStepPublicationBarrier::StateRootSynced => {
+                        RestoreCleanupBarrier::AfterStateRootSync
+                    },
+                })
+            },
+        )?;
         if cleanup_prefix.record.step != "cleanup" || !cleanup_prefix.current_publication {
             return Err(());
         }
@@ -2506,8 +3256,25 @@ impl RestoreGuard {
     {
         let mut prefix = self.open_restored_clean_prefix(RestoreTransition::CleanupToValidated)?;
         if prefix.record.step == "validated" {
-            prefix.root.sync_all().map_err(|_| ())?;
-            self.open_restored_clean_prefix(RestoreTransition::CleanupToValidated)?;
+            let validated_bytes = serde_json::to_vec(&prefix.record).map_err(|_| ())?;
+            self.publish_clean_restore_step(
+                prefix,
+                RestoreTransition::CleanupToValidated,
+                &validated_bytes,
+                |phase| {
+                    barrier(match phase {
+                        CleanStepPublicationBarrier::TemporarySynced => {
+                            RestoreValidationBarrier::AfterTemporarySync
+                        },
+                        CleanStepPublicationBarrier::Renamed => {
+                            RestoreValidationBarrier::AfterRename
+                        },
+                        CleanStepPublicationBarrier::StateRootSynced => {
+                            RestoreValidationBarrier::AfterStateRootSync
+                        },
+                    })
+                },
+            )?;
             return Ok(());
         }
         let identities = match self.profile {
@@ -2540,41 +3307,22 @@ impl RestoreGuard {
             ..prefix.record.clone()
         };
         let validated_bytes = serde_json::to_vec(&validated).map_err(|_| ())?;
-        if let Some(temporary) = prefix.temporary.take() {
-            let bytes = read_bounded(&temporary, 1024)?;
-            drop(temporary);
-            if bytes != validated_bytes {
-                rustix::fs::unlinkat(
-                    &prefix.root,
-                    RESTORE_STATE_TEMPORARY,
-                    rustix::fs::AtFlags::empty(),
-                )
-                .map_err(|_| ())?;
-                prefix.root.sync_all().map_err(|_| ())?;
-            }
-        }
-        if !names(&prefix.root, 8)?.contains(std::ffi::OsStr::new(RESTORE_STATE_TEMPORARY)) {
-            write_restored_file(
-                &prefix.root,
-                RESTORE_STATE_TEMPORARY,
-                &validated_bytes,
-                self.controller,
-                1024,
-            )?;
-            barrier(RestoreValidationBarrier::AfterTemporarySync)?;
-        }
-        self.open_restored_clean_prefix(RestoreTransition::CleanupToValidated)?;
-        renameat(
-            &prefix.root,
-            RESTORE_STATE_TEMPORARY,
-            &prefix.root,
-            RESTORE_INCOMPLETE,
-        )
-        .map_err(|_| ())?;
-        barrier(RestoreValidationBarrier::AfterRename)?;
-        prefix.root.sync_all().map_err(|_| ())?;
-        let validated_prefix =
-            self.open_restored_clean_prefix(RestoreTransition::CleanupToValidated)?;
+        let validated_prefix = self.publish_clean_restore_step(
+            prefix,
+            RestoreTransition::CleanupToValidated,
+            &validated_bytes,
+            |phase| {
+                barrier(match phase {
+                    CleanStepPublicationBarrier::TemporarySynced => {
+                        RestoreValidationBarrier::AfterTemporarySync
+                    },
+                    CleanStepPublicationBarrier::Renamed => RestoreValidationBarrier::AfterRename,
+                    CleanStepPublicationBarrier::StateRootSynced => {
+                        RestoreValidationBarrier::AfterStateRootSync
+                    },
+                })
+            },
+        )?;
         if validated_prefix.record.step != "validated" || !validated_prefix.current_publication {
             return Err(());
         }
@@ -3087,31 +3835,6 @@ fn create_directory(parent: &File, name: &str, identity: BackupIdentity) -> Resu
     directory_at(parent, name, identity.uid, identity.gid, 0o700)
 }
 
-fn create_restored_directory(
-    parent: &File,
-    name: &str,
-    controller: BackupIdentity,
-) -> Result<File, ()> {
-    mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
-    let directory = File::from(
-        openat(
-            parent,
-            name,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::empty(),
-        )
-        .map_err(|_| ())?,
-    );
-    rustix::fs::fchown(
-        &directory,
-        Some(rustix::process::Uid::from_raw(controller.uid)),
-        Some(rustix::process::Gid::from_raw(controller.gid)),
-    )
-    .map_err(|_| ())?;
-    validate_directory(&directory, controller.uid, controller.gid, 0o700)?;
-    Ok(directory)
-}
-
 fn write_new_file(
     parent: &File,
     name: &str,
@@ -3168,15 +3891,347 @@ fn write_restored_file(
     Ok(file)
 }
 
-fn copy_restored_file(
-    source: &File,
-    destination: &File,
-    name: &str,
+fn create_restore_installation_root<F>(
+    parent: &File,
+    helper: BackupIdentity,
     controller: BackupIdentity,
+    barrier: &mut F,
+) -> Result<File, ()>
+where
+    F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+{
+    mkdirat(parent, RESTORE_TEMPORARY, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+    let root = File::from(
+        openat(
+            parent,
+            RESTORE_TEMPORARY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    validate_directory(&root, helper.uid, helper.gid, 0o700)?;
+    barrier(RestoreInstallBarrier::AfterTemporaryCreate)?;
+    rustix::fs::fchown(
+        &root,
+        Some(rustix::process::Uid::from_raw(controller.uid)),
+        Some(rustix::process::Gid::from_raw(controller.gid)),
+    )
+    .map_err(|_| ())?;
+    validate_directory(&root, controller.uid, controller.gid, 0o700)?;
+    barrier(RestoreInstallBarrier::AfterTemporaryOwnership)?;
+    root.sync_all().map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterTemporaryInodeSync)?;
+    parent.sync_all().map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterTemporaryParentSync)?;
+    Ok(root)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the installation file state machine keeps every durable side explicit"
+)]
+fn install_restore_file<F>(
+    parent: &File,
+    name: &str,
+    bytes: &[u8],
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+    final_mode: u32,
     maximum: u64,
-) -> Result<File, ()> {
-    let bytes = read_bounded(source, maximum)?;
-    write_restored_file(destination, name, &bytes, controller, maximum)
+    component: RestoreInstallComponent,
+    barrier: &mut F,
+) -> Result<File, ()>
+where
+    F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+{
+    if u64::try_from(bytes.len()).map_err(|_| ())? > maximum {
+        return Err(());
+    }
+    let mut file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|_| ())?,
+    );
+    validate_file(&file, helper, 0o600, maximum)?;
+    barrier(RestoreInstallBarrier::AfterComponentCreate(component))?;
+    parent.sync_all().map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterComponentNamespaceSync(
+        component,
+    ))?;
+    let split = bytes.len() / 2;
+    if split > 0 && split < bytes.len() {
+        file.write_all(&bytes[..split]).map_err(|_| ())?;
+        barrier(RestoreInstallBarrier::AfterComponentPartialWrite(component))?;
+        file.write_all(&bytes[split..]).map_err(|_| ())?;
+    } else {
+        file.write_all(bytes).map_err(|_| ())?;
+    }
+    barrier(RestoreInstallBarrier::AfterComponentWrite(component))?;
+    file.sync_all().map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterComponentContentSync(component))?;
+    rustix::fs::fchown(
+        &file,
+        Some(rustix::process::Uid::from_raw(controller.uid)),
+        Some(rustix::process::Gid::from_raw(controller.gid)),
+    )
+    .map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterComponentOwnership(component))?;
+    let raw_mode = rustix::fs::RawMode::try_from(final_mode).map_err(|_| ())?;
+    fchmod(&file, Mode::from_raw_mode(raw_mode)).map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterComponentMode(component))?;
+    file.sync_all().map_err(|_| ())?;
+    validate_file(&file, controller, final_mode, maximum)?;
+    barrier(RestoreInstallBarrier::AfterComponentFinalSync(component))?;
+    Ok(file)
+}
+
+fn install_restore_directory<F>(
+    parent: &File,
+    name: &str,
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+    component: RestoreInstallComponent,
+    barrier: &mut F,
+) -> Result<File, ()>
+where
+    F: FnMut(RestoreInstallBarrier) -> Result<(), ()>,
+{
+    mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+    let directory = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    validate_directory(&directory, helper.uid, helper.gid, 0o700)?;
+    barrier(RestoreInstallBarrier::AfterComponentCreate(component))?;
+    parent.sync_all().map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterComponentNamespaceSync(
+        component,
+    ))?;
+    rustix::fs::fchown(
+        &directory,
+        Some(rustix::process::Uid::from_raw(controller.uid)),
+        Some(rustix::process::Gid::from_raw(controller.gid)),
+    )
+    .map_err(|_| ())?;
+    barrier(RestoreInstallBarrier::AfterComponentOwnership(component))?;
+    directory.sync_all().map_err(|_| ())?;
+    validate_directory(&directory, controller.uid, controller.gid, 0o700)?;
+    barrier(RestoreInstallBarrier::AfterComponentFinalSync(component))?;
+    Ok(directory)
+}
+
+fn same_backup_identity(left: BackupIdentity, right: BackupIdentity) -> bool {
+    left.uid == right.uid && left.gid == right.gid
+}
+
+fn open_installation_file(parent: &File, name: &str, maximum: u64) -> Result<File, ()> {
+    let file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    let metadata = file.metadata().map_err(|_| ())?;
+    if metadata.is_file() && metadata.nlink() == 1 && metadata.len() <= maximum {
+        Ok(file)
+    } else {
+        Err(())
+    }
+}
+
+fn open_installation_directory(parent: &File, name: &str) -> Result<File, ()> {
+    let directory = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| ())?,
+    );
+    directory
+        .metadata()
+        .map_err(|_| ())?
+        .is_dir()
+        .then_some(directory)
+        .ok_or(())
+}
+
+fn reachable_installation_root_state(
+    identity: BackupIdentity,
+    mode: u32,
+    empty: bool,
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+) -> bool {
+    mode == 0o700
+        && (same_backup_identity(identity, controller)
+            || empty && same_backup_identity(identity, helper))
+}
+
+fn classify_installation_file_state(
+    identity: BackupIdentity,
+    mode: u32,
+    complete: bool,
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+    final_mode: u32,
+) -> Option<bool> {
+    let helper_state = same_backup_identity(identity, helper) && mode == 0o600;
+    let controller_state = same_backup_identity(identity, controller)
+        && complete
+        && (mode == 0o600 || mode == final_mode);
+    (helper_state || controller_state)
+        .then_some(complete && same_backup_identity(identity, controller) && mode == final_mode)
+}
+
+fn classify_installation_directory_state(
+    identity: BackupIdentity,
+    mode: u32,
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+) -> Option<bool> {
+    (mode == 0o700
+        && (same_backup_identity(identity, helper) || same_backup_identity(identity, controller)))
+    .then_some(same_backup_identity(identity, controller))
+}
+
+fn validate_installation_file_state(
+    file: &File,
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+    final_mode: u32,
+    complete: bool,
+) -> Result<bool, ()> {
+    let metadata = file.metadata().map_err(|_| ())?;
+    classify_installation_file_state(
+        BackupIdentity {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        },
+        metadata.mode() & 0o7777,
+        complete,
+        helper,
+        controller,
+        final_mode,
+    )
+    .ok_or(())
+}
+
+fn validate_installation_directory_state(
+    directory: &File,
+    helper: BackupIdentity,
+    controller: BackupIdentity,
+) -> Result<bool, ()> {
+    let metadata = directory.metadata().map_err(|_| ())?;
+    classify_installation_directory_state(
+        BackupIdentity {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+        },
+        metadata.mode() & 0o7777,
+        helper,
+        controller,
+    )
+    .ok_or(())
+}
+
+fn canonical_installed_record(
+    bytes: &[u8],
+    generation: u64,
+    manifest_sha256: &str,
+    compatibility_sha256: &str,
+    captured_at: i64,
+) -> Option<RestoreIncomplete> {
+    let record = serde_json::from_slice::<RestoreIncomplete>(bytes).ok()?;
+    (serde_json::to_vec(&record).ok()? == bytes
+        && record.schema == "kapsel.sandbox.restore-incomplete.v1"
+        && record.generation == generation
+        && record.manifest_sha256 == manifest_sha256
+        && record.compatibility_sha256 == compatibility_sha256
+        && record.started_at >= captured_at
+        && record.step == "installed")
+        .then_some(record)
+}
+
+fn valid_installed_record_prefix(
+    bytes: &[u8],
+    generation: u64,
+    manifest_sha256: &str,
+    compatibility_sha256: &str,
+    captured_at: i64,
+) -> bool {
+    let sample = RestoreIncomplete {
+        schema: "kapsel.sandbox.restore-incomplete.v1".to_owned(),
+        generation,
+        manifest_sha256: manifest_sha256.to_owned(),
+        compatibility_sha256: compatibility_sha256.to_owned(),
+        started_at: 0,
+        step: "installed".to_owned(),
+    };
+    let Ok(sample) = serde_json::to_vec(&sample) else {
+        return false;
+    };
+    let marker = b"\"started_at\":0";
+    let Some(marker_at) = sample
+        .windows(marker.len())
+        .position(|window| window == marker)
+    else {
+        return false;
+    };
+    let mut header = sample[..marker_at].to_vec();
+    header.extend_from_slice(b"\"started_at\":");
+    if header.starts_with(bytes) {
+        return true;
+    }
+    let Some(tail) = bytes.strip_prefix(header.as_slice()) else {
+        return false;
+    };
+    let digits = tail
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .copied()
+        .collect::<Vec<_>>();
+    if digits.is_empty() || digits.len() > 19 || digits[0] == b'0' {
+        return false;
+    }
+    let Ok(digits_text) = std::str::from_utf8(&digits) else {
+        return false;
+    };
+    let Ok(value) = digits_text.parse::<u128>() else {
+        return false;
+    };
+    let Ok(captured_at) = u128::try_from(captured_at) else {
+        return false;
+    };
+    let suffix = b",\"step\":\"installed\"}";
+    let remainder = &tail[digits.len()..];
+    if !remainder.is_empty() {
+        return suffix.starts_with(remainder) && value <= i64::MAX as u128 && value >= captured_at;
+    }
+    (digits.len()..=19).any(|total| {
+        let power = 10_u128.pow(u32::try_from(total - digits.len()).unwrap_or(0));
+        let minimum = value.saturating_mul(power);
+        let maximum = value
+            .saturating_add(1)
+            .saturating_mul(power)
+            .saturating_sub(1)
+            .min(i64::MAX as u128);
+        minimum <= i64::MAX as u128 && maximum >= captured_at
+    })
 }
 
 fn copy_file(
@@ -3261,19 +4316,44 @@ fn validate_directory(file: &File, uid: u32, gid: u32, mode: u32) -> Result<(), 
         .ok_or(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the pure metadata seam keeps every hostile metadata field explicit"
+)]
+fn valid_file_metadata_fields(
+    is_file: bool,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    links: u64,
+    length: u64,
+    identity: BackupIdentity,
+    expected_mode: u32,
+    maximum: u64,
+) -> bool {
+    is_file
+        && uid == identity.uid
+        && gid == identity.gid
+        && mode == expected_mode
+        && links == 1
+        && length <= maximum
+}
+
 fn validate_file(file: &File, identity: BackupIdentity, mode: u32, maximum: u64) -> Result<(), ()> {
     let metadata = file.metadata().map_err(|_| ())?;
-    if metadata.is_file()
-        && metadata.uid() == identity.uid
-        && metadata.gid() == identity.gid
-        && metadata.mode() & 0o7777 == mode
-        && metadata.nlink() == 1
-        && metadata.len() <= maximum
-    {
-        Ok(())
-    } else {
-        Err(())
-    }
+    valid_file_metadata_fields(
+        metadata.is_file(),
+        metadata.uid(),
+        metadata.gid(),
+        metadata.mode() & 0o7777,
+        metadata.nlink(),
+        metadata.len(),
+        identity,
+        mode,
+        maximum,
+    )
+    .then_some(())
+    .ok_or(())
 }
 
 fn file_at_modes(
@@ -3412,7 +4492,10 @@ mod tests {
         fs,
         os::unix::fs::{symlink, OpenOptionsExt as _, PermissionsExt as _},
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Mutex,
+        },
     };
 
     use super::*;
@@ -3423,6 +4506,7 @@ mod tests {
     };
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+    static INSTALLATION_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn initialized(name: &str) -> (PathBuf, BackupStateGuard) {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -3581,6 +4665,2111 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct TreeInventoryEntry {
+        path: PathBuf,
+        kind: &'static str,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+        links: u64,
+        bytes: Vec<u8>,
+    }
+
+    fn tree_inventory(root: &Path) -> Vec<TreeInventoryEntry> {
+        fn visit(root: &Path, path: &Path, inventory: &mut Vec<TreeInventoryEntry>) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            let kind = if metadata.is_dir() {
+                "directory"
+            } else if metadata.is_file() {
+                "file"
+            } else if metadata.file_type().is_symlink() {
+                "symlink"
+            } else {
+                "special"
+            };
+            let bytes = if metadata.is_file() {
+                fs::read(path).unwrap()
+            } else if metadata.file_type().is_symlink() {
+                fs::read_link(path)
+                    .unwrap()
+                    .to_string_lossy()
+                    .as_bytes()
+                    .to_vec()
+            } else {
+                Vec::new()
+            };
+            inventory.push(TreeInventoryEntry {
+                path: path.strip_prefix(root).unwrap().to_owned(),
+                kind,
+                uid: metadata.uid(),
+                gid: metadata.gid(),
+                mode: metadata.mode() & 0o7777,
+                links: metadata.nlink(),
+                bytes,
+            });
+            if metadata.is_dir() {
+                let mut children = fs::read_dir(path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect::<Vec<_>>();
+                children.sort();
+                for child in children {
+                    visit(root, &child, inventory);
+                }
+            }
+        }
+
+        let mut inventory = Vec::new();
+        visit(root, root, &mut inventory);
+        inventory
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum MatrixBarrier {
+        BeforeSemantic,
+        AfterSemantic,
+        AfterTemporarySync,
+        AfterRename,
+        AfterStateRootSync,
+    }
+
+    struct CleanTransitionFixture {
+        base: PathBuf,
+        backup_root: PathBuf,
+        authority_root: PathBuf,
+        authority: AuthorityConfiguration,
+        destination: PathBuf,
+        source_root: PathBuf,
+        source_inventory: Vec<TreeInventoryEntry>,
+        selected_inventory: Vec<TreeInventoryEntry>,
+    }
+
+    fn clean_transition_fixture(name: &str) -> CleanTransitionFixture {
+        let (base, state) = initialized(name);
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+        let source_root = base.join("state-parent/state");
+        let source_inventory = tree_inventory(&source_root);
+        let selected_inventory = tree_inventory(&backup_root);
+        let restore_parent = base.join("matrix-restore-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        restore.install_incomplete(1_774_051_201).unwrap();
+        drop(restore);
+        CleanTransitionFixture {
+            base,
+            backup_root,
+            authority_root,
+            authority,
+            destination,
+            source_root,
+            source_inventory,
+            selected_inventory,
+        }
+    }
+
+    fn reopen_matrix_transition(
+        fixture: &CleanTransitionFixture,
+        transition: RestoreTransition,
+    ) -> Result<RestoreGuard, ()> {
+        let controller = BackupIdentity::current_process();
+        let backup = BackupIdentity::current_process();
+        match transition {
+            RestoreTransition::InstalledToStopped => RestoreGuard::reopen_installed_to_stopped(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+            RestoreTransition::StoppedToExpired => RestoreGuard::reopen_stopped_to_expired(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+            RestoreTransition::ExpiredToReceipts => RestoreGuard::reopen_expired_to_receipts(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+            RestoreTransition::ReceiptsToRunner => RestoreGuard::reopen_receipts_to_runner(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+            RestoreTransition::RunnerToLease => RestoreGuard::reopen_runner_to_lease(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+            RestoreTransition::LeaseToCleanup => RestoreGuard::reopen_lease_to_cleanup(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+            RestoreTransition::CleanupToValidated => RestoreGuard::reopen_cleanup_to_validated(
+                &fixture.destination,
+                &fixture.backup_root,
+                controller,
+                backup,
+                DeploymentProfile::Test,
+            ),
+        }
+    }
+
+    fn stop_matrix_barrier(actual: MatrixBarrier, target: Option<MatrixBarrier>) -> Result<(), ()> {
+        (target != Some(actual)).then_some(()).ok_or(())
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table dispatcher maps every existing transition barrier without a coordinator"
+    )]
+    fn advance_matrix_transition<Barrier>(
+        restore: &RestoreGuard,
+        transition: RestoreTransition,
+        authority: &AuthorityConfiguration,
+        mut matrix_barrier: Barrier,
+    ) -> Result<(), ()>
+    where
+        Barrier: FnMut(MatrixBarrier) -> Result<(), ()>,
+    {
+        match transition {
+            RestoreTransition::InstalledToStopped => restore
+                .advance_installed_to_stopped_with_barrier(authority, |phase| {
+                    matrix_barrier(match phase {
+                        RestoreStopBarrier::BeforePublication => MatrixBarrier::BeforeSemantic,
+                        RestoreStopBarrier::AfterPublication => MatrixBarrier::AfterSemantic,
+                        RestoreStopBarrier::AfterTemporarySync => MatrixBarrier::AfterTemporarySync,
+                        RestoreStopBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreStopBarrier::AfterStateRootSync => MatrixBarrier::AfterStateRootSync,
+                    })
+                }),
+            RestoreTransition::StoppedToExpired => {
+                restore.advance_stopped_to_expired_with_barrier(authority, |phase| {
+                    matrix_barrier(match phase {
+                        RestoreExpiryBarrier::BeforeExpiryCommit => MatrixBarrier::BeforeSemantic,
+                        RestoreExpiryBarrier::AfterExpiryCommit => MatrixBarrier::AfterSemantic,
+                        RestoreExpiryBarrier::AfterTemporarySync => {
+                            MatrixBarrier::AfterTemporarySync
+                        },
+                        RestoreExpiryBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreExpiryBarrier::AfterStateRootSync => {
+                            MatrixBarrier::AfterStateRootSync
+                        },
+                    })
+                })
+            },
+            RestoreTransition::ExpiredToReceipts => restore
+                .advance_expired_to_receipts_with_barrier(authority, |phase| {
+                    matrix_barrier(match phase {
+                        RestoreReceiptBarrier::BeforeConvergence => MatrixBarrier::BeforeSemantic,
+                        RestoreReceiptBarrier::AfterConvergence => MatrixBarrier::AfterSemantic,
+                        RestoreReceiptBarrier::AfterTemporarySync => {
+                            MatrixBarrier::AfterTemporarySync
+                        },
+                        RestoreReceiptBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreReceiptBarrier::AfterStateRootSync => {
+                            MatrixBarrier::AfterStateRootSync
+                        },
+                    })
+                }),
+            RestoreTransition::ReceiptsToRunner => {
+                restore.advance_receipts_to_runner_with_barrier(authority, |phase| {
+                    let phase = match phase {
+                        RestoreRunnerBarrier::BeforeReconstruction => MatrixBarrier::BeforeSemantic,
+                        RestoreRunnerBarrier::AfterReconstruction
+                        | RestoreRunnerBarrier::BeforeReconciliation => return Ok(()),
+                        RestoreRunnerBarrier::AfterReconciliation => MatrixBarrier::AfterSemantic,
+                        RestoreRunnerBarrier::AfterTemporarySync => {
+                            MatrixBarrier::AfterTemporarySync
+                        },
+                        RestoreRunnerBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreRunnerBarrier::AfterStateRootSync => {
+                            MatrixBarrier::AfterStateRootSync
+                        },
+                    };
+                    matrix_barrier(phase)
+                })
+            },
+            RestoreTransition::RunnerToLease => {
+                restore.advance_runner_to_lease_with_barrier(authority, |phase| {
+                    matrix_barrier(match phase {
+                        RestoreLeaseBarrier::BeforePublicationFixedPoint => {
+                            MatrixBarrier::BeforeSemantic
+                        },
+                        RestoreLeaseBarrier::AfterPublicationFixedPoint => {
+                            MatrixBarrier::AfterSemantic
+                        },
+                        RestoreLeaseBarrier::AfterTemporarySync => {
+                            MatrixBarrier::AfterTemporarySync
+                        },
+                        RestoreLeaseBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreLeaseBarrier::AfterStateRootSync => {
+                            MatrixBarrier::AfterStateRootSync
+                        },
+                    })
+                })
+            },
+            RestoreTransition::LeaseToCleanup => {
+                restore.advance_lease_to_cleanup_with_barrier(authority, |phase| {
+                    matrix_barrier(match phase {
+                        RestoreCleanupBarrier::BeforeCleanupFixedPoint => {
+                            MatrixBarrier::BeforeSemantic
+                        },
+                        RestoreCleanupBarrier::AfterCleanupFixedPoint => {
+                            MatrixBarrier::AfterSemantic
+                        },
+                        RestoreCleanupBarrier::AfterTemporarySync => {
+                            MatrixBarrier::AfterTemporarySync
+                        },
+                        RestoreCleanupBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreCleanupBarrier::AfterStateRootSync => {
+                            MatrixBarrier::AfterStateRootSync
+                        },
+                    })
+                })
+            },
+            RestoreTransition::CleanupToValidated => restore
+                .advance_cleanup_to_validated_with_barrier(authority, |phase| {
+                    matrix_barrier(match phase {
+                        RestoreValidationBarrier::BeforeValidationFixedPoint => {
+                            MatrixBarrier::BeforeSemantic
+                        },
+                        RestoreValidationBarrier::AfterValidationFixedPoint => {
+                            MatrixBarrier::AfterSemantic
+                        },
+                        RestoreValidationBarrier::AfterTemporarySync => {
+                            MatrixBarrier::AfterTemporarySync
+                        },
+                        RestoreValidationBarrier::AfterRename => MatrixBarrier::AfterRename,
+                        RestoreValidationBarrier::AfterStateRootSync => {
+                            MatrixBarrier::AfterStateRootSync
+                        },
+                    })
+                }),
+        }
+    }
+
+    fn assert_clean_transition_invariants(fixture: &CleanTransitionFixture) {
+        assert_eq!(
+            tree_inventory(&fixture.source_root),
+            fixture.source_inventory
+        );
+        assert_eq!(
+            tree_inventory(&fixture.backup_root),
+            fixture.selected_inventory
+        );
+        assert!(!fixture.destination.join("restore.ready").exists());
+        assert!(!fixture.destination.join("sandbox.sqlite3-journal").exists());
+        assert!(crate::state_root::StateGuard::open(
+            &fixture.destination,
+            RoleIdentities::test_controller(),
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        assert!(fs::read_dir(fixture.destination.join("receipts"))
+            .unwrap()
+            .next()
+            .is_none());
+        assert!(fs::read_dir(fixture.destination.join("runner"))
+            .unwrap()
+            .next()
+            .is_none());
+        let connection = rusqlite::Connection::open(fixture.destination.join(DATABASE)).unwrap();
+        for table in [
+            "runs",
+            "tombstones",
+            "receipts",
+            "receipt_publications",
+            "cleanup_records",
+            "application_reports",
+            "provisioned_object_owners",
+            "events",
+            "authority_collection",
+            "backup_authority_references",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "unexpected clean-matrix row in {table}");
+        }
+        let stopped: i64 = connection
+            .query_row(
+                "SELECT stopped FROM service_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stopped, 1);
+        let backup_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM backup_generations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(backup_rows, 1);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the shared matrix keeps all canonical transition prefix rows in one sequence"
+    )]
+    fn exercise_clean_transition_matrix_row() {
+        let fixture = clean_transition_fixture("restore-cross-transition-matrix");
+        let transitions = [
+            RestoreTransition::InstalledToStopped,
+            RestoreTransition::StoppedToExpired,
+            RestoreTransition::ExpiredToReceipts,
+            RestoreTransition::ReceiptsToRunner,
+            RestoreTransition::RunnerToLease,
+            RestoreTransition::LeaseToCleanup,
+            RestoreTransition::CleanupToValidated,
+        ];
+        for transition in transitions {
+            let (_, next_step) = transition.steps();
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            assert!(advance_matrix_transition(
+                &restore,
+                transition,
+                &fixture.authority,
+                |actual| stop_matrix_barrier(actual, Some(MatrixBarrier::BeforeSemantic)),
+            )
+            .is_err());
+            drop(restore);
+            assert!(!fixture.destination.join(RESTORE_STATE_TEMPORARY).exists());
+            assert_clean_transition_invariants(&fixture);
+
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            assert!(advance_matrix_transition(
+                &restore,
+                transition,
+                &fixture.authority,
+                |actual| stop_matrix_barrier(actual, Some(MatrixBarrier::AfterSemantic)),
+            )
+            .is_err());
+            drop(restore);
+            assert!(!fixture.destination.join(RESTORE_STATE_TEMPORARY).exists());
+            assert_clean_transition_invariants(&fixture);
+
+            let temporary = fixture.destination.join(RESTORE_STATE_TEMPORARY);
+            fs::write(&temporary, b"").unwrap();
+            mode(&temporary, 0o600);
+            assert!(reopen_matrix_transition(&fixture, transition).is_ok());
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            assert!(advance_matrix_transition(
+                &restore,
+                transition,
+                &fixture.authority,
+                |actual| stop_matrix_barrier(actual, Some(MatrixBarrier::AfterTemporarySync)),
+            )
+            .is_err());
+            drop(restore);
+            assert_clean_transition_invariants(&fixture);
+
+            let complete = fs::read(&temporary).unwrap();
+            assert!(!complete.is_empty());
+            fs::write(&temporary, &complete[..complete.len() / 2]).unwrap();
+            assert!(reopen_matrix_transition(&fixture, transition).is_ok());
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            assert!(advance_matrix_transition(
+                &restore,
+                transition,
+                &fixture.authority,
+                |actual| stop_matrix_barrier(actual, Some(MatrixBarrier::AfterTemporarySync)),
+            )
+            .is_err());
+            drop(restore);
+            assert_eq!(fs::read(&temporary).unwrap(), complete);
+            assert_clean_transition_invariants(&fixture);
+
+            assert!(reopen_matrix_transition(&fixture, transition).is_ok());
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            assert!(advance_matrix_transition(
+                &restore,
+                transition,
+                &fixture.authority,
+                |actual| stop_matrix_barrier(actual, Some(MatrixBarrier::AfterRename)),
+            )
+            .is_err());
+            drop(restore);
+            assert!(!temporary.exists());
+            let new_bytes = fs::read(fixture.destination.join(RESTORE_INCOMPLETE)).unwrap();
+            let new_record: RestoreIncomplete = serde_json::from_slice(&new_bytes).unwrap();
+            assert_eq!(new_record.step, next_step);
+            assert_clean_transition_invariants(&fixture);
+
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            assert!(advance_matrix_transition(
+                &restore,
+                transition,
+                &fixture.authority,
+                |actual| stop_matrix_barrier(actual, Some(MatrixBarrier::AfterStateRootSync)),
+            )
+            .is_err());
+            drop(restore);
+            assert_eq!(
+                fs::read(fixture.destination.join(RESTORE_INCOMPLETE)).unwrap(),
+                new_bytes
+            );
+            assert_clean_transition_invariants(&fixture);
+
+            for _ in 0..2 {
+                let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+                advance_matrix_transition(&restore, transition, &fixture.authority, |_| Ok(()))
+                    .unwrap();
+                drop(restore);
+                assert_eq!(
+                    fs::read(fixture.destination.join(RESTORE_INCOMPLETE)).unwrap(),
+                    new_bytes
+                );
+                assert_clean_transition_invariants(&fixture);
+            }
+        }
+        crate::test_authority::remove_root(&fixture.authority_root);
+        cleanup(&fixture.base);
+    }
+
+    fn exercise_clean_transition_temporary_substitution_table() {
+        let fixture = clean_transition_fixture("restore-transition-temporary-substitution");
+        let transitions = [
+            RestoreTransition::InstalledToStopped,
+            RestoreTransition::StoppedToExpired,
+            RestoreTransition::ExpiredToReceipts,
+            RestoreTransition::ReceiptsToRunner,
+            RestoreTransition::RunnerToLease,
+            RestoreTransition::LeaseToCleanup,
+            RestoreTransition::CleanupToValidated,
+        ];
+        for (index, transition) in transitions.into_iter().enumerate() {
+            let (current_step, next_step) = transition.steps();
+            let incomplete = fixture.destination.join(RESTORE_INCOMPLETE);
+            let temporary = fixture.destination.join(RESTORE_STATE_TEMPORARY);
+            let before_bytes = fs::read(&incomplete).unwrap();
+            let before: RestoreIncomplete = serde_json::from_slice(&before_bytes).unwrap();
+            assert_eq!(before.step, current_step);
+
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            let mut substituted = false;
+            assert!(
+                advance_matrix_transition(&restore, transition, &fixture.authority, |phase| {
+                    if phase == MatrixBarrier::AfterTemporarySync {
+                        let canonical_bytes = fs::read(&temporary).unwrap();
+                        let replacement = fixture
+                            .destination
+                            .join(format!("restore-state-substitute-{index}"));
+                        fs::write(&replacement, &canonical_bytes).unwrap();
+                        mode(&replacement, 0o600);
+                        fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(&replacement)
+                            .unwrap()
+                            .sync_all()
+                            .unwrap();
+                        fs::rename(&replacement, &temporary).unwrap();
+                        substituted = true;
+                    }
+                    Ok(())
+                },)
+                .is_err()
+            );
+            drop(restore);
+            assert!(
+                substituted,
+                "substitution barrier was not reached for {transition:?}"
+            );
+            assert_eq!(fs::read(&incomplete).unwrap(), before_bytes);
+            let unchanged: RestoreIncomplete =
+                serde_json::from_slice(&fs::read(&incomplete).unwrap()).unwrap();
+            assert_eq!(unchanged.step, current_step);
+            assert!(temporary.exists());
+            assert_clean_transition_invariants(&fixture);
+
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            advance_matrix_transition(&restore, transition, &fixture.authority, |_| Ok(()))
+                .unwrap();
+            drop(restore);
+            assert!(!temporary.exists());
+            let advanced: RestoreIncomplete =
+                serde_json::from_slice(&fs::read(&incomplete).unwrap()).unwrap();
+            assert_eq!(advanced.step, next_step);
+            assert_clean_transition_invariants(&fixture);
+        }
+        crate::test_authority::remove_root(&fixture.authority_root);
+        cleanup(&fixture.base);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum TransitionHostileFault {
+        WrongStep,
+        Nonprefix,
+        ExtraEntry,
+        WrongMode,
+        WrongType,
+        LinkCount,
+        WrongOwnerGroup,
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the hostile table keeps one representative validator fault per transition"
+    )]
+    fn exercise_clean_transition_hostile_table() {
+        let fixture = clean_transition_fixture("restore-transition-hostile-table");
+        let rows = [
+            (
+                RestoreTransition::InstalledToStopped,
+                TransitionHostileFault::WrongStep,
+            ),
+            (
+                RestoreTransition::StoppedToExpired,
+                TransitionHostileFault::Nonprefix,
+            ),
+            (
+                RestoreTransition::ExpiredToReceipts,
+                TransitionHostileFault::ExtraEntry,
+            ),
+            (
+                RestoreTransition::ReceiptsToRunner,
+                TransitionHostileFault::WrongMode,
+            ),
+            (
+                RestoreTransition::RunnerToLease,
+                TransitionHostileFault::WrongType,
+            ),
+            (
+                RestoreTransition::LeaseToCleanup,
+                TransitionHostileFault::LinkCount,
+            ),
+            (
+                RestoreTransition::CleanupToValidated,
+                TransitionHostileFault::WrongOwnerGroup,
+            ),
+        ];
+        let mut reached = Vec::new();
+        for (index, (transition, fault)) in rows.into_iter().enumerate() {
+            assert!(reopen_matrix_transition(&fixture, transition).is_ok());
+            reached.push(transition);
+            let record_path = fixture.destination.join(RESTORE_INCOMPLETE);
+            let temporary = fixture.destination.join(RESTORE_STATE_TEMPORARY);
+            let extra = fixture.destination.join("unexpected-transition-entry");
+            let external = fixture.base.join(format!("transition-hardlink-{index}"));
+            let record_bytes = fs::read(&record_path).unwrap();
+            let mut actual_group_change = false;
+            match fault {
+                TransitionHostileFault::WrongStep => {
+                    let mut record: RestoreIncomplete =
+                        serde_json::from_slice(&record_bytes).unwrap();
+                    record.step = "validated".to_owned();
+                    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+                },
+                TransitionHostileFault::Nonprefix => {
+                    fs::write(&temporary, b"not-a-prefix").unwrap();
+                    mode(&temporary, 0o600);
+                },
+                TransitionHostileFault::ExtraEntry => {
+                    fs::write(&extra, b"unexpected").unwrap();
+                    mode(&extra, 0o600);
+                },
+                TransitionHostileFault::WrongMode => {
+                    fs::write(&temporary, b"").unwrap();
+                    mode(&temporary, 0o400);
+                },
+                TransitionHostileFault::WrongType => {
+                    fs::create_dir(&temporary).unwrap();
+                    mode(&temporary, 0o700);
+                },
+                TransitionHostileFault::LinkCount => {
+                    fs::write(&temporary, b"").unwrap();
+                    mode(&temporary, 0o600);
+                    fs::hard_link(&temporary, &external).unwrap();
+                },
+                TransitionHostileFault::WrongOwnerGroup => {
+                    let controller = BackupIdentity::current_process();
+                    assert!(!valid_file_metadata_fields(
+                        true,
+                        controller.uid.saturating_add(1),
+                        controller.gid,
+                        0o600,
+                        1,
+                        0,
+                        controller,
+                        0o600,
+                        1024,
+                    ));
+                    assert!(!valid_file_metadata_fields(
+                        true,
+                        controller.uid,
+                        controller.gid.saturating_add(1),
+                        0o600,
+                        1,
+                        0,
+                        controller,
+                        0o600,
+                        1024,
+                    ));
+                    fs::write(&temporary, b"").unwrap();
+                    mode(&temporary, 0o600);
+                    let file = fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&temporary)
+                        .unwrap();
+                    if let Some(group) = rustix::process::getgroups()
+                        .unwrap()
+                        .into_iter()
+                        .find(|group| group.as_raw() != controller.gid)
+                    {
+                        rustix::fs::fchown(&file, None, Some(group)).unwrap();
+                        actual_group_change = true;
+                    }
+                },
+            }
+            let hostile_inventory = tree_inventory(&fixture.destination);
+            if actual_group_change || !matches!(fault, TransitionHostileFault::WrongOwnerGroup) {
+                assert!(reopen_matrix_transition(&fixture, transition).is_err());
+            } else {
+                assert!(reopen_matrix_transition(&fixture, transition).is_ok());
+            }
+            assert_eq!(tree_inventory(&fixture.destination), hostile_inventory);
+            match fault {
+                TransitionHostileFault::WrongStep => fs::write(&record_path, record_bytes).unwrap(),
+                TransitionHostileFault::ExtraEntry => fs::remove_file(&extra).unwrap(),
+                TransitionHostileFault::WrongType => fs::remove_dir(&temporary).unwrap(),
+                TransitionHostileFault::LinkCount => {
+                    fs::remove_file(&external).unwrap();
+                    fs::remove_file(&temporary).unwrap();
+                },
+                TransitionHostileFault::Nonprefix
+                | TransitionHostileFault::WrongMode
+                | TransitionHostileFault::WrongOwnerGroup => {
+                    fs::remove_file(&temporary).unwrap();
+                },
+            }
+            assert_clean_transition_invariants(&fixture);
+            let restore = reopen_matrix_transition(&fixture, transition).unwrap();
+            advance_matrix_transition(&restore, transition, &fixture.authority, |_| Ok(()))
+                .unwrap();
+            drop(restore);
+            assert_clean_transition_invariants(&fixture);
+        }
+        assert_eq!(
+            reached,
+            rows.map(|(transition, _)| transition),
+            "hostile table did not reach every canonical transition"
+        );
+        crate::test_authority::remove_root(&fixture.authority_root);
+        cleanup(&fixture.base);
+    }
+
+    #[test]
+    fn installation_owner_mode_classifier_closes_reachable_states() {
+        let helper = BackupIdentity { uid: 11, gid: 12 };
+        let controller = BackupIdentity { uid: 21, gid: 22 };
+        let other = BackupIdentity { uid: 31, gid: 32 };
+        for (identity, owner) in [
+            (helper, "helper"),
+            (controller, "controller"),
+            (other, "other"),
+        ] {
+            for mode in [0o400, 0o600, 0o700, 0o4600] {
+                for complete in [false, true] {
+                    for final_mode in [0o400, 0o600] {
+                        let expected = match (owner, mode, complete, final_mode) {
+                            ("controller", 0o600, true, 0o600)
+                            | ("controller", 0o400, true, 0o400) => Some(true),
+                            ("helper", 0o600, _, _) | ("controller", 0o600, true, 0o400) => {
+                                Some(false)
+                            },
+                            _ => None,
+                        };
+                        assert_eq!(
+                            classify_installation_file_state(
+                                identity, mode, complete, helper, controller, final_mode,
+                            ),
+                            expected,
+                            "owner={owner} mode={mode:o} complete={complete} final={final_mode:o}"
+                        );
+                    }
+                }
+                let expected_directory = match (owner, mode) {
+                    ("helper", 0o700) => Some(false),
+                    ("controller", 0o700) => Some(true),
+                    _ => None,
+                };
+                assert_eq!(
+                    classify_installation_directory_state(identity, mode, helper, controller),
+                    expected_directory,
+                    "directory owner={owner} mode={mode:o}"
+                );
+                for empty in [false, true] {
+                    let expected_root =
+                        mode == 0o700 && (owner == "controller" || empty && owner == "helper");
+                    assert_eq!(
+                        reachable_installation_root_state(
+                            identity, mode, empty, helper, controller,
+                        ),
+                        expected_root,
+                        "root owner={owner} mode={mode:o} empty={empty}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn installed_record_prefix_grammar_is_closed() {
+        let manifest = "a".repeat(64);
+        let compatibility = "b".repeat(64);
+        let record = RestoreIncomplete {
+            schema: "kapsel.sandbox.restore-incomplete.v1".to_owned(),
+            generation: 1,
+            manifest_sha256: manifest.clone(),
+            compatibility_sha256: compatibility.clone(),
+            started_at: 1_774_051_201,
+            step: "installed".to_owned(),
+        };
+        let canonical = serde_json::to_vec(&record).unwrap();
+        for end in 0..canonical.len() {
+            assert!(valid_installed_record_prefix(
+                &canonical[..end],
+                1,
+                &manifest,
+                &compatibility,
+                1_774_051_201,
+            ));
+        }
+        assert!(canonical_installed_record(
+            &canonical,
+            1,
+            &manifest,
+            &compatibility,
+            1_774_051_201,
+        )
+        .is_some());
+        let time_at = canonical
+            .windows(b"1774051201".len())
+            .position(|window| window == b"1774051201")
+            .unwrap();
+        for invalid_time in [
+            b"0".as_slice(),
+            b"01774051201".as_slice(),
+            b"1774051200,\"step\":\"installed\"}".as_slice(),
+            b"9223372036854775808".as_slice(),
+        ] {
+            let mut invalid = canonical[..time_at].to_vec();
+            invalid.extend_from_slice(invalid_time);
+            assert!(!valid_installed_record_prefix(
+                &invalid,
+                1,
+                &manifest,
+                &compatibility,
+                1_774_051_201,
+            ));
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table keeps complete-temporary recovery publication sides explicit"
+    )]
+    fn exercise_complete_temporary_recovery_publication_matrix() {
+        let (base, state) = initialized("restore-complete-temporary-recovery-matrix");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+        let source_root = base.join("state-parent/state");
+        let source_inventory = tree_inventory(&source_root);
+        let selected_inventory = tree_inventory(&backup_root);
+        let identities = RoleIdentities::test_controller();
+        let rows = [
+            (
+                RestoreInstallBarrier::AfterComponentFinalSync(RestoreInstallComponent::Incomplete),
+                RestoreInstallBarrier::AfterTreeSync,
+            ),
+            (
+                RestoreInstallBarrier::AfterTreeSync,
+                RestoreInstallBarrier::BeforeRenameRace,
+            ),
+            (
+                RestoreInstallBarrier::AfterComponentFinalSync(RestoreInstallComponent::Incomplete),
+                RestoreInstallBarrier::AfterRename,
+            ),
+            (
+                RestoreInstallBarrier::AfterTreeSync,
+                RestoreInstallBarrier::AfterParentSync,
+            ),
+        ];
+
+        for (index, (construction_stop, recovery_stop)) in rows.into_iter().enumerate() {
+            let restore_parent = base.join(format!("complete-recovery-parent-{index}"));
+            fs::create_dir(&restore_parent).unwrap();
+            mode(&restore_parent, 0o700);
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(restore_parent.join(PARENT_RESTORE_LOCK))
+                .unwrap();
+            let destination = restore_parent.join("state");
+            let temporary = restore_parent.join(RESTORE_TEMPORARY);
+            let ordinary_open_denied = || {
+                assert!(crate::state_root::StateGuard::open(
+                    &destination,
+                    identities,
+                    DeploymentProfile::Test,
+                )
+                .is_err());
+            };
+
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            let mut construction_reached = false;
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    if phase == construction_stop {
+                        construction_reached = true;
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err());
+            drop(restore);
+            assert!(
+                construction_reached,
+                "construction barrier {construction_stop:?} was not reached"
+            );
+            assert!(temporary.is_dir());
+            assert!(!destination.exists());
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+            ordinary_open_denied();
+            let frozen_bytes = fs::read(temporary.join(RESTORE_INCOMPLETE)).unwrap();
+            let frozen: RestoreIncomplete = serde_json::from_slice(&frozen_bytes).unwrap();
+            assert_eq!(serde_json::to_vec(&frozen).unwrap(), frozen_bytes);
+            assert_eq!(frozen.step, "installed");
+            assert_eq!(frozen.started_at, 1_774_051_201);
+
+            let restore = RestoreGuard::reopen_temporary_installation(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            let mut recovery_reached = false;
+            assert!(restore
+                .resume_temporary_installation_with_barrier(1_774_051_202, |phase| {
+                    if phase == recovery_stop {
+                        recovery_reached = true;
+                        Err(())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err());
+            drop(restore);
+            assert!(
+                recovery_reached,
+                "recovery publisher barrier {recovery_stop:?} was not reached"
+            );
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+            ordinary_open_denied();
+
+            if matches!(
+                recovery_stop,
+                RestoreInstallBarrier::AfterTreeSync | RestoreInstallBarrier::BeforeRenameRace
+            ) {
+                assert!(temporary.is_dir());
+                assert!(!destination.exists());
+                let restore = RestoreGuard::reopen_temporary_installation(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                restore
+                    .resume_temporary_installation_with_barrier(1_774_051_203, |_| Ok(()))
+                    .unwrap();
+            } else {
+                assert!(!temporary.exists());
+                assert!(destination.is_dir());
+                let restore = RestoreGuard::reopen_installed_to_stopped(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                restore
+                    .retry_installed_installation_with_barrier(|_| Ok(()))
+                    .unwrap();
+            }
+
+            assert!(destination.is_dir());
+            assert!(!temporary.exists());
+            ordinary_open_denied();
+            let installed_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+            assert_eq!(installed_bytes, frozen_bytes);
+            let installed: RestoreIncomplete = serde_json::from_slice(&installed_bytes).unwrap();
+            assert_eq!(installed.step, "installed");
+            assert_eq!(installed.started_at, 1_774_051_201);
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+        }
+
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn clean_restore_complete_temporary_recovery_publication_matrix() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        exercise_complete_temporary_recovery_publication_matrix();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the installation matrix keeps every owner-frozen durable side explicit"
+    )]
+    fn clean_restore_installation_crash_restart_matrix() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        let (base, state) = initialized("restore-installation-matrix");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+        let source_root = base.join("state-parent/state");
+        let source_inventory = tree_inventory(&source_root);
+        let selected_inventory = tree_inventory(&backup_root);
+        let identities = RoleIdentities::test_controller();
+
+        let mut barriers = vec![
+            RestoreInstallBarrier::AfterTemporaryCreate,
+            RestoreInstallBarrier::AfterTemporaryOwnership,
+            RestoreInstallBarrier::AfterTemporaryInodeSync,
+            RestoreInstallBarrier::AfterTemporaryParentSync,
+        ];
+        for component in [
+            RestoreInstallComponent::Database,
+            RestoreInstallComponent::Deployment,
+            RestoreInstallComponent::StateLock,
+            RestoreInstallComponent::Incomplete,
+        ] {
+            barriers.extend([
+                RestoreInstallBarrier::AfterComponentCreate(component),
+                RestoreInstallBarrier::AfterComponentNamespaceSync(component),
+            ]);
+            if component != RestoreInstallComponent::StateLock {
+                barriers.push(RestoreInstallBarrier::AfterComponentPartialWrite(component));
+            }
+            barriers.extend([
+                RestoreInstallBarrier::AfterComponentWrite(component),
+                RestoreInstallBarrier::AfterComponentContentSync(component),
+                RestoreInstallBarrier::AfterComponentOwnership(component),
+                RestoreInstallBarrier::AfterComponentMode(component),
+                RestoreInstallBarrier::AfterComponentFinalSync(component),
+            ]);
+        }
+        for component in [
+            RestoreInstallComponent::Receipts,
+            RestoreInstallComponent::Runner,
+        ] {
+            barriers.extend([
+                RestoreInstallBarrier::AfterComponentCreate(component),
+                RestoreInstallBarrier::AfterComponentNamespaceSync(component),
+                RestoreInstallBarrier::AfterComponentOwnership(component),
+                RestoreInstallBarrier::AfterComponentFinalSync(component),
+            ]);
+        }
+        barriers.extend([
+            RestoreInstallBarrier::AfterTreeSync,
+            RestoreInstallBarrier::BeforeRenameRace,
+            RestoreInstallBarrier::AfterRename,
+            RestoreInstallBarrier::AfterParentSync,
+        ]);
+
+        for (index, stopped_at) in barriers.into_iter().enumerate() {
+            let restore_parent = base.join(format!("restore-parent-{index}"));
+            fs::create_dir(&restore_parent).unwrap();
+            mode(&restore_parent, 0o700);
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(restore_parent.join(PARENT_RESTORE_LOCK))
+                .unwrap();
+            let destination = restore_parent.join("state");
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(
+                restore
+                    .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                        (phase != stopped_at).then_some(()).ok_or(())
+                    })
+                    .is_err(),
+                "barrier {stopped_at:?} was not reached"
+            );
+            drop(restore);
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                identities,
+                DeploymentProfile::Test,
+            )
+            .is_err());
+
+            if destination.exists() {
+                assert!(!restore_parent.join(RESTORE_TEMPORARY).exists());
+                let restore = RestoreGuard::reopen_installed_to_stopped(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                let retry_stop = match stopped_at {
+                    RestoreInstallBarrier::AfterRename => {
+                        Some(RestoreInstallBarrier::AfterTreeSync)
+                    },
+                    RestoreInstallBarrier::AfterParentSync => {
+                        Some(RestoreInstallBarrier::AfterParentSync)
+                    },
+                    _ => None,
+                };
+                if let Some(retry_stop) = retry_stop {
+                    assert!(restore
+                        .retry_installed_installation_with_barrier(|phase| {
+                            (phase != retry_stop).then_some(()).ok_or(())
+                        })
+                        .is_err());
+                    drop(restore);
+                    assert_eq!(tree_inventory(&source_root), source_inventory);
+                    assert_eq!(tree_inventory(&backup_root), selected_inventory);
+                    assert!(crate::state_root::StateGuard::open(
+                        &destination,
+                        identities,
+                        DeploymentProfile::Test,
+                    )
+                    .is_err());
+                    let restore = RestoreGuard::reopen_installed_to_stopped(
+                        &destination,
+                        &backup_root,
+                        BackupIdentity::current_process(),
+                        BackupIdentity::current_process(),
+                        DeploymentProfile::Test,
+                    )
+                    .unwrap();
+                    restore
+                        .retry_installed_installation_with_barrier(|_| Ok(()))
+                        .unwrap();
+                } else {
+                    restore
+                        .retry_installed_installation_with_barrier(|_| Ok(()))
+                        .unwrap();
+                }
+            } else {
+                assert!(restore_parent.join(RESTORE_TEMPORARY).is_dir());
+                let restore = RestoreGuard::reopen_temporary_installation(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                restore
+                    .resume_temporary_installation_with_barrier(1_774_051_202, |_| Ok(()))
+                    .unwrap();
+            }
+
+            assert!(destination.is_dir());
+            assert!(!restore_parent.join(RESTORE_TEMPORARY).exists());
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                identities,
+                DeploymentProfile::Test,
+            )
+            .is_err());
+            let bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+            let record: RestoreIncomplete = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(serde_json::to_vec(&record).unwrap(), bytes);
+            let complete_on_disk = matches!(
+                stopped_at,
+                RestoreInstallBarrier::AfterComponentWrite(RestoreInstallComponent::Incomplete)
+                    | RestoreInstallBarrier::AfterComponentContentSync(
+                        RestoreInstallComponent::Incomplete
+                    )
+                    | RestoreInstallBarrier::AfterComponentOwnership(
+                        RestoreInstallComponent::Incomplete
+                    )
+                    | RestoreInstallBarrier::AfterComponentMode(
+                        RestoreInstallComponent::Incomplete
+                    )
+                    | RestoreInstallBarrier::AfterComponentFinalSync(
+                        RestoreInstallComponent::Incomplete
+                    )
+                    | RestoreInstallBarrier::AfterTreeSync
+                    | RestoreInstallBarrier::BeforeRenameRace
+                    | RestoreInstallBarrier::AfterRename
+                    | RestoreInstallBarrier::AfterParentSync
+            );
+            assert_eq!(
+                record.started_at,
+                if complete_on_disk {
+                    1_774_051_201
+                } else {
+                    1_774_051_202
+                },
+                "barrier {stopped_at:?} chose the wrong retry clock"
+            );
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+        }
+
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the hostile installation inventory stays beside its no-deletion assertions"
+    )]
+    fn clean_restore_installation_rejects_malformed_prefix_without_deletion() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        let (base, state) = initialized("restore-installation-malformed");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        for (index, malformed) in ["unexpected", "out-of-order", "nonprefix"]
+            .into_iter()
+            .enumerate()
+        {
+            let restore_parent = base.join(format!("malformed-parent-{index}"));
+            fs::create_dir(&restore_parent).unwrap();
+            mode(&restore_parent, 0o700);
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(restore_parent.join(PARENT_RESTORE_LOCK))
+                .unwrap();
+            let destination = restore_parent.join("state");
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            let construction_stop = if malformed == "nonprefix" {
+                RestoreInstallBarrier::AfterComponentPartialWrite(RestoreInstallComponent::Database)
+            } else {
+                RestoreInstallBarrier::AfterTemporaryParentSync
+            };
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    (phase != construction_stop).then_some(()).ok_or(())
+                })
+                .is_err());
+            drop(restore);
+            let temporary = restore_parent.join(RESTORE_TEMPORARY);
+            if malformed == "unexpected" {
+                fs::write(temporary.join("unexpected"), b"unexpected").unwrap();
+            } else if malformed == "out-of-order" {
+                fs::create_dir(temporary.join("receipts")).unwrap();
+            } else {
+                let database = temporary.join(DATABASE);
+                let mut bytes = fs::read(&database).unwrap();
+                bytes[0] ^= 1;
+                fs::write(database, bytes).unwrap();
+            }
+            let before = fs::read_dir(&temporary)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<BTreeSet<_>>();
+            assert!(RestoreGuard::reopen_temporary_installation(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+            assert_eq!(
+                fs::read_dir(&temporary)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name())
+                    .collect::<BTreeSet<_>>(),
+                before
+            );
+            if malformed == "out-of-order" {
+                fs::create_dir(&destination).unwrap();
+                mode(&destination, 0o700);
+                assert!(RestoreGuard::reopen_temporary_installation(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .is_err());
+                assert!(temporary.exists());
+                assert!(destination.exists());
+            }
+        }
+
+        let restore_parent = base.join("substituted-parent");
+        fs::create_dir(&restore_parent).unwrap();
+        mode(&restore_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(restore_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let destination = restore_parent.join("state");
+        let temporary_database = restore_parent.join(RESTORE_TEMPORARY).join(DATABASE);
+        let selected_database = fs::read(
+            backup_root
+                .join(GENERATIONS)
+                .join(GENERATION_ONE)
+                .join("service")
+                .join(DATABASE),
+        )
+        .unwrap();
+        let restore = RestoreGuard::open_selected_clean(
+            &destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                if phase
+                    == RestoreInstallBarrier::AfterComponentFinalSync(
+                        RestoreInstallComponent::Database,
+                    )
+                {
+                    fs::remove_file(&temporary_database).unwrap();
+                    fs::write(&temporary_database, &selected_database).unwrap();
+                    fs::set_permissions(&temporary_database, fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                }
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(fs::read(&temporary_database).unwrap(), selected_database);
+        assert!(!destination.exists());
+
+        let race_parent = base.join("rename-race-parent");
+        fs::create_dir(&race_parent).unwrap();
+        mode(&race_parent, 0o700);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(race_parent.join(PARENT_RESTORE_LOCK))
+            .unwrap();
+        let race_destination = race_parent.join("state");
+        let restore = RestoreGuard::open_selected_clean(
+            &race_destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                if phase == RestoreInstallBarrier::BeforeRenameRace {
+                    fs::create_dir(&race_destination).unwrap();
+                    mode(&race_destination, 0o700);
+                    fs::write(race_destination.join("sentinel"), b"racing destination").unwrap();
+                }
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(
+            fs::read(race_destination.join("sentinel")).unwrap(),
+            b"racing destination"
+        );
+        assert!(race_parent.join(RESTORE_TEMPORARY).is_dir());
+
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "hostile installation object kinds stay beside their no-deletion assertions"
+    )]
+    fn clean_restore_installation_rejects_hostile_objects_and_separate_init_prefix() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        let (base, state) = initialized("restore-installation-hostile-objects");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+
+        let make_parent = |name: &str| {
+            let parent = base.join(name);
+            fs::create_dir(&parent).unwrap();
+            mode(&parent, 0o700);
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(parent.join(PARENT_RESTORE_LOCK))
+                .unwrap();
+            parent
+        };
+
+        for (index, hostile) in ["symlink", "hardlink", "directory", "socket", "special-bits"]
+            .into_iter()
+            .enumerate()
+        {
+            let parent = make_parent(&format!("hostile-component-{index}"));
+            let destination = parent.join("state");
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            let stop = if matches!(hostile, "hardlink" | "special-bits") {
+                RestoreInstallBarrier::AfterComponentFinalSync(RestoreInstallComponent::Database)
+            } else {
+                RestoreInstallBarrier::AfterTemporaryParentSync
+            };
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    (phase != stop).then_some(()).ok_or(())
+                })
+                .is_err());
+            drop(restore);
+            let temporary = parent.join(RESTORE_TEMPORARY);
+            let component = temporary.join(DATABASE);
+            match hostile {
+                "symlink" => symlink(&backup_root, &component).unwrap(),
+                "hardlink" => fs::hard_link(&component, parent.join("external-link")).unwrap(),
+                "directory" => fs::create_dir(&component).unwrap(),
+                "socket" => {
+                    let short_socket = PathBuf::from(format!(
+                        "/tmp/kapsel-restore-{}-{index}.sock",
+                        std::process::id()
+                    ));
+                    let _ = fs::remove_file(&short_socket);
+                    let listener = std::os::unix::net::UnixListener::bind(&short_socket).unwrap();
+                    fs::rename(&short_socket, &component).unwrap();
+                    drop(listener);
+                },
+                "special-bits" => mode(&component, 0o4600),
+                _ => unreachable!(),
+            }
+            let before = tree_inventory(&temporary);
+            assert!(RestoreGuard::reopen_temporary_installation(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+            assert_eq!(tree_inventory(&temporary), before);
+            assert!(!destination.exists());
+        }
+
+        for (index, hostile) in ["symlink-root", "special-root"].into_iter().enumerate() {
+            let parent = make_parent(&format!("hostile-root-{index}"));
+            let destination = parent.join("state");
+            let temporary = parent.join(RESTORE_TEMPORARY);
+            if hostile == "symlink-root" {
+                symlink(&backup_root, &temporary).unwrap();
+            } else {
+                fs::create_dir(&temporary).unwrap();
+                mode(&temporary, 0o1700);
+            }
+            assert!(RestoreGuard::reopen_temporary_installation(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+            assert!(fs::symlink_metadata(&temporary).is_ok());
+        }
+
+        let substitution_parent = make_parent("hostile-root-substitution");
+        let substitution_destination = substitution_parent.join("state");
+        let substitution_temporary = substitution_parent.join(RESTORE_TEMPORARY);
+        let moved_temporary = substitution_parent.join("moved-restore-temporary");
+        let restore = RestoreGuard::open_selected_clean(
+            &substitution_destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .unwrap();
+        assert!(restore
+            .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                if phase == RestoreInstallBarrier::AfterTreeSync {
+                    fs::rename(&substitution_temporary, &moved_temporary).unwrap();
+                    fs::create_dir(&substitution_temporary).unwrap();
+                    mode(&substitution_temporary, 0o700);
+                }
+                Ok(())
+            })
+            .is_err());
+        assert!(!substitution_destination.exists());
+        assert!(substitution_temporary.is_dir());
+        assert!(moved_temporary.is_dir());
+
+        for (index, stopped_at) in [
+            RestoreInstallBarrier::AfterRename,
+            RestoreInstallBarrier::AfterParentSync,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let parent = make_parent(&format!("published-substitution-{index}"));
+            let destination = parent.join("state");
+            let moved = parent.join("moved-state");
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    if phase == stopped_at {
+                        if phase == RestoreInstallBarrier::AfterRename {
+                            fs::rename(&destination, &moved).unwrap();
+                            fs::create_dir(&destination).unwrap();
+                            mode(&destination, 0o700);
+                        } else {
+                            let lock = destination.join(LOCK);
+                            fs::remove_file(&lock).unwrap();
+                            fs::write(&lock, b"").unwrap();
+                            mode(&lock, 0o600);
+                        }
+                    }
+                    Ok(())
+                })
+                .is_err());
+            assert!(destination.is_dir());
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                RoleIdentities::test_controller(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+        }
+
+        for (index, substituted) in ["component", "source"].into_iter().enumerate() {
+            let parent = make_parent(&format!("cleanup-substitution-{index}"));
+            let destination = parent.join("state");
+            let temporary = parent.join(RESTORE_TEMPORARY);
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    (phase
+                        != RestoreInstallBarrier::AfterComponentPartialWrite(
+                            RestoreInstallComponent::Incomplete,
+                        ))
+                    .then_some(())
+                    .ok_or(())
+                })
+                .is_err());
+            drop(restore);
+            let restore = RestoreGuard::reopen_temporary_installation(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .resume_temporary_installation_with_barrier(1_774_051_202, |phase| {
+                    if phase
+                        == RestoreInstallBarrier::AfterComponentRemovalSync(
+                            RestoreInstallComponent::Incomplete,
+                        )
+                    {
+                        if substituted == "component" {
+                            let lock = temporary.join(LOCK);
+                            fs::remove_file(&lock).unwrap();
+                            fs::write(&lock, b"").unwrap();
+                            mode(&lock, 0o600);
+                        } else {
+                            let current = backup_root.join(CURRENT);
+                            let saved = base.join("cleanup-saved-current");
+                            fs::rename(&current, &saved).unwrap();
+                            fs::copy(&saved, &current).unwrap();
+                            mode(&current, 0o400);
+                        }
+                    }
+                    Ok(())
+                })
+                .is_err());
+            drop(restore);
+            assert!(temporary.join(LOCK).exists());
+            assert!(temporary.join(DEPLOYMENT).exists());
+            assert!(temporary.join("receipts").exists());
+            if substituted == "source" {
+                fs::remove_file(backup_root.join(CURRENT)).unwrap();
+                fs::rename(
+                    base.join("cleanup-saved-current"),
+                    backup_root.join(CURRENT),
+                )
+                .unwrap();
+            }
+        }
+
+        let init_parent = make_parent("restore-rejects-init-prefix");
+        let init_destination = init_parent.join("state");
+        let init_temporary = init_parent.join(".state.initializing");
+        fs::create_dir(&init_temporary).unwrap();
+        mode(&init_temporary, 0o700);
+        assert!(RestoreGuard::open_selected_clean(
+            &init_destination,
+            &backup_root,
+            BackupIdentity::current_process(),
+            BackupIdentity::current_process(),
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        assert!(init_temporary.is_dir());
+
+        let restore_parent = make_parent("init-rejects-restore-prefix");
+        let restore_destination = restore_parent.join("state");
+        let restore_temporary = restore_parent.join(RESTORE_TEMPORARY);
+        fs::create_dir(&restore_temporary).unwrap();
+        mode(&restore_temporary, 0o700);
+        assert!(StateInitializer::begin(
+            &restore_destination,
+            RoleIdentities::test_controller(),
+            &authority,
+            DeploymentProfile::Test,
+        )
+        .is_err());
+        assert!(restore_temporary.is_dir());
+
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "post-tree pin substitution rows keep their exact restoration beside each denial"
+    )]
+    fn clean_restore_installation_revalidates_every_selected_pin_before_rename() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        let (base, state) = initialized("restore-installation-selected-pin-substitution");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+        let selected_inventory = tree_inventory(&backup_root);
+        let generation = backup_root.join(GENERATIONS).join(GENERATION_ONE);
+        let saved_root = base.join("saved-substitutions");
+        fs::create_dir(&saved_root).unwrap();
+        mode(&saved_root, 0o700);
+
+        for (index, substituted) in [
+            "database",
+            "current",
+            "generation",
+            "manifest",
+            "backup-lock",
+            "parent-lock",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let restore_parent = base.join(format!("pin-parent-{index}"));
+            fs::create_dir(&restore_parent).unwrap();
+            mode(&restore_parent, 0o700);
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(restore_parent.join(PARENT_RESTORE_LOCK))
+                .unwrap();
+            let destination = restore_parent.join("state");
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    if phase != RestoreInstallBarrier::AfterTreeSync {
+                        return Ok(());
+                    }
+                    match substituted {
+                        "database" => {
+                            let service = generation.join("service");
+                            mode(&service, 0o700);
+                            let original = service.join(DATABASE);
+                            let saved = saved_root.join("database");
+                            fs::rename(&original, &saved).unwrap();
+                            fs::copy(&saved, &original).unwrap();
+                            mode(&original, 0o400);
+                            mode(&service, 0o500);
+                        },
+                        "current" => {
+                            let original = backup_root.join(CURRENT);
+                            let saved = saved_root.join("current");
+                            fs::rename(&original, &saved).unwrap();
+                            fs::copy(&saved, &original).unwrap();
+                            mode(&original, 0o400);
+                        },
+                        "generation" => {
+                            let generations = backup_root.join(GENERATIONS);
+                            mode(&generations, 0o700);
+                            mode(&generation, 0o700);
+                            let saved = saved_root.join("generation");
+                            fs::rename(&generation, &saved).unwrap();
+                            fs::create_dir(&generation).unwrap();
+                            mode(&generation, 0o500);
+                        },
+                        "manifest" => {
+                            mode(&generation, 0o700);
+                            let original = generation.join(MANIFEST);
+                            let saved = saved_root.join("manifest");
+                            fs::rename(&original, &saved).unwrap();
+                            fs::copy(&saved, &original).unwrap();
+                            mode(&original, 0o400);
+                            mode(&generation, 0o500);
+                        },
+                        "backup-lock" => {
+                            let original = backup_root.join(LOCK);
+                            let saved = saved_root.join("backup-lock");
+                            fs::rename(&original, &saved).unwrap();
+                            fs::write(&original, b"").unwrap();
+                            mode(&original, 0o600);
+                        },
+                        "parent-lock" => {
+                            let original = restore_parent.join(PARENT_RESTORE_LOCK);
+                            let saved = saved_root.join("parent-lock");
+                            fs::rename(&original, &saved).unwrap();
+                            fs::write(&original, b"").unwrap();
+                            mode(&original, 0o600);
+                        },
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                })
+                .is_err());
+            drop(restore);
+            assert!(
+                !destination.exists(),
+                "substitution {substituted} published"
+            );
+            assert!(restore_parent.join(RESTORE_TEMPORARY).is_dir());
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                RoleIdentities::test_controller(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+
+            match substituted {
+                "database" => {
+                    let service = generation.join("service");
+                    mode(&service, 0o700);
+                    fs::remove_file(service.join(DATABASE)).unwrap();
+                    fs::rename(saved_root.join("database"), service.join(DATABASE)).unwrap();
+                    mode(&service, 0o500);
+                },
+                "current" => {
+                    fs::remove_file(backup_root.join(CURRENT)).unwrap();
+                    fs::rename(saved_root.join("current"), backup_root.join(CURRENT)).unwrap();
+                },
+                "generation" => {
+                    fs::remove_dir(&generation).unwrap();
+                    fs::rename(saved_root.join("generation"), &generation).unwrap();
+                    mode(&generation, 0o500);
+                },
+                "manifest" => {
+                    mode(&generation, 0o700);
+                    fs::remove_file(generation.join(MANIFEST)).unwrap();
+                    fs::rename(saved_root.join("manifest"), generation.join(MANIFEST)).unwrap();
+                    mode(&generation, 0o500);
+                },
+                "backup-lock" => {
+                    fs::remove_file(backup_root.join(LOCK)).unwrap();
+                    fs::rename(saved_root.join("backup-lock"), backup_root.join(LOCK)).unwrap();
+                },
+                "parent-lock" => {
+                    fs::remove_file(restore_parent.join(PARENT_RESTORE_LOCK)).unwrap();
+                    fs::rename(
+                        saved_root.join("parent-lock"),
+                        restore_parent.join(PARENT_RESTORE_LOCK),
+                    )
+                    .unwrap();
+                },
+                _ => unreachable!(),
+            }
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+        }
+
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the cleanup matrix keeps every descriptor-relative removal side explicit"
+    )]
+    fn clean_restore_installation_cleanup_crash_restart_matrix() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        let (base, state) = initialized("restore-installation-cleanup-matrix");
+        let backup_root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let backup =
+            BackupRootGuard::open_initial(&state, &backup_root, BackupIdentity::current_process())
+                .unwrap();
+        let selected = backup
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(selected);
+        drop(backup);
+        drop(state);
+        let source_root = base.join("state-parent/state");
+        let source_inventory = tree_inventory(&source_root);
+        let selected_inventory = tree_inventory(&backup_root);
+        let mut cleanup_barriers = Vec::new();
+        for component in [
+            RestoreInstallComponent::Incomplete,
+            RestoreInstallComponent::StateLock,
+            RestoreInstallComponent::Runner,
+            RestoreInstallComponent::Receipts,
+            RestoreInstallComponent::Deployment,
+            RestoreInstallComponent::Database,
+        ] {
+            cleanup_barriers.extend([
+                RestoreInstallBarrier::AfterComponentUnlink(component),
+                RestoreInstallBarrier::AfterComponentRemovalSync(component),
+            ]);
+        }
+        cleanup_barriers.extend([
+            RestoreInstallBarrier::AfterTemporaryUnlink,
+            RestoreInstallBarrier::AfterCleanupParentSync,
+        ]);
+
+        for (index, stopped_at) in cleanup_barriers.into_iter().enumerate() {
+            let restore_parent = base.join(format!("cleanup-parent-{index}"));
+            fs::create_dir(&restore_parent).unwrap();
+            mode(&restore_parent, 0o700);
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(restore_parent.join(PARENT_RESTORE_LOCK))
+                .unwrap();
+            let destination = restore_parent.join("state");
+            let restore = RestoreGuard::open_selected_clean(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .install_incomplete_with_barrier(1_774_051_201, |phase| {
+                    (phase
+                        != RestoreInstallBarrier::AfterComponentPartialWrite(
+                            RestoreInstallComponent::Incomplete,
+                        ))
+                    .then_some(())
+                    .ok_or(())
+                })
+                .is_err());
+            drop(restore);
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                RoleIdentities::test_controller(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+            let restore = RestoreGuard::reopen_temporary_installation(
+                &destination,
+                &backup_root,
+                BackupIdentity::current_process(),
+                BackupIdentity::current_process(),
+                DeploymentProfile::Test,
+            )
+            .unwrap();
+            assert!(restore
+                .resume_temporary_installation_with_barrier(1_774_051_202, |phase| {
+                    (phase != stopped_at).then_some(()).ok_or(())
+                })
+                .is_err());
+            drop(restore);
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+            assert!(crate::state_root::StateGuard::open(
+                &destination,
+                RoleIdentities::test_controller(),
+                DeploymentProfile::Test,
+            )
+            .is_err());
+
+            if restore_parent.join(RESTORE_TEMPORARY).exists() {
+                let restore = RestoreGuard::reopen_temporary_installation(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                restore
+                    .resume_temporary_installation_with_barrier(1_774_051_203, |_| Ok(()))
+                    .unwrap();
+            } else {
+                let restore = RestoreGuard::open_selected_clean(
+                    &destination,
+                    &backup_root,
+                    BackupIdentity::current_process(),
+                    BackupIdentity::current_process(),
+                    DeploymentProfile::Test,
+                )
+                .unwrap();
+                restore.install_incomplete(1_774_051_203).unwrap();
+            }
+            assert!(destination.is_dir());
+            assert!(!restore_parent.join(RESTORE_TEMPORARY).exists());
+            let installed_bytes = fs::read(destination.join(RESTORE_INCOMPLETE)).unwrap();
+            let installed: RestoreIncomplete = serde_json::from_slice(&installed_bytes).unwrap();
+            assert_eq!(installed.started_at, 1_774_051_203);
+            assert_eq!(tree_inventory(&source_root), source_inventory);
+            assert_eq!(tree_inventory(&backup_root), selected_inventory);
+        }
+
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn clean_restore_cross_transition_matrix() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        exercise_clean_transition_matrix_row();
+    }
+
+    #[test]
+    fn clean_restore_cross_transition_temporary_substitution_table() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        exercise_clean_transition_temporary_substitution_table();
+    }
+
+    #[test]
+    fn clean_restore_cross_transition_hostile_table() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        exercise_clean_transition_hostile_table();
+    }
+
+    #[test]
+    fn clean_restore_open_contention_is_ordered_and_read_only() {
+        let _serial = INSTALLATION_TEST_LOCK.lock().unwrap();
+        let fixture = clean_transition_fixture("restore-open-contention");
+        let destination_inventory = tree_inventory(&fixture.destination);
+        let rows = [
+            (
+                fixture
+                    .destination
+                    .parent()
+                    .unwrap()
+                    .join(PARENT_RESTORE_LOCK),
+                FlockOperation::NonBlockingLockShared,
+                "parent restore lock",
+            ),
+            (
+                fixture.destination.join(LOCK),
+                FlockOperation::NonBlockingLockShared,
+                "destination state lock",
+            ),
+            (
+                fixture.backup_root.join(LOCK),
+                FlockOperation::NonBlockingLockExclusive,
+                "backup lock",
+            ),
+        ];
+        for (path, operation, label) in rows {
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .unwrap();
+            flock(&held, operation).unwrap();
+            assert!(
+                reopen_matrix_transition(&fixture, RestoreTransition::InstalledToStopped,).is_err(),
+                "restore ignored contended {label}"
+            );
+            assert_eq!(tree_inventory(&fixture.destination), destination_inventory);
+            assert_clean_transition_invariants(&fixture);
+            drop(held);
+        }
+        crate::test_authority::remove_root(&fixture.authority_root);
+        cleanup(&fixture.base);
     }
 
     #[test]
@@ -3793,8 +6982,18 @@ mod tests {
         drop(competing_state_lock);
         assert!(reopened
             .advance_installed_to_stopped_with_barrier(&authority, |phase| {
-                assert!(matches!(phase, RestoreStopBarrier::AfterPublication));
+                assert_eq!(phase, RestoreStopBarrier::BeforePublication);
                 Err(())
+            })
+            .is_err());
+        assert!(reopened
+            .advance_installed_to_stopped_with_barrier(&authority, |phase| {
+                if phase == RestoreStopBarrier::BeforePublication {
+                    Ok(())
+                } else {
+                    assert_eq!(phase, RestoreStopBarrier::AfterPublication);
+                    Err(())
+                }
             })
             .is_err());
         drop(reopened);
@@ -3931,7 +7130,10 @@ mod tests {
         )
         .unwrap();
         reopened
-            .advance_installed_to_stopped_with_barrier(&authority, |_| Err(()))
+            .advance_installed_to_stopped_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreStopBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(reopened);
         assert_eq!(
@@ -4255,7 +7457,10 @@ mod tests {
         )
         .unwrap();
         restore
-            .advance_stopped_to_expired_with_barrier(&authority, |_| Err(()))
+            .advance_stopped_to_expired_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreExpiryBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(restore);
         assert_eq!(
@@ -4561,7 +7766,10 @@ mod tests {
         )
         .unwrap();
         restore
-            .advance_expired_to_receipts_with_barrier(&authority, |_| Err(()))
+            .advance_expired_to_receipts_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreReceiptBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(restore);
         assert_eq!(
@@ -4887,7 +8095,10 @@ mod tests {
         )
         .unwrap();
         restore
-            .advance_receipts_to_runner_with_barrier(&authority, |_| Err(()))
+            .advance_receipts_to_runner_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreRunnerBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(restore);
         assert_eq!(
@@ -5232,7 +8443,10 @@ mod tests {
         )
         .unwrap();
         restore
-            .advance_runner_to_lease_with_barrier(&authority, |_| Err(()))
+            .advance_runner_to_lease_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreLeaseBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(restore);
         assert_eq!(
@@ -5589,7 +8803,10 @@ mod tests {
         )
         .unwrap();
         restore
-            .advance_lease_to_cleanup_with_barrier(&authority, |_| Err(()))
+            .advance_lease_to_cleanup_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreCleanupBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(restore);
         assert_eq!(
@@ -5912,7 +9129,10 @@ mod tests {
         )
         .unwrap();
         restore
-            .advance_cleanup_to_validated_with_barrier(&authority, |_| Err(()))
+            .advance_cleanup_to_validated_with_barrier(&authority, |phase| {
+                assert_eq!(phase, RestoreValidationBarrier::AfterStateRootSync);
+                Ok(())
+            })
             .unwrap();
         drop(restore);
         assert_eq!(

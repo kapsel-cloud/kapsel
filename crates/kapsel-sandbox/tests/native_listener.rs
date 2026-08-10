@@ -311,7 +311,13 @@ fn hostile_state_inventory_and_records_fail_before_database_mutation() {
     initialize(&database, &receipts, &key);
     let root = database.parent().unwrap();
     let assert_rejected = || {
-        assert_eq!(state_command("stop", &database).status.code(), Some(2));
+        for command in ["stop", "clear-stop"] {
+            assert_eq!(
+                state_command(command, &database).status.code(),
+                Some(2),
+                "{command} accepted incomplete or malformed state",
+            );
+        }
         let stopped: bool = rusqlite::Connection::open(&database)
             .unwrap()
             .query_row(
