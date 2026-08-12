@@ -26,16 +26,6 @@ pub use gateway::{
     ReceiptStatement, ReceiptTrust, SetDeploymentImageRequest, TargetRejection,
 };
 
-/// Returns the private KAP-0038 journal schema identity used by the unpublished sandbox.
-///
-/// This digest-only bridge is unsupported, doc-hidden, and not a Rust compatibility commitment.
-/// It accepts no input and exposes no schema DDL or selectable storage behavior.
-#[doc(hidden)]
-#[must_use]
-pub fn sandbox_gateway_schema_digest() -> [u8; 32] {
-    gateway::sandbox_schema_digest()
-}
-
 #[cfg(test)]
 use gateway::{DeploymentImageAdapter, Gateway, ReceiptSettings, TargetReadError};
 #[cfg(test)]

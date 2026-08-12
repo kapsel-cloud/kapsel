@@ -222,10 +222,10 @@ cluster-policy verification, one fixed- authority bounded cleanup role, atomic r
 intent, and fail-closed static policy loading.
 
 KAP-0072 archives exact clean backup/restore checkpoint `bde1e3b` as historical engineering evidence
-and supersedes that route. The next implementation deletes backup-only schema, bridge, state, and
-tests while preserving the real runner-loss, authority, policy, cleanup, and public projection
-modules. Host/storage catastrophe owns no reusable storage seam; teardown and clean recreation
-remain operator/provider composition proved only at later gates.
+and supersedes that route. Gate 1 item 1 deletes its backup-only schema, bridge, state, and tests
+while preserving the real runner-loss, authority, policy, cleanup, and public projection modules.
+Host/storage catastrophe owns no reusable storage seam; teardown and clean recreation remain
+operator/provider composition proved only at later gates.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor

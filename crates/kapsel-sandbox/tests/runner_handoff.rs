@@ -247,9 +247,9 @@ fn fixture(
     let outer = fs::canonicalize(root).unwrap();
     let state_parent = outer.join("state-parent");
     private_directory(&state_parent);
-    let restore_lock = state_parent.join(".kapsel-sandbox-restore.lock");
-    fs::write(&restore_lock, []).unwrap();
-    fs::set_permissions(&restore_lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let state_lock = state_parent.join(".kapsel-sandbox-state.lock");
+    fs::write(&state_lock, []).unwrap();
+    fs::set_permissions(&state_lock, fs::Permissions::from_mode(0o600)).unwrap();
     let root = state_parent.join("state");
     let authority_root = fixed_authority_root(&outer, handoff_endpoint, kubernetes_endpoint);
     let controller_uid = rustix::process::geteuid().as_raw();

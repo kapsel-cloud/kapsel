@@ -96,8 +96,8 @@ unshare --net env "${common_environment[@]}" KAPSEL_STAGING_TEST_ROLE=reader \
 state_parent="$temporary/controller-state-parent"
 state="$state_parent/state"
 mkdir -m 0700 "$state_parent"
-touch "$state_parent/.kapsel-sandbox-restore.lock"
-chmod 0600 "$state_parent/.kapsel-sandbox-restore.lock"
+touch "$state_parent/.kapsel-sandbox-state.lock"
+chmod 0600 "$state_parent/.kapsel-sandbox-state.lock"
 chown -R "$controller_uid:$controller_gid" "$state_parent"
 if unshare --net "$launcher" "$controller_uid" "$controller_gid" 0 \
   "$production_binary" init \
@@ -122,13 +122,13 @@ with open(sys.argv[1], encoding="ascii") as source:
 if deployment["target"] != "x86_64-linux":
     raise SystemExit("production deployment did not record x86_64-linux")
 PY
-chown "$staging_uid:$staging_gid" "$state/restore.ready"
+chown "$staging_uid:$staging_gid" "$state/readiness.json"
 if unshare --net "$launcher" "$controller_uid" "$controller_gid" 0 \
   "$production_binary" stop --state-root "$state"; then
   echo "production stop unexpectedly accepted wrong readiness ownership" >&2
   exit 1
 fi
-chown "$controller_uid:$controller_gid" "$state/restore.ready"
+chown "$controller_uid:$controller_gid" "$state/readiness.json"
 
 negative_root="$temporary/authority-without-installer-caps"
 mkdir -m 0700 "$negative_root"

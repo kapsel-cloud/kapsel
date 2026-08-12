@@ -454,11 +454,11 @@ live runtime, CNI, metadata, network, abuse control, teardown, endpoint, DNS, sp
 KAP-0072 removes the reserved `test-sandbox-backup-restore` lane and every planned backup/restore
 command. Checkpoint `bde1e3b` is historical evidence, not a runnable deployment gate.
 
-The next implementation must first delete backup-only code while keeping the retained commands
-green. Later contract-first work may add a deterministic catastrophe lane only after its Make task
-exists; it must prove no manufactured outcome and clean-start stop, not restoration. A separately
-selected abuse-control lane must exercise real pre-admission source bounds. Private-live teardown,
-zero-inventory, clean recreation twice, and independent traffic cutoff remain separately authorized
+Gate 1 item 1 deletes backup-only code while keeping the retained commands green. Later
+contract-first work may add a deterministic catastrophe lane only after its Make task exists; it
+must prove no manufactured outcome and clean-start stop, not restoration. A separately selected
+abuse-control lane must exercise real pre-admission source bounds. Private-live teardown, zero-
+inventory, clean recreation twice, and independent traffic cutoff remain separately authorized
 KAP-0070 gates and must not appear in this guide before runnable commands exist.
 
 ## Toolchain

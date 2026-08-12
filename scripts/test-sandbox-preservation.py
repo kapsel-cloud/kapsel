@@ -27,6 +27,7 @@ OLD_COMMANDS = (
     "stage-receipt-signing",
 )
 DELETED_PATHS = (
+    "crates/kapsel-sandbox/src/backup.rs",
     "crates/kapsel-sandbox/src/controller_state_transport.rs",
     "crates/kapsel-sandbox/src/scheduler_state.rs",
     "crates/kapsel-sandbox/src/cleanup_state.rs",
@@ -273,14 +274,37 @@ def prove_deletion_boundary() -> None:
     main_source = (ROOT / "crates/kapsel-sandbox/src/main.rs").read_text(encoding="utf-8")
     for command in OLD_COMMANDS:
         assert f'"{command}"' not in main_source, f"superseded CLI mode remains: {command}"
-    for token in ("external_resource_slots", "TokenReview"):
+    for token in (
+        "external_resource_slots",
+        "TokenReview",
+        "BackupPublication",
+        "PublishedBackup",
+        "BackupPublicationState",
+        "StoppedBackupService",
+        "BackupSourceDescriptors",
+        "BackupStateGuard",
+        "DeploymentSnapshot",
+        "backup_generations",
+        "backup_authority_references",
+        ".kapsel-sandbox-restore.lock",
+        ".backup.lock",
+        "restore.ready",
+        "restore.incomplete",
+    ):
         assert token not in source, f"superseded compiled token remains: {token}"
+    root_library = (ROOT / "src/lib.rs").read_text(encoding="utf-8")
+    assert "sandbox_gateway_schema_digest" not in root_library
+    root_gateway = "\n".join(
+        path.read_text(encoding="utf-8") for path in (ROOT / "src/gateway").rglob("*.rs")
+    )
+    assert "sandbox_schema_digest" not in root_gateway
     makefile = (ROOT / "Makefile.toml").read_text(encoding="utf-8")
     for task in (
         "test-sandbox-gate1",
         "build-sandbox-gate1-image",
         "test-sandbox-gate2-image-candidate",
         "test-sandbox-gate2-fixture",
+        "test-sandbox-backup-restore",
     ):
         assert f"[tasks.{task}]" not in makefile, f"superseded task remains: {task}"
 

@@ -13,19 +13,15 @@ use rustix::fs::{flock, open, openat, FlockOperation, Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    service_schema, AuthorityConfiguration, PinnedServiceState, Service, ServiceError,
-    StoppedBackupService,
-};
+use crate::{AuthorityConfiguration, PinnedServiceState, Service, ServiceError};
 
-const PARENT_LOCK: &str = ".kapsel-sandbox-restore.lock";
-const STATE_LOCK: &str = ".backup.lock";
+const PARENT_LOCK: &str = ".kapsel-sandbox-state.lock";
+const STATE_LOCK: &str = ".state.lock";
 const DATABASE: &str = "sandbox.sqlite3";
 const RECEIPTS: &str = "receipts";
 const RUNNER: &str = "runner";
 const DEPLOYMENT: &str = "deployment.json";
-const READY: &str = "restore.ready";
-const INCOMPLETE: &str = "restore.incomplete";
+const READY: &str = "readiness.json";
 const JSON_MAX: u64 = 16 * 1024;
 #[cfg(any(test, feature = "state-root-test-harness"))]
 const STAGING_ID: u32 = 65_531;
@@ -349,315 +345,6 @@ impl StateGuard {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "the capture-only guard is the accepted foundation for the private backup module"
-)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DeploymentIdentity {
-    pub(crate) compatibility_sha256: String,
-    pub(crate) package_version: String,
-    pub(crate) target: String,
-    pub(crate) service_schema_sha256: String,
-    pub(crate) gateway_schema_sha256: String,
-    pub(crate) staging_schema: String,
-    pub(crate) policy: String,
-    pub(crate) pre_exec_source_sha256: String,
-    pub(crate) pre_exec_compiler: String,
-    pub(crate) pre_exec_helper_sha256: String,
-    pub(crate) runner_sha256: String,
-}
-
-#[allow(
-    dead_code,
-    reason = "the capture-only guard is the accepted foundation for the private backup module"
-)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DeploymentSnapshot {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) identity: DeploymentIdentity,
-}
-
-#[allow(
-    dead_code,
-    reason = "the clean generation tracer consumes the pinned source unit"
-)]
-pub(crate) struct BackupSourceDescriptors {
-    pub(crate) database: File,
-    pub(crate) receipts: File,
-    pub(crate) runner: File,
-    pub(crate) deployment: File,
-    pub(crate) deployment_snapshot: DeploymentSnapshot,
-}
-
-#[allow(
-    dead_code,
-    reason = "the capture-only guard is the accepted foundation for the private backup module"
-)]
-#[derive(Debug)]
-pub(crate) struct BackupStateGuard {
-    root: PathBuf,
-    root_name: std::ffi::OsString,
-    parent_directory: File,
-    state_directory: File,
-    database_file: File,
-    receipts_directory: File,
-    runner_directory: File,
-    deployment_file: File,
-    ready_file: File,
-    deployment: DeploymentSnapshot,
-    identities: RoleIdentities,
-    profile: DeploymentProfile,
-    parent_lock: File,
-    state_lock: File,
-}
-
-#[allow(
-    dead_code,
-    reason = "the capture-only guard is the accepted foundation for the private backup module"
-)]
-impl BackupStateGuard {
-    pub(crate) fn open_clean(
-        root: &Path,
-        identities: RoleIdentities,
-        profile: DeploymentProfile,
-    ) -> Result<Self, ()> {
-        let guard = Self::open_capture(root, identities, profile)?;
-        Service::preflight_clean_backup_source(&guard.root.join(DATABASE)).map_err(|_| ())?;
-        guard.verify()?;
-        Ok(guard)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one closed lock, inventory, descriptor, and read-only source audit stays ordered"
-    )]
-    pub(crate) fn open_capture(
-        root: &Path,
-        identities: RoleIdentities,
-        profile: DeploymentProfile,
-    ) -> Result<Self, ()> {
-        require_absolute(root)?;
-        let parent_path = root.parent().ok_or(())?;
-        let root_name = root.file_name().ok_or(())?.to_owned();
-        let parent_directory = open_fixed_directory_path(
-            parent_path,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o700,
-        )?;
-        let parent_lock = open_fixed_file_at(
-            &parent_directory,
-            PARENT_LOCK,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o600,
-            true,
-        )?;
-        flock(&parent_lock, FlockOperation::NonBlockingLockShared).map_err(|_| ())?;
-        validate_parent_inventory_at(&parent_directory, &root_name)?;
-        let state_directory = open_fixed_directory_at(
-            &parent_directory,
-            &root_name,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o700,
-        )?;
-        let state_lock = open_fixed_file_at(
-            &state_directory,
-            STATE_LOCK,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o600,
-            true,
-        )?;
-        flock(&state_lock, FlockOperation::NonBlockingLockExclusive).map_err(|_| ())?;
-        let actual = directory_names(&state_directory, 7)?;
-        let expected = [DATABASE, RECEIPTS, RUNNER, DEPLOYMENT, STATE_LOCK, READY]
-            .into_iter()
-            .map(std::ffi::OsString::from)
-            .collect::<BTreeSet<_>>();
-        if actual != expected {
-            return Err(());
-        }
-        let database_file = open_fixed_file_at(
-            &state_directory,
-            DATABASE,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o600,
-            false,
-        )?;
-        let receipts_directory = open_fixed_directory_at(
-            &state_directory,
-            RECEIPTS,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o700,
-        )?;
-        if !directory_names(&receipts_directory, 1)?.is_empty() {
-            return Err(());
-        }
-        let runner_directory = open_fixed_directory_at(
-            &state_directory,
-            RUNNER,
-            identities.controller_uid,
-            identities.controller_gid,
-            0o700,
-        )?;
-        if !directory_names(&runner_directory, 1)?.is_empty() {
-            return Err(());
-        }
-        let (deployment_file, deployment) = open_deployment_snapshot_at(
-            &state_directory,
-            identities.controller_uid,
-            identities.controller_gid,
-            profile,
-        )?;
-        let ready_file = open_ready_at(
-            &state_directory,
-            identities.controller_uid,
-            identities.controller_gid,
-            profile,
-        )?;
-        Service::preflight_stopped_backup_source(&root.join(DATABASE)).map_err(|_| ())?;
-        let guard = Self {
-            root: root.to_owned(),
-            root_name,
-            parent_directory,
-            state_directory,
-            database_file,
-            receipts_directory,
-            runner_directory,
-            deployment_file,
-            ready_file,
-            deployment,
-            identities,
-            profile,
-            parent_lock,
-            state_lock,
-        };
-        guard.verify()?;
-        Ok(guard)
-    }
-
-    pub(crate) fn verify(&self) -> Result<(), ()> {
-        validate_parent_inventory_at(&self.parent_directory, &self.root_name)?;
-        let parent_lock = open_fixed_file_at(
-            &self.parent_directory,
-            PARENT_LOCK,
-            self.identities.controller_uid,
-            self.identities.controller_gid,
-            0o600,
-            true,
-        )?;
-        require_same(&parent_lock, &self.parent_lock)?;
-        let state = open_fixed_directory_at(
-            &self.parent_directory,
-            &self.root_name,
-            self.identities.controller_uid,
-            self.identities.controller_gid,
-            0o700,
-        )?;
-        require_same(&state, &self.state_directory)?;
-        for (name, pinned, mode, writable) in [
-            (DATABASE, &self.database_file, 0o600, false),
-            (DEPLOYMENT, &self.deployment_file, 0o400, false),
-            (READY, &self.ready_file, 0o600, false),
-            (STATE_LOCK, &self.state_lock, 0o600, true),
-        ] {
-            let reopened = open_fixed_file_at(
-                &state,
-                name,
-                self.identities.controller_uid,
-                self.identities.controller_gid,
-                mode,
-                writable,
-            )?;
-            require_same(&reopened, pinned)?;
-        }
-        for (name, pinned) in [
-            (RECEIPTS, &self.receipts_directory),
-            (RUNNER, &self.runner_directory),
-        ] {
-            let reopened = open_fixed_directory_at(
-                &state,
-                name,
-                self.identities.controller_uid,
-                self.identities.controller_gid,
-                0o700,
-            )?;
-            require_same(&reopened, pinned)?;
-            if !directory_names(&reopened, 1)?.is_empty() {
-                return Err(());
-            }
-        }
-        let actual = directory_names(&state, 7)?;
-        let expected = [DATABASE, RECEIPTS, RUNNER, DEPLOYMENT, STATE_LOCK, READY]
-            .into_iter()
-            .map(std::ffi::OsString::from)
-            .collect::<BTreeSet<_>>();
-        if actual != expected {
-            return Err(());
-        }
-        let deployment = deployment_snapshot_from_file(&self.deployment_file, self.profile)?;
-        if deployment != self.deployment {
-            return Err(());
-        }
-        validate_ready_file(&self.ready_file, self.profile)?;
-        Service::preflight_stopped_backup_source(&self.root.join(DATABASE)).map_err(|_| ())
-    }
-
-    pub(crate) fn deployment_snapshot(&self) -> Result<DeploymentSnapshot, ()> {
-        self.verify()?;
-        Ok(self.deployment.clone())
-    }
-
-    pub(crate) fn backup_source_descriptors(&self) -> Result<BackupSourceDescriptors, ()> {
-        self.verify()?;
-        let source = BackupSourceDescriptors {
-            database: self.database_file.try_clone().map_err(|_| ())?,
-            receipts: self.receipts_directory.try_clone().map_err(|_| ())?,
-            runner: self.runner_directory.try_clone().map_err(|_| ())?,
-            deployment: self.deployment_file.try_clone().map_err(|_| ())?,
-            deployment_snapshot: self.deployment.clone(),
-        };
-        require_same(&source.database, &self.database_file)?;
-        require_same(&source.receipts, &self.receipts_directory)?;
-        require_same(&source.runner, &self.runner_directory)?;
-        require_same(&source.deployment, &self.deployment_file)?;
-        self.verify()?;
-        Ok(source)
-    }
-
-    pub(crate) fn open_stopped_service<'guard>(
-        &'guard self,
-        authority: &AuthorityConfiguration,
-    ) -> Result<StoppedBackupService<'guard>, ServiceError> {
-        self.verify().map_err(|()| ServiceError::Unavailable)?;
-        StoppedBackupService::open_internal(
-            &self.root.join(DATABASE),
-            &self.root.join(RECEIPTS),
-            authority,
-            Some(PinnedServiceState {
-                state_directory: self
-                    .state_directory
-                    .try_clone()
-                    .map_err(|_| ServiceError::Unavailable)?,
-                database: self
-                    .database_file
-                    .try_clone()
-                    .map_err(|_| ServiceError::Unavailable)?,
-                receipts: self
-                    .receipts_directory
-                    .try_clone()
-                    .map_err(|_| ServiceError::Unavailable)?,
-            }),
-            true,
-        )
-    }
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum InitializationKind {
     Fresh,
@@ -913,10 +600,7 @@ impl StateInitializer {
             )?;
         }
         let ready = ReadyRecord {
-            schema: "kapsel.sandbox.restore-ready.v1".into(),
-            source: "initialized".into(),
-            generation: None,
-            manifest_sha256: None,
+            schema: "kapsel.sandbox.readiness.v1".into(),
             compatibility_sha256: deployment.compatibility_sha256,
             completed_at,
         };
@@ -991,8 +675,6 @@ struct DeploymentRecord {
     compatibility_sha256: String,
     package_version: String,
     target: String,
-    service_schema_sha256: String,
-    gateway_schema_sha256: String,
     staging_schema: String,
     policy: String,
     pre_exec_source_sha256: String,
@@ -1005,9 +687,6 @@ struct DeploymentRecord {
 #[serde(deny_unknown_fields)]
 struct ReadyRecord {
     schema: String,
-    source: String,
-    generation: Option<u64>,
-    manifest_sha256: Option<String>,
     compatibility_sha256: String,
     completed_at: i64,
 }
@@ -1029,8 +708,6 @@ fn deployment_record(profile: DeploymentProfile) -> Result<DeploymentRecord, ()>
         compatibility_sha256: compatibility.sha256,
         package_version: env!("CARGO_PKG_VERSION").into(),
         target: compatibility.target.into(),
-        service_schema_sha256: compatibility.service_sha256,
-        gateway_schema_sha256: compatibility.gateway_sha256,
         staging_schema: "v1".into(),
         policy: "sandbox-policy-v3".into(),
         pre_exec_source_sha256: hex(&Sha256::digest(include_bytes!("runner_pre_exec.c"))),
@@ -1047,32 +724,19 @@ fn record_deployment_executable_identity_access() {
 
 struct CompatibilityIdentity {
     sha256: String,
-    service_sha256: String,
-    gateway_sha256: String,
     target: &'static str,
 }
 
 fn compatibility_identity(profile: DeploymentProfile) -> Result<CompatibilityIdentity, ()> {
-    let service_sha256 = hex(&service_schema::digest());
-    let gateway_sha256 = hex(&kapsel::sandbox_gateway_schema_digest());
     let target = target_identity(profile)?;
     let mut digest = Sha256::new();
-    digest.update(b"KAPSEL-SANDBOX-BACKUP-COMPATIBILITY-V1\0");
-    for value in [
-        env!("CARGO_PKG_VERSION"),
-        target,
-        &service_sha256,
-        &gateway_sha256,
-        "v1",
-        "sandbox-policy-v3",
-    ] {
+    digest.update(b"KAPSEL-SANDBOX-DEPLOYMENT-COMPATIBILITY-V1\0");
+    for value in [env!("CARGO_PKG_VERSION"), target, "v1", "sandbox-policy-v3"] {
         digest.update(u64::try_from(value.len()).map_err(|_| ())?.to_be_bytes());
         digest.update(value.as_bytes());
     }
     Ok(CompatibilityIdentity {
         sha256: hex(&digest.finalize()),
-        service_sha256,
-        gateway_sha256,
         target,
     })
 }
@@ -1102,25 +766,6 @@ fn preflight_migration_database(database: &Path, state: &File) -> Result<(), ()>
         .map_err(|_| ())?;
     if safe != 1 {
         return Err(());
-    }
-    for table in ["backup_generations", "backup_authority_references"] {
-        let exists: i64 = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-                [table],
-                |row| row.get(0),
-            )
-            .map_err(|_| ())?;
-        if exists == 1 {
-            let empty: i64 = connection
-                .query_row(&format!("SELECT COUNT(*) = 0 FROM {table}"), [], |row| {
-                    row.get(0)
-                })
-                .map_err(|_| ())?;
-            if empty != 1 {
-                return Err(());
-            }
-        }
     }
     let mut statement = connection
         .prepare("SELECT object_name FROM receipts ORDER BY object_name")
@@ -1443,10 +1088,7 @@ fn validate_inventory_at(
         .collect::<BTreeSet<_>>();
     let mut allowed = required.clone();
     allowed.insert("sandbox.sqlite3-journal".into());
-    if !required.is_subset(&actual)
-        || !actual.is_subset(&allowed)
-        || actual.contains(std::ffi::OsStr::new(INCOMPLETE))
-    {
+    if !required.is_subset(&actual) || !actual.is_subset(&allowed) {
         return Err(());
     }
     let database = open_fixed_file_at(
@@ -1697,48 +1339,17 @@ fn validate_deployment_at(
     gid: u32,
     profile: DeploymentProfile,
 ) -> Result<(), ()> {
-    open_deployment_snapshot_at(root, uid, gid, profile).map(|_| ())
-}
-
-fn open_deployment_snapshot_at(
-    root: &File,
-    uid: u32,
-    gid: u32,
-    profile: DeploymentProfile,
-) -> Result<(File, DeploymentSnapshot), ()> {
     let file = open_fixed_file_at(root, DEPLOYMENT, uid, gid, 0o400, false)?;
-    let snapshot = deployment_snapshot_from_file(&file, profile)?;
-    Ok((file, snapshot))
-}
-
-pub(crate) fn deployment_snapshot_from_file(
-    file: &File,
-    profile: DeploymentProfile,
-) -> Result<DeploymentSnapshot, ()> {
-    let bytes = read_descriptor_bounded(file, JSON_MAX)?;
+    let bytes = read_descriptor_bounded(&file, JSON_MAX)?;
     let stored: DeploymentRecord = serde_json::from_slice(&bytes).map_err(|_| ())?;
     let expected = deployment_record(profile)?;
-    if serde_json::to_vec(&stored).map_err(|_| ())? != bytes
-        || serde_json::to_vec(&expected).map_err(|_| ())? != bytes
+    if serde_json::to_vec(&stored).map_err(|_| ())? == bytes
+        && serde_json::to_vec(&expected).map_err(|_| ())? == bytes
     {
-        return Err(());
+        Ok(())
+    } else {
+        Err(())
     }
-    Ok(DeploymentSnapshot {
-        bytes,
-        identity: DeploymentIdentity {
-            compatibility_sha256: stored.compatibility_sha256,
-            package_version: stored.package_version,
-            target: stored.target,
-            service_schema_sha256: stored.service_schema_sha256,
-            gateway_schema_sha256: stored.gateway_schema_sha256,
-            staging_schema: stored.staging_schema,
-            policy: stored.policy,
-            pre_exec_source_sha256: stored.pre_exec_source_sha256,
-            pre_exec_compiler: stored.pre_exec_compiler,
-            pre_exec_helper_sha256: stored.pre_exec_helper_sha256,
-            runner_sha256: stored.runner_sha256,
-        },
-    })
 }
 
 fn validate_ready_at(
@@ -1760,22 +1371,14 @@ fn validate_ready_file(file: &File, profile: DeploymentProfile) -> Result<(), ()
     let bytes = read_descriptor_bounded(file, 1024)?;
     let stored: ReadyRecord = serde_json::from_slice(&bytes).map_err(|_| ())?;
     let compatibility = compatibility_identity(profile)?;
-    if serde_json::to_vec(&stored).map_err(|_| ())? != bytes
-        || stored.schema != "kapsel.sandbox.restore-ready.v1"
-        || stored.compatibility_sha256 != compatibility.sha256
-        || stored.completed_at <= 0
+    if serde_json::to_vec(&stored).map_err(|_| ())? == bytes
+        && stored.schema == "kapsel.sandbox.readiness.v1"
+        && stored.compatibility_sha256 == compatibility.sha256
+        && stored.completed_at > 0
     {
-        return Err(());
-    }
-    match stored.source.as_str() {
-        "initialized" if stored.generation.is_none() && stored.manifest_sha256.is_none() => Ok(()),
-        "restored"
-            if stored.generation.is_some_and(|generation| generation > 0)
-                && stored.manifest_sha256.as_deref().is_some_and(valid_digest) =>
-        {
-            Ok(())
-        },
-        _ => Err(()),
+        Ok(())
+    } else {
+        Err(())
     }
 }
 
@@ -1916,12 +1519,6 @@ fn digest_file(mut file: File) -> Result<String, ()> {
     }
     Ok(hex(&digest.finalize()))
 }
-fn valid_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().fold(String::new(), |mut output, byte| {
         let _ = write!(output, "{byte:02x}");
@@ -1978,7 +1575,7 @@ mod tests {
             .unwrap();
         initializer.publish(1_774_051_200).unwrap();
         let connection = rusqlite::Connection::open(root.join(DATABASE)).unwrap();
-        for ddl in service_schema::TABLES_BY_NAME {
+        for ddl in crate::service_schema::TABLES_BY_NAME {
             connection.execute_batch(ddl).unwrap();
         }
         connection
@@ -2049,375 +1646,6 @@ mod tests {
         assert!(StateGuard::open(&root, identities, DeploymentProfile::Test).is_err());
         DEPLOYMENT_EXECUTABLE_IDENTITY_ACCESS_COUNT.with(|count| assert_eq!(count.get(), 2));
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn clean_backup_snapshot_is_exclusive_and_pins_deployment() {
-        let (root, identities) = initialized("clean-backup-snapshot");
-        Service::preflight_clean_backup_source(&root.join(DATABASE)).unwrap();
-        let ordinary = StateGuard::open(&root, identities, DeploymentProfile::Test).unwrap();
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        drop(ordinary);
-
-        let backup =
-            BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).unwrap();
-        assert!(StateGuard::open(&root, identities, DeploymentProfile::Test).is_err());
-        let deployment = backup.deployment_snapshot().unwrap();
-        assert_eq!(deployment.bytes, fs::read(root.join(DEPLOYMENT)).unwrap());
-        assert_eq!(deployment.identity.target, "test-architecture");
-        assert!(valid_digest(&deployment.identity.compatibility_sha256));
-
-        let original = root.join("original-deployment.json");
-        fs::rename(root.join(DEPLOYMENT), &original).unwrap();
-        fs::copy(&original, root.join(DEPLOYMENT)).unwrap();
-        fs::set_permissions(root.join(DEPLOYMENT), fs::Permissions::from_mode(0o400)).unwrap();
-        assert!(backup.verify().is_err());
-        drop(backup);
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn clean_backup_snapshot_rejects_unsupported_files_without_mutation() {
-        let (root, identities) = initialized("clean-backup-preflight");
-        let database = root.join(DATABASE);
-        let original_database = fs::read(&database).unwrap();
-
-        let journal = root.join("sandbox.sqlite3-journal");
-        fs::write(&journal, b"unsupported journal").unwrap();
-        fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        assert_eq!(fs::read(&database).unwrap(), original_database);
-        fs::remove_file(journal).unwrap();
-
-        let receipt_bytes = b"unsupported receipt";
-        let receipt_digest = hex(&Sha256::digest(receipt_bytes));
-        let receipt = root.join(RECEIPTS).join(format!(
-            "sandbox-{}-{receipt_digest}.receipt",
-            "a".repeat(32)
-        ));
-        fs::write(&receipt, receipt_bytes).unwrap();
-        fs::set_permissions(&receipt, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        assert_eq!(fs::read(&database).unwrap(), original_database);
-        fs::remove_file(receipt).unwrap();
-
-        let runner_record = root.join(RUNNER).join("runner-generation.json");
-        fs::write(&runner_record, b"{}").unwrap();
-        fs::set_permissions(&runner_record, fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        assert_eq!(fs::read(&database).unwrap(), original_database);
-        fs::remove_file(runner_record).unwrap();
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn clean_backup_snapshot_rejects_unsupported_service_state() {
-        let (root, identities) = initialized("clean-backup-service-state");
-        let database = root.join(DATABASE);
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute("UPDATE service_state SET stopped = 0", [])
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT stopped FROM service_state", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        connection
-            .execute(
-                "UPDATE service_state SET stopped = 1, boundary_uid_digest = 'owned'",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute("UPDATE service_state SET boundary_uid_digest = ''", [])
-            .unwrap();
-        connection
-            .execute(
-                concat!(
-                    "INSERT INTO runs (run_id, idempotency_key, scenario, operation_id, ",
-                    "admitted_at, expires_at, execution_state, receipt_available, cleanup_state, ",
-                    "last_sequence, active, deadline_emitted, application_invoked, ",
-                    "public_retained, policy_revision, policy_inventory, ",
-                    "policy_inventory_digest, cleanup_identity, deadline_seconds, deadline_at, ",
-                    "policy_verified, cleanup_resource_state, lease_id, lease_epoch, ",
-                    "lease_expires_at, handoff_credential_verifier) VALUES ",
-                    "('run', 'key', 'healthy', 'operation', 1, 2, 'queued', 0, 'pending', ",
-                    "1, 0, 0, 0, 1, 'policy', 'inventory', 'digest', 'cleanup', 180, NULL, ",
-                    "0, 'unverified', '', 0, 0, X'')"
-                ),
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection.execute("DELETE FROM runs", []).unwrap();
-        connection
-            .execute(
-                "INSERT INTO receipt_publications VALUES ('run', 'digest', 'object', 1)",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute("DELETE FROM receipt_publications", [])
-            .unwrap();
-        drop(connection);
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn clean_backup_snapshot_rejects_unsupported_backup_owners() {
-        let (root, identities) = initialized("clean-backup-owners");
-        let database = root.join(DATABASE);
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute(
-                "INSERT INTO cleanup_records VALUES ('run', 'cleanup', NULL, 'unverified', \
-                 'pending', 1, 0, NULL, 0)",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute("DELETE FROM cleanup_records", [])
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO authority_collection VALUES (1, 1, ?1)",
-                ["a".repeat(64)],
-            )
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM authority_collection", [], |row| row
-                    .get::<_, i64>(
-                    0
-                ))
-                .unwrap(),
-            1
-        );
-        connection
-            .execute("DELETE FROM authority_collection", [])
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO backup_generations VALUES ('pending', 1, NULL, 'pending', 1)",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        let connection = rusqlite::Connection::open(&database).unwrap();
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM backup_generations", [], |row| row
-                    .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        drop(connection);
-
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn clean_backup_snapshot_rejects_extra_schema_objects() {
-        let (root, identities) = initialized("clean-backup-schema");
-        let database = root.join(DATABASE);
-        let connection = rusqlite::Connection::open(database).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TRIGGER unexpected_backup_trigger AFTER INSERT ON backup_generations \
-                 BEGIN UPDATE service_state SET stopped = 0 WHERE singleton = 1; END;",
-            )
-            .unwrap();
-        drop(connection);
-
-        assert!(BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).is_err());
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn clean_backup_snapshot_rejects_pinned_component_substitution() {
-        let (root, identities) = initialized("clean-backup-components");
-        let backup =
-            BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).unwrap();
-
-        for (name, mode) in [(DATABASE, 0o600), (READY, 0o600)] {
-            let original = root.join(format!("original-{name}"));
-            fs::rename(root.join(name), &original).unwrap();
-            fs::copy(&original, root.join(name)).unwrap();
-            fs::set_permissions(root.join(name), fs::Permissions::from_mode(mode)).unwrap();
-            assert!(backup.verify().is_err());
-            fs::remove_file(root.join(name)).unwrap();
-            fs::rename(original, root.join(name)).unwrap();
-            assert!(backup.verify().is_ok());
-        }
-        for name in [RECEIPTS, RUNNER] {
-            let original = root.join(format!("original-{name}"));
-            fs::rename(root.join(name), &original).unwrap();
-            fs::create_dir(root.join(name)).unwrap();
-            fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o700)).unwrap();
-            assert!(backup.verify().is_err());
-            fs::remove_dir(root.join(name)).unwrap();
-            fs::rename(original, root.join(name)).unwrap();
-            assert!(backup.verify().is_ok());
-        }
-
-        let competing_parent_lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(root.parent().unwrap().join(PARENT_LOCK))
-            .unwrap();
-        assert!(flock(
-            &competing_parent_lock,
-            FlockOperation::NonBlockingLockExclusive
-        )
-        .is_err());
-
-        let moved = root.with_file_name("moved-clean-backup-components");
-        fs::rename(&root, &moved).unwrap();
-        symlink(&moved, &root).unwrap();
-        assert!(backup.verify().is_err());
-        fs::remove_file(&root).unwrap();
-        fs::rename(&moved, &root).unwrap();
-        assert!(backup.verify().is_ok());
-        drop(backup);
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-    }
-
-    fn set_stopped(root: &Path, stopped: bool) {
-        let connection = rusqlite::Connection::open(root.join(DATABASE)).unwrap();
-        connection
-            .execute(
-                "UPDATE service_state SET stopped = ?1",
-                [i64::from(stopped)],
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn pinned_stopped_backup_service_reopens_pending_and_crosses_closed_states() {
-        let (root, identities) = initialized("stopped-backup-reopen");
-        let authority_parent = std::env::temp_dir().join(format!(
-            "kapsel-state-root-authority-{}-stopped-backup-reopen",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&authority_parent);
-        fs::create_dir(&authority_parent).unwrap();
-        fs::set_permissions(&authority_parent, fs::Permissions::from_mode(0o700)).unwrap();
-        let authority = crate::test_authority::configuration(&authority_parent, [7; 32]);
-
-        let guard =
-            BackupStateGuard::open_clean(&root, identities, DeploymentProfile::Test).unwrap();
-        let service = guard.open_stopped_service(&authority).unwrap();
-        let pending = service.begin_publication(1, 1_774_051_201).unwrap();
-        drop(service);
-        drop(guard);
-
-        let guard =
-            BackupStateGuard::open_capture(&root, identities, DeploymentProfile::Test).unwrap();
-        let service = guard.open_stopped_service(&authority).unwrap();
-        assert_eq!(service.resume_pending().unwrap(), pending);
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Pending(pending)
-        );
-        assert!(StateGuard::open(&root, identities, DeploymentProfile::Test).is_err());
-        set_stopped(&root, false);
-        assert!(service.finish_publication(1, &"a".repeat(64)).is_err());
-        set_stopped(&root, true);
-        service.finish_publication(1, &"a".repeat(64)).unwrap();
-        let current_one = crate::PublishedBackup {
-            generation: 1,
-            captured_at: 1_774_051_201,
-            manifest_digest: "a".repeat(64),
-            authorities: Vec::new(),
-        };
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Current(current_one.clone())
-        );
-        let second = service.begin_publication(2, 1_774_051_202).unwrap();
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Replacing {
-                current: current_one.clone(),
-                pending: second.clone(),
-            }
-        );
-        drop(service);
-        drop(guard);
-
-        let guard =
-            BackupStateGuard::open_capture(&root, identities, DeploymentProfile::Test).unwrap();
-        let service = guard.open_stopped_service(&authority).unwrap();
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Replacing {
-                current: current_one.clone(),
-                pending: second,
-            }
-        );
-        set_stopped(&root, false);
-        assert!(service.finish_publication(2, &"b".repeat(64)).is_err());
-        set_stopped(&root, true);
-        service.finish_publication(2, &"b".repeat(64)).unwrap();
-        let current_two = crate::PublishedBackup {
-            generation: 2,
-            captured_at: 1_774_051_202,
-            manifest_digest: "b".repeat(64),
-            authorities: Vec::new(),
-        };
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Deleting {
-                current: current_two.clone(),
-                deleting: current_one.clone(),
-            }
-        );
-        drop(service);
-        drop(guard);
-
-        let guard =
-            BackupStateGuard::open_capture(&root, identities, DeploymentProfile::Test).unwrap();
-        let service = guard.open_stopped_service(&authority).unwrap();
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Deleting {
-                current: current_two.clone(),
-                deleting: current_one,
-            }
-        );
-        set_stopped(&root, false);
-        assert!(service.finish_deletion(1).is_err());
-        set_stopped(&root, true);
-        service.finish_deletion(1).unwrap();
-        assert_eq!(
-            service.publication_state().unwrap(),
-            crate::BackupPublicationState::Current(current_two)
-        );
-        drop(service);
-        drop(guard);
-        fs::remove_dir_all(root.parent().unwrap()).unwrap();
-        crate::test_authority::remove_root(&authority_parent);
     }
 
     #[test]

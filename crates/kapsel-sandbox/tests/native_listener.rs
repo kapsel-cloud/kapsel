@@ -38,9 +38,9 @@ fn fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let state_parent = root.join("state-parent");
     fs::create_dir(&state_parent).unwrap();
     fs::set_permissions(&state_parent, fs::Permissions::from_mode(0o700)).unwrap();
-    let restore_lock = state_parent.join(".kapsel-sandbox-restore.lock");
-    fs::write(&restore_lock, []).unwrap();
-    fs::set_permissions(&restore_lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let state_lock = state_parent.join(".kapsel-sandbox-state.lock");
+    fs::write(&state_lock, []).unwrap();
+    fs::set_permissions(&state_lock, fs::Permissions::from_mode(0o600)).unwrap();
     let state_root = state_parent.join("state");
     let receipts = state_root.join("receipts");
     let key = root.join("digest.key");
@@ -214,10 +214,10 @@ fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
     assert_eq!(
         entries,
         [
-            ".backup.lock",
+            ".state.lock",
             "deployment.json",
             "receipts",
-            "restore.ready",
+            "readiness.json",
             "runner",
             "sandbox.sqlite3",
         ]
@@ -225,7 +225,7 @@ fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
         .map(str::to_owned)
         .collect()
     );
-    for name in ["deployment.json", "restore.ready"] {
+    for name in ["deployment.json", "readiness.json"] {
         let bytes = fs::read(state_root.join(name)).unwrap();
         assert!(!bytes.ends_with(b"\n"));
         let _: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -241,10 +241,7 @@ fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
                 output
             });
     assert_eq!(deployment["runner_sha256"], runner_digest);
-    assert_eq!(
-        deployment["gateway_schema_sha256"],
-        "0062a67e9bb09b60bb9472386b51b57552f17fb8aa749dace321100951d66521"
-    );
+    assert!(deployment.get("gateway_schema_sha256").is_none());
     for legacy in [
         "--database",
         "--receipts",
@@ -267,8 +264,8 @@ fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
         state_root
             .parent()
             .unwrap()
-            .join(".kapsel-sandbox-restore.lock"),
-        state_root.join(".backup.lock"),
+            .join(".kapsel-sandbox-state.lock"),
+        state_root.join(".state.lock"),
     ] {
         let held = fs::OpenOptions::new()
             .read(true)
@@ -283,7 +280,7 @@ fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
         assert_eq!(output.status.code(), Some(2));
         drop(held);
     }
-    fs::remove_file(state_root.join("restore.ready")).unwrap();
+    fs::remove_file(state_root.join("readiness.json")).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_kapsel-sandbox-test-harness"))
         .args(["stop", "--state-root", state_root.to_str().unwrap()])
         .output()
@@ -304,7 +301,7 @@ fn state_root_init_is_canonical_and_legacy_component_flags_are_rejected() {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one hostile matrix restores every exact state-root corruption before the next case"
+    reason = "one hostile matrix resets every exact state-root corruption before the next case"
 )]
 fn hostile_state_inventory_and_records_fail_before_database_mutation() {
     let (database, receipts, key) = fixture("state-root-hostile");
@@ -350,7 +347,7 @@ fn hostile_state_inventory_and_records_fail_before_database_mutation() {
     fs::write(&deployment, &deployment_bytes).unwrap();
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o400)).unwrap();
 
-    let ready = root.join("restore.ready");
+    let ready = root.join("readiness.json");
     let ready_bytes = fs::read(&ready).unwrap();
     let mut malformed: serde_json::Value = serde_json::from_slice(&ready_bytes).unwrap();
     malformed["unknown"] = serde_json::json!(true);
@@ -363,19 +360,11 @@ fn hostile_state_inventory_and_records_fail_before_database_mutation() {
     fs::write(&ready, serde_json::to_vec(&zero_time).unwrap()).unwrap();
     assert_rejected();
     fs::write(&ready, &ready_bytes).unwrap();
-    let mut zero_generation: serde_json::Value = serde_json::from_slice(&ready_bytes).unwrap();
-    zero_generation["source"] = serde_json::json!("restored");
-    zero_generation["generation"] = serde_json::json!(0);
-    zero_generation["manifest_sha256"] = serde_json::json!("ab".repeat(32));
-    fs::write(&ready, serde_json::to_vec(&zero_generation).unwrap()).unwrap();
+    let unexpected = root.join("unexpected.state");
+    fs::write(&unexpected, b"{}").unwrap();
+    fs::set_permissions(&unexpected, fs::Permissions::from_mode(0o600)).unwrap();
     assert_rejected();
-    fs::write(&ready, &ready_bytes).unwrap();
-
-    let incomplete = root.join("restore.incomplete");
-    fs::write(&incomplete, b"{}").unwrap();
-    fs::set_permissions(&incomplete, fs::Permissions::from_mode(0o600)).unwrap();
-    assert_rejected();
-    fs::remove_file(incomplete).unwrap();
+    fs::remove_file(unexpected).unwrap();
 
     let external_database = root
         .parent()
@@ -477,7 +466,7 @@ fn exact_incomplete_init_temporary_recovers_and_converges() {
         .is_dir());
     fs::rename(&held_authority, &authority).unwrap();
     initialize(&database, &receipts, &key);
-    assert!(state_root.join("restore.ready").is_file());
+    assert!(state_root.join("readiness.json").is_file());
     assert!(!state_root
         .parent()
         .unwrap()
@@ -490,11 +479,6 @@ fn exact_incomplete_init_temporary_recovers_and_converges() {
 fn stopped_drained_pre_slice_state_migrates_without_changing_existing_rows() {
     let (database, receipts, key, _) = prepare_pre_slice_state("state-root-migration", true);
     let connection = rusqlite::Connection::open(&database).unwrap();
-    connection
-        .execute_batch(
-            "DROP TABLE backup_authority_references; DROP TABLE backup_generations; VACUUM;",
-        )
-        .unwrap();
     let stopped_before: i64 = connection
         .query_row(
             "SELECT stopped FROM service_state WHERE singleton = 1",
@@ -516,22 +500,9 @@ fn stopped_drained_pre_slice_state_migrates_without_changing_existing_rows() {
             .unwrap(),
         stopped_before
     );
-    assert_eq!(
-        connection
-            .query_row(
-                concat!(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ",
-                    "('backup_generations', 'backup_authority_references')"
-                ),
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap(),
-        2
-    );
-    assert!(root.join(".backup.lock").is_file());
+    assert!(root.join(".state.lock").is_file());
     assert!(root.join("deployment.json").is_file());
-    assert!(root.join("restore.ready").is_file());
+    assert!(root.join("readiness.json").is_file());
     common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
@@ -541,35 +512,18 @@ fn stopped_migration_resumes_exact_table_and_deployment_prefixes() {
         let (database, receipts, key, _) =
             prepare_pre_slice_state(&format!("state-root-migration-prefix-{name}"), true);
         let connection = rusqlite::Connection::open(&database).unwrap();
-        connection
-            .execute_batch(
-                "DROP TABLE backup_authority_references; DROP TABLE backup_generations; VACUUM;",
-            )
-            .unwrap();
         drop(connection);
         initialize(&database, &receipts, &key);
         let root = database.parent().unwrap();
-        fs::remove_file(root.join("restore.ready")).unwrap();
+        fs::remove_file(root.join("readiness.json")).unwrap();
         if !keep_deployment {
             fs::remove_file(root.join("deployment.json")).unwrap();
         }
         initialize(&database, &receipts, &key);
         assert!(root.join("deployment.json").is_file());
-        assert!(root.join("restore.ready").is_file());
+        assert!(root.join("readiness.json").is_file());
         let connection = rusqlite::Connection::open(&database).unwrap();
-        assert_eq!(
-            connection
-                .query_row(
-                    concat!(
-                        "SELECT (SELECT COUNT(*) FROM backup_generations) + ",
-                        "(SELECT COUNT(*) FROM backup_authority_references)"
-                    ),
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .unwrap(),
-            0
-        );
+        drop(connection);
         common::remove_root(root.parent().unwrap().parent().unwrap());
     }
 }
@@ -592,9 +546,9 @@ fn pre_slice_runner_generation_refuses_without_migration_markers() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(fs::read(&database).unwrap(), before);
     let root = database.parent().unwrap();
-    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join(".state.lock").exists());
     assert!(!root.join("deployment.json").exists());
-    assert!(!root.join("restore.ready").exists());
+    assert!(!root.join("readiness.json").exists());
     common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
@@ -618,7 +572,7 @@ fn unreferenced_pre_slice_receipt_refuses_without_cleanup() {
     assert_eq!(fs::read(&database).unwrap(), before);
     assert_eq!(fs::read(&orphan).unwrap(), b"orphan");
     let root = database.parent().unwrap();
-    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join(".state.lock").exists());
     common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
@@ -655,9 +609,9 @@ fn transitional_pre_slice_state_refuses_before_cleanup_or_marker_mutation() {
         .unwrap();
     assert_eq!(pending, 1);
     let root = database.parent().unwrap();
-    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join(".state.lock").exists());
     assert!(!root.join("deployment.json").exists());
-    assert!(!root.join("restore.ready").exists());
+    assert!(!root.join("readiness.json").exists());
     common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
@@ -678,9 +632,9 @@ fn malformed_pre_slice_schema_refuses_before_migration_mutation() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(fs::read(&database).unwrap(), before);
     let root = database.parent().unwrap();
-    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join(".state.lock").exists());
     assert!(!root.join("deployment.json").exists());
-    assert!(!root.join("restore.ready").exists());
+    assert!(!root.join("readiness.json").exists());
     common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
@@ -696,9 +650,9 @@ fn nonstopped_pre_slice_state_refuses_without_leaving_migration_bytes() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(fs::read(&database).unwrap(), database_before);
     let root = database.parent().unwrap();
-    assert!(!root.join(".backup.lock").exists());
+    assert!(!root.join(".state.lock").exists());
     assert!(!root.join("deployment.json").exists());
-    assert!(!root.join("restore.ready").exists());
+    assert!(!root.join("readiness.json").exists());
     common::remove_root(root.parent().unwrap().parent().unwrap());
 }
 
