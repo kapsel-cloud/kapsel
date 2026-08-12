@@ -979,6 +979,35 @@ backup byte/directory; only transaction P3 deletes the deleting row and `R_o`. T
 without replacement and no caller-selected generation deletion or backup-path scan in authority
 collection.
 
+For the closed clean generation, old-byte removal has one exact descriptor-relative prefix grammar.
+Before its first destructive step, recovery reopens and pins the selected new generation, `current`,
+the complete old generation, and the unchanged Service `current`/`deleting` pair. It then advances
+only in this order: old generation mode `0500 -> 0700`; old `service/` mode `0500 -> 0700`;
+`service/sandbox.sqlite3` unlink and `service/` fsync; empty `service/` removal and old-generation
+fsync; each already-empty `receipts/`, `runner/`, and `trust/` mode `0500 -> 0700`, removal, and
+old-generation fsync in that lexical order; `deployment.json` unlink and old-generation fsync;
+`manifest.json` unlink and old-generation fsync; empty old-generation removal and `generations/`
+fsync. Before `manifest.json` removal, its exact digest remains `d_o` and its canonical inventory
+continues to authenticate every surviving old file. The only reachable prefixes are the exact
+preceding complete entries with final owner/mode/link count and the one next entry at its named mode
+or absence side; the final prefix is the exact owner-private empty `0700` old-generation directory.
+Process-scoped descriptor identity does not survive process loss. Retry accepts only the exact
+fixed-name prefix under both locks after fresh name, owner, mode, type, link-count, digest,
+reference, and surviving-byte validation, then pins each surviving inode and reopens it immediately
+before its unlink. Each namespace removal is followed by fsync of its containing directory before
+another removal. Any extra, out-of-order, malformed, wrong-owner/mode/type/link-count, or
+digest/reference combination refuses without another unlink or P3. The locks exclude conforming
+backup and controller peers; they do not exclude a same-owner nonconforming process. A same-owner
+process can replace an inode before retry or race the final pathname operation after descriptor
+revalidation, and those cases are outside this prototype's cross-process anti-substitution claim.
+The implementation narrows that residual by retaining the selected-generation and `current`
+descriptors through deletion, revalidating their inode identity and the exact Service
+`current`/`deleting` pair before every destructive old-prefix action and P3, and reopening/comparing
+each old child immediately before its descriptor-relative unlink. Accepting the exact empty `0700`
+fixed-name prefix authorizes only removal of that name and containing-directory fsync, never another
+path or P3 before exact absence. After the old namespace is removed and `generations/` is fsynced,
+every old descriptor is closed; only then may P3 release the `deleting` row and `R_o`.
+
 Recovery under both exclusive locks accepts only these combinations:
 
 - no filesystem `current`, no complete generation, and no rows is initial;
@@ -1109,15 +1138,16 @@ The deterministic Slice 5 capture matrix names both sides of: pending-reference 
 generation creation; service database/journal, each receipt slot, semantic runner record/database/
 journal/outbox, deployment record, and each trust slot copy and fsync; temporary-directory fsync;
 manifest write/fsync; generation rename and `generations/` fsync; `.current.tmp` write/fsync;
-`current` rename and root fsync; Service publication commit; old-generation file/directory removal;
-and deleting-reference release. Restore names both sides of: parent lock/preflight; private
-temporary root creation; each ordered component install and fsync; incomplete-record install and
-fsync; validated-prefix removal and parent fsync; complete-root fsync; destination rename and parent
-fsync; retry from exact installed publication; forced-stop commit; each restore-record temporary
-create/write/fsync, atomic step replacement, and state-root fsync; expiry/tombstone commit; pending
-receipt convergence; semantic runner reconstruction; same-operation reconciliation; fresh lease
-publication; cleanup resumption; `validated` commit; ready rename; incomplete-record unlink into
-recoverable readiness; and the publisher/retry final state-root/parent fsync.
+`current` rename and root fsync; Service publication commit; every ordered old-generation mode,
+file/directory removal, containing-directory fsync, descriptor closure, and deleting-reference
+release. Restore names both sides of: parent lock/preflight; private temporary root creation; each
+ordered component install and fsync; incomplete-record install and fsync; validated-prefix removal
+and parent fsync; complete-root fsync; destination rename and parent fsync; retry from exact
+installed publication; forced-stop commit; each restore-record temporary create/write/fsync, atomic
+step replacement, and state-root fsync; expiry/tombstone commit; pending receipt convergence;
+semantic runner reconstruction; same-operation reconciliation; fresh lease publication; cleanup
+resumption; `validated` commit; ready rename; incomplete-record unlink into recoverable readiness;
+and the publisher/retry final state-root/parent fsync.
 
 A separate clean-state vector captures and restores empty authority/trust arrays from a stopped,
 drained initialized service and proves that ambient `current` is not pinned. Every other seam

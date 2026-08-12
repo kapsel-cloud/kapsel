@@ -363,16 +363,23 @@ The accepted Slice 5 contract reserves `test-sandbox-backup-restore`; implementa
 Make task and module together before this guide may present it as runnable. The focused lane is
 offline and uses one fixed state root, backup root, compile-time compatibility record, and injected
 test clock. It crosses the thirteen lifecycle states named by the deployment owner and every durable
-side of pending authority references, component copies/fsyncs, generation/current publication,
-old-byte removal, destination publication, forced stop, every restore-record temporary
-prefix/fsync/replacement, expiry, pending receipt convergence, semantic runner reconstruction, fresh
-lease publication, cleanup resumption, and readiness. Only P1/P2/P3 backup-reference transactions,
-named stopped-restore transactions, temporary/new/deleting generation bytes, and atomic `current`
-may change at their exact seams; every other source fact and the selected old generation remain
+side of pending authority references, component copies/fsyncs, generation/current publication, the
+deployment owner's exact old-generation deletion-prefix mode/removal/fsync/descriptor-close sides,
+destination publication, forced stop, every restore-record temporary prefix/fsync/replacement,
+expiry, pending receipt convergence, semantic runner reconstruction, fresh lease publication,
+cleanup resumption, and readiness. Only P1/P2/P3 backup-reference transactions, named
+stopped-restore transactions, temporary/new/deleting generation bytes, and atomic `current` may
+change at their exact seams; every other source fact and the selected old generation remain
 byte-identical. Every seam asserts no selectable partial generation, early serving/mutation, second
 runnable journal or capacity owner, changed KAP-0038 result/receipt, invented absence, and retry
-convergence. A clean stopped/drained vector proves empty authority/trust arrays and no
-ambient-current pin.
+convergence. Deletion-prefix tests reject every extra, out-of-order,
+wrong-owner/mode/type/link-count, and digest/reference combination without another removal or P3,
+retain and revalidate selected-generation and `current` inode identity plus the exact Service pair
+before every destructive action, exercise each detectable substitution and row/reference attack
+class across early, middle, and final deletion barriers, and prove all old descriptors close before
+reference release. They preserve the deployment owner's explicit same-owner cross-process race limit
+before retry and between final descriptor revalidation and pathname mutation. A clean
+stopped/drained vector proves empty authority/trust arrays and no ambient-current pin.
 
 Closed hostile matrices exhaust manifest field/order/canonicalization, path inventory, count/size,
 digest/length, symlink/hardlink/special file, owner/group/mode/special bits, root/inode

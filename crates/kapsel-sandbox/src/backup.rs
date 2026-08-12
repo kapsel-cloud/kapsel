@@ -38,6 +38,69 @@ const DATABASE_MAX: u64 = 64 * 1024 * 1024;
 const JSON_MAX: u64 = 256 * 1024;
 const GENERATION_MAX: u64 = 256 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplacementFile {
+    Database,
+    Deployment,
+    Manifest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplacementDirectory {
+    Service,
+    Receipts,
+    Runner,
+    Trust,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OldDeletionBarrier {
+    GenerationMode,
+    ServiceMode,
+    DatabaseUnlink,
+    DatabaseDirectorySync,
+    ServiceRemoval,
+    ServiceParentSync,
+    ReceiptsMode,
+    ReceiptsRemoval,
+    ReceiptsParentSync,
+    RunnerMode,
+    RunnerRemoval,
+    RunnerParentSync,
+    TrustMode,
+    TrustRemoval,
+    TrustParentSync,
+    DeploymentUnlink,
+    DeploymentParentSync,
+    ManifestUnlink,
+    ManifestParentSync,
+    GenerationRemoval,
+    GenerationsSync,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReplacementBarrier {
+    AfterP1,
+    AfterTemporaryCreate,
+    AfterDirectoryCreate(ReplacementDirectory),
+    AfterFileWrite(ReplacementFile),
+    AfterFileSync(ReplacementFile),
+    AfterFileSeal(ReplacementFile),
+    AfterDirectorySeal(ReplacementDirectory),
+    AfterTemporarySeal,
+    AfterGenerationRename,
+    AfterGenerationSync,
+    AfterCurrentTemporaryCreate,
+    AfterCurrentTemporaryWrite,
+    AfterCurrentTemporarySync,
+    AfterCurrentRename,
+    AfterRootSync,
+    AfterP2,
+    OldDeletion(OldDeletionBarrier),
+    AfterOldRemoval,
+    AfterP3,
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct Identity {
     device: u64,
@@ -103,6 +166,10 @@ pub(crate) struct BackupRootGuard<'state> {
 )]
 impl<'state> BackupRootGuard<'state> {
     /// Opens only the exact initial root. The lock is acquired before either inventory is read.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded initial and replacement inventories remain one closed entry check"
+    )]
     pub(crate) fn open_initial(
         state: &'state BackupStateGuard,
         path: &Path,
@@ -126,30 +193,92 @@ impl<'state> BackupRootGuard<'state> {
         selected.insert(OsString::from(CURRENT));
         let mut publishing = expected.clone();
         publishing.insert(OsString::from(CURRENT_TMP));
+        let mut replacing = selected.clone();
+        replacing.insert(OsString::from(CURRENT_TMP));
         let root_names = names(&root, 4)?;
-        if root_names != expected && root_names != selected && root_names != publishing {
-            return Err(());
-        }
-        let generations = directory_at(&root, GENERATIONS, identity.uid, identity.gid, 0o700)?;
-        let generation_names = names(&generations, 2)?;
-        let empty = BTreeSet::new();
-        let temporary = std::iter::once(OsString::from(GENERATION_TMP)).collect();
-        let complete = std::iter::once(OsString::from(GENERATION_ONE)).collect();
-        if generation_names != empty
-            && generation_names != temporary
-            && generation_names != complete
+        if root_names != expected
+            && root_names != selected
+            && root_names != publishing
+            && root_names != replacing
         {
             return Err(());
         }
-        if generation_names.contains(std::ffi::OsStr::new(GENERATION_TMP)) {
-            let temporary = directory_at_modes(
-                &generations,
-                GENERATION_TMP,
+        let generations = directory_at(&root, GENERATIONS, identity.uid, identity.gid, 0o700)?;
+        let generation_names = names(&generations, 3)?;
+        let allowed = if root_names.contains(OsStr::new(CURRENT)) {
+            let current = file_at(
+                &root,
+                CURRENT,
                 identity.uid,
                 identity.gid,
-                &[0o700, 0o500],
+                0o400,
+                false,
+                1024,
             )?;
-            let _ = names(&temporary, 7)?;
+            let bytes = read_bounded(&current, 1024)?;
+            let record: CurrentRecord = serde_json::from_slice(&bytes).map_err(|_| ())?;
+            if serde_json::to_vec(&record).map_err(|_| ())? != bytes
+                || record.schema != "kapsel.sandbox.backup.current.v1"
+                || record.generation == 0
+                || !valid_digest(&record.manifest_sha256)
+            {
+                return Err(());
+            }
+            let current_name = complete_generation_name(record.generation);
+            let next = record.generation.checked_add(1).ok_or(())?;
+            let previous = record
+                .generation
+                .checked_sub(1)
+                .map(complete_generation_name);
+            let steady = std::iter::once(OsString::from(&current_name)).collect::<BTreeSet<_>>();
+            let copying = [
+                OsString::from(&current_name),
+                OsString::from(temporary_generation_name(next)),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+            let copied = [
+                OsString::from(&current_name),
+                OsString::from(complete_generation_name(next)),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+            let deleting = previous.map(|previous| {
+                [OsString::from(previous), OsString::from(&current_name)]
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
+            });
+            generation_names == steady
+                || generation_names == copying
+                || generation_names == copied
+                || deleting
+                    .as_ref()
+                    .is_some_and(|names| generation_names == *names)
+        } else {
+            let empty = BTreeSet::new();
+            let temporary = std::iter::once(OsString::from(GENERATION_TMP)).collect();
+            let complete = std::iter::once(OsString::from(GENERATION_ONE)).collect();
+            generation_names == empty
+                || generation_names == temporary
+                || generation_names == complete
+        };
+        if !allowed {
+            return Err(());
+        }
+        for generation_name in &generation_names {
+            let Some(name) = generation_name.to_str() else {
+                return Err(());
+            };
+            if name.starts_with(".generation-") {
+                let temporary = directory_at_modes(
+                    &generations,
+                    name,
+                    identity.uid,
+                    identity.gid,
+                    &[0o700, 0o500],
+                )?;
+                let _ = names(&temporary, 7)?;
+            }
         }
         let guard = Self {
             state,
@@ -216,6 +345,15 @@ impl<'state> BackupRootGuard<'state> {
         (names(&self.root, 4)? == expected).then_some(()).ok_or(())
     }
 
+    fn verify_replacing_root_inventory(&self) -> Result<(), ()> {
+        self.verify_pins()?;
+        let expected = [LOCK, GENERATIONS, CURRENT, CURRENT_TMP]
+            .into_iter()
+            .map(OsString::from)
+            .collect::<BTreeSet<_>>();
+        (names(&self.root, 4)? == expected).then_some(()).ok_or(())
+    }
+
     /// Reopens and validates the sole complete clean generation without publishing `current`.
     #[allow(
         clippy::too_many_lines,
@@ -224,7 +362,16 @@ impl<'state> BackupRootGuard<'state> {
     pub(crate) fn validate_clean_generation(
         &self,
     ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
-        self.validate_generation(false)
+        let expected = std::iter::once(OsString::from(GENERATION_ONE)).collect();
+        self.validate_generation_named(
+            GENERATION_ONE,
+            1,
+            ExpectedPredecessor::None,
+            false,
+            false,
+            false,
+            &expected,
+        )
     }
 
     pub(crate) fn validate_selected_clean_generation(
@@ -243,63 +390,90 @@ impl<'state> BackupRootGuard<'state> {
         let current: CurrentRecord = serde_json::from_slice(&current_bytes).map_err(|_| ())?;
         if serde_json::to_vec(&current).map_err(|_| ())? != current_bytes
             || current.schema != "kapsel.sandbox.backup.current.v1"
-            || current.generation != 1
+            || current.generation == 0
             || !valid_digest(&current.manifest_sha256)
         {
             return Err(());
         }
-        let mut generation = self.validate_generation(true)?;
+        let generation_name = complete_generation_name(current.generation);
+        let expected = std::iter::once(OsString::from(&generation_name)).collect();
+        let predecessor = if current.generation == 1 {
+            ExpectedPredecessor::None
+        } else {
+            ExpectedPredecessor::Previous
+        };
+        let mut generation = self.validate_generation_named(
+            &generation_name,
+            current.generation,
+            predecessor,
+            true,
+            true,
+            false,
+            &expected,
+        )?;
         if generation.manifest_sha256 != current.manifest_sha256 {
             return Err(());
         }
-        generation.selected = true;
         generation.current_descriptor = Some(current_file);
         Ok(generation)
     }
 
-    fn validate_generation(
-        &self,
-        selected: bool,
-    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
-        self.validate_generation_named(GENERATION_ONE, selected, false)
-    }
-
     fn validate_sealed_temporary(&self) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
-        self.validate_generation_named(GENERATION_TMP, false, false)
+        let expected = std::iter::once(OsString::from(GENERATION_TMP)).collect();
+        self.validate_generation_named(
+            GENERATION_TMP,
+            1,
+            ExpectedPredecessor::None,
+            false,
+            false,
+            false,
+            &expected,
+        )
     }
 
     fn validate_generation_during_current_publication(
         &self,
     ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
-        self.validate_generation_named(GENERATION_ONE, false, true)
+        let expected = std::iter::once(OsString::from(GENERATION_ONE)).collect();
+        self.validate_generation_named(
+            GENERATION_ONE,
+            1,
+            ExpectedPredecessor::None,
+            false,
+            false,
+            true,
+            &expected,
+        )
     }
 
     #[allow(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "the closed generation inventory and retained descriptor set stay visibly ordered"
     )]
     fn validate_generation_named(
         &self,
         generation_name: &str,
+        expected_generation: u64,
+        predecessor: ExpectedPredecessor<'_>,
         selected: bool,
+        current_present: bool,
         current_temporary: bool,
+        expected_generation_names: &BTreeSet<OsString>,
     ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
         if current_temporary {
-            self.verify_publishing_root_inventory()?;
+            if current_present {
+                self.verify_replacing_root_inventory()?;
+            } else {
+                self.verify_publishing_root_inventory()?;
+            }
         } else {
-            self.verify_root_inventory(selected)?;
+            self.verify_root_inventory(current_present)?;
         }
-        if names(&self.generations, 2)?
-            != std::iter::once(OsString::from(generation_name)).collect()
+        if names(&self.generations, 3)? != *expected_generation_names
+            || (generation_name != temporary_generation_name(expected_generation)
+                && generation_number(generation_name)? != expected_generation)
         {
-            return Err(());
-        }
-        let generation_number = if generation_name == GENERATION_TMP {
-            1
-        } else {
-            generation_number(generation_name)?
-        };
-        if generation_number != 1 {
             return Err(());
         }
         let generation = directory_at(
@@ -391,7 +565,8 @@ impl<'state> BackupRootGuard<'state> {
         }
         validate_manifest(
             &manifest,
-            generation_number,
+            expected_generation,
+            predecessor,
             &source_deployment,
             &deployment,
             &database,
@@ -417,11 +592,11 @@ impl<'state> BackupRootGuard<'state> {
             &database,
             &deployment,
             &manifest_file,
-            selected,
+            current_present,
             current_temporary,
         )?;
         Ok(ValidatedCleanGeneration {
-            generation: generation_number,
+            generation: expected_generation,
             captured_at: manifest.captured_at,
             manifest_sha256: digest_bytes(&manifest_bytes),
             compatibility_sha256: manifest.compatibility_sha256,
@@ -674,7 +849,7 @@ impl<'state> BackupRootGuard<'state> {
         }
         let generation_names = names(&self.generations, 2)?;
         if generation_names == std::iter::once(OsString::from(GENERATION_TMP)).collect() {
-            remove_incomplete_initial_temporary(&self.generations, self.identity)?;
+            remove_incomplete_temporary(&self.generations, GENERATION_TMP, self.identity)?;
         } else if !generation_names.is_empty() {
             return Err(());
         }
@@ -746,6 +921,725 @@ impl<'state> BackupRootGuard<'state> {
         self.generations.sync_all().map_err(|_| ())?;
         let selected = self.publish_initial_current()?;
         self.finish_initial_p2(authority, &pending, selected, before_p2)
+    }
+
+    fn capture_clean(
+        &self,
+        authority: &AuthorityConfiguration,
+        captured_at: i64,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()> {
+        self.capture_clean_with_barrier(authority, captured_at, |_| Ok(()))
+    }
+
+    fn capture_clean_with_barrier<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        captured_at: i64,
+        mut barrier: F,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()>
+    where
+        F: FnMut(ReplacementBarrier) -> Result<(), ()>,
+    {
+        self.verify_pins()?;
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        let (current, pending) = match service.publication_state().map_err(|_| ())? {
+            BackupPublicationState::Empty | BackupPublicationState::Pending(_) => {
+                drop(service);
+                return self.capture_initial_clean(authority, captured_at);
+            },
+            BackupPublicationState::Current(current) if current.captured_at == captured_at => {
+                drop(service);
+                if !current.authorities.is_empty() {
+                    return Err(());
+                }
+                let selected = self.validate_selected_clean_generation()?;
+                if !generation_matches_publication(&selected, &current) {
+                    return Err(());
+                }
+                return Ok(selected);
+            },
+            BackupPublicationState::Current(current) => (current, None),
+            BackupPublicationState::Replacing { current, pending } => (current, Some(pending)),
+            BackupPublicationState::Deleting { current, deleting } => {
+                drop(service);
+                return self.finish_deleting_replacement(
+                    authority,
+                    &current,
+                    &deleting,
+                    &mut barrier,
+                );
+            },
+        };
+        drop(service);
+        self.replace_clean_generation(authority, captured_at, &current, pending, &mut barrier)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed replacement P1, filesystem, P2, deletion, and P3 order stays explicit"
+    )]
+    fn replace_clean_generation<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        captured_at: i64,
+        current: &crate::PublishedBackup,
+        pending: Option<BackupPublication>,
+        barrier: &mut F,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()>
+    where
+        F: FnMut(ReplacementBarrier) -> Result<(), ()>,
+    {
+        if captured_at <= 0 || !current.authorities.is_empty() {
+            return Err(());
+        }
+        let generation = current.generation.checked_add(1).ok_or(())?;
+        let old_name = complete_generation_name(current.generation);
+        let new_name = complete_generation_name(generation);
+        let temporary_name = temporary_generation_name(generation);
+        let steady_names = std::iter::once(OsString::from(&old_name)).collect::<BTreeSet<_>>();
+        let copying_names = [OsString::from(&old_name), OsString::from(&temporary_name)]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let complete_names = [OsString::from(&old_name), OsString::from(&new_name)]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let observed_names = names(&self.generations, 3)?;
+        let replacing_current_temporary = names(&self.root, 4)?.contains(OsStr::new(CURRENT_TMP));
+        if observed_names != steady_names
+            && observed_names != copying_names
+            && observed_names != complete_names
+        {
+            return Err(());
+        }
+        let current_file = file_at(
+            &self.root,
+            CURRENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        let current_bytes = read_bounded(&current_file, 1024)?;
+        let current_record: CurrentRecord =
+            serde_json::from_slice(&current_bytes).map_err(|_| ())?;
+        let filesystem_current_is_old = current_record.generation == current.generation;
+        let filesystem_current_is_new = current_record.generation == generation;
+        if (!filesystem_current_is_old && !filesystem_current_is_new)
+            || current_record.schema != "kapsel.sandbox.backup.current.v1"
+            || !valid_digest(&current_record.manifest_sha256)
+            || serde_json::to_vec(&current_record).map_err(|_| ())? != current_bytes
+            || (filesystem_current_is_old
+                && current_record.manifest_sha256 != current.manifest_digest)
+        {
+            return Err(());
+        }
+        let mut old = self.validate_generation_named(
+            &old_name,
+            current.generation,
+            if current.generation == 1 {
+                ExpectedPredecessor::None
+            } else {
+                ExpectedPredecessor::Previous
+            },
+            filesystem_current_is_old,
+            true,
+            replacing_current_temporary,
+            &observed_names,
+        )?;
+        if !generation_matches_publication(&old, current) {
+            return Err(());
+        }
+        if filesystem_current_is_old {
+            old.current_descriptor = Some(current_file.try_clone().map_err(|_| ())?);
+        }
+
+        let pending = if let Some(pending) = pending {
+            let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+            let resumed = service.resume_pending().map_err(|_| ())?;
+            drop(service);
+            (resumed == pending).then_some(resumed).ok_or(())?
+        } else {
+            if observed_names != steady_names
+                || replacing_current_temporary
+                || !filesystem_current_is_old
+            {
+                return Err(());
+            }
+            let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+            let pending = service
+                .begin_publication(generation, captured_at)
+                .map_err(|_| ())?;
+            drop(service);
+            barrier(ReplacementBarrier::AfterP1)?;
+            pending
+        };
+        if pending.generation != generation
+            || pending.captured_at <= 0
+            || !pending.authorities.is_empty()
+            || pending.predecessor.as_ref()
+                != Some(&(current.generation, current.manifest_digest.clone()))
+        {
+            return Err(());
+        }
+        let captured_at = pending.captured_at;
+
+        let generation_names = names(&self.generations, 3)?;
+        if generation_names != complete_names {
+            if generation_names == copying_names {
+                let temporary = directory_at_modes(
+                    &self.generations,
+                    &temporary_name,
+                    self.identity.uid,
+                    self.identity.gid,
+                    &[0o700, 0o500],
+                )?;
+                if temporary.metadata().map_err(|_| ())?.mode() & 0o7777 == 0o500 {
+                    let sealed = self.validate_generation_named(
+                        &temporary_name,
+                        generation,
+                        ExpectedPredecessor::Exact {
+                            generation: current.generation,
+                            digest: &current.manifest_digest,
+                        },
+                        false,
+                        true,
+                        false,
+                        &copying_names,
+                    )?;
+                    if sealed.captured_at != captured_at {
+                        return Err(());
+                    }
+                    drop(sealed);
+                    renameat(
+                        &self.generations,
+                        &temporary_name,
+                        &self.generations,
+                        &new_name,
+                    )
+                    .map_err(|_| ())?;
+                    barrier(ReplacementBarrier::AfterGenerationRename)?;
+                } else {
+                    drop(temporary);
+                    remove_incomplete_temporary(&self.generations, &temporary_name, self.identity)?;
+                }
+            } else if generation_names != steady_names {
+                return Err(());
+            }
+        }
+        if names(&self.generations, 3)? != complete_names {
+            let source = self.state.backup_source_descriptors()?;
+            if !names(&source.receipts, 1)?.is_empty() || !names(&source.runner, 1)?.is_empty() {
+                return Err(());
+            }
+            let temporary = create_directory(&self.generations, &temporary_name, self.identity)?;
+            barrier(ReplacementBarrier::AfterTemporaryCreate)?;
+            let service_directory = create_directory(&temporary, "service", self.identity)?;
+            barrier(ReplacementBarrier::AfterDirectoryCreate(
+                ReplacementDirectory::Service,
+            ))?;
+            let receipts = create_directory(&temporary, "receipts", self.identity)?;
+            barrier(ReplacementBarrier::AfterDirectoryCreate(
+                ReplacementDirectory::Receipts,
+            ))?;
+            let runner = create_directory(&temporary, "runner", self.identity)?;
+            barrier(ReplacementBarrier::AfterDirectoryCreate(
+                ReplacementDirectory::Runner,
+            ))?;
+            let trust = create_directory(&temporary, "trust", self.identity)?;
+            barrier(ReplacementBarrier::AfterDirectoryCreate(
+                ReplacementDirectory::Trust,
+            ))?;
+            let database_bytes = read_bounded(&source.database, DATABASE_MAX)?;
+            let database = write_replacement_file(
+                &service_directory,
+                DATABASE,
+                &database_bytes,
+                self.identity,
+                DATABASE_MAX,
+                ReplacementFile::Database,
+                barrier,
+            )?;
+            let deployment_bytes = read_bounded(&source.deployment, 16 * 1024)?;
+            let deployment = write_replacement_file(
+                &temporary,
+                DEPLOYMENT,
+                &deployment_bytes,
+                self.identity,
+                16 * 1024,
+                ReplacementFile::Deployment,
+                barrier,
+            )?;
+            if read_bounded(&deployment, 16 * 1024)? != source.deployment_snapshot.bytes {
+                return Err(());
+            }
+            let manifest = Manifest {
+                schema: "kapsel.sandbox.backup.v1".to_owned(),
+                generation,
+                predecessor: Some(Predecessor {
+                    generation: current.generation,
+                    manifest_sha256: current.manifest_digest.clone(),
+                }),
+                captured_at,
+                stopped: true,
+                compatibility_sha256: source.deployment_snapshot.identity.compatibility_sha256,
+                authorities: Vec::new(),
+                trust: Vec::new(),
+                files: vec![
+                    record(DEPLOYMENT, &deployment, 16 * 1024)?,
+                    record("service/sandbox.sqlite3", &database, DATABASE_MAX)?,
+                ],
+            };
+            let manifest_bytes = serde_json::to_vec(&manifest).map_err(|_| ())?;
+            let manifest_file = write_replacement_file(
+                &temporary,
+                MANIFEST,
+                &manifest_bytes,
+                self.identity,
+                JSON_MAX,
+                ReplacementFile::Manifest,
+                barrier,
+            )?;
+            for (file, component) in [
+                (&database, ReplacementFile::Database),
+                (&deployment, ReplacementFile::Deployment),
+                (&manifest_file, ReplacementFile::Manifest),
+            ] {
+                fchmod(file, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+                validate_file(file, self.identity, 0o400, GENERATION_MAX)?;
+                file.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::AfterFileSeal(component))?;
+            }
+            for (directory, component) in [
+                (&service_directory, ReplacementDirectory::Service),
+                (&receipts, ReplacementDirectory::Receipts),
+                (&runner, ReplacementDirectory::Runner),
+                (&trust, ReplacementDirectory::Trust),
+            ] {
+                directory.sync_all().map_err(|_| ())?;
+                fchmod(directory, Mode::from_raw_mode(0o500)).map_err(|_| ())?;
+                validate_directory(directory, self.identity.uid, self.identity.gid, 0o500)?;
+                directory.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::AfterDirectorySeal(component))?;
+            }
+            temporary.sync_all().map_err(|_| ())?;
+            fchmod(&temporary, Mode::from_raw_mode(0o500)).map_err(|_| ())?;
+            validate_directory(&temporary, self.identity.uid, self.identity.gid, 0o500)?;
+            temporary.sync_all().map_err(|_| ())?;
+            barrier(ReplacementBarrier::AfterTemporarySeal)?;
+            renameat(
+                &self.generations,
+                &temporary_name,
+                &self.generations,
+                &new_name,
+            )
+            .map_err(|_| ())?;
+            barrier(ReplacementBarrier::AfterGenerationRename)?;
+        }
+        self.generations.sync_all().map_err(|_| ())?;
+        barrier(ReplacementBarrier::AfterGenerationSync)?;
+
+        let candidate = self.validate_generation_named(
+            &new_name,
+            generation,
+            ExpectedPredecessor::Exact {
+                generation: current.generation,
+                digest: &current.manifest_digest,
+            },
+            false,
+            true,
+            replacing_current_temporary,
+            &complete_names,
+        )?;
+        let next_current = CurrentRecord {
+            schema: "kapsel.sandbox.backup.current.v1".to_owned(),
+            generation,
+            manifest_sha256: candidate.manifest_sha256.clone(),
+        };
+        let expected_current_bytes = serde_json::to_vec(&next_current).map_err(|_| ())?;
+        let published_current = if filesystem_current_is_old {
+            let current_temporary = if replacing_current_temporary {
+                let existing = file_at_modes(
+                    &self.root,
+                    CURRENT_TMP,
+                    self.identity,
+                    &[0o600, 0o400],
+                    1024,
+                )?;
+                let bytes = read_bounded(&existing, 1024)?;
+                let mode = existing.metadata().map_err(|_| ())?.mode() & 0o7777;
+                if bytes == expected_current_bytes {
+                    if mode == 0o600 {
+                        fchmod(&existing, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+                    }
+                    validate_file(&existing, self.identity, 0o400, 1024)?;
+                    existing.sync_all().map_err(|_| ())?;
+                    barrier(ReplacementBarrier::AfterCurrentTemporarySync)?;
+                    existing
+                } else {
+                    if mode != 0o600
+                        || bytes.len() >= expected_current_bytes.len()
+                        || !expected_current_bytes.starts_with(&bytes)
+                    {
+                        return Err(());
+                    }
+                    drop(existing);
+                    rustix::fs::unlinkat(&self.root, CURRENT_TMP, rustix::fs::AtFlags::empty())
+                        .map_err(|_| ())?;
+                    self.root.sync_all().map_err(|_| ())?;
+                    write_replacement_current(
+                        &self.root,
+                        &expected_current_bytes,
+                        self.identity,
+                        barrier,
+                    )?
+                }
+            } else {
+                write_replacement_current(
+                    &self.root,
+                    &expected_current_bytes,
+                    self.identity,
+                    barrier,
+                )?
+            };
+            self.verify_replacing_root_inventory()?;
+            let reopened_current = file_at(
+                &self.root,
+                CURRENT,
+                self.identity.uid,
+                self.identity.gid,
+                0o400,
+                false,
+                1024,
+            )?;
+            same(
+                &reopened_current,
+                old.current_descriptor.as_ref().ok_or(())?,
+            )?;
+            let reopened_temporary = file_at(
+                &self.root,
+                CURRENT_TMP,
+                self.identity.uid,
+                self.identity.gid,
+                0o400,
+                false,
+                1024,
+            )?;
+            same(&reopened_temporary, &current_temporary)?;
+            if read_bounded(&reopened_temporary, 1024)? != expected_current_bytes {
+                return Err(());
+            }
+            renameat(&self.root, CURRENT_TMP, &self.root, CURRENT).map_err(|_| ())?;
+            barrier(ReplacementBarrier::AfterCurrentRename)?;
+            self.root.sync_all().map_err(|_| ())?;
+            barrier(ReplacementBarrier::AfterRootSync)?;
+            current_temporary
+        } else {
+            if replacing_current_temporary
+                || current_record.manifest_sha256 != next_current.manifest_sha256
+            {
+                return Err(());
+            }
+            self.root.sync_all().map_err(|_| ())?;
+            barrier(ReplacementBarrier::AfterRootSync)?;
+            current_file
+        };
+
+        let selected = self.validate_generation_named(
+            &new_name,
+            generation,
+            ExpectedPredecessor::Exact {
+                generation: current.generation,
+                digest: &current.manifest_digest,
+            },
+            true,
+            true,
+            false,
+            &complete_names,
+        )?;
+        if selected.manifest_sha256 != next_current.manifest_sha256 {
+            return Err(());
+        }
+        same_generation_descriptors(&candidate, &selected)?;
+        let reopened_current = file_at(
+            &self.root,
+            CURRENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        same(&reopened_current, &published_current)?;
+        if read_bounded(&reopened_current, 1024)? != expected_current_bytes {
+            return Err(());
+        }
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        if service.resume_pending().map_err(|_| ())? != pending
+            || service
+                .finish_publication(generation, &selected.manifest_sha256)
+                .map_err(|_| ())?
+                != Some(current.generation)
+        {
+            return Err(());
+        }
+        barrier(ReplacementBarrier::AfterP2)?;
+        let selected_after_p2 = self.validate_generation_named(
+            &new_name,
+            generation,
+            ExpectedPredecessor::Exact {
+                generation: current.generation,
+                digest: &current.manifest_digest,
+            },
+            true,
+            true,
+            false,
+            &complete_names,
+        )?;
+        same_generation_descriptors(&selected, &selected_after_p2)?;
+        let current_after_p2 = file_at(
+            &self.root,
+            CURRENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        same(&current_after_p2, &published_current)?;
+        if read_bounded(&current_after_p2, 1024)? != expected_current_bytes {
+            return Err(());
+        }
+        let deleting = match service.publication_state().map_err(|_| ())? {
+            BackupPublicationState::Deleting {
+                current: replacement,
+                deleting,
+            } if replacement.generation == generation
+                && replacement.captured_at == captured_at
+                && replacement.manifest_digest == selected.manifest_sha256
+                && replacement.authorities.is_empty()
+                && deleting == *current =>
+            {
+                deleting
+            },
+            _ => return Err(()),
+        };
+        drop(service);
+        drop(selected);
+        drop(selected_after_p2);
+        drop(current_after_p2);
+        drop(candidate);
+        drop(old);
+        drop(published_current);
+        self.finish_deleting_replacement(
+            authority,
+            &crate::PublishedBackup {
+                generation,
+                captured_at,
+                manifest_digest: next_current.manifest_sha256,
+                authorities: pending.authorities,
+            },
+            &deleting,
+            barrier,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed P2-deletion-P3 validation order remains explicit"
+    )]
+    fn finish_deleting_replacement<F>(
+        &self,
+        authority: &AuthorityConfiguration,
+        current: &crate::PublishedBackup,
+        deleting: &crate::PublishedBackup,
+        barrier: &mut F,
+    ) -> Result<ValidatedCleanGeneration<'_, 'state>, ()>
+    where
+        F: FnMut(ReplacementBarrier) -> Result<(), ()>,
+    {
+        if !current.authorities.is_empty()
+            || !deleting.authorities.is_empty()
+            || deleting.generation.checked_add(1) != Some(current.generation)
+        {
+            return Err(());
+        }
+        self.verify_pins()?;
+        let old_name = complete_generation_name(deleting.generation);
+        let current_name = complete_generation_name(current.generation);
+        let complete_names = [OsString::from(&old_name), OsString::from(&current_name)]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let steady_names = std::iter::once(OsString::from(&current_name)).collect::<BTreeSet<_>>();
+        let observed_names = names(&self.generations, 3)?;
+        if observed_names != complete_names && observed_names != steady_names {
+            return Err(());
+        }
+        let selected = self.validate_generation_named(
+            &current_name,
+            current.generation,
+            ExpectedPredecessor::Exact {
+                generation: deleting.generation,
+                digest: &deleting.manifest_digest,
+            },
+            true,
+            true,
+            false,
+            &observed_names,
+        )?;
+        let current_file = file_at(
+            &self.root,
+            CURRENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        let current_bytes = read_bounded(&current_file, 1024)?;
+        let current_record: CurrentRecord =
+            serde_json::from_slice(&current_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&current_record).map_err(|_| ())? != current_bytes
+            || current_record.schema != "kapsel.sandbox.backup.current.v1"
+            || current_record.generation != current.generation
+            || current_record.manifest_sha256 != current.manifest_digest
+            || selected.captured_at != current.captured_at
+            || selected.manifest_sha256 != current.manifest_digest
+        {
+            return Err(());
+        }
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        match service.publication_state().map_err(|_| ())? {
+            BackupPublicationState::Deleting {
+                current: ref actual_current,
+                deleting: ref actual_deleting,
+            } if actual_current == current && actual_deleting == deleting => {},
+            _ => return Err(()),
+        }
+        drop(service);
+        if observed_names == complete_names {
+            let mut validate_replacement = || {
+                self.validate_deleting_replacement_pins(
+                    authority,
+                    current,
+                    deleting,
+                    &selected,
+                    &current_file,
+                    true,
+                )
+            };
+            remove_old_clean_generation(
+                self,
+                &old_name,
+                deleting,
+                &mut validate_replacement,
+                barrier,
+            )?;
+            barrier(ReplacementBarrier::AfterOldRemoval)?;
+        } else {
+            self.generations.sync_all().map_err(|_| ())?;
+            barrier(ReplacementBarrier::OldDeletion(
+                OldDeletionBarrier::GenerationsSync,
+            ))?;
+        }
+        self.validate_deleting_replacement_pins(
+            authority,
+            current,
+            deleting,
+            &selected,
+            &current_file,
+            false,
+        )?;
+        drop(selected);
+        drop(current_file);
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        match service.publication_state().map_err(|_| ())? {
+            BackupPublicationState::Deleting {
+                current: ref actual_current,
+                deleting: ref actual_deleting,
+            } if actual_current == current && actual_deleting == deleting => {},
+            _ => return Err(()),
+        }
+        service
+            .finish_deletion(deleting.generation)
+            .map_err(|_| ())?;
+        drop(service);
+        barrier(ReplacementBarrier::AfterP3)?;
+        let selected = self.validate_selected_clean_generation()?;
+        if !generation_matches_publication(&selected, current) {
+            return Err(());
+        }
+        Ok(selected)
+    }
+
+    fn validate_deleting_replacement_pins(
+        &self,
+        authority: &AuthorityConfiguration,
+        current: &crate::PublishedBackup,
+        deleting: &crate::PublishedBackup,
+        selected: &ValidatedCleanGeneration<'_, 'state>,
+        current_file: &File,
+        old_present: bool,
+    ) -> Result<(), ()> {
+        self.verify_pins()?;
+        let current_name = complete_generation_name(current.generation);
+        let expected_names = if old_present {
+            [
+                OsString::from(complete_generation_name(deleting.generation)),
+                OsString::from(&current_name),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        } else {
+            std::iter::once(OsString::from(&current_name)).collect()
+        };
+        if names(&self.generations, 3)? != expected_names {
+            return Err(());
+        }
+        let reopened_selected = self.validate_generation_named(
+            &current_name,
+            current.generation,
+            ExpectedPredecessor::Exact {
+                generation: deleting.generation,
+                digest: &deleting.manifest_digest,
+            },
+            true,
+            true,
+            false,
+            &expected_names,
+        )?;
+        if !generation_matches_publication(&reopened_selected, current) {
+            return Err(());
+        }
+        same_generation_descriptors(selected, &reopened_selected)?;
+        let reopened_current = file_at(
+            &self.root,
+            CURRENT,
+            self.identity.uid,
+            self.identity.gid,
+            0o400,
+            false,
+            1024,
+        )?;
+        same(current_file, &reopened_current)?;
+        let current_bytes = read_bounded(&reopened_current, 1024)?;
+        let current_record: CurrentRecord =
+            serde_json::from_slice(&current_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&current_record).map_err(|_| ())? != current_bytes
+            || current_record.schema != "kapsel.sandbox.backup.current.v1"
+            || current_record.generation != current.generation
+            || current_record.manifest_sha256 != current.manifest_digest
+        {
+            return Err(());
+        }
+        let service = self.state.open_stopped_service(authority).map_err(|_| ())?;
+        match service.publication_state().map_err(|_| ())? {
+            BackupPublicationState::Deleting {
+                current: ref actual_current,
+                deleting: ref actual_deleting,
+            } if actual_current == current && actual_deleting == deleting => Ok(()),
+            _ => Err(()),
+        }
     }
 }
 
@@ -1237,7 +2131,14 @@ impl RestoreGuard {
         }
         let deployment_snapshot =
             crate::state_root::deployment_snapshot_from_file(&deployment, profile)?;
-        validate_manifest(&manifest, 1, &deployment_snapshot, &deployment, &database)?;
+        validate_manifest(
+            &manifest,
+            1,
+            ExpectedPredecessor::None,
+            &deployment_snapshot,
+            &deployment,
+            &database,
+        )?;
         Service::preflight_clean_restore_source(
             &backup_path
                 .join(GENERATIONS)
@@ -1443,7 +2344,14 @@ impl RestoreGuard {
         }
         let deployment =
             crate::state_root::deployment_snapshot_from_file(&self.deployment, self.profile)?;
-        validate_manifest(&manifest, 1, &deployment, &self.deployment, &self.database)?;
+        validate_manifest(
+            &manifest,
+            1,
+            ExpectedPredecessor::None,
+            &deployment,
+            &self.deployment,
+            &self.database,
+        )?;
         Service::preflight_clean_restore_source(
             &self.database_path,
             manifest.generation,
@@ -3533,6 +4441,626 @@ impl ValidatedCleanGeneration<'_, '_> {
     }
 }
 
+fn generation_matches_publication(
+    generation: &ValidatedCleanGeneration<'_, '_>,
+    publication: &crate::PublishedBackup,
+) -> bool {
+    let expected_generation = publication.generation;
+    let expected_captured_at = publication.captured_at;
+    let expected_manifest_digest = &publication.manifest_digest;
+    generation.generation == expected_generation
+        && generation.captured_at == expected_captured_at
+        && generation.manifest_sha256 == *expected_manifest_digest
+}
+
+fn same_generation_descriptors(
+    left: &ValidatedCleanGeneration<'_, '_>,
+    right: &ValidatedCleanGeneration<'_, '_>,
+) -> Result<(), ()> {
+    if left.generation != right.generation
+        || left.captured_at != right.captured_at
+        || left.manifest_sha256 != right.manifest_sha256
+        || left.compatibility_sha256 != right.compatibility_sha256
+        || left.name != right.name
+    {
+        return Err(());
+    }
+    for (left, right) in [
+        (&left.generation_descriptor, &right.generation_descriptor),
+        (&left.service_descriptor, &right.service_descriptor),
+        (&left.receipts_descriptor, &right.receipts_descriptor),
+        (&left.runner_descriptor, &right.runner_descriptor),
+        (&left.trust_descriptor, &right.trust_descriptor),
+        (&left.database_descriptor, &right.database_descriptor),
+        (&left.deployment_descriptor, &right.deployment_descriptor),
+        (&left.manifest_descriptor, &right.manifest_descriptor),
+    ] {
+        same(left, right)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OldDeletionAction {
+    GenerationMode,
+    ServiceMode,
+    DatabaseUnlink,
+    DatabaseDirectorySync,
+    ServiceParentSync,
+    ReceiptsRemoval,
+    ReceiptsParentSync,
+    RunnerRemoval,
+    RunnerParentSync,
+    TrustRemoval,
+    TrustParentSync,
+    DeploymentParentSync,
+    ManifestParentSync,
+}
+
+struct OldDeletionPrefix {
+    action: OldDeletionAction,
+    generation: File,
+    service: Option<File>,
+    receipts: Option<File>,
+    runner: Option<File>,
+    trust: Option<File>,
+    database: Option<File>,
+    deployment: Option<File>,
+    manifest: Option<File>,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the owner-frozen old-generation prefix grammar remains one auditable validator"
+)]
+fn open_old_deletion_prefix(
+    guard: &BackupRootGuard<'_>,
+    name: &str,
+    deleting: &crate::PublishedBackup,
+) -> Result<OldDeletionPrefix, ()> {
+    let identity = guard.identity;
+    let generation = directory_at_modes(
+        &guard.generations,
+        name,
+        identity.uid,
+        identity.gid,
+        &[0o500, 0o700],
+    )?;
+    let generation_mode = generation.metadata().map_err(|_| ())?.mode() & 0o7777;
+    let root_names = names(&generation, 7)?;
+    let full = [
+        DEPLOYMENT, MANIFEST, "receipts", "runner", "service", "trust",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<BTreeSet<_>>();
+    let after_service = [DEPLOYMENT, MANIFEST, "receipts", "runner", "trust"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<BTreeSet<_>>();
+    let after_receipts = [DEPLOYMENT, MANIFEST, "runner", "trust"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<BTreeSet<_>>();
+    let after_runner = [DEPLOYMENT, MANIFEST, "trust"]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<BTreeSet<_>>();
+    let after_trust = [DEPLOYMENT, MANIFEST]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<BTreeSet<_>>();
+    let manifest_only = std::iter::once(OsString::from(MANIFEST)).collect::<BTreeSet<_>>();
+    let empty = BTreeSet::new();
+    if ![
+        &full,
+        &after_service,
+        &after_receipts,
+        &after_runner,
+        &after_trust,
+        &manifest_only,
+        &empty,
+    ]
+    .contains(&&root_names)
+    {
+        return Err(());
+    }
+    if root_names != full && generation_mode != 0o700 {
+        return Err(());
+    }
+
+    let open_directory = |child: &str| -> Result<Option<File>, ()> {
+        if !root_names.contains(OsStr::new(child)) {
+            return Ok(None);
+        }
+        let directory = directory_at_modes(
+            &generation,
+            child,
+            identity.uid,
+            identity.gid,
+            &[0o500, 0o700],
+        )?;
+        Ok(Some(directory))
+    };
+    let service = open_directory("service")?;
+    let receipts = open_directory("receipts")?;
+    let runner = open_directory("runner")?;
+    let trust = open_directory("trust")?;
+    let child_directory_count = [&service, &receipts, &runner, &trust]
+        .into_iter()
+        .filter(|directory| directory.is_some())
+        .count() as u64;
+    let generation_links = generation.metadata().map_err(|_| ())?.nlink();
+    let linux_generation_links = 2 + child_directory_count;
+    let darwin_generation_links = 2 + u64::try_from(root_names.len()).map_err(|_| ())?;
+    if generation_links != linux_generation_links && generation_links != darwin_generation_links {
+        return Err(());
+    }
+    for directory in [&receipts, &runner, &trust].into_iter().flatten() {
+        if directory.metadata().map_err(|_| ())?.nlink() != 2 {
+            return Err(());
+        }
+    }
+    for directory in [&receipts, &runner, &trust].into_iter().flatten() {
+        if !names(directory, 1)?.is_empty() {
+            return Err(());
+        }
+    }
+    let database = if let Some(service) = service.as_ref() {
+        let service_names = names(service, 1)?;
+        let links = service.metadata().map_err(|_| ())?.nlink();
+        let linux_links = 2;
+        let darwin_links = 2 + u64::try_from(service_names.len()).map_err(|_| ())?;
+        if links != linux_links && links != darwin_links {
+            return Err(());
+        }
+        let present = std::iter::once(OsString::from(DATABASE)).collect::<BTreeSet<_>>();
+        if service_names == present {
+            Some(file_at(
+                service,
+                DATABASE,
+                identity.uid,
+                identity.gid,
+                0o400,
+                false,
+                DATABASE_MAX,
+            )?)
+        } else if service_names.is_empty() {
+            None
+        } else {
+            return Err(());
+        }
+    } else {
+        None
+    };
+    let deployment = if root_names.contains(OsStr::new(DEPLOYMENT)) {
+        Some(file_at(
+            &generation,
+            DEPLOYMENT,
+            identity.uid,
+            identity.gid,
+            0o400,
+            false,
+            16 * 1024,
+        )?)
+    } else {
+        None
+    };
+    let manifest = if root_names.contains(OsStr::new(MANIFEST)) {
+        Some(file_at(
+            &generation,
+            MANIFEST,
+            identity.uid,
+            identity.gid,
+            0o400,
+            false,
+            JSON_MAX,
+        )?)
+    } else {
+        None
+    };
+    let deployment_snapshot = guard.state.deployment_snapshot()?;
+    if let Some(manifest_file) = manifest.as_ref() {
+        let manifest_bytes = read_bounded(manifest_file, JSON_MAX)?;
+        if digest_bytes(&manifest_bytes) != deleting.manifest_digest {
+            return Err(());
+        }
+        let manifest_record: Manifest = serde_json::from_slice(&manifest_bytes).map_err(|_| ())?;
+        if serde_json::to_vec(&manifest_record).map_err(|_| ())? != manifest_bytes
+            || manifest_record.schema != "kapsel.sandbox.backup.v1"
+            || manifest_record.generation != deleting.generation
+            || manifest_record.captured_at != deleting.captured_at
+            || !manifest_record.stopped
+            || manifest_record.compatibility_sha256
+                != deployment_snapshot.identity.compatibility_sha256
+            || manifest_record.authorities.len() != deleting.authorities.len()
+            || !manifest_record.authorities.is_empty()
+            || !manifest_record.trust.is_empty()
+            || manifest_record.files.len() != 2
+        {
+            return Err(());
+        }
+        let deployment_record = &manifest_record.files[0];
+        let database_record = &manifest_record.files[1];
+        if deployment_record.path != DEPLOYMENT
+            || database_record.path != "service/sandbox.sqlite3"
+            || deployment_record.kind != "file"
+            || database_record.kind != "file"
+            || deployment_record.bytes > 16 * 1024
+            || database_record.bytes > DATABASE_MAX
+            || !valid_digest(&deployment_record.sha256)
+            || !valid_digest(&database_record.sha256)
+            || !valid_relative_path(&deployment_record.path)
+            || !valid_relative_path(&database_record.path)
+        {
+            return Err(());
+        }
+        if let Some(file) = deployment.as_ref() {
+            if file.metadata().map_err(|_| ())?.len() != deployment_record.bytes
+                || digest_file(file, 16 * 1024)? != deployment_record.sha256
+                || read_bounded(file, 16 * 1024)? != deployment_snapshot.bytes
+            {
+                return Err(());
+            }
+        }
+        if let Some(file) = database.as_ref() {
+            if file.metadata().map_err(|_| ())?.len() != database_record.bytes
+                || digest_file(file, DATABASE_MAX)? != database_record.sha256
+            {
+                return Err(());
+            }
+        }
+        let predecessor_valid = if deleting.generation == 1 {
+            manifest_record.predecessor.is_none()
+        } else {
+            manifest_record
+                .predecessor
+                .as_ref()
+                .is_some_and(|predecessor| {
+                    predecessor.generation.checked_add(1) == Some(deleting.generation)
+                        && valid_digest(&predecessor.manifest_sha256)
+                })
+        };
+        if !predecessor_valid {
+            return Err(());
+        }
+    } else if !root_names.is_empty() {
+        return Err(());
+    }
+
+    let directory_mode = |directory: &Option<File>| -> Result<Option<u32>, ()> {
+        directory
+            .as_ref()
+            .map(|directory| Ok(directory.metadata().map_err(|_| ())?.mode() & 0o7777))
+            .transpose()
+    };
+    let service_mode = directory_mode(&service)?;
+    let receipts_mode = directory_mode(&receipts)?;
+    let runner_mode = directory_mode(&runner)?;
+    let trust_mode = directory_mode(&trust)?;
+    let action = if root_names == full && generation_mode == 0o500 {
+        if service_mode != Some(0o500)
+            || receipts_mode != Some(0o500)
+            || runner_mode != Some(0o500)
+            || trust_mode != Some(0o500)
+            || database.is_none()
+        {
+            return Err(());
+        }
+        OldDeletionAction::GenerationMode
+    } else if root_names == full && service_mode == Some(0o500) {
+        if generation_mode != 0o700
+            || receipts_mode != Some(0o500)
+            || runner_mode != Some(0o500)
+            || trust_mode != Some(0o500)
+            || database.is_none()
+        {
+            return Err(());
+        }
+        OldDeletionAction::ServiceMode
+    } else if root_names == full && service_mode == Some(0o700) && database.is_some() {
+        if receipts_mode != Some(0o500) || runner_mode != Some(0o500) || trust_mode != Some(0o500) {
+            return Err(());
+        }
+        OldDeletionAction::DatabaseUnlink
+    } else if root_names == full && service_mode == Some(0o700) && database.is_none() {
+        if receipts_mode != Some(0o500) || runner_mode != Some(0o500) || trust_mode != Some(0o500) {
+            return Err(());
+        }
+        OldDeletionAction::DatabaseDirectorySync
+    } else if root_names == after_service
+        && receipts_mode == Some(0o500)
+        && runner_mode == Some(0o500)
+        && trust_mode == Some(0o500)
+    {
+        OldDeletionAction::ServiceParentSync
+    } else if root_names == after_service
+        && receipts_mode == Some(0o700)
+        && runner_mode == Some(0o500)
+        && trust_mode == Some(0o500)
+    {
+        OldDeletionAction::ReceiptsRemoval
+    } else if root_names == after_receipts
+        && runner_mode == Some(0o500)
+        && trust_mode == Some(0o500)
+    {
+        OldDeletionAction::ReceiptsParentSync
+    } else if root_names == after_receipts
+        && runner_mode == Some(0o700)
+        && trust_mode == Some(0o500)
+    {
+        OldDeletionAction::RunnerRemoval
+    } else if root_names == after_runner && trust_mode == Some(0o500) {
+        OldDeletionAction::RunnerParentSync
+    } else if root_names == after_runner && trust_mode == Some(0o700) {
+        OldDeletionAction::TrustRemoval
+    } else if root_names == after_trust {
+        OldDeletionAction::TrustParentSync
+    } else if root_names == manifest_only {
+        OldDeletionAction::DeploymentParentSync
+    } else if root_names == empty {
+        OldDeletionAction::ManifestParentSync
+    } else {
+        return Err(());
+    };
+    Ok(OldDeletionPrefix {
+        action,
+        generation,
+        service,
+        receipts,
+        runner,
+        trust,
+        database,
+        deployment,
+        manifest,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the owner-frozen descriptor-relative deletion and fsync order remains explicit"
+)]
+fn remove_old_clean_generation<Validate, Barrier>(
+    guard: &BackupRootGuard<'_>,
+    name: &str,
+    deleting: &crate::PublishedBackup,
+    validate_replacement: &mut Validate,
+    barrier: &mut Barrier,
+) -> Result<(), ()>
+where
+    Validate: FnMut() -> Result<(), ()>,
+    Barrier: FnMut(ReplacementBarrier) -> Result<(), ()>,
+{
+    loop {
+        let prefix = open_old_deletion_prefix(guard, name, deleting)?;
+        match prefix.action {
+            OldDeletionAction::GenerationMode => {
+                validate_replacement()?;
+                fchmod(&prefix.generation, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::GenerationMode,
+                ))?;
+            },
+            OldDeletionAction::ServiceMode => {
+                let service = prefix.service.as_ref().ok_or(())?;
+                validate_replacement()?;
+                fchmod(service, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ServiceMode,
+                ))?;
+            },
+            OldDeletionAction::DatabaseUnlink => {
+                let service = prefix.service.as_ref().ok_or(())?;
+                let database = prefix.database.as_ref().ok_or(())?;
+                let reopened = file_at(
+                    service,
+                    DATABASE,
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o400,
+                    false,
+                    DATABASE_MAX,
+                )?;
+                same(&reopened, database)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(service, DATABASE, rustix::fs::AtFlags::empty())
+                    .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::DatabaseUnlink,
+                ))?;
+            },
+            OldDeletionAction::DatabaseDirectorySync => {
+                let service = prefix.service.as_ref().ok_or(())?;
+                service.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::DatabaseDirectorySync,
+                ))?;
+                let reopened = directory_at(
+                    &prefix.generation,
+                    "service",
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o700,
+                )?;
+                same(&reopened, service)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(
+                    &prefix.generation,
+                    "service",
+                    rustix::fs::AtFlags::REMOVEDIR,
+                )
+                .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ServiceRemoval,
+                ))?;
+            },
+            OldDeletionAction::ServiceParentSync => {
+                prefix.generation.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ServiceParentSync,
+                ))?;
+                let receipts = prefix.receipts.as_ref().ok_or(())?;
+                validate_replacement()?;
+                fchmod(receipts, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ReceiptsMode,
+                ))?;
+            },
+            OldDeletionAction::ReceiptsRemoval => {
+                let receipts = prefix.receipts.as_ref().ok_or(())?;
+                let reopened = directory_at(
+                    &prefix.generation,
+                    "receipts",
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o700,
+                )?;
+                same(&reopened, receipts)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(
+                    &prefix.generation,
+                    "receipts",
+                    rustix::fs::AtFlags::REMOVEDIR,
+                )
+                .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ReceiptsRemoval,
+                ))?;
+            },
+            OldDeletionAction::ReceiptsParentSync => {
+                prefix.generation.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ReceiptsParentSync,
+                ))?;
+                let runner = prefix.runner.as_ref().ok_or(())?;
+                validate_replacement()?;
+                fchmod(runner, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::RunnerMode,
+                ))?;
+            },
+            OldDeletionAction::RunnerRemoval => {
+                let runner = prefix.runner.as_ref().ok_or(())?;
+                let reopened = directory_at(
+                    &prefix.generation,
+                    "runner",
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o700,
+                )?;
+                same(&reopened, runner)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(&prefix.generation, "runner", rustix::fs::AtFlags::REMOVEDIR)
+                    .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::RunnerRemoval,
+                ))?;
+            },
+            OldDeletionAction::RunnerParentSync => {
+                prefix.generation.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::RunnerParentSync,
+                ))?;
+                let trust = prefix.trust.as_ref().ok_or(())?;
+                validate_replacement()?;
+                fchmod(trust, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::TrustMode,
+                ))?;
+            },
+            OldDeletionAction::TrustRemoval => {
+                let trust = prefix.trust.as_ref().ok_or(())?;
+                let reopened = directory_at(
+                    &prefix.generation,
+                    "trust",
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o700,
+                )?;
+                same(&reopened, trust)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(&prefix.generation, "trust", rustix::fs::AtFlags::REMOVEDIR)
+                    .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::TrustRemoval,
+                ))?;
+            },
+            OldDeletionAction::TrustParentSync => {
+                prefix.generation.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::TrustParentSync,
+                ))?;
+                let deployment = prefix.deployment.as_ref().ok_or(())?;
+                let reopened = file_at(
+                    &prefix.generation,
+                    DEPLOYMENT,
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o400,
+                    false,
+                    16 * 1024,
+                )?;
+                same(&reopened, deployment)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(&prefix.generation, DEPLOYMENT, rustix::fs::AtFlags::empty())
+                    .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::DeploymentUnlink,
+                ))?;
+            },
+            OldDeletionAction::DeploymentParentSync => {
+                prefix.generation.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::DeploymentParentSync,
+                ))?;
+                let manifest = prefix.manifest.as_ref().ok_or(())?;
+                let reopened = file_at(
+                    &prefix.generation,
+                    MANIFEST,
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o400,
+                    false,
+                    JSON_MAX,
+                )?;
+                same(&reopened, manifest)?;
+                validate_replacement()?;
+                rustix::fs::unlinkat(&prefix.generation, MANIFEST, rustix::fs::AtFlags::empty())
+                    .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ManifestUnlink,
+                ))?;
+            },
+            OldDeletionAction::ManifestParentSync => {
+                prefix.generation.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::ManifestParentSync,
+                ))?;
+                let reopened = directory_at(
+                    &guard.generations,
+                    name,
+                    guard.identity.uid,
+                    guard.identity.gid,
+                    0o700,
+                )?;
+                same(&reopened, &prefix.generation)?;
+                validate_replacement()?;
+                drop(prefix);
+                rustix::fs::unlinkat(&guard.generations, name, rustix::fs::AtFlags::REMOVEDIR)
+                    .map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::GenerationRemoval,
+                ))?;
+                guard.generations.sync_all().map_err(|_| ())?;
+                barrier(ReplacementBarrier::OldDeletion(
+                    OldDeletionBarrier::GenerationsSync,
+                ))?;
+                return Ok(());
+            },
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "the closed generation inventory is deliberately explicit"
@@ -3548,13 +5076,17 @@ fn revalidate_generation(
     database: &File,
     deployment: &File,
     manifest: &File,
-    selected: bool,
+    current_present: bool,
     current_temporary: bool,
 ) -> Result<(), ()> {
     if current_temporary {
-        guard.verify_publishing_root_inventory()?;
+        if current_present {
+            guard.verify_replacing_root_inventory()?;
+        } else {
+            guard.verify_publishing_root_inventory()?;
+        }
     } else {
-        guard.verify_root_inventory(selected)?;
+        guard.verify_root_inventory(current_present)?;
     }
     let identity = guard.identity;
     let reopened_generation =
@@ -3657,16 +5189,38 @@ struct ManifestFile {
     sha256: String,
 }
 
+#[derive(Clone, Copy)]
+enum ExpectedPredecessor<'digest> {
+    None,
+    Exact {
+        generation: u64,
+        digest: &'digest str,
+    },
+    Previous,
+}
+
 fn validate_manifest(
     manifest: &Manifest,
     generation: u64,
+    predecessor: ExpectedPredecessor<'_>,
     deployment_snapshot: &DeploymentSnapshot,
     deployment: &File,
     database: &File,
 ) -> Result<(), ()> {
+    let predecessor_matches = match (predecessor, manifest.predecessor.as_ref()) {
+        (ExpectedPredecessor::None, None) => true,
+        (ExpectedPredecessor::Exact { generation, digest }, Some(actual)) => {
+            actual.generation == generation && actual.manifest_sha256 == digest
+        },
+        (ExpectedPredecessor::Previous, Some(actual)) => {
+            actual.generation.checked_add(1) == Some(generation)
+                && valid_digest(&actual.manifest_sha256)
+        },
+        _ => false,
+    };
     if manifest.schema != "kapsel.sandbox.backup.v1"
         || manifest.generation != generation
-        || manifest.predecessor.is_some()
+        || !predecessor_matches
         || manifest.captured_at <= 0
         || !manifest.stopped
         || manifest.compatibility_sha256 != deployment_snapshot.identity.compatibility_sha256
@@ -3732,6 +5286,14 @@ fn valid_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+fn complete_generation_name(generation: u64) -> String {
+    format!("backup-{generation:020}")
+}
+
+fn temporary_generation_name(generation: u64) -> String {
+    format!(".generation-{generation:020}.tmp")
+}
+
 fn generation_number(name: &str) -> Result<u64, ()> {
     let digits = name.strip_prefix("backup-").ok_or(())?;
     if digits.len() != 20 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -3741,13 +5303,14 @@ fn generation_number(name: &str) -> Result<u64, ()> {
     (value > 0).then_some(value).ok_or(())
 }
 
-fn remove_incomplete_initial_temporary(
+fn remove_incomplete_temporary(
     generations: &File,
+    temporary_name: &str,
     identity: BackupIdentity,
 ) -> Result<(), ()> {
     let temporary = directory_at(
         generations,
-        GENERATION_TMP,
+        temporary_name,
         identity.uid,
         identity.gid,
         0o700,
@@ -3825,7 +5388,7 @@ fn remove_incomplete_initial_temporary(
         }
     }
     temporary.sync_all().map_err(|_| ())?;
-    rustix::fs::unlinkat(generations, GENERATION_TMP, rustix::fs::AtFlags::REMOVEDIR)
+    rustix::fs::unlinkat(generations, temporary_name, rustix::fs::AtFlags::REMOVEDIR)
         .map_err(|_| ())?;
     generations.sync_all().map_err(|_| ())
 }
@@ -3833,6 +5396,67 @@ fn remove_incomplete_initial_temporary(
 fn create_directory(parent: &File, name: &str, identity: BackupIdentity) -> Result<File, ()> {
     mkdirat(parent, name, Mode::from_raw_mode(0o700)).map_err(|_| ())?;
     directory_at(parent, name, identity.uid, identity.gid, 0o700)
+}
+
+fn write_replacement_file<F>(
+    parent: &File,
+    name: &str,
+    bytes: &[u8],
+    identity: BackupIdentity,
+    maximum: u64,
+    component: ReplacementFile,
+    barrier: &mut F,
+) -> Result<File, ()>
+where
+    F: FnMut(ReplacementBarrier) -> Result<(), ()>,
+{
+    if u64::try_from(bytes.len()).map_err(|_| ())? > maximum {
+        return Err(());
+    }
+    let mut file = File::from(
+        openat(
+            parent,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|_| ())?,
+    );
+    file.write_all(bytes).map_err(|_| ())?;
+    barrier(ReplacementBarrier::AfterFileWrite(component))?;
+    file.sync_all().map_err(|_| ())?;
+    barrier(ReplacementBarrier::AfterFileSync(component))?;
+    validate_file(&file, identity, 0o600, maximum)?;
+    Ok(file)
+}
+
+fn write_replacement_current<F>(
+    root: &File,
+    bytes: &[u8],
+    identity: BackupIdentity,
+    barrier: &mut F,
+) -> Result<File, ()>
+where
+    F: FnMut(ReplacementBarrier) -> Result<(), ()>,
+{
+    let mut file = File::from(
+        openat(
+            root,
+            CURRENT_TMP,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|_| ())?,
+    );
+    barrier(ReplacementBarrier::AfterCurrentTemporaryCreate)?;
+    file.write_all(bytes).map_err(|_| ())?;
+    barrier(ReplacementBarrier::AfterCurrentTemporaryWrite)?;
+    file.sync_all().map_err(|_| ())?;
+    fchmod(&file, Mode::from_raw_mode(0o400)).map_err(|_| ())?;
+    validate_file(&file, identity, 0o400, 1024)?;
+    file.sync_all().map_err(|_| ())?;
+    barrier(ReplacementBarrier::AfterCurrentTemporarySync)?;
+    Ok(file)
 }
 
 fn write_new_file(
@@ -4725,6 +6349,32 @@ mod tests {
         let mut inventory = Vec::new();
         visit(root, root, &mut inventory);
         inventory
+    }
+
+    fn old_deletion_barriers() -> [OldDeletionBarrier; 21] {
+        [
+            OldDeletionBarrier::GenerationMode,
+            OldDeletionBarrier::ServiceMode,
+            OldDeletionBarrier::DatabaseUnlink,
+            OldDeletionBarrier::DatabaseDirectorySync,
+            OldDeletionBarrier::ServiceRemoval,
+            OldDeletionBarrier::ServiceParentSync,
+            OldDeletionBarrier::ReceiptsMode,
+            OldDeletionBarrier::ReceiptsRemoval,
+            OldDeletionBarrier::ReceiptsParentSync,
+            OldDeletionBarrier::RunnerMode,
+            OldDeletionBarrier::RunnerRemoval,
+            OldDeletionBarrier::RunnerParentSync,
+            OldDeletionBarrier::TrustMode,
+            OldDeletionBarrier::TrustRemoval,
+            OldDeletionBarrier::TrustParentSync,
+            OldDeletionBarrier::DeploymentUnlink,
+            OldDeletionBarrier::DeploymentParentSync,
+            OldDeletionBarrier::ManifestUnlink,
+            OldDeletionBarrier::ManifestParentSync,
+            OldDeletionBarrier::GenerationRemoval,
+            OldDeletionBarrier::GenerationsSync,
+        ]
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9805,6 +11455,1218 @@ mod tests {
         drop(guard);
         crate::test_authority::remove_root(&authority_root);
         cleanup(&base);
+    }
+
+    #[test]
+    fn complete_initial_generation_is_replaced_through_p1_p2_byte_removal_and_p3() {
+        let (base, state) = initialized("replace-complete-initial");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let initial_digest = initial.manifest_sha256.clone();
+        drop(initial);
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_202).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert_eq!(replacement.captured_at, 1_774_051_202);
+        assert_ne!(replacement.manifest_sha256, initial_digest);
+        assert!(!root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        let replacement_path = root.join(GENERATIONS).join("backup-00000000000000000002");
+        assert!(replacement_path.is_dir());
+        let manifest_bytes = fs::read(replacement_path.join(MANIFEST)).unwrap();
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let predecessor = manifest.predecessor.unwrap();
+        assert_eq!(predecessor.generation, 1);
+        assert_eq!(predecessor.manifest_sha256, initial_digest);
+        let copied =
+            rusqlite::Connection::open(replacement_path.join("service").join(DATABASE)).unwrap();
+        assert_eq!(
+            copied
+                .query_row(
+                    concat!(
+                        "SELECT COUNT(*) FROM backup_generations WHERE ",
+                        "(slot = 'current' AND generation = 1 AND manifest_digest = ?1) OR ",
+                        "(slot = 'pending' AND generation = 2 AND manifest_digest IS NULL)"
+                    ),
+                    [&initial_digest],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        drop(copied);
+        let current_bytes = fs::read(root.join(CURRENT)).unwrap();
+        let current: CurrentRecord = serde_json::from_slice(&current_bytes).unwrap();
+        assert_eq!(current.generation, 2);
+        assert_eq!(current.manifest_sha256, replacement.manifest_sha256);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert_eq!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(crate::PublishedBackup {
+                generation: 2,
+                captured_at: 1_774_051_202,
+                manifest_digest: replacement.manifest_sha256.clone(),
+                authorities: Vec::new(),
+            })
+        );
+        drop(service);
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn steady_current_rejects_unowned_artifacts_before_p1_without_mutation() {
+        let (base, state) = initialized("replace-reject-artifact-before-p1");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        fs::write(root.join(CURRENT_TMP), b"unowned").unwrap();
+        mode(&root.join(CURRENT_TMP), 0o600);
+        let source_path = base.join("state-parent/state").join(DATABASE);
+        let source_before = fs::read(&source_path).unwrap();
+        let backup_before = tree_inventory(&root);
+
+        assert!(guard.capture_clean(&authority, 1_774_051_202).is_err());
+
+        assert_eq!(fs::read(&source_path).unwrap(), source_before);
+        assert_eq!(tree_inventory(&root), backup_before);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current) if current.generation == 1
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacement_publication_barriers_retry_the_closed_clean_generation() {
+        let barriers = [
+            ReplacementBarrier::AfterP1,
+            ReplacementBarrier::AfterTemporaryCreate,
+            ReplacementBarrier::AfterDirectoryCreate(ReplacementDirectory::Service),
+            ReplacementBarrier::AfterDirectoryCreate(ReplacementDirectory::Receipts),
+            ReplacementBarrier::AfterDirectoryCreate(ReplacementDirectory::Runner),
+            ReplacementBarrier::AfterDirectoryCreate(ReplacementDirectory::Trust),
+            ReplacementBarrier::AfterFileWrite(ReplacementFile::Database),
+            ReplacementBarrier::AfterFileSync(ReplacementFile::Database),
+            ReplacementBarrier::AfterFileWrite(ReplacementFile::Deployment),
+            ReplacementBarrier::AfterFileSync(ReplacementFile::Deployment),
+            ReplacementBarrier::AfterFileWrite(ReplacementFile::Manifest),
+            ReplacementBarrier::AfterFileSync(ReplacementFile::Manifest),
+            ReplacementBarrier::AfterFileSeal(ReplacementFile::Database),
+            ReplacementBarrier::AfterFileSeal(ReplacementFile::Deployment),
+            ReplacementBarrier::AfterFileSeal(ReplacementFile::Manifest),
+            ReplacementBarrier::AfterDirectorySeal(ReplacementDirectory::Service),
+            ReplacementBarrier::AfterDirectorySeal(ReplacementDirectory::Receipts),
+            ReplacementBarrier::AfterDirectorySeal(ReplacementDirectory::Runner),
+            ReplacementBarrier::AfterDirectorySeal(ReplacementDirectory::Trust),
+            ReplacementBarrier::AfterTemporarySeal,
+            ReplacementBarrier::AfterGenerationRename,
+            ReplacementBarrier::AfterGenerationSync,
+            ReplacementBarrier::AfterCurrentTemporaryCreate,
+            ReplacementBarrier::AfterCurrentTemporaryWrite,
+            ReplacementBarrier::AfterCurrentTemporarySync,
+            ReplacementBarrier::AfterCurrentRename,
+            ReplacementBarrier::AfterRootSync,
+            ReplacementBarrier::AfterP2,
+        ];
+        let (base, state) = initialized("replace-publication-barrier-matrix");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        drop(guard);
+        drop(state);
+        for stopped_at in barriers {
+            let state = reopen_state(&base);
+            let guard =
+                BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                    .unwrap();
+            let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+                (phase != stopped_at).then_some(()).ok_or(())
+            });
+            assert!(result.is_err(), "{stopped_at:?}");
+            drop(guard);
+            drop(state);
+        }
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+        assert_eq!(replacement.generation, 2);
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_pending_without_new_bytes_retries_same_generation() {
+        let (base, state) = initialized("replace-recover-p1-no-bytes");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        let initial_digest = initial.manifest_sha256.clone();
+        drop(initial);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(2, 1_774_051_202).unwrap();
+        drop(service);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, pending.generation);
+        assert_eq!(replacement.captured_at, pending.captured_at);
+        let manifest_bytes = fs::read(
+            root.join(GENERATIONS)
+                .join("backup-00000000000000000002")
+                .join(MANIFEST),
+        )
+        .unwrap();
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes).unwrap();
+        let predecessor = manifest.predecessor.unwrap();
+        assert_eq!(predecessor.generation, 1);
+        assert_eq!(predecessor.manifest_sha256, initial_digest);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current)
+                if current.generation == 2
+                    && current.captured_at == pending.captured_at
+                    && current.manifest_digest == replacement.manifest_sha256
+        ));
+        drop(service);
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_pending_with_empty_exact_temporary_restarts_same_generation() {
+        let (base, state) = initialized("replace-recover-empty-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let service = state.open_stopped_service(&authority).unwrap();
+        let pending = service.begin_publication(2, 1_774_051_202).unwrap();
+        drop(service);
+        let temporary = root
+            .join(GENERATIONS)
+            .join(".generation-00000000000000000002.tmp");
+        fs::create_dir(&temporary).unwrap();
+        mode(&temporary, 0o700);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, pending.generation);
+        assert_eq!(replacement.captured_at, pending.captured_at);
+        assert!(!temporary.exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_pending_with_sealed_temporary_finishes_generation_rename() {
+        let (base, state) = initialized("replace-recover-sealed-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterTemporarySeal)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(stopped.is_err());
+        let temporary = root
+            .join(GENERATIONS)
+            .join(".generation-00000000000000000002.tmp");
+        assert!(temporary.is_dir());
+        assert_eq!(fs::metadata(&temporary).unwrap().mode() & 0o7777, 0o500);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert!(!temporary.exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_pending_with_complete_generation_finishes_current_and_p2() {
+        let (base, state) = initialized("replace-recover-complete");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterGenerationSync)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(stopped.is_err());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Replacing {
+                ref current,
+                ref pending,
+            } if current.generation == 1 && pending.generation == 2
+        ));
+        drop(service);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert_eq!(replacement.captured_at, 1_774_051_202);
+        assert!(!root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_canonical_current_temporary_finishes_rename_and_p2() {
+        let (base, state) = initialized("replace-recover-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let mut reached = false;
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            if phase == ReplacementBarrier::AfterCurrentTemporarySync {
+                reached = true;
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(stopped.is_err());
+        assert!(reached);
+        assert!(root.join(CURRENT).exists());
+        assert!(root.join(CURRENT_TMP).exists());
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert!(!root.join(CURRENT_TMP).exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_current_temporary_substitution_refuses_before_current_rename() {
+        let (base, state) = initialized("replace-reject-current-temporary-substitution");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let current_before = fs::read(root.join(CURRENT)).unwrap();
+        let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            if phase == ReplacementBarrier::AfterCurrentTemporarySync {
+                let path = root.join(CURRENT_TMP);
+                let bytes = fs::read(&path).map_err(|_| ())?;
+                fs::remove_file(&path).map_err(|_| ())?;
+                fs::write(&path, bytes).map_err(|_| ())?;
+                mode(&path, 0o400);
+            }
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(root.join(CURRENT)).unwrap(), current_before);
+        assert!(root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Replacing { .. }
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_strict_prefix_current_temporary_is_republished_before_p2() {
+        let (base, state) = initialized("replace-recover-prefix-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let current_temporary = root.join(CURRENT_TMP);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            if phase == ReplacementBarrier::AfterCurrentTemporarySync {
+                let bytes = fs::read(&current_temporary).unwrap();
+                mode(&current_temporary, 0o600);
+                fs::write(&current_temporary, &bytes[..bytes.len() / 2]).unwrap();
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(stopped.is_err());
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert!(!current_temporary.exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_nonprefix_current_temporary_refuses_without_mutation() {
+        let (base, state) = initialized("replace-reject-nonprefix-current-temporary");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let current_temporary = root.join(CURRENT_TMP);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            if phase == ReplacementBarrier::AfterCurrentTemporarySync {
+                mode(&current_temporary, 0o600);
+                fs::write(&current_temporary, b"not-a-canonical-prefix").unwrap();
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(stopped.is_err());
+        drop(guard);
+        drop(state);
+        let source_database = base.join("state-parent/state").join(DATABASE);
+        let source_before = fs::read(&source_database).unwrap();
+        let backup_before = tree_inventory(&root);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        assert!(guard.capture_clean(&authority, 1_774_051_299).is_err());
+
+        assert_eq!(fs::read(&source_database).unwrap(), source_before);
+        assert_eq!(tree_inventory(&root), backup_before);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacing_new_filesystem_current_runs_p2_before_old_removal() {
+        let (base, state) = initialized("replace-recover-new-current-before-p2");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterCurrentRename)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(stopped.is_err());
+        let current: CurrentRecord =
+            serde_json::from_slice(&fs::read(root.join(CURRENT)).unwrap()).unwrap();
+        assert_eq!(current.generation, 2);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Replacing { .. }
+        ));
+        drop(service);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert!(!root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn deleting_state_removes_exact_old_generation_then_releases_references() {
+        let (base, state) = initialized("replace-recover-deleting");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterP2)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(stopped.is_err());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Deleting {
+                ref current,
+                ref deleting,
+            } if current.generation == 2 && deleting.generation == 1
+        ));
+        drop(service);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert!(!root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current) if current.generation == 2
+        ));
+        drop(service);
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn deleting_state_retries_every_owned_removal_and_fsync_prefix() {
+        let barriers = old_deletion_barriers();
+        let (base, state) = initialized("replace-delete-prefix-matrix");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterP2)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(result.is_err());
+        drop(guard);
+        drop(state);
+        for stopped_at in barriers {
+            let state = reopen_state(&base);
+            let guard =
+                BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                    .unwrap();
+            let result = guard.capture_clean_with_barrier(&authority, 1_774_051_299, |phase| {
+                if phase == ReplacementBarrier::OldDeletion(stopped_at) {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err(), "{stopped_at:?}");
+            let service = state.open_stopped_service(&authority).unwrap();
+            assert!(matches!(
+                service.publication_state().unwrap(),
+                BackupPublicationState::Deleting { .. }
+            ));
+            drop(service);
+            drop(guard);
+            drop(state);
+        }
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+        assert_eq!(replacement.generation, 2);
+        assert!(!root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        replacement.verify().unwrap();
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn malformed_or_substituted_deletion_prefix_refuses_without_further_deletion_or_p3() {
+        for case in ["extra", "substitution"] {
+            let (base, state) = initialized(&format!("replace-delete-hostile-{case}"));
+            let root = initial_root(&base);
+            let authority_root = base.join("authority");
+            fs::create_dir(&authority_root).unwrap();
+            mode(&authority_root, 0o700);
+            let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+            let guard =
+                BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                    .unwrap();
+            let initial = guard
+                .capture_initial_clean(&authority, 1_774_051_201)
+                .unwrap();
+            drop(initial);
+            let target = if case == "extra" {
+                OldDeletionBarrier::DatabaseUnlink
+            } else {
+                OldDeletionBarrier::TrustParentSync
+            };
+            let old = root.join(GENERATIONS).join(GENERATION_ONE);
+            let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+                if phase == ReplacementBarrier::OldDeletion(target) {
+                    if case == "extra" {
+                        fs::write(old.join("service/unexpected"), b"unexpected").map_err(|_| ())?;
+                        mode(&old.join("service/unexpected"), 0o400);
+                        Err(())
+                    } else {
+                        let deployment = old.join(DEPLOYMENT);
+                        let bytes = fs::read(&deployment).map_err(|_| ())?;
+                        fs::remove_file(&deployment).map_err(|_| ())?;
+                        fs::write(&deployment, bytes).map_err(|_| ())?;
+                        mode(&deployment, 0o400);
+                        Ok(())
+                    }
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err(), "{case}");
+            let source_path = base.join("state-parent/state").join(DATABASE);
+            let source_before = fs::read(&source_path).unwrap();
+            let backup_before = tree_inventory(&root);
+            if case == "extra" {
+                assert!(guard.capture_clean(&authority, 1_774_051_299).is_err());
+                assert_eq!(tree_inventory(&root), backup_before, "{case}");
+            } else {
+                assert!(old.join(DEPLOYMENT).exists());
+                assert!(old.join(MANIFEST).exists());
+            }
+            assert_eq!(fs::read(&source_path).unwrap(), source_before, "{case}");
+            let service = state.open_stopped_service(&authority).unwrap();
+            assert!(matches!(
+                service.publication_state().unwrap(),
+                BackupPublicationState::Deleting { .. }
+            ));
+            drop(service);
+            drop(guard);
+            crate::test_authority::remove_root(&authority_root);
+            cleanup(&base);
+        }
+    }
+
+    #[test]
+    fn deletion_prefix_rejects_out_of_order_downstream_modes_and_links() {
+        for case in ["runner-mode", "trust-mode", "runner-links"] {
+            let (base, state) = initialized(&format!("replace-delete-order-{case}"));
+            let root = initial_root(&base);
+            let authority_root = base.join("authority");
+            fs::create_dir(&authority_root).unwrap();
+            mode(&authority_root, 0o700);
+            let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+            let guard =
+                BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                    .unwrap();
+            let initial = guard
+                .capture_initial_clean(&authority, 1_774_051_201)
+                .unwrap();
+            drop(initial);
+            let old = root.join(GENERATIONS).join(GENERATION_ONE);
+            let target = if case == "trust-mode" {
+                OldDeletionBarrier::ReceiptsRemoval
+            } else {
+                OldDeletionBarrier::ServiceRemoval
+            };
+            let mut hostile_inventory = None;
+            let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+                if phase == ReplacementBarrier::OldDeletion(target) {
+                    match case {
+                        "runner-mode" => mode(&old.join("runner"), 0o700),
+                        "trust-mode" => mode(&old.join("trust"), 0o700),
+                        "runner-links" => {
+                            let runner = old.join("runner");
+                            let unexpected = runner.join("unexpected");
+                            mode(&runner, 0o700);
+                            fs::create_dir(&unexpected).map_err(|_| ())?;
+                            mode(&unexpected, 0o500);
+                            mode(&runner, 0o500);
+                            assert!(fs::metadata(&runner).map_err(|_| ())?.nlink() > 2);
+                        },
+                        _ => unreachable!(),
+                    }
+                    hostile_inventory = Some(tree_inventory(&old));
+                    return Err(());
+                }
+                Ok(())
+            });
+            assert!(result.is_err(), "{case}");
+            assert!(hostile_inventory.is_some(), "barrier not reached: {case}");
+            let before_retry = hostile_inventory.unwrap();
+            assert!(guard.capture_clean(&authority, 1_774_051_299).is_err());
+            assert_eq!(tree_inventory(&old), before_retry, "{case}");
+            let connection =
+                rusqlite::Connection::open(base.join("state-parent/state").join(DATABASE)).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM backup_generations WHERE slot = 'deleting'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1,
+                "{case}"
+            );
+            drop(connection);
+            drop(guard);
+            crate::test_authority::remove_root(&authority_root);
+            cleanup(&base);
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one adversarial matrix keeps every replacement pin attack and invariant visible"
+    )]
+    fn deletion_barriers_revalidate_each_replacement_pin_class_before_next_removal() {
+        for (attack, stopped_at) in [
+            ("selected", OldDeletionBarrier::GenerationMode),
+            ("current", OldDeletionBarrier::ReceiptsRemoval),
+            ("row", OldDeletionBarrier::ManifestUnlink),
+            ("reference", OldDeletionBarrier::GenerationsSync),
+        ] {
+            let (base, state) = initialized("replace-delete-pin");
+            let root = initial_root(&base);
+            let authority_root = base.join("authority");
+            fs::create_dir(&authority_root).unwrap();
+            mode(&authority_root, 0o700);
+            let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+            let guard =
+                BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                    .unwrap();
+            let initial = guard
+                .capture_initial_clean(&authority, 1_774_051_201)
+                .unwrap();
+            drop(initial);
+            let old = root.join(GENERATIONS).join(GENERATION_ONE);
+            let selected = root.join(GENERATIONS).join("backup-00000000000000000002");
+            let database = base.join("state-parent/state").join(DATABASE);
+            let mut old_inventory_after_attack = None;
+            let mut attacked = false;
+            let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+                if !attacked && phase == ReplacementBarrier::OldDeletion(stopped_at) {
+                    match attack {
+                        "selected" => {
+                            let manifest = selected.join(MANIFEST);
+                            let before = fs::metadata(&manifest).map_err(|_| ())?.ino();
+                            let replacement = base.join("selected-manifest-replacement");
+                            fs::copy(&manifest, &replacement).map_err(|_| ())?;
+                            mode(&replacement, 0o400);
+                            mode(&selected, 0o700);
+                            fs::rename(&replacement, &manifest).map_err(|_| ())?;
+                            mode(&selected, 0o500);
+                            assert_ne!(fs::metadata(&manifest).map_err(|_| ())?.ino(), before);
+                        },
+                        "current" => {
+                            let current = root.join(CURRENT);
+                            let replacement = base.join("current-replacement");
+                            fs::copy(&current, &replacement).map_err(|_| ())?;
+                            mode(&replacement, 0o400);
+                            fs::rename(&replacement, &current).map_err(|_| ())?;
+                        },
+                        "row" => {
+                            let connection =
+                                rusqlite::Connection::open(&database).map_err(|_| ())?;
+                            connection
+                                .execute(
+                                    concat!(
+                                        "UPDATE backup_generations SET captured_at = ",
+                                        "captured_at + 1 WHERE slot = 'current'"
+                                    ),
+                                    [],
+                                )
+                                .map_err(|_| ())?;
+                        },
+                        "reference" => {
+                            let connection =
+                                rusqlite::Connection::open(&database).map_err(|_| ())?;
+                            connection
+                                .execute(
+                                    concat!(
+                                        "INSERT INTO backup_authority_references VALUES ",
+                                        "('current', 999, ?1)"
+                                    ),
+                                    ["0".repeat(64)],
+                                )
+                                .map_err(|_| ())?;
+                        },
+                        _ => unreachable!(),
+                    }
+                    old_inventory_after_attack = old.exists().then(|| tree_inventory(&old));
+                    attacked = true;
+                }
+                Ok(())
+            });
+            assert!(attacked, "{attack} {stopped_at:?}");
+            assert!(result.is_err(), "{attack} {stopped_at:?}");
+            assert_eq!(
+                old.exists().then(|| tree_inventory(&old)),
+                old_inventory_after_attack,
+                "{attack} {stopped_at:?}"
+            );
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM backup_generations WHERE slot = 'deleting'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1,
+                "{attack} {stopped_at:?}"
+            );
+            drop(connection);
+            drop(guard);
+            crate::test_authority::remove_root(&authority_root);
+            cleanup(&base);
+        }
+    }
+
+    #[test]
+    fn deleting_state_without_old_bytes_runs_only_p3() {
+        let (base, state) = initialized("replace-recover-after-old-removal");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterOldRemoval)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(stopped.is_err());
+        assert!(!root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        let new_path = root.join(GENERATIONS).join("backup-00000000000000000002");
+        let new_before = tree_inventory(&new_path);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let replacement = guard.capture_clean(&authority, 1_774_051_299).unwrap();
+
+        assert_eq!(replacement.generation, 2);
+        assert_eq!(tree_inventory(&new_path), new_before);
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Current(ref current) if current.generation == 2
+        ));
+        drop(service);
+        drop(replacement);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn steady_replacement_is_idempotent_for_same_capture_and_allows_next_generation() {
+        let (base, state) = initialized("replace-steady-idempotent-next");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let stopped = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            (phase != ReplacementBarrier::AfterP3)
+                .then_some(())
+                .ok_or(())
+        });
+        assert!(stopped.is_err());
+        let generation_two = root.join(GENERATIONS).join("backup-00000000000000000002");
+        let steady_before = tree_inventory(&root);
+        drop(guard);
+        drop(state);
+        let state = reopen_state(&base);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+
+        let same = guard.capture_clean(&authority, 1_774_051_202).unwrap();
+        assert_eq!(same.generation, 2);
+        assert_eq!(tree_inventory(&root), steady_before);
+        drop(same);
+        let next = guard.capture_clean(&authority, 1_774_051_203).unwrap();
+
+        assert_eq!(next.generation, 3);
+        assert!(!generation_two.exists());
+        assert!(root
+            .join(GENERATIONS)
+            .join("backup-00000000000000000003")
+            .is_dir());
+        next.verify().unwrap();
+        drop(next);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacement_current_substitution_before_p2_refuses_without_deletion_or_source_mutation() {
+        let (base, state) = initialized("replace-reject-current-substitution-before-p2");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let source_database = base.join("state-parent/state").join(DATABASE);
+        let mut substituted = false;
+        let mut source_at_substitution = None;
+
+        let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            if phase == ReplacementBarrier::AfterRootSync {
+                let current = root.join(CURRENT);
+                let saved = base.join("saved-current");
+                fs::rename(&current, &saved).map_err(|_| ())?;
+                fs::copy(&saved, &current).map_err(|_| ())?;
+                mode(&current, 0o400);
+                source_at_substitution = Some(fs::read(&source_database).map_err(|_| ())?);
+                substituted = true;
+            }
+            Ok(())
+        });
+
+        assert!(substituted);
+        assert!(result.is_err());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Replacing { .. }
+        ));
+        drop(service);
+        assert!(root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        assert!(root
+            .join(GENERATIONS)
+            .join("backup-00000000000000000002")
+            .exists());
+        let copied_database = root
+            .join(GENERATIONS)
+            .join("backup-00000000000000000002/service")
+            .join(DATABASE);
+        let copied = rusqlite::Connection::open(copied_database).unwrap();
+        assert_eq!(
+            copied
+                .query_row(
+                    "SELECT COUNT(*) FROM backup_generations WHERE slot IN ('current', 'pending')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        drop(copied);
+        assert_eq!(
+            fs::read(&source_database).unwrap(),
+            source_at_substitution.unwrap()
+        );
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn replacement_selected_substitution_after_p2_refuses_before_old_deletion() {
+        let (base, state) = initialized("replace-reject-selected-substitution-after-p2");
+        let root = initial_root(&base);
+        let authority_root = base.join("authority");
+        fs::create_dir(&authority_root).unwrap();
+        mode(&authority_root, 0o700);
+        let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+        let guard = BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+            .unwrap();
+        let initial = guard
+            .capture_initial_clean(&authority, 1_774_051_201)
+            .unwrap();
+        drop(initial);
+        let new_generation = root.join(GENERATIONS).join("backup-00000000000000000002");
+        let result = guard.capture_clean_with_barrier(&authority, 1_774_051_202, |phase| {
+            if phase == ReplacementBarrier::AfterP2 {
+                let manifest = new_generation.join(MANIFEST);
+                let bytes = fs::read(&manifest).map_err(|_| ())?;
+                mode(&new_generation, 0o700);
+                fs::remove_file(&manifest).map_err(|_| ())?;
+                fs::write(&manifest, bytes).map_err(|_| ())?;
+                mode(&manifest, 0o400);
+                mode(&new_generation, 0o500);
+            }
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert!(root.join(GENERATIONS).join(GENERATION_ONE).exists());
+        let service = state.open_stopped_service(&authority).unwrap();
+        assert!(matches!(
+            service.publication_state().unwrap(),
+            BackupPublicationState::Deleting {
+                ref current,
+                ref deleting,
+            } if current.generation == 2 && deleting.generation == 1
+        ));
+        drop(service);
+        drop(guard);
+        crate::test_authority::remove_root(&authority_root);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn unowned_replacement_row_name_digest_and_reference_combinations_refuse_without_mutation() {
+        for case in ["row", "name", "digest", "reference"] {
+            let (base, state) = initialized(&format!("replace-reject-unowned-{case}"));
+            let root = initial_root(&base);
+            let authority_root = base.join("authority");
+            fs::create_dir(&authority_root).unwrap();
+            mode(&authority_root, 0o700);
+            let authority = crate::test_authority::configuration(&authority_root, [7; 32]);
+            let guard =
+                BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                    .unwrap();
+            let initial = guard
+                .capture_initial_clean(&authority, 1_774_051_201)
+                .unwrap();
+            drop(initial);
+            let service = state.open_stopped_service(&authority).unwrap();
+            service.begin_publication(2, 1_774_051_202).unwrap();
+            drop(service);
+            let database = base.join("state-parent/state").join(DATABASE);
+            match case {
+                "row" => {
+                    let connection = rusqlite::Connection::open(&database).unwrap();
+                    connection
+                        .execute(
+                            concat!(
+                                "INSERT INTO backup_generations VALUES ",
+                                "('deleting', 3, ?1, 'deleting', 1774051203)"
+                            ),
+                            ["3".repeat(64)],
+                        )
+                        .unwrap();
+                },
+                "name" => {
+                    let extra = root.join(GENERATIONS).join("backup-00000000000000000003");
+                    fs::create_dir(&extra).unwrap();
+                    mode(&extra, 0o500);
+                },
+                "digest" => {
+                    let connection = rusqlite::Connection::open(&database).unwrap();
+                    connection
+                        .execute(
+                            concat!(
+                                "UPDATE backup_generations SET manifest_digest = ?1 ",
+                                "WHERE slot = 'current'"
+                            ),
+                            ["0".repeat(64)],
+                        )
+                        .unwrap();
+                },
+                "reference" => {
+                    let connection = rusqlite::Connection::open(&database).unwrap();
+                    connection
+                        .execute(
+                            "INSERT INTO backup_authority_references VALUES ('pending', 999, ?1)",
+                            ["0".repeat(64)],
+                        )
+                        .unwrap();
+                },
+                _ => unreachable!(),
+            }
+            drop(guard);
+            drop(state);
+            let source_before = fs::read(&database).unwrap();
+            let backup_before = tree_inventory(&root);
+            let state = BackupStateGuard::open_capture(
+                &base.join("state-parent/state"),
+                RoleIdentities::test_controller(),
+                DeploymentProfile::Test,
+            );
+            if let Ok(state) = state {
+                if let Ok(guard) =
+                    BackupRootGuard::open_initial(&state, &root, BackupIdentity::current_process())
+                {
+                    assert!(guard.capture_clean(&authority, 1_774_051_299).is_err());
+                    drop(guard);
+                }
+            }
+            assert_eq!(fs::read(&database).unwrap(), source_before, "{case}");
+            assert_eq!(tree_inventory(&root), backup_before, "{case}");
+            crate::test_authority::remove_root(&authority_root);
+            cleanup(&base);
+        }
     }
 
     #[test]
