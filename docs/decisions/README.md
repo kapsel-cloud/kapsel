@@ -10,3 +10,4 @@ Accepted decisions explain durable choices. Current owner documents define behav
 - [0009 — Use a conditional Kubernetes image patch](0009-use-conditional-kubernetes-image-patch.md)
 - [0010 — Evolve through a customer-resident effect gateway](0010-evolve-through-a-resident-effect-gateway.md)
 - [0011 — Separate sandbox controllers from system-state ownership](0011-separate-sandbox-controllers-from-system-state.md)
+  — superseded historical topology

@@ -51,16 +51,16 @@ duplicate, missing, or incorrectly typed JSON fields fail with `invalid_request`
 Unicode only where explicitly stated; identifiers and enum tokens are ASCII. Responses use no
 ambient locale.
 
-The native service enforces these limits without relying on the optional edge: request line at most
-512 bytes; at most 16 headers and an 8 KiB complete request head; each header value at most 256
-bytes; at most 128 open connections and 64 in-flight requests; five seconds to receive request
-headers, five seconds to receive the bounded body, 30 seconds for the native HTTP connection to
-await the service response. Crossing a byte/time/concurrency bound is rejected or closes the
-connection and emits no reflected input. A connection wait timeout does not cancel or terminate a
-service operation that already began. These transport limits do not reserve or release scheduler
-capacity and cannot become receiver outcomes. HTTP/2, if later implemented, must enforce equivalent
-limits per connection and stream; the current native listener is HTTP/1.1 and closes every
-connection after one response.
+The native service enforces these global transport limits independently of the required edge's
+per-source abuse control: request line at most 512 bytes; at most 16 headers and an 8 KiB complete
+request head; each header value at most 256 bytes; at most 128 open connections and 64 in-flight
+requests; five seconds to receive request headers, five seconds to receive the bounded body, 30
+seconds for the native HTTP connection to await the service response. Crossing a
+byte/time/concurrency bound is rejected or closes the connection and emits no reflected input. A
+connection wait timeout does not cancel or terminate a service operation that already began. These
+transport limits do not reserve or release scheduler capacity and cannot become receiver outcomes.
+HTTP/2, if later implemented, must enforce equivalent limits per connection and stream; the current
+native listener is HTTP/1.1 and closes every connection after one response.
 
 ## Routes
 
@@ -75,11 +75,14 @@ There is no run-listing, cancellation, retry, reconciliation, cleanup, log, call
 configuration, health, fault-control, or arbitrary-resource route. `HEAD`, `PUT`, `PATCH`, `DELETE`,
 and `OPTIONS` are not part of this contract.
 
-Browser consumers use these origin-relative routes through a same-origin website/edge proxy. The
-native API sets no cookie, accepts no browser credential, and makes no cross-origin CORS promise.
-The proxy may be deployed independently from the website and runner, but it must preserve method,
-path, bounded headers, body, status, response headers, and idempotency exactly. A later cross-origin
-surface requires a new versioned contract including preflight and origin policy.
+Browser consumers use these origin-relative routes through the required same-origin edge. The native
+API sets no cookie, accepts no browser credential, and makes no cross-origin CORS promise. The edge
+may be deployed independently from the website and runner, but it must preserve method, path,
+bounded application headers, body, status, response headers, and idempotency exactly. It owns
+authoritative per-source abuse rejection before forwarding; the native listener is reachable only
+through its private authenticated channel during exposure. No visitor-derived source header enters
+the `v1` request, durable run state, response, log, or metric. A later cross-origin surface requires
+a new versioned contract including preflight and origin policy.
 
 HTTP routing requires one deployment-configured `Host` or HTTP/2 `:authority`, at most 253 ASCII
 bytes. `POST` requires `Content-Type: application/json`, exact decimal `Content-Length` from 1
@@ -87,8 +90,9 @@ through 512, and the owned `Idempotency-Key`; `GET` has no body or content heade
 optional and, when present, must name the route's owned response media type. `Origin` is optional
 and must equal the configured same origin. Conflicting length/framing, `Transfer-Encoding`,
 `Cookie`, `Authorization`, `Range`, conditional `If-*`, and untrusted forwarding/client-certificate
-headers fail with `invalid_request` before admission. A trusted edge strips its own forwarding and
-tracing headers before the native service.
+headers fail with `invalid_request` before admission. The edge strips forwarding, tracing, and
+visitor-source headers before the native service; its private-channel authentication is transport
+composition, not a `v1` header or caller input.
 
 Other syntactically valid standard HTTP headers within the count/byte limits are ignored, have no
 `v1` semantics, and are never copied to durable state, responses, logs, or metrics. The contract
@@ -124,8 +128,9 @@ idempotency lifetime; diagnostics may retain only its service-keyed digest.
 The admission transaction atomically stores a cryptographically random server-generated `run_id`,
 the exact scenario, a server-generated KAP-0038 `operation_id`, admission time, expiry time, initial
 event, and scheduler eligibility before returning success. A successful response therefore survives
-process restart. The operation has not necessarily been submitted to Kapsel or Kubernetes at that
-point.
+ordinary controller-process restart while the same controller state remains present and validated.
+The operation has not necessarily been submitted to Kapsel or Kubernetes at that point. This
+contract does not preserve admission across controller-host or storage loss.
 
 - The first committed key and body returns `201` and `admission_disposition: "created"`.
 - The same key and byte-equivalent parsed body returns the same identities and times with `200` and
@@ -135,12 +140,12 @@ point.
 - A non-success response other than an idempotent conflict never proves whether an earlier request
   with another key exists.
 
-The global stop, per-source abuse controls, and queue bound are checked before the admission
-transaction commits. One bounded queue slot is reserved atomically with admission. Active execution
-capacity is reserved separately and atomically only when the serial scheduler dispatches the oldest
-queued run; transport activity never reserves it. Saturation fails closed and creates no run. Edge
-admission may reject earlier, but only the native service's durable transaction establishes
-admission.
+The edge's per-source abuse bound rejects before forwarding. The native global stop and queue bound
+are checked before the admission transaction commits. One bounded queue slot is reserved atomically
+with admission. Active execution capacity is reserved separately and atomically only when the serial
+scheduler dispatches the oldest queued run; transport activity never reserves it. Saturation fails
+closed and creates no run. Edge admission may reject earlier, but only the native service's durable
+transaction establishes admission.
 
 A success response has exactly:
 
@@ -325,10 +330,13 @@ possessing an unexpired `run_id` may read that run's synthetic projection and re
 
 ## Retention and expiry
 
-The full run, event projection, and receipt remain publicly retrievable until `expires_at`, exactly
-24 hours after admission. The private idempotency mapping is usable for replay during the same
-period but is never itself public. At expiry, all run, event, and receipt routes return the same
-`run_expired` response for a further 24-hour tombstone window.
+While the admitted controller state remains present and validated, the full run, event projection,
+and receipt remain publicly retrievable until `expires_at`, exactly 24 hours after admission. The
+private idempotency mapping is usable for replay during the same period but is never itself public.
+Controller-host or storage loss withdraws the endpoint and may end this availability early; the
+sandbox does not reconstruct prior locators, projections, receipts, expiry, or cleanup events. At
+expiry, all run, event, and receipt routes return the same `run_expired` response for a further
+24-hour tombstone window.
 
 The private tombstone contains exactly a service-keyed run-identity digest, a service-keyed
 idempotency-key digest, and expiry time. It exposes no scenario, request digest, outcome, event,
@@ -336,11 +344,14 @@ receipt, raw key, or infrastructure identifier. During the tombstone window, any
 matching idempotency key returns `run_expired` regardless of scenario and creates nothing; it never
 reveals the former run identity or scenario. A request by run ID also returns `run_expired`. After
 tombstone deletion, the run ID returns `run_not_found`, and reuse of the former key is a new
-admission with a new run identity.
+admission with a new run identity. After catastrophic state destruction and accepted clean
+recreation, a prior locator may likewise return `run_not_found`; reuse of a prior idempotency key
+may create a new admission only after exact teardown, readiness, and explicit reopening. No prior
+result or receipt is inferred.
 
-Internal security, billing, backup, gateway-recovery, and cleanup records may not extend public
-retention or retain raw visitor identifiers; [Privacy](PRIVACY.md) owns their narrower rules.
-Ongoing Kapsel recovery and forced cleanup may outlive public projection expiry and remain operator
+Internal security, billing, gateway-recovery, and cleanup records may not extend public retention or
+retain raw visitor identifiers; [Privacy](PRIVACY.md) owns their narrower rules. Ongoing Kapsel
+recovery and forced cleanup may outlive public projection expiry and remain operator
 responsibilities.
 
 ## Errors

@@ -1,10 +1,11 @@
 # Technical task route
 
-Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0069 selected one serialized
-reshape for the bounded public product proof; KAP-0070 is the sole active implementation and
-acceptance packet. Only its exact accepted public proof may lead to the later customer-controlled
-non-production integration decision. Exact-artifact evaluation remains supporting evidence; every
-provider, deployment, traffic, and resident implementation act remains separately gated.
+Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0072 narrows KAP-0069's
+serialized route to one seven-day real runner-process-loss proof; KAP-0070 is the sole active
+implementation and acceptance packet. Exact public acceptance or explicit fixtures/local-demo
+fallback closure may lead to the later customer-controlled non-production integration decision.
+Exact-artifact evaluation remains supporting evidence; every provider, deployment, traffic, and
+resident implementation act remains separately gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -19,12 +20,13 @@ now authorizes two decision stages without widening that capability:
    per-run runner process, one dedicated synthetic Kubernetes cluster, and at most one active run
    through complete cleanup. It explicitly supersedes the remote Kubernetes controller and
    key-stager topology.
-2. [KAP-0070](KAP-0070.md) corrects the direct contracts, removes the superseded path, and must pass
-   offline composition, separately authorized private-live, failure-recovery, teardown/recreation,
-   and bounded-public-exposure gates for one exact revision.
-3. Only after KAP-0070's exact public proof passes acceptance, [KAP-0054](KAP-0054.md) decides
-   whether CLI/MCP is sufficient for one customer-controlled non-production integration or whether
-   one smallest resident boundary is justified.
+2. [KAP-0072](KAP-0072.md) supersedes backup/restore and host continuity, archives `bde1e3b`, and
+   imposes a seven-day narrowed implementation window with fixtures/local-demo fallback.
+3. [KAP-0070](KAP-0070.md) must pass retained offline, separately authorized private-live,
+   teardown/recreation, and bounded-public gates for one exact revision or close the fallback.
+4. After either exact public acceptance or fallback closure, [KAP-0054](KAP-0054.md) decides whether
+   CLI/MCP is sufficient for one customer-controlled non-production integration or whether one
+   smallest resident boundary is justified.
 
 Neither decision authorizes provider use, public traffic, a daemon, transport, package, production
 compatibility, or another operation. [KAP-0047](KAP-0047.md) remains the supporting owner for
@@ -76,18 +78,19 @@ conditional future work; v0.2 does not publish crates.io or docs.rs artifacts.
 
 ## Product-cycle and deferred programs
 
-| Packet                  | Status      | Route                                                                                        |
-| ----------------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| [KAP-0069](KAP-0069.md) | Complete    | Selected serialized reshape and mapped every retained, superseded, and historical artifact   |
-| [KAP-0070](KAP-0070.md) | Active      | Prove one serialized public sandbox through separately authorized staged gates               |
-| [KAP-0054](KAP-0054.md) | Queued      | After exact KAP-0070 public acceptance, select CLI/MCP or one resident boundary              |
-| [KAP-0050](KAP-0050.md) | Superseded  | Historical umbrella; KAP-0070 exclusively owns any deployment completion                     |
-| [KAP-0053](KAP-0053.md) | Superseded  | Preserve mapped offline evidence, but never resume its controller/stager deployment topology |
-| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs distribution requires a later explicit use and compatibility decision          |
-| [KAP-0066](KAP-0066.md) | Deferred    | Release-artifact tooling is inactive without an observed product blocker                     |
-| [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling remains behind KAP-0066 and an observed product blocker                |
-| [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization waits for the selected real consumers                                 |
-| [KAP-0071](KAP-0071.md) | Deferred    | Optional Nix development shell waits for KAP-0070 closure and accepted pilot evidence        |
+| Packet                  | Status             | Route                                                                                        |
+| ----------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
+| [KAP-0069](KAP-0069.md) | Superseded in part | Selected native serialized route; KAP-0072 removes its backup/restore guarantee              |
+| [KAP-0072](KAP-0072.md) | Complete           | Narrowed the sandbox to a seven-day real runner-loss proof with explicit fallback            |
+| [KAP-0070](KAP-0070.md) | Active             | Produce the narrowed proof or close fixtures/local-demo fallback                             |
+| [KAP-0054](KAP-0054.md) | Queued             | After KAP-0070 public acceptance or fallback closure, select the resident boundary           |
+| [KAP-0050](KAP-0050.md) | Superseded         | Historical umbrella; KAP-0070 exclusively owns any deployment completion                     |
+| [KAP-0053](KAP-0053.md) | Superseded         | Preserve mapped offline evidence, but never resume its controller/stager deployment topology |
+| [KAP-0048](KAP-0048.md) | Conditional        | Cargo/docs.rs distribution requires a later explicit use and compatibility decision          |
+| [KAP-0066](KAP-0066.md) | Deferred           | Release-artifact tooling is inactive without an observed product blocker                     |
+| [KAP-0067](KAP-0067.md) | Deferred           | Qualification tooling remains behind KAP-0066 and an observed product blocker                |
+| [KAP-0068](KAP-0068.md) | Deferred           | Interface minimization waits for the selected real consumers                                 |
+| [KAP-0071](KAP-0071.md) | Deferred           | Optional Nix development shell waits for KAP-0070 closure and accepted pilot evidence        |
 
 KAP-0051, KAP-0052, KAP-0055, and KAP-0056 remain accepted sandbox history. Their implementation and
 the shared workspace version do not make the sandbox, private controller protocols, runner handoff,

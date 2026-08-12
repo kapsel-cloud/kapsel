@@ -417,155 +417,49 @@ is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence rem
 
 ## Sandbox preservation lanes
 
-KAP-0070 is active only for the serialized reshape selected by KAP-0069; provider selection,
-deployment, credentials, spend, an endpoint, DNS, and public traffic remain separately gated. These
-commands preserve the accepted KAP-0070 Gate 0 evidence and Gate 1 Slice 1 serialized-capacity and
-local-role evidence. Historical KAP-0053 Gate 1 and Gate 2 tasks and artifacts are removed; Git
-history retains their evidence.
-
-Validate the demonstration-scoped public sandbox fixtures without a service or network:
+Validate fixed public bytes without a service or network:
 
 ```sh
 cargo make test-sandbox-contract
 ```
 
-The direct command is `python3 scripts/test-sandbox-contract.py`. It validates the fixed KAP-0051
-HTTP transcripts, field bounds, replay ordering, outcome separation, disclosure key set, and raw
-receipt digest. It is contract evidence, not a sandbox implementation or live deployment proof.
-
-Validate the topology-neutral exact conditional-patch invariant and Gate 0 deletion boundary with:
+Validate the provider-neutral conditional patch and active-route deletion boundary:
 
 ```sh
 cargo make test-sandbox-preservation
 ```
 
-The direct command is `python3 scripts/test-sandbox-preservation.py`. It uses only
-`deploy/sandbox/admission-fixture.json` and `deploy/sandbox/operator-admission-rule.json`, rejects
-all mutation beyond the selected image and operation annotation, and asserts that superseded source,
-CLI modes, artifacts, and Make tasks are absent. It uses no Docker, provider, credential, resource,
-or network.
-
-Run the focused provider-neutral cluster-policy lane with:
-
-```sh
-cargo make test-sandbox-cluster-policy
-```
-
-It derives the closed baseline, explicit and generated run inventory, conditional Deployment
-comparison, and UID-safe cleanup plan from bounded in-process object bodies. It also proves private
-plan integrity before any request, one fixed-authority closed cleanup operation, durable cleanup
-failure, ten-second request and 30-second attempt deadlines, and the 2 MiB pre-deserialization body
-cap for content-length, chunked, and close-delimited responses. In-memory mocks and loopback HTTP
-fixtures verify exact delete/observation behavior. It uses no Docker, kind, network, registry,
-provider, credential, or live cluster. It does not prove runtime, CNI, RBAC, admission, metadata, or
-network enforcement in Kubernetes.
-
-Run the focused deterministic one-active and concrete local-role proof with:
+Run retained deterministic package lanes with:
 
 ```sh
 cargo make test-sandbox-serialized-capacity
-```
-
-It proves exactly one durable dispatch/recovery owner, fail-closed reopen and dispatch for corrupt
-capacity state, active-first recovery, FIFO dispatch, cleanup-held capacity through restart, retry,
-and escalation, and release only after exact UID/owner absence. It uses no runner process, cluster,
-provider, credential, or network.
-
-Run the deterministic KAP-0052 service, fixture, dependency, and deletion-boundary proof with:
-
-```sh
+cargo make test-sandbox-cluster-policy
 cargo make test-sandbox-service
-```
-
-The focused package test crosses strict HTTP translation, durable admission/restart, the real
-`Application` against a deterministic Kubernetes transport, exact receipt publication/retrieval,
-retention, and cleanup. The boundary script also compiles the ordinary root package from a temporary
-copy after deleting `kapsel-sandbox`. This lane uses no Docker, Kubernetes cluster, network,
-website, or deployment provider; KAP-0070 owns fresh serialized live evidence.
-
-Run the KAP-0055 provider-neutral private runner handoff proof with:
-
-```sh
 cargo make test-sandbox-runner-handoff
-```
-
-Run the KAP-0070 Slice 2 fixed native-host boundary and retained process-loss proof without a
-container with:
-
-```sh
 cargo make test-sandbox-runner-host
-```
-
-On a Docker-capable host with the already-pulled pinned builder image and Cargo registry cache, run
-the separately named network-disabled x86-64 Debian/Linux numeric-identity gate with:
-
-```sh
-cargo make test-sandbox-runner-host-linux
-```
-
-The Linux lane remains digest-pinned and network-disabled, and uses an explicitly reviewed
-privileged container with a private cgroup namespace solely to provide writable cgroup-v2
-delegation. It runs the finite hostile-parent matrix against the same production C normalization
-logic, rejects helper/runner file capabilities, and requires final securebits and all five
-capability sets zero, `no_new_privs=1`, numeric real/effective/saved UID/GID 65532, empty groups,
-fixed descriptors, parent-death fencing, and cgroup process-tree fencing before authority reaches
-`Application`. It rejects drift from the pinned C-source digest and Debian compiler identity, then
-records C-source/helper/runner SHA-256 identities as private Slice 6 input evidence. It neither
-assembles the Slice 6 bundle nor proves seccomp, Landlock, host-filesystem concealment, or native
-syscall/path confinement. The lane never skips a missing prerequisite. It is separate because the
-ordinary development host may be macOS; the containerless deterministic lane remains mandatory. On
-non-Linux hosts that lane crosses runner loss before invocation, after the durable invocation
-acknowledgment, and after `apply_started`, then separately preserves one terminal report and its
-exact receipt bytes across a service reopen without claiming host replacement. The mandatory
-Linux/root lane alone executes the terminal-report kill, system restart, and runner replacement
-against KAP-0038's frozen receipt path.
-
-The retained handoff proof crosses the exact request/grant match check, strict binary codec,
-per-lease credential fencing, durable invocation and terminal-report transactions, separate native
-runner and system processes, atomically published per-lease input directories, empty gateway-volume
-initialization, receipt-free and finalized deterministic Kubernetes fixtures, exact receipt
-publication/replay including public expiry, and the runner CLI state-path boundary. It binds only
-loopback fixtures and proves no private-cluster reachability, network isolation, provider identity,
-storage fencing, key custody, or public endpoint.
-
-On a root-controlled Linux host, run the separate container-free distinct fixed-staging identity
-lane with:
-
-```sh
-cargo make test-sandbox-fixed-staging-identities-linux
-```
-
-This lane creates synthetic controller `65530:65530` and staging `65531:65531` identities inside a
-network namespace, gives only the installer process `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, and
-`CAP_FOWNER`, activates one production generation, and reads it from a separate capability-free
-controller process. A no-capability installer must fail. The lane emits source and launcher hashes
-but no authority bytes. It requires Linux root and `unshare`; it uses no Docker, Kubernetes,
-provider, credential, DNS, endpoint, or network traffic. It proves only the production ownership and
-role split, not managed custody or runner syscall/path confinement.
-
-The accepted Slice 5 contract reserves `test-sandbox-backup-restore` as its focused offline gate; it
-is not a runnable command until the implementation packet adds the task and the closed backup/
-restore module together. The gate must use the fixed 256-MiB generation and inventory limits, all
-capture/restore crash seams, thirteen lifecycle snapshots, secret-byte exclusions, exact authority
-reference lifetime, and restore-before-serve denials from the deployment owner. A separate Linux
-root lane must prove backup identity `65529:65529`, capture-only `CAP_DAC_READ_SEARCH`, and
-restore-only `CAP_CHOWN`/`CAP_DAC_OVERRIDE`/`CAP_FOWNER` inside a network namespace. Neither lane
-uses Docker, a provider, credentials, cluster, endpoint, DNS, or traffic, and neither claims
-cross-host or provider-volume fencing.
-
-Run the root-package deletion and one-way dependency proof directly when needed:
-
-```sh
 cargo make test-sandbox-package-boundary
 ```
 
-It compiles the ordinary root package after removing `kapsel-sandbox` from a temporary copy and
-checks that the sandbox depends one way on `kapsel`. `test-sandbox-service` already includes this
-lane.
+On the exact supported Linux environments, the existing focused privilege lanes remain:
 
-The superseded KAP-0053 Gate 1/Gate 2, controller/stager, provider-fixture, and image-candidate
-tasks and working-tree artifacts are deleted. Gate 1 image or bundle commands become guidance only
-after implementation and review.
+```sh
+cargo make test-sandbox-runner-host-linux
+cargo make test-sandbox-fixed-staging-identities-linux
+```
+
+These prove only their named offline descriptor, identity, cgroup, authority-staging, conditional
+mutation, cleanup, handoff, and package assertions. They use no provider account and do not prove
+live runtime, CNI, metadata, network, abuse control, teardown, endpoint, DNS, spend, or traffic.
+
+KAP-0072 removes the reserved `test-sandbox-backup-restore` lane and every planned backup/restore
+command. Checkpoint `bde1e3b` is historical evidence, not a runnable deployment gate.
+
+The next implementation must first delete backup-only code while keeping the retained commands
+green. Later contract-first work may add a deterministic catastrophe lane only after its Make task
+exists; it must prove no manufactured outcome and clean-start stop, not restoration. A separately
+selected abuse-control lane must exercise real pre-admission source bounds. Private-live teardown,
+zero-inventory, clean recreation twice, and independent traffic cutoff remain separately authorized
+KAP-0070 gates and must not appear in this guide before runnable commands exist.
 
 ## Toolchain
 

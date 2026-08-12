@@ -136,12 +136,14 @@ projection and unchanged receipt.
 
 An attacker can flood admission, vary idempotency keys, replay requests, guess run identifiers, hold
 capacity, or exhaust cluster, subnet, store, signer, receipt, telemetry, and cleanup resources. The
-optional edge provides only additive coarse rejection. The native admission transaction enforces the
-global stop, per-source bound, queue bound, active reservation, idempotency, and body bounds before
-committing a run. Saturation creates no run and retry hints disclose no capacity count. Malformed
-and absent run identities receive the same `run_not_found`; expired tombstones reveal no scenario or
-outcome. These controls bound owned work but do not guarantee availability or fair use under a
-distributed attack.
+required same-origin edge enforces the authoritative per-source bound before forwarding through a
+private authenticated channel; visitor-supplied forwarding and source headers are stripped. The
+native listener is not publicly reachable and enforces global connection/body bounds, global stop,
+queue bound, active reservation, and idempotency before committing a run. The edge stores no source
+identity in sandbox run state or public output. Saturation creates no run and retry hints disclose
+no capacity count. Malformed and absent run identities receive the same `run_not_found`; expired
+tombstones reveal no scenario or outcome. These controls bound owned work but do not guarantee
+availability or fair use under a distributed attack.
 
 Idempotency keys are caller-generated 128-bit correlation and bearer replay locators, not browser or
 authority identities. The service stores only their required private mapping and a keyed digest in
@@ -164,9 +166,9 @@ Run locators, whole-second admission/event times, scenario, synthetic operation 
 and classifier-complete receipt can be correlated across requests or copied outside the service. The
 fixed scenarios use no visitor, customer, or production data. Public receipt identifiers are
 server-chosen synthetic evidence. Private host runner identities, leases, journal/outbox paths,
-controller-volume and staged-input paths, backup generations, cluster/provider identifiers,
-credentials, raw journal rows, uncontrolled logs, and fault controls are excluded. Bounds and
-retention reduce exposure but do not establish anonymity or unlinkability.
+controller-volume and staged-input paths, cluster/provider identifiers, credentials, raw journal
+rows, uncontrolled logs, and fault controls are excluded. Bounds and retention reduce exposure but
+do not establish anonymity or unlinkability.
 
 ### Compromised workload and namespace escape
 
@@ -191,8 +193,8 @@ and services reachable from its OS identity. It is more powerful than the target
 selected route uses one fresh least-privilege OS identity and directory per run, fixed read-only
 descriptor-relative inputs, exact owner/mode/no-follow and same-inode checks, stale
 process/descriptor/lease denial, and separate cleanup authority. The runner must be denied
-controller SQLite, immutable receipts, backups, staged sources, prior journals, the canary, and
-unrelated cluster resources.
+controller SQLite, immutable receipts, staged sources, prior journals, the canary, and unrelated
+cluster resources.
 
 The accepted Slice 2 boundary pins roots before dispatch, opens only fixed names no-follow, checks
 exact controller owner/group and `0400` mode plus same-inode reopen, and transfers the individual
@@ -229,73 +231,34 @@ frozen facts, revokes the runner generation, rotates affected inputs through sep
 and reconciles/cleans the admitted run without rewriting its receiver result. No receipt claims
 independence from the runner or signing authority.
 
-Journal loss, rollback, cloning, or concurrent execution can omit facts or create unsafe recovery. A
-backup restore must fence the original controller and runner, restore one writer, one active
-capacity reservation, and one runnable journal, reapply expiry before serve, then reconcile the same
-operation. Receiver-result journals remain through verified report/receipt handoff; `not_attempted`
-remains receipt-free; pre-Application `service_failed` needs no gateway journal. Admission state
-cannot substitute for missing KAP-0038 facts.
+Journal loss, rollback, cloning, or concurrent execution can omit facts or create unsafe recovery.
+Runner-process loss with the same journal remains a KAP-0038 seam; controller-process restart may
+resume only from the same present, validated state. Controller-host or storage loss is catastrophic
+sandbox unavailability. Independent exposure authority withdraws traffic; no old run gains a result,
+receipt, cleanup absence, or capacity release. A new controller cannot initialize against a possibly
+surviving old cluster. The operator must revoke reachable authority, tear down the complete fixed
+provider inventory, prove cluster/volume/process/cgroup/state/endpoint/DNS absence independently of
+the lost database, create a fresh stopped composition, validate readiness, and explicitly reopen.
+Failure to prove absence retires the hosted proof.
 
 ### Controller-host, key, storage, and receipt failure
 
 The controller host concentrates admission, projection, receipt, scheduler, cleanup, cluster
 credentials, and staged-input coordination. Host compromise can alter public state, suppress
-cleanup, substitute runner inputs, or deny all service; one writer reduces races but not this blast
-radius. Compromise of authorization- or receipt-signing material permits forged grants or receipts;
-store compromise can alter projection; loss or rollback can omit runs or resurrect expired state.
+cleanup, substitute runner inputs, or deny all service. Host/storage loss can erase admitted
+projections and receipts before nominal expiry; Kapsel reconstructs none of them and makes no
+availability or disaster-recovery claim.
 
 Authorization, receipt, tombstone, public trust, runner Kubernetes, cleanup Kubernetes, and handoff
-inputs have separate fixed owners inside one closed staged generation. Path/root substitution,
-linked or replaced files, key/token exchange, permissive ownership, partial activation, early old-
-generation deletion, key export, backup/diagnostic leakage, rotation gaps, and outage are explicit
-threats. Slice 4 uses exact schemas and bounds, descriptor-relative no-follow/same-inode checks,
-atomic complete-generation and per-lease activation, a dispatch-time durable generation/manifest
-pin, current plus one retained generation, and redacted failures. `RunnerHost` receives an opened
-lease-directory descriptor and validates replacement input before fencing old work. Durable
-retirement precedes dispatch deletion. Noncurrent collection requires a SQLite-locked complete
-reference proof and a restart-recoverable collection record; malformed or orphan ownership blocks it
-and current is never collectible. Missing authority holds dependent transitions and cannot
-manufacture a lifecycle or KAP-0038 outcome. Legacy state without a provable pin is rejected unless
-the service is stopped and drained; it is never rebound to current. Gate 1/3 must prove restart,
-denial, collection, and non-disclosure. Receipt storage accepts only frozen bytes and refuses
-replacement. An outage may block admission or publication but cannot change receiver classification.
-Receipt retrieval does not appoint trust; separately returned retained trust uses the run's pin.
+inputs retain separate fixed owners and exact staged-generation validation while state is intact.
+Missing or malformed authority holds dependent transitions and cannot manufacture lifecycle or
+receiver facts. The narrowed route deletes backup generations, backup references, restore markers,
+backup identities, and replacement-host commands. Possession of old source or archived checkpoint
+`bde1e3b` is not a deployable recovery route.
 
-Slice 5 freezes one bounded quiesced-offline unit covering admission state, immutable receipts, at
-most one semantic active journal/outbox, capacity, leases, ownership inventory, deployment
-compatibility, and required public trust. It references exact staged authority but never copies
-private generations or credentials. A stale or parallel restore can create a second writer/journal/
-reservation, make an otherwise valid backup unrestorable after authority collection, resurrect
-deleted visitor state, or duplicate cleanup. Service-owned pending and published backup references
-therefore block collection until backup bytes are durably removed. Local process/cgroup fencing, one
-runnable journal, forced stop, restore-incomplete denial, deletion/reconciliation before readiness,
-and exact identity/digest/compatibility validation are mandatory. Missing authority fails closed and
-never rebinds to `current`.
-
-The separately owned controller and backup roots require one fixed privileged command bootstrap; a
-capability-free controller cannot traverse the backup-owned `0700` root. That bootstrap may only pin
-the fixed roots and acquire the universal lock sequence before creating the closed controller/helper
-phases. It cannot inspect content, accept caller-selected descriptors, remain as a reusable broker,
-or survive with bootstrap authority after phase release. The controller phase has no capabilities
-and receives no backup-root or generation descriptor; the backup helper receives only its
-operation-specific closed set. Fresh restore construction cannot mutate the destination until the
-helper's sealed backup preflight is checked against compile-time compatibility, exact staged
-authority, local fencing, one trusted clock sample, and destination absence, then approved through
-the fixed digest-bound reply. Recovery may remove an exactly validated incomplete private prefix
-only after a cleanup-only approval binds its inventory digest, then must repeat the full preflight
-and obtain a separate construction approval. Exact complete-temporary and installed recovery instead
-validate the frozen incomplete record and matching parent inventory, receive a digest-bound approval
-without resampling time, and perform only their bounded publication or synchronization branch. A
-substituted launcher, widened initial set, leaked descriptor, reordered lock, cross-phase
-descriptor, surviving privileged process, malformed or replayed preflight/approval, or alternate
-command route fails before content mutation. This one-shot bootstrap narrows but does not remove the
-controller host's concentrated compromise boundary.
-
-A backup artifact cannot prove that another host, volume, or clone is absent. Gate 1 proves only the
-fixed local lock, process/cgroup absence, exact absent/private-temporary/installed destination
-inventory, authority continuity, and restore-before-serve state machine. Provider volume detachment
-and destruction of the original host remain mandatory Gate 3 evidence. Backup is not an external
-witness, complete history, generic archive, online snapshot, or anti-cloning mechanism.
+Independent endpoint cutoff and automatic exposure expiry must remain usable when controller state
+is absent or suspect. Cutoff does not cancel, classify, revoke all already held authority, or prove
+cleanup. Complete provider-level absence—not a name or label scan—precedes clean recreation.
 
 ### Cleanup failure and unsafe deletion
 
@@ -318,10 +281,11 @@ dependencies or registry/control-plane compromise.
 ### Global stop misuse or failure
 
 An attacker or operator mistake can activate the global stop, prevent activation, or scale away the
-components needed for recovery. Stop state is durable and fail-closed for new admission while
-retained reads, recovery, receipt retrieval, and cleanup remain available. Its control path is
-separately authenticated and not public. The stop limits new work; it cannot undo an admitted run,
-revoke already held cluster authority, or prove cleanup.
+components needed for recovery. Stop state is durable and fail-closed for new admission while intact
+validated state keeps retained reads, recovery, receipt retrieval, retention, and cleanup available.
+Its control path is separately authenticated and not public. Host/storage loss instead uses
+independent endpoint withdrawal and clean-start stop. Neither mechanism can undo an admitted run,
+revoke all already held cluster authority, classify an outcome, or prove cleanup.
 
 ## Non-claims
 
@@ -344,8 +308,8 @@ The experiment does not establish:
   classification.
 - External trust supplied to offline inspection is reviewed separately from receipt bytes.
 - The public sandbox cluster contains only synthetic non-consequential targets plus an operator
-  canary; the operator protects the native controller host/volume, backups, staged inputs, and fixed
-  controller, runner, cleanup, target, backup, key, and operator authorities.
+  canary; the operator protects the native controller host/volume, staged inputs, and fixed
+  controller, runner, cleanup, target, key, exposure, and operator authorities.
 - The host OS identities/path controls and the selected Kubernetes runtime, network implementation,
   RBAC/admission policy, storage, and cleanup behavior enforce the exact serialized configuration
   only after KAP-0070 proves them. Contract text and historical KAP-0053 Pod/PVC, workload-identity,

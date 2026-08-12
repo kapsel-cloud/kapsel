@@ -94,24 +94,20 @@ locators, times, scenarios, and copied receipts can correlate activity.
   admission. A further 24-hour private tombstone retains exactly service-keyed run/idempotency
   digests and expiry needed to return `run_expired` and prevent key reuse. It contains no request or
   scenario digest. Public and idempotency data is then deleted.
-- Backups cannot silently extend these periods. The sole crash-consistent unit may contain only
-  admission/projection/stop state, immutable receipts and pending publication, the active
-  journal/outbox when present, capacity/lease state, complete ownership inventory, compatible
-  deployment metadata, and required public trust. It is owner-private and access-controlled; no
-  diagnostic, provider log, evidence archive, or second backup may copy its request, locator,
-  receipt, journal, key, or trust-decision payload. Private signing keys and Kubernetes credentials
-  remain in separately owned continuity sources. Restore fences the original writer, permits one
-  runnable journal, and reapplies expiry/tombstone deletion before serving. Cleanup ownership may
-  outlive public expiry only until exact owned-resource absence is recorded.
+- The active sandbox creates no continuity backup of admission, projection, receipt, journal, or
+  runner state. Controller-host or storage loss may truncate the public retention window. Recovery
+  withdraws traffic and deletes the dedicated synthetic cluster, provider resources, controller
+  state, and visitor-linked data rather than copying or restoring them. Logical absence and provider
+  deletion lag remain separate; this is not a physical-erasure claim. Cleanup ownership may outlive
+  public expiry only while intact state remains available to prove exact owned-resource absence.
 - Raw gateway journals and outboxes, receipt-storage object keys, internal ownership labels, host
   runner OS/lease identities, prior-run paths, controller volume/database/receipt paths, staged
-  key/trust and Kubernetes-input paths, backup/snapshot identities, canary identity, credentials,
-  private signing material, trust decisions, fault controls, generic logs, and private cluster or
-  provider identifiers are never public protocol fields. The accepted Slice 2 boundary also removes
-  private composition paths and payloads from runner arguments, environment, stdout, stderr, and
-  bootstrap metadata; it transfers each fixed read-only input descriptor through `SCM_RIGHTS`. Its
-  complete offline Linux gate and fresh review passed; cluster and live disclosure enforcement
-  remain unproved.
+  key/trust and Kubernetes-input paths, canary identity, credentials, private signing material,
+  trust decisions, fault controls, generic logs, and private cluster or provider identifiers are
+  never public protocol fields. The accepted Slice 2 boundary also removes private composition paths
+  and payloads from runner arguments, environment, stdout, stderr, and bootstrap metadata; it
+  transfers each fixed read-only input descriptor through `SCM_RIGHTS`. Its complete offline Linux
+  gate and fresh review passed; cluster and live disclosure enforcement remain unproved.
 - Public fixture times and identifiers are synthetic. Public technical evidence reports only
   aggregate approved facts and exact deployed revisions, never visitor-level traces.
 

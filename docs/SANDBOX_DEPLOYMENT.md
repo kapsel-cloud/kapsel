@@ -1,13 +1,13 @@
 # Public sandbox deployment contract
 
-Status: active KAP-0070 serialized-deployment contract; Contract Correction (Gate 0), Gate 1 Slices
-1–4, and the focused Slice 2 runner-hardening follow-up are accepted. Gate 1 Slice 5's original
-docs-only contract correction and its focused bootstrap/lock choreography correction are accepted
-and authorize only offline implementation. No provider, credential, resource, spend, image push,
-endpoint, DNS, private live command, or public traffic is authorized.
+Status: active narrowed KAP-0070 serialized-deployment contract. Gate 1 Slices 1–4 and the
+runner-hardening follow-up remain accepted. KAP-0072 supersedes Slice 5 backup/restore and
+authorizes only one seven-day finite implementation attempt. No provider, credential, resource,
+spend, image push, endpoint, DNS, private live command, or public traffic is authorized.
 
-Kind: design. Authority: ownership, isolation, capacity, durability, key custody, rollback, global
-stop, and cleanup for the fixed public sandbox.
+Kind: design. Authority: ownership, isolation, capacity, durability while controller state remains
+validated, catastrophic fail-closed teardown, clean recreation, key custody, global stop, and
+cleanup for the fixed public sandbox.
 
 Owns: The one permitted native-controller-host composition and the controls that later KAP-0070
 gates must prove.
@@ -21,8 +21,8 @@ lifecycle/result/receipt meaning.
 The only active deployment route is:
 
 ```text
-same-origin edge or reverse proxy
-  -> one native controller host
+required same-origin edge for public exposure
+  -> private native controller host
        -> one owner-private durable controller volume and one writer
             -> admission SQLite and immutable receipt directory
             -> serial scheduler, durable global stop, retention, and cleanup roles
@@ -36,9 +36,10 @@ same-origin edge or reverse proxy
                       -> one policy-complete namespace and target at a time
 ```
 
-The edge is optional and holds no durable truth. The controller host is one bounded deployment unit,
-not a resident product service or generic control plane. The cluster contains no admission database,
-receipt store, signing store, controller workload, customer workload, or production credential.
+The edge is required for public exposure and holds no durable run truth. The controller host is one
+bounded deployment unit, not a resident product service or generic control plane. The cluster
+contains no admission database, receipt store, signing store, controller workload, customer
+workload, or production credential.
 
 KAP-0069 superseded the Kubernetes-hosted remote controller, split controller-state protocols,
 controller-state TLS authority, projected controller credentials, `TokenReview`, Kubernetes key
@@ -55,8 +56,9 @@ and fresh reviews passed. Accepted Slice 3 compiles the deterministic provider-n
 policy, conditional-mutation, fixed-authority bounded cleanup, atomic runner retirement, and fail-
 closed static policy composition. Accepted Slice 4 adds the closed fixed-authority staging,
 descriptor-bound dispatch, durable exact pins, retained trust, cleanup composition, and
-reference-safe collection boundary. Complete backup/restore and live isolation remain planned
-KAP-0070 work; deterministic records do not establish live Kubernetes enforcement.
+reference-safe collection boundary. KAP-0072 archives the later clean backup/restore checkpoint at
+`bde1e3b` and supersedes that implementation route. Live isolation, catastrophic teardown, clean
+recreation, and public enforcement remain unproved; deterministic records do not establish them.
 
 ## Authorization gates
 
@@ -68,9 +70,11 @@ KAP-0070 uses four separately accepted evidence stages after this contract corre
    provider/runtime/version/region/cost facts. Only separate maintainer approval of that fixture may
    authorize the bounded private experiment.
 3. **Gate 3, private live acceptance:** no public application endpoint; prove the exact host,
-   cluster, recovery, isolation, cost, teardown, and recreation assertions.
+   cluster, intentional runner recovery, isolation, cost, catastrophic teardown, and clean
+   recreation assertions.
 4. **Gate 4, bounded public exposure:** separately approve one accepted revision, endpoint, DNS,
-   exposure interval, spend ceiling, stop, rollback, and cleanup owner before traffic.
+   exposure interval, spend ceiling, independent traffic cutoff, stop, teardown, and cleanup owner
+   before traffic.
 
 Passing a gate never authorizes its successor. Gate 0 performs no provider research or command.
 
@@ -78,26 +82,25 @@ Passing a gate never authorizes its successor. Gate 0 performs no provider resea
 
 | Component or authority        | Must own                                                                                               | Must not own or expose                                                              |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Optional same-origin edge     | TLS termination and additive coarse rate/body rejection                                                | Admission identity, idempotency, result, receipt, capacity, or cleanup truth        |
-| Native controller/API         | Exact HTTP translation, durable admission and projection, local role dispatch                          | KAP-0038 classification, arbitrary Kubernetes input, public fault control           |
+| Required same-origin edge     | TLS, authoritative per-source abuse rejection, body bounds, traffic cutoff, automatic exposure expiry  | Admission identity, idempotency, result, receipt, capacity, or cleanup truth        |
+| Native controller/API         | Exact HTTP translation, global bounds, durable admission/projection, local role dispatch               | Source identity, KAP-0038 classification, arbitrary Kubernetes input, fault control |
 | Controller volume/writer      | Admission SQLite, immutable receipts, capacity, stop, leases, ownership inventory, deployment metadata | A generic state API, shared runner write access, key payloads in SQLite or receipts |
 | Serial scheduler role         | FIFO bounded queue, one-active reservation, fresh lease, fail-closed dispatch and restart recovery     | Receiver meaning, unbounded retry, caller lifecycle input                           |
 | Per-run runner identity       | Fixed `Application` execute/reconcile, its journal/outbox, authenticated handoff                       | Controller volume, other/prior journals, cleanup authority, caller-selected inputs  |
 | Runner Kubernetes credential  | Read the fixed target facts and submit only the exact conditional mutation                             | Cleanup, namespace creation, arbitrary patch, another object or namespace           |
 | Cleanup Kubernetes credential | Observe/delete only the complete recorded UID/owner inventory and prove absence                        | Mutation, name-only deletion, receiver-result changes                               |
 | Target identity               | Run the fixed synthetic image under the policy-complete boundary                                       | Kubernetes API, host, key, controller, runner, receipt, or cleanup authority        |
-| Backup identity               | Read the fixed crash-consistent unit and restore only while fenced                                     | Serving, mutation, admission, key export, a second runnable copy                    |
 | Key-staging identity          | Install fixed authorization, receipt, tombstone, and public-trust inputs                               | Operation, scheduling, cleanup, public disclosure, generic secret access            |
-| Operator identity             | Canary ownership, stop/rollback/teardown approval and bounded evidence access                          | Visitor operation input or implicit day-to-day runner authority                     |
+| Operator identity             | Canary ownership, stop, traffic cutoff, teardown, absence, recreation, and explicit reopen approval    | Visitor operation input or implicit day-to-day runner authority                     |
 | Dedicated cluster             | One synthetic target namespace plus operator canary and required policy                                | Customer/production work, controller state, signing/store workloads                 |
 
-Controller, runner, cleanup, target, backup, key-staging, and operator authorities are fixed and
+Controller, runner, cleanup, target, key-staging, exposure, and operator authorities are fixed and
 separate. Scheduler, retention, and cleanup call concrete local `Service` transitions; they do not
 open a remote state endpoint. One controller OS authority owns the single durable controller-state
 and immutable-receipt writer boundary. The shipped admission, handoff, controller, retention, and
 cleanup roles are a finite set of local processes coordinated only through that SQLite/receipt
-boundary; backup capture quiesces them together and does not add a coordinator or daemon. A
-compromised controller host remains a concentrated security and availability risk.
+boundary. No backup, restore, replacement-host, coordinator, or daemon role is part of the active
+route. A compromised controller host remains a concentrated security and availability risk.
 
 ## Durable identity and serial capacity
 
@@ -107,11 +110,13 @@ event, queue reservation, frozen policy identity, cleanup ownership, and maximum
 admission database is never the KAP-0038 journal and cannot reconstruct or reinterpret gateway
 facts.
 
-The public queue maximum remains 32. The active maximum is exactly one. Admission also retains the
-public API's per-source rate, 512-byte body, 64-event, 64-KiB response, 128-connection, and
-64-in-flight transport bounds. The KAP-0055 handoff separately retains 16 connections, eight
-handlers, a five-second absolute receive deadline, and a 30-second response deadline. These bounds
-are independent: transport availability neither reserves nor releases execution capacity.
+The public queue maximum remains 32. The active maximum is exactly one. The required edge owns the
+public API's per-source rate bound and rejects before forwarding; the native listener is reachable
+only through that private edge channel during exposure and owns the 512-byte body, 64-event, 64-KiB
+response, 128-connection, and 64-in-flight global transport bounds. The KAP-0055 handoff separately
+retains 16 connections, eight handlers, a five-second absolute receive deadline, and a 30-second
+response deadline. These bounds are independent: transport availability neither reserves nor
+releases execution capacity.
 
 One active reservation is held from dispatch until all applicable facts are durable:
 
@@ -147,8 +152,8 @@ closed; budget alerts are observations, not admission controls.
 Every dispatch generation creates a fresh run directory owned by a distinct least-privilege OS
 identity. The directory contains only one KAP-0038 gateway journal, its lock/rollback files, and the
 private receipt outbox. The runner has no path, descriptor, mount, group access, or environment
-reference to controller SQLite, system receipts, backup snapshots, other or prior run directories,
-or unrestricted key sources.
+reference to controller SQLite, system receipts, other or prior run directories, or unrestricted key
+sources.
 
 The controller opens each fixed request, grant, authorization trust, receipt-signing input,
 Kubernetes input, and handoff input descriptor-relatively beneath its expected owner-private
@@ -474,9 +479,9 @@ insufficient receiver facts remain `UNKNOWN`.
 
 The target carries no Kubernetes or host authority. The runner and the most compromised target
 posture must be denied metadata, other namespaces, the operator canary, unrelated objects, cleanup
-actions, controller host/state/receipts, key sources, volumes, backup state, prior journals, and
-arbitrary network destinations. Serialization replaces simultaneous visitor-run evidence with these
-canary and prior-run temporal checks. It does not claim hard tenant isolation.
+actions, controller host/state/receipts, key sources, volumes, prior journals, and arbitrary network
+destinations. Serialization replaces simultaneous visitor-run evidence with these canary and
+prior-run temporal checks. It does not claim hard tenant isolation.
 
 ## Host-owned key and trust staging
 
@@ -600,21 +605,28 @@ though runs are serialized.
 
 ## Global stop and local roles
 
-One owner-private controller-state row is the durable global stop. Its authenticated operator path
-is fixed and non-public. Activation atomically blocks new admission; restart or ambiguity fails
-closed. Stop does not revoke admitted authority or block existing projection reads, operation
-recovery, exact receipt retrieval, retention deletion, or UID-safe cleanup. Host-process or host
-replacement failure must preserve this behavior through fenced restore; a stopped or absent process
-is not itself durable stop evidence.
+One owner-private controller-state row is the durable global stop while that state remains present
+and validated. Its authenticated operator path is fixed and non-public. Activation atomically blocks
+new admission; controller-process restart or ambiguity with intact state fails closed. Stop does not
+revoke admitted authority or block existing projection reads, operation recovery, exact receipt
+retrieval, retention deletion, or UID-safe cleanup.
+
+Controller-host or controller-storage loss cannot preserve that row or those reads. Independently
+owned exposure authority must withdraw traffic and keep it withdrawn without consulting controller
+state. Every clean initialization starts stopped. Only complete teardown and provider-level absence,
+a fresh fixed composition, full readiness validation, and an explicit authenticated operator action
+may reopen admission. A stopped or absent process, database, volume, or cluster is never operation,
+cleanup, or receiver evidence.
 
 Scheduler, retention, receipt publication, and cleanup are explicit local roles over concrete
 bounded `Service` transitions. Gate 1 Slice 1 implements a scheduler step that recovers active work
 before FIFO dispatch, the existing periodic retention process through its concrete role, and cleanup
 selection/start/failure/escalation/completion over the exact append-only inventory. They cannot
-execute arbitrary SQL or widen lifecycle/result vocabulary. The runner launch, Kubernetes deletion
-observer, and restart-before-serve composition remain later slices; eventual startup must run
-fencing, restore validation, expiry/tombstone deletion, pending receipt convergence, active journal
-reconciliation, stale-process denial, ownership scan, and cleanup before admission readiness.
+execute arbitrary SQL or widen lifecycle/result vocabulary. The retained composition must run
+fencing, expiry/tombstone deletion, pending receipt convergence, active-journal reconciliation,
+stale-process denial, ownership scan, and cleanup before ordinary admission readiness when the same
+state is intact. Catastrophic host/storage loss uses teardown and clean recreation instead; it never
+reconstructs those facts.
 
 ## UID- and owner-safe cleanup
 
@@ -669,565 +681,81 @@ failure occurred before creating any Kubernetes object, before recording a Names
 release cleanup ownership or capacity. The operator canary, baseline, and unrelated resources are
 never cleanup candidates.
 
-## Crash-consistent backup, restore, and rollback
+## Host or storage loss and clean recreation
 
-Gate 1 Slice 5 selects one **quiesced offline** backup path. It does not select online SQLite
-snapshotting, a generic archive/storage interface, a second state service, or a coordinator. One
-private compile-time-composed backup/restore module will own two shipped operations: publish one
-fixed backup generation and restore the selected `current` generation. The exact command grammars
-are:
+Intentional runner-process loss and controller-process restart with the same validated controller
+state are retained recovery seams. The runner reuses one operation identity, fences stale authority,
+and reconciles after `apply_started` without a blind second mutation. Controller-host loss,
+controller-storage loss, rollback, or identity ambiguity is a different failure domain and has no
+visitor-continuity promise.
 
-```text
-kapsel-sandbox backup --state-root ABS --backup-root ABS --authority-root ABS \
-  --controller-uid U32 --controller-gid U32 --staging-uid U32 --staging-gid U32 \
-  --runner-uid U32 --runner-gid U32 --backup-uid U32 --backup-gid U32
-kapsel-sandbox restore --state-root ABS --backup-root ABS --authority-root ABS \
-  --controller-uid U32 --controller-gid U32 --staging-uid U32 --staging-gid U32 \
-  --runner-uid U32 --runner-gid U32 --backup-uid U32 --backup-gid U32
-```
+On catastrophic host or storage loss:
 
-At the Slice 5 boundary, existing `init`, `serve`, `handoff-serve`, `controller`, `retention`,
-`stop`, and `clear-stop` retain their command names but require one absolute `--state-root` and
-derive `sandbox.sqlite3`, `receipts/`, `runner/`, locks, deployment, and readiness from it. They
-reject `--database`, `--receipts`, `--runner-generation-root`, or any mismatch/alternate component
-path; there is no dual-grammar compatibility window. `stage-authority` and the internal
-runner-process mode remain separate and cannot open state or backup roots. The stopped migration is
-reached only through `init --state-root` when the canonical siblings already exist and all migration
-preconditions hold.
+1. an independently held same-origin edge or provider traffic control withdraws the endpoint and its
+   automatic exposure expiry prevents indefinite unattended exposure;
+2. no new admission or dispatch occurs, and no old run receives `service_failed`, `not_attempted`,
+   `SUCCEEDED`, `FAILED`, `UNKNOWN`, a receipt, cleanup absence, or capacity release;
+3. fixed authority is revoked where still reachable, but revocation is not treated as cleanup;
+4. the operator tears down the complete dedicated synthetic cluster and every fixed provider
+   resource using an inventory and query path that do not depend on the lost controller database;
+5. exact absence of cluster, volume, process/cgroup, state root, endpoint, and DNS is proved;
+6. a fresh controller state, authority generation, and dedicated synthetic cluster are created in
+   the stopped state;
+7. the complete policy, canary, isolation, abuse-control, authority, cleanup, and readiness
+   inventory is validated; and
+8. only an explicit authenticated operator action reopens admission.
 
-Every path is absolute; production requires the numeric pairs `65530:65530`, `65531:65531`,
-`65532:65532`, and `65529:65529` respectively. No component path, generation, deletion, clock,
-compatibility value, credential, authority payload, or extra argument is accepted. The state parent
-is controller-owned `0700` and in steady state contains precreated `.kapsel-sandbox-restore.lock`,
-controller-owned `0600`, plus absent or one state root. While restore holds the exclusive parent
-lock, it alone may instead expose the fixed `.kapsel-sandbox-restore.tmp` prefix defined below. The
-existing init-only `.<state-root>.initializing` recovery remains independent of this restore
-grammar; neither operation accepts or deletes the other's temporary name, and no temporary and state
-root coexist. The state root is controller-owned `0700` and has exactly `sandbox.sqlite3` (`0600`),
-`receipts/` (`0700`, receipt files `0600`), `runner/` (`0700`), `deployment.json` (`0400`),
-`.backup.lock` (`0600`), exactly one of `restore.incomplete` or `restore.ready` (`0600`), and zero
-or one `sandbox.sqlite3-journal` (`0600`). Steady state contains no restore-record temporary. While
-restore alone holds the exclusive parent lock, one controller-owned `restore.state.tmp` regular file
-(`0600`) may coexist with the previous canonical restore record only as the closed replacement
-prefix defined below. During final readiness only, the exact canonical `restore.incomplete` and
-`restore.ready` pair defined below may coexist after the temporary rename and before
-incomplete-record removal; ordinary open rejects that pair. Every regular file has link count one;
-every object has no special bits and its named owner/group. Directory link counts are not treated as
-identity and inventory is descriptor-enumerated.
+If any old resource may survive, provider-level absence cannot be proved, or traffic cannot be
+withdrawn independently, the endpoint remains withdrawn and KAP-0070's retirement rule applies. A
+label or name scan cannot replace a lost UID/owner inventory. A new database must never initialize
+against a possibly surviving old cluster.
 
-The backup root is backup-owned `0700`. Initial state contains exactly `.backup.lock` (`0600`) and
-`generations/` (`0700`) with no `current`. Capturing state adds exactly one
-`generations/.generation-%020u.tmp`; replacement may also retain `current` and two complete
-generations. Published state requires `current` (`0400`) and one or two complete generations.
-`.current.tmp` is the only root temporary. Complete generation directories are `backup-%020u`,
-backup-owned `0500`; files are `0400` and directories `0500`. A temporary generation is `0700` while
-populated, then every descendant is synced, its mode becomes `0500`, it is synced again, and only
-then may it be renamed. Any other entry fails closed.
+The active sandbox creates no backup generation, backup-reference owner, backup identity, restore
+marker, replacement-host copy, or backup/restore command. Public runs, locators, projections, and
+receipts may disappear before their nominal expiry after catastrophic loss; the sandbox does not
+reconstruct them. A repeated idempotency key can become a new admission only after exact absence,
+clean stopped recreation, readiness, and explicit reopen. Host/storage loss and endpoint withdrawal
+never establish a KAP-0038 result or prove cleanup.
 
-Every admission, handoff, controller, retention, cleanup, receipt-publication, stop, and clear-stop
-process first takes a nonblocking shared parent restore lock, then opens the state `.backup.lock`
-descriptor-relatively before SQLite or receipts and holds its nonblocking shared `flock` for the
-process lifetime. Missing, incomplete, duplicate, malformed, or incompatible readiness refuses
-before state mutation or service. `init`, migration, and restore all take the same
-descriptor-relative nonblocking exclusive parent restore lock; only one may create or transform a
-destination. `init` requires an absent root, writes and fsyncs the initial ready record inside a
-complete temporary root, then renames and parent-fsyncs it. The one stopped-and-drained migration
-accepts only the exact pre-Slice-5 predecessor or an exact resumable crash prefix. Before its first
-source mutation it validates the complete predecessor inventory and schema, durable stop, absence of
-every active run, pending receipt publication, cleanup owner, runner generation, authority
-collection, and backup reference, exact receipt inventory, and every retained receipt/tombstone
-authority reference. It may then add or finish only the controller-owned `.backup.lock`, the exact
-empty `backup_generations` and `backup_authority_references` tables, canonical `deployment.json`,
-and initialized `restore.ready`, with the required fsyncs. It changes no pre-existing table row,
-receipt byte, runner byte, lifecycle, cleanup, result, event, or authority fact. Failure before
-publication may leave only an exact resumable prefix of those additions; retry validates that prefix
-and never performs generic service recovery or orphan cleanup.
-
-The universal lock order is parent restore lock, state lock when a canonical state root exists, then
-backup-root lock. A private installation temporary is not a state root; its prospective state-lock
-file is never flocked while the exclusive parent lock supplies the enclosing fence. The `backup` and
-`restore` command entry is one fixed, non-resident launcher and begins only under the exact
-bootstrap frozen below; neither command begins as the capability-free controller or backup identity.
-Before any identity reduction it validates the fixed absolute roots and numeric identities, opens
-the roots descriptor-relatively, and acquires the required locks in universal order. This initial
-phase may use its bootstrap DAC authority only to cross the separately owned controller and backup
-roots. For installed recovery only, it may open the canonical destination root and its state-lock
-file solely to acquire that required lock; it opens no destination database, receipt, runner,
-deployment, restore record, or other component. It opens no SQLite handle, staged authority, or
-backup generation and performs no content mutation. The parent-lock and optional state-lock file
-descriptions transfer only to the capability-free controller phase; the helper receives no state-
-lock descriptor. After lock and root pinning it creates only the fixed controller phase and the
-selected fixed helper phase, closes every unassigned descriptor, and relinquishes all bootstrap
-authority before either phase may inspect or copy content. There is no request loop, reusable
-privileged process, daemon, generic descriptor broker, caller-selected descriptor message, or
-alternate launch route. The sole closed exception is one cleanup-recovery invocation: the same
-helper and controller phases perform exactly two ordered one-shot exchanges, cleanup-only then fresh
-construction, and reject a third exchange or any other branch sequence.
-
-For `backup`, the launcher holds the parent lock shared, state lock exclusive, and backup-root lock
-exclusive before phase separation and all three remain held through recovery and P1/P2/P3. The
-capability-free controller phase runs as controller `65530:65530`; it receives only the pinned
-controller state, authority root, and held lock descriptors required by the closed composition, not
-the backup-root or generation descriptors. It opens `Service`, proves every other fixed role and
-SQLite handle absent, derives the exact authority set, commits the pending backup-reference
-transaction, and reads only each reference's validated public receipt trust. It places each
-non-secret trust document in a sealed anonymous descriptor and closes SQLite and every
-staged-authority descriptor before sending the one fixed indexed source/trust descriptor message
-directly to the already reduced backup helper. The helper receives only the source database/journal,
-receipt directory, semantic runner unit, deployment record, trust descriptors, backup root, and held
-lock descriptors. It runs as backup `65529:65529` with only `CAP_DAC_READ_SEARCH`
-effective/permitted/bounding and empty inheritable and ambient sets. No private staged descriptor
-crosses this boundary.
-
-Both helpers and the capability-free controller phase use one fixed reviewed launcher source. Its
-only initial bootstrap is
-`E=P=B={CAP_CHOWN,CAP_DAC_OVERRIDE,CAP_DAC_READ_SEARCH,CAP_FOWNER,CAP_SETGID,CAP_SETUID,CAP_SETPCAP}`
-and `I=A={}` under real/effective/saved root. It rejects file capabilities, supplementary groups,
-unexpected or locked securebits, or any other initial set. For each fixed phase it sets the required
-real/effective/saved UID/GID, selects exactly that phase's closed final capability set, clears every
-other bounding bit plus securebits, inheritable, and ambient sets, sets `no_new_privs`, and verifies
-the final IDs and all five sets before releasing descriptors. The capability-free controller phase
-has all five capability sets empty. The Linux lane pins source/compiler/launcher hashes and every
-rejection, proves the phase-specific descriptor inventories and direct fixed message, and proves no
-bootstrap-authority process survives phase release.
-
-Each public trust descriptor is `memfd_create(MFD_CLOEXEC|MFD_ALLOW_SEALING)`, written once,
-fsynced, rewound, and sealed with `F_SEAL_WRITE|F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL`. Descriptors
-follow the fixed source descriptors in ascending authority generation; the closed controller message
-binds each FD index to generation, manifest digest, key ID, byte length, and digest. The child
-verifies seals, size, digest, and exact trust semantics before copy. Trust creation or handoff
-failure leaves one recoverable pending row and no selectable generation. A retry under the same
-locks recreates the same trust set and generation; it may remove that pending row only after proving
-no temporary, complete, or current backup names that generation and leaves every other Service byte
-unchanged.
-
-For `restore`, the initial launcher first takes the nonblocking exclusive parent restore lock and
-enumerates the pinned parent before phase separation. An absent destination or the sole private
-restore temporary has no canonical state-root lock to acquire, so it next takes the shared backup
-root lock. An exact installed destination requires it to open and exclusively lock the destination
-state lock before taking the shared backup-root lock. Any simultaneous, unknown, or substituted
-entry refuses. The parent restore-lock descriptor remains with the controller through destination
-readiness and final parent fsync. The shared backup-lock file description is duplicated once across
-the controller and helper before phase release; the capability-free controller retains only that
-held lock descriptor, never a backup root, generation, or component descriptor. The helper holds its
-copy through selected-generation validation and incomplete-destination construction, then closes it
-on exit; the controller's copy alone preserves the shared lock through destination readiness and
-final synchronization. Thus a conforming replacement cannot change or remove selected bytes or
-release their references. The filesystem helper receives only the pinned backup root, parent, and
-held lock descriptors. Running as backup `65529:65529` with only `CAP_CHOWN`, `CAP_DAC_OVERRIDE`,
-and `CAP_FOWNER`, it opens and completely validates `current` and the selected generation without
-mutating the destination, then sends the capability-free controller phase one sealed fixed preflight
-record binding generation, manifest digest, compatibility, capture time, the ordered authority
-identities, and either no private prefix or the exact validated incomplete-prefix inventory digest.
-The controller receives no backup-root, generation, or component descriptor. It validates the record
-against compile-time compatibility and the exact separately staged authority and proves local
-controller-role and runner/cgroup absence. An accepted incomplete private prefix requires one
-cleanup-only approval bound to its inventory digest; that approval authorizes only the closed
-removal below and contains no clock value. After removal, fresh construction uses a new preflight
-and approval, tests canonical destination absence, and samples the one trusted realtime value. Exact
-complete-temporary or installed recovery instead validates the frozen incomplete record and its
-matching parent inventory without reading the clock; complete-temporary recovery requires the
-destination name absent, while installed recovery requires that exact name and root. Only if the
-applicable branch passes does the controller return one fixed approval bound to the preflight digest
-and its cleanup-only, sampled-time, or frozen-time branch. The helper revalidates its pinned backup
-and lock descriptors after approval, then performs only the approved branch: removes the exact
-incomplete prefix, constructs a new stopped incomplete destination, finishes an exact complete
-temporary publication, or revalidates and synchronizes an exact installed destination. After
-cleanup-only removal, the same helper retains its fixed capabilities and held descriptors solely for
-the mandatory second fresh-construction exchange. After any final branch it closes its capabilities
-and exits. A denial, closed channel, changed pin, or malformed, duplicate, extra, replayed, or
-mismatched record/approval exits without destination mutation. No private authority byte crosses
-either message.
-
-Only after helper success does the already capability-free controller phase open the destination and
-perform the fixed pre-readiness state machine with the exact staged authority it already validated.
-Gate 1 Kubernetes reconciliation uses deterministic transports; any real request remains Gate 3
-work. Every reduced phase has empty groups, zero securebits, and `no_new_privs=1` before content
-authority. Every lock uses descriptor-relative `flock(LOCK_NB)` in the universal order; busy,
-substituted, wrong-owner/mode, closed/lost descriptor, or order violation fails before mutation.
-State and backup roots, their writable ancestors, and every SQLite main/sidecar name remain under
-the one trusted controller or backup authority for the complete open lifetime; stock SQLite pathname
-and sidecar opens do not establish descriptor-relative confinement against a malicious
-same-authority rename. Descriptor pinning, no-follow validation, and revalidation deny other roles
-and detect stable substitution, while compromise of the controller authority retains the
-concentrated blast radius named by the threat model. The crash matrix crosses contention at each
-lock and phase boundary, including both sides of preflight and approval. A failed precondition
-changes no source, lifecycle, receipt, cleanup, authority, or backup fact except the explicitly
-named backup-reference transactions. Capture never reconciles source state.
-
-One canonical `kapsel.sandbox.backup.v1` manifest inventories fixed paths in bytewise lexical order.
-Unknown fields are denied and canonical reserialization must equal the stored bytes. Each entry
-binds the relative path, kind, exact byte length, and lowercase SHA-256. The manifest additionally
-binds a positive monotonic backup generation, predecessor generation/digest or `null`, one capture
-time, durable stopped fact, service/gateway/staging/policy schema identities, target architecture,
-the compile-time backup compatibility identity, Slice 2 source/helper/runner identities, every
-required private authority generation/manifest identity, and every copied public-trust
-generation/key/version identity. The compatibility identity is SHA-256 over the domain
-`KAPSEL-SANDBOX-BACKUP-COMPATIBILITY-V1\0` followed by 64-bit big-endian lengths and exact UTF-8
-bytes for package version, target architecture/OS, service schema digest, KAP-0038 gateway schema
-digest, fixed-staging schema `v1`, and policy `sandbox-policy-v3`; Slice 6 must consume rather than
-reinterpret it. Production vocabulary is exactly `x86_64-linux`; tests may substitute
-`test-architecture` only through a crate-private seam. The service schema digest is SHA-256 of
-`KAPSEL-SANDBOX-SERVICE-SCHEMA-V1\0` followed by its exact UTF-8 compile-time DDL literals in
-bytewise table-name order, each prefixed by its 64-bit big-endian byte length. The gateway schema
-digest remains root-`kapsel`-owned: it is SHA-256 of `KAPSEL-SANDBOX-GATEWAY-SCHEMA-V1\0` followed
-by the exact UTF-8 literals `CREATE_OPERATION_TABLE`, `LEGACY_OPERATION_TABLE`, and
-`MIGRATED_LEGACY_OPERATION_TABLE` in that order, each prefixed by its 64-bit big-endian byte length.
-The unpublished workspace consumer may obtain only those resulting 32 bytes through one no-input,
-doc-hidden, explicitly unsupported root Rust export. The DDL remains private; the sandbox must not
-copy it, parse root source, accept it as input, or generalize the export into a schema, backup,
-storage, or provider interface. The Slice 2 source, compiler, helper, and runner values come from
-`deployment.json`: build-time source/compiler identity, the opened helper digest, and
-`/proc/self/exe` digest. They are not caller strings; Slice 6 must produce the same closed record.
-
-All JSON is UTF-8 ASCII, one line with no trailing newline or insignificant whitespace. Struct field
-order below is serialization order; integers are positive decimal without leading zero, optional
-values are JSON `null`, arrays use the stated order, object keys never repeat, and every digest is
-64 lowercase hexadecimal characters. Canonical parse-and-reserialize equality and denied unknown
-fields are required. The closed records are:
-
-```text
-manifest.json = {"schema":"kapsel.sandbox.backup.v1","generation":U64,
-  "predecessor":{"generation":U64,"manifest_sha256":HEX64}|null,
-  "captured_at":I64,"stopped":true,"compatibility_sha256":HEX64,
-  "authorities":[{"generation":U64,"manifest_sha256":HEX64}],
-  "trust":[{"generation":U64,"key_id":IDENT128,"path":TRUST_PATH,"sha256":HEX64}],
-  "files":[{"path":REL_PATH,"kind":"file","bytes":U64,"sha256":HEX64}]}
-current = {"schema":"kapsel.sandbox.backup.current.v1","generation":U64,
-  "manifest_sha256":HEX64}
-deployment.json = {"schema":"kapsel.sandbox.deployment.v1","compatibility_sha256":HEX64,
-  "package_version":SEMVER,"target":"x86_64-linux","service_schema_sha256":HEX64,
-  "gateway_schema_sha256":HEX64,"staging_schema":"v1","policy":"sandbox-policy-v3",
-  "pre_exec_source_sha256":HEX64,"pre_exec_compiler":COMPILER128,
-  "pre_exec_helper_sha256":HEX64,"runner_sha256":HEX64}
-runner/active.json = {"schema":"kapsel.sandbox.runner-recovery.v1","run_id":RUN_ID,
-  "operation_id":OPERATION_ID,"lease_epoch":U64,"logical_generation":U64,
-  "phase":RUNNER_PHASE,"gateway":"runner/gateway.sqlite3",
-  "gateway_journal":BOOL,"outbox":"runner/receipt-outbox/receipt"|null}
-restore.incomplete = {"schema":"kapsel.sandbox.restore-incomplete.v1",
-  "generation":U64,"manifest_sha256":HEX64,"compatibility_sha256":HEX64,
-  "started_at":I64,"step":RESTORE_STEP}
-restore.ready = {"schema":"kapsel.sandbox.restore-ready.v1",
-  "source":"initialized"|"restored","generation":U64|null,
-  "manifest_sha256":HEX64|null,"compatibility_sha256":HEX64,"completed_at":I64}
-```
-
-`REL_PATH` is one listed generation file path whose ASCII components are 1–128 bytes, start with a
-lowercase letter or digit, continue only with lowercase letters, digits, dot, or hyphen, contain no
-slash except separators, and total at most 512 bytes. `TRUST_PATH` is `trust/generation-%020u.json`.
-`IDENT128`, run, operation, compiler, and phase values use their existing closed grammars and
-maxima; runner phase is one of `allocated`, `invoked`, `reported`, or `retiring`. Restore step is
-one of `installed`, `stopped`, `expired`, `receipts`, `runner`, `lease`, `cleanup`, or `validated`.
-File entries are bytewise path-sorted; authorities and trust are ascending by generation and contain
-zero, one, or two unique entries. Empty arrays are the canonical clean stopped state with no run,
-receipt, tombstone, pending publication, cleanup owner, or retained private authority; the ambient
-staged current generation is not added as a backup owner. `manifest.json` inventories every regular
-generation file except itself; its enclosing digest is recorded only by `current` and Service,
-avoiding self-reference. `current` and lock files are outside the generation and are never manifest
-entries.
-
-The Service schema adds only
-`backup_generations(slot TEXT PRIMARY KEY, generation INTEGER UNIQUE, manifest_digest TEXT, state TEXT, captured_at INTEGER)`
-and
-`backup_authority_references(slot TEXT, authority_generation INTEGER, authority_manifest_digest TEXT, PRIMARY KEY(slot, authority_generation))`.
-Slots are exactly `pending`, `current`, and `deleting`; pending alone has a null manifest digest,
-state equals its slot, every generation and time is positive, and at most one row exists per slot.
-Pending and deleting may coexist with current only through the fixed replacement/deletion sequence.
-The schema digest includes these tables. The current/readiness maximum is 1 KiB, deployment and
-runner records 16 KiB, and every grammar above is revalidated before mutation.
-
-The generation contains only:
-
-- `service/sandbox.sqlite3` and zero or one `service/sandbox.sqlite3-journal` from DELETE-journal
-  mode, including admission, stop, capacity, lease, authority-pin, publication, tombstone,
-  UID-owner, cleanup, and escalation facts;
-- `receipts/` with exact immutable receipt objects and at most one durably owned pending
-  publication;
-- zero or one semantic `runner/active.json` plus its gateway SQLite, zero or one rollback journal,
-  and at most one receipt-outbox object; stale device, inode, PID, and cgroup facts are not copied
-  as replacement-host authority;
-- `deployment.json`, containing only the closed compatibility and deployment metadata; and
-- `trust/` with exact public receipt trust bytes for each retained receipt authority identity.
-
-The unit excludes authorization/receipt signing seeds, tombstone keys, Kubernetes CA/token inputs,
-handoff credentials, private staged manifests or payloads, dispatch directories, provider
-credentials, logs, diagnostics, metrics, evidence, and arbitrary sidecars. Private authority is
-referenced by exact generation/manifest identity and restored separately; it is never copied or
-rebound to `current`.
-
-The fixed limits are: service database 64 MiB; service rollback journal 64 MiB; 4,096 receipt
-objects and 64 MiB total receipt bytes; one pending receipt; one runner recovery unit; runner
-database 16 MiB; runner rollback journal 16 MiB; one 16-KiB outbox object; 16-KiB deployment
-metadata; two 1-KiB public-trust documents; two authority references; 4,112 manifest entries;
-256-KiB manifest; 256 MiB total generation bytes; two complete generations plus one publication
-temporary inside `generations/`; and exactly three steady backup-root entries or four while
-atomically replacing `current`. Any exceeded count or size fails before publication or restore
-mutation.
-
-The first generation is `1`; with current generation `n`, the only next generation is checked
-`n + 1`. Generation zero, overflow, a gap, reuse, or caller selection fails. Before initial capture
-there are no backup rows. Transaction P1 inserts `pending(g,null,'pending',captured_at)` and its
-exact reference set `R_g`. After complete generation and `current(g,d_g)` durability, transaction P2
-atomically deletes pending and inserts `current(g,d_g,'current',captured_at)` while moving the same
-references from pending to current.
-
-Replacement starts only from one current row `(o,d_o,R_o)`. P1 adds pending `(n,null,R_n)` without
-changing current, so collection observes `R_o ∪ R_n`. After complete `n` and filesystem
-`current(n, d_n)` are durable, P2 atomically changes old current to `deleting(o,d_o,R_o)`, pending
-to `current(n,d_n,R_n)`, and removes no reference. The command then removes and fsyncs every old
-backup byte/directory; only transaction P3 deletes the deleting row and `R_o`. There is no deletion
-without replacement and no caller-selected generation deletion or backup-path scan in authority
-collection.
-
-For the closed clean generation, old-byte removal has one exact descriptor-relative prefix grammar.
-Before its first destructive step, recovery reopens and pins the selected new generation, `current`,
-the complete old generation, and the unchanged Service `current`/`deleting` pair. It then advances
-only in this order: old generation mode `0500 -> 0700`; old `service/` mode `0500 -> 0700`;
-`service/sandbox.sqlite3` unlink and `service/` fsync; empty `service/` removal and old-generation
-fsync; each already-empty `receipts/`, `runner/`, and `trust/` mode `0500 -> 0700`, removal, and
-old-generation fsync in that lexical order; `deployment.json` unlink and old-generation fsync;
-`manifest.json` unlink and old-generation fsync; empty old-generation removal and `generations/`
-fsync. Before `manifest.json` removal, its exact digest remains `d_o` and its canonical inventory
-continues to authenticate every surviving old file. The only reachable prefixes are the exact
-preceding complete entries with final owner/mode/link count and the one next entry at its named mode
-or absence side; the final prefix is the exact owner-private empty `0700` old-generation directory.
-Process-scoped descriptor identity does not survive process loss. Retry accepts only the exact
-fixed-name prefix under both locks after fresh name, owner, mode, type, link-count, digest,
-reference, and surviving-byte validation, then pins each surviving inode and reopens it immediately
-before its unlink. Each namespace removal is followed by fsync of its containing directory before
-another removal. Any extra, out-of-order, malformed, wrong-owner/mode/type/link-count, or
-digest/reference combination refuses without another unlink or P3. The locks exclude conforming
-backup and controller peers; they do not exclude a same-owner nonconforming process. A same-owner
-process can replace an inode before retry or race the final pathname operation after descriptor
-revalidation, and those cases are outside this prototype's cross-process anti-substitution claim.
-The implementation narrows that residual by retaining the selected-generation and `current`
-descriptors through deletion, revalidating their inode identity and the exact Service
-`current`/`deleting` pair before every destructive old-prefix action and P3, and reopening/comparing
-each old child immediately before its descriptor-relative unlink. Accepting the exact empty `0700`
-fixed-name prefix authorizes only removal of that name and containing-directory fsync, never another
-path or P3 before exact absence. After the old namespace is removed and `generations/` is fsynced,
-every old descriptor is closed; only then may P3 release the `deleting` row and `R_o`.
-
-Recovery under both exclusive locks accepts only these combinations:
-
-- no filesystem `current`, no complete generation, and no rows is initial;
-- pending plus its same-number temporary resumes copy, while pending plus no bytes retries the same
-  generation/trust set or removes pending only after proving no temporary, complete, or `current`;
-- pending plus one complete same-number generation and absent/old filesystem `current` validates it
-  and finishes `current` publication;
-- filesystem `current(g,d_g)` plus same pending and absent Service current runs initial P2;
-- filesystem `current(n,d_n)` plus Service current `o` and pending `n` runs replacement P2;
-- Service current `n` plus deleting `o` finishes old-byte removal then P3; and
-- exact Service/filesystem current with no pending/deleting is steady.
-
-Every other row/name/digest/reference combination, partial complete generation, extra temporary, or
-missing selected generation fails closed. Recovery may remove only an incomplete exact temporary or
-finish the transition above; it never guesses a digest or releases references first. Slice 4
-collection treats every slot reference as an owner.
-
-The copied SQLite contains its own pending row with null enclosing digest, avoiding a digest cycle.
-Restore's first stopped transaction validates that pending generation and `R_g` equal the opened
-manifest, then atomically replaces every copied backup row/reference with exactly
-`current(g,d_g,'current',captured_at)` and `R_g`. No intermediate transaction omits `R_g`; unrelated
-state is unchanged. Subsequent backup replacement proceeds through P1–P3 normally.
-
-Restore accepts only one validated opened generation, the exact compile-time-compatible bundle, the
-separately restored staged-authority continuity source, local process/cgroup absence, and either an
-absent fixed destination for construction or one exact recoverable private-temporary/installed
-inventory. Each new construction attempt samples `clock_gettime(CLOCK_REALTIME)` exactly once after
-validation, requires a nonnegative whole second not earlier than `captured_at`, and fails before
-destination mutation on read failure or rollback; tests alone inject time. Removing an accepted
-incomplete private prefix ends that attempt, and the repeated preflight samples once for the
-replacement attempt. Exact complete-temporary and installed retries instead preserve the canonical
-record's already frozen value and do not read the clock. Restore never overwrites, hard-links,
-reflinks, mounts, or serves backup bytes. Before destination mutation it requires the exclusive
-restore lock, local controller-role and runner/cgroup absence, no active destination, stopped
-snapshot, exact authority, and compatibility. A copy cannot prove another host or volume absent:
-provider volume detachment and original-host destruction remain explicit Gate 3 prerequisites, not a
-token stored in the backup.
-
-Restore builds one fixed sibling `.kapsel-sandbox-restore.tmp` while holding the exclusive parent
-lock. The helper creates the empty temporary root as the backup owner/group with mode `0700`, then
-`chown`s it to the controller pair, fsyncs the temporary root inode, and fsyncs the parent before
-creating any child. Thus a helper-owned root is accepted only while empty; every nonempty prefix
-requires the controller-owned root. The complete tree and every published descendant must use final
-controller ownership. The clean component order is service database, deployment record, empty
-receipt directory, empty semantic runner directory, state lock, and canonical
-`restore.incomplete(installed)`.
-
-For a regular component, the helper creates one backup-owned `0600` singly linked file, fsyncs the
-private temporary root to persist that namespace entry, writes its zero-to-complete expected bytes,
-fsyncs the complete helper-owned file, `chown`s it to the controller, applies its named final mode,
-and fsyncs it again. Only helper-owned `0600` zero-to-complete bytes, controller-owned `0600`
-complete bytes before a deployment mode change, or controller-owned complete bytes at the named
-final mode are reachable. A directory is created empty as backup-owned `0700`, the private temporary
-root is fsynced to persist its entry, then it is `chown`ed to the controller pair and fsynced; only
-those two ordered states are reachable. Every completed component is controller-owned and final
-before the next component begins. For `restore.incomplete`, accepted bytes are the fixed canonical
-prefix through `"started_at":`, then an optional no-leading-zero decimal prefix that can still
-complete to one nonnegative `i64` not before capture, then an optional prefix of
-`,"step":"installed"}` only after the complete valid time. Its fixed selected identities must match.
-Every preceding component must be complete and final; every following component must be absent. Any
-helper-owned final mode, controller-owned partial file, or other off-sequence owner/mode pair is
-unreachable and rejected without deletion. An out-of-order or extra entry, nonprefix byte, nonempty
-directory, unexpected owner, group, mode, special bit, type, link count, or substituted inode
-refuses without deletion. This installation prefix grammar is separate from the later
-`restore.state.tmp` byte-prefix grammar.
-
-Restart first reopens and validates an incomplete private prefix read-only under the already held
-parent and backup locks, sends its exact inventory digest in the preflight, and receives the
-cleanup-only approval before mutation. The restore helper may then descriptor-relatively remove only
-that exact private prefix, fsync each containing directory after removing its child entry, remove
-the empty temporary root, and fsync the parent; it may not remove a state root, complete temporary
-tree, malformed prefix, source, selected backup, or any other name. Cleanup-only approval grants no
-construction approval. The same still-live controller and helper phases must next repeat the
-complete selected-generation, authority, lock, process, absence, preflight, trusted-clock, and
-digest-bound approval protocol before rebuilding from empty. The superseded private sample never
-became a destination or lifecycle fact. An exact complete temporary tree instead preserves its
-canonical `restore.incomplete` bytes and frozen `started_at`; retry revalidates and fsyncs every
-component and directory, fsyncs the complete tree, and may then finish publication without
-resampling. Restore atomically renames the complete temporary tree to the fixed destination and
-fsyncs the parent. A crash after rename enters through the exact installed destination, preserves
-its incomplete-record bytes, revalidates destination, source, selected-generation, and held-lock
-pins, and repeats the parent fsync before returning. The installation entry accepts no simultaneous
-temporary and destination. The newly installed state lock is not flocked while the same process
-retains the exclusive parent lock; after process loss, reopen acquires parent, state, then backup
-locks in universal order before installed-prefix revalidation.
-
-There is no destination-visible interval without the incomplete marker. Every shipped open path,
-including retained reads and `clear-stop`, requires exact `restore.ready` and otherwise refuses.
-Only restore may then, in order: validate all schemas and inventories; force stop active; apply
-public expiry/tombstone deletion under exact retained authority; converge pending immutable receipt
-publication; reconstruct and reconcile the same active run/operation without blind mutation;
-republish fresh lease inputs from its pinned staged generation; resume exact cleanup ownership
-without inventing absence; and prove one active capacity owner, at most one runnable journal, no
-duplicate receipt identity, no stale runner generation, and complete backup-reference ownership.
-After each phase it creates and opens `restore.state.tmp` descriptor-relatively to the pinned state
-root with `O_CREAT|O_EXCL|O_NOFOLLOW`, controller ownership, and `0600` mode; writes exactly the
-canonical next incomplete record; fsyncs the file; revalidates the previous record, temporary,
-destination inventory and component pins, and held parent/backup lock descriptors; renames the
-temporary descriptor-relatively over `restore.incomplete`; and fsyncs the state root. Thus the old
-step remains canonical until atomic replacement. A restart under the same exclusive parent lock
-accepts only no temporary or one same-owner, same-mode, link-count-one regular temporary whose
-zero-to-complete bytes are an exact prefix of the uniquely expected next canonical record while the
-old step remains in place. It unlinks an incomplete prefix descriptor-relatively from the pinned
-state root and state-root-fsyncs before recreating it, may finish an exact complete temporary after
-revalidation, and refuses every other temporary, record pair, or inventory. A crash after rename
-observes the next canonical step and no temporary; retry treats that step as completed. Final
-readiness uses a separate closed two-name publication because POSIX rename cannot atomically change
-both the record bytes and filename: only after `validated` is durable, restore writes and fsyncs
-canonical ready bytes as `restore.state.tmp`, revalidates all pins and locks, renames it
-descriptor-relatively to `restore.ready`, and fsyncs the state root while preserving
-`restore.incomplete`. This exact two-record prefix is not ready and is the only accepted
-final-publication intermediate. Restore then revalidates both canonical records and unlinks
-`restore.incomplete` descriptor-relatively. The exact one-record `restore.ready` inventory is the
-recoverable readiness point because process loss after unlink releases the process-scoped locks and
-leaves no observable bit that distinguishes pre-fsync from post-fsync completion. It also leaves the
-ready record as the sole durable copy of the already frozen trusted time: ready-only retry treats
-its canonical bytes as authoritative, preserves them exactly, and neither samples nor infers another
-time. The publishing or retrying restore must revalidate that ready record and its destination,
-source, selected-generation, and held-lock pins, fsync the state root and parent, and return only
-after both fsyncs. Retry with both records validates their exact relationship and resumes only the
-unlink; retry with the exact one-record inventory performs the final revalidation and fsyncs
-idempotently. Every other pair or inventory refuses. Ordinary open refuses every temporary,
-incomplete record, or two-record prefix; it may accept the exact one-record inventory while restore
-is absent or only after the exclusive restore lock is released. Retained reads may serve only after
-readiness, and mutation remains stopped until ordinary later operator authorization.
-
-The deterministic Slice 5 capture matrix names both sides of: pending-reference commit; temporary
-generation creation; service database/journal, each receipt slot, semantic runner record/database/
-journal/outbox, deployment record, and each trust slot copy and fsync; temporary-directory fsync;
-manifest write/fsync; generation rename and `generations/` fsync; `.current.tmp` write/fsync;
-`current` rename and root fsync; Service publication commit; every ordered old-generation mode,
-file/directory removal, containing-directory fsync, descriptor closure, and deleting-reference
-release. Restore names both sides of: parent lock/preflight; private temporary root creation; each
-ordered component install and fsync; incomplete-record install and fsync; validated-prefix removal
-and parent fsync; complete-root fsync; destination rename and parent fsync; retry from exact
-installed publication; forced-stop commit; each restore-record temporary create/write/fsync, atomic
-step replacement, and state-root fsync; expiry/tombstone commit; pending receipt convergence;
-semantic runner reconstruction; same-operation reconciliation; fresh lease publication; cleanup
-resumption; `validated` commit; ready rename; incomplete-record unlink into recoverable readiness;
-and the publisher/retry final state-root/parent fsync.
-
-A separate clean-state vector captures and restores empty authority/trust arrays from a stopped,
-drained initialized service and proves that ambient `current` is not pinned. Every other seam
-crosses these thirteen durable source states and expected outcomes:
-
-1. admission before dispatch stays queued and may dispatch only after readiness and later
-   clear-stop;
-2. dispatch/pin before provisioning republishes a fresh lease only after no-operation
-   reconciliation;
-3. policy/provisioning closed before invocation may invoke only after proving no gateway operation;
-4. invocation acknowledged before `apply_started` reconciles the same operation before any apply;
-5. `apply_started` without terminal receiver fact observes only and preserves `UNKNOWN` when
-   evidence is insufficient;
-6. receiver terminal before terminal handoff preserves the exact terminal fact and completes
-   handoff;
-7. terminal report before receipt preparation preserves the report and prepares the same bytes;
-8. receipt prepared before filesystem publication publishes only its frozen digest/bytes;
-9. receipt object published before durable availability verifies it and commits availability once;
-10. receipt complete before runner retirement/cleanup never reinvokes and resumes
-    retirement/cleanup;
-11. issued cleanup deletes before fresh observation reobserve exact UID owners and invent no
-    absence;
-12. exact absence before capacity release performs the existing atomic release proof once; and
-13. cleanup complete during public retention, after expiry, or under a tombstone preserves the
-    applicable immutable receipt/trust or exact expiry/tombstone semantics without resurrection.
-
-The source changes only through the exact pending, published, replacing, and deleting backup-
-reference transactions and restore's named stopped-state transactions; every other source table,
-receipt, runner, lifecycle, cleanup, result, and event byte remains unchanged. A selected old backup
-is immutable; only the named temporary/new generation changes. Retry must converge without early
-service, a second journal/capacity owner, authority rebind, changed receipt/result, invented
-absence, or blind apply. Hostile schema, canonical-byte, digest, length, count, path, owner, mode,
-special-bit, type, link, inode, SQLite-sidecar, identity, compatibility, clock, destination,
-fencing, secret-byte, and inventory cases fail before selection or readiness and disclose no private
-value.
-
-Rollback uses the last compatible exact host bundle and state, keeps global stop active, preserves
-retained reads and frozen receipts, and reconciles the one active operation. Endpoint/visualization
-rollback remains separate from operation, host/state/cluster rollback, and cleanup. Teardown remains
-Gate 3 work: it activates stop, drains or recovers the admitted run, completes UID-safe cleanup,
-deletes owned resources, proves absence, and performs creation/teardown/recreation twice. Failure to
-fence, restore-before-serve, delete, or recreate activates KAP-0070's retirement rule rather than
-another topology.
+KAP-0070's offline catastrophe lane must prove the no-outcome state machine and clean-start stop.
+Gate 3 must prove real independent traffic cutoff, complete teardown, zero provider inventory, clean
+recreation, smoke, a second teardown, and zero inventory again. No provider action is authorized by
+this contract text.
 
 ## Gate 0 preservation and live proof map
 
-“Retained now” below means accepted implementation evidence that must continue passing while the
-serialized composition is built. “Planned” means this contract selects the production path but no
-host/provider/live enforcement claim exists yet.
+| Property                                  | Retained deterministic evidence                            | Later assertion                                                              |
+| ----------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Identity/replay/receipt with intact state | Exact fixtures, service restart, immutable publication     | Lost response, reconnect, exact raw receipt                                  |
+| Real conditional `Application` operation  | Service/handoff tests and provider-neutral exact patch     | Both fixed scenarios and explicit `UNKNOWN`                                  |
+| Runner loss/reconcile                     | KAP-0055 process seams, runner fencing, frozen bytes       | Approved kill at the owned runner seam                                       |
+| Bounds/stop                               | Queue, one-active, deadlines, retention, stop              | Real abuse control, spend ceiling, independent traffic cutoff                |
+| Isolation                                 | Fixed descriptors, policy/canary model, prior-run denials  | Runtime, CNI, metadata, API, network, and unrelated-resource denial          |
+| Cleanup/capacity                          | UID/owner inventory, retries, exact absence before release | Finalizer/API failure and no next dispatch before absence                    |
+| Catastrophic host/storage loss            | No-outcome transition and clean-start stop                 | Endpoint withdrawal, complete teardown/absence, clean recreation twice       |
+| Fact separation                           | Exact public fixtures and report/handoff identity          | Independently fail operation, receipt, cleanup, transport, and visualization |
 
-| KAP-0069 essential property                                                       | Owner                                       | Selected production path and present classification                                                                      | Gate 0 deterministic preservation                                                                                             | Later assertion                                                                                 |
-| --------------------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Durable opaque identity, idempotency, reconnect/replay, receipt retrieval         | API; this deployment; Privacy               | Retained KAP-0052 admission SQLite and immutable receipt logic; planned owner-private host volume                        | `test-sandbox-contract`, `test-sandbox-service`, package-boundary deletion proof                                              | Gate 1 crash/reopen; Gate 3 host loss/restore; Gate 4 lost response and reconnect               |
-| Fixed scenarios and server-owned authority                                        | API; this deployment                        | Accepted fixed host staging, distinct role credentials, exact durable pins, and descriptor dispatch                      | Contract fixtures, service authority negatives, runner handoff negatives                                                      | Gate 1 descriptor/policy matrix; Gate 3 runner/target denials; Gate 4 fixed scenarios           |
-| One conditional real `Application` mutation and exact result vocabulary           | KAP-0038; this deployment                   | Retained real `Application`, classifier, receipt and exact patch harness; planned cluster admission enforcement          | Contract bytes, service path, runner handoff, root package after sandbox deletion                                             | Gate 1 normalized patch denial; Gate 3 exact patch and `UNKNOWN`; Gate 4 both scenarios         |
-| Runner loss and same-operation reconcile                                          | KAP-0038; KAP-0055; this deployment         | Retained KAP-0055 protocol/process proofs; planned OS identity, stale-process fencing                                    | `test-sandbox-runner-handoff` at all accepted seams                                                                           | Gate 1 host kill/no-follow; Gate 3 seam kills; Gate 4 approved runner kill                      |
-| Admission/rate/queue/active/resource/deadline/retention/cost bounds               | API; this deployment                        | Retained 32-queue/rate/transport/event/deadline/retention mechanisms; planned active=1 and finite host/cluster/cost lock | Fixtures and service saturation/deadline/retention tests, plus topology-neutral one-active preservation lane when implemented | Gate 1 exact resource bounds; Gate 3 burst/cost measurement; Gate 4 configured ceiling          |
-| Durable global stop                                                               | This deployment; Threat model               | Retained native durable stop semantics; planned local-role and replacement-host continuity                               | Service stop/read/recovery/cleanup tests in topology-neutral preservation lane                                                | Gate 1 restart/role tests; Gate 3 dependency-loss stop; Gate 4 public-boundary stop             |
-| Minimal disclosure and temporal isolation                                         | API; Privacy; Threat model; this deployment | Retained public field/log negatives; planned OS/path, prior-run, canary, runtime/network denials                         | Fixture/service/handoff disclosure and stale credential tests                                                                 | Gate 1 path/canary model; Gate 3 adversarial runner/target denial; Gate 4 disclosure inspection |
-| UID-safe cleanup, retention, backup/restore, restart/rollback/teardown/recreation | This deployment; Privacy                    | Retained inventory/absence/retention transitions; planned one-unit backup, fencing and exact recreation                  | Service UID/owner/absence and retention tests; topology-neutral backup model tests when implemented                           | Gate 1 restore matrix; Gate 3 teardown/recreation twice; Gate 4 rollback/cleanup recovery       |
-| Operation, receipt, deadline, transport, cleanup, visualization remain separate   | KAP-0038; API; this deployment              | Retained exact projection/report/handoff semantics; planned serialized transition composition                            | Exact fixtures, service transitions, runner receipt byte identity                                                             | Gate 1 crash matrix; Gate 3 independent failures; Gate 4 consumer rendering/retrieval           |
-
-Gate 0 accepted this map after the exact public fixtures, topology-neutral preservation, retained
-service and handoff lanes, root package deletion boundary, formatting, links, the full repository
-gate, and independent architecture/security review passed. Gate 1 Slice 1 then accepted exactly one
-durable active reservation through cleanup, fail-closed reopen and dispatch for corrupt capacity
-state, active-first lease recovery, FIFO dispatch, coalesced cleanup retry, one 15-minute
-escalation, and release only after exact absence. No row treats historical provider configuration or
-Kubernetes-hosted controller composition as preservation evidence.
+Gate 0 and accepted Slices 1–4 retain only their named offline evidence. Archived Slice 5 backup and
+restore evidence at `bde1e3b` is historical engineering evidence, not active composition proof or a
+deployable alternative. Provider/runtime/network enforcement, real per-source abuse control, traffic
+cutoff, teardown, cost, and public safety remain unproved until their separate gates pass.
 
 ## Acceptance and non-claims
 
-A KAP-0070 deployment is acceptable only when one exact revision proves all selected controls at its
-separately authorized gate, complete teardown and recreation pass twice, and no duplicate route is
-runnable. If a mandatory property requires concurrent runs, remote controller state, a generic
-provider/storage/queue seam, broader caller authority, customer data, production credentials,
-unbounded key export, unproved runtime/network enforcement, an unowned cost, or a larger unapproved
-cleanup/spend window, stop and retire the hosted proof.
+A narrowed sandbox is acceptable only when one exact revision proves the retained real runner-loss
+mechanism, fixed authority and policy, one-active capacity through exact cleanup absence, real abuse
+control, independent endpoint cutoff, and catastrophic teardown/clean recreation twice through its
+separately authorized gates. Public `v1` bytes remain unchanged, but continuity applies only while
+controller state remains present and validated.
 
-The sandbox proves at most one bounded synthetic demonstration. It does not prove exactly-once
-mutation, Kubernetes truth, causation, complete capture/history, independent witnessing, anonymity,
-hard tenant isolation, production safety, production availability, commercial viability, or a future
-resident interface.
+If any mandatory property requires backup/restore, replacement-host continuity, a remote controller,
+concurrent runs, a generic provider/storage/queue seam, broader caller authority, customer data,
+production credentials, unbounded key export, unproved isolation, or an unowned cost, stop and
+retire the hosted proof. The fallback retains the committed fixtures and existing local real-process
+demo; it does not create another hosted implementation route.
+
+The sandbox proves at most one bounded synthetic demonstration of intentional runner-process loss,
+same-operation reconciliation, receiver-bounded result, receipt, and separate cleanup. It does not
+prove host/storage continuity, public availability, exactly-once mutation, Kubernetes truth,
+causation, complete capture/history, anonymity, hard tenant isolation, physical erasure, production
+safety, commercial viability, or a future resident interface.

@@ -36,8 +36,10 @@ external authenticated evidence. Its technical owner is the
 The sole hosted exception is one fixed, non-consequential public sandbox composition over the same
 `Application`, lifecycle, result, and receipt semantics. The [sandbox API](SANDBOX_API.md) owns
 admission and projection, and [sandbox deployment](SANDBOX_DEPLOYMENT.md) owns isolation, capacity,
-key custody, and cleanup. Their implementation is accepted offline evidence for a paused program,
-not a currently deployed service.
+key custody, and cleanup. Their implementation is accepted offline evidence for one seven-day
+narrowed proof attempt, not a currently deployed service. KAP-0072 removes host/storage continuity
+and requires fixtures plus the local real-process demo as fallback if no gate-eligible candidate
+emerges by 2026-08-18.
 
 The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
 production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens
@@ -88,13 +90,13 @@ The beta must:
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
 After publication, KAP-0069 selected one serialized reshape for the bounded fixed-input public
-proof. KAP-0070 is the sole active implementation and acceptance owner: it retains the fixed API,
-deterministic service, separate runner, and dedicated synthetic cluster while superseding the
-Kubernetes-hosted remote-controller and key-stager topology. At most one run may remain active
-through cleanup. This route does not widen the capability or authorize provider use, deployment, or
-traffic. KAP-0047 remains the supporting owner for approved aggregate external technical findings;
-retained customer-controlled use is still required before production resident compatibility or
-another broader cycle.
+proof. KAP-0072 narrows KAP-0070 to one seven-day real runner-process-loss demonstration: fixed API,
+deterministic service, separate runner, dedicated synthetic cluster, and at most one active run
+through cleanup. Controller-host/storage loss withdraws the endpoint and requires complete teardown
+and clean stopped recreation; it preserves no visitor continuity. This route does not widen the
+capability or authorize provider use, deployment, or traffic. KAP-0047 remains the supporting owner
+for approved aggregate external technical findings; retained customer-controlled use is still
+required before production resident compatibility or another broader cycle.
 
 The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
 route is owned by [the task route](../tasks/README.md).

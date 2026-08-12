@@ -147,7 +147,7 @@ configuration only after policy verification and neither reads gateway journal r
 provider, storage, or public trait seam.
 
 ```text
-browser -> optional edge -> kapsel-sandbox -> kapsel Application
+browser -> required edge -> kapsel-sandbox -> kapsel Application
                                 |                 |
                                 |                 -> unchanged KAP-0038 semantics
                                 -> separate admission/projection/cleanup state
@@ -183,61 +183,55 @@ deadline, handoff transport, cleanup, and capacity release remain separate durab
 controller host stages fixed authorization, receipt, tombstone, Kubernetes, handoff, and
 public-trust inputs descriptor-relatively under exact owner/mode/no-follow rules. The runner
 receives only fixed read-only descriptors, owns one fresh journal/outbox, and cannot access
-controller state, receipts, backups, other/prior journals, or cleanup authority.
+controller state, receipts, other/prior journals, or cleanup authority.
 
-One crash-consistent backup identity covers admission/projection/stop state, immutable receipts and
-pending publication, the active journal/outbox when present, capacity and lease state, the complete
-ownership inventory, compatible deployment metadata, and required public trust. Restore fences the
-original writer and runner, permits one writer and one runnable journal, reapplies deletion before
-serve, then reconciles operation, receipt, and cleanup state. Private signing and Kubernetes
-credentials retain separately owned continuity and are not copied into that backup.
+Runner-process loss and controller-process restart with the same present, validated state remain
+recovery seams. Controller-host or storage loss does not: independent exposure authority withdraws
+the endpoint, no old run is reconstructed or classified, the complete dedicated synthetic and
+provider inventory is torn down and proved absent, and only a fresh stopped composition may be
+validated and explicitly reopened. The active route has no backup or replacement-host interface.
 
-This is the selected production path, not completed enforcement. The implementation now retains the
-exact public contract, KAP-0052 service semantics, real one-way `kapsel-sandbox -> kapsel`
-dependency, KAP-0055 process handoff, and KAP-0070's durable one-active reservation with concrete
-local scheduler, retention, and cleanup roles. The scheduler recovers active work before FIFO
-dispatch; cleanup retry and escalation retain capacity until exact UID/owner absence. Accepted Slice
-2 adds one controller-owned `runner_host` deep module: it pins fixed roots and inputs, transfers
-individual read-only descriptors through `SCM_RIGHTS`, creates a fresh generation, and places the
-Linux process tree in one private cgroup-v2 generation. One fixed C helper establishes identity,
-descriptor closure, parent-death, and `no_new_privs` before the Rust runner runtime without
-weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete controller composition, the
-named descriptor/identity/cgroup/recovery denial evidence, the exact x86-64 Linux gate, and fresh
-review passed for that offline host boundary. The accepted focused Slice 2 follow-up keeps one fixed
-C helper, freezes and normalizes the exact controller/helper bootstrap, rejects executable file
-capabilities, verifies every final capability set and securebits at zero before Rust authority, and
-binds source/compiler/helper/runner identities for Slice 6. It selects no syscall/path confinement;
-remaining host-filesystem and native-syscall reach is explicit and the proof does not establish a
-complete least-privilege process boundary. Accepted Gate 1 Slice 4 keeps fixed staging as one
-private deep module: a closed thirteen-file schema, atomic complete monotonic generations, one
-durable generation/manifest pin committed at dispatch, at most current plus one retained generation,
-and atomically published per-lease twelve-file runner directories. The staging module returns one
-opened published-directory descriptor; `RunnerHost` has no input path and validates every descriptor
-before replacement fencing. Durable runner retirement precedes dispatch removal. Service-owned
-collection holds its SQLite reference proof, records recoverable collection intent, and removes only
-the exact unreferenced noncurrent generation. Recovery, cleanup, tombstones, and separately returned
-retained public trust use the durable pin rather than ambient current authority; unavailable
-authority holds without producing lifecycle or KAP-0038 outcome facts. Pre-Slice-4 state migrates
-only while stopped and drained. Accepted Slice 3 adds exact cluster-policy verification, one fixed-
-authority bounded cleanup role, atomic runner retirement intent, and fail-closed static policy
-loading.
+This is the selected sandbox deployment path, not completed enforcement. The implementation now
+retains the exact public contract, KAP-0052 service semantics, real one-way
+`kapsel-sandbox -> kapsel` dependency, KAP-0055 process handoff, and KAP-0070's durable one-active
+reservation with concrete local scheduler, retention, and cleanup roles. The scheduler recovers
+active work before FIFO dispatch; cleanup retry and escalation retain capacity until exact UID/owner
+absence. Accepted Slice 2 adds one controller-owned `runner_host` deep module: it pins fixed roots
+and inputs, transfers individual read-only descriptors through `SCM_RIGHTS`, creates a fresh
+generation, and places the Linux process tree in one private cgroup-v2 generation. One fixed C
+helper establishes identity, descriptor closure, parent-death, and `no_new_privs` before the Rust
+runner runtime without weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete
+controller composition, the named descriptor/identity/cgroup/recovery denial evidence, the exact
+x86-64 Linux gate, and fresh review passed for that offline host boundary. The accepted focused
+Slice 2 follow-up keeps one fixed C helper, freezes and normalizes the exact controller/helper
+bootstrap, rejects executable file capabilities, verifies every final capability set and securebits
+at zero before Rust authority, and binds source/compiler/helper/runner identities for Slice 6. It
+selects no syscall/path confinement; remaining host-filesystem and native-syscall reach is explicit
+and the proof does not establish a complete least-privilege process boundary. Accepted Gate 1 Slice
+4 keeps fixed staging as one private deep module: a closed thirteen-file schema, atomic complete
+monotonic generations, one durable generation/manifest pin committed at dispatch, at most current
+plus one retained generation, and atomically published per-lease twelve-file runner directories. The
+staging module returns one opened published-directory descriptor; `RunnerHost` has no input path and
+validates every descriptor before replacement fencing. Durable runner retirement precedes dispatch
+removal. Service-owned collection holds its SQLite reference proof, records recoverable collection
+intent, and removes only the exact unreferenced noncurrent generation. Recovery, cleanup,
+tombstones, and separately returned retained public trust use the durable pin rather than ambient
+current authority; unavailable authority holds without producing lifecycle or KAP-0038 outcome
+facts. Pre-Slice-4 state migrates only while stopped and drained. Accepted Slice 3 adds exact
+cluster-policy verification, one fixed- authority bounded cleanup role, atomic runner retirement
+intent, and fail-closed static policy loading.
 
-Gate 1 Slice 5 is frozen as one private quiesced-offline backup/restore module over one fixed state
-root and one fixed backup root. Its canonical bounded generation contains service state, immutable
-receipts, at most one semantic runner recovery unit, closed deployment compatibility, and public
-trust; it references but never copies private staged authority. Service-owned pending/published/
-replacement/deletion references prevent Slice 4 collection from making a backup unrestorable.
-Restore builds a new stopped state root, reconstructs local runner identities, and keeps every role
-behind a durable incomplete marker until expiry, receipt, same-operation, cleanup, and capacity
-reconciliation finish. It adds no storage/provider trait, online snapshot, daemon, second database,
-or cross-host anti-cloning claim. KAP-0070 must still implement and accept this backup boundary, the
-Slice 6 bundle, teardown, and recreation before any live or public claim.
+KAP-0072 archives exact clean backup/restore checkpoint `bde1e3b` as historical engineering evidence
+and supersedes that route. The next implementation deletes backup-only schema, bridge, state, and
+tests while preserving the real runner-loss, authority, policy, cleanup, and public projection
+modules. Host/storage catastrophe owns no reusable storage seam; teardown and clean recreation
+remain operator/provider composition proved only at later gates.
 
 KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
 projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor
-runs, and multi-volume backup topology. None is an alternate architecture. The retained negative
-invariants do not justify a generic coordinator, database, storage, queue, provider, policy,
-transport, or package seam.
+runs, and multi-volume backup topology, and the later single-host backup/restore branch. None is an
+alternate architecture. The retained negative invariants do not justify a generic coordinator,
+database, storage, queue, provider, policy, transport, or package seam.
 
 ## Failure structure
 

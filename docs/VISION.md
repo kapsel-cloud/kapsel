@@ -42,18 +42,18 @@ of provider truth or silently move customer authority into the cloud.
 The verified v0.2 mechanism now supports one bounded product-first cycle without becoming a general
 platform commitment:
 
-1. decide and accept one real fixed-input public crash-recovery proof using the existing sandbox
-   contracts and implementation where they remain technically justified;
+1. decide and accept one real fixed-input public runner-process-loss proof using the existing
+   sandbox contracts and implementation where they remain technically justified;
 2. expose that exact accepted deployment through the independently owned website consumer; and
 3. decide whether the existing CLI/MCP process is sufficient for one customer-controlled
    non-production integration or whether one smallest resident process, interface, and installation
    boundary is required.
 
-KAP-0069 selected a serialized sandbox reshape; KAP-0070 now owns its contract correction,
-implementation, and staged acceptance. KAP-0054 owns the later resident-boundary decision. None may
-infer a resident topology, transport, packaging, authentication, storage, or compatibility from the
-sandbox. Provider use, public traffic, and resident implementation each require their own exact
-accepted gate or owner.
+KAP-0069 selected a serialized sandbox reshape; KAP-0072 narrows KAP-0070 to a seven-day real
+runner-process-loss proof with no controller-host/storage continuity and a fixtures/local-demo
+fallback. KAP-0054 owns the later resident-boundary decision. None may infer a resident topology,
+transport, packaging, authentication, storage, or compatibility from the sandbox. Provider use,
+public traffic, and resident implementation each require their own exact accepted gate or owner.
 
 The cycle keeps one capability and tests two different facts: the public proof tests comprehension;
 the customer-controlled preview tests whether the authority and recovery boundary is useful enough
@@ -84,9 +84,11 @@ Rust module that reuses the existing `Application`. Its accepted [HTTP contract]
 projection, bounded scheduling, cleanup, and receipt presentation. KAP-0069 selected reshape:
 KAP-0070 must preserve the fixed interface and semantic spine while proving one native controller
 host, separate per-run runner, dedicated synthetic cluster, and at most one active run through
-cleanup. The prior Kubernetes-hosted controller/stager topology is superseded. This remains a
-product-comprehension surface, not the production resident interface or a hosted customer control
-plane.
+cleanup. The prior Kubernetes-hosted controller/stager topology and later backup/restore branch are
+superseded. Host/storage loss withdraws the endpoint and requires complete teardown, absence, clean
+stopped recreation, readiness, and explicit reopen; prior visitor state is not reconstructed. This
+remains a product-comprehension surface, not the production resident interface or a hosted customer
+control plane.
 
 ### Customer-resident preview and production v1
 

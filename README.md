@@ -67,7 +67,7 @@ use.
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                 |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
 | Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
-| Serialized sandbox Gate 1 Slice 1                | One-active/local-role offline proof accepted             |
+| Narrowed serialized sandbox                      | Slices 1–4 retained; backup branch archived at `bde1e3b` |
 | Provider-neutral private runner handoff          | Implemented and accepted through offline process proofs  |
 
 The exact local evaluator grammar and file separation are owned by the
@@ -102,20 +102,22 @@ The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and
 grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
 resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
-hosted dependency, second target, or production-readiness claim. KAP-0069 selected one serialized
-reshape for the bounded public proof; KAP-0070 is the sole active implementation and acceptance
-packet and separately gates provider use, deployment, and traffic. KAP-0047 remains the supporting
-owner for approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md) and
-[ordered task route](tasks/README.md).
+hosted dependency, second target, or production-readiness claim. KAP-0072 narrows the serialized
+public proof to one seven-day real runner-process-loss attempt; KAP-0070 is the sole active
+implementation and acceptance packet and separately gates provider use, deployment, and traffic.
+Host/storage continuity and backup/restore are not active requirements. KAP-0047 remains the
+supporting owner for approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md)
+and [ordered task route](tasks/README.md).
 
 ## Scope discipline
 
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
 a generic provider SDK, a policy language, general hosted operation, a dashboard, and a second
 capability are outside its technical scope. The sole hosted exception is one fixed non-consequential
-public sandbox. KAP-0070 now reshapes its accepted deterministic service and private runner handoff
-into one serialized deployment route; the prior Kubernetes-hosted controller/stager topology is
-superseded. No provider is selected and no sandbox deployment or public traffic is approved.
+public sandbox. KAP-0070 now narrows its accepted deterministic service and private runner handoff
+into one finite real process-loss proof; the prior Kubernetes-hosted topology and later
+backup/restore branch are superseded. No provider is selected and no sandbox deployment or public
+traffic is approved.
 
 ## Read next
 

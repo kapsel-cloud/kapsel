@@ -181,276 +181,46 @@ the visual demonstration does not replace them.
 
 ## Serialized public sandbox proof
 
-KAP-0070 retains the fixed API, deterministic service, root-package deletion boundary, and KAP-0055
-handoff while replacing the deployment composition. These offline lanes are preservation evidence,
-not proof of the planned host, provider, cluster, isolation, backup, or public endpoint. The sandbox
-contract lane remains distinct from KAP-0038 gateway tests and must not widen `Application`, expose
-the journal, or present simulation as live enforcement.
+KAP-0072 narrows KAP-0070 to one real intentional runner-process-loss proof. The fixed API,
+deterministic `Service`, root-package deletion boundary, real `Application`, KAP-0055 handoff,
+runner host, authority staging, provider-neutral policy, and UID/owner cleanup remain separate proof
+owners. Public `v1` bytes remain fixture-compatible, but their continuity applies only while the
+same controller state is present and validated.
 
-Committed fixtures under [`docs/fixtures/sandbox-v1`](fixtures/sandbox-v1/README.md) cover healthy,
-unavailable-image, setup failure, saturation, expiry, every bounded error, incompatible version, and
-unavailable service behavior. The standard-library gate `python3 scripts/test-sandbox-contract.py`
-validates exact field sets and ordering, bounds, enum/null invariants, idempotent replay identity,
-event sequence/cursor behavior, error status and retry vocabulary, forbidden disclosure keys, and
-the raw KAP-0038 receipt digest. It uses fixed times and identities, no service, network,
-dependency, random input, or ambient clock. Fixture validity is contract evidence only; it does not
-prove a consumer or deployment.
+The retained deterministic lanes prove:
 
-KAP-0052 defines this deterministic matrix through the implemented `kapsel-sandbox` exported/service
-boundary:
+- exact request/header/query bounds, admission/idempotency, projection, replay, expiry, errors, and
+  unchanged receipt bytes;
+- one active reservation through runner retirement and exact UID/owner absence;
+- fixed authority pins and no caller-appointed credential, target, lifecycle, result, or cleanup;
+- exact conditional mutation and policy/canary/unrelated-resource denials before `Application`;
+- intentional runner loss before invocation, after durable invocation, after `apply_started`, after
+  report, and around receipt publication with one operation identity and no blind second apply;
+- controller-process restart only from the same validated state; and
+- operation, receipt, deadline, handoff, cleanup, retention, and visualization as separate facts.
 
-- exact JSON/header/query parsing before allocation and no caller-appointed authority;
-- one atomic admission/idempotency/capacity/event transaction, including lost-response replay and
-  same-key conflict;
-- queue and active-run saturation before dispatch, fair bounded scheduling, lease loss, and global
-  stop;
-- runner restart before `Application` invocation, during uncertain invocation, after report, and
-  around receipt-store publication;
-- the same operation identity across recovery, no blind second mutation, and unchanged
-  `OperationReport`/receipt bytes;
-- contiguous append-only projection, pagination from every cursor, concurrent append snapshots,
-  rejection above the 64-event request limit without fabricating lifecycle transitions, expiry,
-  tombstone, and deletion;
-- independent deadline and cleanup transitions that never populate or alter receiver result;
-- terminal `service_failed` projection only for setup failure proven before `Application`
-  invocation;
-- unavailable admission store, receipt store, key custody, cluster, and incompatible revision
-  errors; and
-- field-level disclosure assertions over responses, durable run state, bounded diagnostics, and
-  allowlisted telemetry.
+The narrowed catastrophe lane must prove that controller-host/storage loss or rollback appends no
+receiver result, target rejection, `service_failed`, receipt, cleanup absence, or capacity release;
+withdraws admission independently; and makes every clean initialization stopped. It must reject any
+attempt to initialize against a possibly surviving old cluster. Provider-level inventory, traffic
+cutoff, teardown, zero inventory, clean recreation, readiness, explicit reopen, and a second
+teardown remain Gate 3 evidence, not deterministic proof.
 
-The retained KAP-0052 package tests use explicit times, fixed keys, temporary owner-private storage,
-and the existing deterministic Kubernetes transport. They prove atomic admission/replay/conflict,
-queue-32 saturation, global stop, oldest-first dispatch, durable lease exclusion and recovery,
-queued age beyond 180 seconds without head blocking, and exact oldest-first dispatch. KAP-0070 Gate
-1 Slice 1 replaces the historical eight-active cases with exactly one durable active reservation.
-Its focused matrix proves fail-closed reopen and dispatch for missing, inconsistent, noncanonical,
-or multi-active capacity state, active-first lease recovery, FIFO dispatch, no release after
-terminal handoff, cleanup start/failure, retry, restart, public retention, or wrong/present absence
-evidence, one durable 15-minute escalation, and release only after exact UID/owner absence. The
-retained tests also prove an admission-frozen policy revision/inventory digest, cleanup identity,
-and 180-second duration plus an exact dispatch-relative absolute deadline. Deterministic target
-evidence includes every object identity, immutable UID, owner label, and policy-content digest;
-missing, stale, permissive, duplicate-UID, and wrong-owner evidence blocks `Application` before
-provider traffic. Cross-run UID reuse is rejected. Cleanup ownership rows are append-only across
-repeated policy verification; a mismatched observation with an extra owned object remains required
-even after later exact verification. Cleanup completion consumes absence observations for every
-durable kind/namespace/name/UID/owner row and rejects missing, mismatched, or still-present objects
-before releasing capacity. This does not claim live policy enforcement. The separate
-confirmed-no-resource setup path releases capacity without inventing a UID. An explicit periodic
-sweep deletes expired raw run data without visitor traffic, and initial-time open removes due
-tombstones before returning a service. A direct first restart after both 24-hour windows proves the
-same transaction deletes the run and skips its already-due tombstone.
+One real abuse-control lane must bind a finite source signal and trust contract,
+request/window/burst limits, bounded memory/state, same-origin proxy behavior, pre-admission
+rejection, and absence of raw source identity from run state and public output. Fixture
+`rate_limited` bytes alone are not evidence that this composition exists.
 
-An injected crash with only the sandbox `application_invoked` marker and no gateway journal proves
-reconciliation submits the same server-owned request; once gateway state exists, recovery remains
-reconcile-only. Cancellation after one returned mutation reopens the same operation after the
-ordinary deadline event and observes without a second patch. A deliberately failed receipt-reference
-transaction leaves durable pending ownership of the terminal report's exact immutable object;
-restart converges to one byte-identical receipt and one contiguous terminal and receipt event. A
-concurrent collector test pauses publication after final-object installation, proves open-time
-collection preserves the pending-owned exact bytes, completes availability, and safely removes a
-pending object whose run no longer exists. Existing database symlinks and permissive entries fail
-before SQLite open; a securely created file is rechecked as the same 0600 owned regular inode. Both
-fixed scenarios, pre-attempt rejection, strict hostile HTTP including POST queries and forwarding,
-tracing, and both hyphenated and `clientcert` client-certificate header families, every retained
-event cursor, a concurrent cleanup-event append snapshot, rejection of limits above 64, tombstones,
-cleanup identity/UID mismatch, and cleanup failure/retry are covered. Valid prototype transitions do
-not generate 64 events, so tests establish the endpoint bound rather than fabricating invalid
-lifecycle events. Package-private receipt tests also consume the committed classifier-complete
-receipt fixture. No test exposes sandbox state, reuses the KAP-0038 journal as its run database, or
-presents deterministic orchestration as live cluster/isolation evidence.
+Archived checkpoint `bde1e3b` preserves clean backup/restore engineering evidence but is not part of
+the active proof. Delete backup generations, references, restore markers, replacement-host tests,
+and the thirteen nonclean reconstruction matrix while retaining every independently owned gate. No
+test may present the archive as a deployable alternative or widen `Application` into a storage or
+host-continuity interface.
 
-KAP-0055 adds a provider-neutral private runner-handoff lane. Contract tests cross the narrow
-non-mutating `Application` request/grant match, exact bounded binary records, generic non-disclosing
-rejection, per-generation lease/credential rotation, durable invocation before lifecycle work,
-terminal report binding, stale and changed replay denial, replacement-lease recovery, receipt-free
-pre-attempt rejection, exact immutable receipt bytes, restart, concurrency, an absolute
-trickle-resistant receive deadline, cross-expiry invocation/report denial, and finalized recovery
-across public expiry. Direct private-listener tests reject an oversized frame and oversized receipt
-field before invocation or report mutation.
-
-Separate production runner and system subprocesses cross deployment-faithful projected-volume
-symlinks and a genuinely empty gateway volume against receipt-free and actual KAP-0038
-`SUCCEEDED`/`UNKNOWN` deterministic Kubernetes paths. They assert byte-identical outbox/system
-receipts and separately trusted inspection/classifier agreement; the actual `FAILED` Application
-path crosses the same handoff adapter in the service contract with the same byte and classifier
-checks. Production process-kill tests recover one operation from loss before invocation, after the
-durable invocation ACK, and after `apply_started` on the containerless host. The mandatory
-Linux/root lane additionally kills after the durable terminal report, restarts the system process,
-and replaces the runner without changing KAP-0038's frozen receipt bytes. Non-Linux tests instead
-assert terminal report and exact receipt-byte preservation across a service reopen without claiming
-host replacement. The package-private publication tests own the remaining narrower boundaries:
-reopening after a durable pending claim before final-object installation and after installation
-before availability commit. The runner owns only its initialized `run/gateway.sqlite3` and receipt
-outbox; the system process owns admission SQLite and exact immutable receipt installation.
-Escape/substitution layouts and a system-state argument fail before input or lifecycle use, and
-credential-bearing debug output is redacted. Loopback TCP and deterministic Kubernetes fixtures
-prove only process and state-transition behavior; they do not prove private-cluster reachability,
-network/runtime/storage isolation, provider identity, or live custody.
-
-Accepted KAP-0070 Slice 2 replaces copied bootstrap payloads with individually pinned read-only
-descriptors transferred through `SCM_RIGHTS`. A fixed C helper and cgroup-v2 generation establish
-the pre-runtime identity/FD/parent and descendant boundary while Rust remains
-`unsafe_code = "forbid"`. Implementation-local tests cover input-parent replacement, fixed-file mode
-changes, lease/credential rotation, durable allocation/fencing/migration crash sides, record/cgroup
-ambiguity, and forked-descendant fencing after post-attach failure. Separate generation-root tests
-fail closed before processing a fifth entry and remove only obsolete empty directories after the
-durable record advances.
-
-Native process tests retain `not_attempted`, `SUCCEEDED`, `UNKNOWN`, the three pre-terminal loss
-seams, and deterministic both-sided publication with exact terminal/report bytes. The pinned,
-privileged-private-cgroup, network-disabled x86-64 Debian/Linux lane executes rather than skipping
-and passes the fixed helper, descriptor, identity, outcome, full retained process-loss matrix, and
-real terminal kill/restart/replacement.
-
-The Slice 2 hardening lane compiles the production C normalization logic into a finite
-hostile-parent matrix. It tests the exact eight-capability `E=P=B` bootstrap with empty `I/A`,
-independently named `CAP_NET_RAW` effective, permitted, inheritable, ambient, and bounding cases,
-unlocked and locked `KEEP_CAPS`/`NO_SETUID_FIXUP`, and nonempty helper and runner
-`security.capability` values. Linux subset constraints are explicit in the effective and ambient
-fixtures. Canonical and unlocked cases must normalize to the exact bootstrap state; locked cases
-exit before authority. The composed runner then proves securebits and all five sets zero,
-`no_new_privs=1`, UID/GID, empty groups, descriptors, parent-death, cgroup, and recovery. A safe
-Rust `/proc/self/status` backstop checks the post-exec state before descriptor receipt.
-
-The lane also rejects C-source or pinned compiler identity drift and hashes the C source, built
-helper, and runner bytes as Slice 6 inputs. It does not assemble or prove the final bundle. No
-seccomp, Landlock, or equivalent restriction is selected, so tests and review must not imply host
-filesystem concealment or syscall/path confinement. The accepted matrix proves the named capability
-boundary but not a complete least-privilege native process boundary.
-
-Historical KAP-0053 tests retain only topology-neutral evidence: bounded native HTTP parsing,
-durable stop behavior, the exact conditional named-container image and KAP-0038 operation-annotation
-rule, strict input non-disclosure, and Ed25519/inspector known answers. Its `ReadWriteOncePod`,
-runner Pod, projected Kubernetes input, controller-state, key-stager, multi-volume backup,
-concurrent-run, provider fixture, and image-candidate assertions are deleted evidence for KAP-0070
-and must not run or pass as current composition proof. Gate 0 retains the exact conditional patch
-rule and source/artifact deletion boundary in `test-sandbox-preservation`, which uses only the two
-provider-neutral fixtures under `deploy/sandbox`. The current runnable preservation set is
-`test-sandbox-contract`, `test-sandbox-preservation`, `test-sandbox-serialized-capacity`,
-`test-sandbox-service`, `test-sandbox-package-boundary`, and `test-sandbox-runner-handoff`.
-
-KAP-0070 Slice 3 adds `test-sandbox-cluster-policy`. Its bounded in-process bodies prove the exact
-provider-neutral baseline/canary/run composition, generated-child UID inventory, downgrade rejection
-before runner/Application, and the only accepted old/new Deployment difference. The focused
-correction keeps cleanup observations, plans, and requests private; recomputes the canonical plan
-digest before the first request; binds one fixed Kubernetes client at role construction; and exposes
-only one closed attempt that owns generated-child refresh, pre-delete observation, exact deletion,
-post-plan observation, durable completion, and coalesced failure. Unit and loopback HTTP tests prove
-zero requests for a changed private plan, exact UID/propagation deletes, Namespace-presence
-branches, frozen-RBAC scans, ten-second request and 30-second attempt deadlines, and a 2 MiB body
-cap before kube deserialization for content-length, chunked, and close-delimited framing. Retirement
-tests prove one atomic revocation/retiring transition, independent revoked/retiring/retired
-recovery-assignment-launch denial, and fresh empty generation state after prior-run retirement. The
-ordinary Linux production `ControllerRole::run_once` regression restarts after durable retirement
-intent with both an unexpired and expired lease, proves retirement precedes scheduler recovery, and
-asserts no epoch, staged authority, invocation/report count, operation identity, receipt, or runner
-launch changes. It performs no live action and does not prove Kubernetes runtime, CNI, RBAC,
-admission, metadata, or network enforcement.
-
-The Slice 4 offline matrix adds fixed-staging activation/recovery and family-isolation tests; atomic
-per-lease publication, canonical debris, inode substitution, and post-retirement deletion tests;
-descriptor-bound `RunnerHost` replacement; exact generation-pinned trust and cleanup tests; and a
-Service reference matrix for runs, tombstones, receipt ownership, dispatch ownership, malformed
-pins, and crash-recovered noncurrent collection. `CleanupController` is exercised through staged TLS
-and token authority, and missing old authority must leave lifecycle, cleanup, and event facts
-unchanged. `cargo make test-sandbox-fixed-staging-identities-linux` is a separate root-only,
-network-namespace lane for the production distinct-UID/GID split; ordinary macOS and unprivileged
-runs do not claim that evidence.
-
-The accepted Slice 5 contract reserves `test-sandbox-backup-restore`; implementation must add the
-Make task and module together before this guide may present it as runnable. The focused lane is
-offline and uses one fixed state root, backup root, compile-time compatibility record, and injected
-test clock. It crosses the thirteen lifecycle states named by the deployment owner and every durable
-side of pending authority references, component copies/fsyncs, generation/current publication, the
-deployment owner's exact old-generation deletion-prefix mode/removal/fsync/descriptor-close sides,
-destination publication, forced stop, every restore-record temporary prefix/fsync/replacement,
-expiry, pending receipt convergence, semantic runner reconstruction, fresh lease publication,
-cleanup resumption, and readiness. Only P1/P2/P3 backup-reference transactions, named
-stopped-restore transactions, temporary/new/deleting generation bytes, and atomic `current` may
-change at their exact seams; every other source fact and the selected old generation remain
-byte-identical. Every seam asserts no selectable partial generation, early serving/mutation, second
-runnable journal or capacity owner, changed KAP-0038 result/receipt, invented absence, and retry
-convergence. Deletion-prefix tests reject every extra, out-of-order,
-wrong-owner/mode/type/link-count, and digest/reference combination without another removal or P3,
-retain and revalidate selected-generation and `current` inode identity plus the exact Service pair
-before every destructive action, exercise each detectable substitution and row/reference attack
-class across early, middle, and final deletion barriers, and prove all old descriptors close before
-reference release. They preserve the deployment owner's explicit same-owner cross-process race limit
-before retry and between final descriptor revalidation and pathname mutation. A clean
-stopped/drained vector proves empty authority/trust arrays and no ambient-current pin.
-
-Closed hostile matrices exhaust manifest field/order/canonicalization, path inventory, count/size,
-digest/length, symlink/hardlink/special file, owner/group/mode/special bits, root/inode
-substitution, SQLite DELETE-journal sidecars and malformed rows, duplicate identities, stale
-process/inode/cgroup facts, incompatible bundle/architecture/clock, missing public trust/private
-authority, an unexpected or nonrecoverable nonempty destination, and source changes during capture.
-Destination-installation tests cross the exact ordered private temporary-tree prefixes, every
-component install and fsync, validated prefix removal and parent fsync, complete-tree fsync, atomic
-destination rename, retry from the exact installed destination, and publisher/retry parent fsync. An
-incomplete accepted prefix, including the empty-root helper/controller sides and each exact
-create/namespace-fsync/write/fsync/chown/chmod/final-fsync component side, is validated read-only,
-removed under the narrow private-prefix exception with each containing-directory fsync and final
-parent fsync, and rebuilt only after repeated preflight and a new trusted clock sample; an exact
-complete tree preserves its installed record and frozen sample. Each accepted source component must
-match its exact selected byte prefix; an incomplete-record prefix must match the owner's
-fixed-field, bounded decimal-time, and fixed-suffix language. Out-of-order, nonprefix, or extra
-objects, simultaneous temporary and destination, and every unexpected ownership, mode, type,
-link-count, descriptor, source, selected backup generation, or lock substitution and every
-off-sequence owner/mode combination fail closed without deletion. Tests prove the prospective lock
-inside a private temporary is never flocked under the exclusive parent fence and explicitly prove
-restore never accepts or deletes an init prefix and init never accepts or deletes a restore prefix.
-Tests must not infer pre-fsync durability merely from complete bytes.
-
-Restore-step tests accept only an absent temporary or the uniquely expected zero-to-complete
-canonical prefix in controller-owned `restore.state.tmp` beside the previous record; they cross
-partial write, file fsync, rename, and state-root fsync, then require retry convergence and no
-ordinary open at every side. The final readiness matrix separately crosses ready-file rename/fsync,
-the exact two-record non-ready prefix, incomplete-file unlink into exact recoverable readiness, and
-the publisher/retry final state-root/parent fsync. A retry from ready-only must revalidate and
-repeat both fsyncs before returning; tests do not claim that process-scoped locks encode whether
-those fsyncs preceded a prior process loss. Restore-step temporary create, open, rename, and unlink
-operations are descriptor-relative to the pinned state root; installation-tree operations are
-relative to the pinned parent. Fixture-byte scans prove that private staged seeds, tombstone keys,
-Kubernetes and handoff credentials, dispatch inputs, logs, and diagnostics never enter a generation.
-A separate root-only network-namespace identity lane starts from the exact fixed bootstrap and
-proves root/lock pinning before phase release, capability-free controller `65530:65530`, backup
-`65529:65529` with the exact capture/restore capability sets, each phase's closed descriptor
-inventory, the one direct fixed controller-to-helper capture message, the restore helper's sealed
-preflight and branch-bound approval before every destination mutation, including cleanup-only prefix
-removal followed by a distinct fresh-construction approval, and no surviving bootstrap-authority
-process. Installed recovery proves the bootstrap opens only the canonical destination root and state
-lock needed for ordered locking, transfers both held locks only to the capability-free controller,
-and opens no other destination component. It rejects a capability-free attempt to cross the
-backup-owned root, an alternate initial set, file capabilities, extra groups, reordered locks,
-extra/caller-selected descriptors, every cross-phase descriptor, and malformed, changed, replayed,
-or mismatched restore preflight/approval. Ordinary tests do not claim provider-volume detachment or
-original-host destruction.
-
-The serialized proof matrix is:
-
-| Property                               | Retained Gate 0 evidence                                              | Gate 1 deterministic composition                                        | Gate 3 private-live assertion                                                              | Gate 4 public assertion                                               |
-| -------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| Identity/replay/receipt                | Exact fixtures and service restart tests                              | Host-volume crash/reopen and immutable publication                      | Replacement-host restore without identity drift                                            | Lost response, reconnect, exact raw receipt                           |
-| Server authority/conditional operation | Service authority negatives, real `Application`, exact KAP-0038 tests | Fixed descriptor inputs and exact patch denial matrix                   | Runner/target authority and downgrade denials                                              | Both fixed scenarios only                                             |
-| Runner loss/reconcile                  | KAP-0055 subprocess seams and frozen bytes                            | OS identity, no-follow, stale-process/lease fencing                     | Kill at every invocation/apply/report/publication seam                                     | One approved public runner kill                                       |
-| Bounds/stop                            | API transport, queue/rate/deadline/retention, durable stop tests      | Active=1 through cleanup, finite host/state/event bounds                | Burst every bound and stop under dependency loss; measure cost                             | Configured rate/spend ceiling and stop                                |
-| Temporal isolation                     | Disclosure, stale credential, UID/owner tests                         | Prior-run fixtures and canary model                                     | Runner and target denial against canary, unrelated state, prior journals, metadata/network | Disclosure inspection only; no tenant claim                           |
-| Cleanup/backup/recreation              | UID/owner/absence and retention tests                                 | One-unit restore matrix, original-writer fencing, deletion-before-serve | API/finalizer failure, exact absence, teardown/recreation twice                            | Cleanup failure/recovery and endpoint rollback                        |
-| Fact separation                        | Exact API fixtures, service transitions, handoff byte identity        | Crash each operation/publication/deadline/transport/cleanup seam        | Independently fail each fact; preserve explicit `UNKNOWN`                                  | Consumer keeps operation, cleanup, receipt and visualization separate |
-
-Gate 1/3 adversarial tests act from both the host runner OS identity and the most compromised fixed
-target posture. They deny controller state/receipts/staged inputs/backups, canary/unrelated cluster
-objects, prior journals, metadata, API and arbitrary network destinations. A namespace, runtime
-label, or policy manifest alone is not enforcement evidence. Provider/runtime/network behavior, key
-custody, storage fencing, rollback, teardown, cost, and public safety remain unproved until their
-separate gates pass.
-
-A fresh website consumer and a fresh Grafik-boundary consumer must each implement fixture parsing,
-replay from a nonzero cursor, terminal snapshot rendering, raw receipt retrieval, expiry, and all
-retryable/non-retryable errors without reading another checkout or private owner. Consumer
-acceptance compares only to the committed fixtures; it cannot infer fields from implementation.
+A fresh website consumer and Grafik-boundary consumer compare only against committed fixtures. They
+cannot infer unpublished fields or host/storage continuity. If the seven-day implementation window
+closes without one reviewed Gate-1-eligible candidate, the active proof becomes fixtures plus the
+existing local real-process/disposable-cluster demonstration and hosted implementation stops.
 
 ## Review record
 
