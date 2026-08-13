@@ -1,103 +1,118 @@
 # Technical task route
 
-Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0072 narrows KAP-0069's
-serialized route to one seven-day real runner-process-loss proof; KAP-0070 is the sole active
-implementation and acceptance packet. Exact public acceptance or explicit fixtures/local-demo
-fallback closure may lead to the later customer-controlled non-production integration decision.
-Exact-artifact evaluation remains supporting evidence; every provider, deployment, traffic, and
-resident implementation act remains separately gated.
+Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0070 closed the hosted
+sandbox through its accepted fixtures/local-demo fallback. KAP-0073 now owns archival and removal of
+the deployable sandbox, while KAP-0054 is the sole active product-architecture decision for one
+smallest customer-controlled non-production preview. Resident implementation, customer access,
+credentials, production use, another capability, and every hosted act remain separately gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
 
 ## Current direction
 
-[KAP-0046](KAP-0046.md) selected **Stabilize** and produced the verified v0.2 mechanism around the
-sole `kubernetes.set_deployment_image` capability. A new explicit maintainer product-scope decision
-now authorizes two decision stages without widening that capability:
-
-1. Completed [KAP-0069](KAP-0069.md) selected **reshape**: one native controller host, one separate
-   per-run runner process, one dedicated synthetic Kubernetes cluster, and at most one active run
-   through complete cleanup. It explicitly supersedes the remote Kubernetes controller and
-   key-stager topology.
-2. [KAP-0072](KAP-0072.md) supersedes backup/restore and host continuity, archives `bde1e3b`, and
-   imposes a seven-day narrowed implementation window with fixtures/local-demo fallback.
-3. [KAP-0070](KAP-0070.md) must pass retained offline, separately authorized private-live,
-   teardown/recreation, and bounded-public gates for one exact revision or close the fallback.
-4. After either exact public acceptance or fallback closure, [KAP-0054](KAP-0054.md) decides whether
-   CLI/MCP is sufficient for one customer-controlled non-production integration or whether one
-   smallest resident boundary is justified.
-
-Neither decision authorizes provider use, public traffic, a daemon, transport, package, production
-compatibility, or another operation. [KAP-0047](KAP-0047.md) remains the supporting owner for
-approved aggregate technical findings rather than the implementation route.
-
-[`docs/V0.2.md`](../docs/V0.2.md) owns the finite promise:
+The product nucleus is the root `kapsel` package:
 
 ```text
-request-only CLI or MCP intent
-  -> operator-owned exact authorization and Kubernetes authority
-  -> durable conditional mutation opportunity
-  -> restart without blind retry
-  -> bounded SUCCEEDED / FAILED / UNKNOWN receiver result
-  -> frozen signed receipt and offline inspection
+bounded request + operator-held authority
+  -> deep Application
+       -> durable pre-attempt facts
+       -> conditional Kubernetes mutation opportunity
+       -> observation-only recovery after ambiguity
+       -> receiver-bounded SUCCEEDED / FAILED / UNKNOWN
+       -> frozen signed receipt and offline inspection
 ```
 
-This route is not externally validated, production-ready, a Kubernetes operation suite, or an
-automatic v1 roadmap. [KAP-0047](KAP-0047.md) moves after the beta release; it no longer blocks
-implementation.
+The unpublished sandbox proved substantial offline admission, process isolation, authority staging,
+policy, and cleanup behavior, but its remaining work served anonymous hosted operation rather than a
+customer-resident workflow. KAP-0073 accepts KAP-0070's fallback and commissions one bounded
+archive-and-delete packet. Do not refactor or move sandbox machinery into root `kapsel` or a future
+resident package.
 
-## v0.2.0 ordered sequence
+KAP-0054 now compares protected deployment of the existing CLI/MCP adapters with one minimal local
+resident process. It may create one finite implementation packet only if CLI/MCP cannot safely
+provide caller/authority separation, caller-independent recovery, reconnect/status, and receipt
+retrieval for one representative workflow. It does not pre-authorize a daemon, Unix socket, package,
+customer work, or compatibility promise.
 
-| Order | Packet                  | Status     | Required result                                                                                      |
-| ----: | ----------------------- | ---------- | ---------------------------------------------------------------------------------------------------- |
-|     0 | [KAP-0046](KAP-0046.md) | Complete   | Selected Stabilize and rejected widening, freeze, retirement, suite, daemon, and hosted alternatives |
-|     0 | [KAP-0057](KAP-0057.md) | Complete   | Defined and adopted the finite release unit, compatibility classes, gates, and non-goals             |
-|     1 | [KAP-0058](KAP-0058.md) | Complete   | One production lifecycle implementation crossed by every crash test                                  |
-|     2 | [KAP-0059](KAP-0059.md) | Complete   | Adopted beta interfaces and deeper Application/CLI/MCP locality                                      |
-|     3 | [KAP-0060](KAP-0060.md) | Complete   | Exact `v0.1.1` upgrade, migration, backup, rollback, and downgrade proof                             |
-|     4 | [KAP-0064](KAP-0064.md) | Complete   | Stable, navigable private implementation locality across the root release source                     |
-|     5 | [KAP-0061](KAP-0061.md) | Complete   | Accepted finite reliability, hostile-input, security, and performance qualification                  |
-|     6 | [KAP-0062](KAP-0062.md) | Complete   | Authenticated, reproducible beta distribution candidate                                              |
-|     7 | [KAP-0065](KAP-0065.md) | Complete   | Corrected bundled release truth and produced one exact replacement candidate                         |
-|     8 | [KAP-0063](KAP-0063.md) | Complete   | Published, download-verified, and handed off exact prerelease `v0.2.0`                               |
-|     9 | [KAP-0047](KAP-0047.md) | Supporting | Exact-artifact and preview findings remain bounded technical evidence                                |
+KAP-0047 remains the supporting owner for approved aggregate technical findings. Private customer,
+commercial, buyer, acquisition, and continuation evidence remains outside this repository.
 
-Implement and independently review one packet at a time. Do not combine architecture, compatibility,
-migration, locality, qualification, distribution, and publication into one change. A passing packet
-does not pre-authorize the next packet's release act, provider use, or publication.
+## Active work
 
-## Release shape
+|    Lane | Packet                  | Status          | Required result                                                                       |
+| ------: | ----------------------- | --------------- | ------------------------------------------------------------------------------------- |
+|       A | [KAP-0073](KAP-0073.md) | Active deletion | Archive and remove deployable sandbox while preserving root product proof             |
+|       B | [KAP-0054](KAP-0054.md) | Active decision | Select protected CLI/MCP or one minimal customer-resident preview boundary            |
+|    Next | New finite packet       | Gated           | Implement only the accepted preview within its explicit two-to-three-week cap         |
+| Ongoing | [KAP-0047](KAP-0047.md) | Supporting      | Record approved aggregate installation, comprehension, defect, and retained-use facts |
 
-The v0.2 distribution is the root `kapsel` archive for the sole x86-64 GNU/Linux target. It supports
-only the adopted CLI, one exact stdio MCP tool, grant v1 continuity, retained receipt v2 inspection,
-and private operational journal migration named by `docs/V0.2.md` and their direct owners.
+Sandbox deletion and KAP-0054 research may proceed independently, but no resident implementation
+begins until the deletion leaves one clean active workspace and KAP-0054 is accepted. Perform and
+review one implementation packet at a time.
 
-The Rust package remains unsupported for external consumers. [KAP-0048](KAP-0048.md) remains
-conditional future work; v0.2 does not publish crates.io or docs.rs artifacts.
+## Completed v0.2.0 sequence
 
-## Product-cycle and deferred programs
+| Order | Packet                  | Outcome                                                               |
+| ----: | ----------------------- | --------------------------------------------------------------------- |
+|     0 | [KAP-0046](KAP-0046.md) | Selected Stabilize without widening                                   |
+|     1 | [KAP-0057](KAP-0057.md) | Adopted finite release unit and compatibility classes                 |
+|     2 | [KAP-0058](KAP-0058.md) | Unified production and crash-test lifecycle                           |
+|     3 | [KAP-0059](KAP-0059.md) | Adopted Application, CLI, MCP, grant, and receipt beta interfaces     |
+|     4 | [KAP-0060](KAP-0060.md) | Proved exact v0.1.1 upgrade, backup, rollback, and downgrade behavior |
+|     5 | [KAP-0064](KAP-0064.md) | Deepened root release-source locality                                 |
+|     6 | [KAP-0061](KAP-0061.md) | Accepted finite reliability and security qualification                |
+|     7 | [KAP-0062](KAP-0062.md) | Produced authenticated reproducible distribution                      |
+|     8 | [KAP-0065](KAP-0065.md) | Corrected bundled release truth                                       |
+|     9 | [KAP-0063](KAP-0063.md) | Published and publicly verified exact prerelease v0.2.0               |
 
-| Packet                  | Status             | Route                                                                                        |
-| ----------------------- | ------------------ | -------------------------------------------------------------------------------------------- |
-| [KAP-0069](KAP-0069.md) | Superseded in part | Selected native serialized route; KAP-0072 removes its backup/restore guarantee              |
-| [KAP-0072](KAP-0072.md) | Complete           | Narrowed the sandbox to a seven-day real runner-loss proof with explicit fallback            |
-| [KAP-0070](KAP-0070.md) | Active             | Produce the narrowed proof or close fixtures/local-demo fallback                             |
-| [KAP-0054](KAP-0054.md) | Queued             | After KAP-0070 public acceptance or fallback closure, select the resident boundary           |
-| [KAP-0050](KAP-0050.md) | Superseded         | Historical umbrella; KAP-0070 exclusively owns any deployment completion                     |
-| [KAP-0053](KAP-0053.md) | Superseded         | Preserve mapped offline evidence, but never resume its controller/stager deployment topology |
-| [KAP-0048](KAP-0048.md) | Conditional        | Cargo/docs.rs distribution requires a later explicit use and compatibility decision          |
-| [KAP-0066](KAP-0066.md) | Deferred           | Release-artifact tooling is inactive without an observed product blocker                     |
-| [KAP-0067](KAP-0067.md) | Deferred           | Qualification tooling remains behind KAP-0066 and an observed product blocker                |
-| [KAP-0068](KAP-0068.md) | Deferred           | Interface minimization waits for the selected real consumers                                 |
-| [KAP-0071](KAP-0071.md) | Deferred           | Optional Nix development shell waits for KAP-0070 closure and accepted pilot evidence        |
+The v0.2 distribution remains the root archive for one x86-64 GNU/Linux target. It supports only the
+adopted CLI, fixed stdio MCP adapter, grant v1 continuity, retained receipt v2 inspection, and
+private journal migration named by `docs/V0.2.md`. It is a developer beta, not a resident or
+production product.
 
-KAP-0051, KAP-0052, KAP-0055, and KAP-0056 remain accepted sandbox history. Their implementation and
-the shared workspace version do not make the sandbox, private controller protocols, runner handoff,
-manifests, provider resources, or hosted endpoint part of v0.2 compatibility.
+## Sandbox history
 
-No provider selection, credential access, provisioning, spend, image push, endpoint, DNS, or public
-traffic is authorized. The beta release does not depend on the sandbox.
+| Packet                  | Status   | Historical result                                               |
+| ----------------------- | -------- | --------------------------------------------------------------- |
+| [KAP-0051](KAP-0051.md) | Complete | Fixed public `v1` fixture contract                              |
+| [KAP-0052](KAP-0052.md) | Complete | Deterministic admission/projection service and package consumer |
+| [KAP-0055](KAP-0055.md) | Complete | Separate runner handoff and real process-loss recovery          |
+| [KAP-0056](KAP-0056.md) | Complete | Accepted bounded website consumer contract                      |
+| [KAP-0069](KAP-0069.md) | Complete | Selected serialized native-host reshape                         |
+| [KAP-0072](KAP-0072.md) | Complete | Removed backup/restore and imposed finite fallback              |
+| [KAP-0070](KAP-0070.md) | Complete | Closed hosted route through fixtures/local-demo fallback        |
+
+These packets remain evidence and rationale. Their implementation, fixtures, private handoff,
+controller state, manifests, provider resources, and HTTP vocabulary are not v0.2 or resident
+compatibility surfaces. No sandbox gate may be resumed without a new explicit direction decision.
+
+## Deferred and superseded programs
+
+| Packet                  | Status      | Route                                                              |
+| ----------------------- | ----------- | ------------------------------------------------------------------ |
+| [KAP-0050](KAP-0050.md) | Superseded  | Historical hosted umbrella                                         |
+| [KAP-0053](KAP-0053.md) | Superseded  | Historical provider/deployment topology; no live authority remains |
+| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs needs later explicit use and compatibility evidence  |
+| [KAP-0066](KAP-0066.md) | Deferred    | Release automation requires an observed product blocker            |
+| [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling requires an observed product blocker         |
+| [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization waits for real consumers                    |
+| [KAP-0071](KAP-0071.md) | Deferred    | Optional Nix shell waits for accepted resident-pilot evidence      |
+
+No provider selection, credential access, provisioning, spend, image push, endpoint, DNS, traffic,
+customer cluster, production workload, second operation, generic abstraction, or automatic release
+is authorized.
+
+## Product continuation rule
+
+A demo run, fixture, test count, release, download, star, website visit, feature request, or
+installation attempt does not authorize another capability or production route. Retained external
+use in a real caller workflow is required before production resident compatibility or another
+product cycle.
+
+Future receipt, protocol, SDK, provider, Kubernetes, storage, and separate CLI packages remain
+behind the extraction triggers in [V1 technical direction](../docs/VISION.md). Create a finite task
+only after the exact trigger passes.
 
 ## Completed 0.1 release sequence
 
@@ -111,16 +126,4 @@ traffic is authorized. The beta release does not depend on the sandbox.
 |     5 | [KAP-0043](KAP-0043.md) | Thin fixed-schema MCP adapter                     |
 |     6 | [KAP-0044](KAP-0044.md) | Installable, documented 0.1.0 artifact            |
 |     7 | [KAP-0045](KAP-0045.md) | Rehearsed and published 0.1.0                     |
-|     8 | [KAP-0049](KAP-0049.md) | Published ten-minute self-serve `v0.1.1` patch    |
-
-## After the bounded product cycle
-
-The product cycle may justify evidenced corrections, one retained customer-controlled preview, one
-additional operation completing a repeated workflow, maintenance-only scope, or retirement. A demo
-run, feature request, download, star, website visit, release completion, or installation attempt
-does not authorize another capability or generic interface. Production resident compatibility
-requires retained use and a separate direction decision.
-
-Future receipt, protocol, client SDK, provider, Kubernetes, storage, and separate CLI packages
-remain behind the extraction triggers in [V1 technical direction](../docs/VISION.md). Create a
-finite task only after the exact trigger passes.
+|     8 | [KAP-0049](KAP-0049.md) | Published ten-minute self-serve v0.1.1 patch      |

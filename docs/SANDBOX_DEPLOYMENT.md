@@ -1,24 +1,24 @@
 # Public sandbox deployment contract
 
-Status: active narrowed KAP-0070 serialized-deployment contract. Gate 1 Slices 1–4 and the
-runner-hardening follow-up remain accepted. KAP-0072 supersedes Slice 5 backup/restore and
-authorizes only one seven-day finite implementation attempt. No provider, credential, resource,
-spend, image push, endpoint, DNS, private live command, or public traffic is authorized.
+Status: historical deployment contract for the retired hosted route. Gate 1 Slices 1–4 and the
+runner-hardening follow-up remain offline evidence, but KAP-0070 closed through fallback and
+KAP-0073 commissions archival and removal. No provider, credential, resource, spend, image push,
+endpoint, DNS, private live command, or public traffic is authorized.
 
-Kind: design. Authority: ownership, isolation, capacity, durability while controller state remains
-validated, catastrophic fail-closed teardown, clean recreation, key custody, global stop, and
-cleanup for the fixed public sandbox.
+Kind: historical design. Authority: archived ownership, isolation, capacity, durability while
+controller state remains validated, catastrophic fail-closed teardown, clean recreation, key
+custody, global stop, and cleanup requirements for the retired fixed public sandbox.
 
-Owns: The one permitted native-controller-host composition and the controls that later KAP-0070
-gates must prove.
+Owns: The retired native-controller-host composition and the controls that its cancelled KAP-0070
+gates would have had to prove.
 
 Does not own: A hosting provider, HTTP framework, generic storage/provider/queue interface,
 Kubernetes product or version, production deployment, general multi-tenancy, or KAP-0038
 lifecycle/result/receipt meaning.
 
-## One active route
+## Retired route
 
-The only active deployment route is:
+The retired deployment candidate was:
 
 ```text
 required same-origin edge for public exposure
@@ -60,23 +60,13 @@ reference-safe collection boundary. KAP-0072 archives the later clean backup/res
 `bde1e3b` and supersedes that implementation route. Live isolation, catastrophic teardown, clean
 recreation, and public enforcement remain unproved; deterministic records do not establish them.
 
-## Authorization gates
+## Cancelled authorization gates
 
-KAP-0070 uses four separately accepted evidence stages after this contract correction:
-
-1. **Gate 1, serialized composition:** deterministic, topology-neutral offline implementation and
-   package/image evidence only. It selects no provider and uses no external authority.
-2. **Gate 2, reviewed live authorization:** one zero-resource fixture may research and name exact
-   provider/runtime/version/region/cost facts. Only separate maintainer approval of that fixture may
-   authorize the bounded private experiment.
-3. **Gate 3, private live acceptance:** no public application endpoint; prove the exact host,
-   cluster, intentional runner recovery, isolation, cost, catastrophic teardown, and clean
-   recreation assertions.
-4. **Gate 4, bounded public exposure:** separately approve one accepted revision, endpoint, DNS,
-   exposure interval, spend ceiling, independent traffic cutoff, stop, teardown, and cleanup owner
-   before traffic.
-
-Passing a gate never authorizes its successor. Gate 0 performs no provider research or command.
+The retired route had planned four evidence stages: offline serialized composition, reviewed live
+authorization, private-live acceptance, and bounded public exposure. KAP-0073 cancels every stage
+after the accepted offline evidence. Nothing in this historical document may authorize provider
+research, an account, credential, resource, spend, image, endpoint, DNS, private-live command, or
+traffic.
 
 ## Ownership and authority
 
@@ -307,9 +297,9 @@ server-created `default` ServiceAccounts for the baseline, canary, and run Names
 are cluster-scoped: one RuntimeClass, two ClusterRoles, two ClusterRoleBindings, and five
 Namespaces. The append-only per-run cleanup inventory is independently bounded to 64 unique UIDs
 over the 180-second run and cleanup lifetime. Exceeding it fails closed, holds capacity, and
-escalates; it never authorizes name-only deletion. Gate 2 must inventory unavoidable
-provider-managed objects separately; they cannot carry a Kapsel owner label or become visitor
-cleanup candidates.
+escalates; it never authorizes name-only deletion. The cancelled Gate 2 would have inventoried
+unavoidable provider-managed objects separately; they cannot carry a Kapsel owner label or become
+visitor cleanup candidates.
 
 The provisioner ClusterRole has exactly these rules: `get/list` RuntimeClasses, ClusterRoles,
 ClusterRoleBindings, baseline/canary Namespaces and their fixed ServiceAccounts, and the canary
@@ -710,17 +700,17 @@ withdrawn independently, the endpoint remains withdrawn and KAP-0070's retiremen
 label or name scan cannot replace a lost UID/owner inventory. A new database must never initialize
 against a possibly surviving old cluster.
 
-The active sandbox creates no backup generation, backup-reference owner, backup identity, restore
-marker, replacement-host copy, or backup/restore command. Public runs, locators, projections, and
-receipts may disappear before their nominal expiry after catastrophic loss; the sandbox does not
-reconstruct them. A repeated idempotency key can become a new admission only after exact absence,
-clean stopped recreation, readiness, and explicit reopen. Host/storage loss and endpoint withdrawal
-never establish a KAP-0038 result or prove cleanup.
+The retired sandbox design creates no backup generation, backup-reference owner, backup identity,
+restore marker, replacement-host copy, or backup/restore command. Public runs, locators,
+projections, and receipts may disappear before their nominal expiry after catastrophic loss; the
+sandbox does not reconstruct them. A repeated idempotency key can become a new admission only after
+exact absence, clean stopped recreation, readiness, and explicit reopen. Host/storage loss and
+endpoint withdrawal never establish a KAP-0038 result or prove cleanup.
 
-KAP-0070's offline catastrophe lane must prove the no-outcome state machine and clean-start stop.
-Gate 3 must prove real independent traffic cutoff, complete teardown, zero provider inventory, clean
-recreation, smoke, a second teardown, and zero inventory again. No provider action is authorized by
-this contract text.
+The retired route would have required an offline no-outcome state machine, clean-start stop, real
+independent traffic cutoff, complete teardown, zero provider inventory, clean recreation, smoke, a
+second teardown, and zero inventory again. KAP-0073 cancels those gates. No provider action is
+authorized by this contract text.
 
 ## Gate 0 preservation and live proof map
 
@@ -738,15 +728,15 @@ this contract text.
 Gate 0 and accepted Slices 1–4 retain only their named offline evidence. Archived Slice 5 backup and
 restore evidence at `bde1e3b` is historical engineering evidence, not active composition proof or a
 deployable alternative. Provider/runtime/network enforcement, real per-source abuse control, traffic
-cutoff, teardown, cost, and public safety remain unproved until their separate gates pass.
+cutoff, teardown, cost, and public safety remained unproved when KAP-0073 cancelled their gates.
 
-## Acceptance and non-claims
+## Historical acceptance and non-claims
 
-A narrowed sandbox is acceptable only when one exact revision proves the retained real runner-loss
-mechanism, fixed authority and policy, one-active capacity through exact cleanup absence, real abuse
-control, independent endpoint cutoff, and catastrophic teardown/clean recreation twice through its
-separately authorized gates. Public `v1` bytes remain unchanged, but continuity applies only while
-controller state remains present and validated.
+The narrowed sandbox would have been acceptable only if one exact revision proved the retained real
+runner-loss mechanism, fixed authority and policy, one-active capacity through exact cleanup
+absence, real abuse control, independent endpoint cutoff, and catastrophic teardown/clean recreation
+twice. Those gates are cancelled and no deployed acceptance exists. Public `v1` bytes remain
+unchanged, but continuity applies only while controller state remains present and validated.
 
 If any mandatory property requires backup/restore, replacement-host continuity, a remote controller,
 concurrent runs, a generic provider/storage/queue seam, broader caller authority, customer data,

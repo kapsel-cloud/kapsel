@@ -22,15 +22,14 @@ lifecycle, authority separation, receiver-bounded result, and receipt are the pr
 
 ```text
 agent or workflow
-  -> CLI, MCP, or versioned local interface
-       -> customer-resident kapseld
-            -> deep kapsel application
-                 -> bounded capability
-                 -> customer-held provider authority
-                 -> durable lifecycle and recovery
-                 -> receiver observation
-                 -> signed receipt
-                      -> optional managed configuration, upgrades, and receipt indexing
+  -> protected CLI, MCP, or earned versioned local interface
+       -> deep kapsel application
+            -> bounded capability
+            -> customer-held provider authority
+            -> durable lifecycle and recovery
+            -> receiver observation
+            -> signed receipt
+                 -> optional later resident lifecycle and managed coordination
 ```
 
 Provider credentials and execution authority remain customer-resident by default. A managed Kapsel
@@ -39,26 +38,24 @@ of provider truth or silently move customer authority into the cloud.
 
 ## Current product cycle
 
-The verified v0.2 mechanism now supports one bounded product-first cycle without becoming a general
+The verified v0.2 mechanism now supports one bounded sell-first cycle without becoming a general
 platform commitment:
 
-1. decide and accept one real fixed-input public runner-process-loss proof using the existing
-   sandbox contracts and implementation where they remain technically justified;
-2. expose that exact accepted deployment through the independently owned website consumer; and
-3. decide whether the existing CLI/MCP process is sufficient for one customer-controlled
-   non-production integration or whether one smallest resident process, interface, and installation
-   boundary is required.
+1. close the hosted sandbox through its fixtures/local-demo fallback and remove its deployable
+   implementation from the active workspace;
+2. decide whether protected CLI/MCP composition is sufficient for one customer-controlled
+   non-production integration or whether one smallest resident process and local interface is
+   necessary; and
+3. implement at most one finite preview only after that decision and separate authorization.
 
-KAP-0069 selected a serialized sandbox reshape; KAP-0072 narrows KAP-0070 to a seven-day real
-runner-process-loss proof with no controller-host/storage continuity and a fixtures/local-demo
-fallback. KAP-0054 owns the later resident-boundary decision. None may infer a resident topology,
-transport, packaging, authentication, storage, or compatibility from the sandbox. Provider use,
-public traffic, and resident implementation each require their own exact accepted gate or owner.
+KAP-0073 owns sandbox retirement and makes KAP-0054 the sole active product-architecture decision.
+The resident route cannot inherit sandbox topology, transport, scheduling, authority staging,
+isolation, cleanup, or compatibility. Customer access, credentials, implementation, and production
+use each require their own exact owner.
 
-The cycle keeps one capability and tests two different facts: the public proof tests comprehension;
-the customer-controlled preview tests whether the authority and recovery boundary is useful enough
-to install. It does not authorize a second operation, generic provider seam, managed control plane,
-production support, or v1 compatibility.
+The cycle keeps one capability and tests one external-use fact: whether another team will install
+and retain the authority and recovery mechanism. It does not authorize a second operation, generic
+provider seam, managed control plane, production support, or v1 compatibility.
 
 ## Milestone separation
 
@@ -76,19 +73,14 @@ integrity, and qualification obligations without adding a capability, daemon, ho
 public Rust SDK, or production-support claim. Ordered release evidence owns exact candidate and
 publication state; external beta evidence follows publication.
 
-### Bounded public product proof
+### Retired public product proof
 
-One independently deployed sandbox may expose fixed non-consequential scenarios through a narrow
-Rust module that reuses the existing `Application`. Its accepted [HTTP contract](SANDBOX_API.md) and
-[deployment contract](SANDBOX_DEPLOYMENT.md) own hosted admission, isolation, reconnectable public
-projection, bounded scheduling, cleanup, and receipt presentation. KAP-0069 selected reshape:
-KAP-0070 must preserve the fixed interface and semantic spine while proving one native controller
-host, separate per-run runner, dedicated synthetic cluster, and at most one active run through
-cleanup. The prior Kubernetes-hosted controller/stager topology and later backup/restore branch are
-superseded. Host/storage loss withdraws the endpoint and requires complete teardown, absence, clean
-stopped recreation, readiness, and explicit reopen; prior visitor state is not reconstructed. This
-remains a product-comprehension surface, not the production resident interface or a hosted customer
-control plane.
+KAP-0070 closed the independently designed sandbox through its accepted fixtures/local-demo
+fallback. The [historical HTTP contract](SANDBOX_API.md),
+[historical deployment contract](SANDBOX_DEPLOYMENT.md), offline slices, and archive tags remain
+engineering evidence, but KAP-0073 removes deployable sandbox code and active hosted gates. The root
+release-owned real-process and disposable-`kind` demonstrations remain the supported way to inspect
+the mechanism. No sandbox topology or interface becomes a customer product requirement.
 
 ### Customer-resident preview and production v1
 
@@ -98,10 +90,10 @@ process and local caller boundary. That preview decision exists to make one real
 it is not production v1 and does not inherit sandbox topology or public compatibility.
 
 A later production `kapseld` release requires retained real-workflow use and a new explicit
-production decision. It would own supported local admission, durable execution, restart and upgrade
+production decision. It would own supported local admission, process lifecycle, restart and upgrade
 recovery, bounded concurrency, provider authority, grant and trust configuration, receipt
-publication, health, diagnostics, and one versioned local interface. Neither the v0.2 beta, public
-proof, nor preview authorizes that production release.
+publication, health, diagnostics, and one versioned local interface. Neither the v0.2 beta, retired
+public proof, nor preview authorizes that production release.
 
 ## Package strategy
 
@@ -112,26 +104,24 @@ concept being generic does not by itself justify a package.
 
 ```text
 kapsel           product library plus local CLI and MCP executable
-kapsel-sandbox   unpublished fixed public-sandbox service package
 kapsel-dev       unpublished repository tooling
 fuzz             excluded hostile-input package
 ```
+
+`kapsel-sandbox` remains temporarily in the workspace only until KAP-0073's archival and deletion
+packet lands. It is not part of the target active workspace.
 
 The root `kapsel` package remains one deep product module. `Application` is the proven shared
 interface used by the CLI and MCP adapters. Authorization, SQLite lifecycle, the concrete Kubernetes
 adapter, classification, receipt construction, and publication remain private implementation.
 
-### Earned sandbox package
+### Retired sandbox package
 
-```text
-kapsel-sandbox -> kapsel
-```
-
-KAP-0052 implements `kapsel-sandbox` as an independently deployable consumer with a one-way
-dependency on `kapsel`. It owns public admission, capacity, scheduling, reconnectable projection,
-retention, and cleanup. It uses a separate SQLite admission store and immutable receipt directory,
-never reuses the gateway journal as its run database, and never exposes local receipt paths. The
-package creates no reverse dependency or authorization for another package direction.
+KAP-0052 earned one independent `kapsel-sandbox -> kapsel` consumer and proved the root package
+could serve another compile-time composition without reverse dependencies. KAP-0073 now archives and
+removes that consumer because its hosted requirements do not serve the resident pilot. Do not retain
+or extract its admission, runner, staging, scheduling, cleanup, or transport modules merely to
+preserve an unused seam.
 
 ### Production package
 
@@ -194,14 +184,14 @@ classifier-complete concrete evidence.
 
 1. **CLI** for operator provisioning, local operation, diagnostics, and inspection.
 2. **Stdio MCP** for bounded request-only agent integration.
-3. **Public sandbox HTTP** for one accepted fixed-scenario product proof only.
-4. **Customer-controlled preview interface** selected by KAP-0054 only if CLI/MCP is insufficient.
-5. **Production resident interface** only after retained workflow use earns `kapseld` compatibility.
-6. **Managed Kapsel** only after a resident product proves demand for configuration, upgrades, fleet
+3. **Customer-controlled preview interface** selected by KAP-0054 only if protected CLI/MCP is
+   insufficient.
+4. **Production resident interface** only after retained workflow use earns `kapseld` compatibility.
+5. **Managed Kapsel** only after a resident product proves demand for configuration, upgrades, fleet
    health, or receipt indexing.
-7. **Grafik consumer adapter** for visualization of bounded public projections without authority.
-8. **One evidence-selected operation** only when repeated workflows select the same concrete need.
-9. **Another provider** only when a second production adapter exposes a repeated seam.
+6. **Grafik consumer adapter** only for an independently justified retained product surface.
+7. **One evidence-selected operation** only when repeated workflows select the same concrete need.
+8. **Another provider** only when a second production adapter exposes a repeated seam.
 
 ## Intended v1 compatibility surfaces
 

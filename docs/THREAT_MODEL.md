@@ -125,10 +125,14 @@ Offline inspection input may be malformed, oversized, self-trusting, or substitu
 reports are bounded, inspection uses explicit external trust, and no inspection step performs
 network access.
 
-## Public sandbox threats
+## Historical public sandbox threats
 
-The sandbox is anonymous and intentionally discloses fixed synthetic demonstration evidence. A
-high-entropy run locator limits opportunistic enumeration but is a bearer locator, not
+KAP-0070 closed the hosted route through fallback and KAP-0073 removes its deployable
+implementation. This section preserves the threat analysis for historical evidence; none of these
+controls is an active product or deployment claim.
+
+The sandbox was designed to be anonymous and intentionally disclose fixed synthetic demonstration
+evidence. A high-entropy run locator limits opportunistic enumeration but is a bearer locator, not
 authentication or confidentiality. Anyone who obtains it before expiry can read that run's public
 projection and unchanged receipt.
 
@@ -180,10 +184,10 @@ proved sandboxed-runtime-or-equivalent boundary in a dedicated synthetic cluster
 denied the operator canary, unrelated resources, host/controller state, receipts, keys, runner and
 cleanup authority, and prior-run artifacts.
 
-Namespaces, RBAC, quotas, NetworkPolicy, and a runtime label are not hard isolation or enforcement
-proof. Gate 3 must test the selected runtime, network implementation, metadata path, and Kubernetes
-authority. A container or kernel escape can still compromise the dedicated cluster. No production or
-customer workload may share it.
+Namespaces, RBAC, quotas, NetworkPolicy, and a runtime label were not hard isolation or enforcement
+proof. The retired Gate 3 would have tested the selected runtime, network implementation, metadata
+path, and Kubernetes authority; KAP-0073 cancels that live gate. A container or kernel escape can
+still compromise the dedicated cluster. No production or customer workload may share it.
 
 ### Compromised native runner and host boundary
 
@@ -219,10 +223,10 @@ that parent. Linux subset constraints mean some hostile cases necessarily carry 
 in prerequisite sets; this does not weaken the separately asserted target-set coverage.
 
 The mount namespace prevents propagation and creates the fixed state alias but does not conceal the
-remaining host filesystem. This follow-up selects no seccomp, Landlock, or equivalent syscall/path
-confinement; the unrestricted native path/syscall surface remains an explicit non-claim and Gate 3
-adversary. The pinned C-source/compiler identity and exact helper/runner bytes remain supply-chain
-inputs to the planned authenticated bundle rather than proof of final bundle reproducibility.
+remaining host filesystem. This follow-up selected no seccomp, Landlock, or equivalent syscall/path
+confinement; the unrestricted native path/syscall surface remains an explicit historical non-claim.
+The pinned C-source/compiler identity and exact helper/runner bytes remain supply-chain inputs to
+the planned authenticated bundle rather than proof of final bundle reproducibility.
 
 OS users and a sandboxed process are not hard tenant isolation. Symlink/path substitution, parent or
 inode replacement, leaked descriptors, permissive groups, stale processes, ptrace/kernel escape, and
@@ -274,9 +278,9 @@ outage, and failure to erase prior-run state before dispatch require explicit de
 
 The HTTP, database, Kubernetes client, base image, scenario image, CNI, runtime, cluster, receipt
 store, and key service are supply-chain inputs. Exact versions, provenance, vulnerability response,
-rollback, and image immutability require fresh KAP-0070 serialized-deployment evidence; historical
-KAP-0053 fixtures are not authority. Pinning and scanning reduce but do not eliminate malicious
-dependencies or registry/control-plane compromise.
+rollback, and image immutability would have required fresh live evidence; KAP-0073 cancelled that
+route, and historical KAP-0053 fixtures are not authority. Pinning and scanning reduce but do not
+eliminate malicious dependencies or registry/control-plane compromise.
 
 ### Global stop misuse or failure
 
@@ -312,5 +316,5 @@ The experiment does not establish:
   controller, runner, cleanup, target, key, exposure, and operator authorities.
 - The host OS identities/path controls and the selected Kubernetes runtime, network implementation,
   RBAC/admission policy, storage, and cleanup behavior enforce the exact serialized configuration
-  only after KAP-0070 proves them. Contract text and historical KAP-0053 Pod/PVC, workload-identity,
-  stager, or provider evidence cannot establish that enforcement.
+  were never proved live. KAP-0073 cancelled that route; contract text and historical KAP-0053
+  Pod/PVC, workload-identity, stager, or provider evidence cannot establish enforcement.

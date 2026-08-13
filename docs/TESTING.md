@@ -199,28 +199,21 @@ The retained deterministic lanes prove:
 - controller-process restart only from the same validated state; and
 - operation, receipt, deadline, handoff, cleanup, retention, and visualization as separate facts.
 
-The narrowed catastrophe lane must prove that controller-host/storage loss or rollback appends no
-receiver result, target rejection, `service_failed`, receipt, cleanup absence, or capacity release;
-withdraws admission independently; and makes every clean initialization stopped. It must reject any
-attempt to initialize against a possibly surviving old cluster. Provider-level inventory, traffic
-cutoff, teardown, zero inventory, clean recreation, readiness, explicit reopen, and a second
-teardown remain Gate 3 evidence, not deterministic proof.
-
-One real abuse-control lane must bind a finite source signal and trust contract,
-request/window/burst limits, bounded memory/state, same-origin proxy behavior, pre-admission
-rejection, and absence of raw source identity from run state and public output. Fixture
-`rate_limited` bytes alone are not evidence that this composition exists.
+The retired route would have required catastrophe and real abuse-control lanes. KAP-0073 cancels
+those requirements rather than presenting deterministic fixtures as live provider, traffic-cutoff,
+teardown, clean-recreation, or per-source abuse evidence. No such lane may be added during archival
+or deletion.
 
 Archived checkpoint `bde1e3b` preserves clean backup/restore engineering evidence but is not part of
-the active proof. Delete backup generations, references, restore markers, replacement-host tests,
-and the thirteen nonclean reconstruction matrix while retaining every independently owned gate. No
-test may present the archive as a deployable alternative or widen `Application` into a storage or
-host-continuity interface.
+the active proof. Revision `5d55e67` deleted backup generations, references, restore markers,
+replacement-host tests, and the thirteen nonclean reconstruction matrix. KAP-0073 now removes the
+remaining hosted package and sandbox-only gates while preserving root product proof. No test may
+present either archive as a deployable alternative or widen `Application` into a hosted interface.
 
 A fresh website consumer and Grafik-boundary consumer compare only against committed fixtures. They
-cannot infer unpublished fields or host/storage continuity. If the seven-day implementation window
-closes without one reviewed Gate-1-eligible candidate, the active proof becomes fixtures plus the
-existing local real-process/disposable-cluster demonstration and hosted implementation stops.
+cannot infer unpublished fields or host/storage continuity. KAP-0070 closed through fallback, so the
+retained historical proof is fixtures plus the existing local real-process/disposable-cluster
+demonstration. KAP-0073 removes the hosted implementation from the active workspace.
 
 ## Review record
 

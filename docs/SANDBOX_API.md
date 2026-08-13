@@ -1,6 +1,8 @@
 # Public sandbox API
 
-Status: accepted demonstration contract; no production compatibility promise.
+Status: historical contract for the retired hosted route. KAP-0070 closed through fallback and
+KAP-0073 commissions removal of the deployable implementation. These bytes may remain as fixtures;
+no deployment, compatibility, or traffic is authorized.
 
 Kind: contract. Authority: public sandbox HTTP grammar, admission identity, reconnectable public
 projection, retention, errors, and disclosure.

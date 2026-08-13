@@ -119,119 +119,47 @@ they do not add a runtime plugin, provider interface, application seam, trust so
 vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract.
 
 The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
-product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package,
-the independently deployable `crates/kapsel-sandbox` consumer, and the excluded `fuzz` package. No
-product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`,
-`kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only after an independent
-consumer, a one-way package dependency graph, or a measured dependency-isolation need proves that a
-package seam is real. Neither the 0.1 release nor the adopted v0.2 beta establishes a supported
-external Rust interface or justifies another package boundary. Public Rust visibility is retained
-only where the ordinary binary adapters, offline inspection/provisioning composition, the real
-`kapsel-sandbox -> kapsel` consumer, or package tests require it. The public exports, module tree,
-and private adapter seams may change within v0.2.x without external migration support; crates.io,
-docs.rs, and `cargo install` remain unsupported.
+product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package
+and excluded `fuzz` package. The unpublished `kapsel-sandbox -> kapsel` consumer remains only until
+KAP-0073's bounded archival and deletion lands. Its removal is deliberate evidence that hosted
+orchestration is not product core. No product package named `kapsel-core`, `kapsel-gateway`,
+`kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or `kapsel-testing` exists. Product code may be
+extracted only after an independent deployment need, multiple real consumers, or measured dependency
+isolation proves a package seam. Neither the 0.1 release, v0.2 beta, nor retired sandbox establishes
+a supported external Rust interface. Public Rust visibility may contract after sandbox deletion and
+may change within v0.2.x without external migration support; crates.io, docs.rs, and `cargo install`
+remain unsupported.
 
-KAP-0052 implements the accepted [public sandbox API](SANDBOX_API.md) and the retained semantic
-parts of the [deployment composition](SANDBOX_DEPLOYMENT.md) through one one-way
-`kapsel-sandbox -> kapsel` package. The package owns bounded HTTP translation, a separate SQLite
-admission/projection store, fixed-capacity scheduling and recovery leases, an admission-frozen
-policy inventory, cleanup identity, and 180-second duration, a dispatch-established absolute
-deadline, deterministic exact per-object UID/owner/content verification, immutable receipt-file
-publication with durable pending ownership serialized against orphan collection, operator-triggered
-and restart-before-serve retention sweeps, and cleanup completion gated by exact absence evidence
-for every row in an append-only per-run kind/namespace/name/UID/owner inventory (with the separate
-confirmed-no-resource path). The SQLite entry is created 0600, opened no-follow, and checked as the
-same owner-private regular inode before and after open. These are service-model checks, not proof of
-live Kubernetes enforcement. It invokes the same exported `Application` with server-owned
-configuration only after policy verification and neither reads gateway journal rows nor introduces a
-provider, storage, or public trait seam.
+## Retired sandbox composition
 
-```text
-browser -> required edge -> kapsel-sandbox -> kapsel Application
-                                |                 |
-                                |                 -> unchanged KAP-0038 semantics
-                                -> separate admission/projection/cleanup state
-```
+KAP-0052, KAP-0055, KAP-0069, KAP-0072, and completed KAP-0070 preserve historical evidence for one
+`kapsel-sandbox -> kapsel` consumer. It implemented fixed HTTP admission and projection, separate
+SQLite service state, one-active scheduling, native runner isolation and handoff, fixed authority
+staging, synthetic-cluster policy, receipt retention, and exact cleanup. It was never deployed or
+accepted live.
 
-The sandbox directly pins `http` for typed in-process translation, `httparse` for bounded raw
-HTTP/1.1 parsing without route duplication, `serde`/`serde_json` for exact bounded `v1` documents,
-`rusqlite` with bundled SQLite for one local transactional service store, `getrandom` for opaque
-128-bit run identities, `sha2` for exact receipt and keyed tombstone digests, and `rustix` for
-owner-private Unix path checks. It reuses no transitive dependency implicitly.
+KAP-0073 closes that route through fixtures/local-demo fallback and commissions removal of the
+package, deployment assets, and sandbox-only gates. These concerns were created by anonymous hosted
+operation and do not define the customer-resident product. Do not refactor or extract its runner,
+staging, scheduler, cleanup, transport, provider, or storage machinery into root `kapsel` or a
+future resident package.
 
-## Active serialized sandbox composition
-
-The [deployment contract](SANDBOX_DEPLOYMENT.md) now owns one active KAP-0070 route:
+The active architecture remains:
 
 ```text
-same-origin edge
-  -> native controller host and its single writer
-       -> owner-private admission SQLite + immutable receipt directory
-       -> local serial scheduler / retention / cleanup roles
-       -> authenticated KAP-0055 handoff
-            -> separate per-run OS runner identity
-                 -> private gateway journal + receipt outbox
-                 -> real kapsel Application
-                      -> dedicated synthetic cluster
-                           -> one policy-complete namespace + target
-                           -> operator-owned isolation canary
+local CLI or fixed stdio MCP adapter
+  -> deep kapsel Application
+       -> exact authorization and customer-held Kubernetes authority
+       -> durable lifecycle and observation-only recovery
+       -> receiver-bounded result
+       -> frozen signed receipt
 ```
 
-At most one run owns dispatch or cleanup capacity. Release requires terminal or `not_attempted`
-handoff plus exact absence of every recorded UID/owner object; operation, receipt availability,
-deadline, handoff transport, cleanup, and capacity release remain separate durable transitions. The
-controller host stages fixed authorization, receipt, tombstone, Kubernetes, handoff, and
-public-trust inputs descriptor-relatively under exact owner/mode/no-follow rules. The runner
-receives only fixed read-only descriptors, owns one fresh journal/outbox, and cannot access
-controller state, receipts, other/prior journals, or cleanup authority.
-
-Runner-process loss and controller-process restart with the same present, validated state remain
-recovery seams. Controller-host or storage loss does not: independent exposure authority withdraws
-the endpoint, no old run is reconstructed or classified, the complete dedicated synthetic and
-provider inventory is torn down and proved absent, and only a fresh stopped composition may be
-validated and explicitly reopened. The active route has no backup or replacement-host interface.
-
-This is the selected sandbox deployment path, not completed enforcement. The implementation now
-retains the exact public contract, KAP-0052 service semantics, real one-way
-`kapsel-sandbox -> kapsel` dependency, KAP-0055 process handoff, and KAP-0070's durable one-active
-reservation with concrete local scheduler, retention, and cleanup roles. The scheduler recovers
-active work before FIFO dispatch; cleanup retry and escalation retain capacity until exact UID/owner
-absence. Accepted Slice 2 adds one controller-owned `runner_host` deep module: it pins fixed roots
-and inputs, transfers individual read-only descriptors through `SCM_RIGHTS`, creates a fresh
-generation, and places the Linux process tree in one private cgroup-v2 generation. One fixed C
-helper establishes identity, descriptor closure, parent-death, and `no_new_privs` before the Rust
-runner runtime without weakening workspace `unsafe_code = "forbid"`. Durable reopen, concrete
-controller composition, the named descriptor/identity/cgroup/recovery denial evidence, the exact
-x86-64 Linux gate, and fresh review passed for that offline host boundary. The accepted focused
-Slice 2 follow-up keeps one fixed C helper, freezes and normalizes the exact controller/helper
-bootstrap, rejects executable file capabilities, verifies every final capability set and securebits
-at zero before Rust authority, and binds source/compiler/helper/runner identities for Slice 6. It
-selects no syscall/path confinement; remaining host-filesystem and native-syscall reach is explicit
-and the proof does not establish a complete least-privilege process boundary. Accepted Gate 1 Slice
-4 keeps fixed staging as one private deep module: a closed thirteen-file schema, atomic complete
-monotonic generations, one durable generation/manifest pin committed at dispatch, at most current
-plus one retained generation, and atomically published per-lease twelve-file runner directories. The
-staging module returns one opened published-directory descriptor; `RunnerHost` has no input path and
-validates every descriptor before replacement fencing. Durable runner retirement precedes dispatch
-removal. Service-owned collection holds its SQLite reference proof, records recoverable collection
-intent, and removes only the exact unreferenced noncurrent generation. Recovery, cleanup,
-tombstones, and separately returned retained public trust use the durable pin rather than ambient
-current authority; unavailable authority holds without producing lifecycle or KAP-0038 outcome
-facts. Pre-Slice-4 state migrates only while stopped and drained. Accepted Slice 3 adds exact
-cluster-policy verification, one fixed- authority bounded cleanup role, atomic runner retirement
-intent, and fail-closed static policy loading.
-
-KAP-0072 archives exact clean backup/restore checkpoint `bde1e3b` as historical engineering evidence
-and supersedes that route. Gate 1 item 1 deletes its backup-only schema, bridge, state, and tests
-while preserving the real runner-loss, authority, policy, cleanup, and public projection modules.
-Host/storage catastrophe owns no reusable storage seam; teardown and clean recreation remain
-operator/provider composition proved only at later gates.
-
-KAP-0069 superseded the remote controller plane, controller-state TLS/codec/adapters, `TokenReview`,
-projected controller tokens, Kubernetes key stagers, runner Pod/PVC inventory, concurrent visitor
-runs, and multi-volume backup topology, and the later single-host backup/restore branch. None is an
-alternate architecture. The retained negative invariants do not justify a generic coordinator,
-database, storage, queue, provider, policy, transport, or package seam.
+KAP-0054 now decides whether a protected deployment of those existing adapters is sufficient for one
+customer-controlled non-production workflow. Only if it is not may that packet select one minimal
+capability-specific resident process and local interface. Installation and process lifecycle are
+necessary access to the mechanism, not permission to create generic protocol, daemon, provider,
+storage, policy, SDK, or capability modules.
 
 ## Failure structure
 

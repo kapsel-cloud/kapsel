@@ -38,7 +38,11 @@ Potentially revealing material includes:
   documentation, and synthetic vectors; they must not contain evaluator grants, trust decisions,
   credentials, seeds, kubeconfigs, journals, receipts, reports, logs, or private paths.
 
-## Fixed public sandbox
+## Historical fixed public sandbox
+
+KAP-0070 closed the hosted route through fallback and KAP-0073 removes its deployable
+implementation. The following rules preserve what the historical fixtures and evidence were allowed
+to disclose; they authorize no endpoint, collection, retention, or traffic.
 
 The [sandbox API](SANDBOX_API.md) intentionally publishes only synthetic demonstration data: one
 unguessable run locator, server-generated operation identity, fixed scenario, whole-second admission
@@ -94,12 +98,13 @@ locators, times, scenarios, and copied receipts can correlate activity.
   admission. A further 24-hour private tombstone retains exactly service-keyed run/idempotency
   digests and expiry needed to return `run_expired` and prevent key reuse. It contains no request or
   scenario digest. Public and idempotency data is then deleted.
-- The active sandbox creates no continuity backup of admission, projection, receipt, journal, or
-  runner state. Controller-host or storage loss may truncate the public retention window. Recovery
-  withdraws traffic and deletes the dedicated synthetic cluster, provider resources, controller
-  state, and visitor-linked data rather than copying or restoring them. Logical absence and provider
-  deletion lag remain separate; this is not a physical-erasure claim. Cleanup ownership may outlive
-  public expiry only while intact state remains available to prove exact owned-resource absence.
+- The retired sandbox design creates no continuity backup of admission, projection, receipt,
+  journal, or runner state. Controller-host or storage loss may truncate the public retention
+  window. Recovery withdraws traffic and deletes the dedicated synthetic cluster, provider
+  resources, controller state, and visitor-linked data rather than copying or restoring them.
+  Logical absence and provider deletion lag remain separate; this is not a physical-erasure claim.
+  Cleanup ownership may outlive public expiry only while intact state remains available to prove
+  exact owned-resource absence.
 - Raw gateway journals and outboxes, receipt-storage object keys, internal ownership labels, host
   runner OS/lease identities, prior-run paths, controller volume/database/receipt paths, staged
   key/trust and Kubernetes-input paths, canary identity, credentials, private signing material,

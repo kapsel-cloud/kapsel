@@ -415,7 +415,10 @@ meaning, cleanup, unsupported targets, and non-claims. Public `0.1.1` assets are
 is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence remains in
 [KAP-0045](../tasks/KAP-0045.md).
 
-## Sandbox preservation lanes
+## Retiring sandbox lanes
+
+These commands remain runnable only until KAP-0073 removes the unpublished sandbox package. They
+validate historical offline evidence and are not active product gates.
 
 Validate fixed public bytes without a service or network:
 
@@ -423,13 +426,13 @@ Validate fixed public bytes without a service or network:
 cargo make test-sandbox-contract
 ```
 
-Validate the provider-neutral conditional patch and active-route deletion boundary:
+Validate the provider-neutral conditional patch and prior backup-deletion boundary:
 
 ```sh
 cargo make test-sandbox-preservation
 ```
 
-Run retained deterministic package lanes with:
+Run the historical deterministic package lanes with:
 
 ```sh
 cargo make test-sandbox-serialized-capacity
@@ -451,15 +454,11 @@ These prove only their named offline descriptor, identity, cgroup, authority-sta
 mutation, cleanup, handoff, and package assertions. They use no provider account and do not prove
 live runtime, CNI, metadata, network, abuse control, teardown, endpoint, DNS, spend, or traffic.
 
-KAP-0072 removes the reserved `test-sandbox-backup-restore` lane and every planned backup/restore
-command. Checkpoint `bde1e3b` is historical evidence, not a runnable deployment gate.
-
-Gate 1 item 1 deletes backup-only code while keeping the retained commands green. Later
-contract-first work may add a deterministic catastrophe lane only after its Make task exists; it
-must prove no manufactured outcome and clean-start stop, not restoration. A separately selected
-abuse-control lane must exercise real pre-admission source bounds. Private-live teardown, zero-
-inventory, clean recreation twice, and independent traffic cutoff remain separately authorized
-KAP-0070 gates and must not appear in this guide before runnable commands exist.
+KAP-0072 removed the reserved `test-sandbox-backup-restore` lane and every planned backup/restore
+command. Checkpoint `bde1e3b` is historical evidence, not a runnable deployment gate. KAP-0070 then
+closed through fallback. KAP-0073's deletion packet removes this entire section, its Make tasks, and
+its scripts after one final root-preservation proof. No catastrophe, abuse, private-live, teardown,
+endpoint, DNS, or traffic lane may be added.
 
 ## Toolchain
 

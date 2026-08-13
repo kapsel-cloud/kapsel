@@ -1,7 +1,7 @@
 # Separate sandbox controllers from system-state ownership
 
 Status: superseded historical decision; not current architecture. KAP-0069 removed this topology,
-and KAP-0070 contains the only active sandbox route.
+KAP-0070 later closed through fallback, and KAP-0073 retires the remaining deployable sandbox.
 
 Kind: decision. Date: 2026-07-25.
 

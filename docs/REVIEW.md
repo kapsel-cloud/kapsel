@@ -59,7 +59,10 @@ docs: tighten the active capability contract
   real use?
 - Is planned MCP/application behavior still labeled planned?
 
-## Public sandbox questions
+## Historical public sandbox questions
+
+Apply these only while reviewing retained fixtures, archive evidence, or KAP-0073 deletion. They do
+not define an active deployment.
 
 - Does the caller choose only `healthy` or `unavailable-image` plus a bounded idempotency key?
 - Is durable admission still distinct from scheduler work, Kapsel submission, receiver outcome,

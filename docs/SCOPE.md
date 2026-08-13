@@ -11,8 +11,8 @@ Owns: Project identity, the Kubernetes `set_deployment_image` experiment, and th
 distinction among the published 0.1 line, finite v0.2 beta design, and prospective 1.0 compatibility
 commitment.
 
-Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details, the
-fixed public-sandbox HTTP/deployment contracts, a reusable provider interface, or task status.
+Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details,
+historical public-sandbox contracts, a reusable provider interface, or task status.
 
 ## Short answer
 
@@ -33,13 +33,12 @@ The sole capability is `kubernetes.set_deployment_image`. The published `v0.1.1`
 `0.2.0` source demonstrate it against a local `kind` cluster; exact current release state is
 external authenticated evidence. Its technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
-The sole hosted exception is one fixed, non-consequential public sandbox composition over the same
-`Application`, lifecycle, result, and receipt semantics. The [sandbox API](SANDBOX_API.md) owns
-admission and projection, and [sandbox deployment](SANDBOX_DEPLOYMENT.md) owns isolation, capacity,
-key custody, and cleanup. Their implementation is accepted offline evidence for one seven-day
-narrowed proof attempt, not a currently deployed service. KAP-0072 removes host/storage continuity
-and requires fixtures plus the local real-process demo as fallback if no gate-eligible candidate
-emerges by 2026-08-18.
+The hosted sandbox route is closed through its accepted fixtures/local-demo fallback. Its
+[historical API](SANDBOX_API.md), [historical deployment contract](SANDBOX_DEPLOYMENT.md), and
+offline implementation remain evidence only until KAP-0073 archives and removes the deployable
+package. They are not current product requirements. KAP-0054 now decides whether protected CLI/MCP
+composition suffices for one customer-controlled non-production preview or one minimal resident
+process is technically necessary.
 
 The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
 production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens
@@ -89,14 +88,13 @@ The beta must:
 
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
-After publication, KAP-0069 selected one serialized reshape for the bounded fixed-input public
-proof. KAP-0072 narrows KAP-0070 to one seven-day real runner-process-loss demonstration: fixed API,
-deterministic service, separate runner, dedicated synthetic cluster, and at most one active run
-through cleanup. Controller-host/storage loss withdraws the endpoint and requires complete teardown
-and clean stopped recreation; it preserves no visitor continuity. This route does not widen the
-capability or authorize provider use, deployment, or traffic. KAP-0047 remains the supporting owner
-for approved aggregate external technical findings; retained customer-controlled use is still
-required before production resident compatibility or another broader cycle.
+After publication, KAP-0069 and KAP-0072 explored a serialized fixed-input public proof. KAP-0070 is
+now complete through fallback, and KAP-0073 retires its deployable implementation rather than
+finishing anonymous hosted operation. KAP-0054 is the active technical decision for one smallest
+customer-controlled non-production preview. It does not widen the capability or authorize resident
+implementation, credentials, customer access, or production use. KAP-0047 remains the supporting
+owner for approved aggregate external technical findings; retained customer-controlled use is still
+required before production compatibility or another broader cycle.
 
 The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
 route is owned by [the task route](../tasks/README.md).
@@ -153,12 +151,12 @@ The repository does not implement:
 - arbitrary shell or `kubectl` execution;
 - a policy engine;
 - a Kubernetes operator framework;
-- a general hosted service beyond the one fixed public demonstration sandbox;
+- a hosted service;
 - an agent observability platform;
 - a compliance product;
 - a generic receipt framework;
 - runtime plugins, a generic provider SDK, or arbitrary tool execution;
-- hosted storage outside the fixed sandbox contract, a dashboard, or an external witness; or
+- hosted storage, a dashboard, or an external witness; or
 - a second capability.
 
 [ADR 0008](decisions/0008-use-one-kubernetes-effect-gateway-canary.md) records why one Kubernetes
