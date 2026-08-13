@@ -28,14 +28,11 @@ The relevant seams are:
 - Kubernetes credentials and API;
 - Kubernetes deployment controller and observed rollout state;
 - receipt transport and offline inspector; and
-- externally supplied inspection trust; and
-- for the fixed public sandbox only, anonymous admission, durable idempotency/projection state,
-  scheduler and runner authority, dedicated cluster isolation, receipt storage, key custody, and
-  forced cleanup.
+- externally supplied inspection trust.
 
 Collusion, compromised credentials, or a bypassed gateway remove independence. The receipt must not
-imply otherwise. [Public sandbox API](SANDBOX_API.md) and [deployment](SANDBOX_DEPLOYMENT.md) own
-the concrete hosted controls; this document owns the threats and surviving claims.
+imply otherwise. Historical [public sandbox API](SANDBOX_API.md) and
+[deployment](SANDBOX_DEPLOYMENT.md) documents preserve analysis of the retired hosted controls.
 
 ## Surviving claims
 
@@ -127,7 +124,7 @@ network access.
 
 ## Historical public sandbox threats
 
-KAP-0070 closed the hosted route through fallback and KAP-0073 removes its deployable
+KAP-0070 closed the hosted route through fallback and KAP-0073 removed its deployable
 implementation. This section preserves the threat analysis for historical evidence; none of these
 controls is an active product or deployment claim.
 
@@ -186,7 +183,7 @@ cleanup authority, and prior-run artifacts.
 
 Namespaces, RBAC, quotas, NetworkPolicy, and a runtime label were not hard isolation or enforcement
 proof. The retired Gate 3 would have tested the selected runtime, network implementation, metadata
-path, and Kubernetes authority; KAP-0073 cancels that live gate. A container or kernel escape can
+path, and Kubernetes authority; KAP-0073 cancelled that live gate. A container or kernel escape can
 still compromise the dedicated cluster. No production or customer workload may share it.
 
 ### Compromised native runner and host boundary

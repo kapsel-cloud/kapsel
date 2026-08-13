@@ -70,15 +70,13 @@ trust from the request or grant.
 The release-owned experiment uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
 
-One separately owned public sandbox may later compose the same exported `Application`,
+A separately owned, now-retired public sandbox composed the same exported `Application`,
 `AgentRequest`, `OperationReport`, lifecycle, receiver classification, and unchanged receipt bytes
-for two fixed synthetic scenarios. The [sandbox API](../SANDBOX_API.md) owns durable admission,
-idempotency, reconnectable projection, retention, and transport errors. The
-[sandbox deployment contract](../SANDBOX_DEPLOYMENT.md) owns server authority, scheduling,
-isolation, key custody, deadline, and cleanup. Neither can sequence internal gateway states,
-reinterpret a report, redact or re-sign a receipt, or make sandbox timeout, disconnect, storage,
-stream, or cleanup behavior a receiver outcome. These contracts do not change the release-owned
-local demonstration.
+for two fixed synthetic scenarios. Its historical [API](../SANDBOX_API.md) and
+[deployment contract](../SANDBOX_DEPLOYMENT.md) appoint no active implementation or compatibility.
+The archived composition could not sequence internal gateway states, reinterpret a report, redact or
+re-sign a receipt, or make sandbox timeout, disconnect, storage, stream, or cleanup behavior a
+receiver outcome. Its retirement does not change the release-owned local demonstration.
 
 ## Operation lifecycle
 

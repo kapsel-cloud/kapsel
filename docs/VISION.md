@@ -41,17 +41,17 @@ of provider truth or silently move customer authority into the cloud.
 The verified v0.2 mechanism now supports one bounded sell-first cycle without becoming a general
 platform commitment:
 
-1. close the hosted sandbox through its fixtures/local-demo fallback and remove its deployable
-   implementation from the active workspace;
-2. decide whether protected CLI/MCP composition is sufficient for one customer-controlled
+1. completed: close the hosted sandbox through its fixtures/local-demo fallback and remove its
+   deployable implementation from the active workspace;
+2. active: decide whether protected CLI/MCP composition is sufficient for one customer-controlled
    non-production integration or whether one smallest resident process and local interface is
    necessary; and
 3. implement at most one finite preview only after that decision and separate authorization.
 
-KAP-0073 owns sandbox retirement and makes KAP-0054 the sole active product-architecture decision.
-The resident route cannot inherit sandbox topology, transport, scheduling, authority staging,
-isolation, cleanup, or compatibility. Customer access, credentials, implementation, and production
-use each require their own exact owner.
+KAP-0073 completed sandbox retirement and makes KAP-0054 the sole active product-architecture
+decision. The resident route cannot inherit sandbox topology, transport, scheduling, authority
+staging, isolation, cleanup, or compatibility. Customer access, credentials, implementation, and
+production use each require their own exact owner.
 
 The cycle keeps one capability and tests one external-use fact: whether another team will install
 and retain the authority and recovery mechanism. It does not authorize a second operation, generic
@@ -78,7 +78,7 @@ publication state; external beta evidence follows publication.
 KAP-0070 closed the independently designed sandbox through its accepted fixtures/local-demo
 fallback. The [historical HTTP contract](SANDBOX_API.md),
 [historical deployment contract](SANDBOX_DEPLOYMENT.md), offline slices, and archive tags remain
-engineering evidence, but KAP-0073 removes deployable sandbox code and active hosted gates. The root
+engineering evidence, but KAP-0073 removed deployable sandbox code and active hosted gates. The root
 release-owned real-process and disposable-`kind` demonstrations remain the supported way to inspect
 the mechanism. No sandbox topology or interface becomes a customer product requirement.
 
@@ -103,13 +103,10 @@ concept being generic does not by itself justify a package.
 ### Current workspace
 
 ```text
-kapsel           product library plus local CLI and MCP executable
-kapsel-dev       unpublished repository tooling
-fuzz             excluded hostile-input package
+kapsel       product library plus local CLI and MCP executable
+kapsel-dev   unpublished repository tooling
+fuzz         excluded hostile-input package
 ```
-
-`kapsel-sandbox` remains temporarily in the workspace only until KAP-0073's archival and deletion
-packet lands. It is not part of the target active workspace.
 
 The root `kapsel` package remains one deep product module. `Application` is the proven shared
 interface used by the CLI and MCP adapters. Authorization, SQLite lifecycle, the concrete Kubernetes
@@ -118,8 +115,8 @@ adapter, classification, receipt construction, and publication remain private im
 ### Retired sandbox package
 
 KAP-0052 earned one independent `kapsel-sandbox -> kapsel` consumer and proved the root package
-could serve another compile-time composition without reverse dependencies. KAP-0073 now archives and
-removes that consumer because its hosted requirements do not serve the resident pilot. Do not retain
+could serve another compile-time composition without reverse dependencies. KAP-0073 archived and
+removed that consumer because its hosted requirements do not serve the resident pilot. Do not retain
 or extract its admission, runner, staging, scheduling, cleanup, or transport modules merely to
 preserve an unused seam.
 

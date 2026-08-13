@@ -1,9 +1,13 @@
 # Separate sandbox controllers from system-state ownership
 
 Status: superseded historical decision; not current architecture. KAP-0069 removed this topology,
-KAP-0070 later closed through fallback, and KAP-0073 retires the remaining deployable sandbox.
+KAP-0070 later closed through fallback, and KAP-0073 retired the remaining deployable sandbox.
 
-Kind: decision. Date: 2026-07-25.
+> **Historical reading rule:** every present-tense or normative verb below records the rationale and
+> consequences of the superseded decision at its cited revisions. No `must`, `required`, `remains`,
+> or similar wording appoints a current implementation, package relation, or future gate.
+
+Kind: historical decision. Date: 2026-07-25.
 
 Owns: Why the fixed public sandbox keeps system state in one singleton Pod while running scheduler
 and cleanup as separately identified controllers over role-specific private state protocols.

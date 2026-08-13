@@ -120,15 +120,15 @@ vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract
 
 The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
 product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package
-and excluded `fuzz` package. The unpublished `kapsel-sandbox -> kapsel` consumer remains only until
-KAP-0073's bounded archival and deletion lands. Its removal is deliberate evidence that hosted
-orchestration is not product core. No product package named `kapsel-core`, `kapsel-gateway`,
-`kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or `kapsel-testing` exists. Product code may be
-extracted only after an independent deployment need, multiple real consumers, or measured dependency
-isolation proves a package seam. Neither the 0.1 release, v0.2 beta, nor retired sandbox establishes
-a supported external Rust interface. Public Rust visibility may contract after sandbox deletion and
-may change within v0.2.x without external migration support; crates.io, docs.rs, and `cargo install`
-remain unsupported.
+and excluded `fuzz` package. KAP-0073 removed the unpublished `kapsel-sandbox -> kapsel` consumer;
+that deletion is deliberate evidence that hosted orchestration is not product core. No product
+package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or
+`kapsel-testing` exists. Product code may be extracted only after an independent deployment need,
+multiple real consumers, or measured dependency isolation proves a package seam. Neither the 0.1
+release, v0.2 beta, nor retired sandbox establishes a supported external Rust interface. Public Rust
+visibility may contract when compiler and retained consumers prove it unused and may change within
+v0.2.x without external migration support; crates.io, docs.rs, and `cargo install` remain
+unsupported.
 
 ## Retired sandbox composition
 
@@ -138,11 +138,10 @@ SQLite service state, one-active scheduling, native runner isolation and handoff
 staging, synthetic-cluster policy, receipt retention, and exact cleanup. It was never deployed or
 accepted live.
 
-KAP-0073 closes that route through fixtures/local-demo fallback and commissions removal of the
-package, deployment assets, and sandbox-only gates. These concerns were created by anonymous hosted
-operation and do not define the customer-resident product. Do not refactor or extract its runner,
-staging, scheduler, cleanup, transport, provider, or storage machinery into root `kapsel` or a
-future resident package.
+KAP-0073 closed that route through fixtures/local-demo fallback and removed the package, deployment
+assets, and sandbox-only gates. These concerns were created by anonymous hosted operation and do not
+define the customer-resident product. Do not refactor or extract its runner, staging, scheduler,
+cleanup, transport, provider, or storage machinery into root `kapsel` or a future resident package.
 
 The active architecture remains:
 

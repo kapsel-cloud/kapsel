@@ -34,8 +34,8 @@ Managed Kapsel may coordinate configuration, upgrades, fleet health, and bounded
 Provider credentials and effect execution remain customer-resident by default.
 
 Package seams are added only for independent deployment, measured dependency isolation, or repeated
-real consumers. The public sandbox temporarily earned `kapsel-sandbox`, but KAP-0073 archives and
-removes that package after its product need disappeared. A future `kapseld` package remains
+real consumers. The public sandbox temporarily earned `kapsel-sandbox`, but KAP-0073 archived and
+removed that package after its product need disappeared. A future `kapseld` package remains
 trigger-gated by KAP-0054 and a finite preview; production compatibility remains trigger-gated by
 retained use. Receipt, protocol, SDK, provider, Kubernetes, storage, and separate CLI packages
 remain trigger-gated by [V1 technical direction](../VISION.md).

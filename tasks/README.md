@@ -1,8 +1,8 @@
 # Technical task route
 
 Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0070 closed the hosted
-sandbox through its accepted fixtures/local-demo fallback. KAP-0073 now owns archival and removal of
-the deployable sandbox, while KAP-0054 is the sole active product-architecture decision for one
+sandbox through its accepted fixtures/local-demo fallback, and KAP-0073 archived and removed its
+deployable implementation. KAP-0054 is the sole active product-architecture decision for one
 smallest customer-controlled non-production preview. Resident implementation, customer access,
 credentials, production use, another capability, and every hosted act remain separately gated.
 
@@ -25,9 +25,9 @@ bounded request + operator-held authority
 
 The unpublished sandbox proved substantial offline admission, process isolation, authority staging,
 policy, and cleanup behavior, but its remaining work served anonymous hosted operation rather than a
-customer-resident workflow. KAP-0073 accepts KAP-0070's fallback and commissions one bounded
-archive-and-delete packet. Do not refactor or move sandbox machinery into root `kapsel` or a future
-resident package.
+customer-resident workflow. KAP-0073 accepted KAP-0070's fallback, archived the final narrowed
+checkpoint, and deleted the deployable implementation. Do not reconstruct or move sandbox machinery
+into root `kapsel` or a future resident package.
 
 KAP-0054 now compares protected deployment of the existing CLI/MCP adapters with one minimal local
 resident process. It may create one finite implementation packet only if CLI/MCP cannot safely
@@ -42,14 +42,12 @@ commercial, buyer, acquisition, and continuation evidence remains outside this r
 
 |    Lane | Packet                  | Status          | Required result                                                                       |
 | ------: | ----------------------- | --------------- | ------------------------------------------------------------------------------------- |
-|       A | [KAP-0073](KAP-0073.md) | Active deletion | Archive and remove deployable sandbox while preserving root product proof             |
-|       B | [KAP-0054](KAP-0054.md) | Active decision | Select protected CLI/MCP or one minimal customer-resident preview boundary            |
+|       A | [KAP-0054](KAP-0054.md) | Active decision | Select protected CLI/MCP or one minimal customer-resident preview boundary            |
 |    Next | New finite packet       | Gated           | Implement only the accepted preview within its explicit two-to-three-week cap         |
 | Ongoing | [KAP-0047](KAP-0047.md) | Supporting      | Record approved aggregate installation, comprehension, defect, and retained-use facts |
 
-Sandbox deletion and KAP-0054 research may proceed independently, but no resident implementation
-begins until the deletion leaves one clean active workspace and KAP-0054 is accepted. Perform and
-review one implementation packet at a time.
+No resident implementation begins until KAP-0054 is accepted. Perform and review one implementation
+packet at a time.
 
 ## Completed v0.2.0 sequence
 
@@ -82,6 +80,7 @@ production product.
 | [KAP-0069](KAP-0069.md) | Complete | Selected serialized native-host reshape                         |
 | [KAP-0072](KAP-0072.md) | Complete | Removed backup/restore and imposed finite fallback              |
 | [KAP-0070](KAP-0070.md) | Complete | Closed hosted route through fixtures/local-demo fallback        |
+| [KAP-0073](KAP-0073.md) | Complete | Archived and removed the deployable sandbox                     |
 
 These packets remain evidence and rationale. Their implementation, fixtures, private handoff,
 controller state, manifests, provider resources, and HTTP vocabulary are not v0.2 or resident

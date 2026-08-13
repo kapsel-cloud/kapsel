@@ -59,49 +59,12 @@ docs: tighten the active capability contract
   real use?
 - Is planned MCP/application behavior still labeled planned?
 
-## Historical public sandbox questions
+## Historical public sandbox review
 
-Apply these only while reviewing retained fixtures, archive evidence, or KAP-0073 deletion. They do
-not define an active deployment.
-
-- Does the caller choose only `healthy` or `unavailable-image` plus a bounded idempotency key?
-- Is durable admission still distinct from scheduler work, Kapsel submission, receiver outcome,
-  receipt availability, and cleanup?
-- Can timeout, disconnect, HTTP status, lease loss, storage failure, or cleanup populate or alter a
-  KAP-0038 result?
-- Does replay remain contiguous, bounded, retained, and independent of internal journal/fault
-  states?
-- Are raw receipt bytes unchanged, with trust appointed separately and synthetic disclosure
-  explicit?
-- Are run IDs unguessable bearer locators without becoming authentication or anonymity claims?
-- Do global stop and saturation fail before admission while retained reads/recovery/cleanup continue
-  only with intact validated state, while host/storage loss withdraws the endpoint and manufactures
-  no old-run fact?
-- Is the maximum exactly one through terminal/`not_attempted` handoff and complete UID/owner
-  absence, with no next dispatch while cleanup, runner revocation, or journal handoff is incomplete?
-- Is the host boundary explicit: one controller-state/receipt writer, a separate per-run OS
-  identity, descriptor-relative no-follow fixed inputs, stale-process/descriptor/lease denial, and
-  no runner access to controller state, receipts, staged sources, or prior journals?
-- Does the runner boundary prove its exact Linux securebits and every capability set under hostile
-  parent state, reject unexpected executable file capabilities, distinguish mount propagation from
-  filesystem concealment, and either prove or explicitly refuse syscall/path confinement?
-- Is every run policy-complete before dispatch, does the exact conditional patch preserve every
-  field except the named image and required operation annotation, and are canary/unrelated/prior-run
-  denials temporal rather than simultaneous-run claims?
-- Are controller, runner, cleanup, target, key, exposure, and operator authorities fixed and
-  separate?
-- Does cleanup delete only recorded UID/owner objects and prove exact absence before releasing
-  capacity?
-- Does host/storage loss independently withdraw traffic, create no result/receipt/cleanup fact,
-  prohibit initialization against a possibly surviving old cluster, prove complete provider-level
-  absence, recreate stopped, validate readiness, and require explicit reopen?
-- Are operation result, receipt availability, deadline, handoff transport, cleanup, and
-  visualization still separate facts at every crash or endpoint-withdrawal seam?
-- Are private host/runner/store/staging/provider identifiers, paths, credentials, uncontrolled logs,
-  raw journal rows, and fault controls absent from every public field and fixture?
-- Did a contract choice accidentally retain the remote controller/stager route or select a provider,
-  framework, generic store/queue/protocol package, resident/production interface, or second
-  capability?
+When reviewing retained fixtures or archive references, verify that they remain explicitly
+historical, appoint no active compatibility or deployment, and link the exact archive identity. No
+active package, executable, build lane, deployment asset, provider route, or resident interface may
+be inferred from them.
 
 ## Documentation review
 

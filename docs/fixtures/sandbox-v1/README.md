@@ -1,7 +1,7 @@
 # Sandbox `v1` contract fixtures
 
-Status: normative consumer fixtures for the demonstration-scoped
-[public sandbox API](../../SANDBOX_API.md).
+Status: historical explanatory fixtures for the retired [public sandbox API](../../SANDBOX_API.md).
+They carry no active compatibility or deployment promise.
 
 Each JSON file is a bounded HTTP transcript. `request` and `response` own the exact method, path,
 headers, status, and JSON body relevant to the named behavior. Header names are lowercase in
@@ -26,12 +26,6 @@ evidence at the HTTP boundary; they are not JSON and transport does not appoint 
 transcript uses synthetic times and run identities and does not claim those values were served by a
 live deployment.
 
-Validate all fixtures with:
-
-```sh
-python3 scripts/test-sandbox-contract.py
-```
-
-The gate uses only the Python standard library. It checks exact public key sets, bounds, enum and
-nullable-field invariants, event ordering/replay, error vocabulary, receipt digest, fixture
-coverage, and forbidden disclosure field names. It does not implement or call a sandbox service.
+The retired implementation and its fixture-validation lane remain available only at annotated tag
+`archive/kap-0070-final-narrowed-sandbox-0579660`. The unavailable-image receipt remains useful to
+the root offline-inspection test as classifier-complete KAP-0038 evidence.

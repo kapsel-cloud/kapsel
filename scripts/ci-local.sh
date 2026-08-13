@@ -31,8 +31,6 @@ run_static_checks() {
   printf '%s\n' "==> Markdown links"
   ./scripts/check-markdown-links.py
 
-  printf '%s\n' "==> Sandbox contract fixtures"
-  ./scripts/test-sandbox-contract.py
 }
 
 run_rust_checks() {
@@ -43,8 +41,7 @@ run_rust_checks() {
   RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
   echo "==> deterministic Rust tests"
-  cargo test --locked --workspace --lib --bins --tests \
-    --features kapsel-sandbox/state-root-test-harness
+  cargo test --locked --workspace --lib --bins --tests
 }
 
 run_documentation_tests() {

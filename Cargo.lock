@@ -678,28 +678,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kapsel-sandbox"
-version = "0.2.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.3.4",
- "http",
- "http-body-util",
- "httparse",
- "kapsel",
- "kube",
- "rusqlite",
- "rustix",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tower-http",
- "tower-test",
-]
-
-[[package]]
 name = "kube"
 version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

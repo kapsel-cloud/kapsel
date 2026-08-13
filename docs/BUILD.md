@@ -64,9 +64,10 @@ failure or timeout removes any partial report, emits a workflow warning, and doe
 default gate result. Codecov upload runs only for a nonempty completed report. An outer non-blocking
 15-minute job bound covers setup failures without turning coverage into correctness evidence.
 
-On the clean x86-64 Linux Slice 1 candidate, cargo-llvm-cov 0.8.7 completed a cold compile, the full
-suite, and Codecov report in 2m22.791s; compilation took 39.93s and the sandbox library portion took
-99.87s. This is a diagnostic measurement on the verification host, not a duration guarantee.
+On the clean pre-retirement x86-64 Linux Slice 1 candidate, cargo-llvm-cov 0.8.7 completed a cold
+compile, the full suite, and Codecov report in 2m22.791s; compilation took 39.93s and the
+now-retired sandbox library portion took 99.87s. This is a historical diagnostic measurement on the
+verification host, not a duration guarantee.
 
 ## Tidy and style audit
 
@@ -414,51 +415,6 @@ meaning, cleanup, unsupported targets, and non-claims. Public `0.1.1` assets are
 [Kapsel 0.1.1 release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.1); final evidence
 is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence remains in
 [KAP-0045](../tasks/KAP-0045.md).
-
-## Retiring sandbox lanes
-
-These commands remain runnable only until KAP-0073 removes the unpublished sandbox package. They
-validate historical offline evidence and are not active product gates.
-
-Validate fixed public bytes without a service or network:
-
-```sh
-cargo make test-sandbox-contract
-```
-
-Validate the provider-neutral conditional patch and prior backup-deletion boundary:
-
-```sh
-cargo make test-sandbox-preservation
-```
-
-Run the historical deterministic package lanes with:
-
-```sh
-cargo make test-sandbox-serialized-capacity
-cargo make test-sandbox-cluster-policy
-cargo make test-sandbox-service
-cargo make test-sandbox-runner-handoff
-cargo make test-sandbox-runner-host
-cargo make test-sandbox-package-boundary
-```
-
-On the exact supported Linux environments, the existing focused privilege lanes remain:
-
-```sh
-cargo make test-sandbox-runner-host-linux
-cargo make test-sandbox-fixed-staging-identities-linux
-```
-
-These prove only their named offline descriptor, identity, cgroup, authority-staging, conditional
-mutation, cleanup, handoff, and package assertions. They use no provider account and do not prove
-live runtime, CNI, metadata, network, abuse control, teardown, endpoint, DNS, spend, or traffic.
-
-KAP-0072 removed the reserved `test-sandbox-backup-restore` lane and every planned backup/restore
-command. Checkpoint `bde1e3b` is historical evidence, not a runnable deployment gate. KAP-0070 then
-closed through fallback. KAP-0073's deletion packet removes this entire section, its Make tasks, and
-its scripts after one final root-preservation proof. No catastrophe, abuse, private-live, teardown,
-endpoint, DNS, or traffic lane may be added.
 
 ## Toolchain
 

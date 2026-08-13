@@ -35,10 +35,10 @@ external authenticated evidence. Its technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 The hosted sandbox route is closed through its accepted fixtures/local-demo fallback. Its
 [historical API](SANDBOX_API.md), [historical deployment contract](SANDBOX_DEPLOYMENT.md), and
-offline implementation remain evidence only until KAP-0073 archives and removes the deployable
-package. They are not current product requirements. KAP-0054 now decides whether protected CLI/MCP
-composition suffices for one customer-controlled non-production preview or one minimal resident
-process is technically necessary.
+archived implementation remain historical evidence. KAP-0073 removed the deployable package and
+executable gates; none are current product requirements. KAP-0054 now decides whether protected
+CLI/MCP composition suffices for one customer-controlled non-production preview or one minimal
+resident process is technically necessary.
 
 The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
 production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens
@@ -89,8 +89,8 @@ The beta must:
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
 After publication, KAP-0069 and KAP-0072 explored a serialized fixed-input public proof. KAP-0070 is
-now complete through fallback, and KAP-0073 retires its deployable implementation rather than
-finishing anonymous hosted operation. KAP-0054 is the active technical decision for one smallest
+complete through fallback, and KAP-0073 removed its deployable implementation rather than finishing
+anonymous hosted operation. KAP-0054 is the active technical decision for one smallest
 customer-controlled non-production preview. It does not widen the capability or authorize resident
 implementation, credentials, customer access, or production use. KAP-0047 remains the supporting
 owner for approved aggregate external technical findings; retained customer-controlled use is still

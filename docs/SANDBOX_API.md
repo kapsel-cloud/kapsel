@@ -1,11 +1,15 @@
 # Public sandbox API
 
 Status: historical contract for the retired hosted route. KAP-0070 closed through fallback and
-KAP-0073 commissions removal of the deployable implementation. These bytes may remain as fixtures;
-no deployment, compatibility, or traffic is authorized.
+KAP-0073 removed the deployable implementation. These bytes remain only as explanatory fixtures; no
+deployment, compatibility, or traffic is authorized.
 
-Kind: contract. Authority: public sandbox HTTP grammar, admission identity, reconnectable public
-projection, retention, errors, and disclosure.
+> **Historical reading rule:** every present-tense or normative verb below records what the retired
+> contract required at annotated tag `archive/kap-0070-final-narrowed-sandbox-0579660`. No `must`,
+> `requires`, `owns`, or similar wording appoints a current implementation or future obligation.
+
+Kind: historical contract. Authority: public sandbox HTTP grammar, admission identity, reconnectable
+public projection, retention, errors, and disclosure.
 
 Owns: The versioned interface for the fixed public `healthy` and `unavailable-image` scenarios.
 
@@ -33,19 +37,16 @@ separate facts. An HTTP success confirms only the response described below. Disc
 stream failure, sandbox deadline, cleanup failure, and HTTP status never manufacture `SUCCEEDED`,
 `FAILED`, `UNKNOWN`, or `not_attempted`.
 
-## Compatibility and media rules
+## Retired wire and media record
 
-The only accepted wire version is the ASCII token `v1`. All routes begin with `/sandbox/v1` and all
-JSON documents contain `"api_version":"v1"`. A route under `/sandbox/<other-version>/...` or a body
-whose version is not exactly `v1` returns `unsupported_version`; it is never interpreted as `v1`.
+The retired wire used only the ASCII token `v1`. All routes began with `/sandbox/v1`, all JSON
+documents contained `"api_version":"v1"`, and other versions returned `unsupported_version` rather
+than being interpreted as `v1`.
 
-`v1` is fixed for one demonstration deployment and its committed fixtures. Consumers must reject a
-missing or different `api_version`, unknown enum value, unknown required field, or incompatible
-media type rather than guessing. New optional JSON fields may be added only under a new API version;
-`v1` response objects have exactly the fields owned here. Bug fixes may make an implementation
-conform to these bytes without changing the contract. Kapsel may retire this interface instead of
-migrating it. This is not the future resident `kapseld` interface or a production compatibility
-promise.
+The committed fixtures record exact `v1` response objects and the consumer rejection behavior that
+the abandoned demonstration contract required. They appoint no maintained implementation, future
+field evolution, migration, or compatibility. This was never the resident `kapseld` interface or a
+production compatibility promise.
 
 Admission requests use UTF-8 `application/json`, contain exactly one object, and are at most 512
 bytes. JSON responses are at most 64 KiB. Compression and bodies on `GET` are not accepted. Unknown,
@@ -61,8 +62,7 @@ seconds for the native HTTP connection to await the service response. Crossing a
 byte/time/concurrency bound is rejected or closes the connection and emits no reflected input. A
 connection wait timeout does not cancel or terminate a service operation that already began. These
 transport limits do not reserve or release scheduler capacity and cannot become receiver outcomes.
-HTTP/2, if later implemented, must enforce equivalent limits per connection and stream; the current
-native listener is HTTP/1.1 and closes every connection after one response.
+The retired native listener was HTTP/1.1 and closed every connection after one response.
 
 ## Routes
 
@@ -77,14 +77,15 @@ There is no run-listing, cancellation, retry, reconciliation, cleanup, log, call
 configuration, health, fault-control, or arbitrary-resource route. `HEAD`, `PUT`, `PATCH`, `DELETE`,
 and `OPTIONS` are not part of this contract.
 
-Browser consumers use these origin-relative routes through the required same-origin edge. The native
-API sets no cookie, accepts no browser credential, and makes no cross-origin CORS promise. The edge
-may be deployed independently from the website and runner, but it must preserve method, path,
-bounded application headers, body, status, response headers, and idempotency exactly. It owns
-authoritative per-source abuse rejection before forwarding; the native listener is reachable only
-through its private authenticated channel during exposure. No visitor-derived source header enters
-the `v1` request, durable run state, response, log, or metric. A later cross-origin surface requires
-a new versioned contract including preflight and origin policy.
+Browser consumers would have used these origin-relative routes through the required same-origin
+edge. The retired native API set no cookie, accepted no browser credential, and made no cross-origin
+CORS promise. The edge could have been deployed independently from the website and runner, but would
+have had to preserve method, path, bounded application headers, body, status, response headers, and
+idempotency exactly. It would have owned authoritative per-source abuse rejection before forwarding;
+the native listener would have been reachable only through its private authenticated channel during
+exposure. No visitor-derived source header entered the `v1` request, durable run state, response,
+log, or metric. Any future cross-origin surface would require a new direction decision and a new
+versioned contract including preflight and origin policy; this historical contract grants neither.
 
 HTTP routing requires one deployment-configured `Host` or HTTP/2 `:authority`, at most 253 ASCII
 bytes. `POST` requires `Content-Type: application/json`, exact decimal `Content-Length` from 1
@@ -281,11 +282,12 @@ frozen KAP-0038 receipt bytes, without decoding, redaction, re-signing, or re-en
 required and `ETag` is the quoted lowercase SHA-256 hex digest of the exact body. Conditional and
 range requests are unsupported.
 
-Receipt retrieval does not publish or appoint trust. A consumer that inspects the receipt must
-obtain a KAP-0038 trust document, evaluation time, and limits through a separately reviewed channel.
-The owner-private authority controller is that local composition seam for the sandbox prototype: it
-returns unchanged validated trust bytes only for a retained receipt's durable generation. It is not
-an HTTP route, ambient lookup, or receipt field. The receipt never appoints its own trust.
+Receipt retrieval did not publish or appoint trust. A consumer inspecting the receipt would have had
+to obtain a KAP-0038 trust document, evaluation time, and limits through a separately reviewed
+channel. The owner-private authority controller was that local composition seam for the sandbox
+prototype: it returned unchanged validated trust bytes only for a retained receipt's durable
+generation. It was not an HTTP route, ambient lookup, or receipt field. The receipt never appointed
+its own trust.
 
 The unchanged receipt intentionally discloses only server-chosen synthetic KAP-0038 classifier
 fields, including namespace, Deployment and receiver UIDs, resource versions, operation marker,
@@ -351,10 +353,10 @@ recreation, a prior locator may likewise return `run_not_found`; reuse of a prio
 may create a new admission only after exact teardown, readiness, and explicit reopening. No prior
 result or receipt is inferred.
 
-Internal security, billing, gateway-recovery, and cleanup records may not extend public retention or
-retain raw visitor identifiers; [Privacy](PRIVACY.md) owns their narrower rules. Ongoing Kapsel
-recovery and forced cleanup may outlive public projection expiry and remain operator
-responsibilities.
+The retired rules did not permit internal security, billing, gateway-recovery, or cleanup records to
+extend public retention or retain raw visitor identifiers; [Privacy](PRIVACY.md) preserves their
+narrower historical constraints. Kapsel recovery and forced cleanup could have outlived public
+projection expiry as operator responsibilities while the route existed.
 
 ## Errors
 
@@ -403,8 +405,8 @@ Fixed messages are respectively: `The request is invalid.`, `The API version is 
 
 ## Contract fixtures
 
-Consumer fixtures live under [`sandbox-v1`](fixtures/sandbox-v1/README.md). They are normative for
-JSON key sets, values, ordering, replay, errors, headers, and raw receipt retrieval. They use fixed
-synthetic times and identities and never claim that those exact values are generated in production.
-`python3 scripts/test-sandbox-contract.py` validates them without a service, network, dependency, or
-ambient clock.
+Historical consumer fixtures live under [`sandbox-v1`](fixtures/sandbox-v1/README.md). They record
+JSON key sets, values, ordering, replay, errors, headers, and raw receipt retrieval from the retired
+contract. They use fixed synthetic times and identities and promise no executable compatibility. The
+archived implementation and validation lane remain available only at annotated tag
+`archive/kap-0070-final-narrowed-sandbox-0579660`.

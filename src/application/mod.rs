@@ -74,7 +74,7 @@ pub fn provision_exact_grant(
     .map_err(|_| ApplicationError::InvalidGrantProvisioning)
 }
 
-/// Application-level report shared by the local CLI, MCP, and sandbox adapters.
+/// Application-level report shared by the local CLI and fixed MCP adapters.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReport {
     /// Stable operation identity fixed by the configured authorization grant.

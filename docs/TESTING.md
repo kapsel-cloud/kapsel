@@ -179,41 +179,17 @@ cleanup. The compile-time feature and its environment are harness control, not a
 public lifecycle interface. Existing internal fault tests remain the exhaustive transition proof;
 the visual demonstration does not replace them.
 
-## Serialized public sandbox proof
+## Historical public sandbox evidence
 
-KAP-0072 narrows KAP-0070 to one real intentional runner-process-loss proof. The fixed API,
-deterministic `Service`, root-package deletion boundary, real `Application`, KAP-0055 handoff,
-runner host, authority staging, provider-neutral policy, and UID/owner cleanup remain separate proof
-owners. Public `v1` bytes remain fixture-compatible, but their continuity applies only while the
-same controller state is present and validated.
+KAP-0073 removed the unpublished sandbox package and every sandbox-only executable gate. The fixed
+`v1` fixture bytes remain only as historical explanation of the abandoned HTTP contract; they carry
+no executable compatibility or deployment promise. One fixture receipt remains an input to the root
+offline-inspection test because it is valid classifier-complete KAP-0038 evidence.
 
-The retained deterministic lanes prove:
-
-- exact request/header/query bounds, admission/idempotency, projection, replay, expiry, errors, and
-  unchanged receipt bytes;
-- one active reservation through runner retirement and exact UID/owner absence;
-- fixed authority pins and no caller-appointed credential, target, lifecycle, result, or cleanup;
-- exact conditional mutation and policy/canary/unrelated-resource denials before `Application`;
-- intentional runner loss before invocation, after durable invocation, after `apply_started`, after
-  report, and around receipt publication with one operation identity and no blind second apply;
-- controller-process restart only from the same validated state; and
-- operation, receipt, deadline, handoff, cleanup, retention, and visualization as separate facts.
-
-The retired route would have required catastrophe and real abuse-control lanes. KAP-0073 cancels
-those requirements rather than presenting deterministic fixtures as live provider, traffic-cutoff,
-teardown, clean-recreation, or per-source abuse evidence. No such lane may be added during archival
-or deletion.
-
-Archived checkpoint `bde1e3b` preserves clean backup/restore engineering evidence but is not part of
-the active proof. Revision `5d55e67` deleted backup generations, references, restore markers,
-replacement-host tests, and the thirteen nonclean reconstruction matrix. KAP-0073 now removes the
-remaining hosted package and sandbox-only gates while preserving root product proof. No test may
-present either archive as a deployable alternative or widen `Application` into a hosted interface.
-
-A fresh website consumer and Grafik-boundary consumer compare only against committed fixtures. They
-cannot infer unpublished fields or host/storage continuity. KAP-0070 closed through fallback, so the
-retained historical proof is fixtures plus the existing local real-process/disposable-cluster
-demonstration. KAP-0073 removes the hosted implementation from the active workspace.
+Annotated tag `archive/kap-0070-final-narrowed-sandbox-0579660` preserves the final narrowed
+implementation. Existing tag `archive/kap-0070-backup-restore-bde1e3b` preserves the earlier clean
+backup/restore checkpoint. Neither archive is an active proof lane or deployable alternative. The
+root real-process harness and disposable-`kind` demonstration remain the supported mechanism proof.
 
 ## Review record
 

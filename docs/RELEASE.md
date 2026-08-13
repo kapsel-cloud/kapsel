@@ -25,10 +25,9 @@ Debian 12. The clean smoke container is
 Debian 12. Both run with `--platform linux/amd64`. Their digests are build and smoke inputs, not
 claims that the builder or image contents are trustworthy.
 
-The root `kapsel` archive is the only distributed package. The shared workspace version inherited by
-unpublished `kapsel-dev` and `kapsel-sandbox` packages does not distribute or support them. v0.2
-publishes no crates.io, docs.rs, `cargo install`, source-package, sandbox, image, or second-target
-artifact.
+The root `kapsel` archive is the only distributed package. The workspace's unpublished `kapsel-dev`
+package is repository tooling and is not distributed or supported. v0.2 publishes no crates.io,
+docs.rs, `cargo install`, source-package, sandbox, image, or second-target artifact.
 
 ## Deterministic assembly
 

@@ -19,9 +19,9 @@ Read this file first. It routes work; current technical truth lives in the linke
    [evaluator evidence packet](tasks/KAP-0047.md) remains a supporting owner for exact-artifact
    findings. Completed [sandbox fallback KAP-0070](tasks/KAP-0070.md) preserves fixtures and the
    release-owned local demonstration rather than continuing hosted work. Accepted
-   [KAP-0073](tasks/KAP-0073.md) commissions archival and removal of the deployable sandbox and
-   makes the [resident preview decision](tasks/KAP-0054.md) the sole active product-architecture
-   packet. Resident implementation, customer access, credentials, provider use, and traffic remain
+   [KAP-0073](tasks/KAP-0073.md) completed archival and removal of the deployable sandbox and makes
+   the [resident preview decision](tasks/KAP-0054.md) the sole active product-architecture packet.
+   Resident implementation, customer access, credentials, provider use, and traffic remain
    separately gated.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
@@ -32,10 +32,10 @@ Read this file first. It routes work; current technical truth lives in the linke
 
 ## Current route
 
-Kapsel has a verified v0.2.0 mechanism and has closed the hosted sandbox through its explicit
-fixtures/local-demo fallback. KAP-0073 now retires the deployable `kapsel-sandbox` package rather
-than maintaining anonymous admission, abuse, synthetic infrastructure, and cleanup as a second
-product. KAP-0054 is the sole active product-architecture decision: it must test protected CLI/MCP
+Kapsel has a verified v0.2.0 mechanism and closed the hosted sandbox through its explicit
+fixtures/local-demo fallback. KAP-0073 archived and removed the deployable sandbox rather than
+maintaining anonymous admission, abuse, synthetic infrastructure, and cleanup as a second product.
+KAP-0054 is the sole active product-architecture decision: it must test protected CLI/MCP
 composition first and may select one minimal customer-resident process only if necessary for the
 same sole `kubernetes.set_deployment_image` capability. It does not pre-authorize implementation, a
 daemon, transport, package, customer access, or production release. KAP-0047 remains available for

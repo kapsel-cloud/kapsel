@@ -40,7 +40,7 @@ Potentially revealing material includes:
 
 ## Historical fixed public sandbox
 
-KAP-0070 closed the hosted route through fallback and KAP-0073 removes its deployable
+KAP-0070 closed the hosted route through fallback and KAP-0073 removed its deployable
 implementation. The following rules preserve what the historical fixtures and evidence were allowed
 to disclose; they authorize no endpoint, collection, retention, or traffic.
 

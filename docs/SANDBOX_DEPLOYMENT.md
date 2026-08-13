@@ -1,9 +1,13 @@
 # Public sandbox deployment contract
 
 Status: historical deployment contract for the retired hosted route. Gate 1 Slices 1–4 and the
-runner-hardening follow-up remain offline evidence, but KAP-0070 closed through fallback and
-KAP-0073 commissions archival and removal. No provider, credential, resource, spend, image push,
-endpoint, DNS, private live command, or public traffic is authorized.
+runner-hardening follow-up remain archived offline evidence, but KAP-0070 closed through fallback
+and KAP-0073 removed every deployable asset and executable gate. No provider, credential, resource,
+spend, image push, endpoint, DNS, private live command, or public traffic is authorized.
+
+> **Historical reading rule:** every present-tense or normative verb below records what the archived
+> design required at annotated tag `archive/kap-0070-final-narrowed-sandbox-0579660`. No `must`,
+> `requires`, `owns`, or similar wording appoints a current deployment or future gate.
 
 Kind: historical design. Authority: archived ownership, isolation, capacity, durability while
 controller state remains validated, catastrophic fail-closed teardown, clean recreation, key
@@ -63,7 +67,7 @@ recreation, and public enforcement remain unproved; deterministic records do not
 ## Cancelled authorization gates
 
 The retired route had planned four evidence stages: offline serialized composition, reviewed live
-authorization, private-live acceptance, and bounded public exposure. KAP-0073 cancels every stage
+authorization, private-live acceptance, and bounded public exposure. KAP-0073 cancelled every stage
 after the accepted offline evidence. Nothing in this historical document may authorize provider
 research, an account, credential, resource, spend, image, endpoint, DNS, private-live command, or
 traffic.
@@ -89,8 +93,8 @@ separate. Scheduler, retention, and cleanup call concrete local `Service` transi
 open a remote state endpoint. One controller OS authority owns the single durable controller-state
 and immutable-receipt writer boundary. The shipped admission, handoff, controller, retention, and
 cleanup roles are a finite set of local processes coordinated only through that SQLite/receipt
-boundary. No backup, restore, replacement-host, coordinator, or daemon role is part of the active
-route. A compromised controller host remains a concentrated security and availability risk.
+boundary. No backup, restore, replacement-host, coordinator, or daemon role was part of the retired
+route. A compromised controller host remained a concentrated security and availability risk.
 
 ## Durable identity and serial capacity
 
@@ -100,13 +104,13 @@ event, queue reservation, frozen policy identity, cleanup ownership, and maximum
 admission database is never the KAP-0038 journal and cannot reconstruct or reinterpret gateway
 facts.
 
-The public queue maximum remains 32. The active maximum is exactly one. The required edge owns the
-public API's per-source rate bound and rejects before forwarding; the native listener is reachable
-only through that private edge channel during exposure and owns the 512-byte body, 64-event, 64-KiB
-response, 128-connection, and 64-in-flight global transport bounds. The KAP-0055 handoff separately
-retains 16 connections, eight handlers, a five-second absolute receive deadline, and a 30-second
-response deadline. These bounds are independent: transport availability neither reserves nor
-releases execution capacity.
+The retired public queue maximum was 32 and its active-run maximum was exactly one. The required
+edge owned the public API's per-source rate bound and rejects before forwarding; the native listener
+is reachable only through that private edge channel during exposure and owns the 512-byte body,
+64-event, 64-KiB response, 128-connection, and 64-in-flight global transport bounds. The KAP-0055
+handoff separately retains 16 connections, eight handlers, a five-second absolute receive deadline,
+and a 30-second response deadline. These bounds are independent: transport availability neither
+reserves nor releases execution capacity.
 
 One active reservation is held from dispatch until all applicable facts are durable:
 
@@ -131,11 +135,12 @@ or after durable `not_attempted` projection and cleanup handoff; pre-Application
 has no gateway-journal requirement. Cleanup escalates once its bounded retry window reaches 15
 minutes. Recovery work may outlive public expiry without restoring public visibility.
 
-Gate 1 must lock finite CPU, memory, controller-volume bytes, journal/outbox bytes, receipt bytes,
-connections, event count, retry count, cleanup duration, retained aggregate bytes, and object-count
-ceilings for one host and one cluster. Gate 2 must lock every fixed and metered cost class, maximum
-experiment spend, and teardown reserve. Missing or exceeded resource/cost configuration fails
-closed; budget alerts are observations, not admission controls.
+The cancelled Gate 1 would have had to lock finite CPU, memory, controller-volume bytes,
+journal/outbox bytes, receipt bytes, connections, event count, retry count, cleanup duration,
+retained aggregate bytes, and object-count ceilings for one host and one cluster. The cancelled Gate
+2 would have had to lock every fixed and metered cost class, maximum experiment spend, and teardown
+reserve. Missing or exceeded resource/cost configuration would have failed closed; budget alerts
+would have remained observations rather than admission controls.
 
 ## Runner boundary and retained handoff
 
@@ -246,9 +251,9 @@ atomic-record crash sides without treating the generation root as a generic stor
 
 ### Slice 3 scope and compatibility profile
 
-Slice 3 freezes one deterministic provider-neutral model. It performs no provider, registry, image,
-credential, cluster, endpoint, DNS, or network action. The later Gate 2 fixture must select a
-cluster that implements the stable `v1`, `apps/v1`, `rbac.authorization.k8s.io/v1`,
+Slice 3 froze one deterministic provider-neutral model. It performed no provider, registry, image,
+credential, cluster, endpoint, DNS, or network action. The cancelled Gate 2 fixture would have had
+to select a cluster implementing the stable `v1`, `apps/v1`, `rbac.authorization.k8s.io/v1`,
 `networking.k8s.io/v1`, and `node.k8s.io/v1` resources used by the model, the exact ResourceQuota
 count keys below, Pod Security `restricted` version `v1.35`, UID-preconditioned deletion, immutable
 UID/resource-version facts and one admission implementation for the three closed rules below. This
@@ -258,17 +263,18 @@ The dedicated cluster contains no customer or production workload and permits on
 time. Its exact runtime-class name and handler are `kapsel-sandbox-runtime-v1` and
 `kapsel.dev/sandbox-runtime-v1`; its fixed network-enforcement evidence identity is
 `kapsel-sandbox-network-v1`. The three exact admission rules are `composition-v1`,
-`conditional-operation-v1`, and `cleanup-v1`. Their checked-in canonical provider-neutral behavior
-records are respectively `deploy/sandbox/composition-admission-rule.json`,
+`conditional-operation-v1`, and `cleanup-v1`. Their archived canonical provider-neutral behavior
+records were respectively `deploy/sandbox/composition-admission-rule.json`,
 `operator-admission-rule.json`, and `cleanup-admission-rule.json`; `network-boundary-record.json`
-closes the separate network evidence identity. They are not Kubernetes objects. Their exact bytes
-and SHA-256 digests are deployment inputs, and Gate 2 must map each record and the network identity
-to one enforced implementation without fallback. The controller verifies one bounded
+closed the separate network evidence identity. Those tag-relative paths exist only at
+`archive/kap-0070-final-narrowed-sandbox-0579660`; they are not Kubernetes objects or current
+deployment inputs. Gate 2 would have had to map each record and the network identity to one enforced
+implementation without fallback. The controller would have verified one bounded
 `ClusterBoundaryEvidence` containing the runtime object UID and canonical digest, network
 identity/readiness digest, all three admission-rule digests, baseline digest, and canary UIDs before
 each run. Missing, renamed, unready, stale, or multiply mapped runtime, CNI, admission, account, or
 policy evidence blocks provisioning. These records and rendered objects are not live enforcement
-evidence; Gate 3 must prove the selected implementations.
+evidence; the cancelled Gate 3 would have had to prove the selected implementations.
 
 ### Closed cluster inventory and bootstrap
 
@@ -486,9 +492,9 @@ staging process identity and narrowly scoped create/chown/DAC deployment authori
 reads require the configured controller identity and expose only one requested authority family.
 Production configuration rejects equality of either the staging/controller UID or GID. A
 `cfg(test)`-only same-identity constructor supports ordinary unprivileged unit fixtures without
-weakening production constructors; distinct positive execution remains a later privileged Linux
-lane. Absent privilege or a role/owner/mode mismatch fails closed. The root is controller-owned
-exact `0700`; all mode checks include special bits.
+weakening production constructors; distinct positive execution was an accepted offline privileged
+Linux lane, not a surviving deployment requirement. Absent privilege or a role/owner/mode mismatch
+fails closed. The root is controller-owned exact `0700`; all mode checks include special bits.
 
 A candidate contains exactly these thirteen regular, singly linked source files; missing, extra,
 linked, replaced, wrong-owner, or wrong-mode entries fail closed:
@@ -601,36 +607,36 @@ new admission; controller-process restart or ambiguity with intact state fails c
 revoke admitted authority or block existing projection reads, operation recovery, exact receipt
 retrieval, retention deletion, or UID-safe cleanup.
 
-Controller-host or controller-storage loss cannot preserve that row or those reads. Independently
-owned exposure authority must withdraw traffic and keep it withdrawn without consulting controller
-state. Every clean initialization starts stopped. Only complete teardown and provider-level absence,
-a fresh fixed composition, full readiness validation, and an explicit authenticated operator action
-may reopen admission. A stopped or absent process, database, volume, or cluster is never operation,
-cleanup, or receiver evidence.
+Controller-host or controller-storage loss could not preserve that row or those reads. Independently
+owned exposure authority would have had to withdraw traffic and keep it withdrawn without consulting
+controller state. Every clean initialization would have started stopped. Only complete teardown and
+provider-level absence, a fresh fixed composition, full readiness validation, and an explicit
+authenticated operator action could have reopened admission. A stopped or absent process, database,
+volume, or cluster was never operation, cleanup, or receiver evidence.
 
 Scheduler, retention, receipt publication, and cleanup are explicit local roles over concrete
 bounded `Service` transitions. Gate 1 Slice 1 implements a scheduler step that recovers active work
 before FIFO dispatch, the existing periodic retention process through its concrete role, and cleanup
 selection/start/failure/escalation/completion over the exact append-only inventory. They cannot
-execute arbitrary SQL or widen lifecycle/result vocabulary. The retained composition must run
-fencing, expiry/tombstone deletion, pending receipt convergence, active-journal reconciliation,
-stale-process denial, ownership scan, and cleanup before ordinary admission readiness when the same
-state is intact. Catastrophic host/storage loss uses teardown and clean recreation instead; it never
-reconstructs those facts.
+execute arbitrary SQL or widen lifecycle/result vocabulary. The retained composition would have had
+to run fencing, expiry/tombstone deletion, pending receipt convergence, active-journal
+reconciliation, stale-process denial, ownership scan, and cleanup before ordinary admission
+readiness when the same state was intact. Catastrophic host/storage loss would have used teardown
+and clean recreation instead; it could never reconstruct those facts.
 
 ## UID- and owner-safe cleanup
 
 The controller keeps the append-only 64-row maximum inventory described above with exact kind,
 namespace, name, immutable UID, and cleanup owner. Before `CleanupRole` selects work, durable
-service state must record closed/revoked provisioning authority, Slice 2 runner credential
-revocation, cgroup/process absence, journal/outbox retention handoff, and explicit fenced-generation
-retirement. `CleanupWork` contains only those durable facts, the cleanup epoch, namespace UID, and
-the complete ordered inventory; the observer accepts no caller-selected object, patch, delete,
-credential, observation, or lifecycle input. The production entry is one closed cleanup attempt: it
-lists and appends valid generated children, reloads durable work, GETs every recorded object, scans
-the exact owner marker, derives and durably binds one private canonical delete plan, recomputes its
-digest immediately before issue, executes it, and performs the fresh post-plan observation. Neither
-the plan type nor its request fields are publicly re-exported.
+service state would have had to record closed/revoked provisioning authority, Slice 2 runner
+credential revocation, cgroup/process absence, journal/outbox retention handoff, and explicit
+fenced-generation retirement. `CleanupWork` contains only those durable facts, the cleanup epoch,
+namespace UID, and the complete ordered inventory; the observer accepts no caller-selected object,
+patch, delete, credential, observation, or lifecycle input. The production entry is one closed
+cleanup attempt: it lists and appends valid generated children, reloads durable work, GETs every
+recorded object, scans the exact owner marker, derives and durably binds one private canonical
+delete plan, recomputes its digest immediately before issue, executes it, and performs the fresh
+post-plan observation. Neither the plan type nor its request fields are publicly re-exported.
 
 The concrete cleanup observer uses only the fixed cleanup credential. For each child in the frozen
 order it performs a bounded observation, compares exact kind/namespace/name/UID/owner/revision, and
@@ -695,10 +701,10 @@ On catastrophic host or storage loss:
    inventory is validated; and
 8. only an explicit authenticated operator action reopens admission.
 
-If any old resource may survive, provider-level absence cannot be proved, or traffic cannot be
-withdrawn independently, the endpoint remains withdrawn and KAP-0070's retirement rule applies. A
-label or name scan cannot replace a lost UID/owner inventory. A new database must never initialize
-against a possibly surviving old cluster.
+If any old resource might have survived, provider-level absence could not be proved, or traffic
+could not be withdrawn independently, the endpoint would have remained withdrawn and KAP-0070's
+retirement rule would have applied. A label or name scan could not replace a lost UID/owner
+inventory. A new database could never have initialized against a possibly surviving old cluster.
 
 The retired sandbox design creates no backup generation, backup-reference owner, backup identity,
 restore marker, replacement-host copy, or backup/restore command. Public runs, locators,
@@ -709,12 +715,12 @@ endpoint withdrawal never establish a KAP-0038 result or prove cleanup.
 
 The retired route would have required an offline no-outcome state machine, clean-start stop, real
 independent traffic cutoff, complete teardown, zero provider inventory, clean recreation, smoke, a
-second teardown, and zero inventory again. KAP-0073 cancels those gates. No provider action is
+second teardown, and zero inventory again. KAP-0073 cancelled those gates. No provider action is
 authorized by this contract text.
 
 ## Gate 0 preservation and live proof map
 
-| Property                                  | Retained deterministic evidence                            | Later assertion                                                              |
+| Property                                  | Archived deterministic evidence                            | Cancelled live assertion                                                     |
 | ----------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Identity/replay/receipt with intact state | Exact fixtures, service restart, immutable publication     | Lost response, reconnect, exact raw receipt                                  |
 | Real conditional `Application` operation  | Service/handoff tests and provider-neutral exact patch     | Both fixed scenarios and explicit `UNKNOWN`                                  |
