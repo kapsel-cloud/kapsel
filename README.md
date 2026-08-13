@@ -68,7 +68,7 @@ use.
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
 | Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
 | Hosted sandbox                                   | Archived and removed; fixtures remain historical only    |
-| Customer-resident preview boundary               | Active decision; no implementation is authorized         |
+| Customer-resident preview boundary               | Minimal resident route selected; implementation is gated |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -104,8 +104,8 @@ resource qualification, and one authenticated reproducible x86-64 GNU/Linux dist
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
 hosted dependency, second target, or production-readiness claim. KAP-0070 is complete through its
 fixtures/local-demo fallback; KAP-0073 archived and removed the unpublished hosted sandbox. KAP-0054
-now decides whether protected CLI/MCP composition suffices for one customer-controlled preview or
-one minimal resident process is technically necessary. KAP-0047 remains the supporting owner for
+selected one minimal resident process after protected CLI/MCP lacked independent lifetime, status,
+and receipt retrieval; KAP-0074 gates its implementation. KAP-0047 remains the supporting owner for
 approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md) and
 [ordered task route](tasks/README.md).
 
@@ -127,7 +127,8 @@ credential or customer act still separately gated.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Historical public sandbox API](docs/SANDBOX_API.md)
 - [Historical public sandbox deployment](docs/SANDBOX_DEPLOYMENT.md)
-- [Active resident-preview decision](tasks/KAP-0054.md)
+- [Completed resident-preview decision](tasks/KAP-0054.md)
+- [Gated resident-preview implementation](tasks/KAP-0074.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Documentation index](docs/INDEX.md)

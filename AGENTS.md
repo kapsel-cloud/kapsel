@@ -19,10 +19,10 @@ Read this file first. It routes work; current technical truth lives in the linke
    [evaluator evidence packet](tasks/KAP-0047.md) remains a supporting owner for exact-artifact
    findings. Completed [sandbox fallback KAP-0070](tasks/KAP-0070.md) preserves fixtures and the
    release-owned local demonstration rather than continuing hosted work. Accepted
-   [KAP-0073](tasks/KAP-0073.md) completed archival and removal of the deployable sandbox and makes
-   the [resident preview decision](tasks/KAP-0054.md) the sole active product-architecture packet.
-   Resident implementation, customer access, credentials, provider use, and traffic remain
-   separately gated.
+   [KAP-0073](tasks/KAP-0073.md) completed archival and removal of the deployable sandbox. Completed
+   [resident preview decision KAP-0054](tasks/KAP-0054.md) selected one minimal resident boundary;
+   [KAP-0074](tasks/KAP-0074.md) is the sole gated product implementation packet. Resident
+   implementation, customer access, credentials, provider use, and traffic remain separately gated.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -35,10 +35,10 @@ Read this file first. It routes work; current technical truth lives in the linke
 Kapsel has a verified v0.2.0 mechanism and closed the hosted sandbox through its explicit
 fixtures/local-demo fallback. KAP-0073 archived and removed the deployable sandbox rather than
 maintaining anonymous admission, abuse, synthetic infrastructure, and cleanup as a second product.
-KAP-0054 is the sole active product-architecture decision: it must test protected CLI/MCP
-composition first and may select one minimal customer-resident process only if necessary for the
-same sole `kubernetes.set_deployment_image` capability. It does not pre-authorize implementation, a
-daemon, transport, package, customer access, or production release. KAP-0047 remains available for
+KAP-0054 completed the product-architecture decision after testing protected CLI/MCP first and
+selected one minimal customer-resident process for the same sole `kubernetes.set_deployment_image`
+capability. KAP-0074 is the sole gated implementation packet; it does not pre-authorize
+implementation, customer access, credentials, or production release. KAP-0047 remains available for
 approved aggregate technical findings but is not the implementation route. The release owner is
 [`docs/V0.2.md`](docs/V0.2.md); lifecycle, receiver-result, and receipt semantics remain owned by
 [`docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md`](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).

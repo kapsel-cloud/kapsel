@@ -2,9 +2,10 @@
 
 Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0070 closed the hosted
 sandbox through its accepted fixtures/local-demo fallback, and KAP-0073 archived and removed its
-deployable implementation. KAP-0054 is the sole active product-architecture decision for one
-smallest customer-controlled non-production preview. Resident implementation, customer access,
-credentials, production use, another capability, and every hosted act remain separately gated.
+deployable implementation. KAP-0054 completed the resident-boundary decision and selected one
+minimal process and authenticated local interface. KAP-0074 is the sole gated product implementation
+packet. Resident implementation, customer access, credentials, production use, another capability,
+and every hosted act remain separately gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -29,25 +30,31 @@ customer-resident workflow. KAP-0073 accepted KAP-0070's fallback, archived the 
 checkpoint, and deleted the deployable implementation. Do not reconstruct or move sandbox machinery
 into root `kapsel` or a future resident package.
 
-KAP-0054 now compares protected deployment of the existing CLI/MCP adapters with one minimal local
-resident process. It may create one finite implementation packet only if CLI/MCP cannot safely
-provide caller/authority separation, caller-independent recovery, reconnect/status, and receipt
-retrieval for one representative workflow. It does not pre-authorize a daemon, Unix socket, package,
-customer work, or compatibility promise.
+KAP-0054 tested protected deployment of the existing CLI/MCP adapters first. Both preserve the exact
+operation identity and safe replay, but neither provides caller-independent lifetime, read-only
+reconnect/status, or exact receipt retrieval across a separate authority boundary. The completed
+decision therefore selected one unpublished `kapseld -> kapsel` package, one executable, one
+authenticated Linux Unix socket, systemd lifecycle, and no second store. KAP-0074 may implement only
+that inventory after separate authorization; it keeps Python/shell out of customer runtime semantics
+and stops before a scheduler, queue, controller framework, generic seam, or additional
+package/binary/interface.
 
 KAP-0047 remains the supporting owner for approved aggregate technical findings. Private customer,
 commercial, buyer, acquisition, and continuation evidence remains outside this repository.
 
 ## Active work
 
-|    Lane | Packet                  | Status          | Required result                                                                       |
-| ------: | ----------------------- | --------------- | ------------------------------------------------------------------------------------- |
-|       A | [KAP-0054](KAP-0054.md) | Active decision | Select protected CLI/MCP or one minimal customer-resident preview boundary            |
-|    Next | New finite packet       | Gated           | Implement only the accepted preview within its explicit two-to-three-week cap         |
-| Ongoing | [KAP-0047](KAP-0047.md) | Supporting      | Record approved aggregate installation, comprehension, defect, and retained-use facts |
+|    Lane | Packet                  | Status            | Required result                                                                        |
+| ------: | ----------------------- | ----------------- | -------------------------------------------------------------------------------------- |
+|       A | [KAP-0054](KAP-0054.md) | Complete decision | Selected one minimal resident process after CLI/MCP failed required reconnect surfaces |
+|       B | [KAP-0074](KAP-0074.md) | Gated             | Implement and clean-install only the exact accepted preview inventory                  |
+| Ongoing | [KAP-0047](KAP-0047.md) | Supporting        | Record approved aggregate installation, comprehension, defect, and retained-use facts  |
 
-No resident implementation begins until KAP-0054 is accepted. Perform and review one implementation
-packet at a time.
+No resident implementation begins without separate KAP-0074 authorization. Perform and review one
+implementation packet at a time. KAP-0074 must reopen KAP-0054 if it exceeds three weeks, crosses
+the 3,000-line production-code review trigger in any language, deviates materially from the accepted
+inventory, needs more than the accepted one new resident package/product executable/authenticated
+local interface, or needs another lifecycle store.
 
 ## Completed v0.2.0 sequence
 
@@ -88,15 +95,15 @@ compatibility surfaces. No sandbox gate may be resumed without a new explicit di
 
 ## Deferred and superseded programs
 
-| Packet                  | Status      | Route                                                              |
-| ----------------------- | ----------- | ------------------------------------------------------------------ |
-| [KAP-0050](KAP-0050.md) | Superseded  | Historical hosted umbrella                                         |
-| [KAP-0053](KAP-0053.md) | Superseded  | Historical provider/deployment topology; no live authority remains |
-| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs needs later explicit use and compatibility evidence  |
-| [KAP-0066](KAP-0066.md) | Deferred    | Release automation requires an observed product blocker            |
-| [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling requires an observed product blocker         |
-| [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization waits for real consumers                    |
-| [KAP-0071](KAP-0071.md) | Deferred    | Optional Nix shell waits for accepted resident-pilot evidence      |
+| Packet                  | Status      | Route                                                                         |
+| ----------------------- | ----------- | ----------------------------------------------------------------------------- |
+| [KAP-0050](KAP-0050.md) | Superseded  | Historical hosted umbrella                                                    |
+| [KAP-0053](KAP-0053.md) | Superseded  | Historical provider/deployment topology; no live authority remains            |
+| [KAP-0048](KAP-0048.md) | Conditional | Cargo/docs.rs needs later explicit use and compatibility evidence             |
+| [KAP-0066](KAP-0066.md) | Deferred    | Release tooling changes require a concrete preview blocker, not script size   |
+| [KAP-0067](KAP-0067.md) | Deferred    | Qualification tooling prefers archive over port unless a required lane blocks |
+| [KAP-0068](KAP-0068.md) | Deferred    | Interface minimization requires a named consumer and measured friction        |
+| [KAP-0071](KAP-0071.md) | Deferred    | Optional Nix shell waits for accepted resident-pilot evidence                 |
 
 No provider selection, credential access, provisioning, spend, image push, endpoint, DNS, traffic,
 customer cluster, production workload, second operation, generic abstraction, or automatic release

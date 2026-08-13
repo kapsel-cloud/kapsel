@@ -43,15 +43,16 @@ platform commitment:
 
 1. completed: close the hosted sandbox through its fixtures/local-demo fallback and remove its
    deployable implementation from the active workspace;
-2. active: decide whether protected CLI/MCP composition is sufficient for one customer-controlled
-   non-production integration or whether one smallest resident process and local interface is
-   necessary; and
-3. implement at most one finite preview only after that decision and separate authorization.
+2. completed: KAP-0054 proved protected CLI/MCP insufficient for caller-independent lifetime,
+   read-only status, and exact receipt retrieval, then selected one minimal resident process and
+   authenticated local interface; and
+3. gated: implement that exact preview only through KAP-0074 after separate authorization.
 
-KAP-0073 completed sandbox retirement and makes KAP-0054 the sole active product-architecture
-decision. The resident route cannot inherit sandbox topology, transport, scheduling, authority
-staging, isolation, cleanup, or compatibility. Customer access, credentials, implementation, and
-production use each require their own exact owner.
+KAP-0073 completed sandbox retirement. KAP-0054 completed the sole resident-boundary architecture
+decision; KAP-0074 is now the only gated product implementation packet. The resident route cannot
+inherit sandbox topology, transport, scheduling, authority staging, isolation, cleanup, or
+compatibility. Customer access, credentials, implementation, and production use each require their
+own exact owner.
 
 The cycle keeps one capability and tests one external-use fact: whether another team will install
 and retain the authority and recovery mechanism. It does not authorize a second operation, generic
@@ -84,10 +85,12 @@ the mechanism. No sandbox topology or interface becomes a customer product requi
 
 ### Customer-resident preview and production v1
 
-KAP-0054 first decides whether the current CLI/MCP process can satisfy one customer-controlled
-non-production integration with less operational risk. If not, it may specify one smallest resident
-process and local caller boundary. That preview decision exists to make one real workflow possible;
-it is not production v1 and does not inherit sandbox topology or public compatibility.
+KAP-0054 selected one unpublished `kapseld -> kapsel` process under a separate OS identity with one
+authenticated Linux Unix socket. The current CLI/MCP adapters could preserve exact operation replay
+but could not provide caller-independent lifetime, read-only reconnect/status, or exact receipt
+retrieval across the authority boundary. The selected preview exists to make one bounded workflow
+possible; it is not production v1 and does not inherit sandbox topology or public compatibility.
+Implementation remains separately gated by KAP-0074.
 
 A later production `kapseld` release requires retained real-workflow use and a new explicit
 production decision. It would own supported local admission, process lifecycle, restart and upgrade
@@ -126,12 +129,13 @@ preserve an unused seam.
 kapseld -> kapsel
 ```
 
-A preview `kapseld` package becomes justified only if KAP-0054 proves that the existing CLI/MCP
-process cannot satisfy the bounded customer-controlled integration with lower operational risk. It
-owns only the selected local transport, process lifecycle, configuration, health, concurrency,
-upgrades, and operational diagnostics for that preview. It does not absorb effect lifecycle or
-provider classification from `kapsel`. Production compatibility remains unearned until retained
-workflow use passes a later decision.
+KAP-0054 passed the preview `kapseld` extraction trigger because the existing CLI/MCP process cannot
+provide the required independent lifetime, read-only status, and receipt retrieval. KAP-0074 may
+implement exactly one unpublished package, executable, and authenticated Linux Unix socket. That
+package owns only the selected local transport and one in-flight submission rule; systemd owns
+process lifecycle, service health, and diagnostics. It does not absorb effect lifecycle or provider
+classification from `kapsel`, add a second store, or earn production compatibility. Production
+extraction remains unearned until retained workflow use passes a later decision.
 
 The existing `kapsel` executable remains in the root package until independent release cadence,
 installation size, or dependency isolation proves a separate CLI package useful.
@@ -144,12 +148,14 @@ behavior belongs in supported Rust binaries with explicit compatibility and dist
 This is a prospective v1 constraint, not a v0.2 artifact-layout change.
 
 Repository-only release, qualification, fixture, and documentation tooling may remain
-implementation-private in another language. Stable repeated invariants should deepen behind typed
-modules in the existing unpublished `kapsel-dev` package when deletion would otherwise spread those
-invariants across scripts. Keep at least one release verifier independent from the product
-implementation. A future public demonstration either retires with the v0.2 evaluation artifact or
-receives an explicit supported executable and prerequisite decision; shell or Python does not become
-a v1 distribution interface by inheritance.
+implementation-private in another language. Script count or language percentage does not justify a
+rewrite. Stable repeated invariants should deepen behind typed modules in the existing unpublished
+`kapsel-dev` package only when an accepted resident-preview requirement exposes lockstep change,
+duplicated product rules, or unreliable installation/release verification. Prefer archiving expired
+historical qualification tooling over porting it. Keep at least one release verifier independent
+from the product implementation. A future public demonstration either retires with the v0.2
+evaluation artifact or receives an explicit supported executable and prerequisite decision; shell or
+Python does not become a v1 distribution interface by inheritance.
 
 ## Generic data rule
 
@@ -181,8 +187,8 @@ classifier-complete concrete evidence.
 
 1. **CLI** for operator provisioning, local operation, diagnostics, and inspection.
 2. **Stdio MCP** for bounded request-only agent integration.
-3. **Customer-controlled preview interface** selected by KAP-0054 only if protected CLI/MCP is
-   insufficient.
+3. **Customer-controlled preview interface** selected by KAP-0054 and gated for implementation by
+   KAP-0074: one authenticated Linux Unix socket for the sole exact operation.
 4. **Production resident interface** only after retained workflow use earns `kapseld` compatibility.
 5. **Managed Kapsel** only after a resident product proves demand for configuration, upgrades, fleet
    health, or receipt indexing.
@@ -231,16 +237,16 @@ adapter, and public wire-version compatibility case.
 
 ## Trigger-gated package backlog
 
-| Candidate            | Trigger required before extraction                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `kapseld`            | KAP-0054 proves CLI/MCP insufficient for the bounded preview; production compatibility still requires retained use |
-| Separate CLI package | Independent release cadence, installation size, or dependency-isolation evidence                                   |
-| `kapsel-receipt`     | Independent verifier needing receipt logic without gateway and Kubernetes dependencies                             |
-| `kapsel-protocol`    | Two independently maintained clients sharing one stable wire model                                                 |
-| Client SDK           | Multiple external integrations requiring the same supported client behavior                                        |
-| Kubernetes package   | Measured dependency isolation or multiple concrete capability modules needing the same adapter package             |
-| Public provider seam | Two production provider adapters exposing the same repeated interface                                              |
-| Storage seam         | A second durable lifecycle implementation with requirements SQLite cannot satisfy                                  |
+| Candidate            | Trigger required before extraction                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `kapseld`            | Preview extraction selected by KAP-0054 and gated by KAP-0074; production compatibility still requires retained use |
+| Separate CLI package | Independent release cadence, installation size, or dependency-isolation evidence                                    |
+| `kapsel-receipt`     | Independent verifier needing receipt logic without gateway and Kubernetes dependencies                              |
+| `kapsel-protocol`    | Two independently maintained clients sharing one stable wire model                                                  |
+| Client SDK           | Multiple external integrations requiring the same supported client behavior                                         |
+| Kubernetes package   | Measured dependency isolation or multiple concrete capability modules needing the same adapter package              |
+| Public provider seam | Two production provider adapters exposing the same repeated interface                                               |
+| Storage seam         | A second durable lifecycle implementation with requirements SQLite cannot satisfy                                   |
 
 Until its trigger passes, each candidate remains design context rather than active implementation.
 Do not create placeholder packages, pass-through interfaces, or compatibility obligations merely to

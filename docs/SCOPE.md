@@ -36,9 +36,9 @@ external authenticated evidence. Its technical owner is the
 The hosted sandbox route is closed through its accepted fixtures/local-demo fallback. Its
 [historical API](SANDBOX_API.md), [historical deployment contract](SANDBOX_DEPLOYMENT.md), and
 archived implementation remain historical evidence. KAP-0073 removed the deployable package and
-executable gates; none are current product requirements. KAP-0054 now decides whether protected
-CLI/MCP composition suffices for one customer-controlled non-production preview or one minimal
-resident process is technically necessary.
+executable gates; none are current product requirements. KAP-0054 found protected CLI/MCP
+insufficient for caller-independent lifetime, read-only status, and exact receipt retrieval, then
+selected one minimal resident process. KAP-0074 gates that exact non-production implementation.
 
 The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
 production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens
@@ -90,11 +90,11 @@ The release does not include a Kubernetes operation suite, public Rust SDK, crat
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
 After publication, KAP-0069 and KAP-0072 explored a serialized fixed-input public proof. KAP-0070 is
 complete through fallback, and KAP-0073 removed its deployable implementation rather than finishing
-anonymous hosted operation. KAP-0054 is the active technical decision for one smallest
-customer-controlled non-production preview. It does not widen the capability or authorize resident
-implementation, credentials, customer access, or production use. KAP-0047 remains the supporting
-owner for approved aggregate external technical findings; retained customer-controlled use is still
-required before production compatibility or another broader cycle.
+anonymous hosted operation. KAP-0054 completed the technical decision for one smallest
+customer-controlled non-production preview. KAP-0074 is the gated implementation packet; neither
+widens the capability nor authorizes credentials, customer access, or production use. KAP-0047
+remains the supporting owner for approved aggregate external technical findings; retained
+customer-controlled use is still required before production compatibility or another broader cycle.
 
 The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
 route is owned by [the task route](../tasks/README.md).

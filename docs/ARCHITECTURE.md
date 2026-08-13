@@ -143,7 +143,7 @@ assets, and sandbox-only gates. These concerns were created by anonymous hosted 
 define the customer-resident product. Do not refactor or extract its runner, staging, scheduler,
 cleanup, transport, provider, or storage machinery into root `kapsel` or a future resident package.
 
-The active architecture remains:
+The implemented architecture remains:
 
 ```text
 local CLI or fixed stdio MCP adapter
@@ -154,11 +154,26 @@ local CLI or fixed stdio MCP adapter
        -> frozen signed receipt
 ```
 
-KAP-0054 now decides whether a protected deployment of those existing adapters is sufficient for one
-customer-controlled non-production workflow. Only if it is not may that packet select one minimal
-capability-specific resident process and local interface. Installation and process lifecycle are
-necessary access to the mechanism, not permission to create generic protocol, daemon, provider,
-storage, policy, SDK, or capability modules.
+KAP-0054 found that both implemented adapters preserve stable identity and safe replay but lack
+caller-independent lifetime, read-only status, and exact receipt retrieval across a separate OS
+identity. It selected this smallest prospective preview composition:
+
+```text
+bounded local caller
+  -> one authenticated Linux Unix socket
+       -> one unpublished kapseld executable
+            -> deep kapsel Application
+                 -> existing sole SQLite effect journal
+```
+
+KAP-0074 is gated to implement that exact `kapseld -> kapsel` dependency direction. The resident
+adapter may add only capability-specific projected status and safe frozen-receipt reading through
+`Application`; it must not query SQLite, duplicate publication rules, or sequence lifecycle states.
+One in-flight submission is a bound, not a queue. Systemd owns process lifecycle, service health,
+diagnostics, and the separate OS identity; the one socket owns submit, status, and receipt
+vocabulary. Installation and process lifecycle remain necessary access to the mechanism, not
+permission to create generic protocol, daemon framework, provider, storage, policy, SDK, or
+capability modules.
 
 ## Failure structure
 

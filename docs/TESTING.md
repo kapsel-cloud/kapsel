@@ -191,6 +191,29 @@ implementation. Existing tag `archive/kap-0070-backup-restore-bde1e3b` preserves
 backup/restore checkpoint. Neither archive is an active proof lane or deployable alternative. The
 root real-process harness and disposable-`kind` demonstration remain the supported mechanism proof.
 
+## Resident preview proof categories
+
+KAP-0054 selected one minimal resident boundary but authorized no implementation. If KAP-0074 is
+separately authorized, its proof must remain layered around the existing `Application` rather than
+widening private gateway seams:
+
+- read-only projected status and exact frozen-receipt retrieval make no Kubernetes call and advance
+  no lifecycle state;
+- Unix-socket black-box tests cover exact peer-credential allow/deny, filesystem modes, framing and
+  allocation bounds, hostile fields, disclosure, one in-flight submission, and no queue;
+- real caller disconnect and resident process termination cover mutation and receipt-publication
+  seams, startup reconciliation, one provider attempt, frozen bytes, and explicit `UNKNOWN`;
+- concurrent reconnect/status and receipt retrieval remain available without a second state store;
+- a clean x86-64 Debian 12 systemd environment proves identities, fixed-root startup path checks,
+  direct install and lifecycle commands, exact Kubernetes RBAC, operator-file denial, bounded
+  systemd state/diagnostics, one reconciliation per activation, no automatic same-boot restart loop,
+  stop-before-revocation ordering, and uninstall with retained data; and
+- the installed exact artifact passes independent security and architecture review before any
+  external installation is requested.
+
+These are future KAP-0074 acceptance categories, not runnable commands or current product evidence.
+The default CLI/MCP and KAP-0038 suites remain authoritative until retained resident code exists.
+
 ## Review record
 
 Meaningful changes report:
