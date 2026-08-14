@@ -89,6 +89,39 @@ pub struct OperationReport {
     pub receipt: Option<ReceiptReference>,
 }
 
+/// Read-only exact receipt projection for the configured Deployment image operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetDeploymentImageReceipt {
+    /// No durable operation exists for the supplied identity.
+    NotFound,
+    /// The operation exists but has no finalized receipt.
+    NotReady,
+    /// Exact frozen receipt bytes and their expected lowercase SHA-256 digest.
+    Ready {
+        /// Exact canonical receipt bytes read from validated private storage.
+        bytes: Vec<u8>,
+        /// Expected SHA-256 digest frozen in the lifecycle journal.
+        sha256: String,
+    },
+}
+
+/// Read-only status projection for the configured Deployment image operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetDeploymentImageStatus {
+    /// No durable operation exists for the supplied identity.
+    NotFound,
+    /// The operation exists but has not reached a terminal disposition.
+    InProgress,
+    /// The exact target was rejected before a mutation attempt.
+    NotAttempted(TargetRejection),
+    /// Receiver facts established the bounded success predicate.
+    Succeeded,
+    /// Receiver facts established the bounded failure predicate.
+    Failed,
+    /// Receiver facts established neither success nor failure.
+    Unknown,
+}
+
 /// Compile-time composition root for the evaluator application.
 pub struct Application {
     gateway: Gateway,
@@ -120,6 +153,9 @@ impl Application {
         .map_err(|_| ApplicationError::InvalidAuthorizationConfiguration)?;
         validate_key_id(&configuration.receipt_signing_key_id)
             .map_err(|_| ApplicationError::InvalidReceiptConfiguration)?;
+        if !configuration.receipt_output_directory.is_absolute() {
+            return Err(ApplicationError::InvalidReceiptOutputDirectory);
+        }
         validate_private_directory(&configuration.receipt_output_directory)
             .map_err(|_| ApplicationError::InvalidReceiptOutputDirectory)?;
         validate_journal_path(&configuration.journal_path)?;
@@ -153,6 +189,80 @@ impl Application {
     #[must_use]
     pub fn request_matches_authorized_grant(&self, request: &AgentRequest) -> bool {
         request == &self.authorized_request
+    }
+
+    /// Projects the durable status of the configured Deployment image operation.
+    ///
+    /// A different operation identity is indistinguishable from an absent operation. This method
+    /// performs no Kubernetes access and advances no lifecycle state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError::OperationFailure`] when durable state is unreadable or
+    /// internally inconsistent.
+    pub fn read_set_deployment_image_status(
+        &self,
+        operation_id: &str,
+    ) -> Result<SetDeploymentImageStatus, ApplicationError> {
+        if operation_id != self.authorized_request.operation_id {
+            return Ok(SetDeploymentImageStatus::NotFound);
+        }
+        let Some(report) = self.report()? else {
+            return Ok(SetDeploymentImageStatus::NotFound);
+        };
+        match report.state {
+            OperationState::Requested
+            | OperationState::Authorized
+            | OperationState::ApplyStarted
+            | OperationState::ReceiverObserved
+            | OperationState::ReceiptPrepared
+            | OperationState::ReceiptWritten => Ok(SetDeploymentImageStatus::InProgress),
+            OperationState::NotAttempted => report
+                .target_rejection
+                .map(SetDeploymentImageStatus::NotAttempted)
+                .ok_or(ApplicationError::OperationFailure),
+            OperationState::Finalized => match report.result {
+                Some(OperationResult::Succeeded) => Ok(SetDeploymentImageStatus::Succeeded),
+                Some(OperationResult::Failed) => Ok(SetDeploymentImageStatus::Failed),
+                Some(OperationResult::Unknown) => Ok(SetDeploymentImageStatus::Unknown),
+                None => Err(ApplicationError::OperationFailure),
+            },
+        }
+    }
+
+    /// Reads the exact finalized receipt for the configured Deployment image operation.
+    ///
+    /// A different operation identity is indistinguishable from an absent operation. This method
+    /// performs no Kubernetes access and advances no lifecycle state. Private storage paths never
+    /// cross this interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApplicationError::OperationFailure`] when durable facts or receipt storage are
+    /// unreadable, unsafe, inconsistent, or digest-mismatched.
+    pub fn read_set_deployment_image_receipt(
+        &self,
+        operation_id: &str,
+    ) -> Result<SetDeploymentImageReceipt, ApplicationError> {
+        if operation_id != self.authorized_request.operation_id {
+            return Ok(SetDeploymentImageReceipt::NotFound);
+        }
+        let Some(snapshot) = self
+            .gateway
+            .authorized_operation_snapshot(
+                &self.authorized_request,
+                &self.signed_authorization_grant,
+            )
+            .map_err(|_| ApplicationError::OperationFailure)?
+        else {
+            return Ok(SetDeploymentImageReceipt::NotFound);
+        };
+        if snapshot.state != OperationState::Finalized {
+            return Ok(SetDeploymentImageReceipt::NotReady);
+        }
+        let (bytes, sha256) = Gateway::read_snapshot_receipt(snapshot)
+            .map_err(|_| ApplicationError::OperationFailure)?;
+        Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 })
     }
 
     /// Submits request-only intent under the operator-configured exact grant.
@@ -261,7 +371,10 @@ impl Application {
         let operation_id = &self.authorized_request.operation_id;
         let Some(snapshot) = self
             .gateway
-            .operation_snapshot(operation_id)
+            .authorized_operation_snapshot(
+                &self.authorized_request,
+                &self.signed_authorization_grant,
+            )
             .map_err(|_| ApplicationError::OperationFailure)?
         else {
             return Ok(None);

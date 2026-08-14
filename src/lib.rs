@@ -18,7 +18,7 @@ mod simulation_tests;
 
 pub use application::{
     provision_exact_grant, AgentRequest, Application, ApplicationError, GrantProvisioning,
-    OperationReport, OperatorConfiguration,
+    OperationReport, OperatorConfiguration, SetDeploymentImageReceipt, SetDeploymentImageStatus,
 };
 pub use gateway::{
     inspect_receipt, AuthorizationTrust, ExactAuthorization, InspectionLimits, InspectionReport,

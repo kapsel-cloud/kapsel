@@ -346,7 +346,7 @@ impl ReceiptStatement {
         Ok(statement)
     }
 
-    fn validate(&self) -> Result<(), ReceiptError> {
+    pub(in crate::gateway) fn validate(&self) -> Result<(), ReceiptError> {
         validate_identity(InputField::OperationId, &self.operation_id)
             .map_err(|_| ReceiptError::InvalidValue)?;
         for identity in [
@@ -529,6 +529,47 @@ fn sign_statement_bytes(statement_bytes: &[u8], seed: &[u8; 32], key_id: &str) -
     output
 }
 
+struct ReceiptEnvelope<'a> {
+    accepted_purpose: String,
+    key_id: String,
+    statement_bytes: &'a [u8],
+    statement: ReceiptStatement,
+    signature: Signature,
+}
+
+fn parse_receipt_envelope(
+    receipt: &[u8],
+    limits: InspectionLimits,
+) -> Result<ReceiptEnvelope<'_>, ReceiptError> {
+    limits.validate()?;
+    bounded(receipt, limits.receipt_bytes_max)?;
+    let mut records = Records::new(receipt, RECEIPT_MAGIC, limits.text_bytes_max)?;
+    let purpose = records.text(1)?;
+    if purpose != PURPOSE {
+        return Err(ReceiptError::InvalidValue);
+    }
+    let key_id = records.text(2)?;
+    validate_key_id(&key_id)?;
+    let statement_bytes = records.take(3)?;
+    let statement = ReceiptStatement::parse(statement_bytes, limits)?;
+    let signature = Signature::from_bytes(&array(records.take(4)?)?);
+    records.finish()?;
+    Ok(ReceiptEnvelope {
+        accepted_purpose: purpose,
+        key_id,
+        statement_bytes,
+        statement,
+        signature,
+    })
+}
+
+pub(in crate::gateway) fn decode_frozen_receipt(
+    receipt: &[u8],
+) -> Result<(String, ReceiptStatement), ReceiptError> {
+    let envelope = parse_receipt_envelope(receipt, InspectionLimits::default())?;
+    Ok((envelope.key_id, envelope.statement))
+}
+
 /// Aggregate outcome of bounded offline inspection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InspectionStatus {
@@ -627,35 +668,27 @@ fn inspect_inner(
     evaluation_time_unix_s: i64,
     limits: InspectionLimits,
 ) -> Result<ReceiptStatement, ReceiptError> {
-    limits.validate()?;
-    bounded(receipt, limits.receipt_bytes_max)?;
-    let mut records = Records::new(receipt, RECEIPT_MAGIC, limits.text_bytes_max)?;
-    let receipt_purpose = records.text(1)?;
-    if receipt_purpose != PURPOSE {
-        return Err(ReceiptError::InvalidValue);
-    }
-    let key_id = records.text(2)?;
-    validate_key_id(&key_id)?;
-    let statement_bytes = records.take(3)?;
-    let signature = Signature::from_bytes(&array(records.take(4)?)?);
-    records.finish()?;
-    let statement = ReceiptStatement::parse(statement_bytes, limits)?;
+    let envelope = parse_receipt_envelope(receipt, limits)?;
     let parsed_trust = ReceiptTrust::parse(trust, limits)?;
 
     let verifying_key = VerifyingKey::from_bytes(&parsed_trust.public_key)
         .map_err(|_| ReceiptError::InvalidValue)?;
     verifying_key
-        .verify_strict(&signature_input(statement_bytes), &signature)
+        .verify_strict(
+            &signature_input(envelope.statement_bytes),
+            &envelope.signature,
+        )
         .map_err(|_| ReceiptError::BadSignature)?;
 
-    if parsed_trust.key_id != key_id
-        || parsed_trust.accepted_purpose != receipt_purpose
+    let trust_matches_envelope = parsed_trust.key_id == envelope.key_id
+        && parsed_trust.accepted_purpose == envelope.accepted_purpose;
+    if !trust_matches_envelope
         || evaluation_time_unix_s < parsed_trust.not_before_unix_s
         || evaluation_time_unix_s >= parsed_trust.not_after_unix_s
     {
-        return Err(ReceiptError::UntrustedSigner(Box::new(statement)));
+        return Err(ReceiptError::UntrustedSigner(Box::new(envelope.statement)));
     }
-    Ok(statement)
+    Ok(envelope.statement)
 }
 
 impl InspectionLimits {

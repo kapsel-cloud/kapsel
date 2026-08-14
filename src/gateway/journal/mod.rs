@@ -17,9 +17,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use super::{
     authorization::VerifiedAuthorization,
     kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity},
-    receipt::{publication, ReceiptStatement, RECEIPT_BYTES_MAX},
+    receipt::{decode_frozen_receipt, publication, ReceiptStatement, RECEIPT_BYTES_MAX},
     validate_identity, FrozenReceipt, GatewayError, InputField, OperationResult, OperationState,
-    ReceiptReference, SetDeploymentImageRequest, TargetRejection,
+    ReceiptReference, SetDeploymentImageRequest, TargetRejection, WRITE_STRATEGY,
 };
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
@@ -47,6 +47,157 @@ pub(crate) struct OperationSnapshot {
     pub(crate) result: Option<OperationResult>,
     pub(crate) target_rejection: Option<TargetRejection>,
     pub(crate) receipt: Option<ReceiptReference>,
+    pub(crate) frozen_receipt: Option<FrozenReceipt>,
+}
+
+struct SnapshotRow {
+    state: String,
+    result: Option<String>,
+    target_rejection: Option<String>,
+    authorization_id: Option<String>,
+    authorization_signer_key_id: Option<String>,
+    authorization_grant_digest: Option<String>,
+    write_strategy: Option<String>,
+    apply_attempted: bool,
+    target_uid: Option<String>,
+    target_resource_version: Option<String>,
+    apply_accepted: Option<bool>,
+    requested_generation: Option<i64>,
+    apply_resource_version: Option<String>,
+    receiver_facts_present: bool,
+    receipt_path: Option<String>,
+    receipt_digest: Option<String>,
+    receipt_bytes: Option<Vec<u8>>,
+    receipt_key_id: Option<String>,
+}
+
+impl SnapshotRow {
+    fn into_snapshot(
+        self,
+        operation_id: &str,
+        statement: Option<&ReceiptStatement>,
+    ) -> Result<OperationSnapshot, GatewayError> {
+        let state = OperationState::from_sql(&self.state)?;
+        let result = self
+            .result
+            .map(|value| OperationResult::from_sql(&value))
+            .transpose()?;
+        let target_rejection = self
+            .target_rejection
+            .map(|value| TargetRejection::from_sql(&value))
+            .transpose()?;
+        let authorization_present = validate_snapshot_authorization(
+            self.authorization_id,
+            self.authorization_signer_key_id,
+            self.authorization_grant_digest,
+        )?;
+        let (target_present, apply_facts_present) = validate_snapshot_attempt_facts(
+            state,
+            self.write_strategy,
+            self.target_uid,
+            self.target_resource_version,
+            self.apply_accepted,
+            self.requested_generation,
+            self.apply_resource_version,
+        )?;
+        if statement.map(|value| value.result) != result {
+            return Err(GatewayError::InvalidPersistedState);
+        }
+        let frozen_receipt = snapshot_frozen_receipt(
+            operation_id,
+            self.receipt_path,
+            self.receipt_digest,
+            self.receipt_bytes,
+            self.receipt_key_id,
+            statement,
+        )?;
+        let facts = (u8::from(authorization_present) * SNAPSHOT_AUTHORIZATION)
+            | (u8::from(self.apply_attempted) * SNAPSHOT_ATTEMPTED)
+            | (u8::from(target_present) * SNAPSHOT_TARGET)
+            | (u8::from(result.is_some()) * SNAPSHOT_RESULT)
+            | (u8::from(target_rejection.is_some()) * SNAPSHOT_REJECTION)
+            | (u8::from(frozen_receipt.is_some()) * SNAPSHOT_RECEIPT)
+            | (u8::from(statement.is_some()) * SNAPSHOT_STATEMENT);
+        if facts != expected_snapshot_facts(state)
+            || (matches!(
+                state,
+                OperationState::Requested
+                    | OperationState::Authorized
+                    | OperationState::NotAttempted
+            ) && (apply_facts_present || self.receiver_facts_present))
+            || (state == OperationState::ApplyStarted && self.receiver_facts_present)
+        {
+            return Err(GatewayError::InvalidPersistedState);
+        }
+        let receipt = if state == OperationState::Finalized {
+            frozen_receipt.as_ref().map(|receipt| ReceiptReference {
+                path: receipt.path.clone(),
+                digest: receipt.digest.clone(),
+            })
+        } else {
+            None
+        };
+        Ok(OperationSnapshot {
+            state,
+            result,
+            target_rejection,
+            receipt,
+            frozen_receipt,
+        })
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the arguments are one persisted fact group"
+)]
+fn validate_snapshot_attempt_facts(
+    state: OperationState,
+    write_strategy: Option<String>,
+    target_uid: Option<String>,
+    target_resource_version: Option<String>,
+    apply_accepted: Option<bool>,
+    requested_generation: Option<i64>,
+    apply_resource_version: Option<String>,
+) -> Result<(bool, bool), GatewayError> {
+    let target = match (write_strategy, target_uid, target_resource_version) {
+        (Some(strategy), Some(deployment_uid), Some(resource_version))
+            if strategy == WRITE_STRATEGY =>
+        {
+            let target = TargetIdentity {
+                deployment_uid,
+                resource_version,
+            };
+            target
+                .validate()
+                .map_err(|_| GatewayError::InvalidPersistedState)?;
+            Some(target)
+        },
+        (None, None, None) => None,
+        _ => return Err(GatewayError::InvalidPersistedState),
+    };
+    let apply_facts_present = apply_accepted.is_some()
+        || requested_generation.is_some()
+        || apply_resource_version.is_some();
+    if state == OperationState::ApplyStarted {
+        match (apply_accepted, requested_generation, apply_resource_version) {
+            (None, None, None) => {},
+            (Some(accepted), requested_generation, apply_resource_version) => {
+                let target = target.as_ref().ok_or(GatewayError::InvalidPersistedState)?;
+                ApplyOutcome {
+                    accepted,
+                    requested_generation,
+                    deployment_uid: Some(target.deployment_uid.clone()),
+                    resource_version: apply_resource_version
+                        .or_else(|| Some(target.resource_version.clone())),
+                }
+                .validate()
+                .map_err(|_| GatewayError::InvalidPersistedState)?;
+            },
+            _ => return Err(GatewayError::InvalidPersistedState),
+        }
+    }
+    Ok((target.is_some(), apply_facts_present))
 }
 
 impl Drop for WorkerLock<'_> {
@@ -151,62 +302,31 @@ impl Journal {
         request: &SetDeploymentImageRequest,
         authorization: &VerifiedAuthorization,
     ) -> Result<Option<OperationState>, GatewayError> {
-        let existing = self
-            .connection
-            .query_row(
-                "SELECT namespace, deployment, container, immutable_image_digest,
-                        authorization_id, authorization_signer_key_id,
-                        authorization_grant_digest, state
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1",
-                [&request.operation_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, String>(7)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some((
-            namespace,
-            deployment,
-            container,
-            image,
-            authorization_id,
-            authorization_signer_key_id,
-            authorization_grant_digest,
-            state,
-        )) = existing
-        else {
+        existing_submission_on(&self.connection, request, authorization)
+    }
+
+    pub(in crate::gateway) fn authorized_operation_snapshot(
+        &self,
+        request: &SetDeploymentImageRequest,
+        authorization: &VerifiedAuthorization,
+    ) -> Result<Option<OperationSnapshot>, GatewayError> {
+        self.authorized_operation_snapshot_with(request, authorization, || {})
+    }
+
+    fn authorized_operation_snapshot_with(
+        &self,
+        request: &SetDeploymentImageRequest,
+        authorization: &VerifiedAuthorization,
+        after_ownership_read: impl FnOnce(),
+    ) -> Result<Option<OperationSnapshot>, GatewayError> {
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
+                .map_err(GatewayError::Database)?;
+        if existing_submission_on(&transaction, request, authorization)?.is_none() {
             return Ok(None);
-        };
-        if namespace != request.namespace
-            || deployment != request.deployment
-            || container != request.container
-            || image != request.immutable_image_digest
-        {
-            return Err(GatewayError::OperationIdentityConflict);
         }
-        let state = OperationState::from_sql(&state)?;
-        if state != OperationState::Requested
-            && (authorization_id.as_deref()
-                != Some(authorization.authorization.authorization_id.as_str())
-                || authorization_signer_key_id.as_deref()
-                    != Some(authorization.signer_key_id.as_str())
-                || authorization_grant_digest.as_deref()
-                    != Some(authorization.grant_digest.as_str()))
-        {
-            return Err(GatewayError::OperationIdentityConflict);
-        }
-        Ok(Some(state))
+        after_ownership_read();
+        operation_snapshot_on(&transaction, &request.operation_id)
     }
 
     pub(in crate::gateway) fn insert_requested(
@@ -287,56 +407,15 @@ impl Journal {
             .transpose()
     }
 
+    #[cfg(test)]
     pub(in crate::gateway) fn operation_snapshot(
         &self,
         operation_id: &str,
     ) -> Result<Option<OperationSnapshot>, GatewayError> {
-        let row = self
-            .connection
-            .query_row(
-                "SELECT state, result, target_rejection, receipt_path, receipt_digest
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1",
-                [operation_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some((state, result, rejection, receipt_path, receipt_digest)) = row else {
-            return Ok(None);
-        };
-        let state = OperationState::from_sql(&state)?;
-        let result = result
-            .map(|value| OperationResult::from_sql(&value))
-            .transpose()?;
-        let target_rejection = rejection
-            .map(|value| TargetRejection::from_sql(&value))
-            .transpose()?;
-        let receipt = if state == OperationState::Finalized {
-            match (receipt_path, receipt_digest) {
-                (Some(path), Some(digest)) => Some(ReceiptReference {
-                    path: PathBuf::from(path),
-                    digest,
-                }),
-                _ => return Err(GatewayError::InvalidPersistedState),
-            }
-        } else {
-            None
-        };
-        Ok(Some(OperationSnapshot {
-            state,
-            result,
-            target_rejection,
-            receipt,
-        }))
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
+                .map_err(GatewayError::Database)?;
+        operation_snapshot_on(&transaction, operation_id)
     }
 
     #[cfg(test)]
@@ -380,31 +459,7 @@ impl Journal {
         &self,
         operation_id: &str,
     ) -> Result<Option<ReceiptStatement>, GatewayError> {
-        self.connection
-            .query_row(
-                "SELECT operation_id, authorization_id, authorization_signer_key_id,
-                        authorization_grant_digest, namespace, deployment, container,
-                        immutable_image_digest, write_strategy, target_uid,
-                        target_resource_version, receiver_uid, receiver_image,
-                        receiver_operation_marker, current_generation, requested_generation,
-                        observed_generation, receiver_resource_version, desired_replicas,
-                        updated_replicas, available_replicas, unavailable_replicas,
-                        rollout_condition_type, rollout_condition_status,
-                        rollout_condition_reason, result
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1 AND state IN (?2, ?3, ?4)",
-                params![
-                    operation_id,
-                    OperationState::ReceiverObserved.as_sql(),
-                    OperationState::ReceiptWritten.as_sql(),
-                    OperationState::Finalized.as_sql(),
-                ],
-                ReceiptRow::from_sql,
-            )
-            .optional()
-            .map_err(GatewayError::Database)?
-            .map(ReceiptRow::into_statement)
-            .transpose()
+        receipt_statement_on(&self.connection, operation_id)
     }
 
     pub(in crate::gateway) fn prepare_receipt(
@@ -465,41 +520,35 @@ impl Journal {
     ) -> Result<Option<FrozenReceipt>, GatewayError> {
         if !matches!(
             state,
-            OperationState::ReceiptPrepared | OperationState::ReceiptWritten
+            OperationState::ReceiptPrepared
+                | OperationState::ReceiptWritten
+                | OperationState::Finalized
         ) {
             return Err(GatewayError::InvalidPersistedState);
         }
-        let receipt = self
-            .connection
-            .query_row(
-                "SELECT operation_id, receipt_path, receipt_digest, receipt_bytes,
-                        receipt_key_id
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1 AND state = ?2",
-                params![operation_id, state.as_sql()],
-                |row| {
-                    Ok(FrozenReceipt {
-                        operation_id: row.get(0)?,
-                        path: PathBuf::from(row.get::<_, String>(1)?),
-                        digest: row.get(2)?,
-                        bytes: row.get(3)?,
-                        key_id: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some(receipt) = receipt else {
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
+                .map_err(GatewayError::Database)?;
+        let snapshot = snapshot_row_on(&transaction, operation_id)?;
+        let Some(snapshot) = snapshot else {
             return Ok(None);
         };
-        if receipt.bytes.len() > RECEIPT_BYTES_MAX
-            || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
-        {
-            return Err(GatewayError::ReceiptDigestMismatch);
+        if OperationState::from_sql(&snapshot.state)? != state {
+            return Ok(None);
         }
-        validate_identity(InputField::AuthorizationId, &receipt.key_id)
-            .map_err(|_| GatewayError::InvalidPersistedState)?;
-        Ok(Some(receipt))
+        let statement = receipt_statement_on(&transaction, operation_id)?;
+        let receipt = snapshot_frozen_receipt(
+            operation_id,
+            snapshot.receipt_path,
+            snapshot.receipt_digest,
+            snapshot.receipt_bytes,
+            snapshot.receipt_key_id,
+            statement.as_ref(),
+        )?;
+        if receipt.is_none() {
+            return Err(GatewayError::InvalidPersistedState);
+        }
+        Ok(receipt)
     }
 
     pub(in crate::gateway) fn mark_finalized(
@@ -785,6 +834,278 @@ impl Journal {
     }
 }
 
+const SNAPSHOT_AUTHORIZATION: u8 = 1 << 0;
+const SNAPSHOT_ATTEMPTED: u8 = 1 << 1;
+const SNAPSHOT_TARGET: u8 = 1 << 2;
+const SNAPSHOT_RESULT: u8 = 1 << 3;
+const SNAPSHOT_REJECTION: u8 = 1 << 4;
+const SNAPSHOT_RECEIPT: u8 = 1 << 5;
+const SNAPSHOT_STATEMENT: u8 = 1 << 6;
+
+fn expected_snapshot_facts(state: OperationState) -> u8 {
+    match state {
+        OperationState::Requested => 0,
+        OperationState::Authorized => SNAPSHOT_AUTHORIZATION,
+        OperationState::NotAttempted => SNAPSHOT_AUTHORIZATION | SNAPSHOT_REJECTION,
+        OperationState::ApplyStarted => {
+            SNAPSHOT_AUTHORIZATION | SNAPSHOT_ATTEMPTED | SNAPSHOT_TARGET
+        },
+        OperationState::ReceiverObserved => {
+            SNAPSHOT_AUTHORIZATION
+                | SNAPSHOT_ATTEMPTED
+                | SNAPSHOT_TARGET
+                | SNAPSHOT_RESULT
+                | SNAPSHOT_STATEMENT
+        },
+        OperationState::ReceiptPrepared
+        | OperationState::ReceiptWritten
+        | OperationState::Finalized => {
+            SNAPSHOT_AUTHORIZATION
+                | SNAPSHOT_ATTEMPTED
+                | SNAPSHOT_TARGET
+                | SNAPSHOT_RESULT
+                | SNAPSHOT_RECEIPT
+                | SNAPSHOT_STATEMENT
+        },
+    }
+}
+
+fn existing_submission_on(
+    connection: &Connection,
+    request: &SetDeploymentImageRequest,
+    authorization: &VerifiedAuthorization,
+) -> Result<Option<OperationState>, GatewayError> {
+    let existing = connection
+        .query_row(
+            "SELECT namespace, deployment, container, immutable_image_digest,
+                    authorization_id, authorization_signer_key_id,
+                    authorization_grant_digest, state
+             FROM kubernetes_image_operations
+             WHERE operation_id = ?1",
+            [&request.operation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(GatewayError::Database)?;
+    let Some((
+        namespace,
+        deployment,
+        container,
+        image,
+        authorization_id,
+        authorization_signer_key_id,
+        authorization_grant_digest,
+        state,
+    )) = existing
+    else {
+        return Ok(None);
+    };
+    if namespace != request.namespace
+        || deployment != request.deployment
+        || container != request.container
+        || image != request.immutable_image_digest
+    {
+        return Err(GatewayError::OperationIdentityConflict);
+    }
+    let state = OperationState::from_sql(&state)?;
+    if state != OperationState::Requested
+        && (authorization_id.as_deref()
+            != Some(authorization.authorization.authorization_id.as_str())
+            || authorization_signer_key_id.as_deref() != Some(authorization.signer_key_id.as_str())
+            || authorization_grant_digest.as_deref() != Some(authorization.grant_digest.as_str()))
+    {
+        return Err(GatewayError::OperationIdentityConflict);
+    }
+    Ok(Some(state))
+}
+
+fn snapshot_row_on(
+    connection: &Connection,
+    operation_id: &str,
+) -> Result<Option<SnapshotRow>, GatewayError> {
+    connection
+        .query_row(
+            "SELECT state, result, target_rejection,
+                    authorization_id, authorization_signer_key_id,
+                    authorization_grant_digest, write_strategy, apply_attempted,
+                    target_uid, target_resource_version, apply_accepted,
+                    requested_generation, apply_resource_version,
+                    receiver_uid IS NOT NULL OR receiver_image IS NOT NULL
+                        OR receiver_operation_marker IS NOT NULL
+                        OR current_generation IS NOT NULL
+                        OR observed_generation IS NOT NULL
+                        OR receiver_resource_version IS NOT NULL
+                        OR desired_replicas IS NOT NULL
+                        OR updated_replicas IS NOT NULL
+                        OR available_replicas IS NOT NULL
+                        OR unavailable_replicas IS NOT NULL
+                        OR rollout_condition_type IS NOT NULL
+                        OR rollout_condition_status IS NOT NULL
+                        OR rollout_condition_reason IS NOT NULL,
+                    receipt_path, receipt_digest, receipt_bytes, receipt_key_id
+             FROM kubernetes_image_operations
+             WHERE operation_id = ?1",
+            [operation_id],
+            |row| {
+                Ok(SnapshotRow {
+                    state: row.get(0)?,
+                    result: row.get(1)?,
+                    target_rejection: row.get(2)?,
+                    authorization_id: row.get(3)?,
+                    authorization_signer_key_id: row.get(4)?,
+                    authorization_grant_digest: row.get(5)?,
+                    write_strategy: row.get(6)?,
+                    apply_attempted: row.get(7)?,
+                    target_uid: row.get(8)?,
+                    target_resource_version: row.get(9)?,
+                    apply_accepted: row.get(10)?,
+                    requested_generation: row.get(11)?,
+                    apply_resource_version: row.get(12)?,
+                    receiver_facts_present: row.get(13)?,
+                    receipt_path: row.get(14)?,
+                    receipt_digest: row.get(15)?,
+                    receipt_bytes: row.get(16)?,
+                    receipt_key_id: row.get(17)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(GatewayError::Database)
+}
+
+fn receipt_statement_on(
+    connection: &Connection,
+    operation_id: &str,
+) -> Result<Option<ReceiptStatement>, GatewayError> {
+    connection
+        .query_row(
+            "SELECT operation_id, authorization_id, authorization_signer_key_id,
+                    authorization_grant_digest, namespace, deployment, container,
+                    immutable_image_digest, write_strategy, target_uid,
+                    target_resource_version, receiver_uid, receiver_image,
+                    receiver_operation_marker, current_generation, requested_generation,
+                    observed_generation, receiver_resource_version, desired_replicas,
+                    updated_replicas, available_replicas, unavailable_replicas,
+                    rollout_condition_type, rollout_condition_status,
+                    rollout_condition_reason, result
+             FROM kubernetes_image_operations
+             WHERE operation_id = ?1 AND state IN (?2, ?3, ?4, ?5)",
+            params![
+                operation_id,
+                OperationState::ReceiverObserved.as_sql(),
+                OperationState::ReceiptPrepared.as_sql(),
+                OperationState::ReceiptWritten.as_sql(),
+                OperationState::Finalized.as_sql(),
+            ],
+            ReceiptRow::from_sql,
+        )
+        .optional()
+        .map_err(GatewayError::Database)?
+        .map(ReceiptRow::into_statement)
+        .transpose()
+}
+
+fn operation_snapshot_on(
+    connection: &Connection,
+    operation_id: &str,
+) -> Result<Option<OperationSnapshot>, GatewayError> {
+    let Some(row) = snapshot_row_on(connection, operation_id)? else {
+        return Ok(None);
+    };
+    let statement = receipt_statement_on(connection, operation_id)?;
+    row.into_snapshot(operation_id, statement.as_ref())
+        .map(Some)
+}
+
+fn validate_snapshot_authorization(
+    authorization_id: Option<String>,
+    signer_key_id: Option<String>,
+    grant_digest: Option<String>,
+) -> Result<bool, GatewayError> {
+    match (authorization_id, signer_key_id, grant_digest) {
+        (None, None, None) => Ok(false),
+        (Some(authorization_id), Some(signer_key_id), Some(grant_digest)) => {
+            validate_identity(InputField::AuthorizationId, &authorization_id)
+                .map_err(|_| GatewayError::InvalidPersistedState)?;
+            validate_identity(InputField::AuthorizationId, &signer_key_id)
+                .map_err(|_| GatewayError::InvalidPersistedState)?;
+            if grant_digest.len() != 64
+                || !grant_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            {
+                return Err(GatewayError::InvalidPersistedState);
+            }
+            Ok(true)
+        },
+        _ => Err(GatewayError::InvalidPersistedState),
+    }
+}
+
+fn snapshot_frozen_receipt(
+    operation_id: &str,
+    path: Option<String>,
+    digest: Option<String>,
+    bytes: Option<Vec<u8>>,
+    key_id: Option<String>,
+    statement: Option<&ReceiptStatement>,
+) -> Result<Option<FrozenReceipt>, GatewayError> {
+    match (path, digest, bytes, key_id) {
+        (None, None, None, None) => Ok(None),
+        (Some(path), Some(digest), Some(bytes), Some(key_id)) => {
+            let receipt = validate_frozen_receipt(FrozenReceipt {
+                operation_id: operation_id.to_owned(),
+                path: PathBuf::from(path),
+                digest,
+                bytes,
+                key_id,
+            })?;
+            let expected_statement = statement.ok_or(GatewayError::InvalidPersistedState)?;
+            let (embedded_key_id, embedded_statement) =
+                decode_frozen_receipt(&receipt.bytes).map_err(GatewayError::Receipt)?;
+            if embedded_key_id != receipt.key_id || embedded_statement != *expected_statement {
+                return Err(GatewayError::InvalidPersistedState);
+            }
+            Ok(Some(receipt))
+        },
+        _ => Err(GatewayError::InvalidPersistedState),
+    }
+}
+
+fn validate_frozen_receipt(receipt: FrozenReceipt) -> Result<FrozenReceipt, GatewayError> {
+    if receipt.bytes.len() > RECEIPT_BYTES_MAX
+        || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
+    {
+        return Err(GatewayError::ReceiptDigestMismatch);
+    }
+    validate_identity(InputField::AuthorizationId, &receipt.key_id)
+        .map_err(|_| GatewayError::InvalidPersistedState)?;
+    let expected_name = publication::receipt_filename(&receipt.operation_id, &receipt.digest);
+    if !receipt.path.is_absolute()
+        || receipt.path.file_name() != Some(expected_name.as_ref())
+        || receipt.path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    Ok(receipt)
+}
+
 struct ReceiptRow {
     operation_id: String,
     authorization_id: Option<String>,
@@ -847,7 +1168,7 @@ impl ReceiptRow {
     }
 
     fn into_statement(self) -> Result<ReceiptStatement, GatewayError> {
-        Ok(ReceiptStatement {
+        let statement = ReceiptStatement {
             operation_id: self.operation_id,
             authorization_id: self
                 .authorization_id
@@ -884,7 +1205,11 @@ impl ReceiptRow {
             rollout_condition_status: self.rollout_condition_status,
             rollout_condition_reason: self.rollout_condition_reason,
             result: OperationResult::from_sql(&self.result)?,
-        })
+        };
+        statement
+            .validate()
+            .map_err(|_| GatewayError::InvalidPersistedState)?;
+        Ok(statement)
     }
 }
 
@@ -893,5 +1218,501 @@ fn changed_one(changed: usize) -> Result<(), GatewayError> {
         Ok(())
     } else {
         Err(GatewayError::InvalidTransition)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+
+    use super::*;
+    use crate::gateway::{
+        sign_authorization_grant, verify_authorization_grant, ExactAuthorization,
+    };
+
+    fn journal(name: &str) -> (Journal, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-journal-snapshot-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let journal = Journal::open(root.join("journal.sqlite3")).unwrap();
+        (journal, root)
+    }
+
+    fn snapshot_statement() -> ReceiptStatement {
+        let image = concat!(
+            "registry.example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        ReceiptStatement {
+            operation_id: "snapshot-op".into(),
+            authorization_id: "snapshot-auth".into(),
+            authorization_signer_key_id: "snapshot-signer".into(),
+            authorization_grant_digest:
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: image.into(),
+            write_strategy: WRITE_STRATEGY.into(),
+            target_uid: "target-uid".into(),
+            target_resource_version: "target-rv".into(),
+            receiver_uid: Some("target-uid".into()),
+            observed_image: Some(image.into()),
+            observed_operation_marker: Some("snapshot-op".into()),
+            current_generation: Some(2),
+            requested_generation: Some(2),
+            observed_generation: Some(2),
+            observed_resource_version: Some("receiver-rv".into()),
+            desired_replicas: Some(1),
+            updated_replicas: Some(1),
+            available_replicas: Some(1),
+            unavailable_replicas: Some(0),
+            rollout_condition_type: Some("Available".into()),
+            rollout_condition_status: Some("True".into()),
+            rollout_condition_reason: Some("MinimumReplicasAvailable".into()),
+            result: OperationResult::Succeeded,
+        }
+    }
+
+    fn insert_snapshot_row(
+        journal: &Journal,
+        state: &str,
+        result: Option<&str>,
+        rejection: Option<&str>,
+        receipt: bool,
+    ) {
+        let authorized = state != "requested";
+        let attempted = matches!(
+            state,
+            "apply_started"
+                | "receiver_observed"
+                | "receipt_prepared"
+                | "receipt_written"
+                | "finalized"
+        );
+        let observed = matches!(
+            state,
+            "receiver_observed" | "receipt_prepared" | "receipt_written" | "finalized"
+        );
+        let image = concat!(
+            "registry.example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        let statement = snapshot_statement();
+        let receipt_bytes =
+            super::super::receipt::sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key")
+                .unwrap();
+        let receipt_digest = publication::receipt_digest_hex(&receipt_bytes);
+        let receipt_path = format!(
+            "/private/{}",
+            publication::receipt_filename("snapshot-op", &receipt_digest)
+        );
+        journal
+            .connection
+            .execute(
+                "INSERT INTO kubernetes_image_operations (
+                    operation_id, namespace, deployment, container,
+                    immutable_image_digest, state, result, target_rejection,
+                    authorization_id, authorization_signer_key_id,
+                    authorization_grant_digest, write_strategy, apply_attempted,
+                    target_uid, target_resource_version, receiver_uid, receiver_image,
+                    receiver_operation_marker, current_generation, requested_generation,
+                    observed_generation, receiver_resource_version, desired_replicas,
+                    updated_replicas, available_replicas, unavailable_replicas,
+                    rollout_condition_type, rollout_condition_status,
+                    rollout_condition_reason, receipt_path, receipt_digest,
+                    receipt_bytes, receipt_key_id
+                 ) VALUES (?1, 'demo', 'agent-api', 'api', ?2, ?3, ?4, ?5,
+                           ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                           ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
+                           ?27, ?28, ?29, ?30)",
+                params![
+                    "snapshot-op",
+                    image,
+                    state,
+                    result,
+                    rejection,
+                    authorized.then_some("snapshot-auth"),
+                    authorized.then_some("snapshot-signer"),
+                    authorized.then_some(
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    ),
+                    attempted.then_some(WRITE_STRATEGY),
+                    attempted,
+                    attempted.then_some("target-uid"),
+                    attempted.then_some("target-rv"),
+                    observed.then_some("target-uid"),
+                    observed.then_some(image),
+                    observed.then_some("snapshot-op"),
+                    observed.then_some(2_i64),
+                    observed.then_some(2_i64),
+                    observed.then_some(2_i64),
+                    observed.then_some("receiver-rv"),
+                    observed.then_some(1_i32),
+                    observed.then_some(1_i32),
+                    observed.then_some(1_i32),
+                    observed.then_some(0_i32),
+                    observed.then_some("Available"),
+                    observed.then_some("True"),
+                    observed.then_some("MinimumReplicasAvailable"),
+                    receipt.then_some(receipt_path),
+                    receipt.then_some(receipt_digest),
+                    receipt.then_some(receipt_bytes),
+                    receipt.then_some("snapshot-receipt-key"),
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn operation_snapshot_rejects_incoherent_public_facts() {
+        for (name, state, result, rejection, receipt) in [
+            ("finalized-no-result", "finalized", None, None, true),
+            (
+                "not-attempted-no-rejection",
+                "not_attempted",
+                None,
+                None,
+                false,
+            ),
+            (
+                "active-with-terminal-facts",
+                "authorized",
+                Some("SUCCEEDED"),
+                Some("deployment_not_found"),
+                false,
+            ),
+        ] {
+            let (journal, root) = journal(name);
+            insert_snapshot_row(&journal, state, result, rejection, receipt);
+            assert!(journal.operation_snapshot("snapshot-op").is_err());
+            drop(journal);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn operation_snapshot_requires_complete_valid_frozen_receipt_facts() {
+        for (name, assignment) in [
+            ("missing-path", "receipt_path = NULL"),
+            ("missing-digest", "receipt_digest = NULL"),
+            ("missing-bytes", "receipt_bytes = NULL"),
+            ("missing-key", "receipt_key_id = NULL"),
+            (
+                "missing-tuple",
+                "receipt_path = NULL, receipt_digest = NULL, receipt_bytes = NULL, \
+                 receipt_key_id = NULL",
+            ),
+            ("bad-key", "receipt_key_id = 'bad key'"),
+            ("bad-digest", "receipt_digest = '00'"),
+            ("wrong-name", "receipt_path = '/private/wrong.receipt'"),
+            ("relative-path", "receipt_path = 'relative.receipt'"),
+        ] {
+            let (journal, root) = journal(name);
+            insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
+            let update = format!(
+                "UPDATE kubernetes_image_operations SET {assignment} \
+                 WHERE operation_id = ?1"
+            );
+            journal
+                .connection
+                .execute(&update, ["snapshot-op"])
+                .unwrap();
+            assert!(journal.operation_snapshot("snapshot-op").is_err());
+            drop(journal);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        let (journal, root) = journal("oversized-receipt");
+        insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
+        journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations SET receipt_bytes = ?1 \
+                 WHERE operation_id = ?2",
+                params![vec![0_u8; RECEIPT_BYTES_MAX + 1], "snapshot-op"],
+            )
+            .unwrap();
+        assert!(journal.operation_snapshot("snapshot-op").is_err());
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn operation_snapshot_binds_receiver_facts_and_receipt_envelope() {
+        for (name, assignment) in [
+            ("result-tamper", "result = 'FAILED'"),
+            ("classifier-tamper", "available_replicas = 0"),
+            ("key-tamper", "receipt_key_id = 'other-valid-key'"),
+        ] {
+            let (journal, root) = journal(name);
+            insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
+            journal
+                .connection
+                .execute(
+                    &format!(
+                        "UPDATE kubernetes_image_operations SET {assignment} \
+                         WHERE operation_id = ?1"
+                    ),
+                    ["snapshot-op"],
+                )
+                .unwrap();
+            assert!(journal.operation_snapshot("snapshot-op").is_err());
+            drop(journal);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        let (journal, root) = journal("non-receipt-bytes");
+        insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
+        let bytes = b"not-a-receipt";
+        let digest = publication::receipt_digest_hex(bytes);
+        let path = format!(
+            "/private/{}",
+            publication::receipt_filename("snapshot-op", &digest)
+        );
+        journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations
+                 SET receipt_path = ?1, receipt_digest = ?2, receipt_bytes = ?3
+                 WHERE operation_id = ?4",
+                params![path, digest, bytes.as_slice(), "snapshot-op"],
+            )
+            .unwrap();
+        assert!(journal.operation_snapshot("snapshot-op").is_err());
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authorized_snapshot_holds_one_sqlite_read_view() {
+        let (journal, root) = journal("atomic-authorization");
+        let request = SetDeploymentImageRequest {
+            operation_id: "snapshot-op".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: concat!(
+                "registry.example/agent-api@sha256:",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .into(),
+        };
+        let authorization = ExactAuthorization {
+            authorization_id: "snapshot-auth".into(),
+            operation_id: request.operation_id.clone(),
+            namespace: request.namespace.clone(),
+            deployment: request.deployment.clone(),
+            container: request.container.clone(),
+            immutable_image_digest: request.immutable_image_digest.clone(),
+        };
+        let signed =
+            sign_authorization_grant(&authorization, &[7_u8; 32], "snapshot-signer").unwrap();
+        let verified = verify_authorization_grant(
+            &signed,
+            &super::super::AuthorizationTrust {
+                key_id: "snapshot-signer".into(),
+                public_key: ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+        journal.insert_requested(&request).unwrap();
+        let other = Journal::open(root.join("journal.sqlite3")).unwrap();
+
+        let snapshot = journal
+            .authorized_operation_snapshot_with(&request, &verified, || {
+                let result = other.connection.execute(
+                    "UPDATE kubernetes_image_operations
+                     SET state = 'authorized', authorization_id = 'other-auth',
+                         authorization_signer_key_id = 'other-signer',
+                         authorization_grant_digest = ?1
+                     WHERE operation_id = ?2",
+                    params!["0".repeat(64), "snapshot-op"],
+                );
+                assert!(result.is_err());
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.state, OperationState::Requested);
+
+        drop(other);
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authorized_finalized_snapshot_freezes_receipt_and_ownership_together() {
+        let (journal, root) = journal("atomic-finalized-receipt");
+        insert_snapshot_row(&journal, "finalized", Some("SUCCEEDED"), None, true);
+        let request = SetDeploymentImageRequest {
+            operation_id: "snapshot-op".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: concat!(
+                "registry.example/agent-api@sha256:",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .into(),
+        };
+        let authorization = ExactAuthorization {
+            authorization_id: "snapshot-auth".into(),
+            operation_id: request.operation_id.clone(),
+            namespace: request.namespace.clone(),
+            deployment: request.deployment.clone(),
+            container: request.container.clone(),
+            immutable_image_digest: request.immutable_image_digest.clone(),
+        };
+        let signed =
+            sign_authorization_grant(&authorization, &[7_u8; 32], "snapshot-signer").unwrap();
+        let verified = verify_authorization_grant(
+            &signed,
+            &super::super::AuthorizationTrust {
+                key_id: "snapshot-signer".into(),
+                public_key: ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            },
+        )
+        .unwrap();
+        let mut statement = snapshot_statement();
+        statement.authorization_grant_digest = verified.grant_digest.clone();
+        let receipt_bytes =
+            super::super::receipt::sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key")
+                .unwrap();
+        let receipt_digest = publication::receipt_digest_hex(&receipt_bytes);
+        let receipt_path = format!(
+            "/private/{}",
+            publication::receipt_filename("snapshot-op", &receipt_digest)
+        );
+        journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations
+                 SET authorization_grant_digest = ?1, receipt_path = ?2,
+                     receipt_digest = ?3, receipt_bytes = ?4
+                 WHERE operation_id = ?5",
+                params![
+                    verified.grant_digest,
+                    receipt_path,
+                    receipt_digest,
+                    receipt_bytes,
+                    "snapshot-op"
+                ],
+            )
+            .unwrap();
+        let other = Journal::open(root.join("journal.sqlite3")).unwrap();
+
+        let snapshot = journal
+            .authorized_operation_snapshot_with(&request, &verified, || {
+                let result = other.connection.execute(
+                    "UPDATE kubernetes_image_operations
+                     SET authorization_id = 'other-auth', receipt_bytes = ?1
+                     WHERE operation_id = ?2",
+                    params![b"replacement".as_slice(), "snapshot-op"],
+                );
+                assert!(result.is_err());
+            })
+            .unwrap()
+            .unwrap();
+        let receipt = snapshot.frozen_receipt.unwrap();
+        assert_ne!(receipt.bytes, b"replacement");
+        assert_eq!(
+            publication::receipt_digest_hex(&receipt.bytes),
+            receipt.digest
+        );
+
+        drop(other);
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn operation_snapshot_requires_state_local_authorization_and_attempt_facts() {
+        for (name, state, assignment) in [
+            (
+                "authorized-no-auth",
+                "authorized",
+                "authorization_id = NULL",
+            ),
+            ("apply-no-marker", "apply_started", "apply_attempted = 0"),
+            ("apply-no-target", "apply_started", "target_uid = NULL"),
+            ("apply-empty-target", "apply_started", "target_uid = ''"),
+            (
+                "apply-partial-outcome",
+                "apply_started",
+                "requested_generation = 2",
+            ),
+            (
+                "not-attempted-apply-fact",
+                "not_attempted",
+                "apply_accepted = 0",
+            ),
+            (
+                "not-attempted-receiver-fact",
+                "not_attempted",
+                "receiver_uid = 'unexpected'",
+            ),
+            ("observed-no-result", "receiver_observed", "result = NULL"),
+        ] {
+            let (journal, root) = journal(name);
+            let result = (state == "receiver_observed").then_some("SUCCEEDED");
+            insert_snapshot_row(&journal, state, result, None, false);
+            let update = format!(
+                "UPDATE kubernetes_image_operations SET {assignment} \
+                 WHERE operation_id = ?1"
+            );
+            journal
+                .connection
+                .execute(&update, ["snapshot-op"])
+                .unwrap();
+            assert!(journal.operation_snapshot("snapshot-op").is_err());
+            drop(journal);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        let (oversized_journal, root) = journal("apply-oversized-target");
+        insert_snapshot_row(&oversized_journal, "apply_started", None, None, false);
+        oversized_journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations SET target_uid = ?1
+                 WHERE operation_id = ?2",
+                params!["x".repeat(129), "snapshot-op"],
+            )
+            .unwrap();
+        assert!(oversized_journal.operation_snapshot("snapshot-op").is_err());
+        drop(oversized_journal);
+        fs::remove_dir_all(root).unwrap();
+
+        let (outcome_journal, root) = journal("apply-complete-outcome");
+        insert_snapshot_row(&outcome_journal, "apply_started", None, None, false);
+        outcome_journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations
+                 SET apply_accepted = 1, requested_generation = 2,
+                     apply_resource_version = 'apply-rv'
+                 WHERE operation_id = ?1",
+                ["snapshot-op"],
+            )
+            .unwrap();
+        assert_eq!(
+            outcome_journal
+                .operation_snapshot("snapshot-op")
+                .unwrap()
+                .unwrap()
+                .state,
+            OperationState::ApplyStarted
+        );
+        drop(outcome_journal);
+        fs::remove_dir_all(root).unwrap();
     }
 }

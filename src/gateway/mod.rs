@@ -327,11 +327,17 @@ impl Gateway {
         self.journal.state(operation_id)
     }
 
-    pub(crate) fn operation_snapshot(
+    pub(crate) fn authorized_operation_snapshot(
         &self,
-        operation_id: &str,
+        request: &SetDeploymentImageRequest,
+        signed_grant: &[u8],
     ) -> Result<Option<journal::OperationSnapshot>, GatewayError> {
-        self.journal.operation_snapshot(operation_id)
+        let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
+        if !verified.authorization.matches(request) {
+            return Err(GatewayError::AuthorizationMismatch);
+        }
+        self.journal
+            .authorized_operation_snapshot(request, &verified)
     }
 
     /// Reads a frozen receiver result when observation has completed.
@@ -487,6 +493,22 @@ impl Gateway {
             path,
             key_id: settings.key_id.to_owned(),
         })
+    }
+
+    pub(crate) fn read_snapshot_receipt(
+        snapshot: journal::OperationSnapshot,
+    ) -> Result<(Vec<u8>, String), GatewayError> {
+        if snapshot.state != OperationState::Finalized {
+            return Err(GatewayError::InvalidPersistedState);
+        }
+        let receipt = snapshot
+            .frozen_receipt
+            .ok_or(GatewayError::InvalidPersistedState)?;
+        let bytes = publication::read_receipt(&receipt.path).map_err(publication_error)?;
+        if bytes != receipt.bytes || publication::receipt_digest_hex(&bytes) != receipt.digest {
+            return Err(GatewayError::ReceiptDigestMismatch);
+        }
+        Ok((bytes, receipt.digest))
     }
 
     /// Reads the terminal receipt reference for a finalized operation.

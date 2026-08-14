@@ -14,7 +14,7 @@ use std::{
     path::{Component, Path},
 };
 
-use rustix::fs::{fstat, linkat, openat, statat, unlinkat, AtFlags, Mode, OFlags, CWD};
+use rustix::fs::{fchmod, fstat, linkat, openat, statat, unlinkat, AtFlags, Mode, OFlags, CWD};
 use sha2::{Digest, Sha256};
 
 use super::RECEIPT_BYTES_MAX;
@@ -61,6 +61,13 @@ pub(crate) fn publish_receipt(path: &Path, receipt: &[u8]) -> Result<(), Publica
 }
 
 pub(crate) fn read_receipt(path: &Path) -> Result<Vec<u8>, PublicationError> {
+    read_receipt_before_read(path, || {})
+}
+
+fn read_receipt_before_read(
+    path: &Path,
+    before_read: impl FnOnce(),
+) -> Result<Vec<u8>, PublicationError> {
     let (directory, name) = open_parent(path)?;
     let file = match open_regular(&directory, &name) {
         Err(PublicationError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
@@ -69,7 +76,9 @@ pub(crate) fn read_receipt(path: &Path) -> Result<Vec<u8>, PublicationError> {
         result => result?,
     };
     require_private_file(&file)?;
+    require_single_link(&file)?;
     require_named_file(&directory, &name, &file)?;
+    before_read();
     read_bounded(&file, RECEIPT_BYTES_MAX)
 }
 
@@ -152,7 +161,7 @@ fn open_parent(path: &Path) -> Result<(File, OsString), PublicationError> {
         );
     }
     let metadata = directory.metadata().map_err(PublicationError::Io)?;
-    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o7777 != 0o700 {
         return Err(PublicationError::UnsafePath);
     }
     Ok((directory, destination))
@@ -174,6 +183,8 @@ fn create_new_file(
 ) -> Result<File, PublicationError> {
     let mut file =
         File::from(openat(directory, name, write_new_flags(), file_mode()).map_err(io_error)?);
+    fchmod(&file, file_mode()).map_err(io_error)?;
+    require_private_file(&file)?;
     file.write_all(receipt).map_err(PublicationError::Io)?;
     file.sync_all().map_err(PublicationError::Io)?;
     require_named_file(directory, name, &file)?;
@@ -190,7 +201,14 @@ fn open_regular(directory: &File, name: &OsStr) -> Result<File, PublicationError
 
 fn require_private_file(file: &File) -> Result<(), PublicationError> {
     let metadata = file.metadata().map_err(PublicationError::Io)?;
-    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+    if metadata.uid() != rustix::process::geteuid().as_raw() || metadata.mode() & 0o7777 != 0o600 {
+        return Err(PublicationError::UnsafePath);
+    }
+    Ok(())
+}
+
+fn require_single_link(file: &File) -> Result<(), PublicationError> {
+    if file.metadata().map_err(PublicationError::Io)?.nlink() != 1 {
         return Err(PublicationError::UnsafePath);
     }
     Ok(())
@@ -245,7 +263,7 @@ fn directory_flags() -> OFlags {
 }
 
 fn read_flags() -> OFlags {
-    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+    OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC
 }
 
 fn write_new_flags() -> OFlags {
@@ -307,9 +325,15 @@ mod tests {
         fs,
         os::unix::fs::{symlink, PermissionsExt},
         path::PathBuf,
+        process::Command,
     };
 
     use super::*;
+
+    const RESTRICTIVE_UMASK_TEST: &str = concat!(
+        "gateway::receipt::publication::tests::",
+        "creation_forces_exact_mode_under_restrictive_umask"
+    );
 
     fn directory(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("k3-{}-{name}", std::process::id()));
@@ -426,6 +450,113 @@ mod tests {
         let socket = root.join("socket");
         let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert!(read_receipt(&socket).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn receipt_reads_require_exact_modes_and_a_single_link() {
+        let root = directory("read-identity");
+        let path = root.join("receipt");
+        publish_receipt(&path, b"receipt").unwrap();
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(matches!(
+            read_receipt(&path),
+            Err(PublicationError::UnsafePath)
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let linked = root.join("linked");
+        fs::hard_link(&path, &linked).unwrap();
+        assert!(matches!(
+            read_receipt(&path),
+            Err(PublicationError::UnsafePath)
+        ));
+        fs::remove_file(linked).unwrap();
+
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(matches!(
+            read_receipt(&path),
+            Err(PublicationError::UnsafePath)
+        ));
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read_receipt(&path).unwrap(), b"receipt");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn creation_forces_exact_mode_under_restrictive_umask() {
+        const CHILD: &str = "KAPSEL_RESTRICTIVE_UMASK_CHILD";
+        const MARKER: &str = "KAPSEL_RESTRICTIVE_UMASK_MARKER";
+        if std::env::var_os(CHILD).is_some() {
+            rustix::process::umask(Mode::WUSR);
+            let root = directory("restrictive-umask");
+            let path = root.join("receipt");
+            publish_receipt(&path, b"receipt").unwrap();
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+            assert_eq!(read_receipt(&path).unwrap(), b"receipt");
+            fs::remove_dir_all(root).unwrap();
+            fs::write(std::env::var_os(MARKER).unwrap(), b"completed").unwrap();
+            return;
+        }
+
+        let marker = std::env::temp_dir().join(format!(
+            "kapsel-restrictive-umask-marker-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&marker);
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", RESTRICTIVE_UMASK_TEST])
+            .env(CHILD, "1")
+            .env(MARKER, &marker)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(fs::read(&marker).unwrap(), b"completed");
+        fs::remove_file(marker).unwrap();
+    }
+
+    #[test]
+    fn fifo_and_unsafe_read_paths_fail_without_blocking() {
+        let root = directory("fifo-read");
+        let fifo = root.join("receipt-fifo");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(matches!(
+            read_receipt(&fifo),
+            Err(PublicationError::UnsafePath)
+        ));
+
+        let real = root.join("real");
+        fs::create_dir(&real).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = real.join("receipt");
+        publish_receipt(&path, b"receipt").unwrap();
+        symlink(&real, root.join("linked")).unwrap();
+        assert!(read_receipt(&root.join("linked/receipt")).is_err());
+        assert!(read_receipt(&root.join("real/../real/receipt")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_uses_the_validated_open_descriptor_after_name_replacement() {
+        let root = directory("read-substitution");
+        let path = root.join("receipt");
+        let retained = root.join("retained");
+        publish_receipt(&path, b"original").unwrap();
+
+        let bytes = read_receipt_before_read(&path, || {
+            fs::rename(&path, &retained).unwrap();
+            fs::write(&path, b"replacement").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        })
+        .unwrap();
+
+        assert_eq!(bytes, b"original");
+        assert_eq!(fs::read(path).unwrap(), b"replacement");
         fs::remove_dir_all(root).unwrap();
     }
 
