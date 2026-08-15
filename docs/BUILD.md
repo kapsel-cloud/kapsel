@@ -105,6 +105,36 @@ recovery behavior are exercised through both the library and fixed evaluator com
 deterministic suite includes real subprocess kill/restart proofs at the mutation and
 receipt-publication seams.
 
+## Resident socket candidate
+
+Run the focused deterministic package tests for the unpublished resident socket candidate with:
+
+```sh
+cargo test --locked -p kapseld
+cargo clippy --locked -p kapseld --all-targets -- -D warnings
+```
+
+The Linux-only real-process peer-credential gate uses the compile-time test harness and requires a
+Linux host. It creates only caller-owned temporary sockets and processes; it does not create users,
+change groups, run systemd, or use Kubernetes credentials:
+
+```sh
+cargo test --locked -p kapseld --features test-harness --test linux_process
+```
+
+On the authorized `server` host, an additional ignored gate launches the client through its existing
+supplementary `docker` group with `sg` and proves the resulting distinct effective GID is denied
+promptly without sending a frame. It performs no identity or group mutation:
+
+```sh
+cargo test --locked -p kapseld --features test-harness --test linux_process \
+  distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
+```
+
+This candidate covers only KAP-0074 Slice 2 framing, authentication, status, receipt, and
+non-executing submit behavior. It is not an installed resident service and proves no systemd,
+fixed-root, identity-provisioning, startup-reconciliation, execution, or release behavior.
+
 ## Upgrade and rollback fixture gate
 
 The [operator upgrade and rollback contract](UPGRADE.md) owns the supported procedure and limits.

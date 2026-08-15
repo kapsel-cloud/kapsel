@@ -30,7 +30,7 @@ include = [
 ]
 
 [workspace]
-members = ["crates/kapsel-dev"]
+members = ["crates/kapsel-dev", "crates/kapseld"]
 exclude = ["fuzz"]
 resolver = "2"
 
