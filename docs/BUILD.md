@@ -114,9 +114,13 @@ cargo test --locked -p kapseld
 cargo clippy --locked -p kapseld --all-targets -- -D warnings
 ```
 
-The Linux-only real-process peer-credential gate uses the compile-time test harness and requires a
-Linux host. It creates only caller-owned temporary sockets and processes; it does not create users,
-change groups, run systemd, or use Kubernetes credentials:
+The Linux-only real-process peer-credential and execution-ownership gate uses the compile-time test
+harness and requires a Linux host. It creates only caller-owned temporary sockets and processes; it
+does not create users, change groups, run systemd, or use Kubernetes credentials. A harness-only
+status handshake keeps synthetic execution active through the observed `BUSY`, then releases it for
+the final status read; timeout bounds detect deadlock rather than define execution lifetime. This
+proves disconnect-independent process ownership, immediate `BUSY`, and reconnect status without
+claiming provider or receiver behavior:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process
@@ -131,9 +135,13 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
-This candidate covers only KAP-0074 Slice 2 framing, authentication, status, receipt, and
-non-executing submit behavior. It is not an installed resident service and proves no systemd,
-fixed-root, identity-provisioning, startup-reconciliation, execution, or release behavior.
+This candidate covers KAP-0074 Slices 2 and 3: framing, authentication, status, receipt, exact
+process-local `ACCEPTED`, immediate non-queued `BUSY`, one detached execution owner, caller
+disconnect, concurrent reconnect/status, and same-operation replay without a second provider
+mutation attempt. Focused socket tests compose two `Application` handles over the same sole journal;
+the process harness remains a fixed synthetic execution fixture. The candidate is not an installed
+resident service and proves no systemd, fixed-root, identity provisioning, startup reconciliation,
+process-loss recovery, credential composition, or release behavior.
 
 ## Upgrade and rollback fixture gate
 

@@ -1,6 +1,7 @@
-//! Authenticated bounded socket ownership for KAP-0074 Slice 2.
+//! Authenticated bounded socket and execution ownership for KAP-0074 Slices 2 and 3.
 
 use std::{
+    future::Future,
     io,
     process::ExitCode,
     sync::{Arc, Mutex},
@@ -8,14 +9,14 @@ use std::{
 };
 
 use kapsel::{
-    Application, ApplicationError, SetDeploymentImageReceipt, SetDeploymentImageStatus,
-    TargetRejection,
+    AgentRequest, Application, ApplicationError, SetDeploymentImageReceipt,
+    SetDeploymentImageStatus, TargetRejection,
 };
 use serde::Deserialize;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::{UnixListener, UnixStream},
-    sync::Semaphore,
+    sync::{Mutex as AsyncMutex, Semaphore},
     task::spawn_blocking,
     time::timeout,
 };
@@ -40,6 +41,83 @@ impl ApplicationReads for Application {
     fn receipt(&self, operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
         self.read_set_deployment_image_receipt(operation_id)
     }
+}
+
+trait ApplicationExecution: Send {
+    fn matches(&self, request: &AgentRequest) -> bool;
+
+    fn execute(
+        &mut self,
+        request: AgentRequest,
+    ) -> impl Future<Output = Result<(), ApplicationError>> + Send;
+}
+
+impl ApplicationExecution for Application {
+    fn matches(&self, request: &AgentRequest) -> bool {
+        self.request_matches_authorized_grant(request)
+    }
+
+    async fn execute(&mut self, request: AgentRequest) -> Result<(), ApplicationError> {
+        Self::execute(self, &request).await.map(|_| ())
+    }
+}
+
+struct ServerState<R, E> {
+    reads: Arc<Mutex<R>>,
+    execution: Arc<AsyncMutex<E>>,
+    submission: Arc<Semaphore>,
+}
+
+impl<R, E> ServerState<R, E> {
+    fn new(reads: R, execution: E) -> Self {
+        Self {
+            reads: Arc::new(Mutex::new(reads)),
+            execution: Arc::new(AsyncMutex::new(execution)),
+            submission: Arc::new(Semaphore::new(1)),
+        }
+    }
+}
+
+#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+impl<R> ServerState<R, UnavailableExecution> {
+    fn read_only(reads: Arc<Mutex<R>>) -> Self {
+        Self {
+            reads,
+            execution: Arc::new(AsyncMutex::new(UnavailableExecution)),
+            submission: Arc::new(Semaphore::new(1)),
+        }
+    }
+}
+
+impl<R, E> Clone for ServerState<R, E> {
+    fn clone(&self) -> Self {
+        Self {
+            reads: self.reads.clone(),
+            execution: self.execution.clone(),
+            submission: self.submission.clone(),
+        }
+    }
+}
+
+#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+struct UnavailableExecution;
+
+#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+impl ApplicationExecution for UnavailableExecution {
+    fn matches(&self, _request: &AgentRequest) -> bool {
+        false
+    }
+
+    async fn execute(&mut self, _request: AgentRequest) -> Result<(), ApplicationError> {
+        Err(ApplicationError::OperationFailure)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SubmissionAdmission {
+    Accepted,
+    Busy,
+    OperationFailure,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +151,7 @@ pub(crate) fn run() -> ExitCode {
     #[cfg(not(all(target_os = "linux", feature = "test-harness")))]
     {
         let _ = serve_connections::<Application>;
+        let _ = ServerState::<Application, Application>::new;
         ExitCode::from(4)
     }
 }
@@ -103,11 +182,20 @@ fn run_test_harness() -> ExitCode {
     else {
         return ExitCode::from(4);
     };
-    let reads = Arc::new(Mutex::new(HarnessReads));
+    let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let state = ServerState::new(
+        HarnessReads {
+            status: status.clone(),
+            release: release.clone(),
+            status_reads: std::sync::atomic::AtomicU8::new(0),
+        },
+        HarnessExecution { status, release },
+    );
     if runtime
         .block_on(async {
             let listener = UnixListener::bind(path)?;
-            serve_connections(listener, expected_gid, reads, connections).await
+            serve_connections_with_state(listener, expected_gid, state, connections).await
         })
         .is_ok()
     {
@@ -118,12 +206,39 @@ fn run_test_harness() -> ExitCode {
 }
 
 #[cfg(all(target_os = "linux", feature = "test-harness"))]
-struct HarnessReads;
+struct HarnessReads {
+    status: Arc<std::sync::atomic::AtomicU8>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+    status_reads: std::sync::atomic::AtomicU8,
+}
 
 #[cfg(all(target_os = "linux", feature = "test-harness"))]
 impl ApplicationReads for HarnessReads {
-    fn status(&self, _operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
-        Ok(SetDeploymentImageStatus::NotFound)
+    fn status(&self, operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
+        use std::{sync::atomic::Ordering, time::Instant};
+
+        if operation_id != "process-op" {
+            return Ok(SetDeploymentImageStatus::NotFound);
+        }
+        let first_read = self.status_reads.fetch_add(1, Ordering::AcqRel) == 0;
+        if !first_read {
+            self.release.store(true, Ordering::Release);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match (first_read, self.status.load(Ordering::Acquire)) {
+                (true, 1) => return Ok(SetDeploymentImageStatus::InProgress),
+                (false, 2) => {
+                    return Ok(SetDeploymentImageStatus::NotAttempted(
+                        TargetRejection::DeploymentNotFound,
+                    ));
+                },
+                (_, _) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(1));
+                },
+                (_, _) => return Err(ApplicationError::OperationFailure),
+            }
+        }
     }
 
     fn receipt(&self, _operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
@@ -131,10 +246,65 @@ impl ApplicationReads for HarnessReads {
     }
 }
 
+#[cfg(all(target_os = "linux", feature = "test-harness"))]
+struct HarnessExecution {
+    status: Arc<std::sync::atomic::AtomicU8>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(all(target_os = "linux", feature = "test-harness"))]
+impl ApplicationExecution for HarnessExecution {
+    fn matches(&self, request: &AgentRequest) -> bool {
+        request.operation_id == "process-op"
+            && request.namespace == "demo"
+            && request.deployment == "agent-api"
+            && request.container == "api"
+            && request.immutable_image_digest
+                == concat!(
+                    "registry.example/agent-api@sha256:",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                )
+    }
+
+    async fn execute(&mut self, _request: AgentRequest) -> Result<(), ApplicationError> {
+        use std::sync::atomic::Ordering;
+
+        self.status.store(1, Ordering::Release);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !self.release.load(Ordering::Acquire) {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ApplicationError::OperationFailure);
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        self.status.store(2, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
 async fn serve_connections<R: ApplicationReads + 'static>(
     listener: UnixListener,
     expected_gid: u32,
     reads: Arc<Mutex<R>>,
+    connections: usize,
+) -> io::Result<()> {
+    serve_connections_with_state(
+        listener,
+        expected_gid,
+        ServerState::read_only(reads),
+        connections,
+    )
+    .await
+}
+
+async fn serve_connections_with_state<
+    R: ApplicationReads + 'static,
+    E: ApplicationExecution + 'static,
+>(
+    listener: UnixListener,
+    expected_gid: u32,
+    state: ServerState<R, E>,
     connections: usize,
 ) -> io::Result<()> {
     let permits = Arc::new(Semaphore::new(CONNECTIONS_MAX));
@@ -145,9 +315,9 @@ async fn serve_connections<R: ApplicationReads + 'static>(
             drop(stream);
             continue;
         };
-        let reads = reads.clone();
+        let state = state.clone();
         handlers.push(tokio::spawn(async move {
-            serve_connection(stream, expected_gid, reads).await;
+            serve_connection_with_state(stream, expected_gid, state).await;
             drop(permit);
         }));
     }
@@ -159,10 +329,22 @@ async fn serve_connections<R: ApplicationReads + 'static>(
     Ok(())
 }
 
+#[cfg(all(test, target_os = "linux"))]
 async fn serve_connection<R: ApplicationReads + 'static>(
-    mut stream: UnixStream,
+    stream: UnixStream,
     expected_gid: u32,
     reads: Arc<Mutex<R>>,
+) {
+    serve_connection_with_state(stream, expected_gid, ServerState::read_only(reads)).await;
+}
+
+async fn serve_connection_with_state<
+    R: ApplicationReads + 'static,
+    E: ApplicationExecution + 'static,
+>(
+    mut stream: UnixStream,
+    expected_gid: u32,
+    state: ServerState<R, E>,
 ) {
     let Ok(credentials) = stream.peer_cred() else {
         return;
@@ -173,7 +355,7 @@ async fn serve_connection<R: ApplicationReads + 'static>(
     let Ok(body) = read_request_with_deadline(&mut stream).await else {
         return;
     };
-    let (response, class) = dispatch(&body, &reads).await;
+    let (response, class) = dispatch_with_state(&body, &state).await;
     if !response_length_allowed(response.len(), class) {
         return;
     }
@@ -230,16 +412,16 @@ async fn write_response_frame(
     output.shutdown().await
 }
 
-async fn dispatch<R: ApplicationReads + 'static>(
+async fn dispatch_with_state<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>(
     bytes: &[u8],
-    reads: &Arc<Mutex<R>>,
+    state: &ServerState<R, E>,
 ) -> (Vec<u8>, ResponseClass) {
     let Ok(request) = serde_json::from_slice::<Request>(bytes) else {
         return (invalid_request(), ResponseClass::Ordinary);
     };
     match request {
         Request::Status { operation_id } if valid_identity(&operation_id) => {
-            let reads = reads.clone();
+            let reads = state.reads.clone();
             let result = spawn_blocking(move || {
                 reads
                     .lock()
@@ -251,7 +433,7 @@ async fn dispatch<R: ApplicationReads + 'static>(
             (render_status(&result), ResponseClass::Ordinary)
         },
         Request::Receipt { operation_id } if valid_identity(&operation_id) => {
-            let reads = reads.clone();
+            let reads = state.reads.clone();
             let result = spawn_blocking(move || {
                 reads
                     .lock()
@@ -274,14 +456,52 @@ async fn dispatch<R: ApplicationReads + 'static>(
             && valid_dns_label(&container)
             && valid_image(&immutable_image_digest) =>
         {
+            let request = AgentRequest {
+                operation_id,
+                namespace,
+                deployment,
+                container,
+                immutable_image_digest,
+            };
             (
-                br#"{"status":"ERROR","error_class":"submission_unavailable"}"#.to_vec(),
+                render_submission(admit_submission(state, request)),
                 ResponseClass::Ordinary,
             )
         },
         Request::Status { .. } | Request::Receipt { .. } | Request::Submit { .. } => {
             (invalid_request(), ResponseClass::Ordinary)
         },
+    }
+}
+
+fn admit_submission<R, E>(state: &ServerState<R, E>, request: AgentRequest) -> SubmissionAdmission
+where
+    E: ApplicationExecution + 'static,
+{
+    let Ok(permit) = state.submission.clone().try_acquire_owned() else {
+        return SubmissionAdmission::Busy;
+    };
+    let Ok(mut execution) = state.execution.clone().try_lock_owned() else {
+        return SubmissionAdmission::OperationFailure;
+    };
+    if !execution.matches(&request) {
+        return SubmissionAdmission::OperationFailure;
+    }
+    let task = tokio::spawn(async move {
+        let result = execution.execute(request).await;
+        drop(result);
+        drop(execution);
+        drop(permit);
+    });
+    drop(task);
+    SubmissionAdmission::Accepted
+}
+
+fn render_submission(admission: SubmissionAdmission) -> Vec<u8> {
+    match admission {
+        SubmissionAdmission::Accepted => br#"{"status":"ACCEPTED"}"#.to_vec(),
+        SubmissionAdmission::Busy => br#"{"status":"BUSY"}"#.to_vec(),
+        SubmissionAdmission::OperationFailure => operation_failure(),
     }
 }
 
@@ -528,6 +748,18 @@ mod parser_tests {
             .as_bytes()
         );
         assert_eq!(lowercase_hex(&[0x00, 0xab, 0xff]), "00abff");
+        assert_eq!(
+            render_submission(SubmissionAdmission::Accepted),
+            br#"{"status":"ACCEPTED"}"#
+        );
+        assert_eq!(
+            render_submission(SubmissionAdmission::Busy),
+            br#"{"status":"BUSY"}"#
+        );
+        assert_eq!(
+            render_submission(SubmissionAdmission::OperationFailure),
+            br#"{"status":"ERROR","error_class":"operation_failure"}"#
+        );
     }
 
     #[test]
@@ -636,8 +868,8 @@ mod linux_tests {
 
     use ed25519_dalek::SigningKey;
     use kapsel::{
-        provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
-        OperatorConfiguration,
+        provision_exact_grant, AgentRequest, AuthorizationTrust, ExactAuthorization,
+        GrantProvisioning, OperatorConfiguration,
     };
     use tokio::{net::UnixStream, runtime::Builder};
     use tower_test::mock;
@@ -751,6 +983,24 @@ mod linux_tests {
         }
     }
 
+    struct CountingExecution<E> {
+        inner: E,
+        matches_calls: Arc<AtomicUsize>,
+        execute_calls: Arc<AtomicUsize>,
+    }
+
+    impl<E: ApplicationExecution> ApplicationExecution for CountingExecution<E> {
+        fn matches(&self, request: &AgentRequest) -> bool {
+            self.matches_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.matches(request)
+        }
+
+        async fn execute(&mut self, request: AgentRequest) -> Result<(), ApplicationError> {
+            self.execute_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.execute(request).await
+        }
+    }
+
     #[test]
     fn authenticated_status_not_found_crosses_one_complete_frame() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
@@ -809,10 +1059,13 @@ mod linux_tests {
                     r#"{"status":"ERROR","error_class":"operation_failure"}"#,
                 ),
             ] {
-                let request = format!(concat!(
-                    "{{\"request\":\"get_set_deployment_image_status\",",
-                    "\"operation_id\":\"{operation_id}\"}}"
-                ));
+                let request = format!(
+                    concat!(
+                        "{{\"request\":\"get_set_deployment_image_status\",",
+                        "\"operation_id\":\"{operation_id}\"}}"
+                    ),
+                    operation_id = operation_id
+                );
                 assert_socket_response(reads.clone(), request.as_bytes(), expected.as_bytes())
                     .await;
             }
@@ -822,7 +1075,8 @@ mod linux_tests {
                 (
                     "ready",
                     concat!(
-                        r#"{"status":"READY","receipt_hex":"00abff","receipt_sha256":"#,
+                        "{\"status\":\"READY\",\"receipt_hex\":\"00abff\",",
+                        "\"receipt_sha256\":\"",
                         r#"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
                     ),
                 ),
@@ -831,10 +1085,13 @@ mod linux_tests {
                     r#"{"status":"ERROR","error_class":"operation_failure"}"#,
                 ),
             ] {
-                let request = format!(concat!(
-                    "{{\"request\":\"get_set_deployment_image_receipt\",",
-                    "\"operation_id\":\"{operation_id}\"}}"
-                ));
+                let request = format!(
+                    concat!(
+                        "{{\"request\":\"get_set_deployment_image_receipt\",",
+                        "\"operation_id\":\"{operation_id}\"}}"
+                    ),
+                    operation_id = operation_id
+                );
                 assert_socket_response(reads.clone(), request.as_bytes(), expected.as_bytes())
                     .await;
             }
@@ -908,6 +1165,304 @@ mod linux_tests {
                     .is_err()
             );
             drop(reads);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn authenticated_submit_accepts_one_real_application_execution() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("kapseld-accepted-execution-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            private_directory(&root.join("receipts"));
+            let (projection, execution, mut kubernetes) = applications(&root);
+            let state = ServerState::new(projection, execution);
+
+            let (mut client, server) = socket_pair();
+            let gid = server.peer_cred().unwrap().gid();
+            let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
+            write_frame_and_close(&mut client, submit_request().as_bytes()).await;
+            assert_eq!(read_frame(&mut client).await, br#"{"status":"ACCEPTED"}"#);
+            handler.await.unwrap();
+
+            let (_, response) = timeout(Duration::from_secs(1), kubernetes.next_request())
+                .await
+                .unwrap()
+                .unwrap();
+            response.send_response(
+                http::Response::builder()
+                    .status(http::StatusCode::NOT_FOUND)
+                    .body(kube::client::Body::from(Vec::<u8>::new()))
+                    .unwrap(),
+            );
+
+            wait_for_not_attempted(&state, gid).await;
+
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn overlapping_submit_is_busy_without_a_second_application_attempt() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root = std::env::temp_dir().join(format!("kapseld-busy-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            private_directory(&root.join("receipts"));
+            let (projection, execution, mut kubernetes) = applications(&root);
+            let matches_calls = Arc::new(AtomicUsize::new(0));
+            let execute_calls = Arc::new(AtomicUsize::new(0));
+            let state = ServerState::new(
+                projection,
+                CountingExecution {
+                    inner: execution,
+                    matches_calls: matches_calls.clone(),
+                    execute_calls: execute_calls.clone(),
+                },
+            );
+
+            let (mut first_client, first_server) = socket_pair();
+            let gid = first_server.peer_cred().unwrap().gid();
+            let first_handler = tokio::spawn(serve_connection_with_state(
+                first_server,
+                gid,
+                state.clone(),
+            ));
+            write_frame_and_close(&mut first_client, submit_request().as_bytes()).await;
+            assert_eq!(
+                read_frame(&mut first_client).await,
+                br#"{"status":"ACCEPTED"}"#
+            );
+            first_handler.await.unwrap();
+            let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(matches_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+
+            let (mut second_client, second_server) = socket_pair();
+            let second_handler = tokio::spawn(serve_connection_with_state(
+                second_server,
+                gid,
+                state.clone(),
+            ));
+            write_frame_and_close(&mut second_client, submit_request().as_bytes()).await;
+            assert_eq!(
+                read_frame(&mut second_client).await,
+                br#"{"status":"BUSY"}"#
+            );
+            second_handler.await.unwrap();
+            assert_eq!(matches_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
+            assert!(
+                timeout(Duration::from_millis(10), kubernetes.next_request())
+                    .await
+                    .is_err()
+            );
+
+            send_not_found(provider_response);
+            wait_for_not_attempted(&state, gid).await;
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn reconnect_status_remains_available_while_execution_waits_on_provider() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("kapseld-concurrent-status-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            private_directory(&root.join("receipts"));
+            let (projection, execution, mut kubernetes) = applications(&root);
+            let state = ServerState::new(projection, execution);
+
+            let (mut submit_client, submit_server) = socket_pair();
+            let gid = submit_server.peer_cred().unwrap().gid();
+            let submit_handler = tokio::spawn(serve_connection_with_state(
+                submit_server,
+                gid,
+                state.clone(),
+            ));
+            write_frame_and_close(&mut submit_client, submit_request().as_bytes()).await;
+            assert_eq!(
+                read_frame(&mut submit_client).await,
+                br#"{"status":"ACCEPTED"}"#
+            );
+            submit_handler.await.unwrap();
+            let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
+                .await
+                .unwrap()
+                .unwrap();
+
+            let (mut status_client, status_server) = socket_pair();
+            let status_handler = tokio::spawn(serve_connection_with_state(
+                status_server,
+                gid,
+                state.clone(),
+            ));
+            write_frame_and_close(
+                &mut status_client,
+                br#"{"request":"get_set_deployment_image_status","operation_id":"socket-op-1"}"#,
+            )
+            .await;
+            assert_eq!(
+                timeout(Duration::from_secs(1), read_frame(&mut status_client))
+                    .await
+                    .unwrap(),
+                br#"{"status":"IN_PROGRESS"}"#
+            );
+            status_handler.await.unwrap();
+
+            send_not_found(provider_response);
+            wait_for_not_attempted(&state, gid).await;
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn caller_disconnect_before_response_does_not_cancel_execution() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("kapseld-disconnect-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            private_directory(&root.join("receipts"));
+            let (projection, execution, mut kubernetes) = applications(&root);
+            let state = ServerState::new(projection, execution);
+
+            let (mut submit_client, submit_server) = socket_pair();
+            let gid = submit_server.peer_cred().unwrap().gid();
+            let submit_handler = tokio::spawn(serve_connection_with_state(
+                submit_server,
+                gid,
+                state.clone(),
+            ));
+            write_frame_and_close(&mut submit_client, submit_request().as_bytes()).await;
+            drop(submit_client);
+            submit_handler.await.unwrap();
+
+            let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
+                .await
+                .unwrap()
+                .unwrap();
+            send_not_found(provider_response);
+            wait_for_not_attempted(&state, gid).await;
+
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn retry_race_after_apply_started_keeps_one_provider_mutation() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root = std::env::temp_dir().join(format!("kapseld-replay-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            private_directory(&root.join("receipts"));
+            let (projection, execution, mut kubernetes) = applications(&root);
+            let state = ServerState::new(projection, execution);
+            let gid = submit_and_read(&state).await.0;
+
+            let (target_request, target_response) =
+                timeout(Duration::from_secs(1), kubernetes.next_request())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(target_request.method(), http::Method::GET);
+            send_deployment(target_response, &deployment("1", 1, false));
+
+            let (apply_request, apply_response) =
+                timeout(Duration::from_secs(1), kubernetes.next_request())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(apply_request.method(), http::Method::PATCH);
+            send_deployment(apply_response, &deployment("2", 2, false));
+
+            let (observation_request, observation_response) =
+                timeout(Duration::from_secs(1), kubernetes.next_request())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(observation_request.method(), http::Method::GET);
+            let (_, competing_response) = submit_and_read(&state).await;
+            assert_eq!(competing_response, br#"{"status":"BUSY"}"#);
+            assert!(
+                timeout(Duration::from_millis(10), kubernetes.next_request())
+                    .await
+                    .is_err()
+            );
+            send_deployment(observation_response, &deployment("3", 2, true));
+            wait_for_status(&state, gid, br#"{"status":"SUCCEEDED"}"#).await;
+
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            loop {
+                let (_, replay_response) = submit_and_read(&state).await;
+                if replay_response == br#"{"status":"ACCEPTED"}"# {
+                    break;
+                }
+                assert_eq!(replay_response, br#"{"status":"BUSY"}"#);
+                assert!(tokio::time::Instant::now() < deadline);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            while state.submission.available_permits() == 0 {
+                assert!(tokio::time::Instant::now() < deadline);
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                timeout(Duration::from_millis(20), kubernetes.next_request())
+                    .await
+                    .is_err()
+            );
+
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn grant_mismatched_submit_is_bounded_without_execution() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root =
+                std::env::temp_dir().join(format!("kapseld-mismatch-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            private_directory(&root.join("receipts"));
+            let (projection, execution, mut kubernetes) = applications(&root);
+            let state = ServerState::new(projection, execution);
+
+            let (mut client, server) = socket_pair();
+            let gid = server.peer_cred().unwrap().gid();
+            let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
+            let mismatched =
+                submit_request().replace("\"container\":\"api\"", "\"container\":\"other\"");
+            write_frame_and_close(&mut client, mismatched.as_bytes()).await;
+            assert_eq!(
+                read_frame(&mut client).await,
+                br#"{"status":"ERROR","error_class":"operation_failure"}"#
+            );
+            handler.await.unwrap();
+            assert!(
+                timeout(Duration::from_millis(10), kubernetes.next_request())
+                    .await
+                    .is_err()
+            );
+
+            drop(state);
             fs::remove_dir_all(root).unwrap();
         });
     }
@@ -1099,6 +1654,10 @@ mod linux_tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table keeps the authenticated hostile-request matrix explicit"
+    )]
     fn authenticated_hostile_json_and_submit_matrix_has_no_application_effect() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
@@ -1160,17 +1719,23 @@ mod linux_tests {
                 .as_bytes()
                 .to_vec(),
                 br#"{"request":"unknown","operation_id":"a"}"#.to_vec(),
-                format!(concat!(
-                    r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
-                    r#""deployment":"agent-api","container":"api","#,
-                    r#""immutable_image_digest":"{immutable_image}"}}"#
-                ))
+                format!(
+                    concat!(
+                        r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
+                        r#""deployment":"agent-api","container":"api","#,
+                        r#""immutable_image_digest":"{immutable_image}"}}"#
+                    ),
+                    immutable_image = immutable_image
+                )
                 .into_bytes(),
-                format!(concat!(
-                    r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
-                    r#""namespace":null,"deployment":"agent-api","container":"api","#,
-                    r#""immutable_image_digest":"{immutable_image}"}}"#
-                ))
+                format!(
+                    concat!(
+                        r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
+                        r#""namespace":null,"deployment":"agent-api","container":"api","#,
+                        r#""immutable_image_digest":"{immutable_image}"}}"#
+                    ),
+                    immutable_image = immutable_image
+                )
                 .into_bytes(),
                 concat!(
                     r#"{"request":"submit_set_deployment_image","operation_id":"op-1","#,
@@ -1179,24 +1744,30 @@ mod linux_tests {
                 )
                 .as_bytes()
                 .to_vec(),
-                format!(concat!(
-                    r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
-                    r#""namespace":"demo","deployment":"agent-api","container":"api","#,
-                    r#""immutable_image_digest":"{immutable_image}","retry":true}}"#
-                ))
+                format!(
+                    concat!(
+                        r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
+                        r#""namespace":"demo","deployment":"agent-api","container":"api","#,
+                        r#""immutable_image_digest":"{immutable_image}","retry":true}}"#
+                    ),
+                    immutable_image = immutable_image
+                )
                 .into_bytes(),
             ] {
                 assert_socket_response(reads.clone(), &request, invalid).await;
             }
-            let submit = format!(concat!(
-                r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
-                r#""namespace":"demo","deployment":"agent-api","container":"api","#,
-                r#""immutable_image_digest":"{immutable_image}"}}"#
-            ));
+            let submit = format!(
+                concat!(
+                    r#"{{"request":"submit_set_deployment_image","operation_id":"op-1","#,
+                    r#""namespace":"demo","deployment":"agent-api","container":"api","#,
+                    r#""immutable_image_digest":"{immutable_image}"}}"#
+                ),
+                immutable_image = immutable_image
+            );
             assert_socket_response(
                 reads,
                 submit.as_bytes(),
-                br#"{"status":"ERROR","error_class":"submission_unavailable"}"#,
+                br#"{"status":"ERROR","error_class":"operation_failure"}"#,
             )
             .await;
             assert_eq!(status_calls.load(Ordering::Relaxed), 0);
@@ -1266,6 +1837,17 @@ mod linux_tests {
         Application,
         mock::Handle<http::Request<kube::client::Body>, http::Response<kube::client::Body>>,
     ) {
+        let (projection, _execution, handle) = applications(root);
+        (projection, handle)
+    }
+
+    fn applications(
+        root: &Path,
+    ) -> (
+        Application,
+        Application,
+        mock::Handle<http::Request<kube::client::Body>, http::Response<kube::client::Body>>,
+    ) {
         let seed = [41_u8; 32];
         let key = SigningKey::from_bytes(&seed);
         let authorization = ExactAuthorization {
@@ -1288,19 +1870,178 @@ mod linux_tests {
         .unwrap();
         let (service, handle) =
             mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
-        let configuration = OperatorConfiguration {
+        let client = kube::Client::new(service, "demo");
+        let configuration = |client| OperatorConfiguration {
             journal_path: fs::canonicalize(root).unwrap().join("journal.sqlite3"),
             receipt_output_directory: fs::canonicalize(root.join("receipts")).unwrap(),
             authorization_trust: AuthorizationTrust {
                 key_id: "socket-authorization-key".into(),
                 public_key: key.verifying_key().to_bytes(),
             },
-            signed_authorization_grant: grant,
-            kubernetes_client: kube::Client::new(service, "demo"),
+            signed_authorization_grant: grant.clone(),
+            kubernetes_client: client,
             receipt_signing_seed: [42_u8; 32],
             receipt_signing_key_id: "socket-receipt-key".into(),
         };
-        (Application::open(configuration).unwrap(), handle)
+        (
+            Application::open(configuration(client.clone())).unwrap(),
+            Application::open(configuration(client)).unwrap(),
+            handle,
+        )
+    }
+
+    async fn wait_for_not_attempted<E: ApplicationExecution + 'static>(
+        state: &ServerState<Application, E>,
+        gid: u32,
+    ) {
+        wait_for_status(
+            state,
+            gid,
+            br#"{"status":"NOT_ATTEMPTED","target_rejection":"DEPLOYMENT_NOT_FOUND"}"#,
+        )
+        .await;
+    }
+
+    async fn wait_for_status<E: ApplicationExecution + 'static>(
+        state: &ServerState<Application, E>,
+        gid: u32,
+        expected: &[u8],
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let (mut client, server) = socket_pair();
+            let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
+            write_frame_and_close(
+                &mut client,
+                br#"{"request":"get_set_deployment_image_status","operation_id":"socket-op-1"}"#,
+            )
+            .await;
+            let response = read_frame(&mut client).await;
+            handler.await.unwrap();
+            if response == expected {
+                break;
+            }
+            assert_eq!(response, br#"{"status":"IN_PROGRESS"}"#);
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn submit_and_read<E: ApplicationExecution + 'static>(
+        state: &ServerState<Application, E>,
+    ) -> (u32, Vec<u8>) {
+        let (mut client, server) = socket_pair();
+        let gid = server.peer_cred().unwrap().gid();
+        let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
+        write_frame_and_close(&mut client, submit_request().as_bytes()).await;
+        let response = read_frame(&mut client).await;
+        handler.await.unwrap();
+        (gid, response)
+    }
+
+    fn send_not_found(
+        response: tower_test::mock::SendResponse<http::Response<kube::client::Body>>,
+    ) {
+        response.send_response(
+            http::Response::builder()
+                .status(http::StatusCode::NOT_FOUND)
+                .body(kube::client::Body::from(Vec::<u8>::new()))
+                .unwrap(),
+        );
+    }
+
+    fn send_deployment(
+        response: tower_test::mock::SendResponse<http::Response<kube::client::Body>>,
+        body: &serde_json::Value,
+    ) {
+        response.send_response(
+            http::Response::builder()
+                .status(http::StatusCode::OK)
+                .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        );
+    }
+
+    fn deployment(resource_version: &str, generation: i64, observed: bool) -> serde_json::Value {
+        let old_image = concat!(
+            "registry.example/agent-api@sha256:",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+        let image = concat!(
+            "registry.example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        let mut deployment = serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": "agent-api",
+                "namespace": "demo",
+                "uid": "uid-1",
+                "resourceVersion": resource_version,
+                "generation": generation
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": {"app": "agent-api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "agent-api"}},
+                    "spec": {"containers": [{
+                        "name": "api",
+                        "image": if generation == 1 { old_image } else { image }
+                    }]}
+                }
+            },
+            "status": {"observedGeneration": generation}
+        });
+        if observed {
+            deployment["metadata"]["annotations"] = serde_json::json!({
+                "kapsel.dev/kap0038-operation-id": "socket-op-1"
+            });
+            deployment["status"] = serde_json::json!({
+                "observedGeneration": 2,
+                "updatedReplicas": 1,
+                "availableReplicas": 1,
+                "unavailableReplicas": 0,
+                "conditions": [{
+                    "type": "Available",
+                    "status": "True",
+                    "reason": "MinimumReplicasAvailable"
+                }]
+            });
+        }
+        deployment
+    }
+
+    fn submit_request() -> String {
+        let request = submit_agent_request();
+        format!(
+            concat!(
+                "{{\"request\":\"submit_set_deployment_image\",",
+                "\"operation_id\":\"{}\",\"namespace\":\"{}\",",
+                "\"deployment\":\"{}\",\"container\":\"{}\",",
+                "\"immutable_image_digest\":\"{}\"}}"
+            ),
+            request.operation_id,
+            request.namespace,
+            request.deployment,
+            request.container,
+            request.immutable_image_digest
+        )
+    }
+
+    fn submit_agent_request() -> AgentRequest {
+        AgentRequest {
+            operation_id: "socket-op-1".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: concat!(
+                "registry.example/agent-api@sha256:",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .into(),
+        }
     }
 
     fn private_directory(path: &Path) {

@@ -1,4 +1,4 @@
-//! Linux real-process proof for the compile-time KAP-0074 Slice 2 harness.
+//! Linux real-process proof for the compile-time KAP-0074 Slices 2 and 3 harness.
 
 #![cfg(all(target_os = "linux", feature = "test-harness"))]
 #![allow(
@@ -91,6 +91,29 @@ fn write_frame(stream: &mut UnixStream, body: &[u8]) {
     stream.shutdown(std::net::Shutdown::Write).unwrap();
 }
 
+fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
+    let mut prefix = [0_u8; 4];
+    stream.read_exact(&mut prefix).unwrap();
+    let mut response = vec![0_u8; u32::from_be_bytes(prefix) as usize];
+    stream.read_exact(&mut response).unwrap();
+    response
+}
+
+fn submit_request() -> String {
+    format!(
+        concat!(
+            "{{\"request\":\"submit_set_deployment_image\",",
+            "\"operation_id\":\"process-op\",\"namespace\":\"demo\",",
+            "\"deployment\":\"agent-api\",\"container\":\"api\",",
+            "\"immutable_image_digest\":\"{}\"}}"
+        ),
+        concat!(
+            "registry.example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        )
+    )
+}
+
 #[test]
 fn matching_effective_gid_crosses_the_real_kapseld_process() {
     let root = root("allow");
@@ -99,7 +122,7 @@ fn matching_effective_gid_crosses_the_real_kapseld_process() {
     let mut stream = connect(&socket);
     write_frame(
         &mut stream,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"missing"}"#,
     );
     let mut response = Vec::new();
     stream.read_to_end(&mut response).unwrap();
@@ -113,6 +136,44 @@ fn matching_effective_gid_crosses_the_real_kapseld_process() {
         ]
         .concat()
     );
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn disconnect_busy_and_reconnect_status_cross_the_real_process() {
+    let root = root("execution");
+    let socket = root.join("kapseld.sock");
+    let child = spawn(&socket, effective_gid(), 4);
+
+    let mut disconnected = connect(&socket);
+    write_frame(&mut disconnected, submit_request().as_bytes());
+    drop(disconnected);
+
+    let mut status = UnixStream::connect(&socket).unwrap();
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"IN_PROGRESS"}"#);
+
+    let mut competing = UnixStream::connect(&socket).unwrap();
+    write_frame(&mut competing, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut competing), br#"{"status":"BUSY"}"#);
+
+    let mut completed = UnixStream::connect(&socket).unwrap();
+    write_frame(
+        &mut completed,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(
+        read_frame(&mut completed),
+        br#"{"status":"NOT_ATTEMPTED","target_rejection":"DEPLOYMENT_NOT_FOUND"}"#
+    );
+
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
