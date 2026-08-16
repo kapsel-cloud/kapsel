@@ -135,13 +135,23 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
-This candidate covers KAP-0074 Slices 2 and 3: framing, authentication, status, receipt, exact
-process-local `ACCEPTED`, immediate non-queued `BUSY`, one detached execution owner, caller
-disconnect, concurrent reconnect/status, and same-operation replay without a second provider
-mutation attempt. Focused socket tests compose two `Application` handles over the same sole journal;
-the process harness remains a fixed synthetic execution fixture. The candidate is not an installed
-resident service and proves no systemd, fixed-root, identity provisioning, startup reconciliation,
-process-loss recovery, credential composition, or release behavior.
+This candidate covers accepted KAP-0074 Slices 2 through 4: framing, authentication, status,
+receipt, exact process-local `ACCEPTED`, immediate non-queued `BUSY`, disconnect-independent
+execution, startup reconciliation before bind, real process loss at the existing mutation and
+receipt-publication seams, frozen receipt retrieval after configuration rotation, and explicit
+bounded `UNKNOWN`. The exact native-Linux candidate gate is:
+
+```sh
+cargo test --locked -p kapseld --features test-harness
+```
+
+The Slice 4 process cases use only a loopback deterministic Kubernetes fixture and compile-time
+private controls. On the authorized Linux host kernel, the pinned Rust container passed 24 package
+unit/socket tests and nine default real-process tests; the separately invoked distinct-effective-GID
+case also passed through the host's existing supplementary `docker` group. This is native-kernel
+process evidence, not systemd or uncontainerized performance evidence. The ordinary executable
+remains deliberately uncomposed, and the accepted candidate proves no systemd, fixed-root, identity
+provisioning, credential composition, installation, or release behavior.
 
 ## Upgrade and rollback fixture gate
 

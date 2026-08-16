@@ -1,4 +1,4 @@
-//! Authenticated bounded socket and execution ownership for KAP-0074 Slices 2 and 3.
+//! Authenticated bounded socket and execution ownership for KAP-0074 Slices 2 through 4.
 
 use std::{
     future::Future,
@@ -182,27 +182,140 @@ fn run_test_harness() -> ExitCode {
     else {
         return ExitCode::from(4);
     };
-    let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
-    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let state = ServerState::new(
-        HarnessReads {
-            status: status.clone(),
-            release: release.clone(),
-            status_reads: std::sync::atomic::AtomicU8::new(0),
-        },
-        HarnessExecution { status, release },
-    );
-    if runtime
-        .block_on(async {
-            let listener = UnixListener::bind(path)?;
-            serve_connections_with_state(listener, expected_gid, state, connections).await
+    let result = if let Some(root) = std::env::var_os("KAPSELD_TEST_APPLICATION_ROOT") {
+        run_application_test_harness(
+            &runtime,
+            std::path::Path::new(&path),
+            expected_gid,
+            connections,
+            std::path::Path::new(&root),
+        )
+    } else {
+        let status = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let state = ServerState::new(
+            HarnessReads {
+                status: status.clone(),
+                release: release.clone(),
+                status_reads: std::sync::atomic::AtomicU8::new(0),
+            },
+            HarnessExecution { status, release },
+        );
+        runtime.block_on(async {
+            let listener = UnixListener::bind(&path)?;
+            let result =
+                serve_connections_with_state(listener, expected_gid, state, connections).await;
+            let removal = std::fs::remove_file(path);
+            result.and(removal)
         })
-        .is_ok()
-    {
+    };
+    if result.is_ok() {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(4)
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "test-harness"))]
+fn run_application_test_harness(
+    runtime: &tokio::runtime::Runtime,
+    socket: &std::path::Path,
+    expected_gid: u32,
+    connections: usize,
+    root: &std::path::Path,
+) -> io::Result<()> {
+    if !root.is_absolute() {
+        return Err(io::Error::other("invalid application fixture"));
+    }
+    runtime.block_on(async {
+        let mut execution = open_test_application(root)?;
+        execution
+            .reconcile()
+            .await
+            .map_err(|_| io::Error::other("startup reconciliation failed"))?;
+        let reads = open_test_application(root)?;
+        let listener = UnixListener::bind(socket)?;
+        let result = serve_connections_with_state(
+            listener,
+            expected_gid,
+            ServerState::new(reads, execution),
+            connections,
+        )
+        .await;
+        let removal = std::fs::remove_file(socket);
+        result.and(removal)
+    })
+}
+
+#[cfg(all(target_os = "linux", feature = "test-harness"))]
+fn open_test_application(root: &std::path::Path) -> io::Result<Application> {
+    use ed25519_dalek::SigningKey;
+    use kapsel::{
+        provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
+        OperatorConfiguration,
+    };
+
+    let url = std::env::var("KAPSELD_TEST_KUBERNETES_URL")
+        .map_err(|_| io::Error::other("invalid application fixture"))?;
+    let cluster_url = url
+        .parse()
+        .map_err(|_| io::Error::other("invalid application fixture"))?;
+    let config = kube::Config::new(cluster_url);
+    if config.cluster_url.scheme_str() != Some("http")
+        || config.cluster_url.host() != Some("127.0.0.1")
+        || config.cluster_url.port_u16().is_none()
+    {
+        return Err(io::Error::other("invalid application fixture"));
+    }
+    let kubernetes_client = kube::Client::try_from(config)
+        .map_err(|_| io::Error::other("invalid application fixture"))?;
+    let authorization_seed = [41_u8; 32];
+    let authorization_key = SigningKey::from_bytes(&authorization_seed);
+    let authorization = ExactAuthorization {
+        authorization_id: "process-auth".into(),
+        operation_id: "process-op".into(),
+        namespace: "demo".into(),
+        deployment: "agent-api".into(),
+        container: "api".into(),
+        immutable_image_digest: concat!(
+            "registry.example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        )
+        .into(),
+    };
+    let signed_authorization_grant = provision_exact_grant(&GrantProvisioning {
+        authorization: &authorization,
+        signing_seed: &authorization_seed,
+        signing_key_id: "process-authorization-key",
+    })
+    .map_err(|_| io::Error::other("invalid application fixture"))?;
+    let (receipt_directory, receipt_signing_seed, receipt_signing_key_id) =
+        match std::env::var("KAPSELD_TEST_RECEIPT_CONFIGURATION").as_deref() {
+            Ok("A") => (
+                root.join("receipts-a"),
+                [42_u8; 32],
+                "process-receipt-key-a",
+            ),
+            Ok("B") => (
+                root.join("receipts-b"),
+                [43_u8; 32],
+                "process-receipt-key-b",
+            ),
+            _ => return Err(io::Error::other("invalid application fixture")),
+        };
+    Application::open(OperatorConfiguration {
+        journal_path: root.join("journal.sqlite3"),
+        receipt_output_directory: receipt_directory,
+        authorization_trust: AuthorizationTrust {
+            key_id: "process-authorization-key".into(),
+            public_key: authorization_key.verifying_key().to_bytes(),
+        },
+        signed_authorization_grant,
+        kubernetes_client,
+        receipt_signing_seed,
+        receipt_signing_key_id: receipt_signing_key_id.into(),
+    })
+    .map_err(|_| io::Error::other("application open failed"))
 }
 
 #[cfg(all(target_os = "linux", feature = "test-harness"))]
@@ -326,6 +439,7 @@ async fn serve_connections_with_state<
             .await
             .map_err(|_| io::Error::other("connection task failed"))?;
     }
+    drop(state.execution.lock().await);
     Ok(())
 }
 
@@ -983,6 +1097,27 @@ mod linux_tests {
         }
     }
 
+    struct BlockingExecution {
+        started: Arc<Semaphore>,
+        release: Arc<Semaphore>,
+    }
+
+    impl ApplicationExecution for BlockingExecution {
+        fn matches(&self, _request: &AgentRequest) -> bool {
+            true
+        }
+
+        async fn execute(&mut self, _request: AgentRequest) -> Result<(), ApplicationError> {
+            self.started.add_permits(1);
+            self.release
+                .acquire()
+                .await
+                .map_err(|_| ApplicationError::OperationFailure)?
+                .forget();
+            Ok(())
+        }
+    }
+
     struct CountingExecution<E> {
         inner: E,
         matches_calls: Arc<AtomicUsize>,
@@ -999,6 +1134,47 @@ mod linux_tests {
             self.execute_calls.fetch_add(1, Ordering::SeqCst);
             self.inner.execute(request).await
         }
+    }
+
+    #[test]
+    fn finite_server_waits_for_the_final_accepted_execution() {
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let root = std::env::temp_dir()
+                .join(format!("kapseld-final-execution-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            private_directory(&root);
+            let socket = root.join("kapseld.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let started = Arc::new(Semaphore::new(0));
+            let release = Arc::new(Semaphore::new(0));
+            let state = ServerState::new(
+                TestReads::default(),
+                BlockingExecution {
+                    started: started.clone(),
+                    release: release.clone(),
+                },
+            );
+            let mut client = UnixStream::connect(&socket).await.unwrap();
+            let expected_gid = client.peer_cred().unwrap().gid();
+            let mut server = tokio::spawn(serve_connections_with_state(
+                listener,
+                expected_gid,
+                state,
+                1,
+            ));
+
+            write_frame_and_close(&mut client, submit_request().as_bytes()).await;
+            assert_eq!(read_frame(&mut client).await, br#"{"status":"ACCEPTED"}"#);
+            started.acquire().await.unwrap().forget();
+            assert!(timeout(Duration::from_millis(20), &mut server)
+                .await
+                .is_err());
+
+            release.add_permits(1);
+            server.await.unwrap().unwrap();
+            fs::remove_dir_all(root).unwrap();
+        });
     }
 
     #[test]

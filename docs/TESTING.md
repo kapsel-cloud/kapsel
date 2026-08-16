@@ -193,23 +193,30 @@ root real-process harness and disposable-`kind` demonstration remain the support
 
 ## Resident preview proof categories
 
-KAP-0074 has retained accepted Slices 1 through 3. Their focused runnable gates are documented in
+KAP-0074 has retained accepted Slices 1 through 4. Their focused runnable gates are documented in
 [Resident socket candidate](BUILD.md#resident-socket-candidate) and remain layered around the
 existing `Application` rather than widening private gateway seams:
 
 - read-only projected status and exact frozen-receipt retrieval make no Kubernetes call and advance
   no lifecycle state;
 - Unix-socket black-box tests cover exact peer-credential allow/deny, framing and allocation bounds,
-  hostile fields, disclosure, one in-flight submission, and no queue; and
+  hostile fields, disclosure, one in-flight submission, and no queue;
 - Slice 3 socket tests cover process-local acceptance, immediate `BUSY`, real caller disconnect,
   concurrent reconnect/status, one provider attempt, and one sole journal without a second state
-  store.
+  store; and
+- Slice 4 kills the real `kapseld` process after the existing mutation and receipt-publication
+  seams, requires startup reconciliation before bind, checks one PATCH, retrieves frozen bytes and
+  digest after receipt-key/directory rotation, and runs the unchanged 30-read schedule to terminal
+  `UNKNOWN`.
 
-The following acceptance categories remain future and separately gated:
+Slice 4's full Linux package gate passed in the pinned Rust container on the native Linux host
+kernel: 24 package tests plus nine default real-process tests passed, one distinct-GID case remained
+ignored, and that case passed separately against the host's existing supplementary `docker` group.
+Fresh independent correctness, recovery/security, architecture, and test-quality rereviews found no
+blocker, high, or medium finding. The following acceptance categories remain future and separately
+gated:
 
-- fixed-root startup checks and startup reconciliation;
-- resident process-loss coverage at mutation and receipt-publication seams, including frozen bytes
-  and explicit `UNKNOWN`;
+- fixed-root startup checks;
 - a clean x86-64 Debian 12 systemd environment proving identities, socket filesystem modes, direct
   install and lifecycle commands, exact Kubernetes RBAC, operator-file denial, bounded systemd
   state/diagnostics, one reconciliation per activation, no automatic same-boot restart loop,

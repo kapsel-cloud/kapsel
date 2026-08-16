@@ -166,17 +166,21 @@ bounded local caller
                  -> existing sole SQLite effect journal
 ```
 
-KAP-0074 has retained accepted Slices 1 and 2 for the unpublished `kapseld -> kapsel` candidate:
-package/build bounds, authenticated bounded Unix-socket framing, and read-only status and receipt
-projection. Its accepted Slice 3 adds one process-local execution owner, non-queued submission
-admission, disconnect continuity, and focused runnable gates. The resident adapter may compose
-existing `Application::execute` and use only the capability-specific non-mutating exact-grant match,
-projected status, and safe frozen-receipt read through `Application`; it must not query SQLite,
+KAP-0074 has retained accepted Slices 1 through 4 for the unpublished `kapseld -> kapsel` candidate:
+bounded authenticated Unix-socket projection, one process-local execution owner with non-queued
+submission and disconnect continuity, and one compile-time Linux recovery proof. The execution
+`Application` reconciles once before the projection handle opens and the socket binds, and the
+existing KAP-0038 mutation and receipt-publication checkpoints cross the real `kapseld` process. The
+candidate passes its native-kernel Linux process gates; ordinary startup remains deliberately
+uncomposed. Fresh independent rereview found no blocker, high, or medium finding.
+
+The resident adapter composes `Application::execute`, `Application::reconcile`, the non-mutating
+exact-grant match, projected status, and safe frozen-receipt read; it does not query SQLite,
 duplicate publication rules, or sequence lifecycle states. One in-flight submission is a bound, not
-a queue. Fixed-root startup composition, systemd-owned process lifecycle, service health,
-diagnostics, separate-identity installation, process-loss proof, and artifact acceptance remain
-future gated slices. They are necessary access to the mechanism, not permission to create generic
-protocol, daemon framework, provider, storage, policy, SDK, or capability modules.
+a queue. Fixed-root startup, systemd-owned process lifecycle, service health and diagnostics,
+separate-identity installation, and artifact acceptance remain future gated slices. They are
+necessary access to the mechanism, not permission to create generic protocol, daemon framework,
+provider, storage, policy, SDK, or capability modules.
 
 ## Failure structure
 

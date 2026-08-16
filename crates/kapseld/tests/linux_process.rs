@@ -1,4 +1,4 @@
-//! Linux real-process proof for the compile-time KAP-0074 Slices 2 and 3 harness.
+//! Linux real-process proof for the compile-time KAP-0074 Slices 2 through 4 harness.
 
 #![cfg(all(target_os = "linux", feature = "test-harness"))]
 #![allow(
@@ -7,15 +7,73 @@
     reason = "controlled process fixtures must fail the Linux gate immediately"
 )]
 
+use sha2::Digest as _;
+
 use std::{
+    fmt::Write as _,
     fs,
     io::{Read as _, Write as _},
-    os::unix::net::UnixStream,
+    net::{TcpListener, TcpStream},
+    ops::{Deref, DerefMut},
+    os::{unix::fs::PermissionsExt as _, unix::net::UnixStream},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Child, Command, Output, Stdio},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
+
+const IMAGE: &str = concat!(
+    "registry.example/agent-api@sha256:",
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+);
+const OLD_IMAGE: &str = concat!(
+    "registry.example/agent-api@sha256:",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+);
+const DEPLOYMENT_PATH: &str = "/apis/apps/v1/namespaces/demo/deployments/agent-api";
+const PATCH_DEPLOYMENT_PATH: &str = "/apis/apps/v1/namespaces/demo/deployments/agent-api?";
+const FIXTURE_TIMEOUT: Duration = Duration::from_secs(10);
+
+struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    fn wait_with_output(mut self) -> std::io::Result<Output> {
+        self.0.take().unwrap().wait_with_output()
+    }
+}
+
+impl Deref for ChildGuard {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+}
 
 fn root(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("kapseld-linux-{name}-{}", std::process::id()));
@@ -34,23 +92,67 @@ fn effective_gid() -> u32 {
         .unwrap()
 }
 
-fn spawn(socket: &Path, expected_gid: u32, connections: usize) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_kapseld"))
+fn kapseld_executable() -> PathBuf {
+    std::env::var_os("KAPSELD_TEST_EXECUTABLE").map_or_else(
+        || PathBuf::from(env!("CARGO_BIN_EXE_kapseld")),
+        PathBuf::from,
+    )
+}
+
+fn spawn(socket: &Path, expected_gid: u32, connections: usize) -> ChildGuard {
+    ChildGuard::new(
+        Command::new(kapseld_executable())
+            .env("KAPSELD_TEST_SOCKET", socket)
+            .env("KAPSELD_TEST_EXPECTED_GID", expected_gid.to_string())
+            .env("KAPSELD_TEST_CONNECTIONS", connections.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+fn spawn_application(
+    socket: &Path,
+    root: &Path,
+    kubernetes_url: &str,
+    receipt_configuration: &str,
+    seam: Option<&str>,
+    connections: usize,
+) -> ChildGuard {
+    let mut command = Command::new(kapseld_executable());
+    command
         .env("KAPSELD_TEST_SOCKET", socket)
-        .env("KAPSELD_TEST_EXPECTED_GID", expected_gid.to_string())
+        .env("KAPSELD_TEST_EXPECTED_GID", effective_gid().to_string())
         .env("KAPSELD_TEST_CONNECTIONS", connections.to_string())
+        .env("KAPSELD_TEST_APPLICATION_ROOT", root)
+        .env("KAPSELD_TEST_KUBERNETES_URL", kubernetes_url)
+        .env("KAPSELD_TEST_RECEIPT_CONFIGURATION", receipt_configuration)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap()
+        .stderr(Stdio::piped());
+    if let Some(seam) = seam {
+        command
+            .env("KAPSEL_DEMO_CONTROL_DIRECTORY", root.join("control"))
+            .env("KAPSEL_DEMO_PAUSE", seam);
+    }
+    ChildGuard::new(command.spawn().unwrap())
 }
 
 fn connect(socket: &Path) -> UnixStream {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    connect_with_timeout(socket, Duration::from_secs(5))
+}
+
+fn connect_with_timeout(socket: &Path, timeout: Duration) -> UnixStream {
+    let deadline = Instant::now() + timeout;
     loop {
         match UnixStream::connect(socket) {
-            Ok(stream) => return stream,
+            Ok(stream) => {
+                stream.set_read_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
+                stream.set_write_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
+                return stream;
+            },
             Err(error) if Instant::now() < deadline => {
                 let _ = error;
                 thread::sleep(Duration::from_millis(10));
@@ -84,6 +186,7 @@ fn group_gid(group: &str) -> u32 {
 }
 
 fn write_frame(stream: &mut UnixStream, body: &[u8]) {
+    stream.set_write_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
     stream
         .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
         .unwrap();
@@ -92,11 +195,20 @@ fn write_frame(stream: &mut UnixStream, body: &[u8]) {
 }
 
 fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
+    stream.set_read_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
     let mut prefix = [0_u8; 4];
     stream.read_exact(&mut prefix).unwrap();
     let mut response = vec![0_u8; u32::from_be_bytes(prefix) as usize];
     stream.read_exact(&mut response).unwrap();
     response
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(output, "{byte:02x}").unwrap();
+    }
+    output
 }
 
 fn submit_request() -> String {
@@ -107,11 +219,543 @@ fn submit_request() -> String {
             "\"deployment\":\"agent-api\",\"container\":\"api\",",
             "\"immutable_image_digest\":\"{}\"}}"
         ),
-        concat!(
-            "registry.example/agent-api@sha256:",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        )
+        IMAGE
     )
+}
+
+fn application_root(name: &str) -> PathBuf {
+    let root = root(name);
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    for directory in ["control", "receipts-a", "receipts-b"] {
+        let path = root.join(directory);
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    fs::canonicalize(root).unwrap()
+}
+
+fn deployment(resource_version: &str, generation: i64, observed: bool) -> String {
+    let mut value = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "agent-api",
+            "namespace": "demo",
+            "uid": "uid-1",
+            "resourceVersion": resource_version,
+            "generation": generation
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": "agent-api"}},
+            "template": {
+                "metadata": {"labels": {"app": "agent-api"}},
+                "spec": {"containers": [{
+                    "name": "api",
+                    "image": if generation == 1 { OLD_IMAGE } else { IMAGE }
+                }]}
+            }
+        }
+    });
+    if observed {
+        value["metadata"]["annotations"] = serde_json::json!({
+            "kapsel.dev/kap0038-operation-id": "process-op"
+        });
+        value["status"] = serde_json::json!({
+            "observedGeneration": 2,
+            "updatedReplicas": 1,
+            "availableReplicas": 1,
+            "unavailableReplicas": 0,
+            "conditions": [{
+                "type": "Available",
+                "status": "True",
+                "reason": "MinimumReplicasAvailable"
+            }]
+        });
+    }
+    value.to_string()
+}
+
+fn progressing_deployment() -> String {
+    let mut value: serde_json::Value = serde_json::from_str(&deployment("3", 2, false)).unwrap();
+    value["metadata"]["annotations"] = serde_json::json!({
+        "kapsel.dev/kap0038-operation-id": "process-op"
+    });
+    value["status"] = serde_json::json!({
+        "observedGeneration": 2,
+        "updatedReplicas": 0,
+        "availableReplicas": 0,
+        "unavailableReplicas": 1,
+        "conditions": [{
+            "type": "Progressing",
+            "status": "True",
+            "reason": "ReplicaSetUpdated"
+        }]
+    });
+    value.to_string()
+}
+
+fn accept_with_timeout(listener: &TcpListener) -> TcpStream {
+    let deadline = Instant::now() + FIXTURE_TIMEOUT;
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "provider fixture accept timed out"
+                );
+                thread::sleep(Duration::from_millis(10));
+            },
+            Err(error) => panic!("provider fixture accept failed: {error}"),
+        }
+    }
+}
+
+fn read_http_request(listener: &TcpListener) -> (TcpStream, String, String, Vec<u8>) {
+    let mut stream = accept_with_timeout(listener);
+    stream.set_read_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
+    stream.set_write_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
+    let mut bytes = Vec::new();
+    let total = loop {
+        let mut chunk = [0_u8; 4096];
+        let read = stream.read(&mut chunk).unwrap();
+        assert!(
+            read > 0,
+            "provider fixture request ended before framing completed"
+        );
+        bytes.extend_from_slice(&chunk[..read]);
+        assert!(
+            bytes.len() <= 16 * 1024,
+            "provider fixture request exceeded bound"
+        );
+        let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let header_end = header_end + 4;
+        let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+        let content_length = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+        let total = header_end + content_length;
+        if bytes.len() >= total {
+            break total;
+        }
+    };
+    assert_eq!(
+        bytes.len(),
+        total,
+        "provider fixture rejected trailing request bytes"
+    );
+    let header_end = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let request_line = std::str::from_utf8(&bytes[..header_end])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    let mut fields = request_line.split_ascii_whitespace();
+    let method = fields.next().unwrap().to_owned();
+    let path = fields.next().unwrap().to_owned();
+    assert_eq!(fields.next(), Some("HTTP/1.1"));
+    assert_eq!(fields.next(), None);
+    (stream, method, path, bytes[header_end..].to_vec())
+}
+
+fn assert_provider_request(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    expected_method: &str,
+    expected_path: &str,
+) {
+    assert_eq!(method, expected_method);
+    assert_eq!(path, expected_path);
+    if expected_method == "PATCH" {
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {
+                    "name": "agent-api",
+                    "namespace": "demo",
+                    "uid": "uid-1",
+                    "resourceVersion": "1",
+                    "annotations": {
+                        "kapsel.dev/kap0038-operation-id": "process-op"
+                    }
+                },
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "containers": [{"name": "api", "image": IMAGE}]
+                        }
+                    }
+                }
+            })
+        );
+    } else {
+        assert!(body.is_empty());
+    }
+}
+
+fn write_http_response(stream: &mut TcpStream, body: &str) {
+    write!(
+        stream,
+        concat!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
+            "content-length: {}\r\nconnection: close\r\n\r\n"
+        ),
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body.as_bytes()).unwrap();
+}
+
+struct SuccessServer {
+    url: String,
+    patch_count: Arc<AtomicUsize>,
+    observation_started: mpsc::Receiver<()>,
+    release_observation: mpsc::Sender<()>,
+    thread: thread::JoinHandle<()>,
+}
+
+fn success_server() -> SuccessServer {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let patch_count = Arc::new(AtomicUsize::new(0));
+    let server_patch_count = patch_count.clone();
+    let (observation_started_tx, observation_started) = mpsc::channel();
+    let (release_observation, release_observation_rx) = mpsc::channel();
+    let thread = thread::spawn(move || {
+        for (index, (expected_method, expected_path, response_body)) in [
+            ("GET", DEPLOYMENT_PATH, deployment("1", 1, false)),
+            ("PATCH", PATCH_DEPLOYMENT_PATH, deployment("2", 2, false)),
+            ("GET", DEPLOYMENT_PATH, deployment("3", 2, true)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut stream, method, path, request_body) = read_http_request(&listener);
+            assert_provider_request(
+                &method,
+                &path,
+                &request_body,
+                expected_method,
+                expected_path,
+            );
+            if expected_method == "PATCH" {
+                server_patch_count.fetch_add(1, Ordering::Relaxed);
+            }
+            if index == 2 {
+                observation_started_tx.send(()).unwrap();
+                release_observation_rx
+                    .recv_timeout(FIXTURE_TIMEOUT)
+                    .unwrap();
+            }
+            write_http_response(&mut stream, &response_body);
+        }
+    });
+    SuccessServer {
+        url,
+        patch_count,
+        observation_started,
+        release_observation,
+        thread,
+    }
+}
+
+fn unknown_server() -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let patch_count = Arc::new(AtomicUsize::new(0));
+    let server_patch_count = patch_count.clone();
+    let thread = thread::spawn(move || {
+        for index in 0..32 {
+            let expected_method = if index == 1 { "PATCH" } else { "GET" };
+            let expected_path = if index == 1 {
+                PATCH_DEPLOYMENT_PATH
+            } else {
+                DEPLOYMENT_PATH
+            };
+            let response_body = match index {
+                0 => deployment("1", 1, false),
+                1 => deployment("2", 2, false),
+                _ => progressing_deployment(),
+            };
+            let (mut stream, method, path, request_body) = read_http_request(&listener);
+            assert_provider_request(
+                &method,
+                &path,
+                &request_body,
+                expected_method,
+                expected_path,
+            );
+            if expected_method == "PATCH" {
+                server_patch_count.fetch_add(1, Ordering::Relaxed);
+            }
+            write_http_response(&mut stream, &response_body);
+        }
+        let deadline = Instant::now() + Duration::from_millis(1_500);
+        loop {
+            match listener.accept() {
+                Ok(_) => panic!("provider fixture received more than 30 recovery reads"),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                },
+                Err(error) => panic!("provider fixture extra-read check failed: {error}"),
+            }
+        }
+    });
+    (url, patch_count, thread)
+}
+
+fn kill(child: &mut ChildGuard) {
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    child.0.take();
+}
+
+fn wait_for_marker(child: &mut Child, marker: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "kapseld did not reach fault seam"
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "kapseld exited before fault seam"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn restart_reconciles_before_bind_without_a_second_patch() {
+    let root = application_root("startup-reconcile");
+    let socket = root.join("kapseld.sock");
+    let server = success_server();
+
+    let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
+    let mut submit = connect(&socket);
+    write_frame(&mut submit, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
+    kill(&mut first);
+    fs::remove_file(&socket).unwrap();
+
+    let child = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 1);
+    server
+        .observation_started
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert!(!socket.exists());
+    server.release_observation.send(()).unwrap();
+
+    let mut status = connect(&socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"SUCCEEDED"}"#);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert!(!socket.exists());
+    server.thread.join().unwrap();
+    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        fs::read_to_string(root.join("control/provider-apply-count")).unwrap(),
+        "1"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restart_reuses_frozen_receipt_bytes_under_rotated_configuration() {
+    let root = application_root("receipt-recovery");
+    let socket = root.join("kapseld.sock");
+    let server = success_server();
+
+    let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
+    let mut submit = connect(&socket);
+    write_frame(&mut submit, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
+    kill(&mut first);
+    fs::remove_file(&socket).unwrap();
+
+    let mut publication = spawn_application(
+        &socket,
+        &root,
+        &server.url,
+        "A",
+        Some("after_receipt_publish"),
+        10,
+    );
+    server
+        .observation_started
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert!(!socket.exists());
+    server.release_observation.send(()).unwrap();
+    wait_for_marker(
+        &mut publication,
+        &root.join("control/after-receipt-publish.ready"),
+    );
+    assert!(!socket.exists());
+    server.thread.join().unwrap();
+    let receipt_path = fs::read_dir(root.join("receipts-a"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let frozen = fs::read(&receipt_path).unwrap();
+    kill(&mut publication);
+
+    let child = spawn_application(&socket, &root, &server.url, "B", None, 2);
+    let mut status = connect(&socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"SUCCEEDED"}"#);
+    let mut receipt = UnixStream::connect(&socket).unwrap();
+    write_frame(
+        &mut receipt,
+        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
+    );
+    let response: serde_json::Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    let expected_hex = lowercase_hex(&frozen);
+    let expected_digest = lowercase_hex(&sha2::Sha256::digest(&frozen));
+    assert_eq!(response["status"], "READY");
+    assert_eq!(response["receipt_hex"], expected_hex);
+    assert_eq!(response["receipt_sha256"], expected_digest);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(&receipt_path).unwrap(), frozen);
+    assert_eq!(fs::read_dir(root.join("receipts-a")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(root.join("receipts-b")).unwrap().count(), 0);
+    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
+    let root = application_root("reconciliation-failure");
+    let socket = root.join("kapseld.sock");
+    let server = success_server();
+
+    let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
+    let mut submit = connect(&socket);
+    write_frame(&mut submit, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
+    kill(&mut first);
+    fs::remove_file(&socket).unwrap();
+
+    let mut publication = spawn_application(
+        &socket,
+        &root,
+        &server.url,
+        "A",
+        Some("after_receipt_publish"),
+        10,
+    );
+    server
+        .observation_started
+        .recv_timeout(FIXTURE_TIMEOUT)
+        .unwrap();
+    assert!(!socket.exists());
+    server.release_observation.send(()).unwrap();
+    wait_for_marker(
+        &mut publication,
+        &root.join("control/after-receipt-publish.ready"),
+    );
+    server.thread.join().unwrap();
+    let receipt_path = fs::read_dir(root.join("receipts-a"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    kill(&mut publication);
+    fs::write(receipt_path, b"different frozen receipt bytes").unwrap();
+
+    let child = spawn_application(&socket, &root, &server.url, "B", None, 1);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert!(!socket.exists());
+    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() {
+    let root = application_root("unknown-recovery");
+    let socket = root.join("kapseld.sock");
+    let (url, patch_count, server) = unknown_server();
+
+    let mut first = spawn_application(&socket, &root, &url, "A", Some("after_apply"), 10);
+    let mut submit = connect(&socket);
+    write_frame(&mut submit, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
+    kill(&mut first);
+    fs::remove_file(&socket).unwrap();
+
+    let child = spawn_application(&socket, &root, &url, "A", None, 2);
+    let mut status = connect_with_timeout(&socket, Duration::from_secs(40));
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"UNKNOWN"}"#);
+    let mut receipt = UnixStream::connect(&socket).unwrap();
+    write_frame(
+        &mut receipt,
+        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
+    );
+    let response: serde_json::Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    assert_eq!(response["status"], "READY");
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    server.join().unwrap();
+    assert_eq!(patch_count.load(Ordering::Relaxed), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn startup_failure_is_silent_and_leaves_no_socket() {
+    let root = application_root("startup-failure");
+    let socket = root.join("kapseld.sock");
+    let child = spawn_application(&socket, &root, "http://example.com:1234", "A", None, 1);
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert!(!socket.exists());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -140,6 +784,7 @@ fn matching_effective_gid_crosses_the_real_kapseld_process() {
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+    assert!(!socket.exists());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -205,6 +850,7 @@ fn saturated_ninth_is_closed_and_new_tenth_succeeds_after_recovery() {
     assert!(denied.is_empty());
 
     drop(admitted.remove(0));
+    thread::sleep(Duration::from_millis(50));
     let mut tenth = UnixStream::connect(&socket).unwrap();
     write_frame(
         &mut tenth,

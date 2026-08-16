@@ -10,18 +10,19 @@ publish = false
 
 [features]
 default = []
-test-harness = []
+test-harness = ["kapsel/demo-harness"]
 
 [dependencies]
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["signature", "zeroize"] }
 kapsel = { path = "../.." }
+kube = { version = "=4.0.0", default-features = false, features = ["client", "ring", "rustls-tls"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 tokio = { version = "=1.52.3", features = ["io-util", "net", "rt", "sync", "time"] }
 
 [dev-dependencies]
-ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["signature", "zeroize"] }
 http = "=1.4.2"
-kube = { version = "=4.0.0", default-features = false, features = ["client", "ring", "rustls-tls"] }
+sha2 = "=0.11.0"
 tower-test = "=0.4.0"
 
 [lints]
