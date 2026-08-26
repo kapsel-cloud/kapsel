@@ -21,8 +21,9 @@ Read this file first. It routes work; current technical truth lives in the linke
    release-owned local demonstration rather than continuing hosted work. Accepted
    [KAP-0073](tasks/KAP-0073.md) completed archival and removal of the deployable sandbox. Completed
    [resident preview decision KAP-0054](tasks/KAP-0054.md) selected one minimal resident boundary;
-   [KAP-0074](tasks/KAP-0074.md) is the sole gated product implementation packet. Resident
-   implementation, customer access, credentials, provider use, and traffic remain separately gated.
+   [KAP-0074](tasks/KAP-0074.md) is the sole gated product implementation packet. It records
+   accepted Slices 1–5; customer access, provider use, traffic, and artifact work remain separately
+   gated.
 3. Use [`docs/INDEX.md`](docs/INDEX.md) to find the nearest owner.
 4. **Name the contract before editing.** Read its tests and vectors when they exist.
 5. Keep the active experiment as one deep, compile-time-composed module.
@@ -37,10 +38,11 @@ fixtures/local-demo fallback. KAP-0073 archived and removed the deployable sandb
 maintaining anonymous admission, abuse, synthetic infrastructure, and cleanup as a second product.
 KAP-0054 completed the product-architecture decision after testing protected CLI/MCP first and
 selected one minimal customer-resident process for the same sole `kubernetes.set_deployment_image`
-capability. KAP-0074 is the sole gated implementation packet; it does not pre-authorize
-implementation, customer access, credentials, or production release. KAP-0047 remains available for
-approved aggregate technical findings but is not the implementation route. The release owner is
-[`docs/V0.2.md`](docs/V0.2.md); lifecycle, receiver-result, and receipt semantics remain owned by
+capability. KAP-0074 is the sole gated implementation packet; its task record contains the exact
+completed disposable Slice 5 qualification, while customer access, artifact work, and production
+release remain unauthorized. KAP-0047 remains available for approved aggregate technical findings
+but is not the implementation route. The release owner is [`docs/V0.2.md`](docs/V0.2.md); lifecycle,
+receiver-result, and receipt semantics remain owned by
 [`docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md`](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
 Use [`docs/INDEX.md`](docs/INDEX.md) for every other owner rather than recreating its routing here.
 

@@ -170,17 +170,27 @@ KAP-0074 has retained accepted Slices 1 through 4 for the unpublished `kapseld -
 bounded authenticated Unix-socket projection, one process-local execution owner with non-queued
 submission and disconnect continuity, and one compile-time Linux recovery proof. The execution
 `Application` reconciles once before the projection handle opens and the socket binds, and the
-existing KAP-0038 mutation and receipt-publication checkpoints cross the real `kapseld` process. The
-candidate passes its native-kernel Linux process gates; ordinary startup remains deliberately
-uncomposed. Fresh independent rereview found no blocker, high, or medium finding.
+existing KAP-0038 mutation and receipt-publication checkpoints cross the real `kapseld` process.
+Those accepted slices pass their native-kernel Linux process gates and fresh independent rereview.
+
+Authorized Slice 5 adds the feature-free Linux startup composition. It accepts only the fixed
+operator/socket arguments, uses the one application-owned operator grammar, retains
+descriptor-relative `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` roots, consumes validated
+authority bytes, reconciles once, secures the exact socket, and then serves indefinitely. It removes
+only an exact inactive service-owned stale socket and otherwise fails silently with exit 4. One
+static systemd unit, one sysusers file, and one non-secret exact RBAC manifest exist as direct
+install inputs. A separately authorized fresh Debian 12 KVM gate passed separate-identity install,
+systemd boot and process-loss recovery, exact live RBAC, one successful operation, receipt/replay,
+ordered revocation, uninstall, retained data, and cleanup. That gate corrected manager-cleanup
+wording; fresh final architecture, qualification, and security review accepted Slice 5.
 
 The resident adapter composes `Application::execute`, `Application::reconcile`, the non-mutating
 exact-grant match, projected status, and safe frozen-receipt read; it does not query SQLite,
 duplicate publication rules, or sequence lifecycle states. One in-flight submission is a bound, not
-a queue. Fixed-root startup, systemd-owned process lifecycle, service health and diagnostics,
-separate-identity installation, and artifact acceptance remain future gated slices. They are
-necessary access to the mechanism, not permission to create generic protocol, daemon framework,
-provider, storage, policy, SDK, or capability modules.
+a queue. Systemd-owned process lifecycle, service health and diagnostics, separate-identity clean
+installation, live RBAC enforcement, and artifact acceptance remain explicit environment or later
+slice gates. They are necessary access to the mechanism, not permission to create generic protocol,
+daemon framework, provider, storage, policy, SDK, or capability modules.
 
 ## Failure structure
 

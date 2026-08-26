@@ -15,9 +15,10 @@ use ed25519_dalek::SigningKey;
 use tower_test::mock;
 
 use kapsel::{
-    provision_exact_grant, AgentRequest, Application, ApplicationError, AuthorizationTrust,
-    ExactAuthorization, GrantProvisioning, OperationState, OperatorConfiguration,
-    SetDeploymentImageReceipt, SetDeploymentImageStatus, TargetRejection,
+    open_application_from_fixed_operator_document, provision_exact_grant, AgentRequest,
+    Application, ApplicationError, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
+    OperationState, OperatorConfiguration, SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    TargetRejection,
 };
 
 fn request() -> AgentRequest {
@@ -616,6 +617,113 @@ async fn request_match_validation_exposes_only_exact_grant_match_without_mutatio
     assert_eq!(application.reconcile().await.unwrap(), None);
     drop(application);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn fixed_operator_document_composes_the_existing_application_grammar() {
+    let root = std::env::temp_dir().join(format!(
+        "kapsel-fixed-operator-document-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    private_directory(&root);
+    let root = fs::canonicalize(root).unwrap();
+    let receipts = root.join("receipts");
+    private_directory(&receipts);
+    let journal = root.join("journal.sqlite3");
+    let request = request();
+    let authorization_seed = [91_u8; 32];
+    let authorization_key = SigningKey::from_bytes(&authorization_seed);
+    let grant = provision_exact_grant(&GrantProvisioning {
+        authorization: &authorization(&request),
+        signing_seed: &authorization_seed,
+        signing_key_id: "owner-key",
+    })
+    .unwrap();
+    let receipt_seed = [92_u8; 32];
+    let document = serde_json::to_vec(&serde_json::json!({
+        "signed_authorization_grant": "/etc/kapsel/grant.bin",
+        "authorization_key_id": "owner-key",
+        "authorization_public_key": "/etc/kapsel/authorization.pub",
+        "kubeconfig": "/etc/kapsel/kubeconfig.yaml",
+        "journal": journal,
+        "receipt_directory": receipts,
+        "receipt_signing_seed": "/etc/kapsel/receipt.seed",
+        "receipt_signing_key_id": "receipt-key"
+    }))
+    .unwrap();
+    let kubeconfig = concat!(
+        "apiVersion: v1\nkind: Config\ncurrent-context: fixture\n",
+        "clusters:\n- name: fixture\n  cluster:\n",
+        "    server: http://127.0.0.1:1234\n",
+        "contexts:\n- name: fixture\n  context:\n",
+        "    cluster: fixture\n    user: fixture\n",
+        "users:\n- name: fixture\n  user: {}\n"
+    );
+
+    let application = open_application_from_fixed_operator_document(
+        &document,
+        &root.join("journal.sqlite3"),
+        &root.join("receipts"),
+        |path, maximum| {
+            let bytes = match path.to_str().unwrap() {
+                "/etc/kapsel/grant.bin" => grant.clone(),
+                "/etc/kapsel/authorization.pub" => {
+                    authorization_key.verifying_key().to_bytes().to_vec()
+                },
+                "/etc/kapsel/kubeconfig.yaml" => kubeconfig.as_bytes().to_vec(),
+                "/etc/kapsel/receipt.seed" => receipt_seed.to_vec(),
+                _ => return Err(ApplicationError::InvalidOperatorConfiguration),
+            };
+            if bytes.len() > maximum {
+                return Err(ApplicationError::InvalidOperatorConfiguration);
+            }
+            Ok(bytes)
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        application
+            .read_set_deployment_image_status(&request.operation_id)
+            .unwrap(),
+        SetDeploymentImageStatus::NotFound
+    );
+    drop(application);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn fixed_operator_document_rejects_changed_state_paths_before_file_reads() {
+    let document = br#"{
+        "signed_authorization_grant":"/etc/kapsel/grant.bin",
+        "authorization_key_id":"owner-key",
+        "authorization_public_key":"/etc/kapsel/authorization.pub",
+        "kubeconfig":"/etc/kapsel/kubeconfig.yaml",
+        "journal":"/var/lib/kapsel/other.sqlite3",
+        "receipt_directory":"/var/lib/kapsel/receipts",
+        "receipt_signing_seed":"/etc/kapsel/receipt.seed",
+        "receipt_signing_key_id":"receipt-key"
+    }"#;
+    let mut reads = 0;
+
+    let result = open_application_from_fixed_operator_document(
+        document,
+        Path::new("/var/lib/kapsel/journal.sqlite3"),
+        Path::new("/var/lib/kapsel/receipts"),
+        |_, _| {
+            reads += 1;
+            Err(ApplicationError::InvalidOperatorConfiguration)
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(ApplicationError::InvalidOperatorConfiguration)
+    ));
+    assert_eq!(reads, 0);
 }
 
 #[tokio::test]

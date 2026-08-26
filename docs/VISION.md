@@ -46,13 +46,14 @@ platform commitment:
 2. completed: KAP-0054 proved protected CLI/MCP insufficient for caller-independent lifetime,
    read-only status, and exact receipt retrieval, then selected one minimal resident process and
    authenticated local interface; and
-3. gated: implement that exact preview only through KAP-0074 after separate authorization.
+3. accepted direct source: KAP-0074 implemented that exact preview and passed one separately
+   authorized disposable Debian 12/systemd and Kubernetes 1.33 gate plus fresh final review.
 
 KAP-0073 completed sandbox retirement. KAP-0054 completed the sole resident-boundary architecture
-decision; KAP-0074 is now the only gated product implementation packet. The resident route cannot
-inherit sandbox topology, transport, scheduling, authority staging, isolation, cleanup, or
-compatibility. Customer access, credentials, implementation, and production use each require their
-own exact owner.
+decision; KAP-0074 remains the only product implementation packet. The resident route cannot inherit
+sandbox topology, transport, scheduling, authority staging, isolation, cleanup, or compatibility.
+Artifact work, customer access or credentials, external installation, and production use each
+require their own exact owner.
 
 The cycle keeps one capability and tests one external-use fact: whether another team will install
 and retain the authority and recovery mechanism. It does not authorize a second operation, generic
@@ -90,7 +91,8 @@ authenticated Linux Unix socket. The current CLI/MCP adapters could preserve exa
 but could not provide caller-independent lifetime, read-only reconnect/status, or exact receipt
 retrieval across the authority boundary. The selected preview exists to make one bounded workflow
 possible; it is not production v1 and does not inherit sandbox topology or public compatibility.
-Implementation remains separately gated by KAP-0074.
+KAP-0074's direct-source Slice 5 passed one disposable qualification and fresh final review;
+artifact assembly, external installation, customer access, and production remain separately gated.
 
 A later production `kapseld` release requires retained real-workflow use and a new explicit
 production decision. It would own supported local admission, process lifecycle, restart and upgrade
@@ -187,8 +189,8 @@ classifier-complete concrete evidence.
 
 1. **CLI** for operator provisioning, local operation, diagnostics, and inspection.
 2. **Stdio MCP** for bounded request-only agent integration.
-3. **Customer-controlled preview interface** selected by KAP-0054 and gated for implementation by
-   KAP-0074: one authenticated Linux Unix socket for the sole exact operation.
+3. **Customer-controlled preview interface** selected by KAP-0054 and accepted as direct-source
+   Slice 5 through KAP-0074: one authenticated Linux Unix socket for the sole exact operation.
 4. **Production resident interface** only after retained workflow use earns `kapseld` compatibility.
 5. **Managed Kapsel** only after a resident product proves demand for configuration, upgrades, fleet
    health, or receipt indexing.

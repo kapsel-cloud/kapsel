@@ -1,4 +1,4 @@
-//! Authenticated bounded socket and execution ownership for KAP-0074 Slices 2 through 4.
+//! Authenticated bounded socket, execution ownership, and fixed startup for KAP-0074 Slices 2–5.
 
 use std::{
     future::Future,
@@ -78,7 +78,7 @@ impl<R, E> ServerState<R, E> {
     }
 }
 
-#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+#[cfg(all(test, target_os = "linux"))]
 impl<R> ServerState<R, UnavailableExecution> {
     fn read_only(reads: Arc<Mutex<R>>) -> Self {
         Self {
@@ -99,10 +99,10 @@ impl<R, E> Clone for ServerState<R, E> {
     }
 }
 
-#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+#[cfg(all(test, target_os = "linux"))]
 struct UnavailableExecution;
 
-#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+#[cfg(all(test, target_os = "linux"))]
 impl ApplicationExecution for UnavailableExecution {
     fn matches(&self, _request: &AgentRequest) -> bool {
         false
@@ -144,14 +144,86 @@ enum ResponseClass {
 }
 
 pub(crate) fn run() -> ExitCode {
-    #[cfg(all(target_os = "linux", feature = "test-harness"))]
+    #[cfg(target_os = "linux")]
     {
-        run_test_harness()
+        #[cfg(feature = "test-harness")]
+        if std::env::var_os("KAPSELD_TEST_SOCKET").is_some() {
+            return run_test_harness();
+        }
+        run_installed()
     }
-    #[cfg(not(all(target_os = "linux", feature = "test-harness")))]
+    #[cfg(not(target_os = "linux"))]
     {
-        let _ = serve_connections::<Application>;
+        let _ = serve_connections_with_state::<Application, Application>;
         let _ = ServerState::<Application, Application>::new;
+        ExitCode::from(4)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_installed() -> ExitCode {
+    use crate::startup::InstallationInputs;
+
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--operator-config"))
+        || arguments.next().as_deref() != Some(std::ffi::OsStr::new("/etc/kapsel/operator.json"))
+        || arguments.next().as_deref() != Some(std::ffi::OsStr::new("--socket"))
+        || arguments.next().as_deref() != Some(std::ffi::OsStr::new("/run/kapsel/kapseld.sock"))
+        || arguments.next().is_some()
+    {
+        return ExitCode::from(4);
+    }
+    #[cfg(feature = "test-harness")]
+    let installation_root = std::env::var_os("KAPSELD_TEST_INSTALLATION_ROOT")
+        .map_or_else(|| std::path::PathBuf::from("/"), std::path::PathBuf::from);
+    #[cfg(not(feature = "test-harness"))]
+    let installation_root = std::path::PathBuf::from("/");
+    #[cfg(feature = "test-harness")]
+    let connections = match std::env::var("KAPSELD_TEST_CONNECTIONS") {
+        Ok(value) => match value.parse::<usize>() {
+            Ok(value) if value > 0 && value <= CONNECTIONS_MAX + 2 => Some(value),
+            _ => return ExitCode::from(4),
+        },
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => return ExitCode::from(4),
+    };
+    #[cfg(not(feature = "test-harness"))]
+    let connections = None;
+    let Ok(inputs) = InstallationInputs::open_at(&installation_root) else {
+        return ExitCode::from(4);
+    };
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return ExitCode::from(4);
+    };
+    let result = runtime.block_on(async {
+        let mut execution = inputs
+            .open_application()
+            .await
+            .map_err(|_| io::Error::other("application open failed"))?;
+        execution
+            .reconcile()
+            .await
+            .map_err(|_| io::Error::other("startup reconciliation failed"))?;
+        let reads = inputs
+            .open_application()
+            .await
+            .map_err(|_| io::Error::other("application open failed"))?;
+        let listener = inputs.bind_listener()?;
+        let state = ServerState::new(reads, execution);
+        let expected_gid = rustix::process::getegid().as_raw();
+        match connections {
+            Some(connections) => {
+                serve_connections_with_state(listener, expected_gid, state, connections).await
+            },
+            None => serve_connections_forever(listener, expected_gid, state).await,
+        }
+    });
+    if result.is_ok() {
+        ExitCode::SUCCESS
+    } else {
         ExitCode::from(4)
     }
 }
@@ -395,7 +467,7 @@ impl ApplicationExecution for HarnessExecution {
     }
 }
 
-#[cfg(any(test, not(all(target_os = "linux", feature = "test-harness"))))]
+#[cfg(all(test, target_os = "linux"))]
 async fn serve_connections<R: ApplicationReads + 'static>(
     listener: UnixListener,
     expected_gid: u32,
@@ -441,6 +513,30 @@ async fn serve_connections_with_state<
     }
     drop(state.execution.lock().await);
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn serve_connections_forever<
+    R: ApplicationReads + 'static,
+    E: ApplicationExecution + 'static,
+>(
+    listener: UnixListener,
+    expected_gid: u32,
+    state: ServerState<R, E>,
+) -> io::Result<()> {
+    let permits = Arc::new(Semaphore::new(CONNECTIONS_MAX));
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            drop(stream);
+            continue;
+        };
+        let state = state.clone();
+        tokio::spawn(async move {
+            serve_connection_with_state(stream, expected_gid, state).await;
+            drop(permit);
+        });
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

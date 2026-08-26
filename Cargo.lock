@@ -685,6 +685,7 @@ dependencies = [
  "http",
  "kapsel",
  "kube",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

@@ -104,6 +104,33 @@ Kapsel.
 Another actor holding Kubernetes credentials can change the deployment without Kapsel. The
 experiment cannot detect universal capture. Receipts name one Kapsel operation, not all operations.
 
+### Accepted resident-preview source boundary
+
+KAP-0074's accepted Slice 5 adds one fixed local admission boundary and passed one disposable
+clean-install qualification plus fresh final security review. The locked `kapsel` service identity
+exclusively owns exact `0700` configuration/state roots and exact `0600` authority/state files. The
+caller group can traverse only the `0750` runtime directory and use the `0660` socket; Linux peer
+credentials must also report the exact caller-group effective GID before any frame is read.
+Supplementary membership alone is not the peer authentication fact.
+
+Startup retains no-follow descriptor-relative configuration, state, and runtime roots, consumes
+validated regular single-link authority files from opened descriptors, reconciles before admission,
+and removes only an exact inactive stale socket. The daemon refuses every other leaf without
+unlinking it; systemd then owns failed-state runtime-directory cleanup, so a refused leaf does not
+survive the failed activation. Systemd also owns activation and diagnostics with no automatic
+restart. The exact Role limits Kubernetes authorization to `get` and `patch` for one named
+Deployment; it cannot constrain patch fields, so the concrete adapter remains the image-only patch
+owner.
+
+Host root, the kernel, and the `kapsel` service identity remain trusted. A process already running
+with the authenticated effective group is authorized, and removing group membership does not change
+cached credentials in an existing process. The operator must stop the service and relevant caller
+before revocation. Fixed roots do not protect against compromised host administration, kernel, or
+service identity, and RBAC does not prevent credential bypass outside Kapsel. One disposable Debian
+12 gate supplied bounded account, systemd, short-lived credential, Kubernetes RBAC, clean-install,
+revocation, retained-data, and cleanup evidence. It does not establish customer use, production
+safety, or another supported environment.
+
 ### False or changing receiver state
 
 Kubernetes reports may be stale, incomplete, or overwritten by another change after observation.

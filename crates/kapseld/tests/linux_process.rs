@@ -7,6 +7,8 @@
     reason = "controlled process fixtures must fail the Linux gate immediately"
 )]
 
+use ed25519_dalek::SigningKey;
+use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
 use sha2::Digest as _;
 
 use std::{
@@ -15,7 +17,10 @@ use std::{
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
     ops::{Deref, DerefMut},
-    os::{unix::fs::PermissionsExt as _, unix::net::UnixStream},
+    os::{
+        unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
+        unix::net::{UnixListener as StdUnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
     sync::{
@@ -82,8 +87,16 @@ fn root(name: &str) -> PathBuf {
     path
 }
 
+fn effective_uid() -> u32 {
+    numeric_identity("-u")
+}
+
 fn effective_gid() -> u32 {
-    let output = Command::new("id").arg("-g").output().unwrap();
+    numeric_identity("-g")
+}
+
+fn numeric_identity(argument: &str) -> u32 {
+    let output = Command::new("id").arg(argument).output().unwrap();
     assert!(output.status.success());
     String::from_utf8(output.stdout)
         .unwrap()
@@ -111,6 +124,60 @@ fn spawn(socket: &Path, expected_gid: u32, connections: usize) -> ChildGuard {
             .spawn()
             .unwrap(),
     )
+}
+
+fn spawn_installed(root: &Path, connections: usize) -> ChildGuard {
+    spawn_installed_with_arguments(
+        root,
+        connections,
+        &[
+            "--operator-config",
+            "/etc/kapsel/operator.json",
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+        ],
+    )
+}
+
+fn spawn_installed_with_arguments(
+    root: &Path,
+    connections: usize,
+    arguments: &[&str],
+) -> ChildGuard {
+    ChildGuard::new(
+        installed_command(root, connections, arguments)
+            .spawn()
+            .unwrap(),
+    )
+}
+
+fn spawn_installed_with_seam(root: &Path, connections: usize, seam: &str) -> ChildGuard {
+    let mut command = installed_command(
+        root,
+        connections,
+        &[
+            "--operator-config",
+            "/etc/kapsel/operator.json",
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+        ],
+    );
+    command
+        .env("KAPSEL_DEMO_CONTROL_DIRECTORY", root.join("control"))
+        .env("KAPSEL_DEMO_PAUSE", seam);
+    ChildGuard::new(command.spawn().unwrap())
+}
+
+fn installed_command(root: &Path, connections: usize, arguments: &[&str]) -> Command {
+    let mut command = Command::new(kapseld_executable());
+    command
+        .args(arguments)
+        .env("KAPSELD_TEST_INSTALLATION_ROOT", root)
+        .env("KAPSELD_TEST_CONNECTIONS", connections.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
 }
 
 fn spawn_application(
@@ -221,6 +288,87 @@ fn submit_request() -> String {
         ),
         IMAGE
     )
+}
+
+fn private_file(path: &Path, bytes: &[u8]) {
+    fs::write(path, bytes).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn installation_root(name: &str) -> PathBuf {
+    installation_root_with_url(name, "http://127.0.0.1:1234")
+}
+
+fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
+    let root = root(name);
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    for (directory, mode) in [
+        ("etc", 0o700),
+        ("etc/kapsel", 0o700),
+        ("var", 0o700),
+        ("var/lib", 0o700),
+        ("var/lib/kapsel", 0o700),
+        ("var/lib/kapsel/receipts", 0o700),
+        ("run", 0o700),
+        ("run/kapsel", 0o750),
+        ("control", 0o700),
+    ] {
+        let path = root.join(directory);
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let root = fs::canonicalize(root).unwrap();
+    let authorization_seed = [111_u8; 32];
+    let authorization_key = SigningKey::from_bytes(&authorization_seed);
+    let grant = provision_exact_grant(&GrantProvisioning {
+        authorization: &ExactAuthorization {
+            authorization_id: "resident-auth".into(),
+            operation_id: "process-op".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: IMAGE.into(),
+        },
+        signing_seed: &authorization_seed,
+        signing_key_id: "resident-owner-key",
+    })
+    .unwrap();
+    private_file(&root.join("etc/kapsel/grant.bin"), &grant);
+    private_file(
+        &root.join("etc/kapsel/authorization.pub"),
+        &authorization_key.verifying_key().to_bytes(),
+    );
+    private_file(
+        &root.join("etc/kapsel/kubeconfig.yaml"),
+        format!(
+            concat!(
+                "apiVersion: v1\nkind: Config\ncurrent-context: fixture\n",
+                "clusters:\n- name: fixture\n  cluster:\n",
+                "    server: {}\n",
+                "contexts:\n- name: fixture\n  context:\n",
+                "    cluster: fixture\n    user: fixture\n",
+                "users:\n- name: fixture\n  user: {{}}\n"
+            ),
+            kubernetes_url
+        )
+        .as_bytes(),
+    );
+    private_file(&root.join("etc/kapsel/receipt.seed"), &[112_u8; 32]);
+    private_file(
+        &root.join("etc/kapsel/operator.json"),
+        &serde_json::to_vec(&serde_json::json!({
+            "signed_authorization_grant": root.join("etc/kapsel/grant.bin"),
+            "authorization_key_id": "resident-owner-key",
+            "authorization_public_key": root.join("etc/kapsel/authorization.pub"),
+            "kubeconfig": root.join("etc/kapsel/kubeconfig.yaml"),
+            "journal": root.join("var/lib/kapsel/journal.sqlite3"),
+            "receipt_directory": root.join("var/lib/kapsel/receipts"),
+            "receipt_signing_seed": root.join("etc/kapsel/receipt.seed"),
+            "receipt_signing_key_id": "resident-receipt-key"
+        }))
+        .unwrap(),
+    );
+    root
 }
 
 fn application_root(name: &str) -> PathBuf {
@@ -540,6 +688,178 @@ fn wait_for_marker(child: &mut Child, marker: &Path) {
         );
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+#[test]
+fn ordinary_restart_reconciles_before_replacing_stale_socket_without_second_patch() {
+    let server = success_server();
+    let root = installation_root_with_url("ordinary-recovery", &server.url);
+    let socket = root.join("run/kapsel/kapseld.sock");
+    let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
+    let mut submit = connect(&socket);
+    write_frame(&mut submit, submit_request().as_bytes());
+    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
+    kill(&mut first);
+    assert!(socket.exists());
+
+    let child = spawn_installed(&root, 1);
+    server
+        .observation_started
+        .recv_timeout(FIXTURE_TIMEOUT)
+        .unwrap();
+    let error = UnixStream::connect(&socket).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+    server.release_observation.send(()).unwrap();
+
+    let mut status = connect(&socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"SUCCEEDED"}"#);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    server.thread.join().unwrap();
+    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ordinary_startup_rejects_every_nonexact_or_active_socket_without_unlinking() {
+    for (name, kind) in [
+        ("regular", "regular"),
+        ("directory", "directory"),
+        ("symlink", "symlink"),
+        ("wrong-mode", "wrong-mode"),
+        ("linked", "linked"),
+        ("active", "active"),
+    ] {
+        let root = installation_root(name);
+        let socket = root.join("run/kapsel/kapseld.sock");
+        let mut active = None;
+        match kind {
+            "regular" => private_file(&socket, b"not a socket"),
+            "directory" => fs::create_dir(&socket).unwrap(),
+            "symlink" => {
+                let target = root.join("run/kapsel/target");
+                private_file(&target, b"target");
+                std::os::unix::fs::symlink(target, &socket).unwrap();
+            },
+            "wrong-mode" => {
+                let listener = StdUnixListener::bind(&socket).unwrap();
+                fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+                drop(listener);
+            },
+            "linked" => {
+                let listener = StdUnixListener::bind(&socket).unwrap();
+                fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
+                drop(listener);
+                fs::hard_link(&socket, root.join("run/kapsel/linked.sock")).unwrap();
+            },
+            "active" => {
+                let listener = StdUnixListener::bind(&socket).unwrap();
+                fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
+                active = Some(listener);
+            },
+            _ => unreachable!(),
+        }
+        let before = fs::symlink_metadata(&socket).unwrap();
+        let output = spawn_installed(&root, 1).wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        let after = fs::symlink_metadata(&socket).unwrap();
+        assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+        drop(active);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn ordinary_startup_accepts_only_the_exact_ordered_arguments() {
+    let variants: [&[&str]; 5] = [
+        &[],
+        &["--operator-config", "/etc/kapsel/operator.json"],
+        &[
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+            "--operator-config",
+            "/etc/kapsel/operator.json",
+        ],
+        &[
+            "--operator-config",
+            "/tmp/operator.json",
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+        ],
+        &[
+            "--operator-config",
+            "/etc/kapsel/operator.json",
+            "--socket",
+            "/run/kapsel/kapseld.sock",
+            "extra",
+        ],
+    ];
+    for (index, arguments) in variants.into_iter().enumerate() {
+        let root = installation_root(&format!("arguments-{index}"));
+        let output = spawn_installed_with_arguments(&root, 1, arguments)
+            .wait_with_output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert!(!root.join("run/kapsel/kapseld.sock").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
+fn ordinary_startup_removes_only_an_exact_inactive_stale_socket() {
+    let root = installation_root("stale-socket");
+    let socket = root.join("run/kapsel/kapseld.sock");
+    let stale = StdUnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o660)).unwrap();
+    drop(stale);
+
+    let child = spawn_installed(&root, 1);
+    let mut status = connect(&socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"NOT_FOUND"}"#);
+    assert!(child.wait_with_output().unwrap().status.success());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn ordinary_startup_uses_fixed_inputs_and_serves_until_systemd_termination() {
+    let root = installation_root("ordinary-startup");
+    let socket = root.join("run/kapsel/kapseld.sock");
+    let child = spawn_installed(&root, 1);
+    wait_for_socket(&socket);
+    let metadata = fs::symlink_metadata(&socket).unwrap();
+    assert!(metadata.file_type().is_socket());
+    assert_eq!(metadata.uid(), effective_uid());
+    assert_eq!(metadata.gid(), effective_gid());
+    assert_eq!(metadata.mode() & 0o7777, 0o660);
+    assert_eq!(metadata.nlink(), 1);
+    let mut status = connect(&socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    assert_eq!(read_frame(&mut status), br#"{"status":"NOT_FOUND"}"#);
+
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert!(socket.exists());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

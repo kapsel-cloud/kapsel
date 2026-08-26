@@ -68,7 +68,7 @@ use.
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
 | Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
 | Hosted sandbox                                   | Archived and removed; fixtures remain historical only    |
-| Customer-resident preview boundary               | Minimal resident route selected; implementation is gated |
+| Customer-resident preview boundary               | Slices 1–5 accepted; artifact work remains gated         |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -105,9 +105,10 @@ not add a Kubernetes operation suite, generic provider interface, public Rust SD
 hosted dependency, second target, or production-readiness claim. KAP-0070 is complete through its
 fixtures/local-demo fallback; KAP-0073 archived and removed the unpublished hosted sandbox. KAP-0054
 selected one minimal resident process after protected CLI/MCP lacked independent lifetime, status,
-and receipt retrieval; KAP-0074 gates its implementation. KAP-0047 remains the supporting owner for
-approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md) and
-[ordered task route](tasks/README.md).
+and receipt retrieval. KAP-0074 accepted Slices 1–5 after one disposable privileged qualification
+and fresh final review. Artifact work and every external act remain gated. KAP-0047 remains the
+supporting owner for approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md)
+and [ordered task route](tasks/README.md).
 
 ## Scope discipline
 
@@ -115,8 +116,8 @@ The repository has one capability and one Kubernetes adapter. Arbitrary executio
 a generic provider SDK, a policy language, hosted operation, a dashboard, and a second capability
 are outside its technical scope. The unpublished hosted sandbox was archived and removed; its fixed
 fixtures and offline evidence do not define the product. The active route is one lean
-customer-resident preview decision over the existing root mechanism, with implementation and every
-credential or customer act still separately gated.
+customer-resident preview decision over the existing root mechanism. Its unpublished direct-source
+Slice 5 is accepted; artifact work and every customer act remain separately gated.
 
 ## Read next
 

@@ -135,23 +135,107 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
-This candidate covers accepted KAP-0074 Slices 2 through 4: framing, authentication, status,
+This candidate covers accepted KAP-0074 Slices 2 through 5: framing, authentication, status,
 receipt, exact process-local `ACCEPTED`, immediate non-queued `BUSY`, disconnect-independent
-execution, startup reconciliation before bind, real process loss at the existing mutation and
-receipt-publication seams, frozen receipt retrieval after configuration rotation, and explicit
-bounded `UNKNOWN`. The exact native-Linux candidate gate is:
+execution, startup reconciliation before bind, real process loss, frozen receipt retrieval, explicit
+bounded `UNKNOWN`, fixed-root ordinary startup, exact socket identity and stale-socket handling, and
+static installation records. The exact native-Linux source-candidate gate is:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness
 ```
 
-The Slice 4 process cases use only a loopback deterministic Kubernetes fixture and compile-time
-private controls. On the authorized Linux host kernel, the pinned Rust container passed 24 package
-unit/socket tests and nine default real-process tests; the separately invoked distinct-effective-GID
-case also passed through the host's existing supplementary `docker` group. This is native-kernel
-process evidence, not systemd or uncontainerized performance evidence. The ordinary executable
-remains deliberately uncomposed, and the accepted candidate proves no systemd, fixed-root, identity
-provisioning, credential composition, installation, or release behavior.
+The process cases use only loopback deterministic Kubernetes fixtures and compile-time private
+controls. Slice 5's private installation-root prefix and finite connection count exercise the same
+ordinary startup; feature-free production accepts neither. Run the static direct-asset byte gate
+separately or through the full package command:
+
+```sh
+cargo test --locked -p kapseld --test install_assets
+```
+
+The source-only evidence remains native-kernel process evidence. A separately authorized exact
+source snapshot later passed the direct path in a fresh x86-64 Debian 12 KVM VM with systemd 252,
+kind 0.32.0, and pinned Kubernetes 1.33. It proved separate identities, credential/RBAC bounds,
+installed process loss and boot recovery, secret-free diagnostics, ordered uninstall, and retained
+data. That qualification is not an artifact, source-independent-installation, performance,
+customer-use, or production claim; those later surfaces remain separately gated.
+
+### Direct installation candidate
+
+These commands describe the sole Slice 5 direct path; they are not an authorization to run it. Build
+on x86-64 Debian 12 from one clean revision, then install the exact repository inputs:
+
+```sh
+! getent passwd kapsel
+! getent group kapsel
+! getent group kapsel-preview-callers
+getent passwd kapsel-preview-caller
+cargo build --release --locked -p kapseld
+sudo install -D -o root -g root -m 0755 target/release/kapseld \
+  /usr/libexec/kapsel/kapseld
+sudo install -D -o root -g root -m 0644 crates/kapseld/deploy/kapseld.service \
+  /usr/lib/systemd/system/kapseld.service
+sudo install -D -o root -g root -m 0644 crates/kapseld/deploy/kapseld.conf \
+  /usr/lib/sysusers.d/kapseld.conf
+sudo install -D -o root -g root -m 0644 crates/kapseld/deploy/kapseld-rbac.yaml \
+  /usr/share/kapsel/kapseld-rbac.yaml
+sudo systemd-sysusers /usr/lib/sysusers.d/kapseld.conf
+getent passwd kapsel
+getent group kapsel
+getent group kapsel-preview-callers
+sudo passwd --status kapsel
+sudo usermod --append --groups kapsel-preview-callers kapsel-preview-caller
+sudo install -d -o kapsel -g kapsel-preview-callers -m 0700 \
+  /etc/kapsel /var/lib/kapsel /var/lib/kapsel/receipts
+```
+
+The operator then installs exact owner-provisioned `operator.json`, `grant.bin`,
+`authorization.pub`, `kubeconfig.yaml`, and `receipt.seed` beneath `/etc/kapsel` with owner
+`kapsel:kapsel-preview-callers` and mode `0600`. The JSON uses only the existing grammar and exact
+paths fixed by KAP-0054. Applying `/usr/share/kapsel/kapseld-rbac.yaml`, obtaining a short-lived
+synthetic ServiceAccount credential, and writing the embedded kubeconfig are separately authorized
+Kubernetes actions. After those inputs exist, activation is direct:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now kapseld.service
+```
+
+The external caller's own supervisor must set effective `Group=kapsel-preview-callers`;
+supplementary membership alone does not pass peer authentication. Service state plus successful
+authenticated socket use is the health boundary. Direct lifecycle operations are:
+
+```sh
+sudo systemctl start kapseld.service
+sudo systemctl stop kapseld.service
+sudo systemctl restart kapseld.service
+```
+
+Uninstall preserves authority/state bytes but revokes use first. Stop the external caller, then run
+this exact order. The `kubectl` steps and credential revocation require their own Kubernetes
+authorization:
+
+```sh
+sudo systemctl disable --now kapseld.service
+systemctl is-active kapseld.service
+sudo gpasswd --delete kapsel-preview-caller kapsel-preview-callers
+kubectl --namespace demo delete rolebinding kapsel-preview-agent-api
+kubectl --namespace demo delete serviceaccount kapsel-preview
+kubectl --namespace demo delete role kapsel-preview-agent-api
+sudo rm -f /usr/libexec/kapsel/kapseld
+sudo rm -f /usr/lib/systemd/system/kapseld.service
+sudo rm -f /usr/lib/sysusers.d/kapseld.conf
+sudo rm -f /usr/share/kapsel/kapseld-rbac.yaml
+sudo systemctl daemon-reload
+```
+
+The locked `kapsel` account, its private group, `kapsel-preview-callers`, external caller account,
+`/etc/kapsel`, `/var/lib/kapsel`, journal, worker lock, and receipts remain. There is no purge
+command. The clean-VM gate verified process exit, connection closure, runtime-directory cleanup, and
+unchanged retained-data hashes before removing installed static artifacts. It also confirmed that
+the daemon refuses a nonexact socket leaf without unlinking it, after which systemd removes the
+service-owned runtime directory and leaf as failed-activation cleanup.
 
 ## Upgrade and rollback fixture gate
 

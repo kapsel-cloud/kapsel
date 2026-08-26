@@ -4,8 +4,9 @@ Status: the v0.2.0 Kubernetes effect-gateway mechanism is verified. KAP-0070 clo
 sandbox through its accepted fixtures/local-demo fallback, and KAP-0073 archived and removed its
 deployable implementation. KAP-0054 completed the resident-boundary decision and selected one
 minimal process and authenticated local interface. KAP-0074 is the sole gated product implementation
-packet. Resident implementation, customer access, credentials, production use, another capability,
-and every hosted act remain separately gated.
+packet: Slices 1–5 are accepted after one disposable privileged qualification and fresh final
+review. Customer access, production use, another capability, artifact work, and every hosted act
+remain separately gated.
 
 Tasks own remaining engineering work and acceptance evidence. They do not redefine behavior owned by
 `docs/` or KAP-0038.
@@ -35,9 +36,9 @@ operation identity and safe replay, but neither provides caller-independent life
 reconnect/status, or exact receipt retrieval across a separate authority boundary. The completed
 decision therefore selected one unpublished `kapseld -> kapsel` package, one executable, one
 authenticated Linux Unix socket, systemd lifecycle, and no second store. KAP-0074 may implement only
-that inventory after separate authorization; it keeps Python/shell out of customer runtime semantics
-and stops before a scheduler, queue, controller framework, generic seam, or additional
-package/binary/interface.
+that inventory under its recorded per-slice authorizations; it keeps Python/shell out of customer
+runtime semantics and stops before a scheduler, queue, controller framework, generic seam, or
+additional package/binary/interface.
 
 KAP-0047 remains the supporting owner for approved aggregate technical findings. Private customer,
 commercial, buyer, acquisition, and continuation evidence remains outside this repository.
@@ -47,14 +48,14 @@ commercial, buyer, acquisition, and continuation evidence remains outside this r
 |    Lane | Packet                  | Status            | Required result                                                                        |
 | ------: | ----------------------- | ----------------- | -------------------------------------------------------------------------------------- |
 |       A | [KAP-0054](KAP-0054.md) | Complete decision | Selected one minimal resident process after CLI/MCP failed required reconnect surfaces |
-|       B | [KAP-0074](KAP-0074.md) | Gated             | Implement and clean-install only the exact accepted preview inventory                  |
+|       B | [KAP-0074](KAP-0074.md) | Slice 5 accepted  | Keep Slice 6 artifact work and external acts gated                                     |
 | Ongoing | [KAP-0047](KAP-0047.md) | Supporting        | Record approved aggregate installation, comprehension, defect, and retained-use facts  |
 
-No resident implementation begins without separate KAP-0074 authorization. Perform and review one
-implementation packet at a time. KAP-0074 must reopen KAP-0054 if it exceeds three weeks, crosses
-the 3,000-line production-code review trigger in any language, deviates materially from the accepted
-inventory, needs more than the accepted one new resident package/product executable/authenticated
-local interface, or needs another lifecycle store.
+No resident implementation begins without the exact separate KAP-0074 authorization recorded in its
+task. Perform and review one implementation packet at a time. KAP-0074 must reopen KAP-0054 if it
+exceeds three weeks, crosses the 3,000-line production-code review trigger in any language, deviates
+materially from the accepted inventory, needs more than the accepted one new resident
+package/product executable/authenticated local interface, or needs another lifecycle store.
 
 ## Completed v0.2.0 sequence
 

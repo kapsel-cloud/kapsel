@@ -38,7 +38,8 @@ The hosted sandbox route is closed through its accepted fixtures/local-demo fall
 archived implementation remain historical evidence. KAP-0073 removed the deployable package and
 executable gates; none are current product requirements. KAP-0054 found protected CLI/MCP
 insufficient for caller-independent lifetime, read-only status, and exact receipt retrieval, then
-selected one minimal resident process. KAP-0074 gates that exact non-production implementation.
+selected one minimal resident process. KAP-0074 accepted Slices 1–5 after one disposable privileged
+qualification and fresh final review. Artifact work and every external act remain gated.
 
 The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
 production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens

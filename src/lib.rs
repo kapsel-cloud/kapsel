@@ -17,6 +17,7 @@ mod kind_tests;
 mod simulation_tests;
 
 pub use application::{
+    open_application_from_fixed_operator_document, open_application_from_operator_document,
     provision_exact_grant, AgentRequest, Application, ApplicationError, GrantProvisioning,
     OperationReport, OperatorConfiguration, SetDeploymentImageReceipt, SetDeploymentImageStatus,
 };

@@ -1,8 +1,8 @@
 //! Application-owned composition for the one KAP-0038 operation.
 //!
 //! This module separates request-only agent intent from operator-owned authorization, Kubernetes
-//! authority, receipt signing material, and durable paths. It is not a configuration-file grammar
-//! or command adapter.
+//! authority, receipt signing material, and durable paths. It owns the one shared operator-document
+//! grammar but is not a command adapter.
 
 use std::{
     error::Error,
@@ -12,6 +12,10 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
+use http_body_util::Limited;
+use kube::{config::KubeConfigOptions, Config};
+use serde::Deserialize;
+use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::gateway::{
     sign_authorization_grant, validate_key_id, validate_private_directory,
@@ -43,6 +47,205 @@ pub struct OperatorConfiguration {
     pub receipt_signing_seed: [u8; 32],
     /// Public identity for the receipt-signing key.
     pub receipt_signing_key_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperatorDocument {
+    signed_authorization_grant: PathBuf,
+    authorization_key_id: String,
+    authorization_public_key: PathBuf,
+    kubeconfig: PathBuf,
+    journal: PathBuf,
+    receipt_directory: PathBuf,
+    receipt_signing_seed: PathBuf,
+    receipt_signing_key_id: String,
+}
+
+/// Opens the application from the existing operator document and caller-owned file reader.
+///
+/// The supplied reader owns file-opening policy and must return bytes from the opened file. This
+/// prototype-scoped composition seam exists only to keep the CLI, MCP, and resident process on one
+/// operator grammar.
+///
+/// # Errors
+///
+/// Returns a typed application configuration error when the document, one input, or application
+/// composition is invalid.
+pub async fn open_application_from_operator_document(
+    document: &[u8],
+    read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
+) -> Result<Application, ApplicationError> {
+    let operator = parse_operator_document(document)?;
+    open_operator_document(operator, None, read_file).await
+}
+
+/// Opens the application only when the operator document uses the supplied state paths.
+///
+/// The supplied reader owns file-opening policy and must return bytes from the validated opened
+/// inode. Resident startup uses this form to retain the existing grammar without allowing another
+/// journal or receipt root.
+///
+/// # Errors
+///
+/// Returns [`ApplicationError::InvalidOperatorConfiguration`] when the document is malformed, its
+/// state paths differ from the fixed paths, or the supplied reader rejects an input. Other typed
+/// application configuration errors are preserved.
+pub async fn open_application_from_fixed_operator_document(
+    document: &[u8],
+    journal_path: &Path,
+    receipt_directory: &Path,
+    read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
+) -> Result<Application, ApplicationError> {
+    let operator = parse_operator_document(document)?;
+    open_operator_document(operator, Some((journal_path, receipt_directory)), read_file).await
+}
+
+fn parse_operator_document(document: &[u8]) -> Result<OperatorDocument, ApplicationError> {
+    serde_json::from_slice(document).map_err(|_| ApplicationError::InvalidOperatorConfiguration)
+}
+
+async fn open_operator_document(
+    operator: OperatorDocument,
+    fixed_state_paths: Option<(&Path, &Path)>,
+    mut read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
+) -> Result<Application, ApplicationError> {
+    for path in [
+        &operator.signed_authorization_grant,
+        &operator.authorization_public_key,
+        &operator.kubeconfig,
+        &operator.journal,
+        &operator.receipt_directory,
+        &operator.receipt_signing_seed,
+    ] {
+        if !path.is_absolute() {
+            return Err(ApplicationError::InvalidOperatorConfiguration);
+        }
+    }
+    if let Some((journal_path, receipt_directory)) = fixed_state_paths {
+        if operator.journal != journal_path || operator.receipt_directory != receipt_directory {
+            return Err(ApplicationError::InvalidOperatorConfiguration);
+        }
+    }
+    let persisted_receipt_directory = fixed_state_paths.map(|(_, directory)| directory.to_owned());
+    let signed_authorization_grant = read_operator_file(
+        &mut read_file,
+        &operator.signed_authorization_grant,
+        4 * 1024,
+    )?;
+    let authorization_public_key =
+        read_operator_exact_32(&mut read_file, &operator.authorization_public_key)?;
+    let receipt_signing_seed =
+        read_operator_exact_32(&mut read_file, &operator.receipt_signing_seed)?;
+    let kubeconfig = read_operator_file(&mut read_file, &operator.kubeconfig, 16 * 1024)?;
+    let kubernetes_client = load_operator_kubernetes_client(&kubeconfig).await?;
+
+    let mut application = Application::open(OperatorConfiguration {
+        journal_path: operator.journal,
+        receipt_output_directory: operator.receipt_directory,
+        authorization_trust: AuthorizationTrust {
+            key_id: operator.authorization_key_id,
+            public_key: authorization_public_key,
+        },
+        signed_authorization_grant,
+        kubernetes_client,
+        receipt_signing_seed,
+        receipt_signing_key_id: operator.receipt_signing_key_id,
+    })?;
+    application.persisted_receipt_directory = persisted_receipt_directory;
+    Ok(application)
+}
+
+fn read_operator_file(
+    read_file: &mut impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
+    path: &Path,
+    maximum: usize,
+) -> Result<Vec<u8>, ApplicationError> {
+    let bytes = read_file(path, maximum)?;
+    if bytes.len() > maximum {
+        return Err(ApplicationError::InvalidOperatorConfiguration);
+    }
+    Ok(bytes)
+}
+
+fn read_operator_exact_32(
+    read_file: &mut impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
+    path: &Path,
+) -> Result<[u8; 32], ApplicationError> {
+    read_operator_file(read_file, path, 32)?
+        .try_into()
+        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)
+}
+
+async fn load_operator_kubernetes_client(bytes: &[u8]) -> Result<kube::Client, ApplicationError> {
+    const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
+
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    let mut kubeconfig = kube::config::Kubeconfig::from_yaml(text)
+        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    let proxy_placeholder_was_added = configure_explicit_kubeconfig(&mut kubeconfig)?;
+    let mut client_config =
+        Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
+            .await
+            .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    if proxy_placeholder_was_added {
+        client_config.proxy_url = None;
+    }
+    let response_limit =
+        MapResponseBodyLayer::new(|body| Limited::new(body, KUBERNETES_RESPONSE_BYTES_MAX));
+    Ok(kube::client::ClientBuilder::try_from(client_config)
+        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?
+        .with_layer(&response_limit)
+        .build())
+}
+
+fn configure_explicit_kubeconfig(
+    kubeconfig: &mut kube::config::Kubeconfig,
+) -> Result<bool, ApplicationError> {
+    let current = kubeconfig
+        .current_context
+        .as_deref()
+        .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
+    let context = kubeconfig
+        .contexts
+        .iter()
+        .find(|context| context.name == current)
+        .and_then(|context| context.context.as_ref())
+        .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
+    let cluster_name = context.cluster.clone();
+    let user_name = context.user.clone();
+    let cluster = kubeconfig
+        .clusters
+        .iter_mut()
+        .find(|cluster| cluster.name == cluster_name)
+        .and_then(|cluster| cluster.cluster.as_mut())
+        .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
+    if cluster.certificate_authority.is_some() {
+        return Err(ApplicationError::InvalidOperatorConfiguration);
+    }
+    if let Some(user_name) = user_name {
+        let user = kubeconfig
+            .auth_infos
+            .iter()
+            .find(|user| user.name == user_name)
+            .and_then(|user| user.auth_info.as_ref())
+            .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
+        if user.token_file.is_some()
+            || user.client_certificate.is_some()
+            || user.client_key.is_some()
+            || user.auth_provider.is_some()
+            || user.exec.is_some()
+        {
+            return Err(ApplicationError::InvalidOperatorConfiguration);
+        }
+    }
+    if cluster.proxy_url.as_deref().is_none_or(str::is_empty) {
+        cluster.proxy_url = Some(String::from("http://127.0.0.1"));
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 /// Operator-only inputs for provisioning one exact authorization grant.
@@ -131,6 +334,7 @@ pub struct Application {
     receipt_signing_key: SigningKey,
     receipt_signing_key_id: String,
     receipt_output_directory: PathBuf,
+    persisted_receipt_directory: Option<PathBuf>,
 }
 
 impl Application {
@@ -180,6 +384,7 @@ impl Application {
             receipt_signing_key: SigningKey::from_bytes(&configuration.receipt_signing_seed),
             receipt_signing_key_id: configuration.receipt_signing_key_id,
             receipt_output_directory: configuration.receipt_output_directory,
+            persisted_receipt_directory: None,
         })
     }
 
@@ -257,6 +462,17 @@ impl Application {
         else {
             return Ok(SetDeploymentImageReceipt::NotFound);
         };
+        if snapshot
+            .frozen_receipt
+            .as_ref()
+            .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
+            || snapshot
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
+        {
+            return Err(ApplicationError::OperationFailure);
+        }
         if snapshot.state != OperationState::Finalized {
             return Ok(SetDeploymentImageReceipt::NotReady);
         }
@@ -379,6 +595,17 @@ impl Application {
         else {
             return Ok(None);
         };
+        if snapshot
+            .frozen_receipt
+            .as_ref()
+            .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
+            || snapshot
+                .receipt
+                .as_ref()
+                .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
+        {
+            return Err(ApplicationError::OperationFailure);
+        }
         Ok(Some(OperationReport {
             operation_id: operation_id.clone(),
             state: snapshot.state,
@@ -387,6 +614,16 @@ impl Application {
             receipt: snapshot.receipt,
         }))
     }
+
+    fn persisted_receipt_path_is_allowed(&self, path: &Path) -> bool {
+        self.persisted_receipt_directory
+            .as_deref()
+            .is_none_or(|directory| receipt_path_is_beneath(directory, path))
+    }
+}
+
+fn receipt_path_is_beneath(directory: &Path, path: &Path) -> bool {
+    path.parent() == Some(directory) && path.file_name().is_some()
 }
 
 fn map_operation_error(error: &GatewayError) -> ApplicationError {
@@ -430,6 +667,8 @@ fn validate_private_file_or_missing(path: &Path) -> Result<(), ApplicationError>
 /// Bounded application composition or operation failure.
 #[derive(Debug)]
 pub enum ApplicationError {
+    /// The shared operator document or one of its fixed files was invalid.
+    InvalidOperatorConfiguration,
     /// Operator grant-signing inputs were invalid.
     InvalidGrantProvisioning,
     /// Configured grant bytes or trust were invalid.
@@ -449,6 +688,7 @@ pub enum ApplicationError {
 impl fmt::Display for ApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let class = match self {
+            Self::InvalidOperatorConfiguration => "invalid_operator_configuration",
             Self::InvalidGrantProvisioning => "invalid_grant_provisioning",
             Self::InvalidAuthorizationConfiguration => "invalid_authorization_configuration",
             Self::InvalidReceiptConfiguration => "invalid_receipt_configuration",
@@ -464,5 +704,166 @@ impl fmt::Display for ApplicationError {
 impl Error for ApplicationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "controlled fixture failures must fail the response-bound test immediately"
+)]
+mod operator_tests {
+    use std::{
+        io::{Read as _, Write as _},
+        net::{SocketAddr, TcpListener},
+        thread,
+    };
+
+    use k8s_openapi::api::apps::v1::Deployment;
+    use kube::Api;
+
+    use super::*;
+
+    const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
+
+    enum ResponseFraming {
+        ContentLength,
+        Chunked,
+        CloseDelimited,
+    }
+
+    fn response_body(bytes: usize) -> Vec<u8> {
+        let prefix = concat!(
+            r#"{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"#,
+            r#""name":"bounded","namespace":"demo","uid":"uid-1","resourceVersion":"1"}}"#
+        );
+        assert!(bytes >= prefix.len());
+        let mut body = Vec::with_capacity(bytes);
+        body.extend_from_slice(prefix.as_bytes());
+        body.resize(bytes, b' ');
+        body
+    }
+
+    fn response_server(
+        body: Vec<u8>,
+        framing: ResponseFraming,
+    ) -> (SocketAddr, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            match framing {
+                ResponseFraming::ContentLength => {
+                    write!(
+                        stream,
+                        concat!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
+                            "content-length: {}\r\nconnection: close\r\n\r\n"
+                        ),
+                        body.len()
+                    )
+                    .unwrap();
+                    let _ = stream.write_all(&body);
+                },
+                ResponseFraming::Chunked => {
+                    stream
+                        .write_all(
+                            concat!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
+                                "transfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+                            )
+                            .as_bytes(),
+                        )
+                        .unwrap();
+                    let _ = write!(stream, "{:x}\r\n", body.len());
+                    let _ = stream.write_all(&body);
+                    let _ = stream.write_all(b"\r\n0\r\n\r\n");
+                },
+                ResponseFraming::CloseDelimited => {
+                    stream
+                        .write_all(
+                            concat!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
+                                "connection: close\r\n\r\n"
+                            )
+                            .as_bytes(),
+                        )
+                        .unwrap();
+                    let _ = stream.write_all(&body);
+                },
+            }
+        });
+        (address, server)
+    }
+
+    async fn request_deployment(body_bytes: usize, framing: ResponseFraming) -> bool {
+        let body = response_body(body_bytes);
+        let (address, server) = response_server(body, framing);
+        let kubeconfig = format!(
+            concat!(
+                "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n",
+                "  cluster:\n    server: http://{}\ncontexts:\n- name: fixture\n",
+                "  context:\n    cluster: fixture\n    user: fixture\n",
+                "current-context: fixture\nusers:\n- name: fixture\n  user: {{}}\n"
+            ),
+            address
+        );
+        let client = load_operator_kubernetes_client(kubeconfig.as_bytes())
+            .await
+            .unwrap();
+        let result = Api::<Deployment>::namespaced(client, "demo")
+            .get("bounded")
+            .await
+            .is_ok();
+        server.join().unwrap();
+        result
+    }
+
+    #[test]
+    fn fixed_receipt_path_validation_rejects_every_escape() {
+        let directory = Path::new("/var/lib/kapsel/receipts");
+        assert!(receipt_path_is_beneath(
+            directory,
+            Path::new("/var/lib/kapsel/receipts/operation.receipt.json")
+        ));
+        for path in [
+            "/var/lib/kapsel/operation.receipt.json",
+            "/var/lib/kapsel/receipts/nested/operation.receipt.json",
+            "/var/lib/kapsel/receipts/../receipt.seed",
+            "/etc/kapsel/receipt.seed",
+            "/var/lib/kapsel/receipts",
+        ] {
+            assert!(!receipt_path_is_beneath(directory, Path::new(path)));
+        }
+    }
+
+    #[tokio::test]
+    async fn kubernetes_response_limit_accepts_exact_and_rejects_every_oversized_framing() {
+        assert!(
+            request_deployment(
+                KUBERNETES_RESPONSE_BYTES_MAX,
+                ResponseFraming::ContentLength
+            )
+            .await
+        );
+        assert!(
+            !request_deployment(
+                KUBERNETES_RESPONSE_BYTES_MAX + 1,
+                ResponseFraming::ContentLength
+            )
+            .await
+        );
+        assert!(
+            !request_deployment(KUBERNETES_RESPONSE_BYTES_MAX + 1, ResponseFraming::Chunked).await
+        );
+        assert!(
+            !request_deployment(
+                KUBERNETES_RESPONSE_BYTES_MAX + 1,
+                ResponseFraming::CloseDelimited
+            )
+            .await
+        );
     }
 }

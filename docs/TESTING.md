@@ -213,19 +213,45 @@ Slice 4's full Linux package gate passed in the pinned Rust container on the nat
 kernel: 24 package tests plus nine default real-process tests passed, one distinct-GID case remained
 ignored, and that case passed separately against the host's existing supplementary `docker` group.
 Fresh independent correctness, recovery/security, architecture, and test-quality rereviews found no
-blocker, high, or medium finding. The following acceptance categories remain future and separately
-gated:
+blocker, high, or medium finding.
 
-- fixed-root startup checks;
-- a clean x86-64 Debian 12 systemd environment proving identities, socket filesystem modes, direct
-  install and lifecycle commands, exact Kubernetes RBAC, operator-file denial, bounded systemd
-  state/diagnostics, one reconciliation per activation, no automatic same-boot restart loop,
-  stop-before-revocation ordering, and uninstall with retained data; and
-- the installed exact artifact passing independent security and architecture review before any
-  external installation is requested.
+Slice 5 deterministic tests add the existing operator grammar as one application-owned composition
+owner, fixed-root mode/type/link/component and stable-byte checks, optional first-use
+journal/worker-lock validation, exact ordinary argv, reconciliation before socket replacement and
+admission, exact post-bind socket identity, safe exact stale-socket removal, and daemon refusal
+without unlink for active or nonexact socket leaves. Static tests freeze the sole unit, sysusers
+file, and non-secret ServiceAccount/Role/RoleBinding bytes. Linux process tests use only a
+compile-time private installation-root prefix and finite connection count; ordinary production
+startup has neither input. The native Linux source gate passed 29 package unit/socket/startup tests,
+one static asset test, and 14 default real-process tests with one ignored; the ignored
+distinct-effective-GID case passed separately through the host's existing group database. Native
+all-target/all-feature Clippy and the complete local default gate passed. Fresh independent
+source/security/architecture review inspected the actual changed files and found no blocker, high,
+or medium issue.
 
-The candidate is unpublished and is not current release evidence. The default CLI/MCP and KAP-0038
-suites remain authoritative for the released mechanism.
+The separately authorized clean-install gate then passed on a fresh x86-64 Debian 12 KVM VM with
+systemd 252. It proved clean account creation and lock state, exact separate identities,
+socket/filesystem ownership, direct install, enabled boot and explicit lifecycle commands,
+operator-file denial, bounded systemd state/diagnostics, zero automatic restart, process-loss
+recovery, active-socket refusal, inactive exact stale replacement, and runtime-directory cleanup.
+One failed-activation observation corrected the owner: `kapseld` leaves a refused nonexact leaf
+unchanged, then systemd removes that leaf with the service-owned runtime directory after process
+exit. The installed contract does not promise preservation across manager cleanup.
+
+The same disposable gate used kind 0.32.0 and the exact pinned Kubernetes `v1.33.12` node image. The
+actual short-lived ServiceAccount credential passed the named `get`/`patch` allow cases and denied
+the decoy, list/watch, other verbs/resources/namespaces, and cluster scope. One installed operation
+survived process loss after mutation, finalized `SUCCEEDED`, preserved the sidecar, froze exact
+receipt bytes, and replayed, explicitly restarted, and booted without another Deployment generation
+or changed receipt digest. Ordered disable closed an idle connection and removed the runtime root;
+caller and Kubernetes authority revocation preceded static-asset removal, and retained authority,
+journal, and receipt bytes and metadata remained unchanged. The owned cluster and VM were destroyed;
+only bounded secret-free evidence remains outside the repository.
+
+The remaining separately gated category is the Slice 6 exact artifact passing source-independent
+installation and independent security and architecture review before any external installation is
+requested. The candidate is unpublished and is not current release evidence. The default CLI/MCP and
+KAP-0038 suites remain authoritative for the released mechanism.
 
 ## Review record
 
