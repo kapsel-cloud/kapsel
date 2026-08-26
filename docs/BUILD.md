@@ -64,11 +64,6 @@ failure or timeout removes any partial report, emits a workflow warning, and doe
 default gate result. Codecov upload runs only for a nonempty completed report. An outer non-blocking
 15-minute job bound covers setup failures without turning coverage into correctness evidence.
 
-On the clean pre-retirement x86-64 Linux Slice 1 candidate, cargo-llvm-cov 0.8.7 completed a cold
-compile, the full suite, and Codecov report in 2m22.791s; compilation took 39.93s and the
-now-retired sandbox library portion took 99.87s. This is a historical diagnostic measurement on the
-verification host, not a duration guarantee.
-
 ## Tidy and style audit
 
 Run project-local hard hygiene rules with:
@@ -126,45 +121,44 @@ claiming provider or receiver behavior:
 cargo test --locked -p kapseld --features test-harness --test linux_process
 ```
 
-On the authorized `server` host, an additional ignored gate launches the client through its existing
-supplementary `docker` group with `sg` and proves the resulting distinct effective GID is denied
-promptly without sending a frame. It performs no identity or group mutation:
+An additional ignored gate launches the client through an existing supplementary group with `sg` and
+proves that a distinct effective GID is denied before any frame is sent. It performs no identity or
+group mutation:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
-This candidate covers accepted KAP-0074 Slices 2 through 5: framing, authentication, status,
-receipt, exact process-local `ACCEPTED`, immediate non-queued `BUSY`, disconnect-independent
-execution, startup reconciliation before bind, real process loss, frozen receipt retrieval, explicit
-bounded `UNKNOWN`, fixed-root ordinary startup, exact socket identity and stale-socket handling, and
-static installation records. The exact native-Linux source-candidate gate is:
+The resident source gate covers framing, authentication, status, receipt, exact process-local
+`ACCEPTED`, immediate non-queued `BUSY`, disconnect-independent execution, startup reconciliation
+before bind, real process loss, frozen receipt retrieval, bounded `UNKNOWN`, fixed-root startup,
+exact socket identity, stale-socket handling, and static installation records:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness
 ```
 
-The process cases use only loopback deterministic Kubernetes fixtures and compile-time private
-controls. Slice 5's private installation-root prefix and finite connection count exercise the same
-ordinary startup; feature-free production accepts neither. Run the static direct-asset byte gate
-separately or through the full package command:
+The process cases use only loopback deterministic Kubernetes fixtures and compile-time-private
+controls. The private installation-root prefix and finite connection count exercise ordinary
+startup; feature-free production accepts neither. Run the static direct-asset byte gate separately
+or through the full package command:
 
 ```sh
 cargo test --locked -p kapseld --test install_assets
 ```
 
-The source-only evidence remains native-kernel process evidence. A separately authorized exact
-source snapshot later passed the direct path in a fresh x86-64 Debian 12 KVM VM with systemd 252,
-kind 0.32.0, and pinned Kubernetes 1.33. It proved separate identities, credential/RBAC bounds,
-installed process loss and boot recovery, secret-free diagnostics, ordered uninstall, and retained
-data. That qualification is not an artifact, source-independent-installation, performance,
-customer-use, or production claim; those later surfaces remain separately gated.
+The source-only evidence remains native-kernel process evidence. An exact source snapshot passed the
+direct path in a fresh x86-64 Debian 12 KVM VM with systemd 252, kind 0.32.0, and pinned Kubernetes
+1.33. It proved separate identities, credential/RBAC bounds, installed process loss and boot
+recovery, secret-free diagnostics, ordered uninstall, and retained data. It does not prove artifact
+identity, source-independent installation, performance, or production safety.
 
 ### Direct installation candidate
 
-These commands describe the sole Slice 5 direct path; they are not an authorization to run it. Build
-on x86-64 Debian 12 from one clean revision, then install the exact repository inputs:
+The following source-based procedure requires root and Kubernetes administration in a disposable
+non-production environment. Build on x86-64 Debian 12 from one clean revision, then install the
+exact repository inputs:
 
 ```sh
 ! getent passwd kapsel
@@ -194,8 +188,8 @@ The operator then installs exact owner-provisioned `operator.json`, `grant.bin`,
 `authorization.pub`, `kubeconfig.yaml`, and `receipt.seed` beneath `/etc/kapsel` with owner
 `kapsel:kapsel-preview-callers` and mode `0600`. The JSON uses only the existing grammar and exact
 paths fixed by KAP-0054. Applying `/usr/share/kapsel/kapseld-rbac.yaml`, obtaining a short-lived
-synthetic ServiceAccount credential, and writing the embedded kubeconfig are separately authorized
-Kubernetes actions. After those inputs exist, activation is direct:
+ServiceAccount credential, and writing the embedded kubeconfig require Kubernetes administrative
+access. After those inputs exist, activation is direct:
 
 ```sh
 sudo systemctl daemon-reload
@@ -474,10 +468,6 @@ strict assembly B in separate target/output storage and compares archive, checks
 digest-manifest bytes. Remove `"$a_dir"` after use. See the
 [testing strategy](TESTING.md#release-artifact-proof) for the exact proof and
 [release artifact contract](RELEASE.md) for the owned format and bounds.
-
-On clean x86-64 Linux revision `0f86e7c`, a cold two-assembly proof took 5m11s: A assembly 2m31s,
-exact-A hostile/layout/smoke 11s, and B assembly plus four-file comparison 2m29s. The prior hosted
-four-assembly job took 11m55s. These are diagnostic measurements, not duration guarantees.
 
 Scan one exact SPDX sidecar with the KAP-0061-frozen Trivy 0.72.0 policy and a vulnerability
 database no older than 24 hours:

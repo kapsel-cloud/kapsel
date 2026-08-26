@@ -191,67 +191,37 @@ implementation. Existing tag `archive/kap-0070-backup-restore-bde1e3b` preserves
 backup/restore checkpoint. Neither archive is an active proof lane or deployable alternative. The
 root real-process harness and disposable-`kind` demonstration remain the supported mechanism proof.
 
-## Resident preview proof categories
+## Resident service proof categories
 
-KAP-0074 has retained accepted Slices 1 through 4. Their focused runnable gates are documented in
-[Resident socket candidate](BUILD.md#resident-socket-candidate) and remain layered around the
-existing `Application` rather than widening private gateway seams:
+The focused runnable gates are documented in
+[Resident socket candidate](BUILD.md#resident-socket-candidate). They remain layered around the
+existing `Application`:
 
-- read-only projected status and exact frozen-receipt retrieval make no Kubernetes call and advance
-  no lifecycle state;
-- Unix-socket black-box tests cover exact peer-credential allow/deny, framing and allocation bounds,
-  hostile fields, disclosure, one in-flight submission, and no queue;
-- Slice 3 socket tests cover process-local acceptance, immediate `BUSY`, real caller disconnect,
-  concurrent reconnect/status, one provider attempt, and one sole journal without a second state
-  store; and
-- Slice 4 kills the real `kapseld` process after the existing mutation and receipt-publication
-  seams, requires startup reconciliation before bind, checks one PATCH, retrieves frozen bytes and
-  digest after receipt-key/directory rotation, and runs the unchanged 30-read schedule to terminal
-  `UNKNOWN`.
+- projected status and frozen-receipt retrieval make no Kubernetes call and advance no lifecycle
+  state;
+- Unix-socket tests cover peer-credential allow/deny, framing and allocation bounds, hostile fields,
+  disclosure, one in-flight submission, and no queue;
+- process tests cover `ACCEPTED`, immediate `BUSY`, caller disconnect, concurrent status, one
+  provider attempt, and one journal;
+- process-loss tests kill `kapseld` after mutation and receipt-publication seams, require startup
+  reconciliation before bind, and preserve frozen receipt bytes; and
+- startup tests cover fixed-root mode/type/link/component checks, stable consumed bytes, exact argv,
+  post-bind socket identity, exact inactive stale-socket removal, and refusal of every other leaf.
 
-Slice 4's full Linux package gate passed in the pinned Rust container on the native Linux host
-kernel: 24 package tests plus nine default real-process tests passed, one distinct-GID case remained
-ignored, and that case passed separately against the host's existing supplementary `docker` group.
-Fresh independent correctness, recovery/security, architecture, and test-quality rereviews found no
-blocker, high, or medium finding.
+Static tests freeze the systemd unit, sysusers file, and ServiceAccount/Role/RoleBinding bytes.
+Linux process tests use only compile-time-private root and finite-connection controls; ordinary
+startup accepts neither.
 
-Slice 5 deterministic tests add the existing operator grammar as one application-owned composition
-owner, fixed-root mode/type/link/component and stable-byte checks, optional first-use
-journal/worker-lock validation, exact ordinary argv, reconciliation before socket replacement and
-admission, exact post-bind socket identity, safe exact stale-socket removal, and daemon refusal
-without unlink for active or nonexact socket leaves. Static tests freeze the sole unit, sysusers
-file, and non-secret ServiceAccount/Role/RoleBinding bytes. Linux process tests use only a
-compile-time private installation-root prefix and finite connection count; ordinary production
-startup has neither input. The native Linux source gate passed 29 package unit/socket/startup tests,
-one static asset test, and 14 default real-process tests with one ignored; the ignored
-distinct-effective-GID case passed separately through the host's existing group database. Native
-all-target/all-feature Clippy and the complete local default gate passed. Fresh independent
-source/security/architecture review inspected the actual changed files and found no blocker, high,
-or medium issue.
+The direct-source path passed on a fresh x86-64 Debian 12 KVM VM with systemd 252, kind 0.32.0, and
+the pinned Kubernetes v1.33.12 node image. The gate covered separate identities, filesystem and
+socket ownership, operator-file denial, service lifecycle and diagnostics, process-loss and boot
+recovery, exact RBAC allow/deny cases, one successful operation, receipt replay, revocation,
+uninstall, retained data, and cleanup. `kapseld` leaves a refused nonexact socket leaf unchanged;
+systemd may then remove it with the service-owned runtime directory after process exit.
 
-The separately authorized clean-install gate then passed on a fresh x86-64 Debian 12 KVM VM with
-systemd 252. It proved clean account creation and lock state, exact separate identities,
-socket/filesystem ownership, direct install, enabled boot and explicit lifecycle commands,
-operator-file denial, bounded systemd state/diagnostics, zero automatic restart, process-loss
-recovery, active-socket refusal, inactive exact stale replacement, and runtime-directory cleanup.
-One failed-activation observation corrected the owner: `kapseld` leaves a refused nonexact leaf
-unchanged, then systemd removes that leaf with the service-owned runtime directory after process
-exit. The installed contract does not promise preservation across manager cleanup.
-
-The same disposable gate used kind 0.32.0 and the exact pinned Kubernetes `v1.33.12` node image. The
-actual short-lived ServiceAccount credential passed the named `get`/`patch` allow cases and denied
-the decoy, list/watch, other verbs/resources/namespaces, and cluster scope. One installed operation
-survived process loss after mutation, finalized `SUCCEEDED`, preserved the sidecar, froze exact
-receipt bytes, and replayed, explicitly restarted, and booted without another Deployment generation
-or changed receipt digest. Ordered disable closed an idle connection and removed the runtime root;
-caller and Kubernetes authority revocation preceded static-asset removal, and retained authority,
-journal, and receipt bytes and metadata remained unchanged. The owned cluster and VM were destroyed;
-only bounded secret-free evidence remains outside the repository.
-
-The remaining separately gated category is the Slice 6 exact artifact passing source-independent
-installation and independent security and architecture review before any external installation is
-requested. The candidate is unpublished and is not current release evidence. The default CLI/MCP and
-KAP-0038 suites remain authoritative for the released mechanism.
+The resident service is unpublished and absent from the v0.2.0 artifact. A supported resident
+artifact requires source-independent installation and complete installed-path security and
+architecture review. The default CLI/MCP and KAP-0038 suites remain authoritative for v0.2.0.
 
 ## Review record
 

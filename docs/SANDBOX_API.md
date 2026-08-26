@@ -353,10 +353,9 @@ recreation, a prior locator may likewise return `run_not_found`; reuse of a prio
 may create a new admission only after exact teardown, readiness, and explicit reopening. No prior
 result or receipt is inferred.
 
-The retired rules did not permit internal security, billing, gateway-recovery, or cleanup records to
-extend public retention or retain raw visitor identifiers; [Privacy](PRIVACY.md) preserves their
-narrower historical constraints. Kapsel recovery and forced cleanup could have outlived public
-projection expiry as operator responsibilities while the route existed.
+The retired rules did not permit internal security, gateway-recovery, or cleanup records to extend
+public retention or retain raw visitor identifiers. No hosted retention or deletion policy remains
+active; [Privacy](PRIVACY.md) owns the current data boundary.
 
 ## Errors
 

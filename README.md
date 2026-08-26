@@ -67,8 +67,8 @@ use.
 | Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                 |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
 | Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
-| Hosted sandbox                                   | Archived and removed; fixtures remain historical only    |
-| Customer-resident preview boundary               | Slices 1–5 accepted; artifact work remains gated         |
+| Hosted sandbox                                   | Removed; contracts and fixtures are historical only      |
+| Resident systemd service and local socket        | Qualified from source; not in the published artifact     |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -102,22 +102,19 @@ The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and
 grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
 resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
-hosted dependency, second target, or production-readiness claim. KAP-0070 is complete through its
-fixtures/local-demo fallback; KAP-0073 archived and removed the unpublished hosted sandbox. KAP-0054
-selected one minimal resident process after protected CLI/MCP lacked independent lifetime, status,
-and receipt retrieval. KAP-0074 accepted Slices 1–5 after one disposable privileged qualification
-and fresh final review. Artifact work and every external act remain gated. KAP-0047 remains the
-supporting owner for approved aggregate technical findings. See the [v0.2 beta design](docs/V0.2.md)
-and [ordered task route](tasks/README.md).
+hosted dependency, second target, or production-readiness claim.
+
+The repository's separate resident service is unpublished. Its direct-source path has been qualified
+on Debian 12/systemd 252 and Kubernetes 1.33, but the published v0.2.0 archive does not contain it.
+See the [v0.2 beta design](docs/V0.2.md) and [technical task route](tasks/README.md).
 
 ## Scope discipline
 
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
 a generic provider SDK, a policy language, hosted operation, a dashboard, and a second capability
-are outside its technical scope. The unpublished hosted sandbox was archived and removed; its fixed
-fixtures and offline evidence do not define the product. The active route is one lean
-customer-resident preview decision over the existing root mechanism. Its unpublished direct-source
-Slice 5 is accepted; artifact work and every customer act remain separately gated.
+are outside its technical scope. The removed hosted sandbox's contracts and fixtures are historical
+only. The resident service adds local process lifetime, read-only status, and receipt retrieval
+without changing capability or receiver-result semantics.
 
 ## Read next
 
@@ -126,10 +123,8 @@ Slice 5 is accepted; artifact work and every customer act remain separately gate
 - [Prospective V1 technical direction](docs/VISION.md)
 - [Build and proof commands](docs/BUILD.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Historical public sandbox API](docs/SANDBOX_API.md)
-- [Historical public sandbox deployment](docs/SANDBOX_DEPLOYMENT.md)
-- [Completed resident-preview decision](tasks/KAP-0054.md)
-- [Gated resident-preview implementation](tasks/KAP-0074.md)
+- [Resident service architecture decision](tasks/KAP-0054.md)
+- [Resident service implementation record](tasks/KAP-0074.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Documentation index](docs/INDEX.md)

@@ -29,23 +29,20 @@ agent intent
   -> classifier-complete signed experiment receipt
 ```
 
-The sole capability is `kubernetes.set_deployment_image`. The published `v0.1.1` artifact and the
-`0.2.0` source demonstrate it against a local `kind` cluster; exact current release state is
-external authenticated evidence. Its technical owner is the
+The sole capability is `kubernetes.set_deployment_image`. Published v0.1.1 and v0.2.0 artifacts
+demonstrate it against a local `kind` cluster; exact release identity comes from authenticated
+artifact evidence. Its technical owner is the
 [Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
-The hosted sandbox route is closed through its accepted fixtures/local-demo fallback. Its
-[historical API](SANDBOX_API.md), [historical deployment contract](SANDBOX_DEPLOYMENT.md), and
-archived implementation remain historical evidence. KAP-0073 removed the deployable package and
-executable gates; none are current product requirements. KAP-0054 found protected CLI/MCP
-insufficient for caller-independent lifetime, read-only status, and exact receipt retrieval, then
-selected one minimal resident process. KAP-0074 accepted Slices 1–5 after one disposable privileged
-qualification and fresh final review. Artifact work and every external act remain gated.
+The hosted sandbox was removed. Its [historical API](SANDBOX_API.md) and
+[historical deployment contract](SANDBOX_DEPLOYMENT.md) remain engineering evidence, not current
+interfaces. The repository contains one unpublished resident process because CLI/MCP cannot provide
+caller-independent lifetime, read-only status, and exact receipt retrieval. Its direct-source path
+has been qualified on Debian 12/systemd 252 and Kubernetes 1.33; it is not part of the published
+v0.2.0 archive.
 
-The published `0.1.1` artifact is one stable predecessor for this experiment—not a broader platform,
-production-support promise, or second provider. The implemented [v0.2 beta design](V0.2.md) deepens
-that same operation into one finite developer-beta release; it does not widen the capability or
-claim external validation. Source and package identity do not establish candidate acceptance,
-currentness, or publication.
+The published v0.1.1 artifact is the stable predecessor to the finite [v0.2 beta](V0.2.md). Neither
+release widens the capability or claims production support. Source or package version alone does not
+establish artifact identity; use the authenticated release evidence.
 
 ## 0.1.1 release
 
@@ -69,44 +66,33 @@ It does not promise production support or compatibility for the CLI, configurati
 adapter, receipt format, or artifact layout. Those surfaces remain explicitly versioned experiment
 interfaces until a later release owns compatibility.
 
-## Active v0.2.0 direction
+## v0.2.0 release
 
-KAP-0046 selected one maintainer-led stabilization cycle. v0.2.0 remains a developer beta for the
-same Kubernetes Deployment image change. Its implementation makes the existing path coherent enough
-to release, explain, and evaluate after publication.
+v0.2.0 is a published developer beta for the same Kubernetes Deployment image change. It:
 
-The beta must:
-
-1. use one production lifecycle implementation for ordinary execution and crash proof;
-2. adopt explicit CLI, MCP, grant, receipt, artifact, target, and migration compatibility classes;
-3. preserve exact KAP-0038 authorization, mutation-attempt, receiver-result, `UNKNOWN`, receipt, and
+1. uses one lifecycle implementation for ordinary execution and crash proof;
+2. defines CLI, MCP, grant, receipt, artifact, target, and migration compatibility classes;
+3. preserves KAP-0038 authorization, mutation-attempt, receiver-result, `UNKNOWN`, receipt, and
    inspection semantics;
-4. prove `v0.1.1` upgrade, backup, rollback or bounded downgrade refusal, and retained receipt
-   inspection;
-5. qualify hostile input, reliability, resource use, supply chain, installation, cleanup, and
-   downloaded-artifact behavior under finite gates; and
-6. publish only after independent acceptance of one exact candidate.
+4. proves v0.1.1 upgrade, backup, rollback, and bounded downgrade behavior;
+5. qualifies hostile input, reliability, resource use, supply chain, installation, cleanup, and
+   downloaded-artifact behavior; and
+6. publishes one authenticated x86-64 GNU/Linux artifact set.
 
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
 resident daemon, managed control plane, live sandbox, second target, or production-support promise.
-After publication, KAP-0069 and KAP-0072 explored a serialized fixed-input public proof. KAP-0070 is
-complete through fallback, and KAP-0073 removed its deployable implementation rather than finishing
-anonymous hosted operation. KAP-0054 completed the technical decision for one smallest
-customer-controlled non-production preview. KAP-0074 is the gated implementation packet; neither
-widens the capability nor authorizes credentials, customer access, or production use. KAP-0047
-remains the supporting owner for approved aggregate external technical findings; retained
-customer-controlled use is still required before production compatibility or another broader cycle.
+The later hosted-sandbox experiment was removed after its fixed fixtures and local demonstration
+became sufficient historical evidence. The resident service remains unpublished and does not widen
+the capability, move provider credentials into caller input, or establish production support.
 
 The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
 route is owned by [the task route](../tasks/README.md).
 
 ## Future v1.0.0 requirements
 
-`v1.0.0` is not planned or implied by publishing `0.1.1`. The accepted
-[V1 technical direction](VISION.md) describes the intended resident effect-gateway shape without
-authorizing implementation or release. A `v1.0.0` proposal still requires approved public-use
-evidence, a real pilot workflow, and a new explicit production implementation decision. Before a
-`v1.0.0` tag, Kapsel must:
+`v1.0.0` is not planned or implied by publishing `0.1.1`. The [V1 technical direction](VISION.md)
+describes a possible resident effect-gateway shape, not current release scope. Before a `v1.0.0`
+tag, Kapsel must:
 
 1. name every compatibility surface it will support and publish versioning, deprecation, and
    migration rules for the CLI, configuration, MCP behavior, receipt format, Rust API, and artifact

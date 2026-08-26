@@ -9,12 +9,12 @@ Owns: The target resident effect-gateway architecture and the conditions under w
 and public interfaces become justified.
 
 Does not own: Current 0.1 behavior, the active Kubernetes experiment, task status, exact sandbox
-API, commercial scope, or a v1 release authorization.
+API, or a v1 release contract.
 
-## Product definition
+## Technical definition
 
-Kapsel v1 is a customer-resident effect gateway for autonomous systems. It turns bounded caller
-intent into one durably tracked provider attempt, recovery without blind retry, receiver
+A possible Kapsel v1 is an operator-resident effect gateway for autonomous systems. It turns bounded
+caller intent into one durably tracked provider attempt, recovery without blind retry, receiver
 observation, and an inspectable signed receipt.
 
 Kubernetes is the first reference integration, not Kapsel's permanent identity. The durable effect
@@ -25,39 +25,27 @@ agent or workflow
   -> protected CLI, MCP, or earned versioned local interface
        -> deep kapsel application
             -> bounded capability
-            -> customer-held provider authority
+            -> operator-held provider authority
             -> durable lifecycle and recovery
             -> receiver observation
             -> signed receipt
                  -> optional later resident lifecycle and managed coordination
 ```
 
-Provider credentials and execution authority remain customer-resident by default. A managed Kapsel
-service may coordinate gateways and index bounded receipt projections; it does not become the source
-of provider truth or silently move customer authority into the cloud.
+Provider credentials and execution authority remain operator-resident. Any future remote
+coordination layer must not become the source of provider truth or move provider authority across
+the local trust boundary.
 
-## Current product cycle
+## Current implementation boundary
 
-The verified v0.2 mechanism now supports one bounded sell-first cycle without becoming a general
-platform commitment:
+The published v0.2.0 artifact contains the root CLI and fixed stdio MCP adapter. The repository also
+contains an unpublished `kapseld -> kapsel` process with one authenticated Linux Unix socket,
+systemd lifecycle, fixed filesystem roots, and exact Kubernetes RBAC. Its direct-source path passed
+one Debian 12/systemd 252 and Kubernetes 1.33 qualification.
 
-1. completed: close the hosted sandbox through its fixtures/local-demo fallback and remove its
-   deployable implementation from the active workspace;
-2. completed: KAP-0054 proved protected CLI/MCP insufficient for caller-independent lifetime,
-   read-only status, and exact receipt retrieval, then selected one minimal resident process and
-   authenticated local interface; and
-3. accepted direct source: KAP-0074 implemented that exact preview and passed one separately
-   authorized disposable Debian 12/systemd and Kubernetes 1.33 gate plus fresh final review.
-
-KAP-0073 completed sandbox retirement. KAP-0054 completed the sole resident-boundary architecture
-decision; KAP-0074 remains the only product implementation packet. The resident route cannot inherit
-sandbox topology, transport, scheduling, authority staging, isolation, cleanup, or compatibility.
-Artifact work, customer access or credentials, external installation, and production use each
-require their own exact owner.
-
-The cycle keeps one capability and tests one external-use fact: whether another team will install
-and retain the authority and recovery mechanism. It does not authorize a second operation, generic
-provider seam, managed control plane, production support, or v1 compatibility.
+The removed hosted sandbox's scheduling, authority staging, cleanup, and HTTP interfaces are not
+part of the resident architecture. The resident service is not in the published artifact and has no
+production compatibility promise.
 
 ## Milestone separation
 
@@ -75,30 +63,27 @@ integrity, and qualification obligations without adding a capability, daemon, ho
 public Rust SDK, or production-support claim. Ordered release evidence owns exact candidate and
 publication state; external beta evidence follows publication.
 
-### Retired public product proof
+### Retired hosted experiment
 
 KAP-0070 closed the independently designed sandbox through its accepted fixtures/local-demo
 fallback. The [historical HTTP contract](SANDBOX_API.md),
-[historical deployment contract](SANDBOX_DEPLOYMENT.md), offline slices, and archive tags remain
-engineering evidence, but KAP-0073 removed deployable sandbox code and active hosted gates. The root
+[historical deployment contract](SANDBOX_DEPLOYMENT.md), offline evidence, and archive tags remain
+engineering evidence, but deployable sandbox code and active hosted gates were removed. The root
 release-owned real-process and disposable-`kind` demonstrations remain the supported way to inspect
-the mechanism. No sandbox topology or interface becomes a customer product requirement.
+the mechanism. No sandbox topology or interface is a current compatibility surface.
 
-### Customer-resident preview and production v1
+### Resident source implementation
 
-KAP-0054 selected one unpublished `kapseld -> kapsel` process under a separate OS identity with one
-authenticated Linux Unix socket. The current CLI/MCP adapters could preserve exact operation replay
-but could not provide caller-independent lifetime, read-only reconnect/status, or exact receipt
-retrieval across the authority boundary. The selected preview exists to make one bounded workflow
-possible; it is not production v1 and does not inherit sandbox topology or public compatibility.
-KAP-0074's direct-source Slice 5 passed one disposable qualification and fresh final review;
-artifact assembly, external installation, customer access, and production remain separately gated.
+The unpublished `kapseld -> kapsel` process runs under a separate OS identity and exposes one
+authenticated Linux Unix socket. The CLI/MCP adapters preserve exact operation replay but cannot
+provide caller-independent lifetime, read-only reconnect/status, or exact receipt retrieval across
+the authority boundary. The resident service adds those properties without inheriting sandbox
+topology or compatibility.
 
-A later production `kapseld` release requires retained real-workflow use and a new explicit
-production decision. It would own supported local admission, process lifecycle, restart and upgrade
-recovery, bounded concurrency, provider authority, grant and trust configuration, receipt
-publication, health, diagnostics, and one versioned local interface. Neither the v0.2 beta, retired
-public proof, nor preview authorizes that production release.
+A production `kapseld` release would additionally need supported distribution, local admission,
+upgrade and rollback, bounded concurrency, provider authority, grant and trust configuration,
+receipt publication, health, diagnostics, and one versioned local interface. None is implied by the
+direct-source qualification.
 
 ## Package strategy
 
@@ -109,6 +94,7 @@ concept being generic does not by itself justify a package.
 
 ```text
 kapsel       product library plus local CLI and MCP executable
+kapseld      unpublished resident executable; depends on kapsel
 kapsel-dev   unpublished repository tooling
 fuzz         excluded hostile-input package
 ```
@@ -121,23 +107,21 @@ adapter, classification, receipt construction, and publication remain private im
 
 KAP-0052 earned one independent `kapsel-sandbox -> kapsel` consumer and proved the root package
 could serve another compile-time composition without reverse dependencies. KAP-0073 archived and
-removed that consumer because its hosted requirements do not serve the resident pilot. Do not retain
-or extract its admission, runner, staging, scheduling, cleanup, or transport modules merely to
-preserve an unused seam.
+removed that consumer because its hosted requirements do not belong in the resident architecture. Do
+not retain or extract its admission, runner, staging, scheduling, cleanup, or transport modules
+merely to preserve an unused seam.
 
-### Production package
+### Resident package
 
 ```text
 kapseld -> kapsel
 ```
 
-KAP-0054 passed the preview `kapseld` extraction trigger because the existing CLI/MCP process cannot
-provide the required independent lifetime, read-only status, and receipt retrieval. KAP-0074 may
-implement exactly one unpublished package, executable, and authenticated Linux Unix socket. That
-package owns only the selected local transport and one in-flight submission rule; systemd owns
+The `kapseld` package exists because the CLI/MCP process cannot provide independent lifetime,
+read-only status, and receipt retrieval. It contains one executable and one authenticated Linux Unix
+socket. The package owns only the local transport and one in-flight submission rule; systemd owns
 process lifecycle, service health, and diagnostics. It does not absorb effect lifecycle or provider
-classification from `kapsel`, add a second store, or earn production compatibility. Production
-extraction remains unearned until retained workflow use passes a later decision.
+classification from `kapsel`, add a second store, or claim production compatibility.
 
 The existing `kapsel` executable remains in the root package until independent release cadence,
 installation size, or dependency isolation proves a separate CLI package useful.
@@ -145,9 +129,9 @@ installation size, or dependency isolation proves a separate CLI package useful.
 ## Runtime and repository tooling posture
 
 A production resident installation must not require Python or shell for ordinary operation,
-recovery, migration, receipt inspection, health, upgrade, or rollback. Required customer-resident
-behavior belongs in supported Rust binaries with explicit compatibility and distribution evidence.
-This is a prospective v1 constraint, not a v0.2 artifact-layout change.
+recovery, migration, receipt inspection, health, upgrade, or rollback. Required resident behavior
+belongs in supported Rust binaries with explicit compatibility and distribution evidence. This is a
+prospective v1 constraint, not a v0.2 artifact-layout change.
 
 Repository-only release, qualification, fixture, and documentation tooling may remain
 implementation-private in another language. Script count or language percentage does not justify a
@@ -185,18 +169,18 @@ Do not manufacture genericity with arbitrary JSON values, key-value evidence, sh
 plugins, or a public provider trait. A generic envelope must preserve a typed concrete payload and
 classifier-complete concrete evidence.
 
-## Integration order
+## Interface order
 
 1. **CLI** for operator provisioning, local operation, diagnostics, and inspection.
 2. **Stdio MCP** for bounded request-only agent integration.
-3. **Customer-controlled preview interface** selected by KAP-0054 and accepted as direct-source
-   Slice 5 through KAP-0074: one authenticated Linux Unix socket for the sole exact operation.
-4. **Production resident interface** only after retained workflow use earns `kapseld` compatibility.
-5. **Managed Kapsel** only after a resident product proves demand for configuration, upgrades, fleet
-   health, or receipt indexing.
-6. **Grafik consumer adapter** only for an independently justified retained product surface.
-7. **One evidence-selected operation** only when repeated workflows select the same concrete need.
-8. **Another provider** only when a second production adapter exposes a repeated seam.
+3. **Resident Unix socket** for caller-independent lifetime, reconnect/status, and exact receipt
+   retrieval for the same sole operation.
+4. **Versioned resident distribution** only with explicit artifact, installation, compatibility,
+   upgrade, rollback, and platform contracts.
+5. **Remote coordination** only with an explicit trust boundary that leaves provider authority and
+   receiver truth local.
+6. **Another capability or provider** only with concrete typed semantics; never to manufacture a
+   generic seam.
 
 ## Intended v1 compatibility surfaces
 
@@ -214,8 +198,8 @@ A v1 proposal must explicitly choose and support:
 - supported OS, architecture, Kubernetes, installation, upgrade, and support windows; and
 - release signing, provenance, SBOM, vulnerability, and incident procedures.
 
-Private Rust modules, the private provider test seam, sandbox API, Grafik mapping, and internal SQL
-schema are not compatibility surfaces unless a later owner explicitly promotes them.
+Private Rust modules, the private provider test seam, sandbox API, and internal SQL schema are not
+compatibility surfaces unless a later owner explicitly promotes them.
 
 ## V1 proof matrix
 
@@ -230,8 +214,8 @@ fuzz, and informational coverage lanes remain distinct. Production v1 additional
 - filesystem, Kubernetes RBAC, namespace, and process isolation review;
 - installation, upgrade, rollback, and uninstall on every supported platform;
 - controlled failure against the supported Kubernetes matrix;
-- managed-service disconnect without corruption of resident execution; and
-- at least one pilot-workflow acceptance gate.
+- remote-coordinator disconnect without corruption of resident execution; and
+- complete installed-path acceptance on every supported platform.
 
 Coverage percentage remains informational. Enforce owner-specific proof for every lifecycle
 transition, crash window, receiver classification, public error class, migration path, supported
@@ -239,16 +223,15 @@ adapter, and public wire-version compatibility case.
 
 ## Trigger-gated package backlog
 
-| Candidate            | Trigger required before extraction                                                                                  |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `kapseld`            | Preview extraction selected by KAP-0054 and gated by KAP-0074; production compatibility still requires retained use |
-| Separate CLI package | Independent release cadence, installation size, or dependency-isolation evidence                                    |
-| `kapsel-receipt`     | Independent verifier needing receipt logic without gateway and Kubernetes dependencies                              |
-| `kapsel-protocol`    | Two independently maintained clients sharing one stable wire model                                                  |
-| Client SDK           | Multiple external integrations requiring the same supported client behavior                                         |
-| Kubernetes package   | Measured dependency isolation or multiple concrete capability modules needing the same adapter package              |
-| Public provider seam | Two production provider adapters exposing the same repeated interface                                               |
-| Storage seam         | A second durable lifecycle implementation with requirements SQLite cannot satisfy                                   |
+| Candidate            | Trigger required before extraction                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| Separate CLI package | Independent release cadence, installation size, or dependency-isolation evidence                       |
+| `kapsel-receipt`     | Independent verifier needing receipt logic without gateway and Kubernetes dependencies                 |
+| `kapsel-protocol`    | Two independently maintained clients sharing one stable wire model                                     |
+| Client SDK           | Two independently maintained clients requiring the same supported client behavior                      |
+| Kubernetes package   | Measured dependency isolation or multiple concrete capability modules needing the same adapter package |
+| Public provider seam | Two production provider adapters exposing the same repeated interface                                  |
+| Storage seam         | A second durable lifecycle implementation with requirements SQLite cannot satisfy                      |
 
 Until its trigger passes, each candidate remains design context rather than active implementation.
 Do not create placeholder packages, pass-through interfaces, or compatibility obligations merely to
@@ -258,11 +241,10 @@ reserve names.
 
 - Exactly-once real-world effects
 - Arbitrary shell, manifest, patch, provider credential, or lifecycle input from agents
-- Generic provider or capability plugin marketplace
+- Generic provider or capability plugin ecosystem
 - Generic policy language
 - Broad Kubernetes administration
-- Cloud-held customer provider credentials by default
-- Grafik as receipt authority, event storage, or provider client
+- Remote services holding operator provider credentials by default
 - General observability or logs platform
 - Compliance or production claims unsupported by explicit evidence
 - Stable Rust internals solely because a crate is published

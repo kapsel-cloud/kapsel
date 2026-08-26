@@ -754,4 +754,4 @@ The sandbox proves at most one bounded synthetic demonstration of intentional ru
 same-operation reconciliation, receiver-bounded result, receipt, and separate cleanup. It does not
 prove host/storage continuity, public availability, exactly-once mutation, Kubernetes truth,
 causation, complete capture/history, anonymity, hard tenant isolation, physical erasure, production
-safety, commercial viability, or a future resident interface.
+safety or a future resident interface.

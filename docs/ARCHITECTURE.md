@@ -130,67 +130,44 @@ visibility may contract when compiler and retained consumers prove it unused and
 v0.2.x without external migration support; crates.io, docs.rs, and `cargo install` remain
 unsupported.
 
-## Retired sandbox composition
+## Resident composition
 
-KAP-0052, KAP-0055, KAP-0069, KAP-0072, and completed KAP-0070 preserve historical evidence for one
-`kapsel-sandbox -> kapsel` consumer. It implemented fixed HTTP admission and projection, separate
-SQLite service state, one-active scheduling, native runner isolation and handoff, fixed authority
-staging, synthetic-cluster policy, receipt retention, and exact cleanup. It was never deployed or
-accepted live.
+The removed sandbox's HTTP admission, scheduler, authority staging, runner isolation, cleanup, and
+second SQLite store are historical. They are not part of the root or resident architecture.
 
-KAP-0073 closed that route through fixtures/local-demo fallback and removed the package, deployment
-assets, and sandbox-only gates. These concerns were created by anonymous hosted operation and do not
-define the customer-resident product. Do not refactor or extract its runner, staging, scheduler,
-cleanup, transport, provider, or storage machinery into root `kapsel` or a future resident package.
-
-The released architecture remains:
+The published architecture is:
 
 ```text
 local CLI or fixed stdio MCP adapter
   -> deep kapsel Application
-       -> exact authorization and customer-held Kubernetes authority
+       -> exact authorization and operator-held Kubernetes authority
        -> durable lifecycle and observation-only recovery
        -> receiver-bounded result
        -> frozen signed receipt
 ```
 
-KAP-0054 found that both released adapters preserve stable identity and safe replay but lack
-caller-independent lifetime, read-only status, and exact receipt retrieval across a separate OS
-identity. It selected this smallest resident preview composition:
+The repository also contains this unpublished resident composition:
 
 ```text
 bounded local caller
-  -> one authenticated Linux Unix socket
-       -> one unpublished kapseld executable
+  -> authenticated Linux Unix socket
+       -> kapseld
             -> deep kapsel Application
-                 -> existing sole SQLite effect journal
+                 -> sole SQLite effect journal
 ```
 
-KAP-0074 has retained accepted Slices 1 through 4 for the unpublished `kapseld -> kapsel` candidate:
-bounded authenticated Unix-socket projection, one process-local execution owner with non-queued
-submission and disconnect continuity, and one compile-time Linux recovery proof. The execution
-`Application` reconciles once before the projection handle opens and the socket binds, and the
-existing KAP-0038 mutation and receipt-publication checkpoints cross the real `kapseld` process.
-Those accepted slices pass their native-kernel Linux process gates and fresh independent rereview.
+The resident service exists because CLI/MCP cannot provide caller-independent lifetime, read-only
+status, or exact receipt retrieval across a separate OS identity. It accepts fixed operator/socket
+arguments, retains descriptor-relative `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` roots,
+consumes validated authority bytes, reconciles before binding, and removes only an exact inactive
+service-owned stale socket. Systemd owns process lifecycle, runtime-directory cleanup, service
+health, and diagnostics. Static inputs define one service identity and exact namespaced Kubernetes
+RBAC.
 
-Authorized Slice 5 adds the feature-free Linux startup composition. It accepts only the fixed
-operator/socket arguments, uses the one application-owned operator grammar, retains
-descriptor-relative `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` roots, consumes validated
-authority bytes, reconciles once, secures the exact socket, and then serves indefinitely. It removes
-only an exact inactive service-owned stale socket and otherwise fails silently with exit 4. One
-static systemd unit, one sysusers file, and one non-secret exact RBAC manifest exist as direct
-install inputs. A separately authorized fresh Debian 12 KVM gate passed separate-identity install,
-systemd boot and process-loss recovery, exact live RBAC, one successful operation, receipt/replay,
-ordered revocation, uninstall, retained data, and cleanup. That gate corrected manager-cleanup
-wording; fresh final architecture, qualification, and security review accepted Slice 5.
-
-The resident adapter composes `Application::execute`, `Application::reconcile`, the non-mutating
-exact-grant match, projected status, and safe frozen-receipt read; it does not query SQLite,
-duplicate publication rules, or sequence lifecycle states. One in-flight submission is a bound, not
-a queue. Systemd-owned process lifecycle, service health and diagnostics, separate-identity clean
-installation, live RBAC enforcement, and artifact acceptance remain explicit environment or later
-slice gates. They are necessary access to the mechanism, not permission to create generic protocol,
-daemon framework, provider, storage, policy, SDK, or capability modules.
+The adapter composes `Application::execute`, `Application::reconcile`, non-mutating exact-grant
+matching, projected status, and frozen-receipt reads. It does not query SQLite directly, duplicate
+publication rules, sequence lifecycle states, or add a second store. One in-flight submission is a
+bound, not a queue.
 
 ## Failure structure
 
@@ -216,4 +193,4 @@ daemon framework, provider, storage, policy, SDK, or capability modules.
 - [ADR 0009](decisions/0009-use-conditional-kubernetes-image-patch.md) selects the conditional
   strategic merge patch for this one operation.
 - [ADR 0010](decisions/0010-evolve-through-a-resident-effect-gateway.md) selects the prospective
-  customer-resident product shape and earned package seams.
+  operator-resident shape and evidence-backed package seams.

@@ -275,4 +275,4 @@ profile, and path-remapping documentation. SPDX fields follow the SPDX 2.3 speci
 blob signing and verification follow current Sigstore Cosign, Fulcio, Rekor, and trusted-root
 specifications. KAP-0062 retains immutable evidence for its superseded candidate; KAP-0065 owns
 replacement-candidate production evidence. KAP-0063 alone owns tag, publication, public download
-verification, and website handoff for the accepted replacement.
+verification for the accepted replacement.

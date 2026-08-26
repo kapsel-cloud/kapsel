@@ -17,8 +17,8 @@ Owns: Question-to-owner routing and document authority order.
 | What is the fixed MCP adapter contract?            | [MCP adapter](MCP.md)                                                                   |
 | What was the retired public sandbox HTTP contract? | [Historical public sandbox API](SANDBOX_API.md)                                         |
 | How was the retired sandbox intended to deploy?    | [Historical sandbox deployment](SANDBOX_DEPLOYMENT.md)                                  |
-| What resident-preview boundary was selected?       | [Customer-resident preview boundary](../tasks/KAP-0054.md)                              |
-| What gated resident implementation remains?        | [Minimal resident preview implementation](../tasks/KAP-0074.md)                         |
+| What resident service boundary was selected?       | [Resident service boundary](../tasks/KAP-0054.md)                                       |
+| How is the resident service implemented?           | [Resident implementation record](../tasks/KAP-0074.md)                                  |
 | What can I run?                                    | [Build](BUILD.md)                                                                       |
 | What is the release artifact contract?             | [Release artifacts](RELEASE.md)                                                         |
 | How do I upgrade, restore, or downgrade?           | [Upgrade and rollback](UPGRADE.md)                                                      |
