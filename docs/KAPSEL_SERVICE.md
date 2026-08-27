@@ -1,6 +1,6 @@
 # Kapsel service
 
-Status: unpublished source-independent preview candidate.
+Status: accepted unpublished source-independent preview candidate.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 qualification envelope, unsupported behavior, and residual risk.
@@ -282,6 +282,18 @@ exact frozen receipt retrieval, offline inspection, replay, and restart; ordered
 Kubernetes authority revocation; retained operator, journal, and receipt bytes; and complete cluster
 and VM cleanup.
 
+The exact candidate from source revision `5becdcba96a7969a8a88d8bc1ab172aacbb89a44` then passed the
+separate authenticated downloaded-artifact journey on a fresh x86-64 Debian 12 KVM with systemd 252,
+kind 0.32.0, kubectl 1.33.13, and Kubernetes v1.33.12. The operator authenticated archive SHA-256
+`1caec9c621623970e752c7cdd13ab2409d734b83c9dc69eca15c6cd47c527b1e` from the
+[candidate workflow](https://github.com/kapsel-cloud/kapsel/actions/runs/33116851737), extracted
+only through the bundled verifier, installed without a checkout, invoked the fixed client against
+one running Deployment replica, observed `SUCCEEDED`, retrieved and inspected the exact receipt,
+restarted without changing the Deployment generation or frozen receipt bytes, revoked caller and
+Kubernetes authority, preserved operator state, journal, lock, and receipt bytes, removed the static
+assets, deleted the cluster, and destroyed the KVM. The downloaded bytes are therefore an accepted
+unpublished preview candidate; they are not a release or production qualification.
+
 The explicit live-kind gate also passed healthy, `ProgressDeadlineExceeded`, and deleted-after-patch
 `UNKNOWN` cases against the pinned node image.
 
@@ -301,8 +313,8 @@ systemd-owned.
 
 ## Residual risk
 
-Source qualification covers one direct-source installation on Debian 12/systemd 252 and Kubernetes
-1.33. Artifact-only deterministic proof does not replace a fresh native systemd/Kubernetes journey.
-Until the exact authenticated downloaded candidate passes that clean-environment journey, the
-service is not accepted. Neither lane establishes production safety, another platform, upgrade
-compatibility, backup, HA, or protection from compromised host root, kernel, or service identity.
+Source qualification and the accepted downloaded candidate each cover one fresh x86-64 Debian
+12/systemd 252 and Kubernetes 1.33 environment. This finite evidence establishes the exact
+unpublished candidate journey only. It does not establish production safety, another platform,
+upgrade compatibility, backup, HA, repeated external operation, or protection from compromised host
+root, kernel, or service identity.

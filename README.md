@@ -103,9 +103,10 @@ resource qualification, and one authenticated reproducible x86-64 GNU/Linux dist
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, Kapsel service,
 hosted dependency, second target, or production-readiness claim.
 
-The source-independent Kapsel service is unpublished and absent from the v0.2.0 archive. Its final
-authenticated clean systemd/Kubernetes journey remains a separate acceptance gate. See the
-[v0.2 release contract](docs/V0.2.md), [Kapsel service contract](docs/KAPSEL_SERVICE.md), and
+The source-independent Kapsel service is unpublished and absent from the v0.2.0 archive. Its exact
+authenticated candidate passed the separate clean systemd/Kubernetes journey, but remains an
+unpublished non-production preview. See the [v0.2 release contract](docs/V0.2.md),
+[Kapsel service contract](docs/KAPSEL_SERVICE.md), and
 [Kapsel service operator guide](docs/KAPSEL_SERVICE_OPERATOR.md).
 
 ## Scope discipline

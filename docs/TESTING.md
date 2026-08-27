@@ -218,11 +218,11 @@ byte-identical assembly. It reads the bundled verifier by exact member name to s
 requires no checkout after candidate download.
 
 The [Kapsel service contract](KAPSEL_SERVICE.md) owns the artifact and its limits. The Kapsel
-service is unpublished and absent from v0.2.0. A final accepted candidate still requires an
-authenticated downloaded-artifact journey on a fresh native systemd/Kubernetes host, including
-ordered authority revocation and retained-state checks. Deterministic archive/container tests cannot
-imply that gate passed. The default CLI/MCP and effect-gateway suites remain authoritative for
-v0.2.0.
+service is unpublished and absent from v0.2.0. Candidate revision
+`5becdcba96a7969a8a88d8bc1ab172aacbb89a44` passed the separate authenticated downloaded-artifact
+journey on a fresh native systemd/Kubernetes host, including ordered authority revocation and
+retained-state checks. Deterministic archive/container tests cannot imply that gate passed for
+another candidate. The default CLI/MCP and effect-gateway suites remain authoritative for v0.2.0.
 
 ## Review record
 

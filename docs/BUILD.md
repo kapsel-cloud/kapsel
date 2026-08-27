@@ -176,9 +176,9 @@ performs one independent strict B assembly and compares all deterministic bytes.
 
 The candidate workflow may add one Sigstore bundle over `.SHA256SUMS`; it uploads unpublished
 candidate evidence and performs no release action. The exact install/configure/start/call/restart/
-uninstall journey is the [Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md). The
-authenticated artifact-only journey on a fresh native systemd/Kubernetes host remains a separate
-required acceptance gate; deterministic container smoke does not imply it passed.
+uninstall journey is the [Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md). Candidate
+revision `5becdcba96a7969a8a88d8bc1ab172aacbb89a44` passed that separate authenticated fresh-native
+journey. Deterministic container smoke still cannot imply that gate passed for another candidate.
 
 Focused verifier tests that require no Docker are:
 
