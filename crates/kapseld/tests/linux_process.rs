@@ -1,4 +1,4 @@
-//! Linux real-process proof for the compile-time KAP-0074 Slices 2 through 4 harness.
+//! Linux real-process proof for the compile-time resident test harness.
 
 #![cfg(all(target_os = "linux", feature = "test-harness"))]
 #![allow(

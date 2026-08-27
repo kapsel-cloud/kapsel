@@ -8,8 +8,8 @@ and v1 proof categories.
 Owns: The target resident effect-gateway architecture and the conditions under which new packages
 and public interfaces become justified.
 
-Does not own: Current 0.1 behavior, the active Kubernetes experiment, task status, exact sandbox
-API, or a v1 release contract.
+Does not own: Current 0.1 behavior, the active Kubernetes experiment, exact sandbox API, or a v1
+release contract.
 
 ## Technical definition
 
@@ -39,13 +39,11 @@ the local trust boundary.
 ## Current implementation boundary
 
 The published v0.2.0 artifact contains the root CLI and fixed stdio MCP adapter. The repository also
-contains an unpublished `kapseld -> kapsel` process with one authenticated Linux Unix socket,
-systemd lifecycle, fixed filesystem roots, and exact Kubernetes RBAC. Its direct-source path passed
-one Debian 12/systemd 252 and Kubernetes 1.33 qualification.
+contains an unpublished, source-qualified `kapseld -> kapsel` process. The
+[resident service contract](RESIDENT_SERVICE.md) owns its exact boundary, evidence, and limits.
 
-The removed hosted sandbox's scheduling, authority staging, cleanup, and HTTP interfaces are not
-part of the resident architecture. The resident service is not in the published artifact and has no
-production compatibility promise.
+Historical sandbox interfaces are not part of the resident architecture. The resident service is not
+in the published artifact and has no production compatibility promise.
 
 ## Milestone separation
 
@@ -57,18 +55,16 @@ receipt interfaces remain prototype-scoped.
 
 ### Developer beta: 0.2.0
 
-The accepted [v0.2 plan](V0.2.md) has deepened the same operation into one technology-led developer
-beta design. It adopts bounded CLI/MCP, grant/receipt continuity, private journal migration, release
-integrity, and qualification obligations without adding a capability, daemon, hosted dependency,
-public Rust SDK, or production-support claim. Ordered release evidence owns exact candidate and
-publication state; external beta evidence follows publication.
+The published [v0.2 release contract](V0.2.md) deepens the same operation into one technology-led
+developer beta. It adopts bounded CLI/MCP, grant/receipt continuity, private journal migration,
+release integrity, and qualification obligations without adding a capability, daemon, hosted
+dependency, public Rust SDK, or production-support claim. Authenticated release evidence owns exact
+candidate and publication state.
 
-### Retired hosted experiment
+### Historical hosted experiment
 
-KAP-0070 closed the independently designed sandbox through its accepted fixtures/local-demo
-fallback. The [historical HTTP contract](SANDBOX_API.md),
-[historical deployment contract](SANDBOX_DEPLOYMENT.md), offline evidence, and archive tags remain
-engineering evidence, but deployable sandbox code and active hosted gates were removed. The root
+The [historical HTTP contract](SANDBOX_API.md) and
+[historical deployment contract](SANDBOX_DEPLOYMENT.md) explain fixed fixtures only. The root
 release-owned real-process and disposable-`kind` demonstrations remain the supported way to inspect
 the mechanism. No sandbox topology or interface is a current compatibility surface.
 
@@ -103,13 +99,11 @@ The root `kapsel` package remains one deep product module. `Application` is the 
 interface used by the CLI and MCP adapters. Authorization, SQLite lifecycle, the concrete Kubernetes
 adapter, classification, receipt construction, and publication remain private implementation.
 
-### Retired sandbox package
+### Historical sandbox boundary
 
-KAP-0052 earned one independent `kapsel-sandbox -> kapsel` consumer and proved the root package
-could serve another compile-time composition without reverse dependencies. KAP-0073 archived and
-removed that consumer because its hosted requirements do not belong in the resident architecture. Do
-not retain or extract its admission, runner, staging, scheduling, cleanup, or transport modules
-merely to preserve an unused seam.
+The sandbox fixtures demonstrate that the root package can serve another compile-time composition
+without reverse dependencies. Its admission, runner, staging, scheduling, cleanup, and transport
+boundaries are not part of the resident architecture.
 
 ### Resident package
 
@@ -221,7 +215,7 @@ Coverage percentage remains informational. Enforce owner-specific proof for ever
 transition, crash window, receiver classification, public error class, migration path, supported
 adapter, and public wire-version compatibility case.
 
-## Trigger-gated package backlog
+## Package extraction criteria
 
 | Candidate            | Trigger required before extraction                                                                     |
 | -------------------- | ------------------------------------------------------------------------------------------------------ |

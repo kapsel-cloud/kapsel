@@ -1,4 +1,4 @@
-//! Explicit live-cluster proof for the KAP-0038 Deployment-image operation.
+//! Explicit live-cluster proof for the effect-gateway Deployment-image operation.
 
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf};
 
@@ -22,9 +22,9 @@ use crate::{
     OperationState, ReceiptSettings, ReceiptTrust, SetDeploymentImageRequest,
 };
 
-const NAMESPACE: &str = "kapsel-kap0038";
-const FAILED_NAMESPACE: &str = "kapsel-kap0038-failed";
-const UNKNOWN_NAMESPACE: &str = "kapsel-kap0038-unknown";
+const NAMESPACE: &str = "kapsel-effect-gateway";
+const FAILED_NAMESPACE: &str = "kapsel-effect-gateway-failed";
+const UNKNOWN_NAMESPACE: &str = "kapsel-effect-gateway-unknown";
 const DEPLOYMENT: &str = "image-demo";
 const FAILED_DEPLOYMENT: &str = "image-demo-failed";
 const UNKNOWN_DEPLOYMENT: &str = "image-demo-unknown";

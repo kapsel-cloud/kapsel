@@ -1,4 +1,4 @@
-//! Fixed MCP stdio transport for the one KAP-0038 application request.
+//! Fixed MCP stdio transport for the one effect-gateway application request.
 
 use std::{
     collections::BTreeSet,

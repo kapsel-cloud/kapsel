@@ -1,4 +1,4 @@
-//! Process shell for the unpublished KAP-0074 resident socket candidate.
+//! Process shell for the unpublished resident service.
 
 mod server;
 #[cfg(target_os = "linux")]

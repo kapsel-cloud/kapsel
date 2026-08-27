@@ -1,4 +1,4 @@
-//! Fixed parser and composition for the KAP-0041 evaluator commands.
+//! Fixed parser and composition for the evaluator command evaluator commands.
 
 use std::{
     collections::BTreeMap,

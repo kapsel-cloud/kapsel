@@ -91,8 +91,8 @@
 
     #[allow(clippy::print_stdout)]
     #[tokio::test]
-    #[ignore = "private release-optimized KAP-0061 journal growth measurement"]
-    async fn kap0061_journal_growth_measurement() {
+    #[ignore = "private release-optimized beta qualification journal growth measurement"]
+    async fn beta_qualification_journal_growth_measurement() {
         let path = database_path("qualification-growth");
         drop(Gateway::open_for_test(&path).unwrap());
         let empty_bytes = fs::metadata(&path).unwrap().len();
@@ -165,7 +165,7 @@
         let (persisted_value_bytes_max, sqlite_value_or_row_bytes_max, rollback_bytes_max) =
             journal::qualification_storage_limits();
         println!(
-            "KAP0061_GROWTH={}",
+            "BETA_QUALIFICATION_GROWTH={}",
             json!({
                 "empty_bytes": empty_bytes,
                 "final_bytes": final_bytes,
@@ -189,8 +189,8 @@
         reason = "one frozen ignored test emits the fixed internal phase set as one sample document"
     )]
     #[tokio::test]
-    #[ignore = "private release-optimized KAP-0061 phase measurement"]
-    async fn kap0061_internal_phase_measurements() {
+    #[ignore = "private release-optimized beta qualification phase measurement"]
+    async fn beta_qualification_internal_phase_measurements() {
         let request = maximum_request();
         let authorization = maximum_authorization(&request);
         let mut measurements = BTreeMap::new();
@@ -330,7 +330,7 @@
         }
         assert!(measurements.values().all(|values| values.len() == SAMPLES));
         println!(
-            "KAP0061_MEASUREMENTS={}",
+            "BETA_QUALIFICATION_MEASUREMENTS={}",
             serde_json::to_string(&measurements).unwrap()
         );
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every KAP-0061 lane and freeze one closed replacement baseline."""
+"""Run every beta qualification lane and freeze one closed replacement baseline."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import time
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-kap0061-baseline.py"))
+VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-beta-qualification-baseline.py"))
 EXPECTED_BUDGETS = VALIDATOR["EXPECTED_BUDGETS"]
 BUDGET_FIELDS = VALIDATOR["BUDGET_FIELDS"]
 BUILDER_IMAGE_DIGEST = "a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663"
@@ -251,7 +251,7 @@ def main() -> None:
     source_sha256, source_path_count = source_identity(commit)
     source_input = {"source": source_sha256}
 
-    with tempfile.TemporaryDirectory(prefix="kap0061-evidence-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="beta-qualification-evidence-") as temporary:
         evidence = Path(temporary)
         default = run_lane("default and hostile input", ["./scripts/ci-local.sh"], ROOT, 900)
         simulation = run_lane("seeded simulation", ["cargo", "make", "test-simulation"], ROOT, 900)
@@ -262,7 +262,7 @@ def main() -> None:
         measurement_path = evidence / "measurement.json"
         measurement_lane = run_lane(
             "x86-64 measurement",
-            ["python3", "scripts/run-kap0061-measurements.py", "--output", "BOUNDED_OUTPUT"],
+            ["python3", "scripts/run-beta-qualification-measurements.py", "--output", "BOUNDED_OUTPUT"],
             ROOT,
             1800,
             measurement_path,
@@ -270,7 +270,7 @@ def main() -> None:
         privacy_path = evidence / "privacy.json"
         privacy = run_lane(
             "privacy and overclaim review",
-            ["python3", "scripts/check-kap0061-privacy.py", "--output", "BOUNDED_OUTPUT"],
+            ["python3", "scripts/check-beta-qualification-privacy.py", "--output", "BOUNDED_OUTPUT"],
             ROOT,
             120,
             privacy_path,
@@ -278,7 +278,7 @@ def main() -> None:
         security_path = evidence / "security.json"
         security_lane = run_lane(
             "dependency and secret scans",
-            ["python3", "scripts/run-kap0061-security.py", "--output", "BOUNDED_OUTPUT"],
+            ["python3", "scripts/run-beta-qualification-security.py", "--output", "BOUNDED_OUTPUT"],
             ROOT,
             900,
             security_path,
@@ -292,8 +292,8 @@ def main() -> None:
         "ordinary-executable": measured["binary"]["ordinary_sha256"],
         "measurement-harness": digest_paths(
             [
-                ROOT / "scripts/qualify-kap0061.py",
-                ROOT / "scripts/run-kap0061-measurements.py",
+                ROOT / "scripts/measure-beta-qualification.py",
+                ROOT / "scripts/run-beta-qualification-measurements.py",
                 ROOT / "src/gateway/tests/qualification.rs",
             ]
         ),
@@ -309,8 +309,8 @@ def main() -> None:
         "checked-source": privacy_document["checked_source_sha256"],
         "privacy-check": digest_paths(
             [
-                ROOT / "scripts/check-kap0061-privacy.py",
-                ROOT / "scripts/test-check-kap0061-privacy.py",
+                ROOT / "scripts/check-beta-qualification-privacy.py",
+                ROOT / "scripts/test-check-beta-qualification-privacy.py",
             ]
         ),
     }
@@ -520,13 +520,13 @@ def main() -> None:
         "invalidation_rules": [
             {"id": "root-source-or-identity", "trigger": "any root source dependency lockfile toolchain feature compatibility command or executable identity change", "rerun_lanes": ["all"]},
             {"id": "qualification-input", "trigger": "any qualification fixture vector corpus test harness scanner database environment or tool change", "rerun_lanes": ["all"]},
-            {"id": "distribution-only", "trigger": "nonexecutable KAP-0062 distribution metadata or publication input change", "rerun_lanes": ["default", "privacy", "trivy"]},
+            {"id": "distribution-only", "trigger": "nonexecutable distribution metadata or publication input change", "rerun_lanes": ["default", "privacy", "trivy"]},
             {"id": "semantic-or-budget", "trigger": "any semantic security-policy or budget change", "rerun_lanes": ["all"]},
         ],
     }
     arguments.output.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n")
     VALIDATOR["validate"](arguments.output)
-    print(f"KAP-0061 replacement baseline written: {arguments.output}")
+    print(f"beta qualification replacement baseline written: {arguments.output}")
 
 
 if __name__ == "__main__":

@@ -9,8 +9,7 @@ Kind: design. Authority: engineering doctrine.
 
 Owns: Rust shape, naming, bounds, assertions, errors, comments, dependencies, and local hygiene.
 
-Does not own: Proof semantics, technical scope, architecture ownership, test strategy, or task
-status.
+Does not own: Proof semantics, technical scope, architecture ownership, or test strategy.
 
 ## Priorities
 
@@ -276,8 +275,8 @@ Bad:
 // Verify the receipt.
 ```
 
-Future/workaround comments name a task or decision and explain why current code is correct now. Do
-not create a subjective comment-quality linter.
+Future/workaround comments name a decision and explain why current code is correct now. Do not
+create a subjective comment-quality linter.
 
 ## Dependencies and unsafe code
 

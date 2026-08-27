@@ -1,4 +1,4 @@
-//! Descriptor-relative, collision-safe receipt publication for KAP-0038.
+//! Descriptor-relative, collision-safe receipt publication for effect-gateway.
 //!
 //! Publication accepts only a pre-existing owner-private output directory. It walks path components
 //! without following symlinks, writes a same-directory owner-private pending file, installs with a
@@ -296,7 +296,10 @@ impl fmt::Display for PublicationError {
             Self::UnsafePath => "unsafe_path",
             Self::MissingDestination => "missing_destination",
         };
-        write!(formatter, "KAP-0038 receipt publication failure: {class}")
+        write!(
+            formatter,
+            "effect-gateway receipt publication failure: {class}"
+        )
     }
 }
 

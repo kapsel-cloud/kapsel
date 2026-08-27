@@ -38,7 +38,7 @@
         let self_signed = sign_authorization_grant(
             &authorization(&request),
             &[8_u8; 32],
-            "kap0038-authorization-test-key",
+            "effect-gateway-authorization-test-key",
         )
         .unwrap();
         assert!(matches!(
@@ -222,7 +222,7 @@
             let signed = sign_authorization_grant(
                 &existing_authorization,
                 &[7_u8; 32],
-                "kap0038-authorization-test-key",
+                "effect-gateway-authorization-test-key",
             )
             .unwrap();
             let existing_digest = publication::receipt_digest_hex(&signed);
@@ -244,7 +244,7 @@
                             format!("op-{index}"),
                             request().immutable_image_digest,
                             format!("auth-{index}"),
-                            "kap0038-authorization-test-key",
+                            "effect-gateway-authorization-test-key",
                             if index == 0 {
                                 existing_digest.as_str()
                             } else {

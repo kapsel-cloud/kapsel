@@ -1,7 +1,7 @@
 # Separate sandbox controllers from system-state ownership
 
-Status: superseded historical decision; not current architecture. KAP-0069 removed this topology,
-KAP-0070 later closed through fallback, and KAP-0073 retired the remaining deployable sandbox.
+Status: superseded historical decision; not current architecture. The topology and remaining
+deployable sandbox were removed.
 
 > **Historical reading rule:** every present-tense or normative verb below records the rationale and
 > consequences of the superseded decision at its cited revisions. No `must`, `required`, `remains`,
@@ -112,9 +112,9 @@ state and controller roles.
   composition work.
 - The system Pod remains a singleton and a larger availability domain; this is accepted to preserve
   one durable owner rather than invent distributed state.
-- Controller transport failure remains a sandbox orchestration failure. It cannot become a KAP-0038
-  receiver result, lifecycle fact, or receipt change.
+- Controller transport failure remains a sandbox orchestration failure. It cannot become an
+  effect-gateway receiver result, lifecycle fact, or receipt change.
 - The package graph remains `kapsel-sandbox -> kapsel`; no protocol, Kubernetes, storage, provider,
   or controller package is created.
-- Gate 2 remains blocked. This decision selects no provider resource, credential, spend, endpoint,
-  deployment, or public traffic.
+- This decision selects no provider resource, credential, spend, endpoint, deployment, or public
+  traffic.

@@ -6,7 +6,7 @@ Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, b
 semantics.
 
 Owns: The exact stdio MCP process grammar and wire behavior supported across v0.2.x for the sole
-KAP-0038 operation.
+effect-gateway operation.
 
 Does not own: Authorization, durable lifecycle, Kubernetes behavior, receiver classification,
 receipt bytes, the local evaluator command, a generic MCP host, or a stable transport API.
@@ -23,7 +23,7 @@ between v0.2.x releases.
 This contract supports one stdio adapter and one tool. It does not support another transport, remote
 endpoint, generic MCP host, SDK, plugin interface, Rust package interface, or production service.
 Canonical grant, lifecycle, receiver-result, and receipt semantics remain owned only by
-[KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
+[effect-gateway](EFFECT_GATEWAY.md).
 
 ## Protocol and process
 
@@ -142,12 +142,12 @@ Its JSON Schema defaults to JSON Schema 2020-12 and is exactly:
 }
 ```
 
-The deployment and immutable-image fields remain subject to the complete KAP-0038 grammar even where
-JSON Schema cannot concisely express it. A tool call must contain `name`, `arguments`, and only the
-common optional `_meta` object; `arguments` must be an object with exactly the five required string
-fields. `_meta` is bounded by the frame and ignored; it cannot appoint authority or alter execution.
-Missing, unknown, duplicate, malformed, oversized, and wrong-typed fields are rejected before
-application I/O. No second tool or arbitrary tool name is accepted.
+The deployment and immutable-image fields remain subject to the complete effect-gateway grammar even
+where JSON Schema cannot concisely express it. A tool call must contain `name`, `arguments`, and
+only the common optional `_meta` object; `arguments` must be an object with exactly the five
+required string fields. `_meta` is bounded by the frame and ignored; it cannot appoint authority or
+alter execution. Missing, unknown, duplicate, malformed, oversized, and wrong-typed fields are
+rejected before application I/O. No second tool or arbitrary tool name is accepted.
 
 The adapter converts those five values directly into the existing `AgentRequest` in the same order
 and calls `Application::execute`. It does not validate or sequence authorization, persistence,
@@ -195,7 +195,7 @@ JSON-RPC errors use only these fixed messages and standard codes:
 Errors contain no `data`. Parse and invalid-envelope errors use `id: null` when no valid request ID
 is available. Tool/input failures do not echo values. Every JSON object at every protocol depth
 rejects duplicate keys. Extra envelope or method fields are invalid. Responses, diagnostics,
-reports, receipts, and the journal retain the existing KAP-0038 disclosure limits.
+reports, receipts, and the journal retain the existing effect-gateway disclosure limits.
 
 ## Beta support limits
 

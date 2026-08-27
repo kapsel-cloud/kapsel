@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run and validate the pinned KAP-0061 x86-64 resource measurements."""
+"""Run and validate the pinned beta qualification x86-64 resource measurements."""
 
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ def main() -> None:
         and subprocess.run(["git", "diff", "--cached", "--quiet", "--exit-code"], cwd=repo).returncode == 0,
         "measurement requires a clean source tree",
     )
-    with tempfile.TemporaryDirectory(prefix="kap0061-output-") as output_directory:
+    with tempfile.TemporaryDirectory(prefix="beta-qualification-output-") as output_directory:
         raw_path = Path(output_directory) / "raw.json"
         uid = os.getuid()
         gid = os.getgid()
@@ -209,7 +209,7 @@ def main() -> None:
             "mkdir -p /tmp/cargo && ln -s /cargo-registry /tmp/cargo/registry && "
             "PATH=/usr/local/cargo/bin:$PATH CARGO_HOME=/tmp/cargo CARGO_NET_OFFLINE=true "
             "RUSTUP_TOOLCHAIN=1.96.1-x86_64-unknown-linux-gnu "
-            "python3 scripts/qualify-kap0061.py --output /output/raw.json",
+            "python3 scripts/measure-beta-qualification.py --output /output/raw.json",
         ]
         subprocess.run(command, check=True)
         raw = json.loads(raw_path.read_text())

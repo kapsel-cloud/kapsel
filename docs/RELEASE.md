@@ -202,7 +202,7 @@ verification must pass `--trusted-root <captured-trusted-root.json>` and records
 digest. The bundle supplies authenticated signing-time evidence so an expired short-lived leaf
 certificate can remain historically valid. Rekor time is not a general release-approval timestamp.
 Offline verification cannot discover later root rotation, compromise, candidate withdrawal, or
-replacement; KAP-0063 therefore repeats connected verification before publication.
+replacement; connected verification is therefore repeated before publication.
 
 There is no long-lived Kapsel signing key to rotate. Workflow path or branch changes require a new
 explicit identity rule and candidate. Suspected repository, workflow, GitHub OIDC, Fulcio, Rekor, or
@@ -273,6 +273,5 @@ another platform. Receipts and reports remain sensitive operational metadata und
 The target and build behavior follow official Rust platform, Cargo locked-build/metadata, release
 profile, and path-remapping documentation. SPDX fields follow the SPDX 2.3 specification. Keyless
 blob signing and verification follow current Sigstore Cosign, Fulcio, Rekor, and trusted-root
-specifications. KAP-0062 retains immutable evidence for its superseded candidate; KAP-0065 owns
-replacement-candidate production evidence. KAP-0063 alone owns tag, publication, public download
-verification for the accepted replacement.
+specifications. Candidate evidence remains immutable. Public release evidence alone establishes the
+tag, publication, and downloaded verification for the accepted artifact.

@@ -627,7 +627,7 @@
         assert!(matches!(
             gateway.finalize_receipt_once(&ReceiptSettings {
                 signing_seed: &[22_u8; 32],
-                key_id: "kap0038-test-key",
+                key_id: "effect-gateway-test-key",
                 output_directory: &output_directory,
             }),
             Err(GatewayError::InvalidPersistedState)

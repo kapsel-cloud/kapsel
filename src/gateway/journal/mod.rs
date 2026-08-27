@@ -1,4 +1,4 @@
-//! Private durable representation for KAP-0038 operations.
+//! Private durable representation for effect-gateway operations.
 //!
 //! This deep module owns row decoding, capacity enforcement, worker locking, snapshots, and guarded
 //! transitions. Private children concentrate exact schema/migration and owner-private opening,

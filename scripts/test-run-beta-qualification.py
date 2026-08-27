@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the KAP-0061 qualification orchestrator."""
+"""Regression tests for the beta qualification orchestrator."""
 
 import hashlib
 from pathlib import Path
@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-ORCHESTRATOR = runpy.run_path(str(ROOT / "scripts/run-kap0061-qualification.py"))
+ORCHESTRATOR = runpy.run_path(str(ROOT / "scripts/run-beta-qualification.py"))
 
 
 class QualificationOrchestratorTests(unittest.TestCase):

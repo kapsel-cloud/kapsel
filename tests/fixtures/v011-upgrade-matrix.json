@@ -1,7 +1,7 @@
 {
-  "format": "kapsel.kap0060.v011-upgrade-matrix.v1",
+  "format": "kapsel.v011-upgrade.matrix.v1",
   "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-  "new_binary": "v0.2.0 KAP-0060 candidate journal opener",
+  "new_binary": "v0.2.0 candidate journal opener",
   "cases": [
     {
       "name": "requested",
@@ -13,7 +13,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "authorized",
@@ -25,7 +25,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "not_attempted",
@@ -37,7 +37,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "apply_started_before_call",
@@ -49,7 +49,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "apply_started_after_side_effect",
@@ -61,7 +61,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "receiver_observed",
@@ -73,7 +73,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "receipt_prepared",
@@ -85,7 +85,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "receipt_written",
@@ -97,7 +97,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     },
     {
       "name": "finalized",
@@ -109,7 +109,7 @@
       "backup_fact": "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker",
       "permitted_operator_action": "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry",
       "old_binary": "v0.1.1 lifecycle test binary built from tagged source ad799b39112ccd6ef06e1ec954c615b6635650f6 with the recorded test-only harness overlay",
-      "new_binary": "v0.2.0 KAP-0060 candidate journal opener"
+      "new_binary": "v0.2.0 candidate journal opener"
     }
   ]
 }

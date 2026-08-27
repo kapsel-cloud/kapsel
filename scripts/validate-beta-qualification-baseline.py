@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Validate the closed KAP-0061 qualification-baseline manifest."""
+"""Validate the closed beta qualification baseline manifest."""
 
 from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import functools
 import hashlib
 import json
 from pathlib import Path
@@ -100,7 +101,7 @@ EXPECTED_INVALIDATION = {
 }
 EXPECTED_PRIVACY_COMMAND = [
     "python3",
-    "scripts/check-kap0061-privacy.py",
+    "scripts/check-beta-qualification-privacy.py",
     "--output",
     "BOUNDED_OUTPUT",
 ]
@@ -162,25 +163,25 @@ EXPECTED_LANE_COMMANDS = {
     "live-kind": ["cargo", "make", "test-kind"],
     "measurement": [
         "python3",
-        "scripts/run-kap0061-measurements.py",
+        "scripts/run-beta-qualification-measurements.py",
         "--output",
         "BOUNDED_OUTPUT",
     ],
     "cargo-audit": [
         "python3",
-        "scripts/run-kap0061-security.py",
+        "scripts/run-beta-qualification-security.py",
         "--output",
         "BOUNDED_OUTPUT",
     ],
     "trivy": [
         "python3",
-        "scripts/run-kap0061-security.py",
+        "scripts/run-beta-qualification-security.py",
         "--output",
         "BOUNDED_OUTPUT",
     ],
     "privacy": [
         "python3",
-        "scripts/check-kap0061-privacy.py",
+        "scripts/check-beta-qualification-privacy.py",
         "--output",
         "BOUNDED_OUTPUT",
     ],
@@ -222,19 +223,24 @@ PRIVACY_ROOT_FILES = {
     "README.md",
     "SECURITY.md",
     "rust-toolchain.toml",
-    "tasks/KAP-0061.md",
 }
 PRIVACY_ROOT_PREFIXES = ("docs/", "scripts/", "src/", "tests/", "vectors/")
 NODE_IMAGE = "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
 MEASUREMENT_HARNESS_PATHS = [
-    "scripts/qualify-kap0061.py",
-    "scripts/run-kap0061-measurements.py",
+    "scripts/measure-beta-qualification.py",
+    "scripts/run-beta-qualification-measurements.py",
     "src/gateway/tests/qualification.rs",
 ]
 PRIVACY_CHECK_PATHS = [
-    "scripts/check-kap0061-privacy.py",
-    "scripts/test-check-kap0061-privacy.py",
+    "scripts/check-beta-qualification-privacy.py",
+    "scripts/test-check-beta-qualification-privacy.py",
 ]
+HISTORICAL_PATH_MARKERS = {
+    "scripts/measure-beta-qualification.py": b"x86-64 measurement workloads with bounded JSON output.",
+    "scripts/run-beta-qualification-measurements.py": b"x86-64 resource measurements.",
+    "scripts/check-beta-qualification-privacy.py": b"root privacy and overclaim review.",
+    "scripts/test-check-beta-qualification-privacy.py": b"privacy review.",
+}
 
 
 def fail(message: str) -> None:
@@ -280,9 +286,31 @@ def git_output(*arguments: str) -> bytes:
         fail(f"baseline Git identity is unavailable: {error}")
 
 
+@functools.cache
+def git_path_for_role(commit: str, path: str) -> str:
+    if subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}:{path}"],
+        cwd=Path(__file__).resolve().parent.parent,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0:
+        return path
+    marker = HISTORICAL_PATH_MARKERS.get(path)
+    if marker is None:
+        fail(f"baseline Git path is unavailable: {path}")
+    output = git_output(
+        "grep", "-l", "-F", marker.decode(), commit, "--", "scripts/*.py"
+    ).decode()
+    matches = [line.split(":", 1)[1] for line in output.splitlines()]
+    if len(matches) != 1:
+        fail(f"baseline Git role is unavailable: {path}")
+    return matches[0]
+
+
 def canonical_git_digest(commit: str, paths: list[str]) -> str:
     digest = hashlib.sha256()
-    for path in sorted(paths):
+    resolved = [git_path_for_role(commit, path) for path in paths]
+    for path in sorted(resolved):
         contents = git_output("show", f"{commit}:{path}")
         digest.update(path.encode())
         digest.update(b"\0")
@@ -440,9 +468,9 @@ def validate(path: Path) -> None:
     budget_ids = unique(budgets, "budgets")
     lane_ids = unique(lanes, "lanes")
     if budget_ids != set(EXPECTED_BUDGETS):
-        fail("manifest budget set differs from the frozen KAP-0061 contract")
+        fail("manifest budget set differs from the frozen beta qualification contract")
     if lane_ids != EXPECTED_LANES:
-        fail("manifest lane set differs from the frozen KAP-0061 contract")
+        fail("manifest lane set differs from the frozen beta qualification contract")
     budget_by_id = {budget["id"]: budget for budget in budgets}
     for budget in budgets:
         exact(
@@ -478,7 +506,7 @@ def validate(path: Path) -> None:
         exact(lane, {"id", "description", "required"}, f"lane.{lane['id']}")
         text(lane["description"], "lane.description")
         if lane["required"] is not True:
-            fail("KAP-0061 lanes must be required")
+            fail("beta qualification lanes must be required")
 
     results = document["results"]
     if not isinstance(results, list):
@@ -550,7 +578,7 @@ def validate(path: Path) -> None:
             if not isinstance(digest, str) or HEX64.fullmatch(digest) is None:
                 fail("result input is not lowercase SHA-256")
         if result["status"] != "passed":
-            fail("every required KAP-0061 result must pass")
+            fail("every required beta qualification result must pass")
         for field in ("sample_count", "failure_count", "duration_ms"):
             integer(result[field], f"result.{field}")
         if result["kind"] == "budget":
@@ -861,7 +889,7 @@ def main() -> None:
     parser.add_argument("manifest", type=Path)
     arguments = parser.parse_args()
     validate(arguments.manifest)
-    print(f"KAP-0061 baseline manifest valid: {arguments.manifest}")
+    print(f"beta qualification baseline manifest valid: {arguments.manifest}")
 
 
 if __name__ == "__main__":

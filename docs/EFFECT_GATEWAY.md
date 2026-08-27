@@ -63,20 +63,17 @@ operation identities; an existing identical identity remains readable and idempo
 The owner-signed grant carries one bounded authorization identity and an exact copy of the operation
 identity, namespace, deployment, container, and image. It has no wildcards, policy rules, ambient
 lookup, or expiry semantics. The application-configured grant trust contains one exact signing-key
-identity and Ed25519 verifying key. The gateway accepts only the fixed KAP-0038 grant purpose,
+identity and Ed25519 verifying key. The gateway accepts only the fixed effect-gateway grant purpose,
 persists the signer identity and SHA-256 digest of the exact signed grant bytes, and does not accept
 trust from the request or grant.
 
 The release-owned experiment uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
 
-A separately owned, now-retired public sandbox composed the same exported `Application`,
-`AgentRequest`, `OperationReport`, lifecycle, receiver classification, and unchanged receipt bytes
-for two fixed synthetic scenarios. Its historical [API](../SANDBOX_API.md) and
-[deployment contract](../SANDBOX_DEPLOYMENT.md) appoint no active implementation or compatibility.
-The archived composition could not sequence internal gateway states, reinterpret a report, redact or
-re-sign a receipt, or make sandbox timeout, disconnect, storage, stream, or cleanup behavior a
-receiver outcome. Its retirement does not change the release-owned local demonstration.
+The historical sandbox [API](SANDBOX_API.md) and [deployment contract](SANDBOX_DEPLOYMENT.md)
+describe two fixed synthetic scenarios. They appoint no active implementation or compatibility,
+cannot alter effect-gateway semantics or receipt bytes, and do not replace the release-owned local
+demonstration.
 
 ## Operation lifecycle
 
@@ -211,10 +208,10 @@ is the exact byte string `purpose`, one zero byte, then the statement bytes.
 
 The v0.2 beta continues to accept canonical grant v1 bytes emitted by `v0.1.1` and preserves this
 exact wire across v0.2.x. The canonical signed known answer is
-[`vectors/kap0038-grant.hex`](../../vectors/kap0038-grant.hex); it uses the fixed authorization,
-seed, and signer identity in the owner test rather than defining another vector format. That bounded
-compatibility appoints no new trust, adds no expiry or revocation semantics, and creates no generic
-grant format or promise beyond the v0.2.x beta line.
+[`vectors/effect-gateway-grant.hex`](../vectors/effect-gateway-grant.hex); it uses the fixed
+authorization, seed, and signer identity in the owner test rather than defining another vector
+format. That bounded compatibility appoints no new trust, adds no expiry or revocation semantics,
+and creates no generic grant format or promise beyond the v0.2.x beta line.
 
 Kubernetes credentials and signing seeds are owner-controlled private inputs; they never enter agent
 requests, SQLite, receipts, reports, or errors. Public signing-key identities and digests are not
@@ -232,9 +229,9 @@ preserves that wire across v0.2.x. This bounded compatibility never re-signs fro
 receipt-carried trust, creates a generic receipt format, or promises compatibility beyond the v0.2.x
 beta line. A later format must use a new identifier and explicit migration/inspection policy rather
 than reuse or rename these bytes. The canonical `v0.1.1` receipt, statement, and trust known answers
-remain [`vectors/kap0038-receipt.hex`](../../vectors/kap0038-receipt.hex),
-[`vectors/kap0038-statement.hex`](../../vectors/kap0038-statement.hex), and
-[`vectors/kap0038-trust.hex`](../../vectors/kap0038-trust.hex).
+remain [`vectors/effect-gateway-receipt.hex`](../vectors/effect-gateway-receipt.hex),
+[`vectors/effect-gateway-statement.hex`](../vectors/effect-gateway-statement.hex), and
+[`vectors/effect-gateway-trust.hex`](../vectors/effect-gateway-trust.hex).
 
 The prototype bytes are fixed-order length-delimited records with these magic prefixes:
 
@@ -286,8 +283,8 @@ The statement is built only from already frozen durable facts and contains exact
 The inspector reconstructs the bounded request, apply identity, and receiver observation from these
 fields and runs the same pure classifier. A signed statement is structurally rejected when its
 stated result differs from the recomputed result. `INSPECTED` therefore authenticates both the
-classifier inputs and their deterministic KAP-0038 classification; it still does not establish that
-Kubernetes reported truthful facts.
+classifier inputs and their deterministic effect-gateway classification; it still does not establish
+that Kubernetes reported truthful facts.
 
 The non-claims field is the exact ASCII token list
 `no-exactly-once;no-causation;no-kubernetes-truth;no-complete-capture;no-witnessing;not-production`.

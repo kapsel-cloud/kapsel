@@ -1,4 +1,4 @@
-//! Application-owned composition for the one KAP-0038 operation.
+//! Application-owned composition for the one effect-gateway operation.
 //!
 //! This module separates request-only agent intent from operator-owned authorization, Kubernetes
 //! authority, receipt signing material, and durable paths. It owns the one shared operator-document

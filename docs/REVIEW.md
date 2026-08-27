@@ -6,7 +6,7 @@ Kind: design. Authority: review procedure.
 
 Owns: Contract-first review workflow and review result shape.
 
-Does not own: Contract truth, build commands, test philosophy, or task status.
+Does not own: Contract truth, build commands, or test philosophy.
 
 ## Commit subjects
 
@@ -34,9 +34,9 @@ docs: tighten the active capability contract
 7. Check comments for non-local context rather than syntax narration.
 8. Run the narrowest meaningful proof from [Build](BUILD.md).
 9. Review the diff for duplicated truth and stale status.
-10. Update the owner, rationale, guide, or task according to its job.
+10. Update the owner, rationale, or guide according to its job.
 
-## Active KAP-0038 questions
+## Active effect-gateway questions
 
 - Does agent input remain one exact bounded operation without credentials, shell, manifest, patch,
   tag, or wildcard?
@@ -69,7 +69,7 @@ be inferred from them.
 ## Documentation review
 
 - Current owners state what they own and refuse to own.
-- Scope, experiment, architecture, threat, guide, task, and decision jobs are not mixed.
+- Scope, experiment, architecture, threat, guide, and decision jobs are not mixed.
 - Guides describe commands that exist; planned commands are explicit.
 - Status appears only where the document's audience can act on it.
 - Strong claims name trust, evidence, causality, completeness, and witnessing limits.

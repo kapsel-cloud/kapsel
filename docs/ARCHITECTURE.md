@@ -1,7 +1,6 @@
 # Architecture
 
-Status: current architecture for `v0.1.1` and the `0.2.0` source; exact release state is external
-evidence.
+Status: current architecture for the published v0.2.0 product and unpublished resident service.
 
 Kind: design. Authority: current module ownership, dependency direction, and composition status.
 
@@ -12,11 +11,11 @@ semantics, or public-sandbox wire/deployment behavior.
 
 ## Short answer
 
-KAP-0038 is one deep Rust product package, `kapsel`, for one bounded Kubernetes Deployment image
-operation. `Application` is the caller-facing deep module; its private `Gateway` semantic engine
-owns validation, journaling, conditional mutation, reconciliation, receiver classification, receipt
-construction, immutable publication, and offline inspection. Concrete operation names, including
-`SetDeploymentImageRequest`, keep the Kubernetes scope visible at the interface.
+effect-gateway is one deep Rust product package, `kapsel`, for one bounded Kubernetes Deployment
+image operation. `Application` is the caller-facing deep module; its private `Gateway` semantic
+engine owns validation, journaling, conditional mutation, reconciliation, receiver classification,
+receipt construction, immutable publication, and offline inspection. Concrete operation names,
+including `SetDeploymentImageRequest`, keep the Kubernetes scope visible at the interface.
 
 ```text
 bounded request + signed exact grant + application-configured trust
@@ -31,10 +30,9 @@ receipt bytes + explicit trust + time + limits
   -> offline inspector
 ```
 
-The fixed evaluator command and thin fixed-schema MCP stdio adapter are implemented in `v0.1.1` and
-their exact beta interfaces are adopted for v0.2.x. The `0.2.0` source implements the adopted
-architecture. Source and package identity do not establish candidate acceptance or publication;
-ordered release evidence owns that state.
+The fixed evaluator command and thin fixed-schema MCP stdio adapter are v0.2.x beta interfaces.
+Source and package identity do not establish release identity; authenticated release evidence owns
+that state.
 
 ## Implemented modules
 
@@ -64,7 +62,7 @@ callers cannot select either child, SQL, storage, or lifecycle sequencing. A con
 file only when it owns policy or a durable fact behind a smaller internal interface.
 
 The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
-[KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
+[effect-gateway](EFFECT_GATEWAY.md).
 
 ## Application composition
 
@@ -101,7 +99,7 @@ request fields into the same `AgentRequest` and loads operator configuration out
 ```text
 local evaluator command or thin MCP adapter (both implemented)
   -> `kapsel` application composition
-       -> KAP-0038 effect-gateway module
+       -> effect-gateway module
             -> private concrete implementation modules
 ```
 
@@ -120,15 +118,14 @@ vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract
 
 The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
 product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package
-and excluded `fuzz` package. KAP-0073 removed the unpublished `kapsel-sandbox -> kapsel` consumer;
-that deletion is deliberate evidence that hosted orchestration is not product core. No product
-package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or
-`kapsel-testing` exists. Product code may be extracted only after an independent deployment need,
-multiple real consumers, or measured dependency isolation proves a package seam. Neither the 0.1
-release, v0.2 beta, nor retired sandbox establishes a supported external Rust interface. Public Rust
-visibility may contract when compiler and retained consumers prove it unused and may change within
-v0.2.x without external migration support; crates.io, docs.rs, and `cargo install` remain
-unsupported.
+and excluded `fuzz` package. Hosted orchestration is not part of the product architecture. No
+product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`,
+`kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only after an independent
+deployment need, multiple real consumers, or measured dependency isolation proves a package seam.
+Neither the 0.1 release, v0.2 beta, nor retired sandbox establishes a supported external Rust
+interface. Public Rust visibility may contract when compiler and retained consumers prove it unused
+and may change within v0.2.x without external migration support; crates.io, docs.rs, and
+`cargo install` remain unsupported.
 
 ## Resident composition
 
@@ -169,22 +166,12 @@ matching, projected status, and frozen-receipt reads. It does not query SQLite d
 publication rules, sequence lifecycle states, or add a second store. One in-flight submission is a
 bound, not a queue.
 
-## Failure structure
+## Effect-gateway boundary
 
-- Invalid request or grant bytes, untrusted signatures, and tuple mismatches fail before persistence
-  or Kubernetes calls.
-- Application-configured trust is supplied out of band; agent input cannot select it.
-- Safe target validation precedes either a terminal `not_attempted` rejection or an atomic
-  target-identity plus mutation-attempt transition.
-- Transient target-read errors are durably deferred with fair retry ordering so they cannot block
-  later authorized operations.
-- The journal distinguishes a mutation attempt from provider acceptance and receiver observation.
-- Recovery after the durable mutation marker observes; it never blindly issues a second patch.
-- Incomplete receiver facts become `UNKNOWN`.
-- Receipt preparation uses only frozen facts; publication and recovery use durably frozen exact
-  bytes.
-- Offline inspection receives trust, evaluation time, and limits explicitly and performs no network
-  or ambient lookup.
+The private gateway owns authorization, durable attempt ordering, target validation,
+observation-only recovery, receiver classification, frozen receipt construction and publication, and
+offline inspection. The [effect-gateway contract](EFFECT_GATEWAY.md) defines their exact behavior
+and failure semantics.
 
 ## Decisions
 

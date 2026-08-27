@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic prerequisite refusal tests for the live KAP-0042 harness."""
+"""Deterministic prerequisite refusal tests for the live release demonstration harness."""
 
 from __future__ import annotations
 

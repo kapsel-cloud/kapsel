@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a tracked Markdown file has a broken local path or heading anchor."""
+"""Fail when a repository Markdown file has a broken local path or heading anchor."""
 
 from __future__ import annotations
 
@@ -31,12 +31,12 @@ class LinkTarget:
     line_number: int
 
 
-def tracked_markdown() -> list[Path]:
-    """Return tracked Markdown paths under the repository root."""
+def repository_markdown() -> list[Path]:
+    """Return tracked and untracked Markdown paths under the repository root."""
 
     try:
         output = subprocess.check_output(
-            ["git", "ls-files", "*.md"],
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "*.md"],
             cwd=ROOT,
             text=True,
             stderr=subprocess.DEVNULL,
@@ -47,7 +47,7 @@ def tracked_markdown() -> list[Path]:
             for path in ROOT.rglob("*.md")
             if "target" not in path.relative_to(ROOT).parts
         )
-    paths = [ROOT / line for line in output.splitlines() if line]
+    paths = [ROOT / line for line in output.splitlines() if line and (ROOT / line).is_file()]
     if paths:
         return paths
     return sorted(
@@ -293,7 +293,7 @@ def main() -> int:
     """Check all tracked Markdown and return a process status."""
 
     failures: list[str] = []
-    markdown = tracked_markdown()
+    markdown = repository_markdown()
     anchor_cache: dict[Path, set[str]] = {}
     for source in markdown:
         lines = markdown_without_fences(source)

@@ -2,7 +2,7 @@
 
 Status: active experiment strategy.
 
-Kind: design. Authority: proof strategy for current work.
+Kind: design. Authority: proof strategy for the active experiment.
 
 Owns: Test placement, deterministic inputs, hostile-input coverage, and recovery proof expectations.
 
@@ -30,7 +30,7 @@ contract assertion rather than repeat the same implementation matrix.
 | `crates/<crate>/tests/`                  | Exported interfaces of independently meaningful workspace packages.                              |
 | `fuzz/`                                  | Hostile-byte entry points reached only through production interfaces.                            |
 | Ignored long-simulation targets          | Seeded lifecycle schedules, repeated recovery, and invariant checks.                             |
-| Explicit live-kind script and root tests | Disposable-cluster behavior and real process termination where required by the release packet.   |
+| Explicit live-kind script and root tests | Disposable-cluster behavior and real process termination required by the release contract.       |
 
 The repository root is also the `kapsel` product package. Its `tests/` directory therefore contains
 both package integration tests and true binary end-to-end tests; the `application_` and `e2e_`
@@ -43,7 +43,7 @@ composition, authority separation, durable outcomes, observable output, and non-
 not repeat every parser or classifier mutation. Tests use several precise assertions when different
 facts matter, rather than hiding contract failures behind one snapshot or compound predicate.
 
-## Required proof stack for KAP-0038
+## Required proof stack for effect-gateway
 
 | Layer                | Required proof                                                                                           |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -113,7 +113,7 @@ It does not represent the separate live-kind, artifact, shell, Python, fuzz, or 
 lanes. Repository and patch statuses therefore remain informational: no percentage target can
 replace the owner-specific assertions and explicit proof stack above.
 
-## KAP-0043 MCP proof
+## MCP adapter proof
 
 The thin MCP adapter is tested as a production subprocess over newline-delimited stdio. Its focused
 black-box target proves:
@@ -163,7 +163,7 @@ The live artifact demo remains an explicit environment-owning gate on the suppor
 the same bundled demo script and feature-gated executable, preserves prerequisite-before-mutation
 and owned-cleanup behavior, and is separate from deterministic artifact smoke.
 
-## KAP-0042 demonstration proof
+## Release demonstration proof
 
 The release demonstration has two complementary lanes. A deterministic black-box test builds the
 production `kapsel` executable with the private `demo-harness` feature, drives a local HTTP
@@ -181,15 +181,11 @@ the visual demonstration does not replace them.
 
 ## Historical public sandbox evidence
 
-KAP-0073 removed the unpublished sandbox package and every sandbox-only executable gate. The fixed
-`v1` fixture bytes remain only as historical explanation of the abandoned HTTP contract; they carry
-no executable compatibility or deployment promise. One fixture receipt remains an input to the root
-offline-inspection test because it is valid classifier-complete KAP-0038 evidence.
-
-Annotated tag `archive/kap-0070-final-narrowed-sandbox-0579660` preserves the final narrowed
-implementation. Existing tag `archive/kap-0070-backup-restore-bde1e3b` preserves the earlier clean
-backup/restore checkpoint. Neither archive is an active proof lane or deployable alternative. The
-root real-process harness and disposable-`kind` demonstration remain the supported mechanism proof.
+The fixed `v1` fixture bytes explain the historical HTTP contract but carry no executable
+compatibility or deployment promise. One fixture receipt remains an input to the root offline
+inspection test because it is valid classifier-complete effect-gateway evidence. The sandbox is not
+an active package, proof lane, or deployable alternative. The root real-process harness and
+disposable-`kind` demonstration remain the supported mechanism proof.
 
 ## Resident service proof categories
 
@@ -212,16 +208,10 @@ Static tests freeze the systemd unit, sysusers file, and ServiceAccount/Role/Rol
 Linux process tests use only compile-time-private root and finite-connection controls; ordinary
 startup accepts neither.
 
-The direct-source path passed on a fresh x86-64 Debian 12 KVM VM with systemd 252, kind 0.32.0, and
-the pinned Kubernetes v1.33.12 node image. The gate covered separate identities, filesystem and
-socket ownership, operator-file denial, service lifecycle and diagnostics, process-loss and boot
-recovery, exact RBAC allow/deny cases, one successful operation, receipt replay, revocation,
-uninstall, retained data, and cleanup. `kapseld` leaves a refused nonexact socket leaf unchanged;
-systemd may then remove it with the service-owned runtime directory after process exit.
-
-The resident service is unpublished and absent from the v0.2.0 artifact. A supported resident
-artifact requires source-independent installation and complete installed-path security and
-architecture review. The default CLI/MCP and KAP-0038 suites remain authoritative for v0.2.0.
+The [resident service contract](RESIDENT_SERVICE.md) owns the accepted source qualification and its
+limits. The resident service is unpublished and absent from the v0.2.0 artifact. A supported
+resident artifact requires source-independent installation and complete installed-path security and
+architecture review. The default CLI/MCP and effect-gateway suites remain authoritative for v0.2.0.
 
 ## Review record
 

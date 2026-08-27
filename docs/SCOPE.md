@@ -12,7 +12,7 @@ distinction among the published 0.1 line, finite v0.2 beta design, and prospecti
 commitment.
 
 Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details,
-historical public-sandbox contracts, a reusable provider interface, or task status.
+historical public-sandbox contracts, or a reusable provider interface.
 
 ## Short answer
 
@@ -32,13 +32,12 @@ agent intent
 The sole capability is `kubernetes.set_deployment_image`. Published v0.1.1 and v0.2.0 artifacts
 demonstrate it against a local `kind` cluster; exact release identity comes from authenticated
 artifact evidence. Its technical owner is the
-[Kubernetes effect-gateway experiment boundary](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md).
-The hosted sandbox was removed. Its [historical API](SANDBOX_API.md) and
-[historical deployment contract](SANDBOX_DEPLOYMENT.md) remain engineering evidence, not current
-interfaces. The repository contains one unpublished resident process because CLI/MCP cannot provide
-caller-independent lifetime, read-only status, and exact receipt retrieval. Its direct-source path
-has been qualified on Debian 12/systemd 252 and Kubernetes 1.33; it is not part of the published
-v0.2.0 archive.
+[Kubernetes effect-gateway experiment boundary](EFFECT_GATEWAY.md). The hosted sandbox was removed.
+Its [historical API](SANDBOX_API.md) and [historical deployment contract](SANDBOX_DEPLOYMENT.md)
+remain engineering evidence, not current interfaces. The repository contains one unpublished,
+source-qualified resident process because CLI/MCP cannot provide caller-independent lifetime,
+read-only status, and exact receipt retrieval. It is not part of the published v0.2.0 archive; the
+[resident service contract](RESIDENT_SERVICE.md) owns its evidence and limits.
 
 The published v0.1.1 artifact is the stable predecessor to the finite [v0.2 beta](V0.2.md). Neither
 release widens the capability or claims production support. Source or package version alone does not
@@ -72,8 +71,8 @@ v0.2.0 is a published developer beta for the same Kubernetes Deployment image ch
 
 1. uses one lifecycle implementation for ordinary execution and crash proof;
 2. defines CLI, MCP, grant, receipt, artifact, target, and migration compatibility classes;
-3. preserves KAP-0038 authorization, mutation-attempt, receiver-result, `UNKNOWN`, receipt, and
-   inspection semantics;
+3. preserves the effect-gateway authorization, mutation-attempt, receiver-result, `UNKNOWN`,
+   receipt, and inspection semantics;
 4. proves v0.1.1 upgrade, backup, rollback, and bounded downgrade behavior;
 5. qualifies hostile input, reliability, resource use, supply chain, installation, cleanup, and
    downloaded-artifact behavior; and
@@ -85,8 +84,7 @@ The later hosted-sandbox experiment was removed after its fixed fixtures and loc
 became sufficient historical evidence. The resident service remains unpublished and does not widen
 the capability, move provider credentials into caller input, or establish production support.
 
-The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md); the current technical
-route is owned by [the task route](../tasks/README.md).
+The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md).
 
 ## Future v1.0.0 requirements
 

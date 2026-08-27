@@ -1,4 +1,4 @@
-//! Fixed-root ordinary startup inputs for the KAP-0074 resident preview.
+//! Fixed-root ordinary startup inputs for the resident service.
 
 use std::{
     fs::File,

@@ -1,4 +1,4 @@
-//! Local evaluator command for the Kapsel KAP-0038 developer beta.
+//! Local evaluator command for the Kapsel effect-gateway developer beta.
 
 mod command;
 mod mcp;

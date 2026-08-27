@@ -187,7 +187,7 @@ def stage_release(
             staging / "share" / "kapsel" / "demo-kind-crash-recovery.sh",
             0o755,
         ),
-        ROOT / "vectors" / "kap0038-trust.hex": (
+        ROOT / "vectors" / "effect-gateway-trust.hex": (
             staging / "share" / "kapsel" / "kap0038-trust.hex",
             0o644,
         ),

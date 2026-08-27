@@ -152,7 +152,7 @@ fn force_hot_rollback_journal_for_process_loss(
     database_file: &mut File,
 ) -> Result<(), GatewayError> {
     use std::io::Write as _;
-    if std::env::var("KAPSEL_KAP0060_MIGRATION_SEAM").as_deref()
+    if std::env::var("KAPSEL_V011_UPGRADE_MIGRATION_SEAM").as_deref()
         != Ok("marker_set_inside_exclusive_transaction")
     {
         return Ok(());
@@ -161,7 +161,7 @@ fn force_hot_rollback_journal_for_process_loss(
         .execute_batch(
             "PRAGMA cache_size = 1;
              PRAGMA cache_spill = ON;
-             CREATE TABLE kap0060_hot_rollback_probe (
+             CREATE TABLE v011_upgrade_hot_rollback_probe (
                  page INTEGER PRIMARY KEY,
                  payload BLOB NOT NULL
              ) STRICT;",
@@ -170,7 +170,7 @@ fn force_hot_rollback_journal_for_process_loss(
     for page in 0..32 {
         transaction
             .execute(
-                "INSERT INTO kap0060_hot_rollback_probe(page, payload)
+                "INSERT INTO v011_upgrade_hot_rollback_probe(page, payload)
                  VALUES (?1, zeroblob(8192))",
                 [page],
             )
@@ -190,22 +190,25 @@ fn force_hot_rollback_journal_for_process_loss(
 
 #[cfg(test)]
 fn migration_recovery_process_loss_seam(source_version: u32) {
-    if std::env::var_os("KAPSEL_KAP0060_RECOVERY_CHILD").is_none() {
+    if std::env::var_os("KAPSEL_V011_UPGRADE_RECOVERY_CHILD").is_none() {
         return;
     }
     assert_eq!(
         source_version, 0,
         "hot rollback must restore the old marker"
     );
-    migration_ready_marker("KAPSEL_KAP0060_RECOVERY_READY", "hot_rollback_restored");
+    migration_ready_marker(
+        "KAPSEL_V011_UPGRADE_RECOVERY_READY",
+        "hot_rollback_restored",
+    );
 }
 
 #[cfg(test)]
 fn migration_process_loss_seam(selected: &str) {
-    if std::env::var("KAPSEL_KAP0060_MIGRATION_SEAM").as_deref() != Ok(selected) {
+    if std::env::var("KAPSEL_V011_UPGRADE_MIGRATION_SEAM").as_deref() != Ok(selected) {
         return;
     }
-    migration_ready_marker("KAPSEL_KAP0060_MIGRATION_READY", selected);
+    migration_ready_marker("KAPSEL_V011_UPGRADE_MIGRATION_READY", selected);
 }
 
 #[cfg(test)]

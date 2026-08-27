@@ -30,7 +30,7 @@ Current security claims are owned by:
 
 - [Threat model](docs/THREAT_MODEL.md)
 - [Technical scope](docs/SCOPE.md)
-- [KAP-0038 experiment owner](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md)
+- [effect-gateway experiment owner](docs/EFFECT_GATEWAY.md)
 - [Privacy boundary](docs/PRIVACY.md)
 
 The experiment library implements owner-signed exact grants under application-configured trust, a

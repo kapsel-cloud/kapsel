@@ -58,7 +58,7 @@
         assert_eq!(statement.authorization_id, "auth-001");
         assert_eq!(
             statement.authorization_signer_key_id(),
-            "kap0038-authorization-test-key"
+            "effect-gateway-authorization-test-key"
         );
         assert_eq!(statement.authorization_grant_digest().len(), 64);
         assert_eq!(statement.write_strategy(), WRITE_STRATEGY);
@@ -86,7 +86,7 @@
         let seed = [7_u8; 32];
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
         let trust = ReceiptTrust {
-            key_id: "kap0038-test-key".into(),
+            key_id: "effect-gateway-test-key".into(),
             public_key: signing_key.verifying_key().to_bytes(),
             accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
             not_before_unix_s: 100,
@@ -94,7 +94,7 @@
         }
         .encode()
         .unwrap();
-        let receipt = sign_statement(&statement, &seed, "kap0038-test-key").unwrap();
+        let receipt = sign_statement(&statement, &seed, "effect-gateway-test-key").unwrap();
         let report = inspect_receipt(&receipt, &trust, 150, InspectionLimits::default());
 
         assert_eq!(report.status(), InspectionStatus::Inspected);
@@ -109,7 +109,7 @@
         let statement = ReceiptStatement {
             operation_id: "op-001".into(),
             authorization_id: "auth-001".into(),
-            authorization_signer_key_id: "kap0038-authorization-test-key".into(),
+            authorization_signer_key_id: "effect-gateway-authorization-test-key".into(),
             authorization_grant_digest: "0".repeat(64),
             namespace: "demo".into(),
             deployment: "agent-api".into(),
@@ -137,7 +137,7 @@
         let seed = [8_u8; 32];
         let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
         let trust = ReceiptTrust {
-            key_id: "kap0038-test-key".into(),
+            key_id: "effect-gateway-test-key".into(),
             public_key: signing_key.verifying_key().to_bytes(),
             accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
             not_before_unix_s: 100,
@@ -145,7 +145,7 @@
         }
         .encode()
         .unwrap();
-        let receipt = sign_statement(&statement, &seed, "kap0038-test-key").unwrap();
+        let receipt = sign_statement(&statement, &seed, "effect-gateway-test-key").unwrap();
 
         let mut malformed = receipt.clone();
         malformed[0] = b'X';
@@ -198,7 +198,7 @@
                 &request.operation_id,
                 &ReceiptSettings {
                     signing_seed: &seed,
-                    key_id: "kap0038-test-key",
+                    key_id: "effect-gateway-test-key",
                     output_directory: &output_directory,
                 },
                 Some(FaultPoint::ReceiptWrittenCommitted),
@@ -217,7 +217,7 @@
             gateway
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &seed,
-                    key_id: "kap0038-test-key",
+                    key_id: "effect-gateway-test-key",
                     output_directory: &output_directory,
                 })
                 .unwrap(),
@@ -264,7 +264,7 @@
                     &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &[13_u8; 32],
-                        key_id: "kap0038-test-key",
+                        key_id: "effect-gateway-test-key",
                         output_directory: &output_directory,
                     },
                     Some(FaultPoint::ReceiptPreparedCommitted)
@@ -395,7 +395,7 @@
                     &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &seed,
-                        key_id: "kap0038-test-key",
+                        key_id: "effect-gateway-test-key",
                         output_directory: &output_directory,
                     },
                     Some(FaultPoint::ReceiptPublished)
@@ -455,7 +455,7 @@
                     &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &seed,
-                        key_id: "kap0038-test-key",
+                        key_id: "effect-gateway-test-key",
                         output_directory: &output_directory,
                     },
                     Some(FaultPoint::FinalizedCommitted)
@@ -472,7 +472,7 @@
             gateway
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &seed,
-                    key_id: "kap0038-test-key",
+                    key_id: "effect-gateway-test-key",
                     output_directory: &output_directory,
                 })
                 .unwrap(),
@@ -502,7 +502,7 @@
             .receipt_statement(&request.operation_id)
             .unwrap()
             .unwrap();
-        let receipt = sign_statement(&statement, &seed, "kap0038-test-key").unwrap();
+        let receipt = sign_statement(&statement, &seed, "effect-gateway-test-key").unwrap();
         let digest = publication::receipt_digest_hex(&receipt);
         private_directory(&output_directory);
         let output_directory = fs::canonicalize(output_directory).unwrap();
@@ -518,7 +518,7 @@
         assert!(matches!(
             gateway.finalize_receipt_once(&ReceiptSettings {
                 signing_seed: &seed,
-                key_id: "kap0038-test-key",
+                key_id: "effect-gateway-test-key",
                 output_directory: &output_directory,
             }),
             Err(GatewayError::ReceiptPublication)
@@ -554,7 +554,7 @@
             contender
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &seed,
-                    key_id: "kap0038-test-key",
+                    key_id: "effect-gateway-test-key",
                     output_directory: &output_directory,
                 })
                 .unwrap(),
@@ -571,7 +571,7 @@
             contender
                 .finalize_receipt_once(&ReceiptSettings {
                     signing_seed: &seed,
-                    key_id: "kap0038-test-key",
+                    key_id: "effect-gateway-test-key",
                     output_directory: &output_directory,
                 })
                 .unwrap(),

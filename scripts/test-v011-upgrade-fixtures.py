@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify KAP-0060 fixtures from the exact v0.1.1 source tag."""
+"""Generate and verify v0.1.1 upgrade proof fixtures from the exact v0.1.1 source tag."""
 
 from __future__ import annotations
 
@@ -153,18 +153,18 @@ def overlay_harness(root: pathlib.Path, historical: pathlib.Path) -> pathlib.Pat
     source = root / "src/gateway/tests/v011_upgrade.rs"
     destination = historical / "src/gateway/tests/v011_upgrade.rs"
     if destination.exists():
-        raise RuntimeError("the historical tag unexpectedly contains the Slice 1 harness")
+        raise RuntimeError("the historical tag unexpectedly contains the upgrade harness")
     shutil.copyfile(source, destination)
-    historical_matrix = historical / "tests/fixtures/kap0060-v011-upgrade-matrix.json"
+    historical_matrix = historical / "tests/fixtures/v011-upgrade-matrix.json"
     historical_matrix.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(
-        root / "tests/fixtures/kap0060-v011-upgrade-matrix.json",
+        root / "tests/fixtures/v011-upgrade-matrix.json",
         historical_matrix,
     )
     module_file = historical / "src/gateway/tests/mod.rs"
     original = module_file.read_text()
     if "mod v011_upgrade" in original:
-        raise RuntimeError("the historical test module already names the Slice 1 harness")
+        raise RuntimeError("the historical test module already names the upgrade harness")
     module_file.write_text(original.rstrip() + MODULE)
     return destination
 
@@ -205,11 +205,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def self_test_cleanup() -> None:
-    with tempfile.TemporaryDirectory(prefix="kapsel-kap0060-cleanup-test-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="kapsel-v011-upgrade-cleanup-test-") as temporary:
         repository = pathlib.Path(temporary) / "repository"
         repository.mkdir()
         run(["git", "init", "--quiet"], repository)
-        run(["git", "config", "user.name", "KAP-0060 cleanup test"], repository)
+        run(["git", "config", "user.name", "v0.1.1 upgrade proof cleanup test"], repository)
         run(["git", "config", "user.email", "cleanup-test@example.invalid"], repository)
         (repository / "tracked").write_text("fixture\n")
         run(["git", "add", "tracked"], repository)
@@ -274,12 +274,12 @@ def main() -> None:
         self_test_cleanup()
         return
     root = pathlib.Path(__file__).resolve().parent.parent
-    matrix = root / "tests/fixtures/kap0060-v011-upgrade-matrix.json"
+    matrix = root / "tests/fixtures/v011-upgrade-matrix.json"
     verify_provenance(root)
 
     automatic_output: tempfile.TemporaryDirectory[str] | None = None
     if args.output_directory is None:
-        automatic_output = tempfile.TemporaryDirectory(prefix="kapsel-kap0060-fixtures-")
+        automatic_output = tempfile.TemporaryDirectory(prefix="kapsel-v011-upgrade-fixtures-")
         fixtures = pathlib.Path(automatic_output.name) / "v011"
     else:
         fixtures = args.output_directory.expanduser().resolve()
@@ -287,18 +287,18 @@ def main() -> None:
         if fixtures.exists():
             raise RuntimeError(f"fixture output must not already exist: {fixtures}")
 
-    worktree_parent = pathlib.Path(tempfile.mkdtemp(prefix="kapsel-kap0060-v011-source-"))
+    worktree_parent = pathlib.Path(tempfile.mkdtemp(prefix="kapsel-v011-upgrade-source-"))
     historical = worktree_parent / "source"
-    target = root / "target/kap0060-v011-fixtures"
+    target = root / "target/v011-upgrade-fixtures"
 
     def generate_and_verify() -> None:
         run(["git", "worktree", "add", "--detach", "--quiet", str(historical), TAG], root)
         harness = overlay_harness(root, historical)
         harness_sha256 = sha256(harness)
         base_environment = os.environ.copy()
-        base_environment["KAPSEL_KAP0060_FIXTURES"] = str(fixtures)
-        base_environment["KAPSEL_KAP0060_HARNESS_SHA256"] = harness_sha256
-        base_environment["KAPSEL_KAP0060_MATRIX"] = str(matrix)
+        base_environment["KAPSEL_V011_UPGRADE_FIXTURES"] = str(fixtures)
+        base_environment["KAPSEL_V011_UPGRADE_HARNESS_SHA256"] = harness_sha256
+        base_environment["KAPSEL_V011_UPGRADE_MATRIX"] = str(matrix)
         current_environment = base_environment.copy()
         current_environment["CARGO_TARGET_DIR"] = str(target / "current")
         historical_environment = base_environment.copy()

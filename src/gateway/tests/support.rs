@@ -13,7 +13,7 @@
 
     fn database_path(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
-            "kapsel-kap0038-{}-{}-{name}",
+            "kapsel-effect-gateway-{}-{}-{name}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));

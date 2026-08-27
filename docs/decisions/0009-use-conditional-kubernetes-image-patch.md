@@ -4,8 +4,8 @@ Status: accepted.
 
 Kind: decision. Date: 2026-07-15.
 
-Owns: Why KAP-0038 uses a UID/resource-version-guarded strategic merge patch instead of no-force
-server-side apply for its one Deployment image mutation.
+Owns: Why effect-gateway uses a UID/resource-version-guarded strategic merge patch instead of
+no-force server-side apply for its one Deployment image mutation.
 
 Does not own: The experiment lifecycle, receiver-result meaning, receipt bytes, another Kubernetes
 operation, or a reusable provider seam.
@@ -24,7 +24,7 @@ replacement, or concurrent desired-state changes without taking managed-field ow
 
 ## Decision
 
-KAP-0038 uses one strategic merge patch that:
+effect-gateway uses one strategic merge patch that:
 
 - requires the named container to exist in the target observation;
 - includes the observed Deployment UID and resource version;

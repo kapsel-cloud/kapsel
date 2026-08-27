@@ -171,29 +171,29 @@ rustup run nightly-2026-07-03 cargo fuzz run --dev inspect_receipt "$corpus_dire
   -runs=10000 -seed=2118243591
 '''
 
-[tasks.test-kap0061-privacy]
-description = "Run the closed KAP-0061 privacy and overclaim review"
+[tasks.test-beta-qualification-privacy]
+description = "Run the closed beta qualification privacy and overclaim review"
 command = "python3"
-args = ["scripts/test-check-kap0061-privacy.py"]
+args = ["scripts/test-check-beta-qualification-privacy.py"]
 
-[tasks.test-kap0061-security]
-description = "Run fresh KAP-0061 dependency and exact-tree secret scans"
+[tasks.test-beta-qualification-security]
+description = "Run fresh beta qualification dependency and exact-tree secret scans"
 command = "python3"
-args = ["scripts/run-kap0061-security.py", "--output", "/tmp/kap0061-security.json"]
+args = ["scripts/run-beta-qualification-security.py", "--output", "/tmp/beta-qualification-security.json"]
 
-[tasks.test-kap0061-orchestrator]
-description = "Test the KAP-0061 qualification orchestrator"
+[tasks.test-beta-qualification-orchestrator]
+description = "Test the beta qualification orchestrator"
 command = "python3"
-args = ["scripts/test-run-kap0061-qualification.py"]
+args = ["scripts/test-run-beta-qualification.py"]
 
-[tasks.qualify-kap0061]
-description = "Rerun every KAP-0061 lane and freeze the replacement baseline"
-dependencies = ["test-kap0061-orchestrator", "test-kap0061-privacy"]
+[tasks.qualify-beta]
+description = "Run every beta qualification lane for one clean candidate"
+dependencies = ["test-beta-qualification-orchestrator", "test-beta-qualification-privacy"]
 command = "python3"
 args = [
-  "scripts/run-kap0061-qualification.py",
+  "scripts/run-beta-qualification.py",
   "--output",
-  "qualification/kap0061-baseline.json",
+  "/tmp/beta-qualification-baseline.json",
 ]
 
 [tasks.fmt]

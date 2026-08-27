@@ -1,4 +1,4 @@
-//! Fixed-purpose signed authorization grants for the KAP-0038 experiment.
+//! Fixed-purpose signed authorization grants for the effect-gateway experiment.
 //!
 //! This module is private to the one effect gateway. It is not a generic authorization SDK,
 //! policy language, issuer model, or ambient trust mechanism.
@@ -43,7 +43,7 @@ pub(crate) struct VerifiedAuthorization {
     pub(crate) grant_digest: String,
 }
 
-/// Produces canonical owner-signed bytes for one exact KAP-0038 authorization grant.
+/// Produces canonical owner-signed bytes for one exact effect-gateway authorization grant.
 ///
 /// Signing is exposed for owner-side composition and deterministic vectors. Possessing this
 /// function conveys no authority without the configured private signing seed.
@@ -299,7 +299,7 @@ mod tests {
             hex,
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/vectors/kap0038-grant.hex"
+                "/vectors/effect-gateway-grant.hex"
             ))
             .trim()
         );

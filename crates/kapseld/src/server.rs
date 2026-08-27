@@ -1,4 +1,4 @@
-//! Authenticated bounded socket, execution ownership, and fixed startup for KAP-0074 Slices 2–5.
+//! Authenticated bounded socket, execution ownership, and fixed resident startup.
 
 use std::{
     future::Future,

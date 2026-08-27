@@ -13,17 +13,17 @@ use sha2::{Digest, Sha256};
 
 const TAG_OBJECT: &str = "9085414ad329edfa5afe49577afd1d1409a30a5d";
 const SOURCE_COMMIT: &str = "ad799b39112ccd6ef06e1ec954c615b6635650f6";
-const FIXTURE_FORMAT: &str = "kapsel.kap0060.v011-fixture-manifest.v1";
-const MATRIX_FORMAT: &str = "kapsel.kap0060.v011-upgrade-matrix.v1";
+const FIXTURE_FORMAT: &str = "kapsel.v011-upgrade.fixture-manifest.v1";
+const MATRIX_FORMAT: &str = "kapsel.v011-upgrade.matrix.v1";
 const OPERATION_ID: &str = "op-001";
-const RECEIPT_KEY_ID: &str = "kap0060-v011-receipt-key";
-const NEW_BINARY: &str = "v0.2.0 KAP-0060 candidate journal opener";
+const RECEIPT_KEY_ID: &str = "v011-upgrade-receipt-key";
+const NEW_BINARY: &str = "v0.2.0 candidate journal opener";
 const BACKUP_FACT: &str =
     "owner_private_offline_raw_copy_matches_source_and_sha256_before_atomic_marker";
 const PERMITTED_OPERATOR_ACTION: &str =
     "start_or_reopen_v020; exact_v011_direct_reopen; verified_backup_restore_before_retry";
 const MATRIX_BYTES: &[u8] =
-    include_bytes!("../../../tests/fixtures/kap0060-v011-upgrade-matrix.json");
+    include_bytes!("../../../tests/fixtures/v011-upgrade-matrix.json");
 const MIGRATION_SEAMS: &[&str] = &[
     "before_exclusive_transaction",
     "marker_set_inside_exclusive_transaction",
@@ -227,15 +227,15 @@ fn v011_upgrade_matrix_names_every_historical_state_and_ambiguity() {
 }
 
 #[test]
-#[ignore = "invoked by the pinned-tag KAP-0060 fixture generation script"]
+#[ignore = "invoked by the pinned-tag v0.1.1 upgrade proof fixture generation script"]
 fn v011_fixture_mutation_child() {
-    if std::env::var_os("KAPSEL_KAP0060_MUTATION_CHILD").is_none() {
+    if std::env::var_os("KAPSEL_V011_UPGRADE_MUTATION_CHILD").is_none() {
         return;
     }
-    let database = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_DATABASE").unwrap());
-    let ready_path = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_READY").unwrap());
+    let database = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_DATABASE").unwrap());
+    let ready_path = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_READY").unwrap());
     let call_count_path =
-        PathBuf::from(std::env::var_os("KAPSEL_KAP0060_CALL_COUNT").unwrap());
+        PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_CALL_COUNT").unwrap());
     let mut gateway = Gateway::open_for_test(database).unwrap();
     let mut adapter = SideEffectAdapter {
         ready_path,
@@ -254,7 +254,7 @@ fn v011_fixture_mutation_child() {
 #[ignore = "invoked only in an overlaid, detached v0.1.1 source worktree"]
 async fn v011_fixture_generation() {
     assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.1");
-    let output = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_FIXTURES").unwrap());
+    let output = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_FIXTURES").unwrap());
     assert!(!output.exists(), "fixture output must not already exist");
     create_private_directory(&output);
     let output = fs::canonicalize(output).unwrap();
@@ -264,53 +264,53 @@ async fn v011_fixture_generation() {
 }
 
 #[test]
-#[ignore = "invoked by the KAP-0060 real-process matrix parent"]
+#[ignore = "invoked by the v0.1.1 upgrade proof real-process matrix parent"]
 fn v011_migration_open_child() {
-    if std::env::var_os("KAPSEL_KAP0060_MIGRATION_CHILD").is_none() {
+    if std::env::var_os("KAPSEL_V011_UPGRADE_MIGRATION_CHILD").is_none() {
         return;
     }
-    let database = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_DATABASE").unwrap());
+    let database = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_DATABASE").unwrap());
     drop(Gateway::open_for_test(database).unwrap());
     unreachable!("the migration child must park at its selected seam");
 }
 
 #[test]
-#[ignore = "invoked by the KAP-0060 hot-rollback recovery parent"]
+#[ignore = "invoked by the v0.1.1 upgrade proof hot-rollback recovery parent"]
 fn v011_migration_recovery_child() {
-    if std::env::var_os("KAPSEL_KAP0060_RECOVERY_CHILD").is_none() {
+    if std::env::var_os("KAPSEL_V011_UPGRADE_RECOVERY_CHILD").is_none() {
         return;
     }
-    let database = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_DATABASE").unwrap());
+    let database = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_DATABASE").unwrap());
     drop(Gateway::open_for_test(database).unwrap());
     unreachable!("the recovery child must park after hot rollback and before re-marking");
 }
 
 #[test]
-#[ignore = "invoked by the KAP-0060 real-process restore parent"]
+#[ignore = "invoked by the v0.1.1 upgrade proof real-process restore parent"]
 fn v011_restore_child() {
-    if std::env::var_os("KAPSEL_KAP0060_RESTORE_CHILD").is_none() {
+    if std::env::var_os("KAPSEL_V011_UPGRADE_RESTORE_CHILD").is_none() {
         return;
     }
-    let database = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_DATABASE").unwrap());
-    let seam = std::env::var("KAPSEL_KAP0060_RESTORE_SEAM").unwrap();
+    let database = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_DATABASE").unwrap());
+    let seam = std::env::var("KAPSEL_V011_UPGRADE_RESTORE_SEAM").unwrap();
     run_test_restore_protocol(&database, &seam);
     unreachable!("the restore child must park at its selected seam");
 }
 
 #[test]
-#[ignore = "invoked by the KAP-0060 malformed restore-path parent"]
+#[ignore = "invoked by the v0.1.1 upgrade proof malformed restore-path parent"]
 fn v011_restore_recovery_child() {
-    if std::env::var_os("KAPSEL_KAP0060_RESTORE_RECOVERY_CHILD").is_none() {
+    if std::env::var_os("KAPSEL_V011_UPGRADE_RESTORE_RECOVERY_CHILD").is_none() {
         return;
     }
-    let database = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_DATABASE").unwrap());
+    let database = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_DATABASE").unwrap());
     recover_test_restore(&database);
 }
 
 #[test]
 #[ignore = "invoked against freshly generated v0.1.1 fixtures"]
 fn v011_process_loss_verification() {
-    let output = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_FIXTURES").unwrap());
+    let output = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_FIXTURES").unwrap());
     let output = fs::canonicalize(output).unwrap();
     for case in FIXTURE_CASES {
         verify_process_loss_case(&output.join(case.name), case);
@@ -320,10 +320,10 @@ fn v011_process_loss_verification() {
 #[test]
 #[ignore = "invoked against freshly generated v0.1.1 fixtures"]
 fn v011_fixture_verification() {
-    let output = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_FIXTURES").unwrap());
+    let output = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_FIXTURES").unwrap());
     let output = fs::canonicalize(output).unwrap();
-    let harness_sha256 = std::env::var("KAPSEL_KAP0060_HARNESS_SHA256").unwrap();
-    let matrix_path = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_MATRIX").unwrap());
+    let harness_sha256 = std::env::var("KAPSEL_V011_UPGRADE_HARNESS_SHA256").unwrap();
+    let matrix_path = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_MATRIX").unwrap());
     assert_eq!(fs::read(&matrix_path).unwrap(), MATRIX_BYTES);
     for case in FIXTURE_CASES {
         verify_fixture(&output, case, &harness_sha256);
@@ -334,7 +334,7 @@ fn v011_fixture_verification() {
 #[ignore = "invoked in the exact v0.1.1 worktree after the candidate marked every fixture"]
 fn v011_marked_fixture_reopen() {
     assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.1");
-    let output = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_FIXTURES").unwrap());
+    let output = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_FIXTURES").unwrap());
     let output = fs::canonicalize(output).unwrap();
     for case in FIXTURE_CASES {
         let database = output.join(case.name).join("journal.sqlite3");
@@ -523,10 +523,10 @@ fn spawn_mutation_child(database: &Path, ready: &Path, call_count: &Path) -> Mut
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("KAPSEL_KAP0060_MUTATION_CHILD", "1")
-            .env("KAPSEL_KAP0060_DATABASE", database)
-            .env("KAPSEL_KAP0060_READY", ready)
-            .env("KAPSEL_KAP0060_CALL_COUNT", call_count)
+            .env("KAPSEL_V011_UPGRADE_MUTATION_CHILD", "1")
+            .env("KAPSEL_V011_UPGRADE_DATABASE", database)
+            .env("KAPSEL_V011_UPGRADE_READY", ready)
+            .env("KAPSEL_V011_UPGRADE_CALL_COUNT", call_count)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -593,7 +593,7 @@ fn write_manifest(fixture: &Path, case: &FixtureCase) {
         "tag_object": TAG_OBJECT,
         "source_commit": SOURCE_COMMIT,
         "cargo_package_version": env!("CARGO_PKG_VERSION"),
-        "test_harness_sha256": std::env::var("KAPSEL_KAP0060_HARNESS_SHA256").unwrap(),
+        "test_harness_sha256": std::env::var("KAPSEL_V011_UPGRADE_HARNESS_SHA256").unwrap(),
         "case": case.name,
         "durable_state": case.state,
         "crash_point": case.crash_point,
@@ -810,10 +810,10 @@ fn spawn_migration_open_child(database: &Path, seam: &str, ready: &Path) -> Muta
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("KAPSEL_KAP0060_MIGRATION_CHILD", "1")
-            .env("KAPSEL_KAP0060_MIGRATION_SEAM", seam)
-            .env("KAPSEL_KAP0060_MIGRATION_READY", ready)
-            .env("KAPSEL_KAP0060_DATABASE", database)
+            .env("KAPSEL_V011_UPGRADE_MIGRATION_CHILD", "1")
+            .env("KAPSEL_V011_UPGRADE_MIGRATION_SEAM", seam)
+            .env("KAPSEL_V011_UPGRADE_MIGRATION_READY", ready)
+            .env("KAPSEL_V011_UPGRADE_DATABASE", database)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -832,9 +832,9 @@ fn spawn_migration_recovery_child(database: &Path, ready: &Path) -> MutationChil
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("KAPSEL_KAP0060_RECOVERY_CHILD", "1")
-            .env("KAPSEL_KAP0060_RECOVERY_READY", ready)
-            .env("KAPSEL_KAP0060_DATABASE", database)
+            .env("KAPSEL_V011_UPGRADE_RECOVERY_CHILD", "1")
+            .env("KAPSEL_V011_UPGRADE_RECOVERY_READY", ready)
+            .env("KAPSEL_V011_UPGRADE_DATABASE", database)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -853,10 +853,10 @@ fn spawn_restore_child(database: &Path, seam: &str, ready: &Path) -> MutationChi
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("KAPSEL_KAP0060_RESTORE_CHILD", "1")
-            .env("KAPSEL_KAP0060_RESTORE_SEAM", seam)
-            .env("KAPSEL_KAP0060_RESTORE_READY", ready)
-            .env("KAPSEL_KAP0060_DATABASE", database)
+            .env("KAPSEL_V011_UPGRADE_RESTORE_CHILD", "1")
+            .env("KAPSEL_V011_UPGRADE_RESTORE_SEAM", seam)
+            .env("KAPSEL_V011_UPGRADE_RESTORE_READY", ready)
+            .env("KAPSEL_V011_UPGRADE_DATABASE", database)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -875,8 +875,8 @@ fn spawn_restore_recovery_child(database: &Path) -> MutationChild {
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env("KAPSEL_KAP0060_RESTORE_RECOVERY_CHILD", "1")
-            .env("KAPSEL_KAP0060_DATABASE", database)
+            .env("KAPSEL_V011_UPGRADE_RESTORE_RECOVERY_CHILD", "1")
+            .env("KAPSEL_V011_UPGRADE_DATABASE", database)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -949,7 +949,7 @@ fn prove_hot_rollback_before_remark(
     assert_eq!(database_columns(database), expected.columns);
     assert!(!database_schema(database)
         .iter()
-        .any(|(_, name, _, _)| name == "kap0060_hot_rollback_probe"));
+        .any(|(_, name, _, _)| name == "v011_upgrade_hot_rollback_probe"));
     eprintln!("hot rollback recovered: marker=0 exact_schema_row=true probe_absent=true");
     assert_eq!(
         fs::read_to_string(fixture.join("provider-call-count.txt")).unwrap(),
@@ -1072,11 +1072,11 @@ fn upgrade_digest_path(database: &Path) -> PathBuf {
 }
 
 fn restore_replacement_path(database: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.kap0060.restore", database.display()))
+    PathBuf::from(format!("{}.v011_upgrade.restore", database.display()))
 }
 
 fn restore_quarantine_path(database: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.kap0060.quarantine", database.display()))
+    PathBuf::from(format!("{}.v011_upgrade.quarantine", database.display()))
 }
 
 fn run_test_restore_protocol(database: &Path, selected_seam: &str) {
@@ -1119,7 +1119,7 @@ fn restore_process_loss_seam(selected: &str, current: &str) {
     if selected != current {
         return;
     }
-    let ready = PathBuf::from(std::env::var_os("KAPSEL_KAP0060_RESTORE_READY").unwrap());
+    let ready = PathBuf::from(std::env::var_os("KAPSEL_V011_UPGRADE_RESTORE_READY").unwrap());
     let mut marker = fs::OpenOptions::new()
         .write(true)
         .create_new(true)

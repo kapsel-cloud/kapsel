@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the closed KAP-0061 root privacy and overclaim review."""
+"""Run the closed beta qualification root privacy and overclaim review."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ ROOT_FILES = {
     "README.md",
     "SECURITY.md",
     "rust-toolchain.toml",
-    "tasks/KAP-0061.md",
 }
 ROOT_PREFIXES = ("docs/", "scripts/", "src/", "tests/", "vectors/")
 PRIVATE_PATHS = (
@@ -38,21 +37,23 @@ AFFIRMATIVE_OVERCLAIMS = (
 )
 PRIVATE_ARTIFACT_SUFFIXES = (".key", ".kubeconfig", ".pem", ".receipt", ".seed", ".sqlite3")
 PATTERN_FIXTURE_FILES = {
-    "scripts/check-kap0061-privacy.py",
-    "scripts/test-check-kap0061-privacy.py",
-    "scripts/test-validate-kap0061-baseline.py",
-    "scripts/validate-kap0061-baseline.py",
+    "scripts/check-beta-qualification-privacy.py",
+    "scripts/test-check-beta-qualification-privacy.py",
+    "scripts/validate-beta-qualification-baseline.py",
 }
 
 
 def tracked_paths(root: Path) -> list[str]:
     paths = subprocess.check_output(
-        ["git", "ls-files"], cwd=root, text=True
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+        cwd=root,
+        text=True,
     ).splitlines()
     selected = [
         path
         for path in paths
-        if path in ROOT_FILES or path.startswith(ROOT_PREFIXES)
+        if (path in ROOT_FILES or path.startswith(ROOT_PREFIXES))
+        and (root / path).is_file()
     ]
     return sorted(selected)
 

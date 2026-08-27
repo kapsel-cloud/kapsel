@@ -8,7 +8,7 @@ diagnostics, and exit classes.
 Owns: The exact `kapsel` command surface supported across v0.2.x.
 
 Does not own: Gateway lifecycle/result semantics, receipt bytes, Kubernetes semantics, MCP,
-packaging, or the KAP-0042 crash demonstration.
+packaging, or the release demonstration crash demonstration.
 
 ## Compatibility posture
 
@@ -20,8 +20,8 @@ release notes. This support does not extend to the Rust package, source layout, 
 `cargo install`, another platform, or production use.
 
 Canonical grant v1 and receipt/trust v2 continuity are owned only by
-[KAP-0038](experiments/KAP-0038-kubernetes-effect-gateway-boundary.md). This command contract adopts
-their bytes and result vocabulary without defining another vector format.
+[effect-gateway](EFFECT_GATEWAY.md). This command contract adopts their bytes and result vocabulary
+without defining another vector format.
 
 ## Command grammar
 
@@ -58,8 +58,8 @@ path.
 ## Fixed JSON inputs
 
 JSON documents are UTF-8 objects with exactly the fields listed below. Unknown, duplicate, missing,
-non-string, and trailing content is rejected. String values remain subject to the KAP-0038 field
-grammars.
+non-string, and trailing content is rejected. String values remain subject to the effect-gateway
+field grammars.
 
 The authorization file contains operator intent:
 
@@ -147,9 +147,10 @@ Successful operation/reconciliation:
 }
 ```
 
-States and values use the KAP-0038 vocabulary. A pre-attempt rejection reports `NOT_ATTEMPTED`, a
-null result, and one of `DEPLOYMENT_NOT_FOUND`, `CONTAINER_NOT_FOUND`, or `INVALID_TARGET`.
-`SUCCEEDED`, `FAILED`, and `UNKNOWN` are receiver outcomes and all are successful command execution.
+States and values use the effect-gateway vocabulary. A pre-attempt rejection reports
+`NOT_ATTEMPTED`, a null result, and one of `DEPLOYMENT_NOT_FOUND`, `CONTAINER_NOT_FOUND`, or
+`INVALID_TARGET`. `SUCCEEDED`, `FAILED`, and `UNKNOWN` are receiver outcomes and all are successful
+command execution.
 
 Offline inspection reports the classifier-complete signed statement in fixed field order:
 

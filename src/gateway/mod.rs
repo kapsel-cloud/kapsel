@@ -98,7 +98,7 @@ impl ExactAuthorization {
     }
 }
 
-/// Public durable states defined by the KAP-0038 experiment owner.
+/// Public durable states defined by the effect-gateway experiment owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationState {
     /// Bounded request facts are durable.
@@ -145,7 +145,7 @@ pub(crate) enum TargetReadError {
     Permanent(TargetRejection),
 }
 
-/// Receiver result vocabulary owned by the KAP-0038 experiment.
+/// Receiver result vocabulary owned by the effect-gateway experiment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationResult {
     /// The requested generation and image reached the bounded available predicate.
@@ -294,7 +294,7 @@ impl Gateway {
         Self::open(
             path,
             AuthorizationTrust {
-                key_id: "kap0038-authorization-test-key".into(),
+                key_id: "effect-gateway-authorization-test-key".into(),
                 public_key: SigningKey::from_bytes(&seed).verifying_key().to_bytes(),
             },
         )
@@ -316,8 +316,11 @@ impl Gateway {
         authorization: &ExactAuthorization,
         fault: Option<FaultPoint>,
     ) -> Result<SubmissionResult, GatewayError> {
-        let signed =
-            sign_authorization_grant(authorization, &[7_u8; 32], "kap0038-authorization-test-key")?;
+        let signed = sign_authorization_grant(
+            authorization,
+            &[7_u8; 32],
+            "effect-gateway-authorization-test-key",
+        )?;
         self.submit_authorized_with_fault(request, &signed, fault)
     }
 

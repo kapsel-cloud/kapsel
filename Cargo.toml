@@ -16,7 +16,6 @@ include = [
   "/src/**",
   "/vectors/**",
   "/docs/**",
-  "/tasks/**",
   "/scripts/**",
   "/Makefile.toml",
   "/rust-toolchain.toml",

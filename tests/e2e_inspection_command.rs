@@ -41,12 +41,12 @@ fn fixture() -> (PathBuf, PathBuf, PathBuf) {
     let trust = root.join("trust.bin");
     fs::write(
         &receipt,
-        decode_hex(include_str!("../vectors/kap0038-receipt.hex")),
+        decode_hex(include_str!("../vectors/effect-gateway-receipt.hex")),
     )
     .unwrap();
     fs::write(
         &trust,
-        decode_hex(include_str!("../vectors/kap0038-trust.hex")),
+        decode_hex(include_str!("../vectors/effect-gateway-trust.hex")),
     )
     .unwrap();
     (root, receipt, trust)

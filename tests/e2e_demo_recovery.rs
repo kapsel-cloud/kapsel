@@ -201,7 +201,7 @@ fn fixture() -> Fixture {
         &operator_a,
         &receipts_a,
         "receipt-a.seed",
-        "kap0038-test-key",
+        "effect-gateway-test-key",
     );
     write_operator(
         &root,
@@ -214,7 +214,7 @@ fn fixture() -> Fixture {
     private_file(
         &trust,
         &ReceiptTrust {
-            key_id: "kap0038-test-key".into(),
+            key_id: "effect-gateway-test-key".into(),
             public_key: SigningKey::from_bytes(&[9_u8; 32])
                 .verifying_key()
                 .to_bytes(),

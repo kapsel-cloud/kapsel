@@ -1,4 +1,4 @@
-//! Exact static installation records for the KAP-0074 resident preview.
+//! Exact static installation records for the resident service.
 
 #[test]
 fn unit_sysusers_and_rbac_records_are_exact_and_finite() {

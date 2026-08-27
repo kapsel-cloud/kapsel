@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cluster_name="kapsel-kap0038-test-$$-${RANDOM}"
+cluster_name="kapsel-effect-gateway-test-$$-${RANDOM}"
 node_image="kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
 fixture_image="registry.k8s.io/pause:3.10.1"
 target_image="registry.k8s.io/pause@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c"

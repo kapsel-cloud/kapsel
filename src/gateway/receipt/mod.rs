@@ -1,4 +1,4 @@
-//! Prototype-scoped KAP-0038 receipt bytes and deterministic offline inspection.
+//! Prototype-scoped effect-gateway receipt bytes and deterministic offline inspection.
 //!
 //! This module owns only the disposable experiment receipt format. It does not define stable
 //! cross-version bytes, a package format, generic trust, or a verifier profile.
@@ -732,7 +732,7 @@ impl fmt::Display for ReceiptError {
             Self::BadSignature => "bad_signature",
             Self::UntrustedSigner(_) => "untrusted_signer",
         };
-        write!(formatter, "KAP-0038 receipt failure: {class}")
+        write!(formatter, "effect-gateway receipt failure: {class}")
     }
 }
 
@@ -1191,7 +1191,7 @@ mod tests {
         let (receipt, _) = signed_fixture();
         let seed = [9_u8; 32];
         let mut wrong_trust = trust(&seed);
-        wrong_trust.accepted_purpose = "kapsel.kap0038.wrong-purpose.v1".into();
+        wrong_trust.accepted_purpose = "kapsel.effect-gateway.wrong-purpose.v1".into();
         let report = inspect_receipt(
             &receipt,
             &wrong_trust.encode().unwrap(),
@@ -1245,19 +1245,19 @@ mod tests {
         // Fixed independently reviewable vector snapshots are populated with exact encoded bytes.
         assert_eq!(
             hex(&statement_bytes),
-            include_str!("../../../vectors/kap0038-statement.hex").trim()
+            include_str!("../../../vectors/effect-gateway-statement.hex").trim()
         );
         assert_eq!(
             hex(&receipt_bytes),
-            include_str!("../../../vectors/kap0038-receipt.hex").trim()
+            include_str!("../../../vectors/effect-gateway-receipt.hex").trim()
         );
         assert_eq!(
             hex(&trust_bytes),
-            include_str!("../../../vectors/kap0038-trust.hex").trim()
+            include_str!("../../../vectors/effect-gateway-trust.hex").trim()
         );
         assert_eq!(
             hex(&Sha256::digest(&receipt_bytes)),
-            include_str!("../../../vectors/kap0038-receipt.sha256").trim()
+            include_str!("../../../vectors/effect-gateway-receipt.sha256").trim()
         );
     }
 

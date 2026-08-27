@@ -88,7 +88,7 @@ explicit contract. Human review decides whether an advisory requires a change.
 
 ## Active experiment library
 
-The narrow deterministic gate for KAP-0038 is:
+The narrow deterministic gate for effect-gateway is:
 
 ```sh
 cargo test --locked -p kapsel
@@ -187,9 +187,10 @@ sudo install -d -o kapsel -g kapsel-preview-callers -m 0700 \
 The operator then installs exact owner-provisioned `operator.json`, `grant.bin`,
 `authorization.pub`, `kubeconfig.yaml`, and `receipt.seed` beneath `/etc/kapsel` with owner
 `kapsel:kapsel-preview-callers` and mode `0600`. The JSON uses only the existing grammar and exact
-paths fixed by KAP-0054. Applying `/usr/share/kapsel/kapseld-rbac.yaml`, obtaining a short-lived
-ServiceAccount credential, and writing the embedded kubeconfig require Kubernetes administrative
-access. After those inputs exist, activation is direct:
+paths fixed by the [resident service contract](RESIDENT_SERVICE.md). Applying
+`/usr/share/kapsel/kapseld-rbac.yaml`, obtaining a short-lived ServiceAccount credential, and
+writing the embedded kubeconfig require Kubernetes administrative access. After those inputs exist,
+activation is direct:
 
 ```sh
 sudo systemctl daemon-reload
@@ -298,43 +299,34 @@ The simulation injects generated mutation and receipt-publication crash windows,
 journal, and asserts provider-call counts, receiver classification, terminal state, and frozen
 receipt location after every case. It uses no live cluster and is separate from the default gate.
 
-## Qualification baseline
+## Candidate qualification
 
-The accepted KAP-0061 native-Linux baseline is validated without reading raw journals, provider
-bodies, receipt bytes, or key material:
-
-```sh
-python3 scripts/validate-kap0061-baseline.py qualification/kap0061-baseline.json
-python3 scripts/test-validate-kap0061-baseline.py
-cargo make test-kap0061-privacy
-```
-
-After every correction and qualification input is committed, rerun all finite lanes and replace the
-tracked baseline through the closed orchestrator:
+Run every finite qualification lane against one committed clean candidate:
 
 ```sh
-cargo make qualify-kap0061
+cargo make qualify-beta
 ```
 
-This command requires a clean tree, Docker, kind, kubectl, cargo-fuzz/nightly, cargo-audit 0.22.2,
-Trivy 0.72.0 with current databases, the pinned builder image, and the host Cargo registry. It runs
-the default/hostile, simulation, fuzz, historical subprocess, deterministic demo, live-kind,
-measurement, security, and privacy lanes. It writes only the closed aggregate manifest after every
-lane passes.
+This command requires Docker, kind, kubectl, cargo-fuzz/nightly, cargo-audit 0.22.2, Trivy 0.72.0
+with current databases, the pinned builder image, and the host Cargo registry. It runs the
+default/hostile, simulation, fuzz, v0.1.1 upgrade, deterministic demo, live-kind, measurement,
+security, and privacy lanes. It writes `/tmp/beta-qualification-baseline.json` only after every lane
+passes. Validate a retained result with:
 
-The pinned x86-64 measurement harness requires a clean tree, Docker, the already pulled builder
-image, and the host Cargo registry. It builds and runs inside the fixed 8-CPU, 8-GiB isolated
+```sh
+python3 scripts/validate-beta-qualification-baseline.py /absolute/beta-qualification-baseline.json
+```
+
+The pinned x86-64 measurement harness builds and runs inside the fixed 8-CPU, 8-GiB isolated
 container and writes bounded aggregates to a caller-selected temporary path:
 
 ```sh
-python3 scripts/run-kap0061-measurements.py --output /tmp/kap0061-measurements.json
+python3 scripts/run-beta-qualification-measurements.py --output /tmp/beta-qualification-measurements.json
 ```
 
 The semantic lanes remain `cargo make test-simulation`, `cargo make test-fuzz`,
-`cargo make test-v011-upgrade`, `cargo make test-demo-harness`, and `cargo make test-kind`. The
-active candidate-production packet must apply the baseline manifest's invalidation rules before
-treating any result as candidate evidence. These commands are qualification evidence, not production
-performance or support claims.
+`cargo make test-v011-upgrade`, `cargo make test-demo-harness`, and `cargo make test-kind`. These
+commands produce candidate evidence, not production performance or support claims.
 
 ## Live Kubernetes gate
 
@@ -469,12 +461,12 @@ digest-manifest bytes. Remove `"$a_dir"` after use. See the
 [testing strategy](TESTING.md#release-artifact-proof) for the exact proof and
 [release artifact contract](RELEASE.md) for the owned format and bounds.
 
-Scan one exact SPDX sidecar with the KAP-0061-frozen Trivy 0.72.0 policy and a vulnerability
-database no older than 24 hours:
+Scan one exact SPDX sidecar with the candidate Trivy 0.72.0 policy and a vulnerability database no
+older than 24 hours:
 
 ```sh
 KAPSEL_RELEASE_SBOM=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.spdx.json \
-KAPSEL_RELEASE_SBOM_SCAN=/absolute/kap0062-sbom-scan.json \
+KAPSEL_RELEASE_SBOM_SCAN=/absolute/beta-sbom-scan.json \
   cargo make scan-release-sbom
 ```
 
@@ -507,13 +499,13 @@ least-privilege workflow runs the same two-assembly A-smoke/A-B-comparison proof
 `dist/`, installs Cosign v3.1.2 through a commit-pinned action, keylessly signs the exact
 `.SHA256SUMS` bytes, verifies the issuer plus repository/workflow/ref/SHA/trigger certificate
 identity, and uploads the resulting bounded `.sigstore.json` bundle with the four deterministic
-files. The bundle is intentionally nondeterministic and publication remains KAP-0063-owned. See
-[Release artifacts](RELEASE.md) for connected/offline trust, expiry, compromise, withdrawal, and
+files. The bundle is intentionally nondeterministic and publication remains independently reviewed.
+See [Release artifacts](RELEASE.md) for connected/offline trust, expiry, compromise, withdrawal, and
 replacement rules. A dependent clean job downloads that workflow artifact, re-authenticates the
 exact bytes, drives operation/restart/MCP/inspection/cleanup/uninstall in the pinned smoke
 container, runs the extracted live-kind demo, and crosses the exact v0.1.1 finalized
-upgrade/restore/downgrade pair. This is unpublished candidate-download evidence; KAP-0063 still owns
-public-release download verification.
+upgrade/restore/downgrade pair. This is unpublished candidate-download evidence; public release
+evidence owns public-release download verification.
 
 On a supported x86-64 GNU/Linux host, run the live disposable-kind demonstration directly from the
 safely extracted archive top-level directory:
@@ -534,9 +526,7 @@ artifact mode refuses missing, relative, symlinked, or non-executable release in
 or cluster inspection. See [Release artifacts](RELEASE.md) and the bundled
 [evaluator guide](EVALUATOR.md) for exact layout, installation, provenance, expected output, failure
 meaning, cleanup, unsupported targets, and non-claims. Public `0.1.1` assets are attached to the
-[Kapsel 0.1.1 release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.1); final evidence
-is recorded in [KAP-0049](../tasks/KAP-0049.md). Historical `0.1.0` evidence remains in
-[KAP-0045](../tasks/KAP-0045.md).
+[Kapsel 0.1.1 release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.1.1).
 
 ## Toolchain
 

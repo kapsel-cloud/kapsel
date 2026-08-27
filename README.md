@@ -51,8 +51,7 @@ The [Kapsel `0.2.0` release](https://github.com/kapsel-cloud/kapsel/releases/tag
 public x86-64 GNU/Linux developer-beta prerelease. It adopts bounded v0.2.x compatibility for the
 CLI, fixed stdio MCP adapter, grant and retained-receipt bytes, archive layout, and journal upgrade.
 It does not promise production support or external Rust API compatibility. See the
-[effect-gateway boundary](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md) before
-use.
+[effect-gateway boundary](docs/EFFECT_GATEWAY.md) before use.
 
 ## What exists today
 
@@ -104,9 +103,9 @@ resource qualification, and one authenticated reproducible x86-64 GNU/Linux dist
 not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
 hosted dependency, second target, or production-readiness claim.
 
-The repository's separate resident service is unpublished. Its direct-source path has been qualified
-on Debian 12/systemd 252 and Kubernetes 1.33, but the published v0.2.0 archive does not contain it.
-See the [v0.2 beta design](docs/V0.2.md) and [technical task route](tasks/README.md).
+The repository's separate resident service is source-qualified but unpublished and absent from the
+v0.2.0 archive. See the [v0.2 release contract](docs/V0.2.md) and
+[resident service contract](docs/RESIDENT_SERVICE.md).
 
 ## Scope discipline
 
@@ -119,12 +118,11 @@ without changing capability or receiver-result semantics.
 ## Read next
 
 - [Technical scope](docs/SCOPE.md)
-- [Active experiment contract](docs/experiments/KAP-0038-kubernetes-effect-gateway-boundary.md)
+- [Effect-gateway contract](docs/EFFECT_GATEWAY.md)
 - [Prospective V1 technical direction](docs/VISION.md)
 - [Build and proof commands](docs/BUILD.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Resident service architecture decision](tasks/KAP-0054.md)
-- [Resident service implementation record](tasks/KAP-0074.md)
+- [Resident service contract](docs/RESIDENT_SERVICE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Documentation index](docs/INDEX.md)

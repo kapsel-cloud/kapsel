@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen KAP-0061 x86-64 measurement workloads with bounded JSON output."""
+"""Run the frozen beta qualification x86-64 measurement workloads with bounded JSON output."""
 
 from __future__ import annotations
 
@@ -302,7 +302,7 @@ def run_internal_test(repo: Path, test_name: str, marker: str) -> Any:
         cwd=repo,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={**os.environ, "CARGO_TARGET_DIR": "/tmp/kap0061-target"},
+        env={**os.environ, "CARGO_TARGET_DIR": "/tmp/beta-qualification-target"},
     )
     line = next(line for line in completed.stdout.decode().splitlines() if line.startswith(marker))
     return json.loads(line.removeprefix(marker))
@@ -311,8 +311,8 @@ def run_internal_test(repo: Path, test_name: str, marker: str) -> Any:
 def run_internal_measurements(repo: Path) -> dict[str, list[int]]:
     return run_internal_test(
         repo,
-        "gateway::tests::qualification::kap0061_internal_phase_measurements",
-        "KAP0061_MEASUREMENTS=",
+        "gateway::tests::qualification::beta_qualification_internal_phase_measurements",
+        "BETA_QUALIFICATION_MEASUREMENTS=",
     )
 
 
@@ -327,7 +327,7 @@ def inspect_elf(path: Path) -> str:
 
 
 def measure(repo: Path, output: Path) -> None:
-    target = Path("/tmp/kap0061-target")
+    target = Path("/tmp/beta-qualification-target")
     environment = {**os.environ, "CARGO_TARGET_DIR": str(target)}
     build = [
         "cargo",
@@ -341,20 +341,20 @@ def measure(repo: Path, output: Path) -> None:
     ]
     run(build, cwd=repo, env=environment)
     target_binary = target / "x86_64-unknown-linux-gnu/release/kapsel"
-    ordinary = Path("/tmp/kap0061-kapsel")
+    ordinary = Path("/tmp/beta-qualification-kapsel")
     shutil.copy2(target_binary, ordinary)
     run([*build, "--features", "demo-harness"], cwd=repo, env=environment)
-    demonstration = Path("/tmp/kap0061-kapsel-demo")
+    demonstration = Path("/tmp/beta-qualification-kapsel-demo")
     shutil.copy2(target_binary, demonstration)
 
     measurements: dict[str, list[dict[str, int]]] = {}
-    with tempfile.TemporaryDirectory(prefix="kap0061-measure-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="beta-qualification-measure-") as temporary:
         root = Path(temporary).resolve()
         root.chmod(0o700)
         receipt = root / "canonical.receipt"
         trust = root / "canonical.trust"
-        private_file(receipt, bytes.fromhex((repo / "vectors/kap0038-receipt.hex").read_text().strip()))
-        private_file(trust, bytes.fromhex((repo / "vectors/kap0038-trust.hex").read_text().strip()))
+        private_file(receipt, bytes.fromhex((repo / "vectors/effect-gateway-receipt.hex").read_text().strip()))
+        private_file(trust, bytes.fromhex((repo / "vectors/effect-gateway-trust.hex").read_text().strip()))
 
         for index in range(WARMUPS + SAMPLES):
             result = sample_child([str(ordinary)])
@@ -575,8 +575,8 @@ def measure(repo: Path, output: Path) -> None:
     internal = run_internal_measurements(repo)
     growth = run_internal_test(
         repo,
-        "gateway::tests::qualification::kap0061_journal_growth_measurement",
-        "KAP0061_GROWTH=",
+        "gateway::tests::qualification::beta_qualification_journal_growth_measurement",
+        "BETA_QUALIFICATION_GROWTH=",
     )
     result = {
         "schema_version": 1,
@@ -587,10 +587,10 @@ def measure(repo: Path, output: Path) -> None:
         "internal_wall_us": internal,
         "growth": growth,
         "wire_sizes": {
-            "canonical_grant_bytes": len(bytes.fromhex((repo / "vectors/kap0038-grant.hex").read_text().strip())),
-            "canonical_receipt_bytes": len(bytes.fromhex((repo / "vectors/kap0038-receipt.hex").read_text().strip())),
-            "canonical_statement_bytes": len(bytes.fromhex((repo / "vectors/kap0038-statement.hex").read_text().strip())),
-            "canonical_trust_bytes": len(bytes.fromhex((repo / "vectors/kap0038-trust.hex").read_text().strip())),
+            "canonical_grant_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-grant.hex").read_text().strip())),
+            "canonical_receipt_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-receipt.hex").read_text().strip())),
+            "canonical_statement_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-statement.hex").read_text().strip())),
+            "canonical_trust_bytes": len(bytes.fromhex((repo / "vectors/effect-gateway-trust.hex").read_text().strip())),
         },
         "binary": {
             "build_target": "x86_64-unknown-linux-gnu",

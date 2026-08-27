@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression tests for the closed KAP-0061 privacy review."""
+"""Regression tests for the closed beta qualification privacy review."""
 
 from pathlib import Path
 import runpy
@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-CHECKER = ROOT / "scripts/check-kap0061-privacy.py"
+CHECKER = ROOT / "scripts/check-beta-qualification-privacy.py"
 CHECK = runpy.run_path(str(CHECKER))
 
 
