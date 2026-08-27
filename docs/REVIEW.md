@@ -63,8 +63,8 @@ docs: tighten the active capability contract
 
 When reviewing retained fixtures or archive references, verify that they remain explicitly
 historical, appoint no active compatibility or deployment, and link the exact archive identity. No
-active package, executable, build lane, deployment asset, provider route, or resident interface may
-be inferred from them.
+active package, executable, build lane, deployment asset, provider route, or Kapsel service
+interface may be inferred from them.
 
 ## Documentation review
 

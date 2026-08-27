@@ -1,4 +1,4 @@
-//! Fixed-purpose signed authorization grants for the effect-gateway experiment.
+//! Fixed-purpose signed authorization grants for the effect gateway.
 //!
 //! This module is private to the one effect gateway. It is not a generic authorization SDK,
 //! policy language, issuer model, or ambient trust mechanism.

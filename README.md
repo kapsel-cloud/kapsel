@@ -16,7 +16,7 @@ bounded agent intent
   -> durable pre-attempt rejection or target identity
   -> conditional provider mutation when attempted
   -> receiver observation or UNKNOWN
-  -> classifier-complete signed experiment receipt
+  -> classifier-complete signed receipt
 ```
 
 > [!WARNING]
@@ -59,15 +59,15 @@ It does not promise production support or external Rust API compatibility. See t
 | ------------------------------------------------ | -------------------------------------------------------- |
 | Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                       |
 | Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate  |
-| Classifier-complete receipt and inspection       | Implemented in the experiment library                    |
+| Classifier-complete receipt and inspection       | Implemented in the effect-gateway library                |
 | Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests            |
 | Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate               |
 | Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness     |
-| Evaluator-facing operation and inspection CLI    | Implemented as a prototype local command                 |
+| Evaluator-facing operation and inspection CLI    | Implemented as a developer-beta local command            |
 | Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
 | Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
 | Hosted sandbox                                   | Removed; contracts and fixtures are historical only      |
-| Resident systemd service and local socket        | Qualified from source; not in the published artifact     |
+| Kapsel service and local socket                  | Unpublished source-independent preview candidate         |
 
 The exact local evaluator grammar and file separation are owned by the
 [evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
@@ -100,19 +100,20 @@ establish release identity; use the exact GitHub release and authenticate its si
 The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and retained
 grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
 resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
-not add a Kubernetes operation suite, generic provider interface, public Rust SDK, resident daemon,
+not add a Kubernetes operation suite, generic provider interface, public Rust SDK, Kapsel service,
 hosted dependency, second target, or production-readiness claim.
 
-The repository's separate resident service is source-qualified but unpublished and absent from the
-v0.2.0 archive. See the [v0.2 release contract](docs/V0.2.md) and
-[resident service contract](docs/RESIDENT_SERVICE.md).
+The source-independent Kapsel service is unpublished and absent from the v0.2.0 archive. Its final
+authenticated clean systemd/Kubernetes journey remains a separate acceptance gate. See the
+[v0.2 release contract](docs/V0.2.md), [Kapsel service contract](docs/KAPSEL_SERVICE.md), and
+[Kapsel service operator guide](docs/KAPSEL_SERVICE_OPERATOR.md).
 
 ## Scope discipline
 
 The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
 a generic provider SDK, a policy language, hosted operation, a dashboard, and a second capability
 are outside its technical scope. The removed hosted sandbox's contracts and fixtures are historical
-only. The resident service adds local process lifetime, read-only status, and receipt retrieval
+only. The Kapsel service adds local process lifetime, read-only status, and receipt retrieval
 without changing capability or receiver-result semantics.
 
 ## Read next
@@ -122,7 +123,7 @@ without changing capability or receiver-result semantics.
 - [Prospective V1 technical direction](docs/VISION.md)
 - [Build and proof commands](docs/BUILD.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Resident service contract](docs/RESIDENT_SERVICE.md)
+- [Kapsel service contract](docs/KAPSEL_SERVICE.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Security policy](SECURITY.md)
 - [Documentation index](docs/INDEX.md)

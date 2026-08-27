@@ -37,7 +37,7 @@ pub use receipt::{
 };
 use receipt::{publication, sign_statement};
 
-/// The one bounded Kubernetes effect accepted by the experiment.
+/// The one bounded Kubernetes effect accepted by the gateway.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SetDeploymentImageRequest {
     /// Stable local identity for this operation.
@@ -98,7 +98,7 @@ impl ExactAuthorization {
     }
 }
 
-/// Public durable states defined by the effect-gateway experiment owner.
+/// Public durable states defined by the effect-gateway owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationState {
     /// Bounded request facts are durable.
@@ -145,7 +145,7 @@ pub(crate) enum TargetReadError {
     Permanent(TargetRejection),
 }
 
-/// Receiver result vocabulary owned by the effect-gateway experiment.
+/// Receiver result vocabulary owned by the effect gateway.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationResult {
     /// The requested generation and image reached the bounded available predicate.
@@ -224,7 +224,7 @@ pub(crate) struct FrozenReceipt {
     pub(crate) key_id: String,
 }
 
-/// SQLite-backed entry point for the one experiment operation.
+/// SQLite-backed entry point for the one operation.
 pub(crate) struct Gateway {
     journal: Journal,
     authorization_trust: AuthorizationTrust,
@@ -680,7 +680,7 @@ fn stored_receipt_matches(path: &Path, expected: &[u8]) -> Result<bool, GatewayE
     }
 }
 
-/// Name of an input field rejected by the bounded experiment grammar.
+/// Name of an input field rejected by the bounded request grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InputField {
     /// Operation identity.
@@ -697,7 +697,7 @@ pub(crate) enum InputField {
     ImmutableImageDigest,
 }
 
-/// Failure before or during the experiment's durable submission boundary.
+/// Failure before or during the gateway's durable submission boundary.
 #[derive(Debug)]
 pub(crate) enum GatewayError {
     /// SQLite rejected a journal operation.
@@ -722,7 +722,7 @@ pub(crate) enum GatewayError {
     AuthorizationMismatch,
     /// An operation identity was reused for different durable facts.
     OperationIdentityConflict,
-    /// SQLite contained a state outside the experiment lifecycle.
+    /// SQLite contained a state outside the effect lifecycle.
     InvalidPersistedState,
     /// A guarded durable transition did not affect exactly one row.
     InvalidTransition,

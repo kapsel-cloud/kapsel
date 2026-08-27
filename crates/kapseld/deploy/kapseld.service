@@ -1,11 +1,11 @@
 [Unit]
-Description=Kapsel resident preview
+Description=Kapsel service
 StartLimitIntervalSec=0
 
 [Service]
 Type=exec
 User=kapsel
-Group=kapsel-preview-callers
+Group=kapsel-service-callers
 RuntimeDirectory=kapsel
 RuntimeDirectoryMode=0750
 StateDirectory=kapsel

@@ -1,4 +1,4 @@
-//! Kapsel experiment for one authorized Kubernetes Deployment image change.
+//! Kapsel effect gateway for one authorized Kubernetes Deployment image change.
 //!
 //! The [`Application`] composition root separates request-only [`AgentRequest`] from operator-owned
 //! authorization, Kubernetes authority, signing material, and paths. The private deep gateway owns

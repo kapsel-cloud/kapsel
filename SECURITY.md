@@ -33,8 +33,8 @@ Current security claims are owned by:
 - [effect-gateway experiment owner](docs/EFFECT_GATEWAY.md)
 - [Privacy boundary](docs/PRIVACY.md)
 
-The experiment library implements owner-signed exact grants under application-configured trust, a
-`FULL`-synchronous SQLite recovery lifecycle, one conditional Kubernetes mutation adapter,
+The effect-gateway library implements owner-signed exact grants under application-configured trust,
+a `FULL`-synchronous SQLite recovery lifecycle, one conditional Kubernetes mutation adapter,
 classifier-complete signed prototype receipts, explicit offline trust evaluation, bounded
 inspection, and descriptor-relative collision-safe receipt publication on Unix. Deterministic tests
 kill a subprocess at the mutation and receipt-publication seams. The explicit live-`kind` gate

@@ -40,9 +40,9 @@ required same-origin edge for public exposure
 ```
 
 The edge is required for public exposure and holds no durable run truth. The controller host is one
-bounded deployment unit, not a resident product service or generic control plane. The cluster
-contains no admission database, receipt store, signing store, controller workload, customer
-workload, or production credential.
+bounded deployment unit, not the Kapsel service or a generic control plane. The cluster contains no
+admission database, receipt store, signing store, controller workload, customer workload, or
+production credential.
 
 The native-controller design superseded a Kubernetes-hosted remote controller, split
 controller-state protocols, controller-state TLS authority, projected controller credentials,
@@ -757,4 +757,4 @@ The sandbox proves at most one bounded synthetic demonstration of intentional ru
 same-operation reconciliation, receiver-bounded result, receipt, and separate cleanup. It does not
 prove host/storage continuity, public availability, exactly-once mutation, Kubernetes truth,
 causation, complete capture/history, anonymity, hard tenant isolation, physical erasure, production
-safety or a future resident interface.
+safety or a future Kapsel service interface.

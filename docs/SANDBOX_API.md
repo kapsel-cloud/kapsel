@@ -45,7 +45,7 @@ than being interpreted as `v1`.
 
 The committed fixtures record exact `v1` response objects and the consumer rejection behavior that
 the abandoned demonstration contract required. They appoint no maintained implementation, future
-field evolution, migration, or compatibility. This was never the resident `kapseld` interface or a
+field evolution, migration, or compatibility. This was never the Kapsel service interface or a
 production compatibility promise.
 
 Admission requests use UTF-8 `application/json`, contain exactly one object, and are at most 512

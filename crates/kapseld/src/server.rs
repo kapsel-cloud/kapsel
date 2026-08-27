@@ -1,4 +1,4 @@
-//! Authenticated bounded socket, execution ownership, and fixed resident startup.
+//! Authenticated bounded socket, execution ownership, and fixed service startup.
 
 use std::{
     future::Future,
@@ -1602,7 +1602,7 @@ mod linux_tests {
     }
 
     #[test]
-    fn caller_disconnect_before_response_does_not_cancel_execution() {
+    fn client_disconnect_before_response_does_not_cancel_execution() {
         let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let root =

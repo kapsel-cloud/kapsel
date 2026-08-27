@@ -29,7 +29,7 @@ Potentially revealing material includes:
   commands, prompts, or private logs.
 - SQLite, receipts, reports, errors, and captured demo logs must not contain secrets or unbounded
   Kubernetes response bodies.
-- The receipt includes only the fields needed to explain the exact experiment operation and result.
+- The receipt includes only the fields needed to explain the exact operation and result.
 - Offline inspection uses externally supplied trust; receipt-carried keys or metadata do not appoint
   themselves.
 - Public demos must use disposable local `kind` resources and synthetic image digests or clearly

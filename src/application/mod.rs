@@ -65,7 +65,7 @@ struct OperatorDocument {
 /// Opens the application from the existing operator document and caller-owned file reader.
 ///
 /// The supplied reader owns file-opening policy and must return bytes from the opened file. This
-/// prototype-scoped composition seam exists only to keep the CLI, MCP, and resident process on one
+/// prototype-scoped composition seam exists only to keep the CLI, MCP, and Kapsel service on one
 /// operator grammar.
 ///
 /// # Errors
@@ -83,8 +83,8 @@ pub async fn open_application_from_operator_document(
 /// Opens the application only when the operator document uses the supplied state paths.
 ///
 /// The supplied reader owns file-opening policy and must return bytes from the validated opened
-/// inode. Resident startup uses this form to retain the existing grammar without allowing another
-/// journal or receipt root.
+/// inode. Kapsel service startup uses this form to retain the existing grammar without allowing
+/// another journal or receipt root.
 ///
 /// # Errors
 ///

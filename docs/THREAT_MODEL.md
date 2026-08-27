@@ -15,9 +15,9 @@ deployment configuration, or production assurance.
 
 ## Assets and seams
 
-The experiment protects the integrity of disclosed experiment receipt bytes, the distinction between
-a durable Kubernetes attempt and an observed outcome, bounded offline inspection, and the ability to
-identify an unresolved crash window.
+The experiment protects the integrity of disclosed receipt bytes, the distinction between a durable
+Kubernetes attempt and an observed outcome, bounded offline inspection, and the ability to identify
+an unresolved crash window.
 
 The relevant seams are:
 
@@ -104,9 +104,9 @@ Kapsel.
 Another actor holding Kubernetes credentials can change the deployment without Kapsel. The
 experiment cannot detect universal capture. Receipts name one Kapsel operation, not all operations.
 
-### Resident source boundary
+### Kapsel service source boundary
 
-The resident service adds one fixed local admission boundary. The locked `kapsel` service identity
+The Kapsel service adds one fixed local admission boundary. The locked `kapsel` service identity
 exclusively owns exact `0700` configuration/state roots and exact `0600` authority/state files. The
 caller group can traverse only the `0750` runtime directory and use the `0660` socket; Linux peer
 credentials must also report the exact caller-group effective GID before any frame is read.
@@ -123,7 +123,7 @@ owner.
 
 Host root, the kernel, and the `kapsel` service identity remain trusted. A process already running
 with the authenticated effective group is authorized, and removing group membership does not change
-cached credentials in an existing process. The operator must stop the service and relevant caller
+cached credentials in an existing process. The operator must stop the service and relevant client
 before revocation. Fixed roots do not protect against compromised host administration, kernel, or
 service identity, and RBAC does not prevent credential bypass outside Kapsel. One disposable Debian
 12 gate supplied bounded account, systemd, short-lived credential, Kubernetes RBAC, clean-install,
@@ -153,7 +153,7 @@ network access.
 The removed hosted sandbox had additional abuse, multi-process isolation, authority-staging,
 scheduling, cleanup, storage, and public-exposure threats. Its complete historical analysis remains
 in [the sandbox deployment contract](SANDBOX_DEPLOYMENT.md) and archived source. Those controls were
-never accepted as a live deployment and are not part of the active resident threat boundary.
+never accepted as a live deployment and are not part of the active Kapsel service threat boundary.
 
 ## Non-claims
 

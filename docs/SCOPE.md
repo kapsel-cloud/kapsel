@@ -11,8 +11,8 @@ Owns: Project identity, the Kubernetes `set_deployment_image` experiment, and th
 distinction among the published 0.1 line, finite v0.2 beta design, and prospective 1.0 compatibility
 commitment.
 
-Does not own: Kubernetes request semantics, experiment receipt bytes, MCP protocol details,
-historical public-sandbox contracts, or a reusable provider interface.
+Does not own: Kubernetes request semantics, receipt bytes, MCP protocol details, historical
+public-sandbox contracts, or a reusable provider interface.
 
 ## Short answer
 
@@ -26,7 +26,7 @@ agent intent
   -> durable pre-attempt rejection or target identity
   -> provider attempt when eligible
   -> receiver observation or bounded unknown
-  -> classifier-complete signed experiment receipt
+  -> classifier-complete signed receipt
 ```
 
 The sole capability is `kubernetes.set_deployment_image`. Published v0.1.1 and v0.2.0 artifacts
@@ -34,10 +34,10 @@ demonstrate it against a local `kind` cluster; exact release identity comes from
 artifact evidence. Its technical owner is the
 [Kubernetes effect-gateway experiment boundary](EFFECT_GATEWAY.md). The hosted sandbox was removed.
 Its [historical API](SANDBOX_API.md) and [historical deployment contract](SANDBOX_DEPLOYMENT.md)
-remain engineering evidence, not current interfaces. The repository contains one unpublished,
-source-qualified resident process because CLI/MCP cannot provide caller-independent lifetime,
+remain engineering evidence, not current interfaces. The repository contains the unpublished,
+source-independent Kapsel service because CLI/MCP cannot provide caller-independent lifetime,
 read-only status, and exact receipt retrieval. It is not part of the published v0.2.0 archive; the
-[resident service contract](RESIDENT_SERVICE.md) owns its evidence and limits.
+[Kapsel service contract](KAPSEL_SERVICE.md) owns its evidence and limits.
 
 The published v0.1.1 artifact is the stable predecessor to the finite [v0.2 beta](V0.2.md). Neither
 release widens the capability or claims production support. Source or package version alone does not
@@ -79,10 +79,11 @@ v0.2.0 is a published developer beta for the same Kubernetes Deployment image ch
 6. publishes one authenticated x86-64 GNU/Linux artifact set.
 
 The release does not include a Kubernetes operation suite, public Rust SDK, crates.io artifact,
-resident daemon, managed control plane, live sandbox, second target, or production-support promise.
+Kapsel service, managed control plane, live sandbox, second target, or production-support promise.
 The later hosted-sandbox experiment was removed after its fixed fixtures and local demonstration
-became sufficient historical evidence. The resident service remains unpublished and does not widen
-the capability, move provider credentials into caller input, or establish production support.
+became sufficient historical evidence. The Kapsel service remains unpublished and does not widen the
+capability, move provider credentials into caller input, modify the v0.2.0 artifact, or establish
+production support.
 
 The direct release owner is [v0.2.0 Kubernetes effect-gateway beta](V0.2.md).
 
@@ -123,7 +124,7 @@ Kapsel may claim only that its experiment attempts to provide:
 - no blind second provider attempt after `apply_started`;
 - explicit `SUCCEEDED`, `FAILED`, or `UNKNOWN` result meaning based on bounded receiver observation;
   and
-- a signed, offline-inspectable experiment receipt that states its limits.
+- a signed, offline-inspectable receipt that states its limits.
 
 Kapsel does not claim exactly-once real-world effects, Kubernetes truth, causation, complete
 capture, complete history, compliance, or production readiness.

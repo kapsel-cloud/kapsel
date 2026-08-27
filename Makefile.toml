@@ -95,6 +95,28 @@ description = "Assemble the clean x86-64 GNU/Linux archive and deterministic sid
 command = "python3"
 args = ["scripts/assemble-release-artifact.py", "--output-directory", "dist"]
 
+[tasks.assemble-kapsel-service]
+description = "Assemble the unpublished Kapsel service artifact"
+command = "python3"
+args = ["scripts/assemble-kapsel-service-artifact.py", "--output-directory", "dist"]
+
+[tasks.test-kapsel-service-artifact]
+description = "Verify and smoke one strict Kapsel service artifact"
+script = '''
+set -eu
+: "${KAPSEL_SERVICE_ARCHIVE:?set KAPSEL_SERVICE_ARCHIVE to strict artifact A}"
+python3 scripts/test-kapsel-service-artifact.py --archive "$KAPSEL_SERVICE_ARCHIVE"
+'''
+
+[tasks.test-kapsel-service-reproducibility]
+description = "Assemble Kapsel service artifact B and compare it byte-for-byte with strict A"
+script = '''
+set -eu
+: "${KAPSEL_SERVICE_ARCHIVE:?set KAPSEL_SERVICE_ARCHIVE to strict artifact A}"
+python3 scripts/test-kapsel-service-reproducibility.py \
+  --reference-archive "$KAPSEL_SERVICE_ARCHIVE"
+'''
+
 [tasks.test-release-sbom-scan]
 description = "Test release SBOM scanner freshness, findings, and atomic database identity"
 command = "python3"

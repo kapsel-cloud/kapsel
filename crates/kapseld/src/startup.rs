@@ -1,4 +1,4 @@
-//! Fixed-root ordinary startup inputs for the resident service.
+//! Fixed-root ordinary startup inputs for the Kapsel service.
 
 use std::{
     fs::File,
@@ -127,7 +127,7 @@ fn prepare_socket_path(runtime: &File, socket_path: &Path) -> std::io::Result<()
         Ok(_) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AddrInUse,
-                "resident socket is active",
+                "service socket is active",
             ));
         },
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {},
@@ -138,7 +138,7 @@ fn prepare_socket_path(runtime: &File, socket_path: &Path) -> std::io::Result<()
     if stale.st_dev != current.st_dev || stale.st_ino != current.st_ino {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "resident socket identity changed",
+            "service socket identity changed",
         ));
     }
     unlinkat(runtime, "kapseld.sock", AtFlags::empty())?;
@@ -161,7 +161,7 @@ fn require_socket_metadata(metadata: &Stat) -> std::io::Result<()> {
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
-        "invalid resident socket",
+        "invalid service socket",
     ))
 }
 
@@ -298,8 +298,8 @@ mod tests {
         let authorization_seed = [101_u8; 32];
         let authorization_key = SigningKey::from_bytes(&authorization_seed);
         let authorization = ExactAuthorization {
-            authorization_id: "resident-auth".into(),
-            operation_id: "resident-op".into(),
+            authorization_id: "service-auth".into(),
+            operation_id: "service-op".into(),
             namespace: "demo".into(),
             deployment: "agent-api".into(),
             container: "api".into(),
@@ -312,7 +312,7 @@ mod tests {
         let grant = provision_exact_grant(&GrantProvisioning {
             authorization: &authorization,
             signing_seed: &authorization_seed,
-            signing_key_id: "resident-owner-key",
+            signing_key_id: "service-owner-key",
         })
         .unwrap();
         private_file(&root.join("etc/kapsel/grant.bin"), &grant);
@@ -337,13 +337,13 @@ mod tests {
             &root.join("etc/kapsel/operator.json"),
             &serde_json::to_vec(&serde_json::json!({
                 "signed_authorization_grant": root.join("etc/kapsel/grant.bin"),
-                "authorization_key_id": "resident-owner-key",
+                "authorization_key_id": "service-owner-key",
                 "authorization_public_key": root.join("etc/kapsel/authorization.pub"),
                 "kubeconfig": root.join("etc/kapsel/kubeconfig.yaml"),
                 "journal": root.join("var/lib/kapsel/journal.sqlite3"),
                 "receipt_directory": root.join("var/lib/kapsel/receipts"),
                 "receipt_signing_seed": root.join("etc/kapsel/receipt.seed"),
-                "receipt_signing_key_id": "resident-receipt-key"
+                "receipt_signing_key_id": "service-receipt-key"
             }))
             .unwrap(),
         );
@@ -371,7 +371,7 @@ mod tests {
 
         let application = runtime.block_on(inputs.open_application()).unwrap();
         assert!(application
-            .read_set_deployment_image_status("resident-op")
+            .read_set_deployment_image_status("service-op")
             .unwrap()
             .eq(&kapsel::SetDeploymentImageStatus::NotFound));
         drop(application);

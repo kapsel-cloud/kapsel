@@ -1,4 +1,4 @@
-//! Process shell for the unpublished resident service.
+//! Process shell for the unpublished Kapsel service.
 
 mod server;
 #[cfg(target_os = "linux")]

@@ -86,7 +86,7 @@ Style-audit findings use `warning[rule-code]` labels and exit successfully. They
 status language in public docs and async public APIs whose cancellation behavior may deserve an
 explicit contract. Human review decides whether an advisory requires a change.
 
-## Active experiment library
+## Active effect-gateway library
 
 The narrow deterministic gate for effect-gateway is:
 
@@ -100,9 +100,9 @@ recovery behavior are exercised through both the library and fixed evaluator com
 deterministic suite includes real subprocess kill/restart proofs at the mutation and
 receipt-publication seams.
 
-## Resident socket candidate
+## Kapsel service candidate
 
-Run the focused deterministic package tests for the unpublished resident socket candidate with:
+Run the focused deterministic package tests for the unpublished Kapsel service with:
 
 ```sh
 cargo test --locked -p kapseld
@@ -130,7 +130,7 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
-The resident source gate covers framing, authentication, status, receipt, exact process-local
+The Kapsel service source gate covers framing, authentication, status, receipt, exact process-local
 `ACCEPTED`, immediate non-queued `BUSY`, disconnect-independent execution, startup reconciliation
 before bind, real process loss, frozen receipt retrieval, bounded `UNKNOWN`, fixed-root startup,
 exact socket identity, stale-socket handling, and static installation records:
@@ -148,11 +148,43 @@ or through the full package command:
 cargo test --locked -p kapseld --test install_assets
 ```
 
-The source-only evidence remains native-kernel process evidence. An exact source snapshot passed the
+The source evidence remains native-kernel process evidence. An exact source snapshot passed the
 direct path in a fresh x86-64 Debian 12 KVM VM with systemd 252, kind 0.32.0, and pinned Kubernetes
 1.33. It proved separate identities, credential/RBAC bounds, installed process loss and boot
-recovery, secret-free diagnostics, ordered uninstall, and retained data. It does not prove artifact
-identity, source-independent installation, performance, or production safety.
+recovery, secret-free diagnostics, ordered uninstall, and retained data. It does not prove the
+separate Kapsel service artifact or production safety.
+
+### Source-independent Kapsel service artifact
+
+The unpublished Kapsel service artifact is separate from the immutable v0.2.0 archive. Assemble
+strict A only from a clean exact revision:
+
+```sh
+service_a=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-service-a.XXXXXX")
+archive_a=$(python3 scripts/assemble-kapsel-service-artifact.py \
+  --output-directory "$service_a")
+python3 scripts/test-kapsel-service-artifact.py --archive "$archive_a"
+python3 scripts/test-kapsel-service-reproducibility.py \
+  --reference-archive "$archive_a"
+```
+
+Assembly uses the pinned x86-64 Debian 12 Rust builder and emits one archive plus deterministic
+`.sha256` and `.SHA256SUMS` identity files. The artifact test rejects hostile archives, validates
+and exclusively extracts A, then runs the extracted `kapsel`, feature-free `kapseld`, and fixed
+`kapsel-service-client` in the pinned clean Debian 12 Python container. The reproducibility gate
+performs one independent strict B assembly and compares all deterministic bytes.
+
+The candidate workflow may add one Sigstore bundle over `.SHA256SUMS`; it uploads unpublished
+candidate evidence and performs no release action. The exact install/configure/start/call/restart/
+uninstall journey is the [Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md). The
+authenticated artifact-only journey on a fresh native systemd/Kubernetes host remains a separate
+required acceptance gate; deterministic container smoke does not imply it passed.
+
+Focused verifier tests that require no Docker are:
+
+```sh
+python3 scripts/test-kapsel-service-artifact.py
+```
 
 ### Direct installation candidate
 
@@ -163,9 +195,13 @@ exact repository inputs:
 ```sh
 ! getent passwd kapsel
 ! getent group kapsel
-! getent group kapsel-preview-callers
-getent passwd kapsel-preview-caller
-cargo build --release --locked -p kapseld
+! getent group kapsel-service-callers
+getent passwd kapsel-service-caller
+cargo build --release --locked -p kapsel --bin kapsel
+cargo build --release --locked -p kapseld --bins
+sudo install -D -o root -g root -m 0755 target/release/kapsel /usr/bin/kapsel
+sudo install -D -o root -g root -m 0755 target/release/kapsel-service-client \
+  /usr/bin/kapsel-service-client
 sudo install -D -o root -g root -m 0755 target/release/kapseld \
   /usr/libexec/kapsel/kapseld
 sudo install -D -o root -g root -m 0644 crates/kapseld/deploy/kapseld.service \
@@ -174,20 +210,22 @@ sudo install -D -o root -g root -m 0644 crates/kapseld/deploy/kapseld.conf \
   /usr/lib/sysusers.d/kapseld.conf
 sudo install -D -o root -g root -m 0644 crates/kapseld/deploy/kapseld-rbac.yaml \
   /usr/share/kapsel/kapseld-rbac.yaml
+sudo install -D -o root -g root -m 0644 docs/KAPSEL_SERVICE_OPERATOR.md \
+  /usr/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md
 sudo systemd-sysusers /usr/lib/sysusers.d/kapseld.conf
 getent passwd kapsel
 getent group kapsel
-getent group kapsel-preview-callers
+getent group kapsel-service-callers
 sudo passwd --status kapsel
-sudo usermod --append --groups kapsel-preview-callers kapsel-preview-caller
-sudo install -d -o kapsel -g kapsel-preview-callers -m 0700 \
+sudo usermod --append --groups kapsel-service-callers kapsel-service-caller
+sudo install -d -o kapsel -g kapsel-service-callers -m 0700 \
   /etc/kapsel /var/lib/kapsel /var/lib/kapsel/receipts
 ```
 
 The operator then installs exact owner-provisioned `operator.json`, `grant.bin`,
 `authorization.pub`, `kubeconfig.yaml`, and `receipt.seed` beneath `/etc/kapsel` with owner
-`kapsel:kapsel-preview-callers` and mode `0600`. The JSON uses only the existing grammar and exact
-paths fixed by the [resident service contract](RESIDENT_SERVICE.md). Applying
+`kapsel:kapsel-service-callers` and mode `0600`. The JSON uses only the existing grammar and exact
+paths fixed by the [Kapsel service contract](KAPSEL_SERVICE.md). Applying
 `/usr/share/kapsel/kapseld-rbac.yaml`, obtaining a short-lived ServiceAccount credential, and
 writing the embedded kubeconfig require Kubernetes administrative access. After those inputs exist,
 activation is direct:
@@ -197,9 +235,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now kapseld.service
 ```
 
-The external caller's own supervisor must set effective `Group=kapsel-preview-callers`;
-supplementary membership alone does not pass peer authentication. Service state plus successful
-authenticated socket use is the health boundary. Direct lifecycle operations are:
+The external client's supervisor must set effective `Group=kapsel-service-callers`; supplementary
+membership alone does not pass peer authentication. Service state plus successful authenticated
+socket use is the health boundary. Direct lifecycle operations are:
 
 ```sh
 sudo systemctl start kapseld.service
@@ -214,18 +252,18 @@ authorization:
 ```sh
 sudo systemctl disable --now kapseld.service
 systemctl is-active kapseld.service
-sudo gpasswd --delete kapsel-preview-caller kapsel-preview-callers
-kubectl --namespace demo delete rolebinding kapsel-preview-agent-api
-kubectl --namespace demo delete serviceaccount kapsel-preview
-kubectl --namespace demo delete role kapsel-preview-agent-api
-sudo rm -f /usr/libexec/kapsel/kapseld
-sudo rm -f /usr/lib/systemd/system/kapseld.service
-sudo rm -f /usr/lib/sysusers.d/kapseld.conf
-sudo rm -f /usr/share/kapsel/kapseld-rbac.yaml
+sudo gpasswd --delete kapsel-service-caller kapsel-service-callers
+kubectl --namespace demo delete rolebinding kapsel-service-agent-api
+kubectl --namespace demo delete serviceaccount kapsel-service
+kubectl --namespace demo delete role kapsel-service-agent-api
+sudo rm -f /usr/bin/kapsel /usr/bin/kapsel-service-client /usr/libexec/kapsel/kapseld
+sudo rm -f /usr/lib/systemd/system/kapseld.service /usr/lib/sysusers.d/kapseld.conf
+sudo rm -f /usr/share/kapsel/kapseld-rbac.yaml \
+  /usr/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md
 sudo systemctl daemon-reload
 ```
 
-The locked `kapsel` account, its private group, `kapsel-preview-callers`, external caller account,
+The locked `kapsel` account, its private group, `kapsel-service-callers`, external caller account,
 `/etc/kapsel`, `/var/lib/kapsel`, journal, worker lock, and receipts remain. There is no purge
 command. The clean-VM gate verified process exit, connection closure, runtime-directory cleanup, and
 unchanged retained-data hashes before removing installed static artifacts. It also confirmed that

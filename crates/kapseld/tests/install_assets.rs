@@ -1,4 +1,4 @@
-//! Exact static installation records for the resident service.
+//! Exact static installation records for the Kapsel service.
 
 #[test]
 fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
@@ -6,13 +6,13 @@ fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
         include_str!("../deploy/kapseld.service"),
         concat!(
             "[Unit]\n",
-            "Description=Kapsel resident preview\n",
+            "Description=Kapsel service\n",
             "StartLimitIntervalSec=0\n",
             "\n",
             "[Service]\n",
             "Type=exec\n",
             "User=kapsel\n",
-            "Group=kapsel-preview-callers\n",
+            "Group=kapsel-service-callers\n",
             "RuntimeDirectory=kapsel\n",
             "RuntimeDirectoryMode=0750\n",
             "StateDirectory=kapsel\n",
@@ -31,8 +31,8 @@ fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
     assert_eq!(
         include_str!("../deploy/kapseld.conf"),
         concat!(
-            "g kapsel-preview-callers - -\n",
-            "u kapsel - \"Kapsel preview service\" /var/lib/kapsel /usr/sbin/nologin\n",
+            "g kapsel-service-callers - -\n",
+            "u kapsel - \"Kapsel service\" /var/lib/kapsel /usr/sbin/nologin\n",
         )
     );
     assert_eq!(
@@ -41,14 +41,14 @@ fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
             "apiVersion: v1\n",
             "kind: ServiceAccount\n",
             "metadata:\n",
-            "  name: kapsel-preview\n",
+            "  name: kapsel-service\n",
             "  namespace: demo\n",
             "automountServiceAccountToken: false\n",
             "---\n",
             "apiVersion: rbac.authorization.k8s.io/v1\n",
             "kind: Role\n",
             "metadata:\n",
-            "  name: kapsel-preview-agent-api\n",
+            "  name: kapsel-service-agent-api\n",
             "  namespace: demo\n",
             "rules:\n",
             "  - apiGroups: [\"apps\"]\n",
@@ -59,16 +59,16 @@ fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
             "apiVersion: rbac.authorization.k8s.io/v1\n",
             "kind: RoleBinding\n",
             "metadata:\n",
-            "  name: kapsel-preview-agent-api\n",
+            "  name: kapsel-service-agent-api\n",
             "  namespace: demo\n",
             "subjects:\n",
             "  - kind: ServiceAccount\n",
-            "    name: kapsel-preview\n",
+            "    name: kapsel-service\n",
             "    namespace: demo\n",
             "roleRef:\n",
             "  apiGroup: rbac.authorization.k8s.io\n",
             "  kind: Role\n",
-            "  name: kapsel-preview-agent-api\n",
+            "  name: kapsel-service-agent-api\n",
         )
     );
 }

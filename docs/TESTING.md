@@ -187,10 +187,10 @@ inspection test because it is valid classifier-complete effect-gateway evidence.
 an active package, proof lane, or deployable alternative. The root real-process harness and
 disposable-`kind` demonstration remain the supported mechanism proof.
 
-## Resident service proof categories
+## Kapsel service proof categories
 
 The focused runnable gates are documented in
-[Resident socket candidate](BUILD.md#resident-socket-candidate). They remain layered around the
+[Kapsel service candidate](BUILD.md#kapsel-service-candidate). They remain layered around the
 existing `Application`:
 
 - projected status and frozen-receipt retrieval make no Kubernetes call and advance no lifecycle
@@ -206,12 +206,23 @@ existing `Application`:
 
 Static tests freeze the systemd unit, sysusers file, and ServiceAccount/Role/RoleBinding bytes.
 Linux process tests use only compile-time-private root and finite-connection controls; ordinary
-startup accepts neither.
+startup accepts neither. Service-client tests freeze its three-command grammar, bounded framing,
+lowercase receipt decoding, digest verification, exclusive mode-`0600` output, and refusal to
+replace an existing receipt.
 
-The [resident service contract](RESIDENT_SERVICE.md) owns the accepted source qualification and its
-limits. The resident service is unpublished and absent from the v0.2.0 artifact. A supported
-resident artifact requires source-independent installation and complete installed-path security and
-architecture review. The default CLI/MCP and effect-gateway suites remain authoritative for v0.2.0.
+The Kapsel service artifact lane uses the release tooling's pinned builder and normalized USTAR/gzip
+primitives without changing the v0.2.0 archive. It requires exact layout and metadata, bounded
+no-follow sidecar reads, hostile archive rejection before exclusive extraction, extracted binary and
+deploy-asset identity, clean-container client submit/status/receipt smoke, and a second isolated
+byte-identical assembly. It reads the bundled verifier by exact member name to standard output; it
+requires no checkout after candidate download.
+
+The [Kapsel service contract](KAPSEL_SERVICE.md) owns the artifact and its limits. The Kapsel
+service is unpublished and absent from v0.2.0. A final accepted candidate still requires an
+authenticated downloaded-artifact journey on a fresh native systemd/Kubernetes host, including
+ordered authority revocation and retained-state checks. Deterministic archive/container tests cannot
+imply that gate passed. The default CLI/MCP and effect-gateway suites remain authoritative for
+v0.2.0.
 
 ## Review record
 

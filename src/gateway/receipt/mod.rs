@@ -1,6 +1,6 @@
 //! Prototype-scoped effect-gateway receipt bytes and deterministic offline inspection.
 //!
-//! This module owns only the disposable experiment receipt format. It does not define stable
+//! This module owns only the prototype-scoped receipt format. It does not define stable
 //! cross-version bytes, a package format, generic trust, or a verifier profile.
 
 #![allow(clippy::struct_field_names)]
@@ -197,7 +197,7 @@ impl ReceiptStatement {
         self.result
     }
 
-    /// Returns the fixed signed experiment non-claims.
+    /// Returns the fixed signed non-claims.
     #[allow(clippy::unused_self)]
     pub fn non_claims(&self) -> &'static str {
         NON_CLAIMS
@@ -583,7 +583,7 @@ pub enum InspectionStatus {
     Inspected,
 }
 
-/// Caller-selected inspection ceilings, each bounded by the experiment maximum.
+/// Caller-selected inspection ceilings, each bounded by the receipt-format maximum.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InspectionLimits {
     /// Maximum accepted receipt bytes.

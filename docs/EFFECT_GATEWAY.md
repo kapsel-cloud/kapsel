@@ -18,7 +18,7 @@ admission/projection/deployment, or production assurance.
 An agent may request one bounded operation. The gateway verifies an owner-signed, fixed-purpose,
 single-operation grant against application-configured trust, durably records the target and attempt,
 issues at most one conditional mutation request, observes the receiver, reconciles after a crash,
-and emits an inspectable experiment receipt whose classifier inputs can be recomputed offline.
+and emits an inspectable receipt whose classifier inputs can be recomputed offline.
 
 ```text
 agent intent
@@ -26,7 +26,7 @@ agent intent
   -> durable pre-attempt rejection or target identity
   -> Kubernetes deployment-image request when eligible
   -> rollout observation or bounded unknown
-  -> signed, classifier-complete experiment receipt
+  -> signed, classifier-complete receipt
 ```
 
 The receipt is a consequence of the execution guarantee. It is not a compliance product, evidence of

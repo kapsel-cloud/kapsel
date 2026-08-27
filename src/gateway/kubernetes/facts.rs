@@ -1,4 +1,4 @@
-//! Bounded Kubernetes facts and receiver-result classification for the one experiment operation.
+//! Bounded Kubernetes facts and receiver-result classification for the one operation.
 //!
 //! This module is pure policy. It performs no Kubernetes calls and no durable I/O.
 

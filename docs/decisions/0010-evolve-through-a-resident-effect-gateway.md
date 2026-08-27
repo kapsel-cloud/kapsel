@@ -39,9 +39,9 @@ Conceptual genericity alone is insufficient.
 ## Consequences
 
 - The hosted sandbox topology is not a production template.
-- `kapseld` depends on `kapsel`; the root package does not depend on the resident adapter.
-- The resident interface remains local and capability-specific.
+- `kapseld` depends on `kapsel`; the root package does not depend on the Kapsel service adapter.
+- The Kapsel service interface remains local and capability-specific.
 - Receipt, protocol, SDK, provider, Kubernetes, storage, and separate CLI packages are not created
   without their named extraction condition.
 - Another capability or provider does not justify a generic seam until concrete semantics repeat.
-- Remote-coordinator failure cannot corrupt or redefine resident effect execution.
+- Remote-coordinator failure cannot corrupt or redefine Kapsel service effect execution.

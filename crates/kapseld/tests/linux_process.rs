@@ -1,4 +1,4 @@
-//! Linux real-process proof for the compile-time resident test harness.
+//! Linux real-process proof for the compile-time service test harness.
 
 #![cfg(all(target_os = "linux", feature = "test-harness"))]
 #![allow(
@@ -322,7 +322,7 @@ fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
     let authorization_key = SigningKey::from_bytes(&authorization_seed);
     let grant = provision_exact_grant(&GrantProvisioning {
         authorization: &ExactAuthorization {
-            authorization_id: "resident-auth".into(),
+            authorization_id: "service-auth".into(),
             operation_id: "process-op".into(),
             namespace: "demo".into(),
             deployment: "agent-api".into(),
@@ -330,7 +330,7 @@ fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
             immutable_image_digest: IMAGE.into(),
         },
         signing_seed: &authorization_seed,
-        signing_key_id: "resident-owner-key",
+        signing_key_id: "service-owner-key",
     })
     .unwrap();
     private_file(&root.join("etc/kapsel/grant.bin"), &grant);
@@ -358,13 +358,13 @@ fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
         &root.join("etc/kapsel/operator.json"),
         &serde_json::to_vec(&serde_json::json!({
             "signed_authorization_grant": root.join("etc/kapsel/grant.bin"),
-            "authorization_key_id": "resident-owner-key",
+            "authorization_key_id": "service-owner-key",
             "authorization_public_key": root.join("etc/kapsel/authorization.pub"),
             "kubeconfig": root.join("etc/kapsel/kubeconfig.yaml"),
             "journal": root.join("var/lib/kapsel/journal.sqlite3"),
             "receipt_directory": root.join("var/lib/kapsel/receipts"),
             "receipt_signing_seed": root.join("etc/kapsel/receipt.seed"),
-            "receipt_signing_key_id": "resident-receipt-key"
+            "receipt_signing_key_id": "service-receipt-key"
         }))
         .unwrap(),
     );
@@ -1198,8 +1198,8 @@ fn distinct_effective_gid_is_denied_before_frame_read() {
     let root = root("distinct-gid");
     let socket = root.join("kapseld.sock");
     let server_gid = effective_gid();
-    let caller_gid = group_gid("docker");
-    assert_ne!(server_gid, caller_gid);
+    let client_gid = group_gid("docker");
+    assert_ne!(server_gid, client_gid);
     let child = spawn(&socket, server_gid, 1);
     wait_for_socket(&socket);
 
@@ -1221,7 +1221,7 @@ fn distinct_effective_gid_is_denied_before_frame_read() {
     let command = format!("python3 {}", client.display());
     let output = Command::new("sg")
         .args(["docker", "-c", &command])
-        .env("KAPSELD_DISTINCT_GID", caller_gid.to_string())
+        .env("KAPSELD_DISTINCT_GID", client_gid.to_string())
         .env("KAPSELD_DISTINCT_GID_SOCKET", &socket)
         .output()
         .unwrap();

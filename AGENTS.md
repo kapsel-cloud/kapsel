@@ -17,9 +17,9 @@ Kapsel publishes a verified v0.2.0 x86-64 GNU/Linux developer-beta artifact for 
 `kubernetes.set_deployment_image` capability. The hosted sandbox was removed; its contracts are
 historical evidence only.
 
-The repository also contains an unpublished, source-qualified `kapseld -> kapsel` resident service.
-It is not included in the published v0.2.0 artifact. The
-[resident service contract](docs/RESIDENT_SERVICE.md) owns its exact boundary, evidence, and limits.
+The repository also contains the unpublished, source-independent `kapseld -> kapsel` Kapsel service.
+The published v0.2.0 artifact does not include it. The
+[Kapsel service contract](docs/KAPSEL_SERVICE.md) owns its exact boundary, evidence, and limits.
 
 Lifecycle, receiver-result, and receipt semantics are owned by
 [`docs/EFFECT_GATEWAY.md`](docs/EFFECT_GATEWAY.md). Use [`docs/INDEX.md`](docs/INDEX.md) for every

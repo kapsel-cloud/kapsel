@@ -1,4 +1,4 @@
-//! Concrete Kubernetes Deployment-image adapter for the effect-gateway experiment.
+//! Concrete Kubernetes Deployment-image adapter for the effect gateway.
 //!
 //! This module owns one conditional strategic image patch and bounded Deployment observation. It
 //! is not a generic Kubernetes adapter interface.

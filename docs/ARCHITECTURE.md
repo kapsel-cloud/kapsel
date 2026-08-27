@@ -1,10 +1,10 @@
 # Architecture
 
-Status: current architecture for the published v0.2.0 product and unpublished resident service.
+Status: current architecture for the published v0.2.0 product and unpublished Kapsel service.
 
 Kind: design. Authority: current module ownership, dependency direction, and composition status.
 
-Owns: The active experiment's modules, seams, and compile-time dependency direction.
+Owns: The active effect gateway's modules, seams, and compile-time dependency direction.
 
 Does not own: Exact lifecycle/result semantics, Kubernetes truth, exact receipt bytes, MCP protocol
 semantics, or public-sandbox wire/deployment behavior.
@@ -127,10 +127,10 @@ interface. Public Rust visibility may contract when compiler and retained consum
 and may change within v0.2.x without external migration support; crates.io, docs.rs, and
 `cargo install` remain unsupported.
 
-## Resident composition
+## Kapsel service composition
 
 The removed sandbox's HTTP admission, scheduler, authority staging, runner isolation, cleanup, and
-second SQLite store are historical. They are not part of the root or resident architecture.
+second SQLite store are historical. They are not part of the root or Kapsel service architecture.
 
 The published architecture is:
 
@@ -143,17 +143,17 @@ local CLI or fixed stdio MCP adapter
        -> frozen signed receipt
 ```
 
-The repository also contains this unpublished resident composition:
+The repository also contains this unpublished Kapsel service composition:
 
 ```text
-bounded local caller
+bounded local service client
   -> authenticated Linux Unix socket
        -> kapseld
             -> deep kapsel Application
                  -> sole SQLite effect journal
 ```
 
-The resident service exists because CLI/MCP cannot provide caller-independent lifetime, read-only
+The Kapsel service exists because CLI/MCP cannot provide caller-independent lifetime, read-only
 status, or exact receipt retrieval across a separate OS identity. It accepts fixed operator/socket
 arguments, retains descriptor-relative `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` roots,
 consumes validated authority bytes, reconciles before binding, and removes only an exact inactive
@@ -165,6 +165,12 @@ The adapter composes `Application::execute`, `Application::reconcile`, non-mutat
 matching, projected status, and frozen-receipt reads. It does not query SQLite directly, duplicate
 publication rules, sequence lifecycle states, or add a second store. One in-flight submission is a
 bound, not a queue.
+
+The unpublished Kapsel service artifact packages the existing root executable, feature-free daemon,
+one capability-specific fixed client, exact systemd/sysusers/RBAC assets, bundled verifier, and
+operator guide. The client owns framing and exact receipt-file retrieval only; it is not a library,
+SDK, generic protocol package, authority source, or lifecycle engine. Service artifact assembly and
+verification are distribution concerns and never alter the published v0.2.0 layout.
 
 ## Effect-gateway boundary
 
