@@ -5,129 +5,93 @@
 
 A crash-recoverable Kubernetes effect gateway for autonomous agents.
 
-Kapsel's developer beta tests a simple idea: give agents bounded operations, not provider
-credentials. It accepts one authorized Kubernetes image change, records state before any mutation
-attempt, recovers without blindly retrying, and returns an inspectable `SUCCEEDED`, `FAILED`, or
-`UNKNOWN` result.
-
-```text
-bounded agent intent
-  -> owner-signed exact grant under application-configured trust
-  -> durable pre-attempt rejection or target identity
-  -> conditional provider mutation when attempted
-  -> receiver observation or UNKNOWN
-  -> classifier-complete signed receipt
-```
+Kapsel gives an agent one bounded operation without giving it Kubernetes credentials. It records
+state before attempting the change, recovers after process loss without blindly retrying, and
+returns an inspectable `SUCCEEDED`, `FAILED`, or `UNKNOWN` result.
 
 > [!WARNING]
 >
 > Kapsel 0.2.0 is a developer beta. It is not production-ready, a generic agent runtime, or a
 > compliance product. Do not use it for consequential production changes.
 
-## Developer beta
-
-The only active capability is:
+## The one operation
 
 ```text
 kubernetes.set_deployment_image(namespace, deployment, container, immutable_image_digest)
 ```
 
-The experiment runs against a disposable local `kind` cluster. Its release-owned demonstration
-covers a healthy rollout and an unavailable-image `ProgressDeadlineExceeded` rollout, kills the real
-command process after mutation and receipt-publication seams, and restarts without a blind second
-mutation or changed frozen receipt bytes. Deterministic tests exercise the same two process seams
-without a container.
-
-The Rust `Application` interface separates request-only `AgentRequest` from operator-owned grant,
-trust, Kubernetes authority, signing material, and paths. Operator composition supplies that
-authority once; callers use `Application::execute` and `Application::reconcile` without sequencing
-internal durable states. A local evaluator command and one fixed-schema stdio MCP tool expose the
-same bounded request.
-
-Kapsel reports `SUCCEEDED`, `FAILED`, or `UNKNOWN`. These are bounded receiver outcomes, not claims
-of exactly-once mutation, causation, complete cluster health, complete capture, or Kubernetes truth.
-
-The [Kapsel `0.2.0` release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0) is the
-public x86-64 GNU/Linux developer-beta prerelease. It adopts bounded v0.2.x compatibility for the
-CLI, fixed stdio MCP adapter, grant and retained-receipt bytes, archive layout, and journal upgrade.
-It does not promise production support or external Rust API compatibility. See the
-[effect-gateway boundary](docs/EFFECT_GATEWAY.md) before use.
-
-## What exists today
-
-| Surface                                          | Status                                                   |
-| ------------------------------------------------ | -------------------------------------------------------- |
-| Signed exact grant and SQLite recovery lifecycle | Implemented in the product package                       |
-| Conditional Deployment image mutation            | Implemented and exercised by an explicit live-kind gate  |
-| Classifier-complete receipt and inspection       | Implemented in the effect-gateway library                |
-| Process-kill mutation and publication recovery   | Implemented in deterministic subprocess tests            |
-| Failed-rollout live-kind test proof              | Implemented in the explicit live-kind gate               |
-| Evaluator demo with real process termination     | Implemented through an owned disposable-kind harness     |
-| Evaluator-facing operation and inspection CLI    | Implemented as a developer-beta local command            |
-| Thin fixed-schema MCP stdio adapter              | Implemented with deterministic black-box tests           |
-| Authenticated x86-64 Linux artifact and SBOM     | Published and publicly verified as developer-beta v0.2.0 |
-| Hosted sandbox                                   | Removed; contracts and fixtures are historical only      |
-| Kapsel service and local socket                  | Unpublished source-independent preview candidate         |
-
-The exact local evaluator grammar and file separation are owned by the
-[evaluator command contract](docs/COMMANDS.md); the fixed protocol surface is owned by the
-[MCP adapter contract](docs/MCP.md), and distribution by the
-[release artifact contract](docs/RELEASE.md). The current engineering proof is:
-
-```sh
-cargo test --locked --test e2e_mcp_adapter
-./scripts/ci-local.sh
-cargo make test-demo-harness
-a_dir=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-release-a.XXXXXX")
-archive_a=$(python3 scripts/assemble-release-artifact.py --output-directory "$a_dir")
-python3 scripts/test-release-artifact.py --archive "$archive_a"
-python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
-cargo make demo-kind  # requires Docker, kind 0.32+, and kubectl 1.30+
+```text
+agent request
+  -> operator-owned exact grant, trust, and Kubernetes authority
+  -> durable pre-attempt rejection or mutation marker
+  -> conditional image change
+  -> Kubernetes rollout observation or UNKNOWN
+  -> signed receipt
 ```
 
-Each live command creates and removes its own uniquely named cluster. This is demonstration
-evidence, not part of the deterministic default gate. See [Build](docs/BUILD.md) for exact meaning
-and prerequisites.
+The agent cannot supply credentials, shell commands, `kubectl`, manifests, arbitrary patches, tags,
+wildcards, or lifecycle controls. The operator keeps authority and signing material outside caller
+input.
 
-## v0.2 developer beta status
+`SUCCEEDED` and `FAILED` describe bounded Kubernetes rollout observations. `UNKNOWN` means Kapsel
+could not establish either result after bounded recovery. None proves exactly-once mutation,
+causation, complete cluster health, or Kubernetes truth.
 
-Kapsel `0.2.0` is published and publicly verified as a finite developer-beta prerelease. Its exact
-five assets, authenticated digest manifest, source identity, safe extraction, install, CLI/MCP,
-inspection, `v0.1.1` upgrade and rollback, disposable-kind demonstration, cleanup, and uninstall
-passed fresh public-download verification. A package version or source checkout alone does not
-establish release identity; use the exact GitHub release and authenticate its signed manifest.
+## Try the published beta
 
-The beta keeps one production and crash-test lifecycle path, adopted CLI/MCP and retained
-grant/receipt compatibility, proven `v0.1.1` upgrade and rollback, bounded hostile-input and
-resource qualification, and one authenticated reproducible x86-64 GNU/Linux distribution. It does
-not add a Kubernetes operation suite, generic provider interface, public Rust SDK, Kapsel service,
-hosted dependency, second target, or production-readiness claim.
+The [v0.2.0 release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0) contains an
+authenticated x86-64 GNU/Linux archive and a disposable-`kind` crash-recovery demonstration. Start
+with the [evaluator guide](docs/EVALUATOR.md) to verify the download and run it.
 
-The source-independent Kapsel service is unpublished and absent from the v0.2.0 archive. Its exact
-authenticated candidate passed the separate clean systemd/Kubernetes journey, but remains an
-unpublished non-production preview. See the [v0.2 release contract](docs/V0.2.md),
-[Kapsel service contract](docs/KAPSEL_SERVICE.md), and
-[Kapsel service operator guide](docs/KAPSEL_SERVICE_OPERATOR.md).
+From a source checkout, the shortest deterministic gate is:
 
-## Scope discipline
+```sh
+./scripts/ci-local.sh
+```
 
-The repository has one capability and one Kubernetes adapter. Arbitrary execution, runtime plugins,
-a generic provider SDK, a policy language, hosted operation, a dashboard, and a second capability
-are outside its technical scope. The removed hosted sandbox's contracts and fixtures are historical
-only. The Kapsel service adds local process lifetime, read-only status, and receipt retrieval
-without changing capability or receiver-result semantics.
+With Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 
-## Read next
+```sh
+cargo make demo-kind
+```
 
-- [Technical scope](docs/SCOPE.md)
-- [Effect-gateway contract](docs/EFFECT_GATEWAY.md)
-- [Prospective V1 technical direction](docs/VISION.md)
-- [Build and proof commands](docs/BUILD.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Kapsel service contract](docs/KAPSEL_SERVICE.md)
-- [Threat model](docs/THREAT_MODEL.md)
-- [Security policy](SECURITY.md)
-- [Documentation index](docs/INDEX.md)
+The demonstration creates and removes its own cluster. It runs healthy and failed-rollout paths,
+kills the real process around mutation and receipt publication, restarts without a blind second
+mutation, and inspects the frozen receipt.
+
+## What exists
+
+| Surface                                               | Status                                                        |
+| ----------------------------------------------------- | ------------------------------------------------------------- |
+| Exact grant, SQLite recovery, image mutation, receipt | Published in v0.2.0                                           |
+| Local CLI and fixed-schema stdio MCP adapter          | Published in v0.2.0                                           |
+| Process-loss and disposable-`kind` demonstrations     | Published and tested                                          |
+| Authenticated x86-64 GNU/Linux artifact and SBOM      | Published and verified                                        |
+| Customer-resident Kapsel service and local socket     | Implemented candidate; unpublished                            |
+| Hosted sandbox                                        | Removed; [historical record only](docs/HISTORICAL_SANDBOX.md) |
+
+The unpublished service adds caller-independent lifetime, reconnectable status, and exact receipt
+retrieval. It is absent from v0.2.0 and remains a non-production preview. Its approved installer
+journey is not yet runnable.
+
+## Choose a path
+
+| Goal                                           | Read                                               |
+| ---------------------------------------------- | -------------------------------------------------- |
+| Understand exact result and recovery semantics | [Effect-gateway contract](docs/EFFECT_GATEWAY.md)  |
+| Verify and run the published artifact          | [Evaluator guide](docs/EVALUATOR.md)               |
+| Use the CLI or MCP adapter                     | [Commands](docs/COMMANDS.md) or [MCP](docs/MCP.md) |
+| Build and test the repository                  | [Build and test](docs/BUILD.md)                    |
+| Understand the unpublished service             | [Kapsel service](docs/KAPSEL_SERVICE.md)           |
+| Contribute safely                              | [Contributor guide](AGENTS.md)                     |
+| Find any other owner                           | [Documentation map](docs/INDEX.md)                 |
+
+## Scope
+
+Kapsel has one capability and one Kubernetes adapter. It does not provide a Kubernetes operation
+suite, generic provider SDK, policy engine, workflow engine, hosted control plane, dashboard, public
+Rust SDK, second platform, or production support. See [Technical scope](docs/SCOPE.md) and the
+[threat model](docs/THREAT_MODEL.md).
 
 ## License
 

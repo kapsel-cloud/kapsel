@@ -70,10 +70,9 @@ trust from the request or grant.
 The release-owned experiment uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
 
-The historical sandbox [API](SANDBOX_API.md) and [deployment contract](SANDBOX_DEPLOYMENT.md)
-describe two fixed synthetic scenarios. They appoint no active implementation or compatibility,
-cannot alter effect-gateway semantics or receipt bytes, and do not replace the release-owned local
-demonstration.
+The [historical hosted sandbox](HISTORICAL_SANDBOX.md) used two fixed synthetic scenarios. It
+appoints no active implementation or compatibility, cannot alter effect-gateway semantics or receipt
+bytes, and does not replace the release-owned local demonstration.
 
 ## Operation lifecycle
 

@@ -63,10 +63,9 @@ candidate and publication state.
 
 ### Historical hosted experiment
 
-The [historical HTTP contract](SANDBOX_API.md) and
-[historical deployment contract](SANDBOX_DEPLOYMENT.md) explain fixed fixtures only. The root
-release-owned real-process and disposable-`kind` demonstrations remain the supported way to inspect
-the mechanism. No sandbox topology or interface is a current compatibility surface.
+The [historical hosted-sandbox record](HISTORICAL_SANDBOX.md) explains the fixed fixtures and links
+the retired contracts. The release-owned real-process and disposable-`kind` demonstrations remain
+the supported way to inspect the mechanism. No sandbox topology or interface is current.
 
 ### Kapsel service source implementation
 

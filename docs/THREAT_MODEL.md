@@ -10,8 +10,8 @@ effect-gateway experiment.
 
 Owns: Experiment threat analysis, result limits, and security assumptions.
 
-Does not own: Kubernetes authorization policy, credential operations, public-sandbox HTTP grammar or
-deployment configuration, or production assurance.
+Does not own: Kubernetes authorization policy, credential operations, retired hosted-sandbox
+details, or production assurance.
 
 ## Assets and seams
 
@@ -31,8 +31,8 @@ The relevant seams are:
 - externally supplied inspection trust.
 
 Collusion, compromised credentials, or a bypassed gateway remove independence. The receipt must not
-imply otherwise. Historical [public sandbox API](SANDBOX_API.md) and
-[deployment](SANDBOX_DEPLOYMENT.md) documents preserve analysis of the retired hosted controls.
+imply otherwise. The [historical hosted-sandbox record](HISTORICAL_SANDBOX.md) points to the retired
+controls.
 
 ## Surviving claims
 
@@ -150,10 +150,10 @@ network access.
 
 ## Historical sandbox threats
 
-The removed hosted sandbox had additional abuse, multi-process isolation, authority-staging,
-scheduling, cleanup, storage, and public-exposure threats. Its complete historical analysis remains
-in [the sandbox deployment contract](SANDBOX_DEPLOYMENT.md) and archived source. Those controls were
-never accepted as a live deployment and are not part of the active Kapsel service threat boundary.
+The removed hosted sandbox explored abuse control, process isolation, authority staging, scheduling,
+cleanup, storage, and public exposure. Its [historical record](HISTORICAL_SANDBOX.md) links the
+complete archived design. Those controls were never accepted for live deployment and are not part of
+the active Kapsel service threat boundary.
 
 ## Non-claims
 

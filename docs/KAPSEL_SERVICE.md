@@ -1,16 +1,17 @@
 # Kapsel service
 
-Status: accepted unpublished source-independent preview candidate.
+Status: accepted unpublished service candidate; installer contract approved but not implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
-qualification envelope, unsupported behavior, and residual risk.
+installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
 
 Owns: The `kapseld -> kapsel` composition, authenticated Unix socket, fixed filesystem roots,
-systemd lifecycle, and narrow Kubernetes RBAC.
+systemd lifecycle, narrow Kubernetes RBAC, and the next installer's trust, credential, transaction,
+recovery, and uninstall boundary.
 
 Does not own: Authorization, effect lifecycle, receiver-result, `UNKNOWN`, or receipt semantics;
-those remain owned by the [effect-gateway contract](EFFECT_GATEWAY.md). Build and installation
-commands are in [Build](BUILD.md), and proof requirements are in [Testing](TESTING.md).
+those remain owned by the [effect-gateway contract](EFFECT_GATEWAY.md). Runnable build and current
+candidate commands are in [Build](BUILD.md), and proof requirements are in [Testing](TESTING.md).
 
 ## Boundary
 
@@ -42,11 +43,11 @@ unsupported status store, receipt copying, and supervision.
 | Authentication              | Parent `0750`, socket `0660`, owner `kapsel:kapsel-service-callers`; exact effective caller-group peer credential required                                    |
 | Connection resources        | At most eight admitted connections; two-second read and write deadlines; no queue                                                                             |
 | Durable stores              | Existing effect-gateway SQLite journal only                                                                                                                   |
-| Operator configuration      | Fixed `/etc/kapsel/operator.json`; authority beneath `/etc/kapsel`; journal and receipts beneath `/var/lib/kapsel`                                            |
+| Operator configuration      | Generated fixed `/etc/kapsel/operator.json`; authority beneath `/etc/kapsel`; journal and receipts beneath `/var/lib/kapsel`                                  |
 | Startup path validation     | Descriptor-relative fixed roots; exact owners/modes; regular single-link files; no symlinks; stable consumed bytes                                            |
 | OS ownership                | Locked non-login `kapsel`; `0700` private roots and `0600` private files                                                                                      |
 | Caller identity             | Fixed locked `kapsel-service-caller`, created separately; supervisor-set effective group is distinct from supplementary membership                            |
-| Kubernetes authority        | `ServiceAccount/demo/kapsel-service`; namespaced `get` and `patch` on exact Deployment `agent-api`                                                            |
+| Kubernetes authority        | Short-lived TokenRequest credential for `ServiceAccount/demo/kapsel-service`; namespaced `get` and `patch` on exact Deployment `agent-api`                    |
 | Installed assets            | Three executables, systemd unit, sysusers record, non-secret RBAC manifest, and operator guide; no socket unit, tmpfiles rule, PID file, wrapper, or workload |
 | Runtime dependencies        | Rust executables, Linux Unix sockets, systemd, existing SQLite and Kubernetes stack; no Python, shell, daemon framework, RPC SDK, or new DB                   |
 | Supported failure domains   | Caller disconnect, service process loss, same-host restart, mutation/publication seams, bounded Kubernetes ambiguity                                          |
@@ -57,7 +58,7 @@ abstraction, policy engine, SDK, or second store.
 
 ## Authority and filesystem
 
-The Kapsel service reuses the root operator JSON grammar at these exact paths:
+The installer generates the root operator JSON using the existing grammar and these exact paths:
 
 ```text
 /etc/kapsel/operator.json
@@ -208,11 +209,318 @@ RoleBinding. It creates no credential, token Secret, Namespace, Deployment, work
 wildcard, or field policy.
 
 Removal stops and disables the service, waits for process and connection closure, removes caller
-group membership, revokes Kubernetes authority, and removes all three executables, unit, sysusers
-record, RBAC manifest, operator guide, and runtime socket. It retains identities, operator files,
-journal, and receipts. Destructive purge is unsupported.
+group membership, revokes Kubernetes authority, and only then removes all three executables, unit,
+sysusers record, RBAC manifest, operator guide, and runtime socket. It retains identities, operator
+files, installer transaction evidence, journal, and receipts. Destructive purge is unsupported.
 
-## Source-independent service artifact
+## Approved installer contract
+
+This section owns the next candidate's interface. It is approved contract, not an implemented or
+qualified command. The accepted archive journey below remains historical regression evidence until a
+self-contained installer candidate passes its own gates.
+
+### Authenticated acquisition and fixed interface
+
+“One-command installation” begins only after the operator independently downloads and authenticates
+one `x86_64-unknown-linux-gnu` `kapsel-service-installer` executable, its digest manifest, and its
+Sigstore bundle. Authentication verifies the exact issuer, `kapsel-cloud/kapsel` repository,
+appointed workflow, `refs/heads/master` ref, 40-hex source SHA, and `workflow_dispatch` trigger
+before the manifest verifies the executable digest. The installer cannot authenticate itself. It
+performs no runtime download and embeds the exact three service executables, systemd unit, sysusers
+record, RBAC bytes, operator guide, license, and metadata. The authenticated installer executable is
+at most 64 MiB; a larger candidate is rejected before execution rather than adding a second payload
+or runtime download.
+
+The only planned mutating commands are:
+
+```text
+sudo kapsel-service-installer install \
+  --operator-input /secure/kapsel \
+  --kube-context nonprod
+
+sudo kapsel-service-installer refresh-credential \
+  --operator-input /secure/kapsel \
+  --kube-context nonprod
+
+sudo kapsel-service-installer uninstall \
+  --operator-input /secure/kapsel \
+  --kube-context nonprod
+```
+
+Each option is required exactly once. The operator-input path is absolute, and the context is an
+explicit 1–253 byte Kubernetes name. There is no environment, ambient kubeconfig, current-directory,
+network-download, archive, package-manager, reinstall, upgrade, purge, force, or unattended-refresh
+alternative.
+
+### Operator input and bootstrap authority
+
+The operator-input directory contains exactly:
+
+```text
+grant.bin
+authorization.pub
+receipt.seed
+receipt.trust
+bootstrap-kubeconfig.yaml
+```
+
+The installer opens the absolute directory and every leaf descriptor-relatively without following
+symlinks. The directory is root-owned mode `0700` and not replaced while open. Every input is a
+stable root-owned regular single-link file, mode `0600`, at most 64 KiB; grant, key, seed, and trust
+retain their smaller product grammar bounds. Unknown or missing leaves fail before mutation. The
+installer verifies the signed grant, derives its exact authorization key identity and operation
+tuple, verifies that `authorization.pub` is its appointed key, and verifies that `receipt.seed`
+derives the key and key identity accepted by `receipt.trust`. `receipt.trust` is evaluator trust
+material: it is required for this consistency check but is never installed, copied into service
+authority, or selected by a caller.
+
+`bootstrap-kubeconfig.yaml` is administrative installer authority, never service authority. Its
+bounded grammar is one `apiVersion: v1`, `kind: Config` document with exactly one cluster, user, and
+context entry. The context name equals `--kube-context`, references those exact entries, and has no
+namespace or namespace `demo`; `current-context`, when present, must equal the same explicit name.
+The cluster contains only one absolute `https` server URL without user information, query, or
+fragment and embedded `certificate-authority-data`. The user contains either one inline token or one
+inline client-certificate/client-key pair. The document rejects aliases, duplicate or unknown
+fields, extensions, proxy settings, insecure TLS, external certificate, key, CA, or token file
+references, username/password, `exec`, and `auth-provider`. The YAML is at most 64 KiB; the decoded
+CA, token, client certificate, and client key are each at most 16 KiB and are bounded before decode
+allocation. The installer ignores `KUBECONFIG` and all client environment configuration.
+
+The transaction binds the selected server URL, CA SHA-256, context, and opened input-directory
+device, inode, UID, and mode. Bootstrap credential bytes may exist only in the operator-input
+directory and the installer's memory; they never enter `/etc/kapsel`, the installer transaction,
+service environment, output, or diagnostics. Every install, refresh, and uninstall requires that
+same directory identity, context, server, CA, and four stable non-bootstrap input digests. A renewed
+inline bootstrap token or client certificate/key may replace `bootstrap-kubeconfig.yaml` at the same
+strongly owned directory; the installer records its new digest after validation. This renewal may
+change no cluster, CA, context, grant, authorization key, receipt seed, or receipt trust.
+
+### Short-lived service credential
+
+After creating and UID-binding the fixed ServiceAccount, Role, and RoleBinding, the installer sends
+one TokenRequest to `/api/v1/namespaces/demo/serviceaccounts/kapsel-service/token`. It requests
+3,600 seconds, omits a bound object and custom audiences so the API server appoints its API
+audience. The request has a ten-second deadline; its streamed response body is at most 64 KiB before
+collection, and `status.token` is nonempty ASCII at most 16 KiB. The response must be
+`authentication.k8s.io/v1` `TokenRequest` with a parseable `status.expirationTimestamp` 1,800–7,200
+seconds after the installer's current wall time. No clock-skew correction or ambient time source is
+used; an incorrectly set host clock fails closed. The generated service kubeconfig contains only the
+selected server, embedded CA, one inline token, and one fixed service context; it contains no
+bootstrap credential or external reference.
+
+Credential refresh is explicit and operator-authorized; there is no timer or daemon refresh path.
+`refresh-credential` is accepted when the recorded credential has at most 900 seconds remaining or
+is expired. An earlier request is read-only and reports the existing expiration. At the threshold it
+stops `kapseld`, obtains and validates a new TokenRequest response, writes a new mode-`0600`
+service-owned kubeconfig to a same-directory temporary inode, syncs it, atomically renames it over
+the old kubeconfig, syncs `/etc/kapsel`, and starts `kapseld`. Startup reconciliation completes
+before socket bind. A failure before rename leaves the old kubeconfig intact and the service
+stopped; a failure after rename recovers by validating the recorded inode and restarting with the
+new bytes. Install and refresh have exact success output:
+
+```text
+{"status":"INSTALLED","credential_expiration":"<server RFC-3339 expirationTimestamp>"}
+{"status":"CREDENTIAL_CURRENT","credential_expiration":"<recorded RFC-3339 expirationTimestamp>"}
+{"status":"CREDENTIAL_REFRESHED","credential_expiration":"<server RFC-3339 expirationTimestamp>"}
+```
+
+Each is the sole stdout line for its case and exits 0. Partial uninstall exits 20 as specified
+below; every other installer failure exits 1 with no stdout and at most one 4 KiB secret-free stderr
+line.
+
+The service loads one credential at startup. After expiration, Kubernetes calls authenticate no
+longer; read-only status and frozen-receipt retrieval remain local while `kapseld` is running. A
+failed refresh deliberately leaves the socket unavailable until refresh recovery starts the daemon;
+already retrieved receipts remain inspectable offline. Pre-attempt API failure remains retryable
+lifecycle state, while failure after `apply_started` can only reconcile from bounded receiver facts
+or `UNKNOWN`. Expiration, authentication failure, outage, installer failure, or restart never
+becomes receiver `FAILED` or `SUCCEEDED`. Continued operation beyond the issued lease requires the
+explicit refresh command and reachable bootstrap authority.
+
+### Durable installer transaction and ownership
+
+The installer first opens `/run/lock/kapsel-service-installer.lock` as an exact root-owned regular
+single-link mode-`0600` file and takes a nonblocking exclusive `flock`. The lock leaf is
+coordination, not durable ownership evidence, and may be reused after the crash-released lock. With
+the lock held, the only mutation allowed before a transaction exists is this bootstrap: create
+`/var/lib/kapsel-installer` no-replace as root mode `0700` and sync `/var/lib`; open an unnamed
+mode-`0600` inode there with Linux `O_TMPFILE`; write the complete initial record; sync that inode;
+link it no-replace as `transaction.json`; then sync the installer directory. A crash before the link
+leaves no named partial file. After a crash, an exact root-owned mode-`0700` empty installer
+directory resumes creation, and an exact valid `transaction.json` resumes its recorded phase. The
+only additional permitted leaf is the strongly marked `.transaction.next` update described below; it
+must be a valid one-step successor and is completed before resource recovery. Any other leaf,
+invalid transaction, unsupported unnamed-file operation, or concurrent Kapsel resource fails closed.
+The installer directory and transaction are never removed.
+
+The retained regular single-link transaction is at most 64 KiB and canonical UTF-8 JSON. Schema `1`
+has these exact top-level keys; `null` is explicit where shown, hashes and the transaction identity
+are lowercase hexadecimal, and canonical object keys are lexically ordered:
+
+```json
+{
+  "action": "install | refresh-credential | uninstall",
+  "bootstrap_kubeconfig_initial_sha256": "<64-hex>",
+  "bootstrap_kubeconfig_sha256": "<64-hex>",
+  "cluster": { "ca_sha256": "<64-hex>", "server": "https://..." },
+  "credential_expiration": "<RFC-3339> | null",
+  "host_resources": [],
+  "input_directory": { "device": 1, "inode": 2, "mode": 448, "path": "/secure/kapsel", "uid": 0 },
+  "installer_sha256": "<64-hex>",
+  "kube_context": "nonprod",
+  "kubernetes_resources": [],
+  "operator_inputs": {
+    "authorization.pub": "<64-hex>",
+    "grant.bin": "<64-hex>",
+    "receipt.seed": "<64-hex>",
+    "receipt.trust": "<64-hex>"
+  },
+  "pending": null,
+  "phase": "prepared",
+  "schema": 1,
+  "transaction_id": "<64-hex>"
+}
+```
+
+A host file or directory record contains exactly `kind`, `path`, `device`, `inode`, `file_type`,
+`uid`, `gid`, and `mode`, plus `length` and `sha256` for a file. A user record contains `kind`,
+`name`, `uid`, `primary_gid`, and `gecos_transaction_id`; a group contains `kind`, `name`, and
+`gid`; a membership contains `kind`, `user`, `uid`, `group`, and `gid`. A systemd enablement record
+contains the unit inode and digest plus each created enablement link's descriptor-relative path,
+device, inode, file type, and exact target. A Kubernetes record contains exactly `api_version`,
+`kind`, `namespace`, `name`, `uid`, and `transaction_id_annotation`. The record contains no token,
+bootstrap credential, private key, seed, grant bytes, or trust bytes.
+
+`pending` is `null` or one object with exact `action` plus these variant fields:
+
+| Pending action       | Required fields                                                                                                                                         | Recovery observation                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `stage_host`         | destination, staging leaf, type, owner, mode, length/digest, transaction marker                                                                         | Bind only a staging inode carrying the transaction marker and every expected fact.                            |
+| `publish_host`       | destination plus recorded staging device/inode                                                                                                          | Destination same inode is complete; staging same inode is not started; every other shape conflicts.           |
+| `create_group`       | name, preselected GID, transaction identity                                                                                                             | Absent is not started; exact name/GID under the pending transaction is complete; other identity conflicts.    |
+| `create_user`        | name, preselected UID/GID, transaction GECOS                                                                                                            | Absent is not started; every exact identity fact is complete; any mismatch conflicts.                         |
+| `add_membership`     | name/UID and group/GID                                                                                                                                  | Exact membership is complete; absence is not started; changed identities conflict.                            |
+| `enable_service`     | unit device/inode/digest and exact enablement link path/target                                                                                          | Bind link inodes only under exact unit and target identity; any pre-existing or changed link conflicts.       |
+| `start_service`      | exact unit                                                                                                                                              | Active exact unit is complete; inactive is not started; failed state is a typed activation failure.           |
+| `stop_service`       | exact unit                                                                                                                                              | Inactive with no process/socket is complete; otherwise repeat stop and wait at most ten seconds for closure.  |
+| `create_kubernetes`  | API version, kind, namespace, name, transaction annotation                                                                                              | Bind UID only from the same cluster and annotation; absence is not started; mismatch conflicts.               |
+| `issue_credential`   | ServiceAccount UID, requested seconds, destination, staging leaf, owner/mode, transaction marker, then staged inode/digest/length/expiration when known | No leaf repeats issuance; a marked unbound leaf is removed and reissued; a bound inode continues publication. |
+| `replace_credential` | destination and recorded staged device/inode, expiration                                                                                                | Destination same inode is complete; staging same inode is not started; every other shape conflicts.           |
+| `remove_membership`  | recorded membership                                                                                                                                     | Absence is complete; exact membership is not started; changed identities conflict.                            |
+| `disable_service`    | recorded enablement link identities                                                                                                                     | All absent is complete; exact recorded links remain not started; any replacement conflicts.                   |
+| `delete_kubernetes`  | complete recorded Kubernetes ownership                                                                                                                  | Delete uses UID precondition; absence is complete; same UID remains not started; replacement conflicts.       |
+| `remove_host`        | complete recorded host ownership                                                                                                                        | Absence is complete; exact recorded inode remains not started; any replacement conflicts.                     |
+| `daemon_reload`      | exact unit                                                                                                                                              | Safe to repeat; it neither establishes nor removes ownership.                                                 |
+
+A staged regular file is first an unnamed `O_TMPFILE` inode in the destination parent. The installer
+writes it, sets and verifies a Linux extended attribute carrying the transaction identity, syncs the
+inode, links it no-replace to the predeclared same-parent staging leaf, syncs the parent, then
+records its inode before publication. A crash before link leaves no named inode. A staged directory
+uses a predeclared cryptographically random leaf containing the transaction identity; recovery may
+bind it only while it is root-owned, exact-mode, empty, in the already opened parent, and still
+named by that pending transaction, after which it sets and syncs the same extended-attribute marker.
+Any other shape conflicts. If the filesystem cannot provide these operations and markers, preflight
+rejects the host. No recovery binds an ordinary expected name or matching bytes alone.
+
+`issue_credential` owns TokenRequest through credential staging as one seam. After receiving a
+token, the installer constructs the bounded kubeconfig in memory, writes and marks an unnamed
+same-parent inode, syncs it, links it no-replace to the predeclared staging leaf, and syncs the
+parent. It then atomically adds the staged device, inode, digest, length, and expiration to
+`pending` and syncs the transaction. A crash before the link repeats TokenRequest. A crash after the
+marked leaf appears but before its inode is bound removes only that marker-matching leaf, syncs its
+parent, and reissues; the abandoned token remains inaccessible and expires within 7,200 seconds. A
+bound staged inode continues to `publish_host` during install or `replace_credential` during
+refresh.
+
+Legal phase transitions are exact:
+
+```text
+prepared -> installing -> installed
+installing -> rolling_back -> rolled_back
+rolled_back -> prepared
+installed -> refreshing -> installed
+installed -> uninstalling_local -> uninstalling_kubernetes
+uninstalling_kubernetes -> partial_uninstall -> uninstalling_kubernetes
+uninstalling_kubernetes -> uninstalling_static -> uninstalled
+```
+
+The `rolled_back -> prepared` transition requires the same installer, directory, cluster, and stable
+inputs. Every transaction update uses the same protocol: write the complete successor to an unnamed
+`O_TMPFILE` inode in the installer directory, set and verify its transaction-identity extended
+attribute, sync it, link it no-replace as `.transaction.next`, and sync the directory; then rename
+it over `transaction.json` and sync the directory again. A crash before link leaves only the old
+record. A crash after link leaves the old record plus `.transaction.next`; recovery accepts the
+latter only when its marker, schema, transaction identity, immutable fields, and phase/pending
+change are exactly one legal successor of the old record, then completes rename and directory sync.
+Any other candidate conflicts. Thus no partial named JSON is ever parsed or discarded.
+
+Before every pending action, that update protocol durably installs the pending object. After
+observation, it installs the successor that adds ownership evidence or removes the owned slot,
+clears `pending`, and advances the phase when applicable. No later action starts until that boundary
+is durable.
+
+Host ownership is stronger than a name or matching bytes. Published files and directories retain the
+recorded staged inode. Users and groups use transaction-selected numeric IDs recorded before
+creation; users also carry the transaction identity in their GECOS field. Membership records bind
+the exact user UID and group GID. Kubernetes objects carry the random transaction identity
+annotation and are bound to the selected server, CA, and returned UID. A lost Kubernetes create
+response may be recovered only by observing that same annotation and then durably binding the
+returned UID. A missing or conflicting marker, UID, inode, numeric identity, type, owner, mode,
+digest, link target, or cluster identity is an ownership conflict, not permission to replace or
+delete.
+
+### Recovery, rollback, and uninstall
+
+Every command opens and validates the transaction before preflight or mutation. A nonterminal
+install observes its exact pending seam, then continues a provably incomplete action or enters
+`rolling_back`. Install rollback stops local use and removes only resources carrying complete
+ownership evidence, in reverse creation order. A nonterminal refresh never enters install rollback:
+it retains all installed resources, observes or completes `replace_credential`, remains stopped on
+failure, and resumes refresh until it can return to `installed`. An uninstall requested during
+refresh first normalizes any credential replacement to one strongly identified installed kubeconfig,
+without requiring service restart, then begins local revocation.
+
+Every nonterminal uninstall resumes monotonically from its pending seam. It never rolls back caller
+or service revocation, re-adds membership, restarts the service, or recreates Kubernetes authority.
+It repeats exact stop/removal actions only under the pending table and cannot enter static removal
+before UID-bound Kubernetes revocation.
+
+No recovery deletes from an expected name, preflight absence, transaction intent, matching bytes, or
+an RBAC shape alone. Unresolved or conflicting ownership stops recovery nonzero and retains the
+record and resource for a disposable-host operator; installation never continues around it. A fully
+`rolled_back` first attempt may be retried with the same authenticated installer and inputs. An
+`installed`, `partial_uninstall`, or `uninstalled` transaction can never install again.
+
+Uninstall orders revocation as follows:
+
+1. disable and stop `kapseld`, wait for process and connection closure, and verify socket removal;
+2. remove the caller's exact recorded group membership;
+3. using the explicit bootstrap context, delete the recorded RoleBinding, ServiceAccount, and Role
+   only when each observed UID and transaction annotation matches;
+4. remove the strongly owned static service assets and reload systemd; and
+5. enter `uninstalled` while retaining identities, `/etc/kapsel`, `/var/lib/kapsel`, journal, worker
+   lock, receipts, and `/var/lib/kapsel-installer` evidence.
+
+If Kubernetes authority is unavailable after local revocation, uninstall enters `partial_uninstall`,
+retains every static asset and all transaction evidence needed for recovery, and exits with
+status 20. Its sole stdout line is the exact compact JSON retry record:
+
+```text
+{"status":"PARTIAL_UNINSTALL","retry":["sudo","kapsel-service-installer","uninstall","--operator-input","/secure/kapsel","--kube-context","nonprod"]}
+```
+
+The two values are the original absolute input path and context from argv. Repeating that exact
+command recovers first and resumes at Kubernetes revocation; it never re-enables local use. Static
+removal and `uninstalled` are forbidden until all three UID-bound Kubernetes objects are absent or
+were deleted under matching ownership. Absence is acceptable only after the transaction had already
+bound that object's UID.
+
+Successful uninstall deliberately leaves the disposable preview host non-reinstallable. Retained
+identities, authority/state roots, and terminal transaction evidence are part of the proof and are
+not adopted installation inputs. Reinstall, upgrade, purge, identity reuse, transaction reset, and
+manual ownership override remain unsupported; use a fresh disposable host.
+
+## Accepted source-independent archive candidate
 
 The unpublished service preview has one strict `x86_64-unknown-linux-gnu` archive named
 `kapsel-service-<40-lowercase-source-revision>-x86_64-unknown-linux-gnu.tar.gz`. It does not change
@@ -257,10 +565,11 @@ identity, the caller's submit/status/exact-receipt path, daemon argv refusal, an
 bytes without Cargo, a checkout, or repository-relative paths. A second isolated strict assembly
 must be byte-identical. The separate fresh native gate must prove systemd install/start/restart,
 Kubernetes execution, recovery, inspection, and ordered uninstall from those exact authenticated
-bytes. The [Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md) is the sole supported
-installed journey. Installation is clean-only and refuses pre-existing identities, static
-destinations, configuration/state roots, or named RBAC objects; reinstall and upgrade are
-unsupported.
+bytes. That archive's manual journey is retained only by its accepted candidate evidence; the
+[Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md) now owns the approved,
+not-yet-implemented installer journey. The archive installation was clean-only and refused
+pre-existing identities, static destinations, configuration/state roots, or named RBAC objects;
+reinstall and upgrade were unsupported.
 
 This unpublished service preview has no compatibility, upgrade, production, or public-release
 promise. Candidate assembly and verification do not authorize publication.

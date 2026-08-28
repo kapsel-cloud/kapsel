@@ -1,42 +1,58 @@
-# Documentation index
+# Documentation map
 
-Status: current.
+Start with the shortest page that answers your question. Contracts own behavior; guides show how to
+run it.
 
-Owns: Question-to-owner routing and document authority order.
+## I want to…
 
-## Owners
+| Goal                                       | Read                                                      |
+| ------------------------------------------ | --------------------------------------------------------- |
+| Understand Kapsel in five minutes          | [README](../README.md)                                    |
+| Run the published demonstration            | [Evaluator guide](EVALUATOR.md)                           |
+| Build or test the repository               | [Build and test](BUILD.md)                                |
+| Understand results, recovery, and receipts | [Effect-gateway contract](EFFECT_GATEWAY.md)              |
+| Use the local CLI                          | [Evaluator commands](COMMANDS.md)                         |
+| Use the fixed MCP tool                     | [MCP adapter](MCP.md)                                     |
+| Verify a release                           | [Release artifacts](RELEASE.md)                           |
+| Work on the unpublished service            | [Kapsel service](KAPSEL_SERVICE.md)                       |
+| Review the planned installer journey       | [Service operator journey](KAPSEL_SERVICE_OPERATOR.md)    |
+| Contribute a change                        | [Contributor guide](../AGENTS.md) and [Review](REVIEW.md) |
 
-| Question                                           | Owner                                                       |
-| -------------------------------------------------- | ----------------------------------------------------------- |
-| What is Kapsel testing and why?                    | [Technical scope](SCOPE.md)                                 |
-| What exactly does the capability guarantee?        | [Effect-gateway contract](EFFECT_GATEWAY.md)                |
-| How is it composed today?                          | [Architecture](ARCHITECTURE.md)                             |
-| What is the intended v1 technical shape?           | [V1 technical direction](VISION.md)                         |
-| What is the v0.2.0 release contract?               | [v0.2.0 Kubernetes effect-gateway beta](V0.2.md)            |
-| What is the evaluator command contract?            | [Evaluator commands](COMMANDS.md)                           |
-| What is the fixed MCP adapter contract?            | [MCP adapter](MCP.md)                                       |
-| What was the retired public sandbox HTTP contract? | [Historical public sandbox API](SANDBOX_API.md)             |
-| How was the retired sandbox intended to deploy?    | [Historical sandbox deployment](SANDBOX_DEPLOYMENT.md)      |
-| What is the Kapsel service contract?               | [Kapsel service](KAPSEL_SERVICE.md)                         |
-| How do I install the Kapsel service?               | [Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md) |
-| What can I run?                                    | [Build](BUILD.md)                                           |
-| What is the release artifact contract?             | [Release artifacts](RELEASE.md)                             |
-| How do I upgrade, restore, or downgrade?           | [Upgrade and rollback](UPGRADE.md)                          |
-| How do I evaluate an installed artifact?           | [Evaluator guide](EVALUATOR.md)                             |
-| What proof is required?                            | [Testing](TESTING.md)                                       |
-| What may Kapsel claim?                             | [Threat model](THREAT_MODEL.md)                             |
-| What data can receipts and reports disclose?       | [Privacy](PRIVACY.md)                                       |
-| What do current terms mean?                        | [Glossary](GLOSSARY.md)                                     |
-| How should Rust be shaped?                         | [Style](STYLE.md)                                           |
-| How is a change reviewed?                          | [Review](REVIEW.md)                                         |
-| Why were current durable choices made?             | [Decisions](decisions/README.md)                            |
-| How do I report a vulnerability?                   | [Security policy](../SECURITY.md)                           |
+## Current product contracts
+
+- [Technical scope](SCOPE.md) — purpose, sole capability, maturity, and non-goals.
+- [Effect-gateway contract](EFFECT_GATEWAY.md) — authorization, lifecycle, receiver results,
+  `UNKNOWN`, and receipts.
+- [Architecture](ARCHITECTURE.md) — current composition and module ownership.
+- [Threat model](THREAT_MODEL.md) and [Privacy](PRIVACY.md) — security assumptions, disclosures, and
+  non-claims.
+
+## Published v0.2.0
+
+- [v0.2.0 contract](V0.2.md) — supported beta surfaces and acceptance.
+- [Evaluator commands](COMMANDS.md) and [MCP adapter](MCP.md) — public interfaces.
+- [Release artifacts](RELEASE.md), [Upgrade and rollback](UPGRADE.md), and
+  [Evaluator guide](EVALUATOR.md) — distribution and operation.
+
+## Unpublished and prospective
+
+- [Kapsel service](KAPSEL_SERVICE.md) — accepted source implementation and installer contract.
+- [Service operator journey](KAPSEL_SERVICE_OPERATOR.md) — approved plan; not yet runnable.
+- [V1 technical direction](VISION.md) — possible future shape, not a commitment.
+
+## Project reference
+
+- [Testing](TESTING.md), [Rust style](STYLE.md), and [Review](REVIEW.md)
+- [Glossary](GLOSSARY.md)
+- [Accepted decisions](decisions/README.md)
+- [Security policy](../SECURITY.md)
+- [Historical hosted sandbox](HISTORICAL_SANDBOX.md)
 
 ## Authority order
 
 When documents disagree:
 
-1. [Technical scope](SCOPE.md) and the [effect-gateway contract](EFFECT_GATEWAY.md);
-2. the direct owner for the specific claim;
+1. [Technical scope](SCOPE.md) and [Effect-gateway contract](EFFECT_GATEWAY.md);
+2. the direct contract for that surface;
 3. conforming implementation and tests; then
 4. accepted decisions, which explain rationale but do not override current contracts.

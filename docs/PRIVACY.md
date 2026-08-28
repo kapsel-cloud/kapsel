@@ -6,8 +6,8 @@ Kind: design. Authority: data-exposure boundary for the Kubernetes effect-gatewa
 
 Owns: Disclosure risks for requests, journals, receipts, reports, and demo artifacts.
 
-Does not own: Legal compliance, production retention, Kubernetes credential operations, or exact
-public-sandbox field grammar.
+Does not own: Legal compliance, production retention, Kubernetes credential operations, or retired
+hosted-sandbox details.
 
 ## Short answer
 
@@ -40,10 +40,9 @@ Potentially revealing material includes:
 
 ## Historical sandbox data
 
-The removed hosted sandbox used only synthetic request and receiver fields. Its fixed fixture values
-and historical data-flow contract remain in [the sandbox API](SANDBOX_API.md) and
-[deployment contract](SANDBOX_DEPLOYMENT.md). No hosted collection, retention, telemetry, provider
-audit, or deletion policy is active.
+The removed hosted sandbox used only synthetic request and receiver fields. Its
+[historical record and fixtures](HISTORICAL_SANDBOX.md) contain no live data. No hosted collection,
+retention, telemetry, provider audit, or deletion policy is active.
 
 ## Non-claims
 

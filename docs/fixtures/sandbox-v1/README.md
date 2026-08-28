@@ -1,7 +1,8 @@
 # Sandbox `v1` contract fixtures
 
-Status: historical explanatory fixtures for the retired [public sandbox API](../../SANDBOX_API.md).
-They carry no active compatibility or deployment promise.
+Status: historical explanatory fixtures for the retired
+[hosted sandbox](../../HISTORICAL_SANDBOX.md). They carry no active compatibility or deployment
+promise.
 
 Each JSON file is a bounded HTTP transcript. `request` and `response` own the exact method, path,
 headers, status, and JSON body relevant to the named behavior. Header names are lowercase in
