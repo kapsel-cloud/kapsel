@@ -681,6 +681,7 @@ dependencies = [
 name = "kapsel-installer"
 version = "0.2.0"
 dependencies = [
+ "kapsel",
  "rustix",
  "serde_json",
  "sha2",

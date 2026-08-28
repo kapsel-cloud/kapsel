@@ -67,26 +67,75 @@ def stage_bundle(stage: pathlib.Path) -> None:
         directory.chmod(0o755)
 
 
+def operator_input(directory: pathlib.Path) -> None:
+    directory.chmod(0o700)
+    files = {
+        "grant.bin": bytes.fromhex(
+            (ROOT / "vectors/effect-gateway-grant.hex").read_text().strip()
+        ),
+        "authorization.pub": bytes.fromhex(
+            "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        ),
+        "receipt.seed": bytes([9]) * 32,
+        "receipt.trust": bytes.fromhex(
+            (ROOT / "vectors/effect-gateway-trust.hex").read_text().strip()
+        ),
+        "bootstrap-kubeconfig.yaml": b"""apiVersion: v1
+kind: Config
+clusters:
+- name: fixture
+  cluster:
+    server: https://127.0.0.1:6443
+    certificate-authority-data: Y2E=
+users:
+- name: fixture
+  user:
+    token: fixture-token
+contexts:
+- name: nonprod
+  context:
+    cluster: fixture
+    user: fixture
+    namespace: demo
+current-context: nonprod
+""",
+    }
+    for name, contents in files.items():
+        path = directory / name
+        path.write_bytes(contents)
+        path.chmod(0o600)
+
+
 def main() -> int:
     if shutil.which("docker") is None:
         raise RuntimeError("Docker is required for the installer bundle smoke")
     subprocess.run(
         ["docker", "info"], check=True, stdout=subprocess.DEVNULL, timeout=30
     )
-    with tempfile.TemporaryDirectory(prefix="kapsel-installer-stage-") as stage_text:
-        with tempfile.TemporaryDirectory(prefix="kapsel-installer-target-") as target_text:
-            stage = pathlib.Path(stage_text)
-            target = pathlib.Path(target_text)
-            stage_bundle(stage)
-            script = f"""
-                set -eu
-                restore_target_ownership() {{
-                    chown -R "$HOST_UID:$HOST_GID" /target
-                }}
-                trap restore_target_ownership EXIT
-                cargo build --release --locked --target {TARGET} \\
-                    -p kapsel-installer
-                installer=/target/{TARGET}/release/kapsel-installer
+    with (
+        tempfile.TemporaryDirectory(prefix="kapsel-installer-stage-") as stage_text,
+        tempfile.TemporaryDirectory(prefix="kapsel-installer-target-") as target_text,
+        tempfile.TemporaryDirectory(prefix="kapsel-installer-input-") as input_text,
+    ):
+        stage = pathlib.Path(stage_text)
+        target = pathlib.Path(target_text)
+        operator = pathlib.Path(input_text)
+        stage_bundle(stage)
+        operator_input(operator)
+        script = f"""
+            set -eu
+            restore_target_ownership() {{
+                chown -R "$HOST_UID:$HOST_GID" /target
+            }}
+            trap restore_target_ownership EXIT
+            cargo build --release --locked --target {TARGET} \\
+                -p kapsel-installer
+            installer=/target/{TARGET}/release/kapsel-installer
+            mkdir -p /secure
+            cp -a /operator-fixture /secure/kapsel
+            chown -R 0:0 /secure/kapsel
+            run_failure() {{
+                expected=$1
                 set +e
                 "$installer" install --operator-input /secure/kapsel \\
                     --kube-context nonprod >/target/stdout 2>/target/stderr
@@ -95,49 +144,99 @@ def main() -> int:
                 test "$status" = 1
                 test ! -s /target/stdout
                 test "$(cat /target/stderr)" = \\
-                    "Kapsel installer failure: implementation_incomplete"
-            """
-            container = f"kapsel-installer-bundle-{os.getpid()}-{secrets.token_hex(4)}"
-            command = [
-                "docker",
-                "run",
-                "--rm",
-                "--name",
-                container,
-                "--platform",
-                "linux/amd64",
-                "--volume",
-                f"{ROOT}:/workspace:ro",
-                "--volume",
-                f"{stage}:/stage:ro",
-                "--volume",
-                f"{target}:/target",
-                "--workdir",
-                "/workspace",
-                "--env",
-                "CARGO_TARGET_DIR=/target",
-                "--env",
-                "KAPSEL_INSTALLER_STAGE=/stage",
-                "--env",
-                f"HOST_UID={os.getuid()}",
-                "--env",
-                f"HOST_GID={os.getgid()}",
-                BUILDER_IMAGE,
-                "sh",
-                "-eu",
-                "-c",
-                script,
-            ]
-            try:
-                subprocess.run(command, cwd=ROOT, check=True, timeout=300)
-            finally:
-                subprocess.run(
-                    ["docker", "rm", "--force", container],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=30,
-                    check=False,
-                )
+                    "Kapsel installer failure: $expected"
+            }}
+            run_failure implementation_incomplete
+            chmod 0644 /secure/kapsel/grant.bin
+            run_failure invalid_operator_input
+            chmod 0600 /secure/kapsel/grant.bin
+            : >/secure/kapsel/unknown
+            chmod 0600 /secure/kapsel/unknown
+            run_failure invalid_operator_input
+            rm /secure/kapsel/unknown
+            ln /secure/kapsel/receipt.seed /secure/receipt-seed-link
+            run_failure invalid_operator_input
+            rm /secure/receipt-seed-link
+            cp /secure/kapsel/authorization.pub /secure/kapsel/receipt.seed
+            chmod 0600 /secure/kapsel/receipt.seed
+            run_failure invalid_operator_input
+            cp /operator-fixture/receipt.seed /secure/kapsel/receipt.seed
+            rm /secure/kapsel/grant.bin
+            mkfifo -m 0600 /secure/kapsel/grant.bin
+            run_failure invalid_operator_input
+            rm /secure/kapsel/grant.bin
+            cp /operator-fixture/grant.bin /secure/kapsel/grant.bin
+            rm /secure/kapsel/receipt.trust
+            ln -s /operator-fixture/receipt.trust /secure/kapsel/receipt.trust
+            run_failure invalid_operator_input
+            rm /secure/kapsel/receipt.trust
+            cp /operator-fixture/receipt.trust /secure/kapsel/receipt.trust
+            rm /secure/kapsel/authorization.pub
+            run_failure invalid_operator_input
+            cp /operator-fixture/authorization.pub /secure/kapsel/authorization.pub
+            chown 1 /secure/kapsel/grant.bin
+            run_failure invalid_operator_input
+            chown 0 /secure/kapsel/grant.bin
+            chmod 0710 /secure/kapsel
+            run_failure invalid_operator_input
+            chmod 0700 /secure/kapsel
+            head -c 65537 /dev/zero >/secure/kapsel/bootstrap-kubeconfig.yaml
+            chmod 0600 /secure/kapsel/bootstrap-kubeconfig.yaml
+            run_failure invalid_operator_input
+            cp /operator-fixture/bootstrap-kubeconfig.yaml \
+                /secure/kapsel/bootstrap-kubeconfig.yaml
+            head -c 31 /operator-fixture/authorization.pub \
+                >/secure/kapsel/authorization.pub
+            chmod 0600 /secure/kapsel/authorization.pub
+            run_failure invalid_operator_input
+            cp /operator-fixture/authorization.pub /secure/kapsel/authorization.pub
+            mv /secure/kapsel /secure/kapsel-real
+            ln -s /secure/kapsel-real /secure/kapsel
+            run_failure invalid_operator_input
+        """
+        container = f"kapsel-installer-bundle-{os.getpid()}-{secrets.token_hex(4)}"
+        command = [
+            "docker",
+            "run",
+            "--rm",
+            "--name",
+            container,
+            "--platform",
+            "linux/amd64",
+            "--volume",
+            f"{ROOT}:/workspace:ro",
+            "--volume",
+            f"{stage}:/stage:ro",
+            "--volume",
+            f"{target}:/target",
+            "--volume",
+            f"{operator}:/operator-fixture:ro",
+            "--workdir",
+            "/workspace",
+            "--env",
+            "CARGO_TARGET_DIR=/target",
+            "--env",
+            "KAPSEL_INSTALLER_STAGE=/stage",
+            "--env",
+            f"HOST_UID={os.getuid()}",
+            "--env",
+            f"HOST_GID={os.getgid()}",
+            BUILDER_IMAGE,
+            "sh",
+            "-eu",
+            "-c",
+            script,
+        ]
+        try:
+            subprocess.run(command, cwd=ROOT, check=True, timeout=900)
+        finally:
+            subprocess.run(
+                ["docker", "rm", "--force", container],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
     print("installer release-bundle smoke: ok")
     return 0
 
