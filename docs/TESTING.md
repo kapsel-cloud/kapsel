@@ -210,6 +210,15 @@ startup accepts neither. Service-client tests freeze its three-command grammar, 
 lowercase receipt decoding, digest verification, exclusive mode-`0600` output, and refusal to
 replace an existing receipt.
 
+The `kapsel-installer` package's black-box binary tests freeze its exact three-command grammar,
+required-once options, absolute operator-input path, Kubernetes context bounds, secret-free failure
+class, and empty stdout. They also prove that a default development build reaches
+`bundle_unavailable` without creating anything in its working directory. The explicit Docker bundle
+smoke constructs an exact stage with clearly test-only ELF fixtures, crosses release-stage
+generation, and requires the built Linux installer to reach `implementation_incomplete`. It proves
+no payload provenance, metadata schema, final-size bound, runnable installation, or candidate
+qualification.
+
 The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
 suites remain authoritative for v0.2.0.
 

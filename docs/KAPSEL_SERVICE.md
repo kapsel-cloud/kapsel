@@ -181,9 +181,13 @@ The systemd unit uses `Type=exec`, `User=kapsel`, `Group=kapsel-service-callers`
 limiting, the fixed argv above, and `WantedBy=multi-user.target`. Every boot, explicit start, or
 explicit restart attempts startup once.
 
-The sysusers record creates only the locked non-login `kapsel` identity, its private group, and
-`kapsel-service-callers`. It does not create the external caller. The caller's supervisor must set
-effective `Group=kapsel-service-callers`; supplementary membership alone is insufficient.
+The installer creates the `kapsel` private group, `kapsel-service-callers`, and locked `kapsel` user
+through fixed absolute no-shell identity commands using transaction-preselected numeric IDs and the
+exact transaction identity as GECOS. It creates the locked external caller separately and binds its
+exact caller-group membership. It does not invoke `systemd-sysusers`; the installed sysusers record
+is a vendor asset only and is never installer ownership or recovery evidence. The caller's
+supervisor must set effective `Group=kapsel-service-callers`; supplementary membership alone is
+insufficient.
 
 Systemd state plus successful authenticated socket use is the health boundary. The socket exposes no
 administration, key management, migration, purge, health, or shutdown request. Diagnostics are
@@ -222,27 +226,28 @@ qualified command.
 ### Authenticated acquisition and fixed interface
 
 “One-command installation” begins only after the operator independently downloads and authenticates
-one `x86_64-unknown-linux-gnu` `kapsel-service-installer` executable, its digest manifest, and its
-Sigstore bundle. Authentication verifies the exact issuer, `kapsel-cloud/kapsel` repository,
-appointed workflow, `refs/heads/master` ref, 40-hex source SHA, and `workflow_dispatch` trigger
-before the manifest verifies the executable digest. The installer cannot authenticate itself. It
-performs no runtime download and embeds the exact three service executables, systemd unit, sysusers
-record, RBAC bytes, operator guide, license, and metadata. The authenticated installer executable is
-at most 64 MiB; a larger candidate is rejected before execution rather than adding a second payload
-or runtime download.
+one `x86_64-unknown-linux-gnu` `kapsel-installer` executable, its digest manifest, and its Sigstore
+bundle. Authentication verifies the exact issuer, `kapsel-cloud/kapsel` repository, appointed
+workflow, `refs/heads/master` ref, 40-hex source SHA, and `workflow_dispatch` trigger before the
+manifest verifies the executable digest. The installer cannot authenticate itself. It performs no
+runtime download and embeds the exact three service executables, systemd unit, sysusers record, RBAC
+bytes, operator guide, license, and metadata. License and metadata are embedded bundle evidence
+only; they have no install destination and are not host resources. The authenticated installer
+executable is at most 64 MiB; a larger candidate is rejected before execution rather than adding a
+second payload or runtime download.
 
 The only planned mutating commands are:
 
 ```text
-sudo kapsel-service-installer install \
+sudo kapsel-installer install \
   --operator-input /secure/kapsel \
   --kube-context nonprod
 
-sudo kapsel-service-installer refresh-credential \
+sudo kapsel-installer refresh-credential \
   --operator-input /secure/kapsel \
   --kube-context nonprod
 
-sudo kapsel-service-installer uninstall \
+sudo kapsel-installer uninstall \
   --operator-input /secure/kapsel \
   --kube-context nonprod
 ```
@@ -339,7 +344,7 @@ explicit refresh command and reachable bootstrap authority.
 
 ### Durable installer transaction and ownership
 
-The installer first opens `/run/lock/kapsel-service-installer.lock` as an exact root-owned regular
+The installer first opens `/run/lock/kapsel-installer.lock` as an exact root-owned regular
 single-link mode-`0600` file and takes a nonblocking exclusive `flock`. The lock leaf is
 coordination, not durable ownership evidence, and may be reused after the crash-released lock. With
 the lock held, the only mutation allowed before a transaction exists is this bootstrap: create
@@ -462,12 +467,14 @@ is durable.
 Host ownership is stronger than a name or matching bytes. Published files and directories retain the
 recorded staged inode. Users and groups use transaction-selected numeric IDs recorded before
 creation; users also carry the transaction identity in their GECOS field. Membership records bind
-the exact user UID and group GID. Kubernetes objects carry the random transaction identity
-annotation and are bound to the selected server, CA, and returned UID. A lost Kubernetes create
-response may be recovered only by observing that same annotation and then durably binding the
-returned UID. A missing or conflicting marker, UID, inode, numeric identity, type, owner, mode,
-digest, link target, or cluster identity is an ownership conflict, not permission to replace or
-delete.
+the exact user UID and group GID. `kapseld.conf` is published only after the transaction has durably
+bound every identity it names; rollback removes that asset before removing any created identity, and
+no boot or recovery path may use sysusers to complete a pending identity action. Kubernetes objects
+carry the random transaction identity annotation and are bound to the selected server, CA, and
+returned UID. A lost Kubernetes create response may be recovered only by observing that same
+annotation and then durably binding the returned UID. A missing or conflicting marker, UID, inode,
+numeric identity, type, owner, mode, digest, link target, or cluster identity is an ownership
+conflict, not permission to replace or delete.
 
 ### Recovery, rollback, and uninstall
 
@@ -506,7 +513,7 @@ retains every static asset and all transaction evidence needed for recovery, and
 status 20. Its sole stdout line is the exact compact JSON retry record:
 
 ```text
-{"status":"PARTIAL_UNINSTALL","retry":["sudo","kapsel-service-installer","uninstall","--operator-input","/secure/kapsel","--kube-context","nonprod"]}
+{"status":"PARTIAL_UNINSTALL","retry":["sudo","kapsel-installer","uninstall","--operator-input","/secure/kapsel","--kube-context","nonprod"]}
 ```
 
 The two values are the original absolute input path and context from argv. Repeating that exact

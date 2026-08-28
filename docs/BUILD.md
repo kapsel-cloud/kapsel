@@ -34,6 +34,8 @@ gate for every content-changing commit.
 | Effect-gateway library        | `cargo test --locked -p kapsel`                                |
 | Effect-gateway Clippy         | `cargo clippy --locked -p kapsel --all-targets -- -D warnings` |
 | Kapsel service                | `cargo test --locked -p kapseld --features test-harness`       |
+| Installer skeleton            | `cargo test --locked -p kapsel-installer`                      |
+| Installer bundle seam         | `cargo make test-installer-bundle`                             |
 | Service installed assets      | `cargo test --locked -p kapseld --test install_assets`         |
 | MCP adapter                   | `cargo test --locked --test e2e_mcp_adapter`                   |
 | Upgrade and rollback          | `cargo make test-v011-upgrade`                                 |
@@ -74,6 +76,30 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
 
 The service contract owns what these gates prove and do not prove. See
 [Kapsel service](KAPSEL_SERVICE.md).
+
+## Kapsel installer skeleton
+
+The unpublished installer package currently proves only its fixed command grammar and fail-closed
+development build:
+
+```sh
+cargo test --locked -p kapsel-installer
+cargo clippy --locked -p kapsel-installer --all-targets --all-features -- -D warnings
+```
+
+The installer produced by default workspace builds deliberately contains no embedded service
+payloads. An otherwise valid mutating invocation exits before host access with `bundle_unavailable`;
+installation is not yet runnable. The release-only build seam accepts one structurally bounded fixed
+stage through `KAPSEL_INSTALLER_STAGE`. Its explicit Docker smoke uses test-only ELF fixtures and
+proves only bundle generation plus the `implementation_incomplete` boundary:
+
+```sh
+cargo make test-installer-bundle
+```
+
+No candidate assembly command exists yet. Exact metadata schema and provenance, real feature-free
+payload construction, deterministic assembly, and the final linked installer's 64 MiB bound remain
+candidate-assembly work.
 
 ## Upgrade and rollback fixture gate
 

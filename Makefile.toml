@@ -62,6 +62,11 @@ done
 exit "$status"
 '''
 
+[tasks.test-installer-bundle]
+description = "Smoke the release-only fixed installer bundle seam in the pinned Linux builder"
+command = "python3"
+args = ["scripts/test-kapsel-installer-bundle.py"]
+
 [tasks.test-kind]
 description = "Run the explicit live Kubernetes gate through a disposable kind cluster"
 command = "./scripts/test-kind-effect-gateway.sh"

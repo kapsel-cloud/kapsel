@@ -57,7 +57,7 @@ byte-identical.
 After authenticating the installer, the complete planned installation command is:
 
 ```sh
-sudo kapsel-service-installer install \
+sudo kapsel-installer install \
   --operator-input /secure/kapsel \
   --kube-context nonprod
 ```
@@ -123,7 +123,7 @@ There is no automatic refresh, timer, or persisted bootstrap authority. When the
 has at most 900 seconds remaining, or after it expires, run:
 
 ```sh
-sudo kapsel-service-installer refresh-credential \
+sudo kapsel-installer refresh-credential \
   --operator-input /secure/kapsel \
   --kube-context nonprod
 ```
@@ -163,7 +163,7 @@ authenticated installer, input directory, and context.
 Use the same explicit operator input and Kubernetes context:
 
 ```sh
-sudo kapsel-service-installer uninstall \
+sudo kapsel-installer uninstall \
   --operator-input /secure/kapsel \
   --kube-context nonprod
 ```
@@ -181,7 +181,7 @@ If Kubernetes is unavailable after local revocation, the command retains all sta
 operator/state roots, and installer ownership evidence, exits with status 20, and prints only:
 
 ```text
-{"status":"PARTIAL_UNINSTALL","retry":["sudo","kapsel-service-installer","uninstall","--operator-input","/secure/kapsel","--kube-context","nonprod"]}
+{"status":"PARTIAL_UNINSTALL","retry":["sudo","kapsel-installer","uninstall","--operator-input","/secure/kapsel","--kube-context","nonprod"]}
 ```
 
 The path and context are the original argv values. Run that exact argv after Kubernetes returns. The

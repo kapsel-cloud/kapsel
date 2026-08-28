@@ -678,6 +678,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kapsel-installer"
+version = "0.2.0"
+dependencies = [
+ "rustix",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "kapseld"
 version = "0.2.0"
 dependencies = [
