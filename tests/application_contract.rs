@@ -15,9 +15,10 @@ use ed25519_dalek::SigningKey;
 use tower_test::mock;
 
 use kapsel::{
-    open_application_from_fixed_operator_document, provision_exact_grant, AgentRequest,
-    Application, ApplicationError, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
-    OperationState, OperatorConfiguration, SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    open_application_from_fixed_operator_document, provision_exact_grant,
+    validate_service_operator_inputs, AgentRequest, Application, ApplicationError,
+    AuthorizationTrust, ExactAuthorization, GrantProvisioning, OperationState,
+    OperatorConfiguration, ReceiptTrust, SetDeploymentImageReceipt, SetDeploymentImageStatus,
     TargetRejection,
 };
 
@@ -572,6 +573,108 @@ async fn receipt_read_fails_closed_for_hostile_finalized_storage() {
 
     drop(application);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn service_operator_inputs_return_only_consistent_public_identity() {
+    let request = request();
+    let authorization_seed = [81_u8; 32];
+    let authorization_key = SigningKey::from_bytes(&authorization_seed);
+    let grant = provision_exact_grant(&GrantProvisioning {
+        authorization: &authorization(&request),
+        signing_seed: &authorization_seed,
+        signing_key_id: "service-authorization-key",
+    })
+    .unwrap();
+    let receipt_seed = [82_u8; 32];
+    let receipt_trust = ReceiptTrust {
+        key_id: "service-receipt-key".into(),
+        public_key: SigningKey::from_bytes(&receipt_seed)
+            .verifying_key()
+            .to_bytes(),
+        accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
+        not_before_unix_s: 100,
+        not_after_unix_s: 200,
+    }
+    .encode()
+    .unwrap();
+
+    let validated = validate_service_operator_inputs(
+        &grant,
+        &authorization_key.verifying_key().to_bytes(),
+        &receipt_seed,
+        &receipt_trust,
+    )
+    .unwrap();
+
+    assert_eq!(validated.authorization, authorization(&request));
+    assert_eq!(
+        validated.authorization_signing_key_id,
+        "service-authorization-key"
+    );
+    assert_eq!(validated.receipt_signing_key_id, "service-receipt-key");
+}
+
+#[test]
+fn service_operator_inputs_reject_every_inconsistent_authority() {
+    let request = request();
+    let authorization_seed = [83_u8; 32];
+    let grant = provision_exact_grant(&GrantProvisioning {
+        authorization: &authorization(&request),
+        signing_seed: &authorization_seed,
+        signing_key_id: "service-authorization-key",
+    })
+    .unwrap();
+    let authorization_public_key = SigningKey::from_bytes(&authorization_seed)
+        .verifying_key()
+        .to_bytes();
+    let receipt_seed = [84_u8; 32];
+    let trust = |seed: &[u8; 32], purpose: &str| {
+        ReceiptTrust {
+            key_id: "service-receipt-key".into(),
+            public_key: SigningKey::from_bytes(seed).verifying_key().to_bytes(),
+            accepted_purpose: purpose.into(),
+            not_before_unix_s: 100,
+            not_after_unix_s: 200,
+        }
+        .encode()
+        .unwrap()
+    };
+    let receipt_trust = trust(&receipt_seed, "kapsel.kap0038.kubernetes-effect-receipt.v2");
+
+    for result in [
+        validate_service_operator_inputs(
+            b"not-a-grant",
+            &authorization_public_key,
+            &receipt_seed,
+            &receipt_trust,
+        ),
+        validate_service_operator_inputs(
+            &grant,
+            &SigningKey::from_bytes(&[85_u8; 32])
+                .verifying_key()
+                .to_bytes(),
+            &receipt_seed,
+            &receipt_trust,
+        ),
+        validate_service_operator_inputs(
+            &grant,
+            &authorization_public_key,
+            &[86_u8; 32],
+            &receipt_trust,
+        ),
+        validate_service_operator_inputs(
+            &grant,
+            &authorization_public_key,
+            &receipt_seed,
+            &trust(&receipt_seed, "wrong-purpose"),
+        ),
+    ] {
+        assert!(matches!(
+            result,
+            Err(ApplicationError::InvalidOperatorConfiguration)
+        ));
+    }
 }
 
 #[tokio::test]

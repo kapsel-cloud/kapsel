@@ -76,6 +76,27 @@ pub(crate) fn sign_authorization_grant(
     Ok(output)
 }
 
+pub(crate) fn verify_authorization_grant_for_public_key(
+    bytes: &[u8],
+    public_key: &[u8; 32],
+) -> Result<VerifiedAuthorization, GatewayError> {
+    if bytes.len() > SIGNED_GRANT_BYTES_MAX {
+        return Err(GatewayError::InvalidAuthorizationGrant);
+    }
+    let mut records = GrantRecords::new(bytes, SIGNED_GRANT_MAGIC)?;
+    if records.take_record(1)? != GRANT_PURPOSE.as_bytes() {
+        return Err(GatewayError::InvalidAuthorizationGrant);
+    }
+    let key_id = records.take_ascii_text(2)?;
+    verify_authorization_grant(
+        bytes,
+        &AuthorizationTrust {
+            key_id,
+            public_key: *public_key,
+        },
+    )
+}
+
 pub(crate) fn verify_authorization_grant(
     bytes: &[u8],
     trust: &AuthorizationTrust,

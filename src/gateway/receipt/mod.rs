@@ -504,6 +504,19 @@ impl ReceiptTrust {
     }
 }
 
+pub(crate) fn receipt_signing_key_id(
+    seed: &[u8; 32],
+    trust: &[u8],
+) -> Result<String, ReceiptError> {
+    let trust = ReceiptTrust::parse(trust, InspectionLimits::default())?;
+    if trust.accepted_purpose != PURPOSE
+        || trust.public_key != SigningKey::from_bytes(seed).verifying_key().to_bytes()
+    {
+        return Err(ReceiptError::InvalidValue);
+    }
+    Ok(trust.key_id)
+}
+
 pub(crate) fn sign_statement(
     statement: &ReceiptStatement,
     seed: &[u8; 32],

@@ -18,7 +18,9 @@ use std::{
 };
 
 pub use authorization::AuthorizationTrust;
-pub(crate) use authorization::{sign_authorization_grant, verify_authorization_grant};
+pub(crate) use authorization::{
+    sign_authorization_grant, verify_authorization_grant, verify_authorization_grant_for_public_key,
+};
 use journal::Journal;
 use kubernetes::{
     ApplyOutcome, KubernetesDeploymentImageAdapter, ReceiverObservation, TargetIdentity,
@@ -30,6 +32,7 @@ pub(crate) use kubernetes::{
     ReceiverObservation as TestReceiverObservation, TargetIdentity as TestTargetIdentity,
 };
 pub(crate) use receipt::publication::validate_private_directory;
+pub(crate) use receipt::receipt_signing_key_id;
 pub(crate) use receipt::validate_key_id;
 pub use receipt::{
     inspect_receipt, InspectionLimits, InspectionReport, InspectionStatus, ReceiptError,

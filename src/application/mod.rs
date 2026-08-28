@@ -18,10 +18,10 @@ use serde::Deserialize;
 use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::gateway::{
-    sign_authorization_grant, validate_key_id, validate_private_directory,
-    verify_authorization_grant, AuthorizationTrust, ExactAuthorization, Gateway, GatewayError,
-    OperationResult, OperationState, ReceiptReference, ReceiptSettings, SetDeploymentImageRequest,
-    SubmissionResult, TargetRejection,
+    receipt_signing_key_id, sign_authorization_grant, validate_key_id, validate_private_directory,
+    verify_authorization_grant, verify_authorization_grant_for_public_key, AuthorizationTrust,
+    ExactAuthorization, Gateway, GatewayError, OperationResult, OperationState, ReceiptReference,
+    ReceiptSettings, SetDeploymentImageRequest, SubmissionResult, TargetRejection,
 };
 
 /// Request-only caller input for the sole supported operation.
@@ -246,6 +246,46 @@ fn configure_explicit_kubeconfig(
     } else {
         Ok(false)
     }
+}
+
+/// Public identities derived from consistent Kapsel service operator inputs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedServiceOperatorInputs {
+    /// Exact operation tuple authenticated by the authorization key.
+    pub authorization: ExactAuthorization,
+    /// Signing-key identity authenticated inside the exact authorization grant.
+    pub authorization_signing_key_id: String,
+    /// Receipt-signing key identity appointed by evaluator trust.
+    pub receipt_signing_key_id: String,
+}
+
+/// Validates the service grant, authorization key, receipt seed, and evaluator trust together.
+///
+/// The returned value contains only public identity. This function performs no filesystem,
+/// network, environment, clock, or durable-state access.
+///
+/// # Errors
+///
+/// Returns [`ApplicationError::InvalidOperatorConfiguration`] when any input is malformed or the
+/// grant, public key, receipt seed, and trust do not appoint one consistent authority.
+pub fn validate_service_operator_inputs(
+    signed_authorization_grant: &[u8],
+    authorization_public_key: &[u8; 32],
+    receipt_signing_seed: &[u8; 32],
+    receipt_trust: &[u8],
+) -> Result<ValidatedServiceOperatorInputs, ApplicationError> {
+    let verified = verify_authorization_grant_for_public_key(
+        signed_authorization_grant,
+        authorization_public_key,
+    )
+    .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    let receipt_signing_key_id = receipt_signing_key_id(receipt_signing_seed, receipt_trust)
+        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    Ok(ValidatedServiceOperatorInputs {
+        authorization: verified.authorization,
+        authorization_signing_key_id: verified.signer_key_id,
+        receipt_signing_key_id,
+    })
 }
 
 /// Operator-only inputs for provisioning one exact authorization grant.
