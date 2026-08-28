@@ -1,5 +1,10 @@
 //! Self-contained installer for the unpublished Kapsel preview.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "runtime installer validation is Linux-only")
+)]
+
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -17,8 +22,11 @@ use std::{
     path::{Component, Path},
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use http::{uri::Scheme, Uri};
 #[cfg(target_os = "linux")]
 use rustix::fs::{self as rfs, FileType, Mode, OFlags, RawDir, Stat, CWD};
+use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 #[cfg(target_os = "linux")]
@@ -26,10 +34,108 @@ struct OperatorInput {
     _directory: OwnedFd,
     _files: BTreeMap<&'static str, Vec<u8>>,
     _identity: kapsel::ValidatedServiceOperatorInputs,
+    _bootstrap: BootstrapAuthority,
 }
 
 #[cfg(not(target_os = "linux"))]
 struct OperatorInput;
+
+struct BootstrapAuthority {
+    _server: String,
+    _certificate_authority: Vec<u8>,
+    _credential: BootstrapCredential,
+}
+
+enum BootstrapCredential {
+    Token {
+        _token: String,
+    },
+    ClientCertificate {
+        _certificate: Vec<u8>,
+        _key: Vec<u8>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapKubeconfig {
+    #[serde(rename = "apiVersion")]
+    api_version: String,
+    kind: String,
+    clusters: Vec<NamedCluster>,
+    users: Vec<NamedUser>,
+    contexts: Vec<NamedContext>,
+    #[serde(
+        rename = "current-context",
+        default,
+        deserialize_with = "deserialize_optional_string"
+    )]
+    current_context: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedCluster {
+    name: String,
+    cluster: Cluster,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Cluster {
+    server: String,
+    #[serde(rename = "certificate-authority-data")]
+    certificate_authority_data: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedUser {
+    name: String,
+    user: User,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct User {
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    token: Option<String>,
+    #[serde(
+        rename = "client-certificate-data",
+        default,
+        deserialize_with = "deserialize_optional_string"
+    )]
+    client_certificate_data: Option<String>,
+    #[serde(
+        rename = "client-key-data",
+        default,
+        deserialize_with = "deserialize_optional_string"
+    )]
+    client_key_data: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedContext {
+    name: String,
+    context: Context,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Context {
+    cluster: String,
+    user: String,
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    namespace: Option<String>,
+}
+
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
 
 #[cfg(target_os = "linux")]
 const OPERATOR_FILES: &[(&str, usize)] = &[
@@ -118,7 +224,8 @@ fn main() -> ExitCode {
 fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerError> {
     let invocation = parse_arguments(arguments)?;
     validate_embedded_bundle()?;
-    let _operator_input = validate_operator_input(&invocation.operator_input)?;
+    let _operator_input =
+        validate_operator_input(&invocation.operator_input, &invocation.kube_context)?;
 
     let _ = (invocation.action, invocation.kube_context);
     Err(InstallerError::ImplementationIncomplete)
@@ -232,13 +339,159 @@ fn validate_embedded_bundle() -> Result<(), InstallerError> {
     Ok(())
 }
 
+fn parse_bootstrap_kubeconfig(
+    bytes: &[u8],
+    selected_context: &str,
+) -> Result<BootstrapAuthority, InstallerError> {
+    let options = serde_saphyr::options! {
+        budget: serde_saphyr::budget! {
+            max_events: 512,
+            max_aliases: 0,
+            max_anchors: 0,
+            max_depth: 16,
+            max_documents: 1,
+            max_nodes: 128,
+            max_total_scalar_bytes: 64 * 1024,
+            max_total_comment_bytes: 64 * 1024,
+            max_merge_keys: 0,
+        },
+        merge_keys: serde_saphyr::MergeKeyPolicy::Error,
+        strict_booleans: true,
+        no_schema: true,
+        with_snippet: false,
+    };
+    let mut configs: Vec<BootstrapKubeconfig> =
+        serde_saphyr::from_slice_multiple_with_options(bytes, options)
+            .map_err(|_| InstallerError::InvalidOperatorInput)?;
+    if configs.len() != 1 {
+        return Err(InstallerError::InvalidOperatorInput);
+    }
+    let config = configs.pop().ok_or(InstallerError::InvalidOperatorInput)?;
+    if config.api_version != "v1"
+        || config.kind != "Config"
+        || config.clusters.len() != 1
+        || config.users.len() != 1
+        || config.contexts.len() != 1
+        || config
+            .current_context
+            .as_deref()
+            .is_some_and(|current| current != selected_context)
+    {
+        return Err(InstallerError::InvalidOperatorInput);
+    }
+    let cluster = config
+        .clusters
+        .into_iter()
+        .next()
+        .ok_or(InstallerError::InvalidOperatorInput)?;
+    let user = config
+        .users
+        .into_iter()
+        .next()
+        .ok_or(InstallerError::InvalidOperatorInput)?;
+    let context = config
+        .contexts
+        .into_iter()
+        .next()
+        .ok_or(InstallerError::InvalidOperatorInput)?;
+    if context.name != selected_context
+        || context.context.cluster != cluster.name
+        || context.context.user != user.name
+        || context
+            .context
+            .namespace
+            .as_deref()
+            .is_some_and(|namespace| namespace != "demo")
+        || cluster.name.is_empty()
+        || user.name.is_empty()
+    {
+        return Err(InstallerError::InvalidOperatorInput);
+    }
+
+    let server = validate_server(cluster.cluster.server)?;
+    let certificate_authority = decode_inline_data(&cluster.cluster.certificate_authority_data)?;
+    let credential = match (
+        user.user.token,
+        user.user.client_certificate_data,
+        user.user.client_key_data,
+    ) {
+        (Some(token), None, None)
+            if !token.is_empty() && token.len() <= 16 * 1024 && token.is_ascii() =>
+        {
+            BootstrapCredential::Token { _token: token }
+        },
+        (None, Some(certificate), Some(key)) => BootstrapCredential::ClientCertificate {
+            _certificate: decode_inline_data(&certificate)?,
+            _key: decode_inline_data(&key)?,
+        },
+        _ => return Err(InstallerError::InvalidOperatorInput),
+    };
+    Ok(BootstrapAuthority {
+        _server: server,
+        _certificate_authority: certificate_authority,
+        _credential: credential,
+    })
+}
+
+fn validate_server(server: String) -> Result<String, InstallerError> {
+    let uri = server
+        .parse::<Uri>()
+        .map_err(|_| InstallerError::InvalidOperatorInput)?;
+    let authority = uri
+        .authority()
+        .ok_or(InstallerError::InvalidOperatorInput)?;
+    if server.contains('#')
+        || uri.scheme() != Some(&Scheme::HTTPS)
+        || authority.host().is_empty()
+        || authority.as_str().contains('@')
+        || !valid_authority_port(authority)
+        || uri
+            .path_and_query()
+            .and_then(|value| value.query())
+            .is_some()
+    {
+        return Err(InstallerError::InvalidOperatorInput);
+    }
+    Ok(server)
+}
+
+fn valid_authority_port(authority: &http::uri::Authority) -> bool {
+    let suffix = &authority.as_str()[authority.host().len()..];
+    suffix.is_empty()
+        || suffix.strip_prefix(':').is_some_and(|port| {
+            !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && port.parse::<u16>().is_ok()
+        })
+}
+
+fn decode_inline_data(encoded: &str) -> Result<Vec<u8>, InstallerError> {
+    const DECODED_MAX: usize = 16 * 1024;
+    const ENCODED_MAX: usize = DECODED_MAX.div_ceil(3) * 4;
+
+    if encoded.is_empty() || encoded.len() > ENCODED_MAX || !encoded.is_ascii() {
+        return Err(InstallerError::InvalidOperatorInput);
+    }
+    let mut decoded = [0_u8; DECODED_MAX];
+    let length = BASE64
+        .decode_slice(encoded, &mut decoded)
+        .map_err(|_| InstallerError::InvalidOperatorInput)?;
+    if length == 0 {
+        return Err(InstallerError::InvalidOperatorInput);
+    }
+    Ok(decoded[..length].to_vec())
+}
+
 #[cfg(not(target_os = "linux"))]
-fn validate_operator_input(_: &std::path::Path) -> Result<OperatorInput, InstallerError> {
+fn validate_operator_input(_: &std::path::Path, _: &str) -> Result<OperatorInput, InstallerError> {
     Err(InstallerError::InvalidOperatorInput)
 }
 
 #[cfg(target_os = "linux")]
-fn validate_operator_input(path: &Path) -> Result<OperatorInput, InstallerError> {
+fn validate_operator_input(
+    path: &Path,
+    kube_context: &str,
+) -> Result<OperatorInput, InstallerError> {
     let directory = open_absolute_directory_without_symlinks(path)?;
     let before = rfs::fstat(&directory).map_err(|_| InstallerError::InvalidOperatorInput)?;
     if !valid_operator_directory(&before) {
@@ -274,10 +527,17 @@ fn validate_operator_input(path: &Path) -> Result<OperatorInput, InstallerError>
             .ok_or(InstallerError::InvalidOperatorInput)?,
     )
     .map_err(|_| InstallerError::InvalidOperatorInput)?;
+    let bootstrap = parse_bootstrap_kubeconfig(
+        inputs
+            .get("bootstrap-kubeconfig.yaml")
+            .ok_or(InstallerError::InvalidOperatorInput)?,
+        kube_context,
+    )?;
     Ok(OperatorInput {
         _directory: directory,
         _files: inputs,
         _identity: identity,
+        _bootstrap: bootstrap,
     })
 }
 
@@ -425,4 +685,104 @@ fn hex_digest(bytes: &[u8]) -> String {
         let _ = write!(&mut output, "{byte:02x}");
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN_CONFIG: &str = concat!(
+        "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n  cluster:\n",
+        "    server: https://127.0.0.1:6443\n    certificate-authority-data: Y2E=\n",
+        "users:\n- name: fixture\n  user:\n    token: fixture-token\n",
+        "contexts:\n- name: nonprod\n  context:\n    cluster: fixture\n    user: fixture\n",
+        "    namespace: demo\ncurrent-context: nonprod\n",
+    );
+
+    #[test]
+    fn bootstrap_kubeconfig_accepts_only_inline_token_or_certificate_authority() {
+        assert!(parse_bootstrap_kubeconfig(TOKEN_CONFIG.as_bytes(), "nonprod").is_ok());
+        let ipv6 = TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://[::1]:6443");
+        assert!(parse_bootstrap_kubeconfig(ipv6.as_bytes(), "nonprod").is_ok());
+        let optional_fields_absent = TOKEN_CONFIG
+            .replace("    namespace: demo\n", "")
+            .replace("current-context: nonprod\n", "");
+        assert!(parse_bootstrap_kubeconfig(optional_fields_absent.as_bytes(), "nonprod").is_ok());
+        let certificate = TOKEN_CONFIG.replace(
+            "    token: fixture-token\n",
+            "    client-certificate-data: Y2VydA==\n    client-key-data: a2V5\n",
+        );
+        assert!(parse_bootstrap_kubeconfig(certificate.as_bytes(), "nonprod").is_ok());
+    }
+
+    #[test]
+    fn bootstrap_kubeconfig_rejects_ambient_external_and_ambiguous_authority() {
+        let oversized = "A".repeat(21_848);
+        let cases = [
+            TOKEN_CONFIG.replace(
+                "    server: https://127.0.0.1:6443",
+                "    server: &server https://127.0.0.1:6443",
+            ),
+            format!("{TOKEN_CONFIG}unknown: value\n"),
+            format!("{TOKEN_CONFIG}current-context: nonprod\n"),
+            TOKEN_CONFIG.replace(
+                "certificate-authority-data: Y2E=",
+                "certificate-authority: /ca",
+            ),
+            TOKEN_CONFIG.replace(
+                "    certificate-authority-data: Y2E=",
+                "    certificate-authority-data: Y2E=\n    insecure-skip-tls-verify: true",
+            ),
+            TOKEN_CONFIG.replace(
+                "    certificate-authority-data: Y2E=",
+                "    certificate-authority-data: Y2E=\n    proxy-url: https://proxy",
+            ),
+            TOKEN_CONFIG.replace("    token: fixture-token", "    exec: {}"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "http://127.0.0.1:6443"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://user@127.0.0.1:6443"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://127.0.0.1:6443?query"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://127.0.0.1:6443#fragment"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://127.0.0.1:bad"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://127.0.0.1:+443"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://[::1]:+443"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://127.0.0.1:"),
+            TOKEN_CONFIG.replace("https://127.0.0.1:6443", "https://127.0.0.1:65536"),
+            TOKEN_CONFIG.replace("    namespace: demo", "    namespace: other"),
+            TOKEN_CONFIG.replace("    namespace: demo", "    namespace: null"),
+            TOKEN_CONFIG.replace("current-context: nonprod", "current-context: null"),
+            TOKEN_CONFIG.replace("    token: fixture-token", "    token: null"),
+            TOKEN_CONFIG.replace("    token: fixture-token", "    token: true"),
+            TOKEN_CONFIG.replace(
+                "users:\n",
+                concat!(
+                    "- name: second\n  cluster:\n",
+                    "    server: https://127.0.0.1:6443\n",
+                    "    certificate-authority-data: Y2E=\nusers:\n"
+                ),
+            ),
+            format!("{TOKEN_CONFIG}---\n{TOKEN_CONFIG}"),
+            TOKEN_CONFIG.replace(
+                "    token: fixture-token",
+                concat!(
+                    "    token: fixture-token\n",
+                    "    client-certificate-data: Y2VydA==\n",
+                    "    client-key-data: a2V5"
+                ),
+            ),
+            TOKEN_CONFIG.replace("Y2E=", &oversized),
+        ];
+        for (index, hostile) in cases.into_iter().enumerate() {
+            assert!(
+                matches!(
+                    parse_bootstrap_kubeconfig(hostile.as_bytes(), "nonprod"),
+                    Err(InstallerError::InvalidOperatorInput)
+                ),
+                "hostile case {index} was accepted"
+            );
+        }
+        assert!(matches!(
+            parse_bootstrap_kubeconfig(TOKEN_CONFIG.as_bytes(), "other"),
+            Err(InstallerError::InvalidOperatorInput)
+        ));
+    }
 }

@@ -90,16 +90,20 @@ cargo clippy --locked -p kapsel-installer --all-targets --all-features -- -D war
 The installer produced by default workspace builds deliberately contains no embedded service
 payloads. An otherwise valid mutating invocation exits before host access with `bundle_unavailable`;
 installation is not yet runnable. The release-only build seam accepts one structurally bounded fixed
-stage through `KAPSEL_INSTALLER_STAGE`. Its explicit Docker smoke uses test-only ELF fixtures and
-proves only bundle generation plus the `implementation_incomplete` boundary:
+stage through `KAPSEL_INSTALLER_STAGE`. Package tests prove the strict bounded single-context
+bootstrap-kubeconfig parser and its hostile grammar. The explicit Docker smoke uses test-only ELF
+fixtures and root-owned test operator input; it proves bundle generation, descriptor-relative exact
+input inventory and metadata checks, grant/key/receipt consistency, valid kubeconfig composition,
+hostile filesystem refusal, and the `implementation_incomplete` boundary:
 
 ```sh
 cargo make test-installer-bundle
 ```
 
-No candidate assembly command exists yet. Exact metadata schema and provenance, real feature-free
-payload construction, deterministic assembly, and the final linked installer's 64 MiB bound remain
-candidate-assembly work.
+No transaction, host preflight, installation, Kubernetes mutation, credential issuance, activation,
+refresh, or uninstall runs yet. No candidate assembly command exists. Exact metadata schema and
+provenance, real feature-free payload construction, deterministic assembly, and the final linked
+installer's 64 MiB bound remain candidate-assembly work.
 
 ## Upgrade and rollback fixture gate
 
