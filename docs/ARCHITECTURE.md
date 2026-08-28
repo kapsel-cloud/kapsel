@@ -166,12 +166,6 @@ matching, projected status, and frozen-receipt reads. It does not query SQLite d
 publication rules, sequence lifecycle states, or add a second store. One in-flight submission is a
 bound, not a queue.
 
-The unpublished Kapsel service artifact packages the existing root executable, feature-free daemon,
-one capability-specific fixed client, exact systemd/sysusers/RBAC assets, bundled verifier, and
-operator guide. The client owns framing and exact receipt-file retrieval only; it is not a library,
-SDK, generic protocol package, authority source, or lifecycle engine. Service artifact assembly and
-verification are distribution concerns and never alter the published v0.2.0 layout.
-
 ## Effect-gateway boundary
 
 The private gateway owns authorization, durable attempt ordering, target validation,

@@ -4,9 +4,8 @@ Status: approved plan; not yet runnable.
 
 This document specifies the next source-independent x86-64 GNU/Linux Kapsel service preview. It is
 not an installation guide until an authenticated installer candidate passes the source and fresh
-native gates. The previously accepted archive remains regression evidence, not the next publication
-route. This preview is non-production and supports only `kubernetes.set_deployment_image` for the
-fixed `demo/agent-api` target.
+native gates. This preview is non-production and supports only `kubernetes.set_deployment_image` for
+the fixed `demo/agent-api` target.
 
 ## Authenticate before the one command
 

@@ -1,6 +1,7 @@
 # Kapsel service
 
-Status: accepted unpublished service candidate; installer contract approved but not implemented.
+Status: accepted unpublished service implementation; installer contract approved but not
+implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
@@ -216,8 +217,7 @@ files, installer transaction evidence, journal, and receipts. Destructive purge 
 ## Approved installer contract
 
 This section owns the next candidate's interface. It is approved contract, not an implemented or
-qualified command. The accepted archive journey below remains historical regression evidence until a
-self-contained installer candidate passes its own gates.
+qualified command.
 
 ### Authenticated acquisition and fixed interface
 
@@ -520,66 +520,12 @@ identities, authority/state roots, and terminal transaction evidence are part of
 not adopted installation inputs. Reinstall, upgrade, purge, identity reuse, transaction reset, and
 manual ownership override remain unsupported; use a fresh disposable host.
 
-## Accepted source-independent archive candidate
-
-The unpublished service preview has one strict `x86_64-unknown-linux-gnu` archive named
-`kapsel-service-<40-lowercase-source-revision>-x86_64-unknown-linux-gnu.tar.gz`. It does not change
-the immutable v0.2.0 archive. It has one top-level directory and exactly these regular inputs
-beneath normalized directories:
-
-```text
-LICENSE
-SERVICE-METADATA.json
-bin/kapsel
-bin/kapsel-service-client
-lib/systemd/system/kapseld.service
-lib/sysusers.d/kapseld.conf
-libexec/kapsel/kapseld
-share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md
-share/kapsel/kapseld-rbac.yaml
-share/kapsel/smoke-kapsel-service-artifact.py
-share/kapsel/verify-kapsel-service-artifact.py
-```
-
-Directories and executables are mode `0755`; other files are mode `0644`. USTAR and gzip metadata,
-entry order, owners, groups, names, and timestamps are normalized exactly as in the v0.2 release
-assembler. Assembly uses the same pinned Debian 12 Rust builder, feature-free locked release builds,
-source-prefix remapping, a clean exact revision and tree, bounded output, and no installed or
-operator authority. Metadata binds the schema, root package version, source revision and tree,
-target, builder image, Cargo lock digest, each executable digest and length, license digest, and
-exact preview non-claims.
-
-Adjacent deterministic `.sha256` and `.SHA256SUMS` files bind the archive and checksum bytes. An
-unpublished candidate may additionally carry a Sigstore bundle over exact `.SHA256SUMS` bytes from
-the appointed `.github/workflows/kapsel-service-candidate.yml@refs/heads/master` GitHub Actions
-identity for the exact source SHA, repository, ref, and `workflow_dispatch` trigger. A checksum
-alone establishes byte identity, not publisher authentication. No local assembly, package version,
-archive metadata, or source checkout may be presented as authenticated publisher identity.
-
-The bundled Python 3.11 verifier is read by exact archive member name to standard output before
-execution. It and the bundled clean-container smoke driver are not installed or service runtime
-dependencies. It bounds and validates the archive and sidecars before exclusive extraction, rejects
-extra, missing, duplicate, reordered, absolute, traversal, link, special, permissive, oversized, or
-non-normalized entries, and executes only extracted files. Deterministic smoke proves binary
-identity, the caller's submit/status/exact-receipt path, daemon argv refusal, and static install
-bytes without Cargo, a checkout, or repository-relative paths. A second isolated strict assembly
-must be byte-identical. The separate fresh native gate must prove systemd install/start/restart,
-Kubernetes execution, recovery, inspection, and ordered uninstall from those exact authenticated
-bytes. That archive's manual journey is retained only by its accepted candidate evidence; the
-[Kapsel service operator guide](KAPSEL_SERVICE_OPERATOR.md) now owns the approved,
-not-yet-implemented installer journey. The archive installation was clean-only and refused
-pre-existing identities, static destinations, configuration/state roots, or named RBAC objects;
-reinstall and upgrade were unsupported.
-
-This unpublished service preview has no compatibility, upgrade, production, or public-release
-promise. Candidate assembly and verification do not authorize publication.
-
 ## Qualification envelope
 
-The deterministic package, application, CLI, MCP, formatting, documentation, Clippy, and default
-repository gates pass. Native Linux tests cover peer credentials, saturation, framing deadlines,
-process-local execution, disconnect continuity, process loss, startup roots, socket identity, and
-static asset bytes.
+The deterministic application, CLI, MCP, formatting, documentation, Clippy, and default repository
+gates pass. Native Linux tests cover peer credentials, saturation, framing deadlines, process-local
+execution, disconnect continuity, process loss, startup roots, socket identity, and static asset
+bytes.
 
 The direct-source path passed on one fresh x86-64 Debian 12 KVM VM with systemd 252, kind 0.32.0,
 kubectl 1.33.13, and Kubernetes v1.33.12. The disposable qualification established separate locked
@@ -590,18 +536,6 @@ RBAC allow/deny behavior; one successful image operation preserving Deployment U
 exact frozen receipt retrieval, offline inspection, replay, and restart; ordered caller and
 Kubernetes authority revocation; retained operator, journal, and receipt bytes; and complete cluster
 and VM cleanup.
-
-The exact candidate from source revision `5becdcba96a7969a8a88d8bc1ab172aacbb89a44` then passed the
-separate authenticated downloaded-artifact journey on a fresh x86-64 Debian 12 KVM with systemd 252,
-kind 0.32.0, kubectl 1.33.13, and Kubernetes v1.33.12. The operator authenticated archive SHA-256
-`1caec9c621623970e752c7cdd13ab2409d734b83c9dc69eca15c6cd47c527b1e` from the
-[candidate workflow](https://github.com/kapsel-cloud/kapsel/actions/runs/33116851737), extracted
-only through the bundled verifier, installed without a checkout, invoked the fixed client against
-one running Deployment replica, observed `SUCCEEDED`, retrieved and inspected the exact receipt,
-restarted without changing the Deployment generation or frozen receipt bytes, revoked caller and
-Kubernetes authority, preserved operator state, journal, lock, and receipt bytes, removed the static
-assets, deleted the cluster, and destroyed the KVM. The downloaded bytes are therefore an accepted
-unpublished preview candidate; they are not a release or production qualification.
 
 The explicit live-kind gate also passed healthy, `ProgressDeadlineExceeded`, and deleted-after-patch
 `UNKNOWN` cases against the pinned node image.
@@ -622,8 +556,7 @@ systemd-owned.
 
 ## Residual risk
 
-Source qualification and the accepted downloaded candidate each cover one fresh x86-64 Debian
-12/systemd 252 and Kubernetes 1.33 environment. This finite evidence establishes the exact
-unpublished candidate journey only. It does not establish production safety, another platform,
-upgrade compatibility, backup, HA, repeated external operation, or protection from compromised host
-root, kernel, or service identity.
+Source qualification covers one fresh x86-64 Debian 12/systemd 252 and Kubernetes 1.33 environment.
+This finite evidence establishes the exact unpublished service journey only. It does not establish
+production safety, another platform, upgrade compatibility, backup, HA, repeated external operation,
+or protection from compromised host root, kernel, or service identity.

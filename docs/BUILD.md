@@ -75,35 +75,6 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
 The service contract owns what these gates prove and do not prove. See
 [Kapsel service](KAPSEL_SERVICE.md).
 
-### Source-independent service artifact
-
-Assemble and verify one clean candidate outside the worktree:
-
-```sh
-service_a=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-service-a.XXXXXX")
-archive_a=$(python3 scripts/assemble-kapsel-service-artifact.py \
-  --output-directory "$service_a")
-python3 scripts/test-kapsel-service-artifact.py --archive "$archive_a"
-python3 scripts/test-kapsel-service-reproducibility.py \
-  --reference-archive "$archive_a"
-```
-
-Focused verifier tests require no Docker:
-
-```sh
-python3 scripts/test-kapsel-service-artifact.py
-```
-
-The accepted archive at source `5becdcba96a7969a8a88d8bc1ab172aacbb89a44` is regression evidence. It
-does not prove the approved installer described by the
-[service operator guide](KAPSEL_SERVICE_OPERATOR.md).
-
-### Direct installation candidate
-
-The earlier source-based clean-host procedure is preserved at revision `5becdcba` for regression
-work. It is not the supported next installation route. Use the approved operator journey only after
-an authenticated installer candidate exists.
-
 ## Upgrade and rollback fixture gate
 
 Run the source fixture matrix with:
