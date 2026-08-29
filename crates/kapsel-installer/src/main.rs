@@ -1441,6 +1441,8 @@ fn hex_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt as _;
 
     const TOKEN_CONFIG: &str = concat!(
         "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n  cluster:\n",
@@ -1701,8 +1703,6 @@ mod tests {
             assert!(status.success());
             return;
         }
-
-        use std::os::unix::fs::PermissionsExt as _;
 
         let fixture =
             std::env::temp_dir().join(format!("kapsel-installer-creation-{}", std::process::id()));
