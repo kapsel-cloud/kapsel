@@ -486,14 +486,30 @@ uninstalling_kubernetes -> uninstalling_static -> uninstalled
 ```
 
 The `rolled_back -> prepared` transition requires the same installer, directory, cluster, and stable
-inputs. Every transaction update uses the same protocol: write the complete successor to an unnamed
+inputs. The sole transaction marker is the extended attribute `user.kapsel.transaction-id`. Its
+value is the exact 64 ASCII lowercase-hex bytes of `transaction_id`, without NUL or newline. The
+installer sets it on an opened inode with create-only semantics, reads it back into a bounded
+65-byte buffer, and requires an exact 64-byte match. Unsupported attributes, a pre-existing marker,
+an over-limit value, or a mismatch fail closed; unrelated attributes are ignored.
+`.transaction.next` always requires the marker. The initially published `transaction.json` has no
+marker; after a successor rename its marker, when present, must match.
+
+Every transaction update uses the same protocol: write the complete successor to an unnamed
 `O_TMPFILE` inode in the installer directory, set and verify its transaction-identity extended
 attribute, sync it, link it no-replace as `.transaction.next`, and sync the directory; then rename
 it over `transaction.json` and sync the directory again. A crash before link leaves only the old
 record. A crash after link leaves the old record plus `.transaction.next`; recovery accepts the
 latter only when its marker, schema, transaction identity, immutable fields, and phase/pending
 change are exactly one legal successor of the old record, then completes rename and directory sync.
-Any other candidate conflicts. Thus no partial named JSON is ever parsed or discarded.
+Any other candidate conflicts. Thus no partial named JSON is ever parsed or discarded. At the
+transaction-foundation boundary, a successor may change only `phase` along one edge in the legal
+phase graph while `pending` is null and every other field, including both resource arrays, is
+byte-for-byte unchanged. `action` remains `install` through install and rollback, changes to
+`refresh-credential` only on `installed -> refreshing`, remains so on `refreshing -> installed`, and
+changes to `uninstall` only on `installed -> uninstalling_local`, remaining so thereafter.
+Pending-action and ownership-evidence successors become legal only with the later implementation of
+their corresponding resource mutation; until then they fail closed rather than being treated as
+opaque updates.
 
 Before every pending action, that update protocol durably installs the pending object. After
 observation, it installs the successor that adds ownership evidence or removes the owned slot,

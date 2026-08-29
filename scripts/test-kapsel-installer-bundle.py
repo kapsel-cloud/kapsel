@@ -165,6 +165,25 @@ def main() -> int:
             cp "$transaction" /target/valid-transaction.json
             ! grep -F 'fixture-token' "$transaction"
             ! grep -F 'Y2E=' "$transaction"
+            successor=$installer_state/.transaction.next
+            sed 's/"phase":"prepared"/"phase":"installing"/' \
+                "$transaction" >"$successor"
+            chmod 0600 "$successor"
+            printf '%s\n' \
+                '#include <string.h>' \
+                '#include <sys/xattr.h>' \
+                'int main(int c, char **v) {{ return c != 3 || setxattr(v[1], "user.kapsel.transaction-id", v[2], strlen(v[2]), XATTR_CREATE); }}' \
+                >/target/set-transaction-xattr.c
+            cc /target/set-transaction-xattr.c -o /target/set-transaction-xattr
+            transaction_id=$(sed -n \
+                's/.*"transaction_id":"\\([0-9a-f]*\\)".*/\\1/p' "$transaction")
+            test "${{#transaction_id}}" = 64
+            /target/set-transaction-xattr "$successor" "$transaction_id"
+            run_failure implementation_incomplete
+            test ! -e "$successor"
+            grep -F '"phase":"installing"' "$transaction" >/dev/null
+            cp /target/valid-transaction.json "$transaction"
+            chmod 0600 "$transaction"
             run_failure implementation_incomplete
             cmp "$transaction" /target/valid-transaction.json
             : >"$installer_state/unknown"

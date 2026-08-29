@@ -93,8 +93,8 @@ installation is not yet runnable. The release-only build seam accepts one struct
 stage through `KAPSEL_INSTALLER_STAGE`. The explicit Docker smoke uses test-only ELF fixtures and
 root-owned test operator input; it proves bundle generation, descriptor-relative exact input
 inventory and metadata checks, grant/key/receipt consistency, valid kubeconfig composition, hostile
-filesystem refusal, exact installer-lock handling, crash-safe prepared-transaction publication and
-recovery, and the next `implementation_incomplete` boundary:
+filesystem refusal, exact installer-lock handling, crash-safe prepared-transaction publication,
+marked phase-successor update and recovery, and the next `implementation_incomplete` boundary:
 
 ```sh
 cargo make test-installer-bundle

@@ -221,10 +221,11 @@ prepared-transaction publication and recovery, and hostile metadata, inventory, 
 bounds, authority, lock, and transaction refusal before requiring `implementation_incomplete`.
 Portable package unit tests own the strict bounded bootstrap-kubeconfig grammar, canonical prepared
 record, and hostile aliases, duplicates, unknowns, external references, credential forms, decoded
-bounds, and URL shapes. The Docker smoke explicitly runs the Linux root unit test for the
-unnamed-inode publication seam. These gates prove no host preflight, successor transaction update,
-payload provenance, metadata schema, final-size bound, runnable installation, or candidate
-qualification.
+bounds, and URL shapes. The Docker smoke explicitly runs the Linux root unit test for unnamed-inode
+initial publication, marked phase-successor update, interruption seams, and conflicting-successor
+evidence preservation. These gates prove no host preflight, pending-action or resource-evidence
+successor, payload provenance, metadata schema, final-size bound, runnable installation, or
+candidate qualification.
 
 The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
 suites remain authoritative for v0.2.0.

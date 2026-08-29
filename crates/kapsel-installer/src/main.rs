@@ -25,7 +25,9 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use http::{uri::Scheme, Uri};
 #[cfg(target_os = "linux")]
-use rustix::fs::{self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, CWD};
+use rustix::fs::{
+    self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, XattrFlags, CWD,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -170,7 +172,7 @@ struct Invocation {
     kube_context: String,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct InstallerTransaction {
     action: Action,
@@ -190,14 +192,14 @@ struct InstallerTransaction {
     transaction_id: String,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TransactionCluster {
     ca_sha256: String,
     server: String,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TransactionInputDirectory {
     device: u64,
@@ -207,7 +209,7 @@ struct TransactionInputDirectory {
     uid: u32,
 }
 
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TransactionOperatorInputs {
     #[serde(rename = "authorization.pub")]
@@ -618,6 +620,7 @@ fn initial_transaction(
         schema: 1,
         transaction_id,
     };
+    validate_initial_transaction(&transaction)?;
     let bytes = encode_transaction(&transaction)?;
     let _ = decode_transaction(&bytes)?;
     Ok(transaction)
@@ -678,16 +681,28 @@ fn bootstrap_transaction(
         publish_initial_transaction(&directory, &bytes)?;
         return Ok(transaction);
     }
-    if names.len() != 1 || !names.contains("transaction.json") {
-        return Err(InstallerError::TransactionFailure);
-    }
-    let transaction = read_transaction(&directory)?;
+    let (transaction, recovered_successor) =
+        if names.len() == 1 && names.contains("transaction.json") {
+            (
+                read_transaction_leaf(&directory, "transaction.json", false)?,
+                false,
+            )
+        } else if names.len() == 2
+            && names.contains("transaction.json")
+            && names.contains(".transaction.next")
+        {
+            (recover_transaction_successor(&directory)?, true)
+        } else {
+            return Err(InstallerError::TransactionFailure);
+        };
     let expected = initial_transaction(invocation, input, transaction.transaction_id.clone())?;
-    if transaction != expected {
+    if !matches_prepared_identity(&transaction, &expected) {
         return Err(InstallerError::TransactionFailure);
     }
     let after = rfs::fstat(&directory).map_err(|_| InstallerError::TransactionFailure)?;
-    if !stable_directory(&before, &after) {
+    if !valid_transaction_directory(&after)
+        || !recovered_successor && !stable_directory(&before, &after)
+    {
         return Err(InstallerError::TransactionFailure);
     }
     Ok(transaction)
@@ -784,10 +799,95 @@ fn link_initial_transaction_inode(
 }
 
 #[cfg(target_os = "linux")]
-fn read_transaction(directory: &OwnedFd) -> Result<InstallerTransaction, InstallerError> {
-    let descriptor = rfs::openat(
+#[allow(
+    dead_code,
+    reason = "successor writes begin with the next installer phase"
+)]
+fn publish_transaction_successor(
+    directory: &OwnedFd,
+    old: &InstallerTransaction,
+    next: &InstallerTransaction,
+) -> Result<(), InstallerError> {
+    if !legal_phase_successor(old, next) {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let bytes = encode_transaction(next)?;
+    let file = write_successor_transaction_inode(directory, &bytes, &next.transaction_id)?;
+    link_successor_transaction_inode(directory, &file)?;
+    rfs::fsync(directory).map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::renameat(
+        directory,
+        ".transaction.next",
         directory,
         "transaction.json",
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::fsync(directory).map_err(|_| InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn write_successor_transaction_inode(
+    directory: &OwnedFd,
+    bytes: &[u8],
+    transaction_id: &str,
+) -> Result<std::fs::File, InstallerError> {
+    let descriptor = rfs::openat(
+        directory,
+        ".",
+        OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::fchmod(&descriptor, Mode::RUSR | Mode::WUSR)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    file.write_all(bytes)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::fsetxattr(
+        &file,
+        "user.kapsel.transaction-id",
+        transaction_id.as_bytes(),
+        XattrFlags::CREATE,
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    validate_transaction_marker(&file, transaction_id, true)?;
+    rfs::fsync(&file).map_err(|_| InstallerError::TransactionFailure)?;
+    let metadata = rfs::fstat(&file).map_err(|_| InstallerError::TransactionFailure)?;
+    if !FileType::from_raw_mode(metadata.st_mode).is_file()
+        || metadata.st_uid != 0
+        || metadata.st_mode & 0o7777 != 0o600
+        || metadata.st_nlink != 0
+        || usize::try_from(metadata.st_size) != Ok(bytes.len())
+    {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn link_successor_transaction_inode(
+    directory: &OwnedFd,
+    file: &std::fs::File,
+) -> Result<(), InstallerError> {
+    rfs::linkat(
+        file,
+        "",
+        directory,
+        ".transaction.next",
+        AtFlags::EMPTY_PATH,
+    )
+    .map_err(|_| InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn read_transaction_leaf(
+    directory: &OwnedFd,
+    name: &str,
+    marker_required: bool,
+) -> Result<InstallerTransaction, InstallerError> {
+    let descriptor = rfs::openat(
+        directory,
+        name,
         OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
@@ -814,11 +914,61 @@ fn read_transaction(directory: &OwnedFd) -> Result<InstallerTransaction, Install
     if bytes.len() > TRANSACTION_BYTES_MAX || !stable_file(&before, &after, bytes.len()) {
         return Err(InstallerError::TransactionFailure);
     }
-    decode_transaction(&bytes)
+    let transaction = decode_transaction(&bytes)?;
+    validate_transaction_marker(&file, &transaction.transaction_id, marker_required)?;
+    Ok(transaction)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_transaction_marker(
+    file: &std::fs::File,
+    transaction_id: &str,
+    required: bool,
+) -> Result<(), InstallerError> {
+    let mut marker = [0_u8; 65];
+    match rfs::fgetxattr(file, "user.kapsel.transaction-id", &mut marker[..]) {
+        Ok(length) if length == 64 && marker[..length] == *transaction_id.as_bytes() => Ok(()),
+        Err(rustix::io::Errno::NODATA) if !required => Ok(()),
+        _ => Err(InstallerError::TransactionFailure),
+    }
+}
+
+fn matches_prepared_identity(
+    transaction: &InstallerTransaction,
+    expected: &InstallerTransaction,
+) -> bool {
+    transaction.bootstrap_kubeconfig_initial_sha256 == expected.bootstrap_kubeconfig_initial_sha256
+        && transaction.bootstrap_kubeconfig_sha256 == expected.bootstrap_kubeconfig_sha256
+        && transaction.cluster == expected.cluster
+        && transaction.input_directory == expected.input_directory
+        && transaction.installer_sha256 == expected.installer_sha256
+        && transaction.kube_context == expected.kube_context
+        && transaction.operator_inputs == expected.operator_inputs
+        && transaction.schema == expected.schema
+}
+
+#[cfg(target_os = "linux")]
+fn recover_transaction_successor(
+    directory: &OwnedFd,
+) -> Result<InstallerTransaction, InstallerError> {
+    let old = read_transaction_leaf(directory, "transaction.json", false)?;
+    let next = read_transaction_leaf(directory, ".transaction.next", true)?;
+    if !legal_phase_successor(&old, &next) {
+        return Err(InstallerError::TransactionFailure);
+    }
+    rfs::renameat(
+        directory,
+        ".transaction.next",
+        directory,
+        "transaction.json",
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::fsync(directory).map_err(|_| InstallerError::TransactionFailure)?;
+    Ok(next)
 }
 
 fn encode_transaction(transaction: &InstallerTransaction) -> Result<Vec<u8>, InstallerError> {
-    validate_initial_transaction(transaction)?;
+    validate_transaction(transaction)?;
     let bytes = serde_json::to_vec(transaction).map_err(|_| InstallerError::TransactionFailure)?;
     if bytes.len() > TRANSACTION_BYTES_MAX {
         return Err(InstallerError::TransactionFailure);
@@ -832,7 +982,7 @@ fn decode_transaction(bytes: &[u8]) -> Result<InstallerTransaction, InstallerErr
     }
     let transaction = serde_json::from_slice::<InstallerTransaction>(bytes)
         .map_err(|_| InstallerError::TransactionFailure)?;
-    validate_initial_transaction(&transaction)?;
+    validate_transaction(&transaction)?;
     if serde_json::to_vec(&transaction).map_err(|_| InstallerError::TransactionFailure)? != bytes {
         return Err(InstallerError::TransactionFailure);
     }
@@ -840,6 +990,14 @@ fn decode_transaction(bytes: &[u8]) -> Result<InstallerTransaction, InstallerErr
 }
 
 fn validate_initial_transaction(transaction: &InstallerTransaction) -> Result<(), InstallerError> {
+    validate_transaction(transaction)?;
+    if transaction.action != Action::Install || transaction.phase != TransactionPhase::Prepared {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(())
+}
+
+fn validate_transaction(transaction: &InstallerTransaction) -> Result<(), InstallerError> {
     let digests = [
         transaction.bootstrap_kubeconfig_initial_sha256.as_str(),
         transaction.bootstrap_kubeconfig_sha256.as_str(),
@@ -851,15 +1009,14 @@ fn validate_initial_transaction(transaction: &InstallerTransaction) -> Result<()
         transaction.operator_inputs.receipt_trust.as_str(),
         transaction.transaction_id.as_str(),
     ];
-    if transaction.action != Action::Install
-        || transaction.phase != TransactionPhase::Prepared
-        || transaction.schema != 1
+    if transaction.schema != 1
         || transaction.bootstrap_kubeconfig_initial_sha256
             != transaction.bootstrap_kubeconfig_sha256
         || transaction.credential_expiration.is_some()
         || !transaction.host_resources.is_empty()
         || !transaction.kubernetes_resources.is_empty()
         || transaction.pending.is_some()
+        || !valid_action_phase(transaction.action, transaction.phase)
         || transaction.input_directory.uid != 0
         || transaction.input_directory.mode != 0o700
         || !valid_transaction_path(&transaction.input_directory.path)
@@ -870,6 +1027,88 @@ fn validate_initial_transaction(transaction: &InstallerTransaction) -> Result<()
         return Err(InstallerError::TransactionFailure);
     }
     Ok(())
+}
+
+fn valid_action_phase(action: Action, phase: TransactionPhase) -> bool {
+    match action {
+        Action::Install => matches!(
+            phase,
+            TransactionPhase::Prepared
+                | TransactionPhase::Installing
+                | TransactionPhase::Installed
+                | TransactionPhase::RollingBack
+                | TransactionPhase::RolledBack
+        ),
+        Action::RefreshCredential => {
+            matches!(
+                phase,
+                TransactionPhase::Refreshing | TransactionPhase::Installed
+            )
+        },
+        Action::Uninstall => matches!(
+            phase,
+            TransactionPhase::UninstallingLocal
+                | TransactionPhase::UninstallingKubernetes
+                | TransactionPhase::PartialUninstall
+                | TransactionPhase::UninstallingStatic
+                | TransactionPhase::Uninstalled
+        ),
+    }
+}
+
+fn legal_phase_successor(old: &InstallerTransaction, next: &InstallerTransaction) -> bool {
+    let transition = matches!(
+        (old.phase, next.phase),
+        (TransactionPhase::Prepared, TransactionPhase::Installing)
+            | (
+                TransactionPhase::Installing | TransactionPhase::Refreshing,
+                TransactionPhase::Installed
+            )
+            | (TransactionPhase::Installing, TransactionPhase::RollingBack)
+            | (TransactionPhase::RollingBack, TransactionPhase::RolledBack)
+            | (TransactionPhase::RolledBack, TransactionPhase::Prepared)
+            | (
+                TransactionPhase::Installed,
+                TransactionPhase::Refreshing | TransactionPhase::UninstallingLocal
+            )
+            | (
+                TransactionPhase::UninstallingLocal | TransactionPhase::PartialUninstall,
+                TransactionPhase::UninstallingKubernetes
+            )
+            | (
+                TransactionPhase::UninstallingKubernetes,
+                TransactionPhase::PartialUninstall | TransactionPhase::UninstallingStatic
+            )
+            | (
+                TransactionPhase::UninstallingStatic,
+                TransactionPhase::Uninstalled
+            )
+    );
+    transition
+        && valid_action_phase(next.action, next.phase)
+        && old.bootstrap_kubeconfig_initial_sha256 == next.bootstrap_kubeconfig_initial_sha256
+        && old.bootstrap_kubeconfig_sha256 == next.bootstrap_kubeconfig_sha256
+        && old.cluster == next.cluster
+        && old.credential_expiration == next.credential_expiration
+        && old.host_resources == next.host_resources
+        && old.input_directory == next.input_directory
+        && old.installer_sha256 == next.installer_sha256
+        && old.kube_context == next.kube_context
+        && old.kubernetes_resources == next.kubernetes_resources
+        && old.operator_inputs == next.operator_inputs
+        && old.pending.is_none()
+        && next.pending.is_none()
+        && old.schema == next.schema
+        && old.transaction_id == next.transaction_id
+        && match (old.phase, next.phase) {
+            (TransactionPhase::Installed, TransactionPhase::Refreshing) => {
+                next.action == Action::RefreshCredential
+            },
+            (TransactionPhase::Installed, TransactionPhase::UninstallingLocal) => {
+                next.action == Action::Uninstall
+            },
+            _ => old.action == next.action,
+        }
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -1367,7 +1606,7 @@ mod tests {
             format!(" {canonical}"),
             format!("{canonical}\n"),
             canonical.replacen("\"action\":\"install\"", "\"action\":\"uninstall\"", 1),
-            canonical.replacen("\"phase\":\"prepared\"", "\"phase\":\"installed\"", 1),
+            canonical.replacen("\"phase\":\"prepared\"", "\"phase\":\"refreshing\"", 1),
             canonical.replacen("\"action\":", "\"unknown\":null,\"action\":", 1),
             canonical.replacen(
                 "\"action\":\"install\"",
@@ -1402,6 +1641,105 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn phase_successors_are_exact_and_change_nothing_else() {
+        let edges = [
+            (
+                Action::Install,
+                TransactionPhase::Prepared,
+                Action::Install,
+                TransactionPhase::Installing,
+            ),
+            (
+                Action::Install,
+                TransactionPhase::Installing,
+                Action::Install,
+                TransactionPhase::Installed,
+            ),
+            (
+                Action::Install,
+                TransactionPhase::Installing,
+                Action::Install,
+                TransactionPhase::RollingBack,
+            ),
+            (
+                Action::Install,
+                TransactionPhase::RollingBack,
+                Action::Install,
+                TransactionPhase::RolledBack,
+            ),
+            (
+                Action::Install,
+                TransactionPhase::RolledBack,
+                Action::Install,
+                TransactionPhase::Prepared,
+            ),
+            (
+                Action::Install,
+                TransactionPhase::Installed,
+                Action::RefreshCredential,
+                TransactionPhase::Refreshing,
+            ),
+            (
+                Action::RefreshCredential,
+                TransactionPhase::Refreshing,
+                Action::RefreshCredential,
+                TransactionPhase::Installed,
+            ),
+            (
+                Action::Install,
+                TransactionPhase::Installed,
+                Action::Uninstall,
+                TransactionPhase::UninstallingLocal,
+            ),
+            (
+                Action::Uninstall,
+                TransactionPhase::UninstallingLocal,
+                Action::Uninstall,
+                TransactionPhase::UninstallingKubernetes,
+            ),
+            (
+                Action::Uninstall,
+                TransactionPhase::UninstallingKubernetes,
+                Action::Uninstall,
+                TransactionPhase::PartialUninstall,
+            ),
+            (
+                Action::Uninstall,
+                TransactionPhase::PartialUninstall,
+                Action::Uninstall,
+                TransactionPhase::UninstallingKubernetes,
+            ),
+            (
+                Action::Uninstall,
+                TransactionPhase::UninstallingKubernetes,
+                Action::Uninstall,
+                TransactionPhase::UninstallingStatic,
+            ),
+            (
+                Action::Uninstall,
+                TransactionPhase::UninstallingStatic,
+                Action::Uninstall,
+                TransactionPhase::Uninstalled,
+            ),
+        ];
+        for (old_action, old_phase, next_action, next_phase) in edges {
+            let mut old = initial_transaction();
+            old.action = old_action;
+            old.phase = old_phase;
+            let mut next = old.clone();
+            next.action = next_action;
+            next.phase = next_phase;
+            assert!(legal_phase_successor(&old, &next));
+            next.cluster.ca_sha256 = "99".repeat(32);
+            assert!(!legal_phase_successor(&old, &next));
+        }
+        let old = initial_transaction();
+        let mut skipped = old.clone();
+        skipped.phase = TransactionPhase::Installed;
+        assert!(!legal_phase_successor(&old, &skipped));
     }
 
     #[cfg(target_os = "linux")]
@@ -1461,10 +1799,65 @@ mod tests {
             bytes
         );
         rfs::fsync(&directory).expect("fixture directory must sync");
+        let old = initial_transaction();
         assert_eq!(
-            read_transaction(&directory).expect("published transaction must decode"),
-            initial_transaction()
+            read_transaction_leaf(&directory, "transaction.json", false)
+                .expect("published transaction must decode"),
+            old
         );
+        let mut next = old.clone();
+        next.phase = TransactionPhase::Installing;
+        let next_bytes = encode_transaction(&next).expect("successor must encode");
+
+        let abandoned =
+            write_successor_transaction_inode(&directory, &next_bytes, &next.transaction_id)
+                .expect("marked successor inode must be written");
+        drop(abandoned);
+        assert!(!path.join(".transaction.next").exists());
+
+        let staged =
+            write_successor_transaction_inode(&directory, &next_bytes, &next.transaction_id)
+                .expect("marked successor inode must be written");
+        link_successor_transaction_inode(&directory, &staged)
+            .expect("successor must link no-replace");
+        assert_eq!(
+            recover_transaction_successor(&directory).expect("linked successor must recover"),
+            next
+        );
+        assert!(!path.join(".transaction.next").exists());
+        assert_eq!(
+            read_transaction_leaf(&directory, "transaction.json", true)
+                .expect("renamed successor marker must match"),
+            next
+        );
+        let mut installed = next.clone();
+        installed.phase = TransactionPhase::Installed;
+        publish_transaction_successor(&directory, &next, &installed)
+            .expect("complete successor protocol must publish");
+        assert_eq!(
+            read_transaction_leaf(&directory, "transaction.json", true)
+                .expect("fully published successor must decode"),
+            installed
+        );
+        let mut invalid = installed.clone();
+        invalid.action = Action::Uninstall;
+        invalid.phase = TransactionPhase::Uninstalled;
+        let invalid_bytes = encode_transaction(&invalid).expect("invalid successor must encode");
+        let conflicting =
+            write_successor_transaction_inode(&directory, &invalid_bytes, &invalid.transaction_id)
+                .expect("conflicting successor inode must be written");
+        link_successor_transaction_inode(&directory, &conflicting)
+            .expect("conflicting successor must link");
+        rfs::fsync(&directory).expect("conflicting successor name must sync");
+        assert!(matches!(
+            recover_transaction_successor(&directory),
+            Err(InstallerError::TransactionFailure)
+        ));
+        assert!(path.join(".transaction.next").exists());
+        rfs::unlinkat(&directory, ".transaction.next", AtFlags::empty())
+            .expect("conflicting successor must be removed by the test");
+        drop(conflicting);
+        drop(staged);
         drop(linked);
         drop(directory);
         std::fs::remove_file(path.join("transaction.json"))
