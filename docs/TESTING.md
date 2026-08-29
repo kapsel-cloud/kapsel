@@ -216,16 +216,17 @@ class, and empty stdout. They also prove that a default development build reache
 `bundle_unavailable` without creating anything in its working directory. The explicit Docker bundle
 smoke constructs an exact stage with clearly test-only ELF fixtures and root-owned operator input.
 It crosses release-stage generation, descriptor-relative exact input validation, cryptographic
-consistency, one valid bootstrap kubeconfig, exact installer-lock handling, crash-safe canonical
-prepared-transaction publication and recovery, and hostile metadata, inventory, path, special-file,
-bounds, authority, lock, and transaction refusal before requiring `implementation_incomplete`.
-Portable package unit tests own the strict bounded bootstrap-kubeconfig grammar, canonical prepared
-record, and hostile aliases, duplicates, unknowns, external references, credential forms, decoded
-bounds, and URL shapes. The Docker smoke explicitly runs the Linux root unit test for unnamed-inode
-initial publication, marked phase-successor update, interruption seams, and conflicting-successor
-evidence preservation. These gates prove no host preflight, pending-action or resource-evidence
-successor, payload provenance, metadata schema, final-size bound, runnable installation, or
-candidate qualification.
+consistency, one valid bootstrap kubeconfig, exact installer-lock handling, exact named-object modes
+under a hostile umask, kill/restart recovery after lock and transaction-directory creation,
+crash-safe canonical prepared-transaction publication and recovery, and hostile metadata, inventory,
+path, special-file, bounds, authority, lock, and transaction refusal before requiring
+`implementation_incomplete`. Portable package unit tests own the strict bounded bootstrap-kubeconfig
+grammar, canonical prepared record, and hostile aliases, duplicates, unknowns, external references,
+credential forms, decoded bounds, and URL shapes. The Docker smoke explicitly runs the Linux root
+unit test for unnamed-inode initial publication, marked phase-successor update, interruption seams,
+and conflicting-successor evidence preservation. These gates prove no host preflight, pending-action
+or resource-evidence successor, payload provenance, metadata schema, final-size bound, runnable
+installation, or candidate qualification.
 
 The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
 suites remain authoritative for v0.2.0.

@@ -649,15 +649,19 @@ fn bootstrap_transaction(
     )
     .map_err(|_| InstallerError::TransactionFailure)?;
     let var = open_directory(&root, "var", InstallerError::TransactionFailure)?;
-    validate_transaction_parent(&var)?;
+    validate_transaction_parent(&var, false)?;
     let lib = open_directory(&var, "lib", InstallerError::TransactionFailure)?;
-    validate_transaction_parent(&lib)?;
+    validate_transaction_parent(&lib, true)?;
 
-    let created = match rfs::mkdirat(&lib, "kapsel-installer", Mode::RWXU) {
-        Ok(()) => true,
-        Err(rustix::io::Errno::EXIST) => false,
-        Err(_) => return Err(InstallerError::TransactionFailure),
-    };
+    let created =
+        match with_exact_creation_mode(|| rfs::mkdirat(&lib, "kapsel-installer", Mode::RWXU)) {
+            Ok(()) => {
+                stop_after_named_creation("transaction-directory");
+                true
+            },
+            Err(rustix::io::Errno::EXIST) => false,
+            Err(_) => return Err(InstallerError::TransactionFailure),
+        };
     let directory = open_directory(&lib, "kapsel-installer", InstallerError::TransactionFailure)?;
     if created {
         rfs::fchmod(&directory, Mode::RWXU).map_err(|_| InstallerError::TransactionFailure)?;
@@ -702,9 +706,15 @@ fn bootstrap_transaction(
 }
 
 #[cfg(target_os = "linux")]
-fn validate_transaction_parent(directory: &OwnedFd) -> Result<(), InstallerError> {
+fn validate_transaction_parent(
+    directory: &OwnedFd,
+    reject_inherited_setgid: bool,
+) -> Result<(), InstallerError> {
     let metadata = rfs::fstat(directory).map_err(|_| InstallerError::TransactionFailure)?;
-    if !root_owned_directory(&metadata) || metadata.st_mode & 0o022 != 0 {
+    if !root_owned_directory(&metadata)
+        || metadata.st_mode & 0o022 != 0
+        || (reject_inherited_setgid && metadata.st_mode & 0o2000 != 0)
+    {
         return Err(InstallerError::TransactionFailure);
     }
     Ok(())
@@ -1094,6 +1104,25 @@ fn acquire_installer_lock() -> Result<InstallerLock, InstallerError> {
 }
 
 #[cfg(target_os = "linux")]
+fn with_exact_creation_mode<T>(create: impl FnOnce() -> T) -> T {
+    let previous_umask = rustix::process::umask(Mode::empty());
+    let result = create();
+    rustix::process::umask(previous_umask);
+    result
+}
+
+#[cfg(all(target_os = "linux", kapsel_installer_test_crash_seams))]
+fn stop_after_named_creation(seam: &str) {
+    if std::env::var("KAPSEL_INSTALLER_TEST_STOP_AFTER_CREATE").as_deref() == Ok(seam) {
+        rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::STOP)
+            .expect("test crash seam must stop the installer");
+    }
+}
+
+#[cfg(all(target_os = "linux", not(kapsel_installer_test_crash_seams)))]
+fn stop_after_named_creation(_: &str) {}
+
+#[cfg(target_os = "linux")]
 fn acquire_installer_lock() -> Result<OwnedFd, InstallerError> {
     let root = rfs::openat(
         CWD,
@@ -1123,13 +1152,16 @@ fn acquire_installer_lock() -> Result<OwnedFd, InstallerError> {
         | OFlags::NOFOLLOW
         | OFlags::NONBLOCK
         | OFlags::CLOEXEC;
-    let descriptor = match rfs::openat(
-        &lock_directory,
-        "kapsel-installer.lock",
-        create_flags,
-        Mode::RUSR | Mode::WUSR,
-    ) {
+    let descriptor = match with_exact_creation_mode(|| {
+        rfs::openat(
+            &lock_directory,
+            "kapsel-installer.lock",
+            create_flags,
+            Mode::RUSR | Mode::WUSR,
+        )
+    }) {
         Ok(descriptor) => {
+            stop_after_named_creation("installer-lock");
             rfs::fchmod(&descriptor, Mode::RUSR | Mode::WUSR)
                 .map_err(|_| InstallerError::InstallerLockFailure)?;
             descriptor
@@ -1650,6 +1682,67 @@ mod tests {
         let mut skipped = old.clone();
         skipped.phase = TransactionPhase::Installed;
         assert!(!legal_phase_successor(&old, &skipped));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn named_creation_has_exact_mode_before_repair_under_hostile_umask() {
+        const CHILD: &str = "KAPSEL_INSTALLER_UMASK_CHILD";
+        const TEST: &str = "tests::named_creation_has_exact_mode_before_repair_under_hostile_umask";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(
+                std::env::current_exe().expect("current test executable must resolve"),
+            )
+            .args(["--exact", TEST])
+            .env(CHILD, "1")
+            .status()
+            .expect("isolated umask test must start");
+            assert!(status.success());
+            return;
+        }
+
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let fixture =
+            std::env::temp_dir().join(format!("kapsel-installer-creation-{}", std::process::id()));
+        std::fs::create_dir(&fixture).expect("fixture parent must be created");
+        let parent = rfs::openat(
+            CWD,
+            &fixture,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("fixture parent must open");
+        rustix::process::umask(Mode::from_raw_mode(0o777));
+        with_exact_creation_mode(|| rfs::mkdirat(&parent, "state", Mode::RWXU))
+            .expect("state directory must be created");
+        let lock = with_exact_creation_mode(|| {
+            rfs::openat(
+                &parent,
+                "lock",
+                OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+        })
+        .expect("lock must be created");
+        assert_eq!(
+            std::fs::metadata(fixture.join("state"))
+                .expect("state metadata must be readable")
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            rfs::fstat(&lock)
+                .expect("lock metadata must be readable")
+                .st_mode
+                & 0o7777,
+            0o600
+        );
+        drop(lock);
+        drop(parent);
+        std::fs::remove_dir_all(fixture).expect("fixture must be removed");
     }
 
     #[cfg(target_os = "linux")]

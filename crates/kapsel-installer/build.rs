@@ -21,6 +21,7 @@ use rustix::fs::{self as rfs, FileType, Mode, OFlags, RawDir, Stat, CWD};
 use sha2::{Digest as _, Sha256};
 
 const STAGE_ENV: &str = "KAPSEL_INSTALLER_STAGE";
+const TEST_CRASH_SEAMS_ENV: &str = "KAPSEL_INSTALLER_TEST_CRASH_SEAMS";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 const BUNDLE_BYTES_MAX: u64 = 64 * 1024 * 1024;
 const BINARY_BYTES_MAX: u64 = 32 * 1024 * 1024;
@@ -154,6 +155,11 @@ const ASSETS: &[AssetSpec] = &[
 ];
 
 fn main() -> ExitCode {
+    println!("cargo:rustc-check-cfg=cfg(kapsel_installer_test_crash_seams)");
+    println!("cargo:rerun-if-env-changed={TEST_CRASH_SEAMS_ENV}");
+    if env::var(TEST_CRASH_SEAMS_ENV).as_deref() == Ok("1") {
+        println!("cargo:rustc-cfg=kapsel_installer_test_crash_seams");
+    }
     match generate_bundle() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

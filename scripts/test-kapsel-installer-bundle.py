@@ -128,10 +128,14 @@ def main() -> int:
                 chown -R "$HOST_UID:$HOST_GID" /target
             }}
             trap restore_target_ownership EXIT
+            export KAPSEL_INSTALLER_TEST_CRASH_SEAMS=1
             cargo build --release --locked --target {TARGET} \\
                 -p kapsel-installer
             cargo test --release --locked --target {TARGET} -p kapsel-installer \\
                 'tests::initial_publication_has_no_named_partial_before_link' -- --exact
+            cargo test --release --locked --target {TARGET} -p kapsel-installer \\
+                'tests::named_creation_has_exact_mode_before_repair_under_hostile_umask' \\
+                -- --exact
             installer=/target/{TARGET}/release/kapsel-installer
             mkdir -p /secure
             cp -a /operator-fixture /secure/kapsel
@@ -151,7 +155,54 @@ def main() -> int:
                 test "$(cat /target/stderr)" = \\
                     "Kapsel installer failure: $expected"
             }}
+            run_killed_at_creation() {{
+                seam=$1
+                : >/target/stdout
+                : >/target/stderr
+                chmod 0600 /target/stdout /target/stderr
+                (
+                    umask 0777
+                    export KAPSEL_INSTALLER_TEST_STOP_AFTER_CREATE="$seam"
+                    exec "$installer" install --operator-input /secure/kapsel \\
+                        --kube-context nonprod
+                ) >/target/stdout 2>/target/stderr &
+                pid=$!
+                stopped=false
+                for _ in $(seq 1 1000); do
+                    case "$(ps -o stat= -p "$pid" 2>/dev/null || true)" in
+                        *T*) stopped=true; break ;;
+                    esac
+                    kill -0 "$pid" 2>/dev/null || break
+                    sleep 0.01
+                done
+                if test "$stopped" != true; then
+                    kill -KILL "$pid" 2>/dev/null || true
+                    wait "$pid" 2>/dev/null || true
+                    return 1
+                fi
+                kill -KILL "$pid"
+                status=0
+                wait "$pid" || status=$?
+                test "$status" = 137
+            }}
             test ! -e /var/lib/kapsel-installer
+            rm -f /run/lock/kapsel-installer.lock
+            run_killed_at_creation installer-lock
+            test "$(stat -c '%u:%a:%h' /run/lock/kapsel-installer.lock)" = "0:600:1"
+            run_failure implementation_incomplete
+            rm /var/lib/kapsel-installer/transaction.json
+            rmdir /var/lib/kapsel-installer
+            run_killed_at_creation transaction-directory
+            test "$(stat -c '%u:%a' /var/lib/kapsel-installer)" = "0:700"
+            run_failure implementation_incomplete
+            rm /var/lib/kapsel-installer/transaction.json
+            rmdir /var/lib/kapsel-installer
+            rm /run/lock/kapsel-installer.lock
+            chmod 2755 /var/lib
+            run_failure transaction_failure
+            test ! -e /var/lib/kapsel-installer
+            chmod 0755 /var/lib
+            rm /run/lock/kapsel-installer.lock
             old_umask=$(umask)
             umask 0777
             run_failure implementation_incomplete

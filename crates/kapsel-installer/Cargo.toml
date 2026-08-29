@@ -13,7 +13,7 @@ build = "build.rs"
 base64 = "=0.22.1"
 http = "=1.4.2"
 kapsel = { path = "../.." }
-rustix = { version = "=1.1.4", default-features = false, features = ["fs", "rand", "std"] }
+rustix = { version = "=1.1.4", default-features = false, features = ["fs", "process", "rand", "std"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 serde-saphyr = { version = "=0.0.27", default-features = false, features = ["deserialize"] }
