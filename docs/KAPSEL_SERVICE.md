@@ -344,19 +344,28 @@ explicit refresh command and reachable bootstrap authority.
 
 ### Durable installer transaction and ownership
 
-The installer first opens `/run/lock/kapsel-installer.lock` as an exact root-owned regular
-single-link mode-`0600` file and takes a nonblocking exclusive `flock`. The lock leaf is
-coordination, not durable ownership evidence, and may be reused after the crash-released lock. With
-the lock held, the only mutation allowed before a transaction exists is this bootstrap: create
-`/var/lib/kapsel-installer` no-replace as root mode `0700` and sync `/var/lib`; open an unnamed
-mode-`0600` inode there with Linux `O_TMPFILE`; write the complete initial record; sync that inode;
-link it no-replace as `transaction.json`; then sync the installer directory. A crash before the link
-leaves no named partial file. After a crash, an exact root-owned mode-`0700` empty installer
-directory resumes creation, and an exact valid `transaction.json` resumes its recorded phase. The
-only additional permitted leaf is the strongly marked `.transaction.next` update described below; it
-must be a valid one-step successor and is completed before resource recovery. Any other leaf,
-invalid transaction, unsupported unnamed-file operation, or concurrent Kapsel resource fails closed.
-The installer directory and transaction are never removed.
+`/run` and `/run/lock` are pre-existing platform directories; the installer never creates or repairs
+them. Starting from the root directory, it opens both components descriptor-relatively without
+following symlinks and requires root-owned directories. `/run` must not be writable by group or
+other; a group- or other-writable `/run/lock` must have the sticky bit. The installer first opens
+`kapsel-installer.lock` descriptor-relatively with
+`O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC` and requests mode `0600`. Only on
+`EEXIST` does it reopen without `O_CREAT | O_EXCL`. It may set exact mode `0600` only on an inode it
+created successfully; it never changes, truncates, unlinks, or replaces an existing leaf. Before and
+after taking a nonblocking exclusive `flock`, the retained descriptor must identify the same exact
+root-owned regular single-link mode-`0600` inode. The descriptor holds the lock for the invocation.
+The lock leaf is permitted pre-transaction coordination, not durable ownership evidence, and may be
+reused after the crash-released lock. With the lock held, the only other mutation allowed before a
+transaction exists is this bootstrap: create `/var/lib/kapsel-installer` no-replace as root mode
+`0700` and sync `/var/lib`; open an unnamed mode-`0600` inode there with Linux `O_TMPFILE`; write
+the complete initial record; sync that inode; link it no-replace as `transaction.json`; then sync
+the installer directory. A crash before the link leaves no named partial file. After a crash, an
+exact root-owned mode-`0700` empty installer directory resumes creation, and an exact valid
+`transaction.json` resumes its recorded phase. The only additional permitted leaf is the strongly
+marked `.transaction.next` update described below; it must be a valid one-step successor and is
+completed before resource recovery. Any other leaf, invalid transaction, unsupported unnamed-file
+operation, or concurrent Kapsel resource fails closed. The installer directory and transaction are
+never removed.
 
 The retained regular single-link transaction is at most 64 KiB and canonical UTF-8 JSON. Schema `1`
 has these exact top-level keys; `null` is explicit where shown, hashes and the transaction identity

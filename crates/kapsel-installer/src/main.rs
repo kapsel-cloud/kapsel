@@ -25,7 +25,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use http::{uri::Scheme, Uri};
 #[cfg(target_os = "linux")]
-use rustix::fs::{self as rfs, FileType, Mode, OFlags, RawDir, Stat, CWD};
+use rustix::fs::{self as rfs, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, CWD};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
@@ -39,6 +39,14 @@ struct OperatorInput {
 
 #[cfg(not(target_os = "linux"))]
 struct OperatorInput;
+
+#[cfg(target_os = "linux")]
+struct InstallerLock {
+    _descriptor: OwnedFd,
+}
+
+#[cfg(not(target_os = "linux"))]
+struct InstallerLock;
 
 struct BootstrapAuthority {
     _server: String,
@@ -193,6 +201,7 @@ enum InstallerError {
     InvalidArguments,
     InvalidBundle,
     InvalidOperatorInput,
+    InstallerLockFailure,
 }
 
 impl InstallerError {
@@ -203,6 +212,7 @@ impl InstallerError {
             Self::InvalidArguments => "invalid_arguments",
             Self::InvalidBundle => "invalid_bundle",
             Self::InvalidOperatorInput => "invalid_operator_input",
+            Self::InstallerLockFailure => "installer_lock_failure",
         }
     }
 }
@@ -226,6 +236,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerErr
     validate_embedded_bundle()?;
     let _operator_input =
         validate_operator_input(&invocation.operator_input, &invocation.kube_context)?;
+    let _lock = acquire_installer_lock()?;
 
     let _ = (invocation.action, invocation.kube_context);
     Err(InstallerError::ImplementationIncomplete)
@@ -485,6 +496,110 @@ fn decode_inline_data(encoded: &str) -> Result<Vec<u8>, InstallerError> {
 #[cfg(not(target_os = "linux"))]
 fn validate_operator_input(_: &std::path::Path, _: &str) -> Result<OperatorInput, InstallerError> {
     Err(InstallerError::InvalidOperatorInput)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn acquire_installer_lock() -> Result<InstallerLock, InstallerError> {
+    Err(InstallerError::InstallerLockFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn acquire_installer_lock() -> Result<InstallerLock, InstallerError> {
+    let root = rfs::openat(
+        CWD,
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::InstallerLockFailure)?;
+    let run = open_lock_directory(&root, "run")?;
+    let run_metadata = rfs::fstat(&run).map_err(|_| InstallerError::InstallerLockFailure)?;
+    if !root_owned_directory(&run_metadata) || run_metadata.st_mode & 0o022 != 0 {
+        return Err(InstallerError::InstallerLockFailure);
+    }
+    let lock_directory = open_lock_directory(&run, "lock")?;
+    let lock_directory_metadata =
+        rfs::fstat(&lock_directory).map_err(|_| InstallerError::InstallerLockFailure)?;
+    if !root_owned_directory(&lock_directory_metadata)
+        || lock_directory_metadata.st_mode & 0o022 != 0
+            && lock_directory_metadata.st_mode & 0o1000 == 0
+    {
+        return Err(InstallerError::InstallerLockFailure);
+    }
+
+    let create_flags = OFlags::RDWR
+        | OFlags::CREATE
+        | OFlags::EXCL
+        | OFlags::NOFOLLOW
+        | OFlags::NONBLOCK
+        | OFlags::CLOEXEC;
+    let descriptor = match rfs::openat(
+        &lock_directory,
+        "kapsel-installer.lock",
+        create_flags,
+        Mode::RUSR | Mode::WUSR,
+    ) {
+        Ok(descriptor) => {
+            rfs::fchmod(&descriptor, Mode::RUSR | Mode::WUSR)
+                .map_err(|_| InstallerError::InstallerLockFailure)?;
+            descriptor
+        },
+        Err(rustix::io::Errno::EXIST) => rfs::openat(
+            &lock_directory,
+            "kapsel-installer.lock",
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| InstallerError::InstallerLockFailure)?,
+        Err(_) => return Err(InstallerError::InstallerLockFailure),
+    };
+    let before = rfs::fstat(&descriptor).map_err(|_| InstallerError::InstallerLockFailure)?;
+    if !valid_installer_lock(&before) {
+        return Err(InstallerError::InstallerLockFailure);
+    }
+    rfs::flock(&descriptor, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| InstallerError::InstallerLockFailure)?;
+    let after = rfs::fstat(&descriptor).map_err(|_| InstallerError::InstallerLockFailure)?;
+    if !valid_installer_lock(&after) || !stable_lock(&before, &after) {
+        return Err(InstallerError::InstallerLockFailure);
+    }
+    Ok(InstallerLock {
+        _descriptor: descriptor,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn open_lock_directory(parent: &OwnedFd, name: &str) -> Result<OwnedFd, InstallerError> {
+    rfs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::InstallerLockFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn root_owned_directory(metadata: &Stat) -> bool {
+    FileType::from_raw_mode(metadata.st_mode).is_dir() && metadata.st_uid == 0
+}
+
+#[cfg(target_os = "linux")]
+fn valid_installer_lock(metadata: &Stat) -> bool {
+    FileType::from_raw_mode(metadata.st_mode).is_file()
+        && metadata.st_uid == 0
+        && metadata.st_mode & 0o7777 == 0o600
+        && metadata.st_nlink == 1
+}
+
+#[cfg(target_os = "linux")]
+fn stable_lock(before: &Stat, after: &Stat) -> bool {
+    before.st_dev == after.st_dev
+        && before.st_ino == after.st_ino
+        && before.st_mode == after.st_mode
+        && before.st_uid == after.st_uid
+        && before.st_gid == after.st_gid
+        && before.st_nlink == after.st_nlink
 }
 
 #[cfg(target_os = "linux")]

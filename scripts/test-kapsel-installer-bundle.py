@@ -147,6 +147,34 @@ def main() -> int:
                     "Kapsel installer failure: $expected"
             }}
             run_failure implementation_incomplete
+            test -f /run/lock/kapsel-installer.lock
+            test "$(stat -c '%u:%a:%h' /run/lock/kapsel-installer.lock)" = "0:600:1"
+            run_failure implementation_incomplete
+            exec 9<>/run/lock/kapsel-installer.lock
+            flock -n 9
+            run_failure installer_lock_failure
+            flock -u 9
+            exec 9>&-
+            chmod 0644 /run/lock/kapsel-installer.lock
+            run_failure installer_lock_failure
+            chmod 0600 /run/lock/kapsel-installer.lock
+            chown 1:0 /run/lock/kapsel-installer.lock
+            run_failure installer_lock_failure
+            chown 0:0 /run/lock/kapsel-installer.lock
+            ln /run/lock/kapsel-installer.lock /run/lock/kapsel-installer-link
+            run_failure installer_lock_failure
+            rm /run/lock/kapsel-installer-link
+            rm /run/lock/kapsel-installer.lock
+            ln -s /secure/kapsel/grant.bin /run/lock/kapsel-installer.lock
+            run_failure installer_lock_failure
+            rm /run/lock/kapsel-installer.lock
+            mkdir /run/lock/kapsel-installer.lock
+            run_failure installer_lock_failure
+            rmdir /run/lock/kapsel-installer.lock
+            mkfifo -m 0600 /run/lock/kapsel-installer.lock
+            run_failure installer_lock_failure
+            rm /run/lock/kapsel-installer.lock
+            run_failure implementation_incomplete
             chmod 0644 /secure/kapsel/grant.bin
             run_failure invalid_operator_input
             chmod 0600 /secure/kapsel/grant.bin
