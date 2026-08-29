@@ -19,7 +19,7 @@ target, or older glibc environments. Adding a target requires a separately accep
 artifact lane and owner update.
 
 The build container is the Docker Official Image
-`rust@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663` for Rust 1.96.1 on
+`rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922` for Rust 1.98.0 on
 Debian 12. The clean smoke container is
 `python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1` for Python 3.11 on
 Debian 12. Both run with `--platform linux/amd64`. Their digests are build and smoke inputs, not

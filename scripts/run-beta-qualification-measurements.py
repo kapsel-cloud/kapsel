@@ -13,7 +13,7 @@ import tempfile
 from typing import Any
 
 IMAGE = (
-    "rust@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663"
+    "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 )
 SAMPLES = 30
 WARMUPS = 5
@@ -208,7 +208,7 @@ def main() -> None:
             "-lc",
             "mkdir -p /tmp/cargo && ln -s /cargo-registry /tmp/cargo/registry && "
             "PATH=/usr/local/cargo/bin:$PATH CARGO_HOME=/tmp/cargo CARGO_NET_OFFLINE=true "
-            "RUSTUP_TOOLCHAIN=1.96.1-x86_64-unknown-linux-gnu "
+            "RUSTUP_TOOLCHAIN=1.98.0-x86_64-unknown-linux-gnu "
             "python3 scripts/measure-beta-qualification.py --output /output/raw.json",
         ]
         subprocess.run(command, check=True)

@@ -7,7 +7,9 @@
 
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     io::{self, Write as _},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -254,7 +256,8 @@ fn generate_bundle() -> Result<(), String> {
         fs::write(&copied, bytes)
             .map_err(|error| format!("cannot copy {} into Cargo output: {error}", asset.name))?;
         let digest = hex_digest(bytes);
-        generated_source.push_str(&format!(
+        let _ = write!(
+            generated_source,
             concat!(
                 "    super::Asset {{ bytes: include_bytes!(concat!(env!(\"OUT_DIR\"), ",
                 "\"/asset-{}\")), length: {}, sha256: {:?} }},\n"
@@ -262,7 +265,7 @@ fn generate_bundle() -> Result<(), String> {
             index,
             bytes.len(),
             digest,
-        ));
+        );
     }
     generated_source.push_str("];\n");
     fs::write(generated, generated_source)
@@ -280,13 +283,14 @@ fn append_expected_asset(output: &mut String, asset: &AssetSpec) {
         Owner::Evidence => "super::OwnerClass::Evidence",
         Owner::Root => "super::OwnerClass::Root",
     };
-    output.push_str(&format!(
+    let _ = write!(
+        output,
         concat!(
             "    super::ExpectedAsset {{ name: {:?}, destination: {}, ",
             "mode: {}, owner: {} }},\n"
         ),
         asset.name, destination, mode, owner
-    ));
+    );
 }
 
 fn required_path(name: &str) -> Result<PathBuf, String> {

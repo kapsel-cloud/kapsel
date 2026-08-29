@@ -104,6 +104,10 @@
         }
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the fake mirrors the production async provider seam"
+    )]
     impl DeploymentImageAdapter for FakeAdapter {
         async fn identify(
             &mut self,
@@ -179,6 +183,10 @@
         }
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the fake mirrors the production async provider seam"
+    )]
     impl DeploymentImageAdapter for TargetRoutingAdapter {
         async fn identify(
             &mut self,
@@ -234,6 +242,10 @@
         patch_count_path: PathBuf,
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "the fake mirrors the production async provider seam"
+    )]
     impl DeploymentImageAdapter for ProcessMutationAdapter {
         async fn identify(
             &mut self,

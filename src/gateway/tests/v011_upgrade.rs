@@ -159,6 +159,10 @@ impl Drop for MutationChild {
     }
 }
 
+#[allow(
+    clippy::unused_async_trait_impl,
+    reason = "the fixture adapter mirrors the production async provider seam"
+)]
 impl DeploymentImageAdapter for SideEffectAdapter {
     async fn identify(
         &mut self,

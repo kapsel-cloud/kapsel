@@ -202,8 +202,8 @@ LIVE_BUDGETS = {
     "live-cleanup-wall",
 }
 EXPECTED_TOOL_VERSIONS = {
-    "rust-host": "rustc 1.96.1 commit 31fca3adb283cc9dfd56b49cdee9a96eb9c96ffd",
-    "cargo-host": "cargo 1.96.1 (356927216 2026-06-26)",
+    "rust-host": "rustc 1.98.0 commit 88d9e12ae178fab0fb5cc050a94da85685d449ea",
+    "cargo-host": "cargo 1.98.0 (797e8a9bc 2026-08-05)",
     "python-host": "3.13.5",
     "docker": "client 29.5.2 server 29.5.2",
     "kind": "0.32.0",
@@ -212,9 +212,9 @@ EXPECTED_TOOL_VERSIONS = {
     "nightly-rust": "rustc 1.98.0-nightly commit c397dae808f70caebab1fc4e11b3edf7e59f58c7",
     "cargo-audit": "0.22.2",
     "trivy": "0.72.0 database version 2",
-    "rust-container": "rustc and cargo 1.96.1",
+    "rust-container": "rustc and cargo 1.98.0",
     "python-container": "Python 3.11.2",
-    "builder-image": "rust image digest a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663",
+    "builder-image": "rust image digest 82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922",
 }
 PRIVACY_ROOT_FILES = {
     "Cargo.lock",

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-beta-qualification-baseline.py"))
 EXPECTED_BUDGETS = VALIDATOR["EXPECTED_BUDGETS"]
 BUDGET_FIELDS = VALIDATOR["BUDGET_FIELDS"]
-BUILDER_IMAGE_DIGEST = "a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663"
+BUILDER_IMAGE_DIGEST = "82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 NODE_IMAGE = "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
 
 
@@ -146,7 +146,7 @@ def tools(security: dict[str, Any]) -> list[dict[str, Any]]:
         {"id": "nightly-rust", "environment_id": "host", "version": rust_commit(["rustup", "run", "nightly-2026-07-03", "rustc", "-Vv"])},
         {"id": "cargo-audit", "environment_id": "host", "version": audit_tool["version"].removeprefix("cargo-audit "), "database_utc": audit_tool["database_utc"]},
         {"id": "trivy", "environment_id": "host", "version": f"{trivy_tool['version']} database version {trivy_tool['database_version']}", "database_utc": trivy_tool["database_utc"]},
-        {"id": "rust-container", "environment_id": "container", "version": "rustc and cargo 1.96.1"},
+        {"id": "rust-container", "environment_id": "container", "version": "rustc and cargo 1.98.0"},
         {"id": "python-container", "environment_id": "container", "version": "Python 3.11.2"},
         {"id": "builder-image", "environment_id": "container", "version": f"rust image digest {BUILDER_IMAGE_DIGEST}"},
     ]

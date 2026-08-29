@@ -51,6 +51,10 @@ struct SimulationAdapter {
     observation: ReceiverObservation,
 }
 
+#[allow(
+    clippy::unused_async_trait_impl,
+    reason = "the simulation adapter mirrors the production async provider seam"
+)]
 impl DeploymentImageAdapter for SimulationAdapter {
     async fn identify(
         &mut self,

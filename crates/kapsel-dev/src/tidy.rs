@@ -314,7 +314,7 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
                     &item.attrs,
                     item.span(),
                     item.sig.asyncness.is_some(),
-                    item.sig.unsafety.is_some(),
+                    matches!(item.sig.safety, syn::Safety::Unsafe(_)),
                     documented,
                 );
             },
@@ -350,7 +350,7 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
                             &item.attrs,
                             item.span(),
                             item.sig.asyncness.is_some(),
-                            item.sig.unsafety.is_some(),
+                            matches!(item.sig.safety, syn::Safety::Unsafe(_)),
                             documented,
                         ),
                         TraitItem::Type(item) => {
@@ -381,7 +381,7 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
                             &item.attrs,
                             item.span(),
                             item.sig.asyncness.is_some(),
-                            item.sig.unsafety.is_some(),
+                            matches!(item.sig.safety, syn::Safety::Unsafe(_)),
                             documented,
                         ),
                         ImplItem::Type(item) if is_public(&item.vis) => {
