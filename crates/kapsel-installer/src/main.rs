@@ -1655,6 +1655,20 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn initial_publication_has_no_named_partial_before_link() {
+        let Some((path, directory)) = transaction_test_directory() else {
+            return;
+        };
+        let bytes = encode_transaction(&initial_transaction()).expect("fixture must encode");
+        initial_publication_has_no_named_partial(&path, &directory, &bytes);
+        successor_publication_recovers_and_preserves_conflicts(&path, &directory);
+        drop(directory);
+        std::fs::remove_file(path.join("transaction.json"))
+            .expect("fixture transaction must be removed");
+        std::fs::remove_dir(path).expect("fixture directory must be removed");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn transaction_test_directory() -> Option<(std::path::PathBuf, OwnedFd)> {
         use std::os::unix::fs::PermissionsExt as _;
 
         let path = std::env::temp_dir().join(format!(
@@ -1678,101 +1692,100 @@ mod tests {
         if rfs::fstat(&directory)
             .expect("fixture metadata must be readable")
             .st_uid
-            != 0
+            == 0
         {
+            Some((path, directory))
+        } else {
+            drop(directory);
             std::fs::remove_dir(&path).expect("fixture directory must be removed");
-            return;
+            None
         }
-        let bytes = encode_transaction(&initial_transaction()).expect("fixture must encode");
+    }
 
-        let unnamed =
-            write_transaction_inode(&directory, &bytes, None).expect("O_TMPFILE must work");
+    #[cfg(target_os = "linux")]
+    fn initial_publication_has_no_named_partial(
+        path: &std::path::Path,
+        directory: &OwnedFd,
+        bytes: &[u8],
+    ) {
+        let unnamed = write_transaction_inode(directory, bytes, None).expect("O_TMPFILE must work");
         assert_eq!(
-            std::fs::read_dir(&path)
+            std::fs::read_dir(path)
                 .expect("fixture directory must be readable")
                 .count(),
             0
         );
         drop(unnamed);
         assert_eq!(
-            std::fs::read_dir(&path)
+            std::fs::read_dir(path)
                 .expect("fixture directory must be readable")
                 .count(),
             0
         );
-
-        let linked =
-            write_transaction_inode(&directory, &bytes, None).expect("O_TMPFILE must work");
-        link_transaction_inode(&directory, &linked, "transaction.json")
+        let linked = write_transaction_inode(directory, bytes, None).expect("O_TMPFILE must work");
+        link_transaction_inode(directory, &linked, "transaction.json")
             .expect("AT_EMPTY_PATH must work");
         assert_eq!(
             std::fs::read(path.join("transaction.json")).expect("linked record must be readable"),
             bytes
         );
-        rfs::fsync(&directory).expect("fixture directory must sync");
-        let old = initial_transaction();
+        rfs::fsync(directory).expect("fixture directory must sync");
         assert_eq!(
-            read_transaction_leaf(&directory, "transaction.json", false)
+            read_transaction_leaf(directory, "transaction.json", false)
                 .expect("published transaction must decode"),
-            old
+            initial_transaction()
         );
-        let mut next = old.clone();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn successor_publication_recovers_and_preserves_conflicts(
+        path: &std::path::Path,
+        directory: &OwnedFd,
+    ) {
+        let mut next = initial_transaction();
         next.phase = TransactionPhase::Installing;
         let next_bytes = encode_transaction(&next).expect("successor must encode");
-
-        let abandoned =
-            write_transaction_inode(&directory, &next_bytes, Some(&next.transaction_id))
-                .expect("marked successor inode must be written");
+        let abandoned = write_transaction_inode(directory, &next_bytes, Some(&next.transaction_id))
+            .expect("marked successor inode must be written");
         drop(abandoned);
         assert!(!path.join(".transaction.next").exists());
-
-        let staged = write_transaction_inode(&directory, &next_bytes, Some(&next.transaction_id))
+        let staged = write_transaction_inode(directory, &next_bytes, Some(&next.transaction_id))
             .expect("marked successor inode must be written");
-        link_transaction_inode(&directory, &staged, ".transaction.next")
+        link_transaction_inode(directory, &staged, ".transaction.next")
             .expect("successor must link no-replace");
         assert_eq!(
-            recover_transaction_successor(&directory).expect("linked successor must recover"),
+            recover_transaction_successor(directory).expect("linked successor must recover"),
             next
         );
         assert!(!path.join(".transaction.next").exists());
-        assert_eq!(
-            read_transaction_leaf(&directory, "transaction.json", true)
-                .expect("renamed successor marker must match"),
-            next
-        );
-        let mut installed = next.clone();
+        let mut installed = next;
         installed.phase = TransactionPhase::Installed;
-        publish_transaction_successor(&directory, &next, &installed)
-            .expect("complete successor protocol must publish");
-        assert_eq!(
-            read_transaction_leaf(&directory, "transaction.json", true)
-                .expect("fully published successor must decode"),
-            installed
-        );
-        let mut invalid = installed.clone();
+        publish_transaction_successor(
+            directory,
+            &read_transaction_leaf(directory, "transaction.json", true)
+                .expect("recovered successor must decode"),
+            &installed,
+        )
+        .expect("complete successor protocol must publish");
+        let mut invalid = installed;
         invalid.action = Action::Uninstall;
         invalid.phase = TransactionPhase::Uninstalled;
         let invalid_bytes = encode_transaction(&invalid).expect("invalid successor must encode");
         let conflicting =
-            write_transaction_inode(&directory, &invalid_bytes, Some(&invalid.transaction_id))
+            write_transaction_inode(directory, &invalid_bytes, Some(&invalid.transaction_id))
                 .expect("conflicting successor inode must be written");
-        link_transaction_inode(&directory, &conflicting, ".transaction.next")
+        link_transaction_inode(directory, &conflicting, ".transaction.next")
             .expect("conflicting successor must link");
-        rfs::fsync(&directory).expect("conflicting successor name must sync");
+        rfs::fsync(directory).expect("conflicting successor name must sync");
         assert!(matches!(
-            recover_transaction_successor(&directory),
+            recover_transaction_successor(directory),
             Err(InstallerError::TransactionFailure)
         ));
         assert!(path.join(".transaction.next").exists());
-        rfs::unlinkat(&directory, ".transaction.next", AtFlags::empty())
+        rfs::unlinkat(directory, ".transaction.next", AtFlags::empty())
             .expect("conflicting successor must be removed by the test");
         drop(conflicting);
         drop(staged);
-        drop(linked);
-        drop(directory);
-        std::fs::remove_file(path.join("transaction.json"))
-            .expect("fixture transaction must be removed");
-        std::fs::remove_dir(path).expect("fixture directory must be removed");
     }
 
     #[test]

@@ -29,23 +29,23 @@ gate for every content-changing commit.
 
 ## Choose a focused gate
 
-| Change                        | Smallest useful command                                        |
-| ----------------------------- | -------------------------------------------------------------- |
-| Effect-gateway library        | `cargo test --locked -p kapsel`                                |
-| Effect-gateway Clippy         | `cargo clippy --locked -p kapsel --all-targets -- -D warnings` |
-| Kapsel service                | `cargo test --locked -p kapseld --features test-harness`       |
-| Installer skeleton            | `cargo test --locked -p kapsel-installer`                      |
-| Installer bundle seam         | `cargo make test-installer-bundle`                             |
-| Service installed assets      | `cargo test --locked -p kapseld --test install_assets`         |
-| MCP adapter                   | `cargo test --locked --test e2e_mcp_adapter`                   |
-| Upgrade and rollback          | `cargo make test-v011-upgrade`                                 |
-| Crash-demo harness            | `cargo make test-demo-harness`                                 |
-| Seeded lifecycle simulation   | `cargo make test-simulation`                                   |
-| Receipt-inspection fuzz smoke | `cargo make test-fuzz`                                         |
-| Live Kubernetes behavior      | `cargo make test-kind`                                         |
-| Full local demonstration      | `cargo make demo-kind`                                         |
-| Release artifact              | `cargo make assemble-release`                                  |
-| Finite beta qualification     | `cargo make qualify-beta`                                      |
+| Change                           | Smallest useful command                                        |
+| -------------------------------- | -------------------------------------------------------------- |
+| Effect-gateway library           | `cargo test --locked -p kapsel`                                |
+| Effect-gateway Clippy            | `cargo clippy --locked -p kapsel --all-targets -- -D warnings` |
+| Kapsel service                   | `cargo test --locked -p kapseld --features test-harness`       |
+| Installer skeleton               | `cargo test --locked -p kapsel-installer`                      |
+| Linux-only installer/bundle code | `cargo make test-installer-bundle`                             |
+| Service installed assets         | `cargo test --locked -p kapseld --test install_assets`         |
+| MCP adapter                      | `cargo test --locked --test e2e_mcp_adapter`                   |
+| Upgrade and rollback             | `cargo make test-v011-upgrade`                                 |
+| Crash-demo harness               | `cargo make test-demo-harness`                                 |
+| Seeded lifecycle simulation      | `cargo make test-simulation`                                   |
+| Receipt-inspection fuzz smoke    | `cargo make test-fuzz`                                         |
+| Live Kubernetes behavior         | `cargo make test-kind`                                         |
+| Full local demonstration         | `cargo make demo-kind`                                         |
+| Release artifact                 | `cargo make assemble-release`                                  |
+| Finite beta qualification        | `cargo make qualify-beta`                                      |
 
 Use `cargo make tidy` for project-specific hard hygiene checks. `cargo make style-audit` emits
 non-blocking review prompts.
