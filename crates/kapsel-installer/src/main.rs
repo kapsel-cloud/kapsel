@@ -25,7 +25,7 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use http::{uri::Scheme, Uri};
 #[cfg(target_os = "linux")]
-use rustix::fs::{self as rfs, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, CWD};
+use rustix::fs::{self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, CWD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -309,7 +309,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerErr
         validate_operator_input(&invocation.operator_input, &invocation.kube_context)?;
     let _lock = acquire_installer_lock()?;
     if invocation.action == Action::Install {
-        let _initial_transaction = prepare_initial_transaction(&invocation, &operator_input)?;
+        let _transaction = bootstrap_transaction(&invocation, &operator_input)?;
     }
 
     let _ = invocation.kube_context;
@@ -572,18 +572,20 @@ const TRANSACTION_BYTES_MAX: usize = 64 * 1024;
 const INSTALLER_BYTES_MAX: usize = 64 * 1024 * 1024;
 
 #[cfg(not(target_os = "linux"))]
-fn prepare_initial_transaction(
+fn initial_transaction(
     _: &Invocation,
     _: &OperatorInput,
-) -> Result<Vec<u8>, InstallerError> {
+    _: String,
+) -> Result<InstallerTransaction, InstallerError> {
     Err(InstallerError::TransactionFailure)
 }
 
 #[cfg(target_os = "linux")]
-fn prepare_initial_transaction(
+fn initial_transaction(
     invocation: &Invocation,
     input: &OperatorInput,
-) -> Result<Vec<u8>, InstallerError> {
+    transaction_id: String,
+) -> Result<InstallerTransaction, InstallerError> {
     let bootstrap_digest = digest_named_input(input, "bootstrap-kubeconfig.yaml")?;
     let transaction = InstallerTransaction {
         action: Action::Install,
@@ -614,11 +616,11 @@ fn prepare_initial_transaction(
         pending: None,
         phase: TransactionPhase::Prepared,
         schema: 1,
-        transaction_id: new_transaction_id()?,
+        transaction_id,
     };
     let bytes = encode_transaction(&transaction)?;
     let _ = decode_transaction(&bytes)?;
-    Ok(bytes)
+    Ok(transaction)
 }
 
 #[cfg(target_os = "linux")]
@@ -628,6 +630,191 @@ fn digest_named_input(input: &OperatorInput, name: &str) -> Result<String, Insta
         .get(name)
         .map(|bytes| hex_digest(bytes))
         .ok_or(InstallerError::TransactionFailure)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bootstrap_transaction(
+    _: &Invocation,
+    _: &OperatorInput,
+) -> Result<InstallerTransaction, InstallerError> {
+    Err(InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn bootstrap_transaction(
+    invocation: &Invocation,
+    input: &OperatorInput,
+) -> Result<InstallerTransaction, InstallerError> {
+    let root = rfs::openat(
+        CWD,
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    let var = open_transaction_directory(&root, "var")?;
+    validate_transaction_parent(&var)?;
+    let lib = open_transaction_directory(&var, "lib")?;
+    validate_transaction_parent(&lib)?;
+
+    let created = match rfs::mkdirat(&lib, "kapsel-installer", Mode::RWXU) {
+        Ok(()) => true,
+        Err(rustix::io::Errno::EXIST) => false,
+        Err(_) => return Err(InstallerError::TransactionFailure),
+    };
+    let directory = open_transaction_directory(&lib, "kapsel-installer")?;
+    if created {
+        rfs::fchmod(&directory, Mode::RWXU).map_err(|_| InstallerError::TransactionFailure)?;
+        rfs::fsync(&lib).map_err(|_| InstallerError::TransactionFailure)?;
+    }
+    let before = rfs::fstat(&directory).map_err(|_| InstallerError::TransactionFailure)?;
+    if !valid_transaction_directory(&before) {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let names = transaction_directory_names(&directory)?;
+    if names.is_empty() {
+        let transaction = initial_transaction(invocation, input, new_transaction_id()?)?;
+        let bytes = encode_transaction(&transaction)?;
+        publish_initial_transaction(&directory, &bytes)?;
+        return Ok(transaction);
+    }
+    if names.len() != 1 || !names.contains("transaction.json") {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let transaction = read_transaction(&directory)?;
+    let expected = initial_transaction(invocation, input, transaction.transaction_id.clone())?;
+    if transaction != expected {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let after = rfs::fstat(&directory).map_err(|_| InstallerError::TransactionFailure)?;
+    if !stable_directory(&before, &after) {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(transaction)
+}
+
+#[cfg(target_os = "linux")]
+fn open_transaction_directory(parent: &OwnedFd, name: &str) -> Result<OwnedFd, InstallerError> {
+    rfs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_transaction_parent(directory: &OwnedFd) -> Result<(), InstallerError> {
+    let metadata = rfs::fstat(directory).map_err(|_| InstallerError::TransactionFailure)?;
+    if !root_owned_directory(&metadata) || metadata.st_mode & 0o022 != 0 {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn valid_transaction_directory(metadata: &Stat) -> bool {
+    root_owned_directory(metadata) && metadata.st_mode & 0o7777 == 0o700
+}
+
+#[cfg(target_os = "linux")]
+fn transaction_directory_names(directory: &OwnedFd) -> Result<BTreeSet<String>, InstallerError> {
+    let mut buffer = [MaybeUninit::uninit(); 4096];
+    let mut entries = RawDir::new(directory, &mut buffer);
+    let mut names = BTreeSet::new();
+    while let Some(entry) = entries.next() {
+        let entry = entry.map_err(|_| InstallerError::TransactionFailure)?;
+        let bytes = entry.file_name().to_bytes();
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        let name = std::str::from_utf8(bytes).map_err(|_| InstallerError::TransactionFailure)?;
+        if !names.insert(name.to_owned()) {
+            return Err(InstallerError::TransactionFailure);
+        }
+    }
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn publish_initial_transaction(directory: &OwnedFd, bytes: &[u8]) -> Result<(), InstallerError> {
+    let file = write_initial_transaction_inode(directory, bytes)?;
+    link_initial_transaction_inode(directory, &file)?;
+    rfs::fsync(directory).map_err(|_| InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn write_initial_transaction_inode(
+    directory: &OwnedFd,
+    bytes: &[u8],
+) -> Result<std::fs::File, InstallerError> {
+    let descriptor = rfs::openat(
+        directory,
+        ".",
+        OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+        Mode::RUSR | Mode::WUSR,
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::fchmod(&descriptor, Mode::RUSR | Mode::WUSR)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    file.write_all(bytes)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    rfs::fsync(&file).map_err(|_| InstallerError::TransactionFailure)?;
+    let metadata = rfs::fstat(&file).map_err(|_| InstallerError::TransactionFailure)?;
+    if !FileType::from_raw_mode(metadata.st_mode).is_file()
+        || metadata.st_uid != 0
+        || metadata.st_mode & 0o7777 != 0o600
+        || metadata.st_nlink != 0
+        || usize::try_from(metadata.st_size) != Ok(bytes.len())
+    {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(file)
+}
+
+#[cfg(target_os = "linux")]
+fn link_initial_transaction_inode(
+    directory: &OwnedFd,
+    file: &std::fs::File,
+) -> Result<(), InstallerError> {
+    rfs::linkat(file, "", directory, "transaction.json", AtFlags::EMPTY_PATH)
+        .map_err(|_| InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn read_transaction(directory: &OwnedFd) -> Result<InstallerTransaction, InstallerError> {
+    let descriptor = rfs::openat(
+        directory,
+        "transaction.json",
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    let before = rfs::fstat(&descriptor).map_err(|_| InstallerError::TransactionFailure)?;
+    if !FileType::from_raw_mode(before.st_mode).is_file()
+        || before.st_uid != 0
+        || before.st_mode & 0o7777 != 0o600
+        || before.st_nlink != 1
+        || before.st_size <= 0
+        || usize::try_from(before.st_size).map_or(true, |length| length > TRANSACTION_BYTES_MAX)
+    {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let capacity =
+        usize::try_from(before.st_size).map_err(|_| InstallerError::TransactionFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    let mut bytes = Vec::with_capacity(capacity);
+    (&mut file)
+        .take(u64::try_from(TRANSACTION_BYTES_MAX).unwrap_or(u64::MAX) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    let after = rfs::fstat(&file).map_err(|_| InstallerError::TransactionFailure)?;
+    if bytes.len() > TRANSACTION_BYTES_MAX || !stable_file(&before, &after, bytes.len()) {
+        return Err(InstallerError::TransactionFailure);
+    }
+    decode_transaction(&bytes)
 }
 
 fn encode_transaction(transaction: &InstallerTransaction) -> Result<Vec<u8>, InstallerError> {
@@ -1215,6 +1402,74 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn initial_publication_has_no_named_partial_before_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = std::env::temp_dir().join(format!(
+            "kapsel-installer-transaction-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("fixture directory must be created");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("fixture mode must be set");
+        let directory = rfs::openat(
+            CWD,
+            &path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .expect("fixture directory must open");
+        if rfs::fstat(&directory)
+            .expect("fixture metadata must be readable")
+            .st_uid
+            != 0
+        {
+            std::fs::remove_dir(&path).expect("fixture directory must be removed");
+            return;
+        }
+        let bytes = encode_transaction(&initial_transaction()).expect("fixture must encode");
+
+        let unnamed =
+            write_initial_transaction_inode(&directory, &bytes).expect("O_TMPFILE must work");
+        assert_eq!(
+            std::fs::read_dir(&path)
+                .expect("fixture directory must be readable")
+                .count(),
+            0
+        );
+        drop(unnamed);
+        assert_eq!(
+            std::fs::read_dir(&path)
+                .expect("fixture directory must be readable")
+                .count(),
+            0
+        );
+
+        let linked =
+            write_initial_transaction_inode(&directory, &bytes).expect("O_TMPFILE must work");
+        link_initial_transaction_inode(&directory, &linked).expect("AT_EMPTY_PATH must work");
+        assert_eq!(
+            std::fs::read(path.join("transaction.json")).expect("linked record must be readable"),
+            bytes
+        );
+        rfs::fsync(&directory).expect("fixture directory must sync");
+        assert_eq!(
+            read_transaction(&directory).expect("published transaction must decode"),
+            initial_transaction()
+        );
+        drop(linked);
+        drop(directory);
+        std::fs::remove_file(path.join("transaction.json"))
+            .expect("fixture transaction must be removed");
+        std::fs::remove_dir(path).expect("fixture directory must be removed");
     }
 
     #[test]

@@ -355,17 +355,19 @@ created successfully; it never changes, truncates, unlinks, or replaces an exist
 after taking a nonblocking exclusive `flock`, the retained descriptor must identify the same exact
 root-owned regular single-link mode-`0600` inode. The descriptor holds the lock for the invocation.
 The lock leaf is permitted pre-transaction coordination, not durable ownership evidence, and may be
-reused after the crash-released lock. With the lock held, the only other mutation allowed before a
-transaction exists is this bootstrap: create `/var/lib/kapsel-installer` no-replace as root mode
-`0700` and sync `/var/lib`; open an unnamed mode-`0600` inode there with Linux `O_TMPFILE`; write
-the complete initial record; sync that inode; link it no-replace as `transaction.json`; then sync
-the installer directory. A crash before the link leaves no named partial file. After a crash, an
-exact root-owned mode-`0700` empty installer directory resumes creation, and an exact valid
-`transaction.json` resumes its recorded phase. The only additional permitted leaf is the strongly
-marked `.transaction.next` update described below; it must be a valid one-step successor and is
-completed before resource recovery. Any other leaf, invalid transaction, unsupported unnamed-file
-operation, or concurrent Kapsel resource fails closed. The installer directory and transaction are
-never removed.
+reused after the crash-released lock. The pre-existing `/var` and `/var/lib` components are opened
+descriptor-relatively without following symlinks; both must be root-owned directories not writable
+by group or other, and the installer never creates or repairs them. With the lock held, the only
+other mutation allowed before a transaction exists is this bootstrap: create
+`/var/lib/kapsel-installer` no-replace as root mode `0700` and sync `/var/lib`; open an unnamed
+mode-`0600` inode there with Linux `O_TMPFILE`; write the complete initial record; sync that inode;
+link it no-replace as `transaction.json`; then sync the installer directory. A crash before the link
+leaves no named partial file. After a crash, an exact root-owned mode-`0700` empty installer
+directory resumes creation, and an exact valid `transaction.json` resumes its recorded phase. The
+only additional permitted leaf is the strongly marked `.transaction.next` update described below; it
+must be a valid one-step successor and is completed before resource recovery. Any other leaf,
+invalid transaction, unsupported unnamed-file operation, or concurrent Kapsel resource fails closed.
+The installer directory and transaction are never removed.
 
 For a new transaction, after acquiring the lock and before publishing any transaction inode, the
 installer fills exactly 32 bytes using blocking-complete Linux `getrandom` calls with flags zero. It

@@ -216,12 +216,15 @@ class, and empty stdout. They also prove that a default development build reache
 `bundle_unavailable` without creating anything in its working directory. The explicit Docker bundle
 smoke constructs an exact stage with clearly test-only ELF fixtures and root-owned operator input.
 It crosses release-stage generation, descriptor-relative exact input validation, cryptographic
-consistency, one valid bootstrap kubeconfig, and hostile metadata, inventory, path, special-file,
-bounds, and authority refusal before requiring `implementation_incomplete`. Package unit tests own
-the strict bounded bootstrap-kubeconfig grammar and its hostile aliases, duplicates, unknowns,
-external references, credential forms, decoded bounds, and URL shapes. These gates prove no
-transaction, host preflight, payload provenance, metadata schema, final-size bound, runnable
-installation, or candidate qualification.
+consistency, one valid bootstrap kubeconfig, exact installer-lock handling, crash-safe canonical
+prepared-transaction publication and recovery, and hostile metadata, inventory, path, special-file,
+bounds, authority, lock, and transaction refusal before requiring `implementation_incomplete`.
+Portable package unit tests own the strict bounded bootstrap-kubeconfig grammar, canonical prepared
+record, and hostile aliases, duplicates, unknowns, external references, credential forms, decoded
+bounds, and URL shapes. The Docker smoke explicitly runs the Linux root unit test for the
+unnamed-inode publication seam. These gates prove no host preflight, successor transaction update,
+payload provenance, metadata schema, final-size bound, runnable installation, or candidate
+qualification.
 
 The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
 suites remain authoritative for v0.2.0.

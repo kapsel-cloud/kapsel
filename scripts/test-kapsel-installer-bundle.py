@@ -130,12 +130,17 @@ def main() -> int:
             trap restore_target_ownership EXIT
             cargo build --release --locked --target {TARGET} \\
                 -p kapsel-installer
+            cargo test --release --locked --target {TARGET} -p kapsel-installer \\
+                'tests::initial_publication_has_no_named_partial_before_link' -- --exact
             installer=/target/{TARGET}/release/kapsel-installer
             mkdir -p /secure
             cp -a /operator-fixture /secure/kapsel
             chown -R 0:0 /secure/kapsel
             run_failure() {{
                 expected=$1
+                : >/target/stdout
+                : >/target/stderr
+                chmod 0600 /target/stdout /target/stderr
                 set +e
                 "$installer" install --operator-input /secure/kapsel \\
                     --kube-context nonprod >/target/stdout 2>/target/stderr
@@ -146,7 +151,64 @@ def main() -> int:
                 test "$(cat /target/stderr)" = \\
                     "Kapsel installer failure: $expected"
             }}
+            test ! -e /var/lib/kapsel-installer
+            old_umask=$(umask)
+            umask 0777
             run_failure implementation_incomplete
+            umask "$old_umask"
+            installer_state=/var/lib/kapsel-installer
+            transaction=$installer_state/transaction.json
+            test "$(stat -c '%u:%a' "$installer_state")" = "0:700"
+            test -f "$transaction"
+            test "$(stat -c '%u:%a:%h' "$transaction")" = "0:600:1"
+            test "$(stat -c '%s' "$transaction")" -le 65536
+            cp "$transaction" /target/valid-transaction.json
+            ! grep -F 'fixture-token' "$transaction"
+            ! grep -F 'Y2E=' "$transaction"
+            run_failure implementation_incomplete
+            cmp "$transaction" /target/valid-transaction.json
+            : >"$installer_state/unknown"
+            chmod 0600 "$installer_state/unknown"
+            run_failure transaction_failure
+            test -f "$installer_state/unknown"
+            rm "$installer_state/unknown"
+            chmod 0644 "$transaction"
+            run_failure transaction_failure
+            test "$(stat -c '%a' "$transaction")" = "644"
+            chmod 0600 "$transaction"
+            printf '{{}}' >"$transaction"
+            run_failure transaction_failure
+            test "$(cat "$transaction")" = '{{}}'
+            cp /target/valid-transaction.json "$transaction"
+            chmod 0600 "$transaction"
+            sed 's#"path":"/secure/kapsel"#"path":"/secure/changed"#' \
+                /target/valid-transaction.json >"$transaction"
+            run_failure transaction_failure
+            grep -F '"path":"/secure/changed"' "$transaction" >/dev/null
+            cp /target/valid-transaction.json "$transaction"
+            chmod 0600 "$transaction"
+            ln "$transaction" "$installer_state/transaction-link"
+            run_failure transaction_failure
+            test "$(stat -c '%h' "$transaction")" = "2"
+            rm "$installer_state/transaction-link"
+            rm "$transaction"
+            ln -s /target/valid-transaction.json "$transaction"
+            run_failure transaction_failure
+            test -L "$transaction"
+            rm "$transaction"
+            mkfifo -m 0600 "$transaction"
+            run_failure transaction_failure
+            test -p "$transaction"
+            rm "$transaction"
+            mkdir -m 0600 "$transaction"
+            run_failure transaction_failure
+            test -d "$transaction"
+            rmdir "$transaction"
+            rmdir "$installer_state"
+            mkdir -m 0700 "$installer_state"
+            run_failure implementation_incomplete
+            test "$(stat -c '%u:%a' "$installer_state")" = "0:700"
+            test "$(stat -c '%u:%a:%h' "$transaction")" = "0:600:1"
             test -f /run/lock/kapsel-installer.lock
             test "$(stat -c '%u:%a:%h' /run/lock/kapsel-installer.lock)" = "0:600:1"
             run_failure implementation_incomplete
