@@ -155,14 +155,14 @@ def main() -> int:
                 test "$(cat /target/stderr)" = \\
                     "Kapsel installer failure: $expected"
             }}
-            run_killed_at_creation() {{
+            run_killed_at_seam() {{
                 seam=$1
                 : >/target/stdout
                 : >/target/stderr
                 chmod 0600 /target/stdout /target/stderr
                 (
                     umask 0777
-                    export KAPSEL_INSTALLER_TEST_STOP_AFTER_CREATE="$seam"
+                    export KAPSEL_INSTALLER_TEST_STOP_AT_SEAM="$seam"
                     exec "$installer" install --operator-input /secure/kapsel \\
                         --kube-context nonprod
                 ) >/target/stdout 2>/target/stderr &
@@ -187,13 +187,15 @@ def main() -> int:
             }}
             test ! -e /var/lib/kapsel-installer
             rm -f /run/lock/kapsel-installer.lock
-            run_killed_at_creation installer-lock
+            run_killed_at_seam installer-lock
             test "$(stat -c '%u:%a:%h' /run/lock/kapsel-installer.lock)" = "0:600:1"
             run_failure implementation_incomplete
             rm /var/lib/kapsel-installer/transaction.json
             rmdir /var/lib/kapsel-installer
-            run_killed_at_creation transaction-directory
+            run_killed_at_seam transaction-directory
             test "$(stat -c '%u:%a' /var/lib/kapsel-installer)" = "0:700"
+            run_killed_at_seam transaction-parent-synced
+            test -z "$(ls -A /var/lib/kapsel-installer)"
             run_failure implementation_incomplete
             rm /var/lib/kapsel-installer/transaction.json
             rmdir /var/lib/kapsel-installer

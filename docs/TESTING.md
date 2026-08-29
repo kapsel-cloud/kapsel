@@ -218,8 +218,8 @@ smoke constructs an exact stage with clearly test-only ELF fixtures and root-own
 It crosses release-stage generation, descriptor-relative exact input validation, cryptographic
 consistency, one valid bootstrap kubeconfig, exact installer-lock handling, exact named-object modes
 under a hostile umask, kill/restart recovery after lock and transaction-directory creation,
-crash-safe canonical prepared-transaction publication and recovery, and hostile metadata, inventory,
-path, special-file, bounds, authority, lock, and transaction refusal before requiring
+recovered-parent sync before crash-safe canonical transaction publication, and hostile metadata,
+inventory, path, special-file, bounds, authority, lock, and transaction refusal before requiring
 `implementation_incomplete`. Portable package unit tests own the strict bounded bootstrap-kubeconfig
 grammar, canonical prepared record, and hostile aliases, duplicates, unknowns, external references,
 credential forms, decoded bounds, and URL shapes. The Docker smoke explicitly runs the Linux root

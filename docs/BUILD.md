@@ -94,9 +94,9 @@ stage through `KAPSEL_INSTALLER_STAGE`. The explicit Docker smoke uses test-only
 root-owned test operator input; it proves bundle generation, descriptor-relative exact input
 inventory and metadata checks, grant/key/receipt consistency, valid kubeconfig composition, hostile
 filesystem refusal, exact installer-lock handling and named-object modes under a hostile umask,
-kill/restart recovery after lock and transaction-directory creation, crash-safe prepared-transaction
-publication, marked phase-successor update and recovery, and the next `implementation_incomplete`
-boundary:
+kill/restart recovery after lock and transaction-directory creation, recovered-parent sync before
+crash-safe transaction publication, marked phase-successor update and recovery, and the next
+`implementation_incomplete` boundary:
 
 ```sh
 cargo make test-installer-bundle

@@ -656,7 +656,7 @@ fn bootstrap_transaction(
     let created =
         match with_exact_creation_mode(|| rfs::mkdirat(&lib, "kapsel-installer", Mode::RWXU)) {
             Ok(()) => {
-                stop_after_named_creation("transaction-directory");
+                stop_at_test_seam("transaction-directory");
                 true
             },
             Err(rustix::io::Errno::EXIST) => false,
@@ -665,7 +665,6 @@ fn bootstrap_transaction(
     let directory = open_directory(&lib, "kapsel-installer", InstallerError::TransactionFailure)?;
     if created {
         rfs::fchmod(&directory, Mode::RWXU).map_err(|_| InstallerError::TransactionFailure)?;
-        rfs::fsync(&lib).map_err(|_| InstallerError::TransactionFailure)?;
     }
     let before = rfs::fstat(&directory).map_err(|_| InstallerError::TransactionFailure)?;
     if !valid_transaction_directory(&before) {
@@ -673,6 +672,8 @@ fn bootstrap_transaction(
     }
     let names = directory_names(&directory, InstallerError::TransactionFailure)?;
     if names.is_empty() {
+        rfs::fsync(&lib).map_err(|_| InstallerError::TransactionFailure)?;
+        stop_at_test_seam("transaction-parent-synced");
         let transaction = initial_transaction(invocation, input, new_transaction_id()?)?;
         let bytes = encode_transaction(&transaction)?;
         publish_initial_transaction(&directory, &bytes)?;
@@ -1112,15 +1113,15 @@ fn with_exact_creation_mode<T>(create: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(all(target_os = "linux", kapsel_installer_test_crash_seams))]
-fn stop_after_named_creation(seam: &str) {
-    if std::env::var("KAPSEL_INSTALLER_TEST_STOP_AFTER_CREATE").as_deref() == Ok(seam) {
+fn stop_at_test_seam(seam: &str) {
+    if std::env::var("KAPSEL_INSTALLER_TEST_STOP_AT_SEAM").as_deref() == Ok(seam) {
         rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::STOP)
             .expect("test crash seam must stop the installer");
     }
 }
 
 #[cfg(all(target_os = "linux", not(kapsel_installer_test_crash_seams)))]
-fn stop_after_named_creation(_: &str) {}
+fn stop_at_test_seam(_: &str) {}
 
 #[cfg(target_os = "linux")]
 fn acquire_installer_lock() -> Result<OwnedFd, InstallerError> {
@@ -1161,7 +1162,7 @@ fn acquire_installer_lock() -> Result<OwnedFd, InstallerError> {
         )
     }) {
         Ok(descriptor) => {
-            stop_after_named_creation("installer-lock");
+            stop_at_test_seam("installer-lock");
             rfs::fchmod(&descriptor, Mode::RUSR | Mode::WUSR)
                 .map_err(|_| InstallerError::InstallerLockFailure)?;
             descriptor
