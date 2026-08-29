@@ -26,15 +26,17 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use http::{uri::Scheme, Uri};
 #[cfg(target_os = "linux")]
 use rustix::fs::{self as rfs, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, CWD};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 #[cfg(target_os = "linux")]
 struct OperatorInput {
     _directory: OwnedFd,
-    _files: BTreeMap<&'static str, Vec<u8>>,
+    directory_metadata: Stat,
+    files: BTreeMap<&'static str, Vec<u8>>,
     _identity: kapsel::ValidatedServiceOperatorInputs,
-    _bootstrap: BootstrapAuthority,
+    path: String,
+    bootstrap: BootstrapAuthority,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -49,8 +51,8 @@ struct InstallerLock {
 struct InstallerLock;
 
 struct BootstrapAuthority {
-    _server: String,
-    _certificate_authority: Vec<u8>,
+    server: String,
+    certificate_authority: Vec<u8>,
     _credential: BootstrapCredential,
 }
 
@@ -154,7 +156,8 @@ const OPERATOR_FILES: &[(&str, usize)] = &[
     ("receipt.trust", 1024),
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 enum Action {
     Install,
     RefreshCredential,
@@ -165,6 +168,72 @@ struct Invocation {
     action: Action,
     operator_input: PathBuf,
     kube_context: String,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InstallerTransaction {
+    action: Action,
+    bootstrap_kubeconfig_initial_sha256: String,
+    bootstrap_kubeconfig_sha256: String,
+    cluster: TransactionCluster,
+    credential_expiration: Option<String>,
+    host_resources: Vec<serde_json::Value>,
+    input_directory: TransactionInputDirectory,
+    installer_sha256: String,
+    kube_context: String,
+    kubernetes_resources: Vec<serde_json::Value>,
+    operator_inputs: TransactionOperatorInputs,
+    pending: Option<serde_json::Value>,
+    phase: TransactionPhase,
+    schema: u64,
+    transaction_id: String,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TransactionCluster {
+    ca_sha256: String,
+    server: String,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TransactionInputDirectory {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    path: String,
+    uid: u32,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TransactionOperatorInputs {
+    #[serde(rename = "authorization.pub")]
+    authorization_pub: String,
+    #[serde(rename = "grant.bin")]
+    grant_bin: String,
+    #[serde(rename = "receipt.seed")]
+    receipt_seed: String,
+    #[serde(rename = "receipt.trust")]
+    receipt_trust: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TransactionPhase {
+    Installed,
+    Installing,
+    PartialUninstall,
+    Prepared,
+    Refreshing,
+    RolledBack,
+    RollingBack,
+    Uninstalled,
+    UninstallingKubernetes,
+    UninstallingLocal,
+    UninstallingStatic,
 }
 
 #[allow(
@@ -194,7 +263,7 @@ mod bundle {
     include!(concat!(env!("OUT_DIR"), "/bundle.rs"));
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum InstallerError {
     BundleUnavailable,
     ImplementationIncomplete,
@@ -202,6 +271,7 @@ enum InstallerError {
     InvalidBundle,
     InvalidOperatorInput,
     InstallerLockFailure,
+    TransactionFailure,
 }
 
 impl InstallerError {
@@ -213,6 +283,7 @@ impl InstallerError {
             Self::InvalidBundle => "invalid_bundle",
             Self::InvalidOperatorInput => "invalid_operator_input",
             Self::InstallerLockFailure => "installer_lock_failure",
+            Self::TransactionFailure => "transaction_failure",
         }
     }
 }
@@ -234,11 +305,14 @@ fn main() -> ExitCode {
 fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerError> {
     let invocation = parse_arguments(arguments)?;
     validate_embedded_bundle()?;
-    let _operator_input =
+    let operator_input =
         validate_operator_input(&invocation.operator_input, &invocation.kube_context)?;
     let _lock = acquire_installer_lock()?;
+    if invocation.action == Action::Install {
+        let _initial_transaction = prepare_initial_transaction(&invocation, &operator_input)?;
+    }
 
-    let _ = (invocation.action, invocation.kube_context);
+    let _ = invocation.kube_context;
     Err(InstallerError::ImplementationIncomplete)
 }
 
@@ -438,8 +512,8 @@ fn parse_bootstrap_kubeconfig(
         _ => return Err(InstallerError::InvalidOperatorInput),
     };
     Ok(BootstrapAuthority {
-        _server: server,
-        _certificate_authority: certificate_authority,
+        server,
+        certificate_authority,
         _credential: credential,
     })
 }
@@ -491,6 +565,191 @@ fn decode_inline_data(encoded: &str) -> Result<Vec<u8>, InstallerError> {
         return Err(InstallerError::InvalidOperatorInput);
     }
     Ok(decoded[..length].to_vec())
+}
+
+const TRANSACTION_BYTES_MAX: usize = 64 * 1024;
+#[cfg(target_os = "linux")]
+const INSTALLER_BYTES_MAX: usize = 64 * 1024 * 1024;
+
+#[cfg(not(target_os = "linux"))]
+fn prepare_initial_transaction(
+    _: &Invocation,
+    _: &OperatorInput,
+) -> Result<Vec<u8>, InstallerError> {
+    Err(InstallerError::TransactionFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn prepare_initial_transaction(
+    invocation: &Invocation,
+    input: &OperatorInput,
+) -> Result<Vec<u8>, InstallerError> {
+    let bootstrap_digest = digest_named_input(input, "bootstrap-kubeconfig.yaml")?;
+    let transaction = InstallerTransaction {
+        action: Action::Install,
+        bootstrap_kubeconfig_initial_sha256: bootstrap_digest.clone(),
+        bootstrap_kubeconfig_sha256: bootstrap_digest,
+        cluster: TransactionCluster {
+            ca_sha256: hex_digest(&input.bootstrap.certificate_authority),
+            server: input.bootstrap.server.clone(),
+        },
+        credential_expiration: None,
+        host_resources: Vec::new(),
+        input_directory: TransactionInputDirectory {
+            device: input.directory_metadata.st_dev,
+            inode: input.directory_metadata.st_ino,
+            mode: input.directory_metadata.st_mode & 0o7777,
+            path: input.path.clone(),
+            uid: input.directory_metadata.st_uid,
+        },
+        installer_sha256: digest_running_installer()?,
+        kube_context: invocation.kube_context.clone(),
+        kubernetes_resources: Vec::new(),
+        operator_inputs: TransactionOperatorInputs {
+            authorization_pub: digest_named_input(input, "authorization.pub")?,
+            grant_bin: digest_named_input(input, "grant.bin")?,
+            receipt_seed: digest_named_input(input, "receipt.seed")?,
+            receipt_trust: digest_named_input(input, "receipt.trust")?,
+        },
+        pending: None,
+        phase: TransactionPhase::Prepared,
+        schema: 1,
+        transaction_id: new_transaction_id()?,
+    };
+    let bytes = encode_transaction(&transaction)?;
+    let _ = decode_transaction(&bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+fn digest_named_input(input: &OperatorInput, name: &str) -> Result<String, InstallerError> {
+    input
+        .files
+        .get(name)
+        .map(|bytes| hex_digest(bytes))
+        .ok_or(InstallerError::TransactionFailure)
+}
+
+fn encode_transaction(transaction: &InstallerTransaction) -> Result<Vec<u8>, InstallerError> {
+    validate_initial_transaction(transaction)?;
+    let bytes = serde_json::to_vec(transaction).map_err(|_| InstallerError::TransactionFailure)?;
+    if bytes.len() > TRANSACTION_BYTES_MAX {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(bytes)
+}
+
+fn decode_transaction(bytes: &[u8]) -> Result<InstallerTransaction, InstallerError> {
+    if bytes.len() > TRANSACTION_BYTES_MAX {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let transaction = serde_json::from_slice::<InstallerTransaction>(bytes)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    validate_initial_transaction(&transaction)?;
+    if serde_json::to_vec(&transaction).map_err(|_| InstallerError::TransactionFailure)? != bytes {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(transaction)
+}
+
+fn validate_initial_transaction(transaction: &InstallerTransaction) -> Result<(), InstallerError> {
+    let digests = [
+        transaction.bootstrap_kubeconfig_initial_sha256.as_str(),
+        transaction.bootstrap_kubeconfig_sha256.as_str(),
+        transaction.cluster.ca_sha256.as_str(),
+        transaction.installer_sha256.as_str(),
+        transaction.operator_inputs.authorization_pub.as_str(),
+        transaction.operator_inputs.grant_bin.as_str(),
+        transaction.operator_inputs.receipt_seed.as_str(),
+        transaction.operator_inputs.receipt_trust.as_str(),
+        transaction.transaction_id.as_str(),
+    ];
+    if transaction.action != Action::Install
+        || transaction.phase != TransactionPhase::Prepared
+        || transaction.schema != 1
+        || transaction.bootstrap_kubeconfig_initial_sha256
+            != transaction.bootstrap_kubeconfig_sha256
+        || transaction.credential_expiration.is_some()
+        || !transaction.host_resources.is_empty()
+        || !transaction.kubernetes_resources.is_empty()
+        || transaction.pending.is_some()
+        || transaction.input_directory.uid != 0
+        || transaction.input_directory.mode != 0o700
+        || !valid_transaction_path(&transaction.input_directory.path)
+        || !valid_kubernetes_name(&transaction.kube_context)
+        || validate_server(transaction.cluster.server.clone()).is_err()
+        || digests.into_iter().any(|digest| !valid_digest(digest))
+    {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(())
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_transaction_path(value: &str) -> bool {
+    let path = std::path::Path::new(value);
+    path.is_absolute()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn new_transaction_id() -> Result<String, InstallerError> {
+    let mut bytes = [0_u8; 32];
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match rustix::rand::getrandom(&mut bytes[offset..], rustix::rand::GetRandomFlags::empty()) {
+            Ok(0) => return Err(InstallerError::TransactionFailure),
+            Ok(read) => offset += read,
+            Err(rustix::io::Errno::INTR) => {},
+            Err(_) => return Err(InstallerError::TransactionFailure),
+        }
+    }
+    Ok(hex_bytes(&bytes))
+}
+
+#[cfg(target_os = "linux")]
+fn digest_running_installer() -> Result<String, InstallerError> {
+    let descriptor = rfs::openat(
+        CWD,
+        "/proc/self/exe",
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::TransactionFailure)?;
+    let before = rfs::fstat(&descriptor).map_err(|_| InstallerError::TransactionFailure)?;
+    if !FileType::from_raw_mode(before.st_mode).is_file()
+        || before.st_size <= 0
+        || usize::try_from(before.st_size).map_or(true, |length| length > INSTALLER_BYTES_MAX)
+    {
+        return Err(InstallerError::TransactionFailure);
+    }
+    let capacity =
+        usize::try_from(before.st_size).map_err(|_| InstallerError::TransactionFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    let mut bytes = Vec::with_capacity(capacity);
+    (&mut file)
+        .take(u64::try_from(INSTALLER_BYTES_MAX).unwrap_or(u64::MAX) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| InstallerError::TransactionFailure)?;
+    let after = rfs::fstat(&file).map_err(|_| InstallerError::TransactionFailure)?;
+    if bytes.is_empty()
+        || bytes.len() > INSTALLER_BYTES_MAX
+        || !stable_file(&before, &after, bytes.len())
+    {
+        return Err(InstallerError::TransactionFailure);
+    }
+    Ok(hex_digest(&bytes))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -650,9 +909,14 @@ fn validate_operator_input(
     )?;
     Ok(OperatorInput {
         _directory: directory,
-        _files: inputs,
+        directory_metadata: after,
+        files: inputs,
         _identity: identity,
-        _bootstrap: bootstrap,
+        path: path
+            .to_str()
+            .ok_or(InstallerError::InvalidOperatorInput)?
+            .to_owned(),
+        bootstrap,
     })
 }
 
@@ -793,9 +1057,12 @@ fn stable_file(before: &Stat, after: &Stat, length: usize) -> bool {
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
+    hex_bytes(&Sha256::digest(bytes))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         use std::fmt::Write as _;
         let _ = write!(&mut output, "{byte:02x}");
     }
@@ -813,6 +1080,142 @@ mod tests {
         "contexts:\n- name: nonprod\n  context:\n    cluster: fixture\n    user: fixture\n",
         "    namespace: demo\ncurrent-context: nonprod\n",
     );
+
+    fn initial_transaction() -> InstallerTransaction {
+        InstallerTransaction {
+            action: Action::Install,
+            bootstrap_kubeconfig_initial_sha256: "11".repeat(32),
+            bootstrap_kubeconfig_sha256: "11".repeat(32),
+            cluster: TransactionCluster {
+                ca_sha256: "22".repeat(32),
+                server: String::from("https://127.0.0.1:6443"),
+            },
+            credential_expiration: None,
+            host_resources: Vec::new(),
+            input_directory: TransactionInputDirectory {
+                device: 1,
+                inode: 2,
+                mode: 0o700,
+                path: String::from("/secure/kapsel"),
+                uid: 0,
+            },
+            installer_sha256: "33".repeat(32),
+            kube_context: String::from("nonprod"),
+            kubernetes_resources: Vec::new(),
+            operator_inputs: TransactionOperatorInputs {
+                authorization_pub: "44".repeat(32),
+                grant_bin: "55".repeat(32),
+                receipt_seed: "66".repeat(32),
+                receipt_trust: "77".repeat(32),
+            },
+            pending: None,
+            phase: TransactionPhase::Prepared,
+            schema: 1,
+            transaction_id: "88".repeat(32),
+        }
+    }
+
+    #[test]
+    fn initial_transaction_has_exact_canonical_schema_one_bytes() {
+        let h1 = "11".repeat(32);
+        let h2 = "22".repeat(32);
+        let h3 = "33".repeat(32);
+        let h4 = "44".repeat(32);
+        let h5 = "55".repeat(32);
+        let h6 = "66".repeat(32);
+        let h7 = "77".repeat(32);
+        let h8 = "88".repeat(32);
+        let expected = [
+            r#"{"action":"install","bootstrap_kubeconfig_initial_sha256":""#,
+            &h1,
+            r#"","bootstrap_kubeconfig_sha256":""#,
+            &h1,
+            r#"","cluster":{"ca_sha256":""#,
+            &h2,
+            r#"","server":"https://127.0.0.1:6443"},"credential_expiration":null,"#,
+            r#""host_resources":[],"input_directory":{"device":1,"inode":2,"mode":448,"#,
+            r#""path":"/secure/kapsel","uid":0},"installer_sha256":""#,
+            &h3,
+            r#"","kube_context":"nonprod","kubernetes_resources":[],"operator_inputs":{"#,
+            r#""authorization.pub":""#,
+            &h4,
+            r#"","grant.bin":""#,
+            &h5,
+            r#"","receipt.seed":""#,
+            &h6,
+            r#"","receipt.trust":""#,
+            &h7,
+            r#""},"pending":null,"phase":"prepared","schema":1,"transaction_id":""#,
+            &h8,
+            r#""}"#,
+        ]
+        .concat();
+        let encoded = encode_transaction(&initial_transaction()).expect("fixture must encode");
+        assert_eq!(encoded, expected.as_bytes());
+        assert_eq!(
+            decode_transaction(&encoded).expect("canonical bytes must decode"),
+            initial_transaction()
+        );
+        for secret in [
+            "fixture-token",
+            "private-key",
+            "receipt-seed-bytes",
+            "grant-bytes",
+        ] {
+            assert!(!expected.contains(secret));
+        }
+    }
+
+    #[test]
+    fn initial_transaction_rejects_noncanonical_hostile_and_nonprepared_records() {
+        let canonical = String::from_utf8(
+            encode_transaction(&initial_transaction()).expect("fixture must encode"),
+        )
+        .expect("fixture must be UTF-8");
+        let reordered = format!(
+            "{{\"schema\":1,{}",
+            canonical[1..].replacen(",\"schema\":1", "", 1)
+        );
+        let cases = [
+            format!(" {canonical}"),
+            format!("{canonical}\n"),
+            canonical.replacen("\"action\":\"install\"", "\"action\":\"uninstall\"", 1),
+            canonical.replacen("\"phase\":\"prepared\"", "\"phase\":\"installed\"", 1),
+            canonical.replacen("\"action\":", "\"unknown\":null,\"action\":", 1),
+            canonical.replacen(
+                "\"action\":\"install\"",
+                "\"action\":\"install\",\"action\":\"install\"",
+                1,
+            ),
+            canonical.replacen(&"33".repeat(32), &"AA".repeat(32), 1),
+            canonical.replacen("https://", r"https:\/\/", 1),
+            canonical.replacen("\"host_resources\":[]", "\"host_resources\":[{}]", 1),
+            reordered,
+        ];
+        for (index, bytes) in cases.into_iter().enumerate() {
+            assert!(
+                matches!(
+                    decode_transaction(bytes.as_bytes()),
+                    Err(InstallerError::TransactionFailure)
+                ),
+                "hostile transaction case {index} was accepted"
+            );
+        }
+        assert!(matches!(
+            decode_transaction(&vec![b' '; TRANSACTION_BYTES_MAX + 1]),
+            Err(InstallerError::TransactionFailure)
+        ));
+        for (action, expected) in [
+            (Action::Install, "\"install\""),
+            (Action::RefreshCredential, "\"refresh-credential\""),
+            (Action::Uninstall, "\"uninstall\""),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&action).expect("action must encode"),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn bootstrap_kubeconfig_accepts_only_inline_token_or_certificate_authority() {

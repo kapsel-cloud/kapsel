@@ -367,9 +367,28 @@ completed before resource recovery. Any other leaf, invalid transaction, unsuppo
 operation, or concurrent Kapsel resource fails closed. The installer directory and transaction are
 never removed.
 
-The retained regular single-link transaction is at most 64 KiB and canonical UTF-8 JSON. Schema `1`
-has these exact top-level keys; `null` is explicit where shown, hashes and the transaction identity
-are lowercase hexadecimal, and canonical object keys are lexically ordered:
+For a new transaction, after acquiring the lock and before publishing any transaction inode, the
+installer fills exactly 32 bytes using blocking-complete Linux `getrandom` calls with flags zero. It
+retries interrupted calls and short successful reads, uses no fallback entropy, and encodes the
+result as 64 lowercase hexadecimal characters. Entropy failure fails closed. Recovery of an empty
+installer directory after a pre-link crash generates a new identity because no prior identity became
+durable.
+
+`installer_sha256` is SHA-256 over the complete bytes of the executing Linux inode opened through
+the kernel-owned `/proc/self/exe` magic link. This is transaction identity evidence, not publisher
+authentication. The retained descriptor must identify a stable nonempty regular file of at most 64
+MiB. Unavailable procfs, a read or metadata change, or an invalid type or length fails closed. The
+installer never derives or reopens this inode through argv, `PATH`, or `current_exe`.
+
+The retained regular single-link transaction is at most 65,536 bytes and canonical UTF-8 JSON with
+no byte-order mark, insignificant whitespace, or trailing newline. Object keys are ordered lexically
+by their UTF-8 bytes at every depth, unsigned integers use shortest decimal form, and strings use
+shortest JSON escapes without escaping `/` or printable UTF-8. Parsing is a strict typed decode
+followed by canonical reserialization and exact byte comparison. Duplicate, unknown, reordered,
+alternately escaped, noncanonical numeric, whitespace-padded, trailing, or over-limit records fail
+closed. Resource arrays retain transaction creation order and are never sorted. Schema `1` has these
+exact top-level keys; `null` is explicit where shown, and hashes and the transaction identity are
+lowercase hexadecimal:
 
 ```json
 {
@@ -395,6 +414,12 @@ are lowercase hexadecimal, and canonical object keys are lexically ordered:
   "transaction_id": "<64-hex>"
 }
 ```
+
+The initial record is exactly `action: "install"`, `phase: "prepared"`, equal initial and current
+bootstrap-kubeconfig digests, null expiration and pending action, and empty host and Kubernetes
+resource arrays. Input digests cover the exact retained file bytes, the CA digest covers decoded CA
+bytes, and `input_directory.mode` is the unsigned permission-bit value. No other action or phase may
+be initially published.
 
 A host file or directory record contains exactly `kind`, `path`, `device`, `inode`, `file_type`,
 `uid`, `gid`, and `mode`, plus `length` and `sha256` for a file. A user record contains `kind`,
