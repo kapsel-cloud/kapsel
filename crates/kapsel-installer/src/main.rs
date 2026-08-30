@@ -36,7 +36,7 @@ struct OperatorInput {
     _directory: OwnedFd,
     directory_metadata: Stat,
     files: BTreeMap<&'static str, Vec<u8>>,
-    _identity: kapsel::ValidatedServiceOperatorInputs,
+    _identity: kapsel_authority::ValidatedServiceOperatorInputs,
     path: String,
     bootstrap: BootstrapAuthority,
 }
@@ -1256,7 +1256,7 @@ fn validate_operator_input(
 
     let authorization_public_key = exact_32(&inputs, "authorization.pub")?;
     let receipt_signing_seed = exact_32(&inputs, "receipt.seed")?;
-    let identity = kapsel::validate_service_operator_inputs(
+    let identity = kapsel_authority::validate_service_operator_inputs(
         inputs
             .get("grant.bin")
             .ok_or(InstallerError::InvalidOperatorInput)?,

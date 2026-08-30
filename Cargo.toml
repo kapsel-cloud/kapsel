@@ -17,7 +17,6 @@ include = [
   "/vectors/**",
   "/docs/**",
   "/scripts/**",
-  "/Makefile.toml",
   "/rust-toolchain.toml",
   "/rustfmt.toml",
   "/rustfmt-nightly.toml",
@@ -32,6 +31,7 @@ include = [
 members = [
   "crates/kapsel-dev",
   "crates/kapsel-installer",
+  "crates/kapsel-authority",
   "crates/kapseld",
 ]
 exclude = ["fuzz"]
@@ -49,6 +49,7 @@ rust-version = "1.98"
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["signature", "zeroize"] }
 http = "1.5.0"
 kapsel = { path = "." }
+kapsel-authority = { path = "crates/kapsel-authority" }
 kube = { version = "4.2.0", default-features = false, features = ["client", "ring", "rustls-tls"] }
 rustix = { version = "1.1.4", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -65,6 +66,7 @@ demo-harness = []
 ed25519-dalek.workspace = true
 http-body-util = "0.1.5"
 k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
+kapsel-authority.workspace = true
 kube.workspace = true
 rusqlite = { version = "0.40.2", features = ["bundled", "limits"] }
 rustix = { workspace = true, features = ["fs", "process", "std"] }

@@ -108,8 +108,11 @@ impl ApplicationExecution for UnavailableExecution {
         false
     }
 
-    async fn execute(&mut self, _request: AgentRequest) -> Result<(), ApplicationError> {
-        Err(ApplicationError::OperationFailure)
+    fn execute(
+        &mut self,
+        _request: AgentRequest,
+    ) -> impl Future<Output = Result<(), ApplicationError>> + Send {
+        std::future::ready(Err(ApplicationError::OperationFailure))
     }
 }
 

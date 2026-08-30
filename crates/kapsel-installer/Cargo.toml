@@ -12,7 +12,7 @@ build = "build.rs"
 [dependencies]
 base64 = "0.23.1"
 http.workspace = true
-kapsel.workspace = true
+kapsel-authority.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "rand", "std"] }
 serde.workspace = true
 serde_json.workspace = true

@@ -117,15 +117,22 @@ they do not add a runtime plugin, provider interface, application seam, trust so
 vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract.
 
 The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
-product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package
-and excluded `fuzz` package. Hosted orchestration is not part of the product architecture. No
-product package named `kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`,
-`kapsel-api`, or `kapsel-testing` exists. Product code may be extracted only after an independent
-deployment need, multiple real consumers, or measured dependency isolation proves a package seam.
-Neither the 0.1 release, v0.2 beta, nor retired sandbox establishes a supported external Rust
-interface. Public Rust visibility may contract when compiler and retained consumers prove it unused
-and may change within v0.2.x without external migration support; crates.io, docs.rs, and
-`cargo install` remain unsupported.
+product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package,
+the unpublished fixed-purpose `kapsel-authority` package, and the excluded `fuzz` package. The
+fixed-purpose package owns the exact authorization-grant codec, receipt-trust codec, and their
+combined service operator-input consistency check. Both `kapsel` and the installer consume that one
+implementation; the installer therefore avoids the root package's Kubernetes, journal, and gateway
+dependency graph. The package is an internal source-composition seam, not a runtime package, SDK,
+generic validation library, or supported Rust interface. Its extraction is justified by the measured
+installer dependency isolation and two concrete repository consumers.
+
+Hosted orchestration is not part of the product architecture. No product package named
+`kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or `kapsel-testing`
+exists. Other product code may be extracted only after an independent deployment need, multiple real
+consumers, or measured dependency isolation proves a package seam. Neither the 0.1 release, v0.2
+beta, nor retired sandbox establishes a supported external Rust interface. Public Rust visibility
+may contract when compiler and retained consumers prove it unused and may change within v0.2.x
+without external migration support; crates.io, docs.rs, and `cargo install` remain unsupported.
 
 ## Kapsel service composition
 
@@ -151,7 +158,14 @@ bounded local service client
        -> kapseld
             -> deep kapsel Application
                  -> sole SQLite effect journal
+
+installer + kapsel
+  -> fixed-purpose service operator-input validation
+       -> exact grant and receipt-trust consistency
 ```
+
+The validation package participates only in source composition. It adds no installed process,
+runtime package, caller interface, authority source, or lifecycle owner.
 
 The Kapsel service exists because CLI/MCP cannot provide caller-independent lifetime, read-only
 status, or exact receipt retrieval across a separate OS identity. It accepts fixed operator/socket

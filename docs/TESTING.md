@@ -210,6 +210,12 @@ startup accepts neither. Service-client tests freeze its three-command grammar, 
 lowercase receipt decoding, digest verification, exclusive mode-`0600` output, and refusal to
 replace an existing receipt.
 
+The fixed-purpose `kapsel-authority` package freezes the exact grant and receipt-trust vectors,
+hostile codec rejection, returned public identities, and combined authority consistency. The root
+package separately proves that every shared validation failure retains
+`invalid_operator_configuration`. The package is an unpublished source seam, not a public SDK or
+runtime surface.
+
 The `kapsel-installer` package's black-box binary tests freeze its exact three-command grammar,
 required-once options, absolute operator-input path, Kubernetes context bounds, secret-free failure
 class, and empty stdout. They also prove that a default development build reaches

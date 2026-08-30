@@ -13,12 +13,18 @@ import subprocess
 ROOT_FILES = {
     "Cargo.lock",
     "Cargo.toml",
-    "Makefile.toml",
     "README.md",
     "SECURITY.md",
     "rust-toolchain.toml",
 }
-ROOT_PREFIXES = ("docs/", "scripts/", "src/", "tests/", "vectors/")
+ROOT_PREFIXES = (
+    "crates/kapsel-authority/",
+    "docs/",
+    "scripts/",
+    "src/",
+    "tests/",
+    "vectors/",
+)
 PRIVATE_PATHS = (
     re.compile(rb"/Users/[^\s\x00]+"),
     re.compile(rb"/private/var/[^\s\x00]+"),

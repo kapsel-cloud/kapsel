@@ -2,11 +2,8 @@
 set -eu
 
 run_static_checks() {
-  echo "==> Rust format"
-  cargo fmt --all --check
-  if [ -f fuzz/Cargo.toml ]; then
-    cargo fmt --manifest-path fuzz/Cargo.toml --check
-  fi
+  echo "==> Rust and Markdown format"
+  ./scripts/format.sh --check
 
   printf '%s\n' "==> Rust line width"
   ./scripts/check-rust-width.sh
@@ -20,10 +17,6 @@ run_static_checks() {
     printf '%s\n' "tidy: missing crates/kapsel-dev/Cargo.toml" >&2
     exit 1
   fi
-
-  echo "==> Markdown format"
-  prettier --check --no-config --ignore-path .gitignore --print-width 100 --prose-wrap always \
-    --tab-width 2 '**/*.md'
 
   printf '%s\n' "==> Markdown link checker regressions"
   ./scripts/test-check-markdown-links.py

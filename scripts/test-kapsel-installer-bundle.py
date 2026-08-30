@@ -204,6 +204,8 @@ def main() -> int:
             run_failure transaction_failure
             test ! -e /var/lib/kapsel-installer
             chmod 0755 /var/lib
+            chmod g-s /var/lib
+            test "$(stat -c '%a' /var/lib)" = "755"
             rm /run/lock/kapsel-installer.lock
             old_umask=$(umask)
             umask 0777
@@ -323,6 +325,11 @@ def main() -> int:
             chmod 0600 /secure/kapsel/receipt.seed
             run_failure invalid_operator_input
             cp /operator-fixture/receipt.seed /secure/kapsel/receipt.seed
+            printf '%s' 'E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o=' \\
+                | base64 -d >/secure/kapsel/authorization.pub
+            chmod 0600 /secure/kapsel/authorization.pub
+            run_failure invalid_operator_input
+            cp /operator-fixture/authorization.pub /secure/kapsel/authorization.pub
             rm /secure/kapsel/grant.bin
             mkfifo -m 0600 /secure/kapsel/grant.bin
             run_failure invalid_operator_input

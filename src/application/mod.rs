@@ -18,10 +18,10 @@ use serde::Deserialize;
 use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::gateway::{
-    receipt_signing_key_id, sign_authorization_grant, validate_key_id, validate_private_directory,
-    verify_authorization_grant, verify_authorization_grant_for_public_key, AuthorizationTrust,
-    ExactAuthorization, Gateway, GatewayError, OperationResult, OperationState, ReceiptReference,
-    ReceiptSettings, SetDeploymentImageRequest, SubmissionResult, TargetRejection,
+    sign_authorization_grant, validate_key_id, validate_private_directory,
+    verify_authorization_grant, AuthorizationTrust, ExactAuthorization, Gateway, GatewayError,
+    OperationResult, OperationState, ReceiptReference, ReceiptSettings, SetDeploymentImageRequest,
+    SubmissionResult, TargetRejection,
 };
 
 /// Request-only caller input for the sole supported operation.
@@ -248,16 +248,7 @@ fn configure_explicit_kubeconfig(
     }
 }
 
-/// Public identities derived from consistent Kapsel service operator inputs.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ValidatedServiceOperatorInputs {
-    /// Exact operation tuple authenticated by the authorization key.
-    pub authorization: ExactAuthorization,
-    /// Signing-key identity authenticated inside the exact authorization grant.
-    pub authorization_signing_key_id: String,
-    /// Receipt-signing key identity appointed by evaluator trust.
-    pub receipt_signing_key_id: String,
-}
+pub use kapsel_authority::ValidatedServiceOperatorInputs;
 
 /// Validates the service grant, authorization key, receipt seed, and evaluator trust together.
 ///
@@ -274,18 +265,13 @@ pub fn validate_service_operator_inputs(
     receipt_signing_seed: &[u8; 32],
     receipt_trust: &[u8],
 ) -> Result<ValidatedServiceOperatorInputs, ApplicationError> {
-    let verified = verify_authorization_grant_for_public_key(
+    kapsel_authority::validate_service_operator_inputs(
         signed_authorization_grant,
         authorization_public_key,
+        receipt_signing_seed,
+        receipt_trust,
     )
-    .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
-    let receipt_signing_key_id = receipt_signing_key_id(receipt_signing_seed, receipt_trust)
-        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
-    Ok(ValidatedServiceOperatorInputs {
-        authorization: verified.authorization,
-        authorization_signing_key_id: verified.signer_key_id,
-        receipt_signing_key_id,
-    })
+    .map_err(|_| ApplicationError::InvalidOperatorConfiguration)
 }
 
 /// Operator-only inputs for provisioning one exact authorization grant.

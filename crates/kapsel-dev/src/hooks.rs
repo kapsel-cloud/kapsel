@@ -16,7 +16,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
     exit 0
 fi
 
-cargo make check
+./scripts/ci-local.sh
 ";
 
 #[derive(Clone, Copy)]
@@ -90,20 +90,47 @@ fn discover_hooks_dir() -> io::Result<PathBuf> {
 fn install(hooks_dir: &Path) -> io::Result<String> {
     fs::create_dir_all(hooks_dir)?;
     let hook_path = hooks_dir.join("pre-commit");
-    fs::write(&hook_path, PRE_COMMIT_HOOK)?;
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&hook_path)
+    {
+        Ok(mut hook) => hook.write_all(PRE_COMMIT_HOOK.as_bytes())?,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if !is_owned_hook(&hook_path)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("refusing to replace foreign hook {}", hook_path.display()),
+                ));
+            }
+        },
+        Err(error) => return Err(error),
+    }
     make_executable(&hook_path)?;
     Ok(format!("hooks: installed {}", hook_path.display()))
 }
 
 fn uninstall(hooks_dir: &Path) -> io::Result<String> {
     let hook_path = hooks_dir.join("pre-commit");
-    match fs::remove_file(&hook_path) {
-        Ok(()) => Ok(format!("hooks: removed {}", hook_path.display())),
+    match fs::symlink_metadata(&hook_path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Ok(format!("hooks: {} not present", hook_path.display()))
         },
         Err(error) => Err(error),
+        Ok(_) if is_owned_hook(&hook_path)? => {
+            fs::remove_file(&hook_path)?;
+            Ok(format!("hooks: removed {}", hook_path.display()))
+        },
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("refusing to remove foreign hook {}", hook_path.display()),
+        )),
     }
+}
+
+fn is_owned_hook(path: &Path) -> io::Result<bool> {
+    let metadata = fs::symlink_metadata(path)?;
+    Ok(metadata.file_type().is_file() && fs::read(path)? == PRE_COMMIT_HOOK.as_bytes())
 }
 
 #[cfg(unix)]
@@ -183,15 +210,41 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn install_and_uninstall_refuse_foreign_hook() -> io::Result<()> {
+        let directory = TestDirectory::create()?;
+        let hook = directory.path().join("pre-commit");
+        fs::write(&hook, "#!/bin/sh\nforeign\n")?;
+
+        assert!(install(directory.path()).is_err());
+        assert!(uninstall(directory.path()).is_err());
+        assert_eq!(fs::read_to_string(hook)?, "#!/bin/sh\nforeign\n");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_and_uninstall_refuse_symlink_hook() -> io::Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let directory = TestDirectory::create()?;
+        let target = directory.path().join("foreign");
+        fs::write(&target, "foreign\n")?;
+        symlink(&target, directory.path().join("pre-commit"))?;
+
+        assert!(install(directory.path()).is_err());
+        assert!(uninstall(directory.path()).is_err());
+        assert_eq!(fs::read_to_string(target)?, "foreign\n");
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn installed_hook_skips_only_an_unchanged_tree() -> io::Result<()> {
         let directory = TestDirectory::create()?;
         let repository = directory.path().join("repository");
-        let bin = directory.path().join("bin");
-        let marker = directory.path().join("cargo-called");
+        let marker = directory.path().join("gate-called");
         fs::create_dir_all(&repository)?;
-        fs::create_dir_all(&bin)?;
 
         git(&repository, &["init", "-q"])?;
         fs::write(repository.join("tracked"), "initial\n")?;
@@ -214,20 +267,24 @@ mod tests {
         let hooks = repository.join(".git/hooks");
         install(&hooks)?;
         let hook = hooks.join("pre-commit");
-        let cargo = bin.join("cargo");
-        fs::write(
-            &cargo,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$KAPSEL_HOOK_MARKER\"\n",
+        let gate = repository.join("scripts/ci-local.sh");
+        fs::create_dir_all(
+            gate.parent()
+                .ok_or_else(|| io::Error::other("gate has no parent"))?,
         )?;
-        make_executable(&cargo)?;
+        fs::write(
+            &gate,
+            "#!/bin/sh\nprintf '%s\\n' './scripts/ci-local.sh' > \"$KAPSEL_HOOK_MARKER\"\n",
+        )?;
+        make_executable(&gate)?;
 
         fs::write(repository.join("tracked"), "unstaged\n")?;
-        run_hook(&hook, &repository, &bin, &marker)?;
+        run_hook(&hook, &repository, &marker)?;
         assert!(!marker.exists());
 
         git(&repository, &["add", "tracked"])?;
-        run_hook(&hook, &repository, &bin, &marker)?;
-        assert_eq!(fs::read_to_string(&marker)?, "make check\n");
+        run_hook(&hook, &repository, &marker)?;
+        assert_eq!(fs::read_to_string(&marker)?, "./scripts/ci-local.sh\n");
         Ok(())
     }
 
@@ -248,11 +305,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn run_hook(hook: &Path, repository: &Path, bin: &Path, marker: &Path) -> io::Result<()> {
-        let inherited_path = std::env::var("PATH").unwrap_or_default();
+    fn run_hook(hook: &Path, repository: &Path, marker: &Path) -> io::Result<()> {
         let status = Command::new(hook)
             .current_dir(repository)
-            .env("PATH", format!("{}:{inherited_path}", bin.display()))
             .env("KAPSEL_HOOK_MARKER", marker)
             .status()?;
         if status.success() {

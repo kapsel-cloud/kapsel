@@ -10,9 +10,16 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts/check-beta-qualification-privacy.py"
 CHECK = runpy.run_path(str(CHECKER))
+VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-beta-qualification-baseline.py"))
 
 
 class PrivacyReviewTests(unittest.TestCase):
+    def test_scope_covers_extracted_product_source(self) -> None:
+        prefix = "crates/kapsel-authority/"
+        self.assertIn(prefix, CHECK["ROOT_PREFIXES"])
+        self.assertIn(prefix, VALIDATOR["PRIVACY_ROOT_PREFIXES"])
+        self.assertIn(f"{prefix}src/lib.rs", CHECK["tracked_paths"](ROOT))
+
     def test_current_root_scope_passes(self) -> None:
         with tempfile.NamedTemporaryFile() as output:
             result = subprocess.run(

@@ -48,15 +48,29 @@ def git(*arguments: str) -> str:
     return subprocess.check_output(["git", *arguments], cwd=ROOT, text=True).strip()
 
 
-def source_identity(commit: str) -> tuple[str, int]:
-    paths = git("ls-tree", "-r", "--name-only", commit).splitlines()
-    selected = sorted(
+SOURCE_FILES = {
+    "Cargo.lock",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "scripts/format.sh",
+    "scripts/test-demo-harness.sh",
+    "scripts/test-fuzz.sh",
+    "scripts/test-simulation.sh",
+}
+SOURCE_PREFIXES = ("crates/kapsel-authority/", "src/", "vectors/")
+
+
+def selected_source_paths(paths: list[str]) -> list[str]:
+    return sorted(
         path
         for path in paths
-        if path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Makefile.toml"}
-        or path.startswith("src/")
-        or path.startswith("vectors/")
+        if path in SOURCE_FILES or path.startswith(SOURCE_PREFIXES)
     )
+
+
+def source_identity(commit: str) -> tuple[str, int]:
+    paths = git("ls-tree", "-r", "--name-only", commit).splitlines()
+    selected = selected_source_paths(paths)
     digest = hashlib.sha256()
     for path in selected:
         contents = subprocess.check_output(["git", "show", f"{commit}:{path}"], cwd=ROOT)
@@ -254,11 +268,16 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="beta-qualification-evidence-") as temporary:
         evidence = Path(temporary)
         default = run_lane("default and hostile input", ["./scripts/ci-local.sh"], ROOT, 900)
-        simulation = run_lane("seeded simulation", ["cargo", "make", "test-simulation"], ROOT, 900)
-        fuzz = run_lane("seeded fuzz", ["cargo", "make", "test-fuzz"], ROOT, 900)
-        subprocess_lane = run_lane("v0.1.1 subprocess matrix", ["cargo", "make", "test-v011-upgrade"], ROOT, 1800)
-        demo = run_lane("deterministic demo", ["cargo", "make", "test-demo-harness"], ROOT, 900)
-        live = run_lane("live kind", ["cargo", "make", "test-kind"], ROOT, 1200)
+        simulation = run_lane("seeded simulation", ["./scripts/test-simulation.sh"], ROOT, 900)
+        fuzz = run_lane("seeded fuzz", ["./scripts/test-fuzz.sh"], ROOT, 900)
+        subprocess_lane = run_lane(
+            "v0.1.1 subprocess matrix",
+            ["python3", "scripts/test-v011-upgrade-fixtures.py"],
+            ROOT,
+            1800,
+        )
+        demo = run_lane("deterministic demo", ["./scripts/test-demo-harness.sh"], ROOT, 900)
+        live = run_lane("live kind", ["./scripts/test-kind-effect-gateway.sh"], ROOT, 1200)
         measurement_path = evidence / "measurement.json"
         measurement_lane = run_lane(
             "x86-64 measurement",

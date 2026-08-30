@@ -744,6 +744,7 @@ dependencies = [
  "http",
  "http-body-util",
  "k8s-openapi",
+ "kapsel-authority",
  "kube",
  "rusqlite",
  "rustix",
@@ -753,6 +754,14 @@ dependencies = [
  "tokio",
  "tower-http 0.7.0",
  "tower-test",
+]
+
+[[package]]
+name = "kapsel-authority"
+version = "0.2.0"
+dependencies = [
+ "ed25519-dalek",
+ "sha2",
 ]
 
 [[package]]
@@ -769,7 +778,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "http",
- "kapsel",
+ "kapsel-authority",
  "rustix",
  "serde",
  "serde-saphyr 1.1.0",

@@ -7,7 +7,7 @@ Read this file first. Current technical truth lives in the linked owners.
 1. Read [`README.md`](README.md), [`docs/SCOPE.md`](docs/SCOPE.md), and
    [`docs/INDEX.md`](docs/INDEX.md).
 2. Read the direct contract, tests, and vectors for the surface you will change.
-3. Run `cargo make fmt`; it formats Rust and Markdown and expands Markdown tables.
+3. Run `./scripts/format.sh`; it formats Rust and Markdown and expands Markdown tables.
 4. Select the narrowest meaningful gate from [`docs/BUILD.md`](docs/BUILD.md).
 5. Review with [`docs/REVIEW.md`](docs/REVIEW.md).
 
@@ -57,9 +57,9 @@ they do not override current contract text.
 ## Validation
 
 Docs-only changes: check local links and anchors, run focused terminology searches,
-`cargo make fmt-check`, `git diff --check`, and the narrowest repository gate. Contract or code
-changes: add owner-specific tests before broadening to `./scripts/ci-local.sh`. The live Kubernetes
-gate is separate and requires Docker plus `kind`.
+`./scripts/format.sh --check`, `git diff --check`, and the narrowest repository gate. Contract or
+code changes: add owner-specific tests before broadening to `./scripts/ci-local.sh`. The live
+Kubernetes gate is separate and requires Docker plus `kind`.
 
 Report meaningful work as:
 

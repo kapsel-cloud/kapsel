@@ -275,9 +275,11 @@ stable root-owned regular single-link file, mode `0600`, at most 64 KiB; grant, 
 retain their smaller product grammar bounds. Unknown or missing leaves fail before mutation. The
 installer verifies the signed grant, derives its exact authorization key identity and operation
 tuple, verifies that `authorization.pub` is its appointed key, and verifies that `receipt.seed`
-derives the key and key identity accepted by `receipt.trust`. `receipt.trust` is evaluator trust
-material: it is required for this consistency check but is never installed, copied into service
-authority, or selected by a caller.
+derives the key and key identity accepted by `receipt.trust`. The installer and root package consume
+one unpublished fixed-purpose `kapsel-authority` implementation for this grant, receipt-trust, and
+combined consistency validation. That source-only package is not installed and is not a public SDK
+or runtime interface. `receipt.trust` is evaluator trust material: it is required for this
+consistency check but is never installed, copied into service authority, or selected by a caller.
 
 `bootstrap-kubeconfig.yaml` is administrative installer authority, never service authority. Its
 bounded grammar is one `apiVersion: v1`, `kind: Config` document with exactly one cluster, user, and

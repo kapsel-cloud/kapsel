@@ -7,48 +7,55 @@ their rationale or evidence.
 
 ## Start here
 
-Kapsel uses Rust, Cargo Make, Python 3.11+, and Prettier 3. Run the complete deterministic gate:
+Kapsel uses Rust, Python 3.11+, Node.js 24, and Prettier 3.6.2. Prettier remains the deterministic
+Markdown prose-wrapping and table-expansion owner; the link and whitespace checks do not replace it.
+Run the complete deterministic gate:
 
 ```sh
 ./scripts/ci-local.sh
 ```
 
-Equivalent aliases are `cargo make check` and `cargo make ci`. The gate formats and checks Rust and
-Markdown, validates local documentation links and anchors, runs Clippy and rustdoc with warnings
-denied, and executes workspace tests.
+The gate formats and checks Rust and Markdown, validates local documentation links and anchors, runs
+Clippy and rustdoc with warnings denied, and executes workspace tests.
 
 Before review:
 
 ```sh
-cargo make fmt
-cargo make fmt-check
+./scripts/format.sh
+./scripts/format.sh --check
 ```
 
-Install the repository-managed pre-commit hook with `cargo make hooks-install`. It runs the complete
-gate for every content-changing commit.
+Install the repository-managed pre-commit hook with:
+
+```sh
+cargo run --quiet --locked -p kapsel-dev --bin kapsel-hooks -- install
+```
+
+It runs the complete gate for every content-changing commit.
 
 ## Choose a focused gate
 
-| Change                           | Smallest useful command                                        |
-| -------------------------------- | -------------------------------------------------------------- |
-| Effect-gateway library           | `cargo test --locked -p kapsel`                                |
-| Effect-gateway Clippy            | `cargo clippy --locked -p kapsel --all-targets -- -D warnings` |
-| Kapsel service                   | `cargo test --locked -p kapseld --features test-harness`       |
-| Installer skeleton               | `cargo test --locked -p kapsel-installer`                      |
-| Linux-only installer/bundle code | `cargo make test-installer-bundle`                             |
-| Service installed assets         | `cargo test --locked -p kapseld --test install_assets`         |
-| MCP adapter                      | `cargo test --locked --test e2e_mcp_adapter`                   |
-| Upgrade and rollback             | `cargo make test-v011-upgrade`                                 |
-| Crash-demo harness               | `cargo make test-demo-harness`                                 |
-| Seeded lifecycle simulation      | `cargo make test-simulation`                                   |
-| Receipt-inspection fuzz smoke    | `cargo make test-fuzz`                                         |
-| Live Kubernetes behavior         | `cargo make test-kind`                                         |
-| Full local demonstration         | `cargo make demo-kind`                                         |
-| Release artifact                 | `cargo make assemble-release`                                  |
-| Finite beta qualification        | `cargo make qualify-beta`                                      |
+| Change                           | Smallest useful command                                                                    |
+| -------------------------------- | ------------------------------------------------------------------------------------------ |
+| Effect-gateway library           | `cargo test --locked -p kapsel`                                                            |
+| Effect-gateway Clippy            | `cargo clippy --locked -p kapsel --all-targets -- -D warnings`                             |
+| Kapsel service                   | `cargo test --locked -p kapseld --features test-harness`                                   |
+| Service operator-input seam      | `cargo test --locked -p kapsel-authority`                                                  |
+| Installer skeleton               | `cargo test --locked -p kapsel-installer`                                                  |
+| Linux-only installer/bundle code | `python3 scripts/test-kapsel-installer-bundle.py`                                          |
+| Service installed assets         | `cargo test --locked -p kapseld --test install_assets`                                     |
+| MCP adapter                      | `cargo test --locked --test e2e_mcp_adapter`                                               |
+| Upgrade and rollback             | `python3 scripts/test-v011-upgrade-fixtures.py`                                            |
+| Crash-demo harness               | `./scripts/test-demo-harness.sh`                                                           |
+| Seeded lifecycle simulation      | `./scripts/test-simulation.sh`                                                             |
+| Receipt-inspection fuzz smoke    | `./scripts/test-fuzz.sh`                                                                   |
+| Live Kubernetes behavior         | `./scripts/test-kind-effect-gateway.sh`                                                    |
+| Full local demonstration         | `./scripts/demo-kind-crash-recovery.sh`                                                    |
+| Release artifact                 | `python3 scripts/assemble-release-artifact.py --output-directory dist`                     |
+| Finite beta qualification        | `python3 scripts/run-beta-qualification.py --output /tmp/beta-qualification-baseline.json` |
 
-Use `cargo make tidy` for project-specific hard hygiene checks. `cargo make style-audit` emits
-non-blocking review prompts.
+Use `cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy` for project-specific hard
+hygiene checks. Replace `tidy` with `style-audit` for non-blocking review prompts.
 
 ## Kapsel service candidate
 
@@ -79,8 +86,16 @@ The service contract owns what these gates prove and do not prove. See
 
 ## Kapsel installer skeleton
 
-The unpublished installer package's portable gate proves its fixed command grammar, fail-closed
-development build, strict bootstrap-kubeconfig parser, and canonical prepared-transaction codec:
+The unpublished fixed-purpose validation seam and installer package have portable gates. The first
+freezes exact grant and receipt-trust bytes plus their combined public-identity validation; the
+second proves its fixed command grammar, fail-closed development build, strict bootstrap-kubeconfig
+parser, and canonical prepared-transaction codec:
+
+```sh
+cargo test --locked -p kapsel-authority
+```
+
+The installer gate is:
 
 ```sh
 cargo test --locked -p kapsel-installer
@@ -99,7 +114,7 @@ crash-safe transaction publication, marked phase-successor update and recovery, 
 `implementation_incomplete` boundary:
 
 ```sh
-cargo make test-installer-bundle
+python3 scripts/test-kapsel-installer-bundle.py
 ```
 
 No host preflight, installation, Kubernetes mutation, credential issuance, activation, refresh, or
@@ -112,7 +127,7 @@ bound remain candidate-assembly work.
 Run the source fixture matrix with:
 
 ```sh
-cargo make test-v011-upgrade
+python3 scripts/test-v011-upgrade-fixtures.py
 ```
 
 The direct command is `python3 scripts/test-v011-upgrade-fixtures.py`. It checks all nine historical
@@ -125,8 +140,8 @@ provider-call counts, and frozen receipt bytes. It uses no Kubernetes cluster or
 Compile or briefly run the receipt-inspection fuzz target:
 
 ```sh
-cargo make fuzz-check
-cargo make test-fuzz
+rustup run nightly-2026-07-03 cargo fuzz check --manifest-path fuzz/Cargo.toml inspect_receipt
+./scripts/test-fuzz.sh
 ```
 
 These commands require cargo-fuzz 0.13+ and Rust nightly. For a longer session, run
@@ -135,7 +150,7 @@ These commands require cargo-fuzz 0.13+ and Rust nightly. For a longer session, 
 Run the seeded lifecycle simulation:
 
 ```sh
-cargo make test-simulation
+./scripts/test-simulation.sh
 ```
 
 Override its defaults when reproducing or extending a run:
@@ -143,7 +158,7 @@ Override its defaults when reproducing or extending a run:
 ```sh
 KAPSEL_SIMULATION_SEED=21182435914953528 \
 KAPSEL_SIMULATION_CASES=10000 \
-cargo make test-simulation
+./scripts/test-simulation.sh
 ```
 
 ## Candidate qualification
@@ -151,7 +166,7 @@ cargo make test-simulation
 Run every finite qualification lane against one committed clean candidate:
 
 ```sh
-cargo make qualify-beta
+python3 scripts/run-beta-qualification.py --output /tmp/beta-qualification-baseline.json
 ```
 
 This requires Docker, kind, kubectl, cargo-fuzz and Rust nightly, cargo-audit 0.22.2, Trivy 0.72.0
@@ -170,7 +185,7 @@ Qualification is candidate evidence, not a production or support claim.
 With Docker and kind 0.32+:
 
 ```sh
-cargo make test-kind
+./scripts/test-kind-effect-gateway.sh
 ```
 
 The gate creates and removes one uniquely named cluster. It exercises successful, failed, and
@@ -182,12 +197,12 @@ bounded-unknown receiver paths without a blind second patch. On failure it expor
 With Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 
 ```sh
-cargo make demo-kind
+./scripts/demo-kind-crash-recovery.sh
 ```
 
 The demonstration creates its own cluster, runs healthy and failed-rollout paths, kills the real
 process around mutation and receipt publication, restarts, inspects the frozen receipt, and cleans
-up. Test the harness without Docker using `cargo make test-demo-harness`.
+up. Test the harness without Docker using `./scripts/test-demo-harness.sh`.
 
 ## Evaluator CLI
 
@@ -235,7 +250,7 @@ See [MCP adapter](MCP.md) for the protocol and fixed tool schema.
 The sole release target is `x86_64-unknown-linux-gnu`. Assemble deterministic files under `dist/`:
 
 ```sh
-cargo make assemble-release
+python3 scripts/assemble-release-artifact.py --output-directory dist
 ```
 
 Run the complete two-assembly proof outside the worktree:
@@ -260,8 +275,9 @@ Drive an extracted artifact through the live demonstration from its top-level di
 Or use a named archive from a checkout:
 
 ```sh
-KAPSEL_RELEASE_ARCHIVE=/absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz \
-  cargo make demo-release-artifact
+python3 scripts/smoke-release-artifact.py \
+  --archive /absolute/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz \
+  --live-demo
 ```
 
 ## Coverage
@@ -277,6 +293,6 @@ Coverage is non-blocking information, not correctness evidence.
 ## Toolchain ownership
 
 The executable build inputs are `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`,
-`rustfmt-nightly.toml`, `clippy.toml`, `Makefile.toml`, `.github/workflows/ci.yml`, and
+`rustfmt-nightly.toml`, `clippy.toml`, `.github/workflows/ci.yml`, `scripts/format.sh`, and
 `scripts/ci-local.sh`. When this guide disagrees with an executable command, correct the guide and
 its direct contract before relying on the prose.

@@ -246,11 +246,11 @@ synthetic hostile-archive matrix remains independent of the producer.
 strict assembly B and compares all four deterministic outputs byte-for-byte. Neither verifier hides
 another A assembly.
 
-`cargo make test-release-upgrade` consumes the exact immutable v0.1.1 archive and candidate archive,
-then uses only their safely extracted executables to prove a finalized historical journal backup,
-migration-only open/reopen, retained receipt inspection, restore/re-mark, and direct exact-v0.1.1
-downgrade. It complements the complete source-fixture state/process matrix and reads no checkout or
-`target/` candidate binary.
+`python3 scripts/smoke-release-upgrade.py` consumes the exact immutable v0.1.1 archive and candidate
+archive, then uses only their safely extracted executables to prove a finalized historical journal
+backup, migration-only open/reopen, retained receipt inspection, restore/re-mark, and direct
+exact-v0.1.1 downgrade. It complements the complete source-fixture state/process matrix and reads no
+checkout or `target/` candidate binary.
 
 The live artifact demo uses only the extracted script, feature-gated executable, and public vector
 against its uniquely owned disposable `kind` cluster. The ordinary binary contains no demonstration

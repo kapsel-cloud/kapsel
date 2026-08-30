@@ -156,11 +156,11 @@ EXPECTED_TOOL_ENVIRONMENTS = {
 EXPECTED_LANE_COMMANDS = {
     "default": ["./scripts/ci-local.sh"],
     "hostile-input": ["./scripts/ci-local.sh"],
-    "simulation": ["cargo", "make", "test-simulation"],
-    "fuzz": ["cargo", "make", "test-fuzz"],
-    "subprocess": ["cargo", "make", "test-v011-upgrade"],
-    "demo": ["cargo", "make", "test-demo-harness"],
-    "live-kind": ["cargo", "make", "test-kind"],
+    "simulation": ["./scripts/test-simulation.sh"],
+    "fuzz": ["./scripts/test-fuzz.sh"],
+    "subprocess": ["python3", "scripts/test-v011-upgrade-fixtures.py"],
+    "demo": ["./scripts/test-demo-harness.sh"],
+    "live-kind": ["./scripts/test-kind-effect-gateway.sh"],
     "measurement": [
         "python3",
         "scripts/run-beta-qualification-measurements.py",
@@ -219,12 +219,18 @@ EXPECTED_TOOL_VERSIONS = {
 PRIVACY_ROOT_FILES = {
     "Cargo.lock",
     "Cargo.toml",
-    "Makefile.toml",
     "README.md",
     "SECURITY.md",
     "rust-toolchain.toml",
 }
-PRIVACY_ROOT_PREFIXES = ("docs/", "scripts/", "src/", "tests/", "vectors/")
+PRIVACY_ROOT_PREFIXES = (
+    "crates/kapsel-authority/",
+    "docs/",
+    "scripts/",
+    "src/",
+    "tests/",
+    "vectors/",
+)
 NODE_IMAGE = "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
 MEASUREMENT_HARNESS_PATHS = [
     "scripts/measure-beta-qualification.py",
@@ -319,15 +325,27 @@ def canonical_git_digest(commit: str, paths: list[str]) -> str:
     return digest.hexdigest()
 
 
-def baseline_source_paths(commit: str) -> list[str]:
-    paths = git_output("ls-tree", "-r", "--name-only", commit).decode().splitlines()
+def selected_baseline_source_paths(paths: list[str]) -> list[str]:
+    source_files = {
+        "Cargo.lock",
+        "Cargo.toml",
+        "rust-toolchain.toml",
+        "scripts/format.sh",
+        "scripts/test-demo-harness.sh",
+        "scripts/test-fuzz.sh",
+        "scripts/test-simulation.sh",
+    }
+    source_prefixes = ("crates/kapsel-authority/", "src/", "vectors/")
     return [
         path
         for path in paths
-        if path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Makefile.toml"}
-        or path.startswith("src/")
-        or path.startswith("vectors/")
+        if path in source_files or path.startswith(source_prefixes)
     ]
+
+
+def baseline_source_paths(commit: str) -> list[str]:
+    paths = git_output("ls-tree", "-r", "--name-only", commit).decode().splitlines()
+    return selected_baseline_source_paths(paths)
 
 
 def privacy_source_paths(commit: str) -> list[str]:

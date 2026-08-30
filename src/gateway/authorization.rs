@@ -1,41 +1,16 @@
 //! Fixed-purpose signed authorization grants for the effect gateway.
 //!
-//! This module is private to the one effect gateway. It is not a generic authorization SDK,
-//! policy language, issuer model, or ambient trust mechanism.
+//! Canonical bytes and validation live in the unpublished service operator-input package so the
+//! root gateway and installer consume one implementation. This private module preserves gateway
+//! error classes and internal verified-fact ownership.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use sha2::{Digest, Sha256};
+use kapsel_authority::{
+    self as authority, AuthorizationGrantError, AuthorizationInputField,
+    ValidatedAuthorizationGrant,
+};
+pub use kapsel_authority::{AuthorizationTrust, ExactAuthorization};
 
-use super::{validate_identity, ExactAuthorization, GatewayError, InputField};
-
-const GRANT_STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-STATEMENT-V1\0";
-const SIGNED_GRANT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-V1\0";
-const GRANT_PURPOSE: &str = "kapsel.kap0038.kubernetes-set-deployment-image-grant.v1";
-const SIGNED_GRANT_BYTES_MAX: usize = 4 * 1024;
-const GRANT_STATEMENT_BYTES_MAX: usize = 2 * 1024;
-const GRANT_TEXT_BYTES_MAX: usize = 512;
-
-const _: () = assert!(GRANT_TEXT_BYTES_MAX <= GRANT_STATEMENT_BYTES_MAX);
-const _: () = assert!(GRANT_STATEMENT_BYTES_MAX < SIGNED_GRANT_BYTES_MAX);
-
-/// Owner-controlled trust for the one fixed-purpose authorization-grant signer.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorizationTrust {
-    /// Exact configured grant signing-key identity.
-    pub key_id: String,
-    /// Exact configured Ed25519 verifying key.
-    pub public_key: [u8; 32],
-}
-
-impl AuthorizationTrust {
-    pub(super) fn validate(&self) -> Result<(), GatewayError> {
-        validate_identity(InputField::AuthorizationId, &self.key_id)
-            .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-        VerifyingKey::from_bytes(&self.public_key)
-            .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-        Ok(())
-    }
-}
+use super::GatewayError;
 
 pub(crate) struct VerifiedAuthorization {
     pub(crate) authorization: ExactAuthorization,
@@ -43,368 +18,54 @@ pub(crate) struct VerifiedAuthorization {
     pub(crate) grant_digest: String,
 }
 
-/// Produces canonical owner-signed bytes for one exact effect-gateway authorization grant.
-///
-/// Signing is exposed for owner-side composition and deterministic vectors. Possessing this
-/// function conveys no authority without the configured private signing seed.
 pub(crate) fn sign_authorization_grant(
     authorization: &ExactAuthorization,
     signing_seed: &[u8; 32],
     key_id: &str,
 ) -> Result<Vec<u8>, GatewayError> {
-    authorization.validate()?;
-    validate_identity(InputField::AuthorizationId, key_id)
-        .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    let statement = encode_statement(authorization)?;
-    let signature = SigningKey::from_bytes(signing_seed).sign(&signature_input(&statement));
-    let mut output = Vec::with_capacity(statement.len() + 192);
-    output.extend_from_slice(SIGNED_GRANT_MAGIC);
-    append_bounded_record(
-        &mut output,
-        1,
-        GRANT_PURPOSE.as_bytes(),
-        SIGNED_GRANT_BYTES_MAX,
-    )?;
-    append_bounded_record(&mut output, 2, key_id.as_bytes(), SIGNED_GRANT_BYTES_MAX)?;
-    append_bounded_record(&mut output, 3, &statement, SIGNED_GRANT_BYTES_MAX)?;
-    append_bounded_record(
-        &mut output,
-        4,
-        &signature.to_bytes(),
-        SIGNED_GRANT_BYTES_MAX,
-    )?;
-    Ok(output)
+    authority::sign_authorization_grant(authorization, signing_seed, key_id)
+        .map_err(map_authorization_error)
 }
 
-pub(crate) fn verify_authorization_grant_for_public_key(
-    bytes: &[u8],
-    public_key: &[u8; 32],
-) -> Result<VerifiedAuthorization, GatewayError> {
-    if bytes.len() > SIGNED_GRANT_BYTES_MAX {
-        return Err(GatewayError::InvalidAuthorizationGrant);
-    }
-    let mut records = GrantRecords::new(bytes, SIGNED_GRANT_MAGIC)?;
-    if records.take_record(1)? != GRANT_PURPOSE.as_bytes() {
-        return Err(GatewayError::InvalidAuthorizationGrant);
-    }
-    let key_id = records.take_ascii_text(2)?;
-    verify_authorization_grant(
-        bytes,
-        &AuthorizationTrust {
-            key_id,
-            public_key: *public_key,
-        },
-    )
+pub(crate) fn validate_authorization_trust(trust: &AuthorizationTrust) -> Result<(), GatewayError> {
+    authority::validate_authorization_trust(trust).map_err(map_authorization_error)
 }
 
 pub(crate) fn verify_authorization_grant(
     bytes: &[u8],
     trust: &AuthorizationTrust,
 ) -> Result<VerifiedAuthorization, GatewayError> {
-    trust.validate()?;
-    if bytes.len() > SIGNED_GRANT_BYTES_MAX {
-        return Err(GatewayError::InvalidAuthorizationGrant);
-    }
-    let mut records = GrantRecords::new(bytes, SIGNED_GRANT_MAGIC)?;
-    if records.take_record(1)? != GRANT_PURPOSE.as_bytes() {
-        return Err(GatewayError::InvalidAuthorizationGrant);
-    }
-    let key_id = records.take_ascii_text(2)?;
-    validate_identity(InputField::AuthorizationId, &key_id)
-        .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    let statement_bytes = records.take_record(3)?;
-    if statement_bytes.len() > GRANT_STATEMENT_BYTES_MAX {
-        return Err(GatewayError::InvalidAuthorizationGrant);
-    }
-    let signature_bytes: [u8; 64] = records
-        .take_record(4)?
-        .try_into()
-        .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    records.finish_exact()?;
-    let authorization = parse_statement(statement_bytes)?;
-    if key_id != trust.key_id {
-        return Err(GatewayError::UntrustedAuthorizationGrant);
-    }
-    let key = VerifyingKey::from_bytes(&trust.public_key)
-        .map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    key.verify_strict(
-        &signature_input(statement_bytes),
-        &Signature::from_bytes(&signature_bytes),
-    )
-    .map_err(|_| GatewayError::UntrustedAuthorizationGrant)?;
-    Ok(VerifiedAuthorization {
+    authority::verify_authorization_grant(bytes, trust)
+        .map(into_verified)
+        .map_err(map_authorization_error)
+}
+
+fn into_verified(verified: ValidatedAuthorizationGrant) -> VerifiedAuthorization {
+    let (authorization, signer_key_id, grant_digest) = verified.into_parts();
+    VerifiedAuthorization {
         authorization,
-        signer_key_id: key_id,
-        grant_digest: digest_hex(bytes),
-    })
-}
-
-fn encode_statement(authorization: &ExactAuthorization) -> Result<Vec<u8>, GatewayError> {
-    let mut output = Vec::with_capacity(768);
-    output.extend_from_slice(GRANT_STATEMENT_MAGIC);
-    for (tag, value) in [
-        (1, authorization.authorization_id.as_str()),
-        (2, authorization.operation_id.as_str()),
-        (3, authorization.namespace.as_str()),
-        (4, authorization.deployment.as_str()),
-        (5, authorization.container.as_str()),
-        (6, authorization.immutable_image_digest.as_str()),
-    ] {
-        append_bounded_record(
-            &mut output,
-            tag,
-            value.as_bytes(),
-            GRANT_STATEMENT_BYTES_MAX,
-        )?;
-    }
-    Ok(output)
-}
-
-fn parse_statement(bytes: &[u8]) -> Result<ExactAuthorization, GatewayError> {
-    let mut records = GrantRecords::new(bytes, GRANT_STATEMENT_MAGIC)?;
-    let authorization = ExactAuthorization {
-        authorization_id: records.take_ascii_text(1)?,
-        operation_id: records.take_ascii_text(2)?,
-        namespace: records.take_ascii_text(3)?,
-        deployment: records.take_ascii_text(4)?,
-        container: records.take_ascii_text(5)?,
-        immutable_image_digest: records.take_ascii_text(6)?,
-    };
-    records.finish_exact()?;
-    authorization.validate()?;
-    Ok(authorization)
-}
-
-fn signature_input(statement: &[u8]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(GRANT_PURPOSE.len() + 1 + statement.len());
-    input.extend_from_slice(GRANT_PURPOSE.as_bytes());
-    input.push(0);
-    input.extend_from_slice(statement);
-    input
-}
-
-fn append_bounded_record(
-    output: &mut Vec<u8>,
-    tag: u8,
-    value: &[u8],
-    maximum_bytes: usize,
-) -> Result<(), GatewayError> {
-    let length = u32::try_from(value.len()).map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-    if output
-        .len()
-        .checked_add(5)
-        .and_then(|length| length.checked_add(value.len()))
-        .is_none_or(|length| length > maximum_bytes)
-    {
-        return Err(GatewayError::InvalidAuthorizationGrant);
-    }
-    output.push(tag);
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value);
-    Ok(())
-}
-
-struct GrantRecords<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-    next_tag: u8,
-}
-
-impl<'a> GrantRecords<'a> {
-    fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, GatewayError> {
-        if !bytes.starts_with(magic) {
-            return Err(GatewayError::InvalidAuthorizationGrant);
-        }
-        Ok(Self {
-            bytes,
-            offset: magic.len(),
-            next_tag: 1,
-        })
-    }
-
-    fn take_record(&mut self, expected_tag: u8) -> Result<&'a [u8], GatewayError> {
-        if expected_tag != self.next_tag {
-            return Err(GatewayError::InvalidAuthorizationGrant);
-        }
-        let header_end = self
-            .offset
-            .checked_add(5)
-            .ok_or(GatewayError::InvalidAuthorizationGrant)?;
-        if header_end > self.bytes.len() || self.bytes[self.offset] != expected_tag {
-            return Err(GatewayError::InvalidAuthorizationGrant);
-        }
-        let length = u32::from_be_bytes(
-            self.bytes[self.offset + 1..header_end]
-                .try_into()
-                .map_err(|_| GatewayError::InvalidAuthorizationGrant)?,
-        );
-        let length =
-            usize::try_from(length).map_err(|_| GatewayError::InvalidAuthorizationGrant)?;
-        let value_end = header_end
-            .checked_add(length)
-            .ok_or(GatewayError::InvalidAuthorizationGrant)?;
-        if value_end > self.bytes.len() {
-            return Err(GatewayError::InvalidAuthorizationGrant);
-        }
-        self.offset = value_end;
-        self.next_tag = self
-            .next_tag
-            .checked_add(1)
-            .ok_or(GatewayError::InvalidAuthorizationGrant)?;
-        Ok(&self.bytes[header_end..value_end])
-    }
-
-    fn take_ascii_text(&mut self, expected_tag: u8) -> Result<String, GatewayError> {
-        let value = self.take_record(expected_tag)?;
-        if value.is_empty() || value.len() > GRANT_TEXT_BYTES_MAX || !value.is_ascii() {
-            return Err(GatewayError::InvalidAuthorizationGrant);
-        }
-        String::from_utf8(value.to_vec()).map_err(|_| GatewayError::InvalidAuthorizationGrant)
-    }
-
-    fn finish_exact(self) -> Result<(), GatewayError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(GatewayError::InvalidAuthorizationGrant)
-        }
+        signer_key_id,
+        grant_digest,
     }
 }
 
-fn digest_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut output, "{byte:02x}").unwrap_or_else(|_| unreachable!());
+fn map_authorization_error(error: AuthorizationGrantError) -> GatewayError {
+    match error {
+        AuthorizationGrantError::InvalidInput(field) => {
+            GatewayError::InvalidInput(map_input_field(field))
+        },
+        AuthorizationGrantError::Invalid => GatewayError::InvalidAuthorizationGrant,
+        AuthorizationGrantError::Untrusted => GatewayError::UntrustedAuthorizationGrant,
     }
-    output
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn authorization() -> ExactAuthorization {
-        ExactAuthorization {
-            authorization_id: "auth-001".into(),
-            operation_id: "op-001".into(),
-            namespace: "demo".into(),
-            deployment: "agent-api".into(),
-            container: "api".into(),
-            immutable_image_digest: concat!(
-                "registry.example/example/agent-api@sha256:",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            )
-            .into(),
-        }
-    }
-
-    fn trust(seed: &[u8; 32], key_id: &str) -> AuthorizationTrust {
-        AuthorizationTrust {
-            key_id: key_id.into(),
-            public_key: SigningKey::from_bytes(seed).verifying_key().to_bytes(),
-        }
-    }
-
-    #[test]
-    fn canonical_grant_v1_vector_authenticates_under_application_configured_trust() {
-        let seed = [7_u8; 32];
-        let bytes = sign_authorization_grant(&authorization(), &seed, "owner-key").unwrap();
-        let mut hex = String::with_capacity(bytes.len() * 2);
-        for byte in &bytes {
-            use std::fmt::Write as _;
-            write!(&mut hex, "{byte:02x}").unwrap();
-        }
-        assert_eq!(
-            hex,
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/vectors/effect-gateway-grant.hex"
-            ))
-            .trim()
-        );
-        let verified = verify_authorization_grant(&bytes, &trust(&seed, "owner-key")).unwrap();
-        assert_eq!(verified.authorization, authorization());
-        assert_eq!(verified.signer_key_id, "owner-key");
-        assert_eq!(verified.grant_digest.len(), 64);
-    }
-
-    fn record_offset(input: &[u8], magic: &[u8], tag: u8) -> (usize, usize, usize) {
-        let mut offset = magic.len();
-        loop {
-            let record_tag = input[offset];
-            let length = u32::from_be_bytes(input[offset + 1..offset + 5].try_into().unwrap());
-            let length = usize::try_from(length).unwrap();
-            if record_tag == tag {
-                return (offset, offset + 5, length);
-            }
-            offset += 5 + length;
-        }
-    }
-
-    #[test]
-    fn duplicate_reordered_unknown_malformed_and_non_ascii_grant_records_fail_closed() {
-        let seed = [7_u8; 32];
-        let bytes = sign_authorization_grant(&authorization(), &seed, "owner-key").unwrap();
-        let (key_header, key_value, _) = record_offset(&bytes, SIGNED_GRANT_MAGIC, 2);
-        let (statement_header, statement_value, statement_length) =
-            record_offset(&bytes, SIGNED_GRANT_MAGIC, 3);
-        let statement = &bytes[statement_value..statement_value + statement_length];
-        let (statement_first_header, _, _) = record_offset(statement, GRANT_STATEMENT_MAGIC, 1);
-
-        let mut duplicate = bytes.clone();
-        duplicate[key_header] = 1;
-        let mut reordered = bytes.clone();
-        reordered[statement_header] = 2;
-        let mut unknown = bytes.clone();
-        unknown[key_header] = 9;
-        let mut malformed_length = bytes.clone();
-        malformed_length[key_header + 1..key_header + 5].copy_from_slice(&u32::MAX.to_be_bytes());
-        let mut empty = bytes.clone();
-        empty[key_header + 1..key_header + 5].copy_from_slice(&0_u32.to_be_bytes());
-        let mut non_ascii = bytes.clone();
-        non_ascii[key_value] = 0xff;
-        let mut nested_duplicate = bytes.clone();
-        nested_duplicate[statement_value + statement_first_header] = 2;
-
-        for hostile in [
-            duplicate,
-            reordered,
-            unknown,
-            malformed_length,
-            empty,
-            non_ascii,
-            nested_duplicate,
-        ] {
-            assert!(matches!(
-                verify_authorization_grant(&hostile, &trust(&seed, "owner-key")),
-                Err(GatewayError::InvalidAuthorizationGrant)
-            ));
-        }
-    }
-
-    #[test]
-    fn self_asserted_wrong_key_and_hostile_shapes_fail_closed() {
-        let seed = [7_u8; 32];
-        let bytes = sign_authorization_grant(&authorization(), &seed, "owner-key").unwrap();
-        assert!(matches!(
-            verify_authorization_grant(&bytes, &trust(&[8_u8; 32], "owner-key")),
-            Err(GatewayError::UntrustedAuthorizationGrant)
-        ));
-        assert!(matches!(
-            verify_authorization_grant(&bytes, &trust(&seed, "other-key")),
-            Err(GatewayError::UntrustedAuthorizationGrant)
-        ));
-        for hostile in [
-            bytes[..bytes.len() - 1].to_vec(),
-            [bytes.as_slice(), b"trailing"].concat(),
-            vec![0_u8; SIGNED_GRANT_BYTES_MAX + 1],
-        ] {
-            assert!(matches!(
-                verify_authorization_grant(&hostile, &trust(&seed, "owner-key")),
-                Err(GatewayError::InvalidAuthorizationGrant)
-            ));
-        }
+fn map_input_field(field: AuthorizationInputField) -> super::InputField {
+    match field {
+        AuthorizationInputField::AuthorizationId => super::InputField::AuthorizationId,
+        AuthorizationInputField::OperationId => super::InputField::OperationId,
+        AuthorizationInputField::Namespace => super::InputField::Namespace,
+        AuthorizationInputField::Deployment => super::InputField::Deployment,
+        AuthorizationInputField::Container => super::InputField::Container,
+        AuthorizationInputField::ImmutableImageDigest => super::InputField::ImmutableImageDigest,
     }
 }

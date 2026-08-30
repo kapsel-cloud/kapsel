@@ -19,7 +19,6 @@ use super::{
 
 const STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-STATEMENT-V2\0";
 const RECEIPT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-RECEIPT-V2\0";
-const TRUST_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-TRUST-V2\0";
 const PURPOSE: &str = "kapsel.kap0038.kubernetes-effect-receipt.v2";
 const NON_CLAIMS: &str = concat!(
     "no-exactly-once;no-causation;no-kubernetes-truth;",
@@ -457,64 +456,34 @@ impl ReceiptTrust {
     /// Returns a bounded receipt error when the key identity, public key, purpose, time interval,
     /// or encoded trust document violates the prototype contract.
     pub fn encode(&self) -> Result<Vec<u8>, ReceiptError> {
-        self.validate()?;
-        let mut output = Vec::with_capacity(128);
-        output.extend_from_slice(TRUST_MAGIC);
-        push_text(&mut output, 1, &self.key_id, TRUST_BYTES_MAX)?;
-        push(&mut output, 2, &self.public_key, TRUST_BYTES_MAX)?;
-        push_text(&mut output, 3, &self.accepted_purpose, TRUST_BYTES_MAX)?;
-        push(
-            &mut output,
-            4,
-            &self.not_before_unix_s.to_be_bytes(),
-            TRUST_BYTES_MAX,
-        )?;
-        push(
-            &mut output,
-            5,
-            &self.not_after_unix_s.to_be_bytes(),
-            TRUST_BYTES_MAX,
-        )?;
-        Ok(output)
+        kapsel_authority::encode_receipt_trust(&kapsel_authority::ReceiptTrustDocument {
+            key_id: self.key_id.clone(),
+            public_key: self.public_key,
+            accepted_purpose: self.accepted_purpose.clone(),
+            not_before_unix_s: self.not_before_unix_s,
+            not_after_unix_s: self.not_after_unix_s,
+        })
+        .map_err(map_receipt_trust_error)
     }
 
     fn parse(input: &[u8], limits: InspectionLimits) -> Result<Self, ReceiptError> {
         limits.validate()?;
-        bounded(input, limits.trust_bytes_max)?;
-        let mut records = Records::new(input, TRUST_MAGIC, limits.text_bytes_max)?;
-        let trust = Self {
-            key_id: records.text(1)?,
-            public_key: array(records.take(2)?)?,
-            accepted_purpose: records.text(3)?,
-            not_before_unix_s: i64::from_be_bytes(array(records.take(4)?)?),
-            not_after_unix_s: i64::from_be_bytes(array(records.take(5)?)?),
-        };
-        records.finish()?;
-        trust.validate()?;
-        Ok(trust)
+        let trust = kapsel_authority::parse_receipt_trust(
+            input,
+            kapsel_authority::ReceiptTrustLimits {
+                trust_bytes_max: limits.trust_bytes_max,
+                text_bytes_max: limits.text_bytes_max,
+            },
+        )
+        .map_err(map_receipt_trust_error)?;
+        Ok(Self {
+            key_id: trust.key_id,
+            public_key: trust.public_key,
+            accepted_purpose: trust.accepted_purpose,
+            not_before_unix_s: trust.not_before_unix_s,
+            not_after_unix_s: trust.not_after_unix_s,
+        })
     }
-
-    fn validate(&self) -> Result<(), ReceiptError> {
-        validate_key_id(&self.key_id)?;
-        validate_text(&self.accepted_purpose, false)?;
-        if self.not_before_unix_s >= self.not_after_unix_s {
-            return Err(ReceiptError::InvalidValue);
-        }
-        Ok(())
-    }
-}
-
-pub(crate) fn receipt_signing_key_id(
-    seed: &[u8; 32],
-    trust: &[u8],
-) -> Result<String, ReceiptError> {
-    let trust = ReceiptTrust::parse(trust, InspectionLimits::default())?;
-    if trust.accepted_purpose != PURPOSE
-        || trust.public_key != SigningKey::from_bytes(seed).verifying_key().to_bytes()
-    {
-        return Err(ReceiptError::InvalidValue);
-    }
-    Ok(trust.key_id)
 }
 
 pub(crate) fn sign_statement(
@@ -931,7 +900,19 @@ fn bounded(input: &[u8], maximum_bytes: usize) -> Result<(), ReceiptError> {
 }
 
 pub(crate) fn validate_key_id(value: &str) -> Result<(), ReceiptError> {
-    validate_identity(InputField::AuthorizationId, value).map_err(|_| ReceiptError::InvalidValue)
+    if kapsel_authority::identity_is_valid(value) {
+        Ok(())
+    } else {
+        Err(ReceiptError::InvalidValue)
+    }
+}
+
+fn map_receipt_trust_error(error: kapsel_authority::ReceiptTrustError) -> ReceiptError {
+    match error {
+        kapsel_authority::ReceiptTrustError::LimitExceeded => ReceiptError::LimitExceeded,
+        kapsel_authority::ReceiptTrustError::InvalidValue => ReceiptError::InvalidValue,
+        kapsel_authority::ReceiptTrustError::InvalidRecord => ReceiptError::InvalidRecord,
+    }
 }
 
 fn validate_digest(value: &str) -> Result<(), ReceiptError> {
@@ -1110,7 +1091,10 @@ mod tests {
                 InspectionStatus::StructureRejected
             );
         }
-        for malformed in malformed_shapes(&trust, TRUST_MAGIC, 5) {
+        for malformed in [
+            trust[..trust.len() - 1].to_vec(),
+            [trust.as_slice(), b"trailing"].concat(),
+        ] {
             assert_eq!(
                 inspect_receipt(&receipt, &malformed, 150, limits).status(),
                 InspectionStatus::StructureRejected

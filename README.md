@@ -52,7 +52,7 @@ From a source checkout, the shortest deterministic gate is:
 With Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 
 ```sh
-cargo make demo-kind
+./scripts/demo-kind-crash-recovery.sh
 ```
 
 The demonstration creates and removes its own cluster. It runs healthy and failed-rollout paths,

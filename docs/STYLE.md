@@ -118,9 +118,9 @@ wrapping would reduce clarity.
 Run:
 
 ```sh
-cargo make fmt
-cargo make tidy
-cargo make check
+./scripts/format.sh
+cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy
+./scripts/ci-local.sh
 ```
 
 Hard gates stay objective: formatting, source width, compiler and Clippy warnings, public API docs,

@@ -9,9 +9,26 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 ORCHESTRATOR = runpy.run_path(str(ROOT / "scripts/run-beta-qualification.py"))
+VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-beta-qualification-baseline.py"))
 
 
 class QualificationOrchestratorTests(unittest.TestCase):
+    def test_source_identity_covers_extracted_inputs_and_replacement_scripts(self) -> None:
+        paths = [
+            "Cargo.lock",
+            "crates/kapsel-authority/src/lib.rs",
+            "scripts/format.sh",
+            "scripts/test-demo-harness.sh",
+            "scripts/test-fuzz.sh",
+            "scripts/test-simulation.sh",
+            "unrelated",
+        ]
+        selected = ORCHESTRATOR["selected_source_paths"](paths)
+        mirrored = VALIDATOR["selected_baseline_source_paths"](paths)
+        self.assertNotIn("unrelated", selected)
+        self.assertEqual(selected, mirrored)
+        self.assertEqual(len(selected), len(paths) - 1)
+
     def test_bounded_output_placeholder_is_replaced_only_for_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "bounded.json"

@@ -17,10 +17,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub use authorization::AuthorizationTrust;
 pub(crate) use authorization::{
-    sign_authorization_grant, verify_authorization_grant, verify_authorization_grant_for_public_key,
+    sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
+pub use authorization::{AuthorizationTrust, ExactAuthorization};
 use journal::Journal;
 use kubernetes::{
     ApplyOutcome, KubernetesDeploymentImageAdapter, ReceiverObservation, TargetIdentity,
@@ -32,7 +32,6 @@ pub(crate) use kubernetes::{
     ReceiverObservation as TestReceiverObservation, TargetIdentity as TestTargetIdentity,
 };
 pub(crate) use receipt::publication::validate_private_directory;
-pub(crate) use receipt::receipt_signing_key_id;
 pub(crate) use receipt::validate_key_id;
 pub use receipt::{
     inspect_receipt, InspectionLimits, InspectionReport, InspectionStatus, ReceiptError,
@@ -62,42 +61,6 @@ impl SetDeploymentImageRequest {
         validate_dns_subdomain(InputField::Deployment, &self.deployment)?;
         validate_dns_label(InputField::Container, &self.container)?;
         validate_immutable_image(&self.immutable_image_digest)
-    }
-}
-
-/// Exact owner-controlled statement embedded in a signed authorization grant.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExactAuthorization {
-    /// Stable local identity for the authorization record.
-    pub authorization_id: String,
-    /// Exact authorized operation identity.
-    pub operation_id: String,
-    /// Exact authorized Kubernetes namespace.
-    pub namespace: String,
-    /// Exact authorized Deployment name.
-    pub deployment: String,
-    /// Exact authorized container name.
-    pub container: String,
-    /// Exact authorized immutable image reference.
-    pub immutable_image_digest: String,
-}
-
-impl ExactAuthorization {
-    pub(crate) fn validate(&self) -> Result<(), GatewayError> {
-        validate_identity(InputField::AuthorizationId, &self.authorization_id)?;
-        validate_identity(InputField::OperationId, &self.operation_id)?;
-        validate_dns_label(InputField::Namespace, &self.namespace)?;
-        validate_dns_subdomain(InputField::Deployment, &self.deployment)?;
-        validate_dns_label(InputField::Container, &self.container)?;
-        validate_immutable_image(&self.immutable_image_digest)
-    }
-
-    fn matches(&self, request: &SetDeploymentImageRequest) -> bool {
-        self.operation_id == request.operation_id
-            && self.namespace == request.namespace
-            && self.deployment == request.deployment
-            && self.container == request.container
-            && self.immutable_image_digest == request.immutable_image_digest
     }
 }
 
@@ -239,7 +202,7 @@ impl Gateway {
         path: impl AsRef<Path>,
         authorization_trust: AuthorizationTrust,
     ) -> Result<Self, GatewayError> {
-        authorization_trust.validate()?;
+        validate_authorization_trust(&authorization_trust)?;
         Ok(Self {
             journal: Journal::open(path)?,
             authorization_trust,
@@ -263,7 +226,7 @@ impl Gateway {
     ) -> Result<SubmissionResult, GatewayError> {
         request.validate()?;
         let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
-        if !verified.authorization.matches(request) {
+        if !authorization_matches(&verified.authorization, request) {
             return Err(GatewayError::AuthorizationMismatch);
         }
         if let Some(existing) = self.journal.existing_submission(request, &verified)? {
@@ -339,7 +302,7 @@ impl Gateway {
         signed_grant: &[u8],
     ) -> Result<Option<journal::OperationSnapshot>, GatewayError> {
         let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
-        if !verified.authorization.matches(request) {
+        if !authorization_matches(&verified.authorization, request) {
             return Err(GatewayError::AuthorizationMismatch);
         }
         self.journal
@@ -809,84 +772,46 @@ impl Error for GatewayError {
 }
 
 pub(crate) fn validate_identity(field: InputField, value: &str) -> Result<(), GatewayError> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
-    {
-        return Err(GatewayError::InvalidInput(field));
+    if kapsel_authority::identity_is_valid(value) {
+        Ok(())
+    } else {
+        Err(GatewayError::InvalidInput(field))
     }
-    Ok(())
 }
 
 pub(crate) fn validate_dns_label(field: InputField, value: &str) -> Result<(), GatewayError> {
-    let bytes = value.as_bytes();
-    if bytes.is_empty()
-        || bytes.len() > 63
-        || !bytes.first().is_some_and(u8::is_ascii_lowercase_or_digit)
-        || !bytes.last().is_some_and(u8::is_ascii_lowercase_or_digit)
-        || !bytes
-            .iter()
-            .copied()
-            .all(|byte| byte.is_ascii_lowercase_or_digit() || byte == b'-')
-    {
-        return Err(GatewayError::InvalidInput(field));
+    if kapsel_authority::dns_label_is_valid(value) {
+        Ok(())
+    } else {
+        Err(GatewayError::InvalidInput(field))
     }
-    Ok(())
 }
 
 pub(crate) fn validate_dns_subdomain(field: InputField, value: &str) -> Result<(), GatewayError> {
-    if value.is_empty()
-        || value.len() > 253
-        || value
-            .split('.')
-            .any(|label| validate_dns_label(field, label).is_err())
-    {
-        return Err(GatewayError::InvalidInput(field));
+    if kapsel_authority::dns_subdomain_is_valid(value) {
+        Ok(())
+    } else {
+        Err(GatewayError::InvalidInput(field))
     }
-    Ok(())
 }
 
 pub(crate) fn validate_immutable_image(value: &str) -> Result<(), GatewayError> {
-    if value.is_empty() || value.len() > 512 || !value.is_ascii() {
-        return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
+    if kapsel_authority::immutable_image_is_valid(value) {
+        Ok(())
+    } else {
+        Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest))
     }
-    let Some((name, digest)) = value.split_once("@sha256:") else {
-        return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
-    };
-    if name.contains('@') {
-        return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
-    }
-    let digest_is_lowercase_sha256 = digest.len() == 64
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'));
-    if !digest_is_lowercase_sha256 || name.split('/').any(invalid_image_name_component) {
-        return Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest));
-    }
-    Ok(())
 }
 
-fn invalid_image_name_component(component: &str) -> bool {
-    let bytes = component.as_bytes();
-    bytes.is_empty()
-        || !bytes.first().is_some_and(u8::is_ascii_lowercase_or_digit)
-        || !bytes.last().is_some_and(u8::is_ascii_lowercase_or_digit)
-        || !bytes
-            .iter()
-            .copied()
-            .all(|byte| byte.is_ascii_lowercase_or_digit() || matches!(byte, b'.' | b'_' | b'-'))
-}
-
-trait AsciiDnsByte {
-    fn is_ascii_lowercase_or_digit(&self) -> bool;
-}
-
-impl AsciiDnsByte for u8 {
-    fn is_ascii_lowercase_or_digit(&self) -> bool {
-        self.is_ascii_lowercase() || self.is_ascii_digit()
-    }
+fn authorization_matches(
+    authorization: &ExactAuthorization,
+    request: &SetDeploymentImageRequest,
+) -> bool {
+    authorization.operation_id == request.operation_id
+        && authorization.namespace == request.namespace
+        && authorization.deployment == request.deployment
+        && authorization.container == request.container
+        && authorization.immutable_image_digest == request.immutable_image_digest
 }
 
 #[cfg(test)]
