@@ -480,29 +480,21 @@ impl Application {
         }
         let Some(snapshot) = self
             .gateway
-            .authorized_operation_snapshot(
-                &self.authorized_request,
-                &self.signed_authorization_grant,
-            )
+            .authorized_operation(&self.authorized_request, &self.signed_authorization_grant)
             .map_err(|_| ApplicationError::OperationFailure)?
         else {
             return Ok(SetDeploymentImageReceipt::NotFound);
         };
         if snapshot
-            .frozen_receipt
-            .as_ref()
+            .frozen_receipt()
             .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
-            || snapshot
-                .receipt
-                .as_ref()
-                .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
         {
             return Err(ApplicationError::OperationFailure);
         }
-        if snapshot.state != OperationState::Finalized {
+        if snapshot.state() != OperationState::Finalized {
             return Ok(SetDeploymentImageReceipt::NotReady);
         }
-        let (bytes, sha256) = Gateway::read_snapshot_receipt(snapshot)
+        let (bytes, sha256) = Gateway::read_loaded_receipt(snapshot)
             .map_err(|_| ApplicationError::OperationFailure)?;
         Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 })
     }
@@ -613,31 +605,23 @@ impl Application {
         let operation_id = &self.authorized_request.operation_id;
         let Some(snapshot) = self
             .gateway
-            .authorized_operation_snapshot(
-                &self.authorized_request,
-                &self.signed_authorization_grant,
-            )
+            .authorized_operation(&self.authorized_request, &self.signed_authorization_grant)
             .map_err(|_| ApplicationError::OperationFailure)?
         else {
             return Ok(None);
         };
         if snapshot
-            .frozen_receipt
-            .as_ref()
+            .frozen_receipt()
             .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
-            || snapshot
-                .receipt
-                .as_ref()
-                .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
         {
             return Err(ApplicationError::OperationFailure);
         }
         Ok(Some(OperationReport {
             operation_id: operation_id.clone(),
-            state: snapshot.state,
-            result: snapshot.result,
-            target_rejection: snapshot.target_rejection,
-            receipt: snapshot.receipt,
+            state: snapshot.state(),
+            result: snapshot.result(),
+            target_rejection: snapshot.target_rejection(),
+            receipt: snapshot.receipt_reference(),
         }))
     }
 

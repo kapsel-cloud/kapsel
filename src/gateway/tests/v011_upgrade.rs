@@ -349,6 +349,7 @@ fn v011_marked_fixture_reopen() {
             gateway.get(OPERATION_ID).unwrap(),
             Some(operation_state(case.state))
         );
+        assert_decoded_operation_state(&gateway, case.state);
         drop(gateway);
         assert_eq!(journal_version(&database), 2);
         assert_eq!(durable_row(&database), row_before);
@@ -660,6 +661,7 @@ fn verify_fixture(output: &Path, case: &FixtureCase, harness_sha256: &str) {
         gateway.get(OPERATION_ID).unwrap(),
         Some(operation_state(case.state))
     );
+    assert_decoded_operation_state(&gateway, case.state);
     drop(gateway);
     assert_eq!(journal_version(&database), 2);
     assert_eq!(durable_row(&database), row_before);
@@ -759,6 +761,7 @@ fn verify_process_loss_case(fixture: &Path, case: &FixtureCase) {
         eprintln!("reopening {} after migration seam {seam}", case.name);
         let gateway = Gateway::open_for_test(&database).unwrap();
         assert_eq!(gateway.get(OPERATION_ID).unwrap(), Some(operation_state(case.state)));
+        assert_decoded_operation_state(&gateway, case.state);
         drop(gateway);
         assert_eq!(journal_version(&database), 2);
         let after_first_reopen = sha256_file(&database);
@@ -783,6 +786,7 @@ fn verify_process_loss_case(fixture: &Path, case: &FixtureCase) {
 
         let gateway = Gateway::open_for_test(&database).unwrap();
         assert_eq!(gateway.get(OPERATION_ID).unwrap(), Some(operation_state(case.state)));
+        assert_decoded_operation_state(&gateway, case.state);
         drop(gateway);
         assert_eq!(journal_version(&database), 2);
         let after_first_reopen = sha256_file(&database);
@@ -1499,6 +1503,18 @@ fn receipt_facts(database: &Path) -> Option<(String, String, Vec<u8>, String)> {
         )
         .optional()
         .unwrap()
+}
+
+fn assert_decoded_operation_state(gateway: &Gateway, state: &str) {
+    assert_eq!(
+        gateway
+            .journal
+            .operation(OPERATION_ID)
+            .unwrap()
+            .unwrap()
+            .state(),
+        operation_state(state)
+    );
 }
 
 fn operation_state(state: &str) -> OperationState {

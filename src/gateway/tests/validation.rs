@@ -89,6 +89,55 @@
     }
 
     #[test]
+    fn duplicate_submission_rejects_inconsistent_requested_row_without_advancing() {
+        let path = database_path("inconsistent-requested-duplicate");
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        let request = request();
+        gateway
+            .journal
+            .connection
+            .execute(
+                "INSERT INTO kubernetes_image_operations (
+                    operation_id, namespace, deployment, container,
+                    immutable_image_digest, state, apply_attempted
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, 'requested', 1)",
+                params![
+                    request.operation_id,
+                    request.namespace,
+                    request.deployment,
+                    request.container,
+                    request.immutable_image_digest,
+                ],
+            )
+            .unwrap();
+
+        assert!(matches!(
+            gateway.submit_exact_for_test(&request, &authorization(&request)),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        let persisted = gateway
+            .journal
+            .connection
+            .query_row(
+                "SELECT state, apply_attempted, authorization_id
+                 FROM kubernetes_image_operations WHERE operation_id = ?1",
+                [&request.operation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(persisted, ("requested".into(), true, None));
+
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn kubernetes_names_and_identities_enforce_contract_bounds() {
         let path = database_path("input-bounds");
         let invalid_requests = [

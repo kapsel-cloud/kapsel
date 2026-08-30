@@ -64,6 +64,28 @@ impl SetDeploymentImageRequest {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::gateway) struct ValidatedRequest(SetDeploymentImageRequest);
+
+impl TryFrom<&SetDeploymentImageRequest> for ValidatedRequest {
+    type Error = GatewayError;
+
+    fn try_from(request: &SetDeploymentImageRequest) -> Result<Self, Self::Error> {
+        request.validate()?;
+        Ok(Self(request.clone()))
+    }
+}
+
+impl ValidatedRequest {
+    pub(in crate::gateway) fn as_request(&self) -> &SetDeploymentImageRequest {
+        &self.0
+    }
+
+    pub(in crate::gateway) fn operation_id(&self) -> &str {
+        &self.0.operation_id
+    }
+}
+
 /// Public durable states defined by the effect-gateway owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationState {
@@ -182,6 +204,7 @@ pub struct ReceiptReference {
     pub digest: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrozenReceipt {
     pub(crate) operation_id: String,
     pub(crate) bytes: Vec<u8>,
@@ -224,15 +247,14 @@ impl Gateway {
         signed_grant: &[u8],
         fault: Option<FaultPoint>,
     ) -> Result<SubmissionResult, GatewayError> {
-        request.validate()?;
+        let request = ValidatedRequest::try_from(request)?;
         let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
-        if !authorization_matches(&verified.authorization, request) {
+        if !authorization_matches(&verified.authorization, request.as_request()) {
             return Err(GatewayError::AuthorizationMismatch);
         }
-        if let Some(existing) = self.journal.existing_submission(request, &verified)? {
+        if let Some(existing) = self.journal.existing_submission(&request, &verified)? {
             if existing == OperationState::Requested {
-                self.journal
-                    .mark_authorized(&request.operation_id, &verified)?;
+                self.journal.mark_authorized(&request, &verified)?;
                 if fault == Some(FaultPoint::AuthorizedCommitted) {
                     return Err(GatewayError::InjectedFault);
                 }
@@ -240,12 +262,11 @@ impl Gateway {
             }
             return Ok(SubmissionResult::Existing(existing));
         }
-        self.journal.insert_requested(request)?;
+        self.journal.insert_requested(&request)?;
         if fault == Some(FaultPoint::RequestedCommitted) {
             return Err(GatewayError::InjectedFault);
         }
-        self.journal
-            .mark_authorized(&request.operation_id, &verified)?;
+        self.journal.mark_authorized(&request, &verified)?;
         if fault == Some(FaultPoint::AuthorizedCommitted) {
             return Err(GatewayError::InjectedFault);
         }
@@ -296,17 +317,17 @@ impl Gateway {
         self.journal.state(operation_id)
     }
 
-    pub(crate) fn authorized_operation_snapshot(
+    pub(crate) fn authorized_operation(
         &self,
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
-    ) -> Result<Option<journal::OperationSnapshot>, GatewayError> {
+    ) -> Result<Option<journal::LoadedOperation>, GatewayError> {
         let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
-        if !authorization_matches(&verified.authorization, request) {
+        let request = ValidatedRequest::try_from(request)?;
+        if !authorization_matches(&verified.authorization, request.as_request()) {
             return Err(GatewayError::AuthorizationMismatch);
         }
-        self.journal
-            .authorized_operation_snapshot(request, &verified)
+        self.journal.authorized_operation(&request, &verified)
     }
 
     /// Reads a frozen receiver result when observation has completed.
@@ -369,13 +390,21 @@ impl Gateway {
         };
         let operation = self
             .journal
-            .next_request(OperationState::ReceiverObserved)?
-            .or(self.journal.next_request(OperationState::ReceiptPrepared)?)
-            .or(self.journal.next_request(OperationState::ReceiptWritten)?);
+            .next_operation(OperationState::ReceiverObserved)?
+            .or(self
+                .journal
+                .next_operation(OperationState::ReceiptPrepared)?)
+            .or(self
+                .journal
+                .next_operation(OperationState::ReceiptWritten)?);
         let Some(operation) = operation else {
             return Ok(None);
         };
-        self.finalize_locked_operation_receipt_once(&operation.operation_id, settings, fault)
+        self.finalize_locked_operation_receipt_once(
+            operation.request().operation_id.as_str(),
+            settings,
+            fault,
+        )
     }
 
     fn finalize_locked_operation_receipt_once(
@@ -386,68 +415,71 @@ impl Gateway {
     ) -> Result<Option<OperationState>, GatewayError> {
         #[cfg(not(test))]
         let _ = fault;
-        if self
-            .journal
-            .request_in_state(operation_id, OperationState::ReceiverObserved)?
-            .is_some()
-        {
-            let receipt = self.build_receipt(operation_id, settings)?;
-            publication::validate_private_directory(settings.output_directory)
-                .map_err(publication_error)?;
-            self.journal.prepare_receipt(&receipt)?;
-            #[cfg(test)]
-            if fault == Some(FaultPoint::ReceiptPreparedCommitted) {
-                return Err(GatewayError::InjectedFault);
+        loop {
+            let Some(operation) = self.journal.operation(operation_id)? else {
+                return Ok(None);
+            };
+            match operation {
+                journal::LoadedOperation::ReceiverObserved(operation) => {
+                    let receipt = Self::build_receipt(&operation, settings)?;
+                    publication::validate_private_directory(settings.output_directory)
+                        .map_err(publication_error)?;
+                    self.journal.prepare_receipt(&operation, &receipt)?;
+                    #[cfg(test)]
+                    if fault == Some(FaultPoint::ReceiptPreparedCommitted) {
+                        return Err(GatewayError::InjectedFault);
+                    }
+                },
+                journal::LoadedOperation::ReceiptPrepared(operation) => {
+                    let receipt = operation.receipt();
+                    publication::publish_receipt(&receipt.path, &receipt.bytes)
+                        .map_err(publication_error)?;
+                    #[cfg(feature = "demo-harness")]
+                    demo_control::checkpoint_after_receipt_publish()
+                        .map_err(|()| GatewayError::ReceiptPublication)?;
+                    #[cfg(test)]
+                    if fault == Some(FaultPoint::ReceiptPublished) {
+                        return Err(GatewayError::InjectedFault);
+                    }
+                    self.journal.mark_receipt_written(&operation)?;
+                },
+                journal::LoadedOperation::ReceiptWritten(operation) => {
+                    #[cfg(test)]
+                    if fault == Some(FaultPoint::ReceiptWrittenCommitted) {
+                        return Err(GatewayError::InjectedFault);
+                    }
+                    let receipt = operation.receipt();
+                    if !stored_receipt_matches(&receipt.path, &receipt.bytes)? {
+                        publication::publish_receipt(&receipt.path, &receipt.bytes)
+                            .map_err(publication_error)?;
+                    }
+                    self.journal.mark_finalized(&operation)?;
+                    #[cfg(test)]
+                    if fault == Some(FaultPoint::FinalizedCommitted) {
+                        return Err(GatewayError::InjectedFault);
+                    }
+                    return Ok(Some(OperationState::Finalized));
+                },
+                journal::LoadedOperation::Requested(_)
+                | journal::LoadedOperation::Authorized(_)
+                | journal::LoadedOperation::NotAttempted(_)
+                | journal::LoadedOperation::ApplyStarted(_)
+                | journal::LoadedOperation::Finalized(_) => return Ok(None),
             }
         }
-        if let Some(receipt) = self
-            .journal
-            .frozen_receipt_for(operation_id, OperationState::ReceiptPrepared)?
-        {
-            publication::publish_receipt(&receipt.path, &receipt.bytes)
-                .map_err(publication_error)?;
-            #[cfg(feature = "demo-harness")]
-            demo_control::checkpoint_after_receipt_publish()
-                .map_err(|()| GatewayError::ReceiptPublication)?;
-            #[cfg(test)]
-            if fault == Some(FaultPoint::ReceiptPublished) {
-                return Err(GatewayError::InjectedFault);
-            }
-            self.journal.mark_receipt_written(operation_id)?;
-        }
-        if let Some(receipt) = self
-            .journal
-            .frozen_receipt_for(operation_id, OperationState::ReceiptWritten)?
-        {
-            #[cfg(test)]
-            if fault == Some(FaultPoint::ReceiptWrittenCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-            if !stored_receipt_matches(&receipt.path, &receipt.bytes)? {
-                publication::publish_receipt(&receipt.path, &receipt.bytes)
-                    .map_err(publication_error)?;
-            }
-            self.journal.mark_finalized(operation_id)?;
-            #[cfg(test)]
-            if fault == Some(FaultPoint::FinalizedCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-            return Ok(Some(OperationState::Finalized));
-        }
-        Ok(None)
     }
 
     fn build_receipt(
-        &self,
-        operation_id: &str,
+        operation: &journal::ReceiverObservedOperation,
         settings: &ReceiptSettings<'_>,
     ) -> Result<FrozenReceipt, GatewayError> {
-        let statement = self
-            .journal
-            .receipt_statement(operation_id)?
-            .ok_or(GatewayError::InvalidPersistedState)?;
-        let bytes = sign_statement(&statement, settings.signing_seed, settings.key_id)
-            .map_err(GatewayError::Receipt)?;
+        let operation_id = operation.operation_id();
+        let bytes = sign_statement(
+            operation.statement(),
+            settings.signing_seed,
+            settings.key_id,
+        )
+        .map_err(GatewayError::Receipt)?;
         let digest = publication::receipt_digest_hex(&bytes);
         let path = settings
             .output_directory
@@ -464,20 +496,18 @@ impl Gateway {
         })
     }
 
-    pub(crate) fn read_snapshot_receipt(
-        snapshot: journal::OperationSnapshot,
+    pub(crate) fn read_loaded_receipt(
+        operation: journal::LoadedOperation,
     ) -> Result<(Vec<u8>, String), GatewayError> {
-        if snapshot.state != OperationState::Finalized {
+        let journal::LoadedOperation::Finalized(operation) = operation else {
             return Err(GatewayError::InvalidPersistedState);
-        }
-        let receipt = snapshot
-            .frozen_receipt
-            .ok_or(GatewayError::InvalidPersistedState)?;
+        };
+        let receipt = operation.receipt();
         let bytes = publication::read_receipt(&receipt.path).map_err(publication_error)?;
         if bytes != receipt.bytes || publication::receipt_digest_hex(&bytes) != receipt.digest {
             return Err(GatewayError::ReceiptDigestMismatch);
         }
-        Ok((bytes, receipt.digest))
+        Ok((bytes, receipt.digest.clone()))
     }
 
     /// Reads the terminal receipt reference for a finalized operation.
@@ -534,82 +564,89 @@ impl Gateway {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        if let Some(request) = self
-            .journal
-            .request_in_state(operation_id, OperationState::Authorized)?
-        {
-            let target = match adapter.identify(&request).await {
-                Ok(target) => target,
-                Err(TargetReadError::Transient) => {
-                    self.journal.defer_target_retry(&request.operation_id)?;
-                    return Err(GatewayError::KubernetesTargetObservation);
-                },
-                Err(TargetReadError::Permanent(rejection)) => {
-                    self.journal
-                        .mark_not_attempted(&request.operation_id, rejection)?;
-                    if fault == Some(FaultPoint::TargetRejectedCommitted) {
-                        return Err(GatewayError::InjectedFault);
-                    }
-                    return Ok(Some(OperationState::NotAttempted));
-                },
-            };
-            if fault == Some(FaultPoint::TargetObserved) {
-                return Err(GatewayError::InjectedFault);
-            }
-            self.journal
-                .mark_apply_started(&request.operation_id, WRITE_STRATEGY, &target)?;
-            if fault == Some(FaultPoint::ApplyStartedCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-            let outcome = adapter
-                .apply(&request, &target)
-                .await
-                .map_err(|()| GatewayError::KubernetesApply)?;
-            #[cfg(feature = "demo-harness")]
-            demo_control::checkpoint_after_apply().map_err(|()| GatewayError::KubernetesApply)?;
-            if fault == Some(FaultPoint::ApplyReturned) {
-                return Err(GatewayError::InjectedFault);
-            }
-            self.journal
-                .record_apply_outcome(&request.operation_id, &outcome)?;
-            if fault == Some(FaultPoint::ApplyOutcomeCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-            let observation = adapter
-                .observe(&request)
-                .await
-                .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
-            if fault == Some(FaultPoint::ReceiverRead) {
-                return Err(GatewayError::InjectedFault);
-            }
-            self.journal
-                .freeze_observation(&request, &outcome, &observation)?;
-            if fault == Some(FaultPoint::ReceiverObservedCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-            return Ok(Some(OperationState::ReceiverObserved));
+        let Some(operation) = self.journal.operation(operation_id)? else {
+            return Ok(None);
+        };
+        match operation {
+            journal::LoadedOperation::Authorized(operation) => {
+                let target = match adapter.identify(operation.request()).await {
+                    Ok(target) => target,
+                    Err(TargetReadError::Transient) => {
+                        self.journal.defer_target_retry(&operation)?;
+                        return Err(GatewayError::KubernetesTargetObservation);
+                    },
+                    Err(TargetReadError::Permanent(rejection)) => {
+                        self.journal.mark_not_attempted(&operation, rejection)?;
+                        if fault == Some(FaultPoint::TargetRejectedCommitted) {
+                            return Err(GatewayError::InjectedFault);
+                        }
+                        return Ok(Some(OperationState::NotAttempted));
+                    },
+                };
+                if fault == Some(FaultPoint::TargetObserved) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                self.journal
+                    .mark_apply_started(&operation, WRITE_STRATEGY, &target)?;
+                if fault == Some(FaultPoint::ApplyStartedCommitted) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                let Some(journal::LoadedOperation::ApplyStarted(started)) =
+                    self.journal.operation(operation_id)?
+                else {
+                    return Err(GatewayError::InvalidPersistedState);
+                };
+                let outcome = adapter
+                    .apply(started.request(), &target)
+                    .await
+                    .map_err(|()| GatewayError::KubernetesApply)?;
+                #[cfg(feature = "demo-harness")]
+                demo_control::checkpoint_after_apply()
+                    .map_err(|()| GatewayError::KubernetesApply)?;
+                if fault == Some(FaultPoint::ApplyReturned) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                self.journal.record_apply_outcome(&started, &outcome)?;
+                if fault == Some(FaultPoint::ApplyOutcomeCommitted) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                let Some(journal::LoadedOperation::ApplyStarted(started)) =
+                    self.journal.operation(operation_id)?
+                else {
+                    return Err(GatewayError::InvalidPersistedState);
+                };
+                let observation = adapter
+                    .observe(started.request())
+                    .await
+                    .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
+                if fault == Some(FaultPoint::ReceiverRead) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                self.journal.freeze_observation(&started, &observation)?;
+                if fault == Some(FaultPoint::ReceiverObservedCommitted) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                Ok(Some(OperationState::ReceiverObserved))
+            },
+            // Loaded ApplyStarted is recovery-only here. It has no path to adapter.apply.
+            journal::LoadedOperation::ApplyStarted(operation) => {
+                let observation = adapter
+                    .observe(operation.request())
+                    .await
+                    .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
+                self.journal.freeze_observation(&operation, &observation)?;
+                if fault == Some(FaultPoint::ReceiverObservedCommitted) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                Ok(Some(OperationState::ReceiverObserved))
+            },
+            journal::LoadedOperation::Requested(_)
+            | journal::LoadedOperation::NotAttempted(_)
+            | journal::LoadedOperation::ReceiverObserved(_)
+            | journal::LoadedOperation::ReceiptPrepared(_)
+            | journal::LoadedOperation::ReceiptWritten(_)
+            | journal::LoadedOperation::Finalized(_) => Ok(None),
         }
-        // ApplyStarted is the durable mutation marker. Recovery observes from this state and never
-        // issues another provider mutation.
-        if let Some(request) = self
-            .journal
-            .request_in_state(operation_id, OperationState::ApplyStarted)?
-        {
-            let outcome = self
-                .journal
-                .persisted_apply_outcome(&request.operation_id)?;
-            let observation = adapter
-                .observe(&request)
-                .await
-                .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
-            self.journal
-                .freeze_observation(&request, &outcome, &observation)?;
-            if fault == Some(FaultPoint::ReceiverObservedCommitted) {
-                return Err(GatewayError::InjectedFault);
-            }
-            return Ok(Some(OperationState::ReceiverObserved));
-        }
-        Ok(None)
     }
 
     // Queue-oriented tests select only an exact identity, then cross the same operation-selected
@@ -623,13 +660,17 @@ impl Gateway {
     ) -> Result<Option<OperationState>, GatewayError> {
         let operation = self
             .journal
-            .next_request(OperationState::Authorized)?
-            .or(self.journal.next_request(OperationState::ApplyStarted)?);
+            .next_operation(OperationState::Authorized)?
+            .or(self.journal.next_operation(OperationState::ApplyStarted)?);
         let Some(operation) = operation else {
             return Ok(None);
         };
-        self.run_operation_once_with_adapter_and_fault(&operation.operation_id, adapter, fault)
-            .await
+        self.run_operation_once_with_adapter_and_fault(
+            operation.request().operation_id.as_str(),
+            adapter,
+            fault,
+        )
+        .await
     }
 }
 
