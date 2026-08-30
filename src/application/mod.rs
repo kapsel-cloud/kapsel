@@ -486,8 +486,8 @@ impl Application {
             return Ok(SetDeploymentImageReceipt::NotFound);
         };
         if snapshot
-            .frozen_receipt()
-            .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
+            .frozen_receipt_path()
+            .is_some_and(|path| !self.persisted_receipt_path_is_allowed(path))
         {
             return Err(ApplicationError::OperationFailure);
         }
@@ -611,8 +611,8 @@ impl Application {
             return Ok(None);
         };
         if snapshot
-            .frozen_receipt()
-            .is_some_and(|receipt| !self.persisted_receipt_path_is_allowed(&receipt.path))
+            .frozen_receipt_path()
+            .is_some_and(|path| !self.persisted_receipt_path_is_allowed(path))
         {
             return Err(ApplicationError::OperationFailure);
         }

@@ -4,6 +4,7 @@
 
 use super::super::{
     validate_immutable_image, GatewayError, OperationResult, SetDeploymentImageRequest,
+    ValidatedRequest,
 };
 
 pub(crate) const KUBERNETES_FACT_BYTES_MAX: usize = 128;
@@ -18,6 +19,41 @@ impl TargetIdentity {
     pub(crate) fn validate(&self) -> Result<(), GatewayError> {
         validate_required_fact(&self.deployment_uid)?;
         validate_required_fact(&self.resource_version)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::gateway) struct ValidatedTargetIdentity {
+    deployment_uid: String,
+    resource_version: String,
+}
+
+impl TryFrom<TargetIdentity> for ValidatedTargetIdentity {
+    type Error = GatewayError;
+
+    fn try_from(target: TargetIdentity) -> Result<Self, Self::Error> {
+        target.validate()?;
+        Ok(Self {
+            deployment_uid: target.deployment_uid,
+            resource_version: target.resource_version,
+        })
+    }
+}
+
+impl ValidatedTargetIdentity {
+    pub(in crate::gateway) fn deployment_uid(&self) -> &str {
+        &self.deployment_uid
+    }
+
+    pub(in crate::gateway) fn resource_version(&self) -> &str {
+        &self.resource_version
+    }
+
+    pub(in crate::gateway) fn to_adapter_target(&self) -> TargetIdentity {
+        TargetIdentity {
+            deployment_uid: self.deployment_uid.clone(),
+            resource_version: self.resource_version.clone(),
+        }
     }
 }
 
@@ -129,14 +165,13 @@ impl ReceiverObservation {
                 || (replicas_available && self.available_condition()))
     }
 
-    pub(crate) fn requested_generation(
+    pub(in crate::gateway) fn requested_generation(
         &self,
-        request: &SetDeploymentImageRequest,
+        request: &ValidatedRequest,
         outcome: &ApplyOutcome,
     ) -> Option<i64> {
-        let operation_matches = self.operation_marker.as_deref()
-            == Some(request.operation_id.as_str())
-            && self.image.as_deref() == Some(request.immutable_image_digest.as_str());
+        let operation_matches = self.operation_marker.as_deref() == Some(request.operation_id())
+            && self.image.as_deref() == Some(request.immutable_image_digest());
         let receiver_uid_matches =
             outcome.deployment_uid.is_some() && self.deployment_uid == outcome.deployment_uid;
         outcome
@@ -148,14 +183,13 @@ impl ReceiverObservation {
             })
     }
 
-    pub(crate) fn classify(
+    pub(in crate::gateway) fn classify(
         &self,
-        request: &SetDeploymentImageRequest,
+        request: &ValidatedRequest,
         outcome: &ApplyOutcome,
     ) -> OperationResult {
-        let operation_matches = self.operation_marker.as_deref()
-            == Some(request.operation_id.as_str())
-            && self.image.as_deref() == Some(request.immutable_image_digest.as_str());
+        let operation_matches = self.operation_marker.as_deref() == Some(request.operation_id())
+            && self.image.as_deref() == Some(request.immutable_image_digest());
         let requested_generation = self.requested_generation(request, outcome);
         let Some(requested_generation) = requested_generation else {
             return OperationResult::Unknown;
@@ -232,6 +266,10 @@ mod tests {
         }
     }
 
+    fn validated(request: &SetDeploymentImageRequest) -> ValidatedRequest {
+        ValidatedRequest::try_from(request).unwrap()
+    }
+
     fn unknown_observation(request: &SetDeploymentImageRequest) -> ReceiverObservation {
         ReceiverObservation {
             deployment_uid: Some("deployment-uid-1".into()),
@@ -257,6 +295,25 @@ mod tests {
             deployment_uid: Some("deployment-uid-1".into()),
             resource_version: Some("resource-version-1".into()),
         }
+    }
+
+    #[test]
+    fn target_identity_validation_produces_proof_only_for_bounded_required_facts() {
+        assert!(ValidatedTargetIdentity::try_from(TargetIdentity {
+            deployment_uid: "deployment-uid-1".into(),
+            resource_version: "resource-version-1".into(),
+        })
+        .is_ok());
+        assert!(ValidatedTargetIdentity::try_from(TargetIdentity {
+            deployment_uid: String::new(),
+            resource_version: "resource-version-1".into(),
+        })
+        .is_err());
+        assert!(ValidatedTargetIdentity::try_from(TargetIdentity {
+            deployment_uid: "deployment-uid-1".into(),
+            resource_version: "x".repeat(KUBERNETES_FACT_BYTES_MAX + 1),
+        })
+        .is_err());
     }
 
     #[test]
@@ -310,23 +367,23 @@ mod tests {
         };
         let mut observation = unknown_observation(&request);
         assert_eq!(
-            observation.classify(&request, &outcome),
+            observation.classify(&validated(&request), &outcome),
             OperationResult::Unknown
         );
         assert_eq!(
-            observation.requested_generation(&request, &recovered_outcome),
+            observation.requested_generation(&validated(&request), &recovered_outcome),
             Some(2)
         );
         let mut mismatched_uid = observation.clone();
         mismatched_uid.deployment_uid = Some("replacement-uid".into());
         assert_eq!(
-            mismatched_uid.requested_generation(&request, &recovered_outcome),
+            mismatched_uid.requested_generation(&validated(&request), &recovered_outcome),
             None
         );
         let mut missing_stored_uid = recovered_outcome.clone();
         missing_stored_uid.deployment_uid = None;
         assert_eq!(
-            observation.requested_generation(&request, &missing_stored_uid),
+            observation.requested_generation(&validated(&request), &missing_stored_uid),
             None
         );
 
@@ -337,11 +394,11 @@ mod tests {
         observation.rollout_condition_status = Some("True".into());
         observation.rollout_condition_reason = Some("DifferentObservedReason".into());
         assert_eq!(
-            observation.classify(&request, &outcome),
+            observation.classify(&validated(&request), &outcome),
             OperationResult::Succeeded
         );
         assert_eq!(
-            observation.classify(&request, &recovered_outcome),
+            observation.classify(&validated(&request), &recovered_outcome),
             OperationResult::Succeeded
         );
 
@@ -349,11 +406,11 @@ mod tests {
         observation.rollout_condition_status = Some("False".into());
         observation.rollout_condition_reason = Some("ProgressDeadlineExceeded".into());
         assert_eq!(
-            observation.classify(&request, &outcome),
+            observation.classify(&validated(&request), &outcome),
             OperationResult::Failed
         );
         assert_eq!(
-            observation.classify(&request, &recovered_outcome),
+            observation.classify(&validated(&request), &recovered_outcome),
             OperationResult::Failed
         );
     }
@@ -367,7 +424,7 @@ mod tests {
         observation.rollout_condition_reason = Some("FailedCreate".into());
 
         assert_eq!(
-            observation.classify(&request, &apply_outcome()),
+            observation.classify(&validated(&request), &apply_outcome()),
             OperationResult::Unknown
         );
         assert!(!observation.has_terminal_rollout_signal(&request));

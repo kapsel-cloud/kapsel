@@ -14,7 +14,7 @@ pub(in crate::gateway) mod publication;
 use super::{
     kubernetes::facts::{ApplyOutcome, ReceiverObservation, KUBERNETES_FACT_BYTES_MAX},
     validate_dns_label, validate_dns_subdomain, validate_identity, validate_immutable_image,
-    InputField, OperationResult, SetDeploymentImageRequest, WRITE_STRATEGY,
+    InputField, OperationResult, SetDeploymentImageRequest, ValidatedRequest, WRITE_STRATEGY,
 };
 
 const STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-STATEMENT-V2\0";
@@ -389,7 +389,9 @@ impl ReceiptStatement {
         observation
             .validate()
             .map_err(|_| ReceiptError::InvalidValue)?;
-        if observation.classify(&self.request(), &self.apply_outcome()) != self.result {
+        let request =
+            ValidatedRequest::try_from(&self.request()).map_err(|_| ReceiptError::InvalidValue)?;
+        if observation.classify(&request, &self.apply_outcome()) != self.result {
             return Err(ReceiptError::InvalidValue);
         }
         Ok(())

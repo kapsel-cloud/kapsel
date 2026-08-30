@@ -4,4 +4,5 @@ pub(in crate::gateway) mod adapter;
 pub(in crate::gateway) mod facts;
 
 pub(crate) use adapter::KubernetesDeploymentImageAdapter;
+pub(in crate::gateway) use facts::ValidatedTargetIdentity;
 pub(crate) use facts::{ApplyOutcome, ReceiverObservation, TargetIdentity};

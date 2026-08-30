@@ -15,11 +15,11 @@ use std::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use super::{
-    authorization::VerifiedAuthorization,
-    kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity},
+    kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity, ValidatedTargetIdentity},
     receipt::{decode_frozen_receipt, publication, ReceiptStatement, RECEIPT_BYTES_MAX},
-    validate_identity, FrozenReceipt, GatewayError, InputField, OperationResult, OperationState,
-    ReceiptReference, SetDeploymentImageRequest, TargetRejection, ValidatedRequest, WRITE_STRATEGY,
+    validate_identity, AuthorizedRequest, FrozenReceipt, GatewayError, InputField, OperationResult,
+    OperationState, ReceiptReference, ReceiptToPrepare, SetDeploymentImageRequest, TargetRejection,
+    ValidatedRequest, WRITE_STRATEGY,
 };
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
@@ -40,6 +40,11 @@ pub(crate) struct Journal {
 
 pub(crate) struct WorkerLock<'a> {
     file: &'a File,
+}
+
+#[cfg(test)]
+pub(crate) struct OperationStateProjection {
+    pub(crate) state: OperationState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,7 +91,7 @@ struct ApplyResponseFacts {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::gateway) struct AttemptFacts {
-    target: TargetIdentity,
+    target: ValidatedTargetIdentity,
     response: Option<ApplyResponseFacts>,
 }
 
@@ -152,14 +157,20 @@ pub(crate) enum LoadedOperation {
     Finalized(FinalizedOperation),
 }
 
+impl RequestedOperation {
+    pub(in crate::gateway) fn request(&self) -> &ValidatedRequest {
+        &self.request.request
+    }
+}
+
 impl AuthorizedOperation {
-    pub(in crate::gateway) fn request(&self) -> &SetDeploymentImageRequest {
-        self.request.request.as_request()
+    pub(in crate::gateway) fn request(&self) -> &ValidatedRequest {
+        &self.request.request
     }
 }
 
 impl ApplyStartedOperation {
-    pub(in crate::gateway) fn request(&self) -> &SetDeploymentImageRequest {
+    pub(in crate::gateway) fn request(&self) -> &ValidatedRequest {
         self.authorized.request()
     }
 
@@ -175,9 +186,9 @@ impl ApplyStartedOperation {
                 .response
                 .as_ref()
                 .and_then(|response| response.requested_generation),
-            deployment_uid: Some(self.attempt.target.deployment_uid.clone()),
+            deployment_uid: Some(self.attempt.target.deployment_uid().to_owned()),
             resource_version: Some(self.attempt.response.as_ref().map_or_else(
-                || self.attempt.target.resource_version.clone(),
+                || self.attempt.target.resource_version().to_owned(),
                 |response| response.resource_version.clone(),
             )),
         }
@@ -186,7 +197,7 @@ impl ApplyStartedOperation {
 
 impl ReceiverObservedOperation {
     pub(in crate::gateway) fn operation_id(&self) -> &str {
-        self.apply_started.request().operation_id.as_str()
+        self.apply_started.request().operation_id()
     }
 
     pub(in crate::gateway) fn statement(&self) -> &ReceiptStatement {
@@ -226,10 +237,10 @@ impl LoadedOperation {
         }
     }
 
-    pub(crate) fn request(&self) -> &SetDeploymentImageRequest {
+    pub(in crate::gateway) fn request(&self) -> &ValidatedRequest {
         match self {
-            Self::Requested(value) => value.request.request.as_request(),
-            Self::Authorized(value) => value.request.request.as_request(),
+            Self::Requested(value) => &value.request.request,
+            Self::Authorized(value) => &value.request.request,
             Self::NotAttempted(value) => value.authorized.request(),
             Self::ApplyStarted(value) => value.request(),
             Self::ReceiverObserved(value) => value.apply_started.request(),
@@ -283,13 +294,17 @@ impl LoadedOperation {
         }
     }
 
-    pub(crate) fn frozen_receipt(&self) -> Option<&FrozenReceipt> {
+    pub(in crate::gateway) fn frozen_receipt(&self) -> Option<&FrozenReceipt> {
         match self {
             Self::ReceiptPrepared(value) => Some(value.receipt()),
             Self::ReceiptWritten(value) => Some(value.receipt()),
             Self::Finalized(value) => Some(value.receipt()),
             _ => None,
         }
+    }
+
+    pub(crate) fn frozen_receipt_path(&self) -> Option<&Path> {
+        self.frozen_receipt().map(|receipt| receipt.path.as_path())
     }
 
     pub(crate) fn receipt_reference(&self) -> Option<ReceiptReference> {
@@ -316,10 +331,10 @@ struct SnapshotRow {
     authorization_signer_key_id: Option<String>,
     authorization_grant_digest: Option<String>,
     write_strategy: Option<String>,
-    apply_attempted: bool,
+    apply_attempted: i64,
     target_uid: Option<String>,
     target_resource_version: Option<String>,
-    apply_accepted: Option<bool>,
+    apply_accepted: Option<i64>,
     requested_generation: Option<i64>,
     apply_resource_version: Option<String>,
     receiver_facts_present: bool,
@@ -339,6 +354,8 @@ impl SnapshotRow {
         statement: Option<ReceiptStatement>,
     ) -> Result<LoadedOperation, GatewayError> {
         let state = OperationState::from_sql(&self.state)?;
+        let apply_attempted = decode_sql_bool(self.apply_attempted)?;
+        let apply_accepted = self.apply_accepted.map(decode_sql_bool).transpose()?;
         let request = RequestFacts {
             request: ValidatedRequest::try_from(&SetDeploymentImageRequest {
                 operation_id: self.operation_id,
@@ -367,7 +384,7 @@ impl SnapshotRow {
             self.write_strategy,
             self.target_uid,
             self.target_resource_version,
-            self.apply_accepted,
+            apply_accepted,
             self.requested_generation,
             self.apply_resource_version,
         )?;
@@ -386,7 +403,7 @@ impl SnapshotRow {
 
         match state {
             OperationState::Requested
-                if !self.apply_attempted
+                if !apply_attempted
                     && authorization.is_none()
                     && rejection.is_none()
                     && attempt.is_none()
@@ -398,7 +415,7 @@ impl SnapshotRow {
                 Ok(LoadedOperation::Requested(RequestedOperation { request }))
             },
             OperationState::Authorized
-                if !self.apply_attempted
+                if !apply_attempted
                     && authorization.is_some()
                     && rejection.is_none()
                     && attempt.is_none()
@@ -413,7 +430,7 @@ impl SnapshotRow {
                 }))
             },
             OperationState::NotAttempted
-                if !self.apply_attempted
+                if !apply_attempted
                     && authorization.is_some()
                     && rejection.is_some()
                     && attempt.is_none()
@@ -433,7 +450,7 @@ impl SnapshotRow {
             OperationState::ApplyStarted
                 if authorization.is_some()
                     && rejection.is_none()
-                    && self.apply_attempted
+                    && apply_attempted
                     && attempt.is_some()
                     && result.is_none()
                     && receiver.is_none()
@@ -451,7 +468,7 @@ impl SnapshotRow {
             OperationState::ReceiverObserved
                 if authorization.is_some()
                     && rejection.is_none()
-                    && self.apply_attempted
+                    && apply_attempted
                     && attempt.is_some()
                     && result.is_some()
                     && receiver.is_some()
@@ -474,7 +491,7 @@ impl SnapshotRow {
             OperationState::ReceiptPrepared
                 if authorization.is_some()
                     && rejection.is_none()
-                    && self.apply_attempted
+                    && apply_attempted
                     && attempt.is_some()
                     && result.is_some()
                     && receiver.is_some()
@@ -498,7 +515,7 @@ impl SnapshotRow {
             OperationState::ReceiptWritten
                 if authorization.is_some()
                     && rejection.is_none()
-                    && self.apply_attempted
+                    && apply_attempted
                     && attempt.is_some()
                     && result.is_some()
                     && receiver.is_some()
@@ -524,7 +541,7 @@ impl SnapshotRow {
             OperationState::Finalized
                 if authorization.is_some()
                     && rejection.is_none()
-                    && self.apply_attempted
+                    && apply_attempted
                     && attempt.is_some()
                     && result.is_some()
                     && receiver.is_some()
@@ -571,14 +588,13 @@ fn validate_snapshot_attempt_facts(
         (Some(strategy), Some(deployment_uid), Some(resource_version))
             if strategy == WRITE_STRATEGY =>
         {
-            let target = TargetIdentity {
-                deployment_uid,
-                resource_version,
-            };
-            target
-                .validate()
-                .map_err(|_| GatewayError::InvalidPersistedState)?;
-            Some(target)
+            Some(
+                ValidatedTargetIdentity::try_from(TargetIdentity {
+                    deployment_uid,
+                    resource_version,
+                })
+                .map_err(|_| GatewayError::InvalidPersistedState)?,
+            )
         },
         (None, None, None) => None,
         _ => return Err(GatewayError::InvalidPersistedState),
@@ -600,7 +616,7 @@ fn validate_snapshot_attempt_facts(
             ApplyOutcome {
                 accepted,
                 requested_generation,
-                deployment_uid: Some(target.deployment_uid.clone()),
+                deployment_uid: Some(target.deployment_uid().to_owned()),
                 resource_version: Some(resource_version.clone()),
             }
             .validate()
@@ -715,41 +731,37 @@ impl Journal {
 
     pub(in crate::gateway) fn existing_submission(
         &self,
-        request: &ValidatedRequest,
-        authorization: &VerifiedAuthorization,
+        authorized: &AuthorizedRequest,
     ) -> Result<Option<OperationState>, GatewayError> {
-        existing_submission_on(&self.connection, request, authorization)
+        existing_submission_on(&self.connection, authorized)
     }
 
     pub(in crate::gateway) fn authorized_operation(
         &self,
-        request: &ValidatedRequest,
-        authorization: &VerifiedAuthorization,
+        authorized: &AuthorizedRequest,
     ) -> Result<Option<LoadedOperation>, GatewayError> {
-        self.authorized_operation_with(request, authorization, || {})
+        self.authorized_operation_with(authorized, || {})
     }
 
     fn authorized_operation_with(
         &self,
-        request: &ValidatedRequest,
-        authorization: &VerifiedAuthorization,
+        authorized: &AuthorizedRequest,
         after_ownership_read: impl FnOnce(),
     ) -> Result<Option<LoadedOperation>, GatewayError> {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
-        if existing_submission_on(&transaction, request, authorization)?.is_none() {
+        if existing_submission_on(&transaction, authorized)?.is_none() {
             return Ok(None);
         }
         after_ownership_read();
-        loaded_operation_on(&transaction, request.operation_id())
+        loaded_operation_on(&transaction, authorized.request().operation_id())
     }
 
     pub(in crate::gateway) fn insert_requested(
         &self,
         request: &ValidatedRequest,
     ) -> Result<(), GatewayError> {
-        let request = request.as_request();
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
@@ -770,11 +782,11 @@ impl Journal {
                     immutable_image_digest, state
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    request.operation_id,
-                    request.namespace,
-                    request.deployment,
-                    request.container,
-                    request.immutable_image_digest,
+                    request.operation_id(),
+                    request.namespace(),
+                    request.deployment(),
+                    request.container(),
+                    request.immutable_image_digest(),
                     OperationState::Requested.as_sql(),
                 ],
             )
@@ -784,10 +796,14 @@ impl Journal {
 
     pub(in crate::gateway) fn mark_authorized(
         &self,
-        request: &ValidatedRequest,
-        authorization: &VerifiedAuthorization,
+        operation: &RequestedOperation,
+        authorized: &AuthorizedRequest,
     ) -> Result<(), GatewayError> {
-        let operation_id = request.operation_id();
+        if operation.request() != authorized.request() {
+            return Err(GatewayError::InvalidTransition);
+        }
+        let operation_id = operation.request().operation_id();
+        let authorization = authorized.authorization();
         let changed = self
             .connection
             .execute(
@@ -873,8 +889,9 @@ impl Journal {
     pub(in crate::gateway) fn prepare_receipt(
         &self,
         operation: &ReceiverObservedOperation,
-        receipt: &FrozenReceipt,
+        candidate: &ReceiptToPrepare,
     ) -> Result<(), GatewayError> {
+        let receipt = candidate.receipt();
         if receipt.operation_id != operation.operation_id() {
             return Err(GatewayError::InvalidTransition);
         }
@@ -976,7 +993,25 @@ impl Journal {
             .map_err(GatewayError::Database)
     }
 
-    pub(in crate::gateway) fn next_operation(
+    pub(in crate::gateway) fn next_executable_operation(
+        &self,
+    ) -> Result<Option<LoadedOperation>, GatewayError> {
+        let authorized = self.next_operation(OperationState::Authorized)?;
+        let apply_started = self.next_operation(OperationState::ApplyStarted)?;
+        Ok(authorized.or(apply_started))
+    }
+
+    #[cfg(test)]
+    pub(in crate::gateway) fn next_receipt_finalization_operation(
+        &self,
+    ) -> Result<Option<LoadedOperation>, GatewayError> {
+        let receiver_observed = self.next_operation(OperationState::ReceiverObserved)?;
+        let receipt_prepared = self.next_operation(OperationState::ReceiptPrepared)?;
+        let receipt_written = self.next_operation(OperationState::ReceiptWritten)?;
+        Ok(receiver_observed.or(receipt_prepared).or(receipt_written))
+    }
+
+    fn next_operation(
         &self,
         state: OperationState,
     ) -> Result<Option<LoadedOperation>, GatewayError> {
@@ -1017,11 +1052,23 @@ impl Journal {
         loaded_operation_on(&transaction, operation_id)
     }
 
+    #[cfg(test)]
+    pub(in crate::gateway) fn operation_snapshot(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<OperationStateProjection>, GatewayError> {
+        self.operation(operation_id).map(|operation| {
+            operation.map(|operation| OperationStateProjection {
+                state: operation.state(),
+            })
+        })
+    }
+
     pub(in crate::gateway) fn defer_target_retry(
         &self,
         operation: &AuthorizedOperation,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request.request.operation_id();
+        let operation_id = operation.request().operation_id();
         let changed = self
             .connection
             .execute(
@@ -1040,7 +1087,7 @@ impl Journal {
         operation: &AuthorizedOperation,
         rejection: TargetRejection,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request.request.operation_id();
+        let operation_id = operation.request().operation_id();
         let changed = self
             .connection
             .execute(
@@ -1061,11 +1108,9 @@ impl Journal {
     pub(in crate::gateway) fn mark_apply_started(
         &self,
         operation: &AuthorizedOperation,
-        write_strategy: &str,
-        target: &TargetIdentity,
+        target: &ValidatedTargetIdentity,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request.request.operation_id();
-        target.validate()?;
+        let operation_id = operation.request().operation_id();
         let changed = self
             .connection
             .execute(
@@ -1075,9 +1120,9 @@ impl Journal {
                  WHERE operation_id = ?5 AND state = ?6",
                 params![
                     OperationState::ApplyStarted.as_sql(),
-                    write_strategy,
-                    target.deployment_uid,
-                    target.resource_version,
+                    WRITE_STRATEGY,
+                    target.deployment_uid(),
+                    target.resource_version(),
                     operation_id,
                     OperationState::Authorized.as_sql(),
                 ],
@@ -1091,7 +1136,7 @@ impl Journal {
         operation: &ApplyStartedOperation,
         outcome: &ApplyOutcome,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request().operation_id.as_str();
+        let operation_id = operation.request().operation_id();
         outcome.validate()?;
         let target_uid = self
             .connection
@@ -1168,7 +1213,7 @@ impl Journal {
                     observation.rollout_condition_type,
                     observation.rollout_condition_status,
                     observation.rollout_condition_reason,
-                    request.operation_id,
+                    request.operation_id(),
                     OperationState::ApplyStarted.as_sql(),
                 ],
             )
@@ -1179,10 +1224,10 @@ impl Journal {
 
 fn existing_submission_on(
     connection: &Connection,
-    request: &ValidatedRequest,
-    authorization: &VerifiedAuthorization,
+    authorized: &AuthorizedRequest,
 ) -> Result<Option<OperationState>, GatewayError> {
-    let request = request.as_request();
+    let request = authorized.request();
+    let authorization = authorized.authorization();
     let existing = connection
         .query_row(
             "SELECT namespace, deployment, container, immutable_image_digest,
@@ -1190,7 +1235,7 @@ fn existing_submission_on(
                     authorization_grant_digest, state
              FROM kubernetes_image_operations
              WHERE operation_id = ?1",
-            [&request.operation_id],
+            [request.operation_id()],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1219,10 +1264,10 @@ fn existing_submission_on(
     else {
         return Ok(None);
     };
-    if namespace != request.namespace
-        || deployment != request.deployment
-        || container != request.container
-        || image != request.immutable_image_digest
+    if namespace != request.namespace()
+        || deployment != request.deployment()
+        || container != request.container()
+        || image != request.immutable_image_digest()
     {
         return Err(GatewayError::OperationIdentityConflict);
     }
@@ -1235,7 +1280,7 @@ fn existing_submission_on(
     {
         return Err(GatewayError::OperationIdentityConflict);
     }
-    let loaded = loaded_operation_on(connection, &request.operation_id)?
+    let loaded = loaded_operation_on(connection, request.operation_id())?
         .ok_or(GatewayError::InvalidPersistedState)?;
     if loaded.state() != state {
         return Err(GatewayError::InvalidPersistedState);
@@ -1344,6 +1389,14 @@ fn loaded_operation_on(
     };
     let statement = receipt_statement_on(connection, operation_id)?;
     row.into_operation(statement).map(Some)
+}
+
+fn decode_sql_bool(value: i64) -> Result<bool, GatewayError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(GatewayError::InvalidPersistedState),
+    }
 }
 
 fn validate_snapshot_authorization(
@@ -1711,7 +1764,7 @@ mod tests {
                     | ("finalized", LoadedOperation::Finalized(_))
             );
             assert!(exact_variant, "{state}");
-            assert_eq!(operation.request().operation_id, "snapshot-op");
+            assert_eq!(operation.request().operation_id(), "snapshot-op");
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -1876,6 +1929,100 @@ mod tests {
                 .unwrap();
 
             assert!(journal.operation("snapshot-op").is_err(), "{state}");
+            drop(journal);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn queue_selection_rejects_malformed_later_phase_rows_before_advancing() {
+        let (executable_journal, root) = journal("malformed-executable-queue");
+        insert_snapshot_row(&executable_journal, "apply_started", None, None, false);
+        executable_journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations
+                 SET operation_id = 'apply-op', target_uid = NULL
+                 WHERE operation_id = 'snapshot-op'",
+                [],
+            )
+            .unwrap();
+        insert_snapshot_row(&executable_journal, "authorized", None, None, false);
+
+        assert!(executable_journal.next_executable_operation().is_err());
+        drop(executable_journal);
+        fs::remove_dir_all(root).unwrap();
+
+        let (journal, root) = journal("malformed-receipt-queue");
+        insert_snapshot_row(&journal, "receipt_prepared", Some("SUCCEEDED"), None, true);
+        journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations
+                 SET operation_id = 'prepared-op', receipt_path = NULL
+                 WHERE operation_id = 'snapshot-op'",
+                [],
+            )
+            .unwrap();
+        insert_snapshot_row(
+            &journal,
+            "receiver_observed",
+            Some("SUCCEEDED"),
+            None,
+            false,
+        );
+
+        assert!(journal.next_receipt_finalization_operation().is_err());
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persisted_operation_decoder_rejects_noncanonical_write_strategy() {
+        let (journal, root) = journal("noncanonical-write-strategy");
+        insert_snapshot_row(&journal, "apply_started", None, None, false);
+        journal
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations SET write_strategy = 'banana'
+                 WHERE operation_id = ?1",
+                ["snapshot-op"],
+            )
+            .unwrap();
+
+        assert!(journal.operation("snapshot-op").is_err());
+        drop(journal);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn persisted_operation_decoder_rejects_nonbinary_boolean_columns() {
+        for (name, assignment) in [
+            ("attempt-positive", "apply_attempted = 2"),
+            ("attempt-negative", "apply_attempted = -1"),
+            (
+                "accepted-positive",
+                "apply_accepted = 2, apply_resource_version = 'apply-rv'",
+            ),
+            (
+                "accepted-negative",
+                "apply_accepted = -1, apply_resource_version = 'apply-rv'",
+            ),
+        ] {
+            let (journal, root) = journal(name);
+            insert_snapshot_row(&journal, "apply_started", None, None, false);
+            journal
+                .connection
+                .execute(
+                    &format!(
+                        "UPDATE kubernetes_image_operations SET {assignment}
+                         WHERE operation_id = ?1"
+                    ),
+                    ["snapshot-op"],
+                )
+                .unwrap();
+
+            assert!(journal.operation("snapshot-op").is_err(), "{name}");
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -2142,12 +2289,14 @@ mod tests {
             },
         )
         .unwrap();
-        let request = ValidatedRequest::try_from(&request).unwrap();
-        journal.insert_requested(&request).unwrap();
+        let authorized =
+            AuthorizedRequest::bind(ValidatedRequest::try_from(&request).unwrap(), verified)
+                .unwrap();
+        journal.insert_requested(authorized.request()).unwrap();
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
 
         let snapshot = journal
-            .authorized_operation_with(&request, &verified, || {
+            .authorized_operation_with(&authorized, || {
                 let result = other.connection.execute(
                     "UPDATE kubernetes_image_operations
                      SET state = 'authorized', authorization_id = 'other-auth',
@@ -2228,11 +2377,13 @@ mod tests {
                 ],
             )
             .unwrap();
-        let request = ValidatedRequest::try_from(&request).unwrap();
+        let authorized =
+            AuthorizedRequest::bind(ValidatedRequest::try_from(&request).unwrap(), verified)
+                .unwrap();
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
 
         let snapshot = journal
-            .authorized_operation_with(&request, &verified, || {
+            .authorized_operation_with(&authorized, || {
                 let result = other.connection.execute(
                     "UPDATE kubernetes_image_operations
                      SET authorization_id = 'other-auth', receipt_bytes = ?1

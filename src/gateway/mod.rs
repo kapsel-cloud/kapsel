@@ -17,19 +17,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use authorization::VerifiedAuthorization;
 pub(crate) use authorization::{
     sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
 pub use authorization::{AuthorizationTrust, ExactAuthorization};
 use journal::Journal;
-use kubernetes::{
-    ApplyOutcome, KubernetesDeploymentImageAdapter, ReceiverObservation, TargetIdentity,
-};
 #[cfg(test)]
 pub(crate) use kubernetes::{
     ApplyOutcome as TestApplyOutcome,
     KubernetesDeploymentImageAdapter as TestKubernetesDeploymentImageAdapter,
     ReceiverObservation as TestReceiverObservation, TargetIdentity as TestTargetIdentity,
+};
+use kubernetes::{
+    ApplyOutcome, KubernetesDeploymentImageAdapter, ReceiverObservation, TargetIdentity,
+    ValidatedTargetIdentity,
 };
 pub(crate) use receipt::publication::validate_private_directory;
 pub(crate) use receipt::validate_key_id;
@@ -54,35 +56,106 @@ pub struct SetDeploymentImageRequest {
     pub immutable_image_digest: String,
 }
 
-impl SetDeploymentImageRequest {
-    fn validate(&self) -> Result<(), GatewayError> {
-        validate_identity(InputField::OperationId, &self.operation_id)?;
-        validate_dns_label(InputField::Namespace, &self.namespace)?;
-        validate_dns_subdomain(InputField::Deployment, &self.deployment)?;
-        validate_dns_label(InputField::Container, &self.container)?;
-        validate_immutable_image(&self.immutable_image_digest)
-    }
-}
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OperationId(String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::gateway) struct ValidatedRequest(SetDeploymentImageRequest);
+struct Namespace(String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DeploymentName(String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ContainerName(String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ImmutableImageDigest(String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::gateway) struct ValidatedRequest {
+    operation_id: OperationId,
+    namespace: Namespace,
+    deployment: DeploymentName,
+    container: ContainerName,
+    immutable_image: ImmutableImageDigest,
+}
 
 impl TryFrom<&SetDeploymentImageRequest> for ValidatedRequest {
     type Error = GatewayError;
 
     fn try_from(request: &SetDeploymentImageRequest) -> Result<Self, Self::Error> {
-        request.validate()?;
-        Ok(Self(request.clone()))
+        validate_identity(InputField::OperationId, &request.operation_id)?;
+        validate_dns_label(InputField::Namespace, &request.namespace)?;
+        validate_dns_subdomain(InputField::Deployment, &request.deployment)?;
+        validate_dns_label(InputField::Container, &request.container)?;
+        validate_immutable_image(&request.immutable_image_digest)?;
+        Ok(Self {
+            operation_id: OperationId(request.operation_id.clone()),
+            namespace: Namespace(request.namespace.clone()),
+            deployment: DeploymentName(request.deployment.clone()),
+            container: ContainerName(request.container.clone()),
+            immutable_image: ImmutableImageDigest(request.immutable_image_digest.clone()),
+        })
     }
 }
 
 impl ValidatedRequest {
-    pub(in crate::gateway) fn as_request(&self) -> &SetDeploymentImageRequest {
-        &self.0
+    pub(in crate::gateway) fn operation_id(&self) -> &str {
+        &self.operation_id.0
     }
 
-    pub(in crate::gateway) fn operation_id(&self) -> &str {
-        &self.0.operation_id
+    pub(in crate::gateway) fn namespace(&self) -> &str {
+        &self.namespace.0
+    }
+
+    pub(in crate::gateway) fn deployment(&self) -> &str {
+        &self.deployment.0
+    }
+
+    pub(in crate::gateway) fn container(&self) -> &str {
+        &self.container.0
+    }
+
+    pub(in crate::gateway) fn immutable_image_digest(&self) -> &str {
+        &self.immutable_image.0
+    }
+
+    fn to_adapter_request(&self) -> SetDeploymentImageRequest {
+        SetDeploymentImageRequest {
+            operation_id: self.operation_id().to_owned(),
+            namespace: self.namespace().to_owned(),
+            deployment: self.deployment().to_owned(),
+            container: self.container().to_owned(),
+            immutable_image_digest: self.immutable_image_digest().to_owned(),
+        }
+    }
+}
+
+pub(in crate::gateway) struct AuthorizedRequest {
+    request: ValidatedRequest,
+    authorization: VerifiedAuthorization,
+}
+
+impl AuthorizedRequest {
+    fn bind(
+        request: ValidatedRequest,
+        authorization: VerifiedAuthorization,
+    ) -> Result<Self, GatewayError> {
+        if !authorization_matches(&authorization.authorization, &request) {
+            return Err(GatewayError::AuthorizationMismatch);
+        }
+        Ok(Self {
+            request,
+            authorization,
+        })
+    }
+
+    pub(in crate::gateway) fn request(&self) -> &ValidatedRequest {
+        &self.request
+    }
+
+    pub(in crate::gateway) fn authorization(&self) -> &VerifiedAuthorization {
+        &self.authorization
     }
 }
 
@@ -205,12 +278,22 @@ pub struct ReceiptReference {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FrozenReceipt {
-    pub(crate) operation_id: String,
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) digest: String,
-    pub(crate) path: PathBuf,
-    pub(crate) key_id: String,
+pub(in crate::gateway) struct FrozenReceipt {
+    operation_id: String,
+    bytes: Vec<u8>,
+    digest: String,
+    path: PathBuf,
+    key_id: String,
+}
+
+pub(in crate::gateway) struct ReceiptToPrepare {
+    receipt: FrozenReceipt,
+}
+
+impl ReceiptToPrepare {
+    pub(in crate::gateway) fn receipt(&self) -> &FrozenReceipt {
+        &self.receipt
+    }
 }
 
 /// SQLite-backed entry point for the one operation.
@@ -249,12 +332,10 @@ impl Gateway {
     ) -> Result<SubmissionResult, GatewayError> {
         let request = ValidatedRequest::try_from(request)?;
         let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
-        if !authorization_matches(&verified.authorization, request.as_request()) {
-            return Err(GatewayError::AuthorizationMismatch);
-        }
-        if let Some(existing) = self.journal.existing_submission(&request, &verified)? {
+        let authorized = AuthorizedRequest::bind(request, verified)?;
+        if let Some(existing) = self.journal.existing_submission(&authorized)? {
             if existing == OperationState::Requested {
-                self.journal.mark_authorized(&request, &verified)?;
+                self.mark_requested_authorized(&authorized)?;
                 if fault == Some(FaultPoint::AuthorizedCommitted) {
                     return Err(GatewayError::InjectedFault);
                 }
@@ -262,15 +343,29 @@ impl Gateway {
             }
             return Ok(SubmissionResult::Existing(existing));
         }
-        self.journal.insert_requested(&request)?;
+        self.journal.insert_requested(authorized.request())?;
         if fault == Some(FaultPoint::RequestedCommitted) {
             return Err(GatewayError::InjectedFault);
         }
-        self.journal.mark_authorized(&request, &verified)?;
+        self.mark_requested_authorized(&authorized)?;
         if fault == Some(FaultPoint::AuthorizedCommitted) {
             return Err(GatewayError::InjectedFault);
         }
         Ok(SubmissionResult::Created)
+    }
+
+    fn mark_requested_authorized(
+        &self,
+        authorized: &AuthorizedRequest,
+    ) -> Result<(), GatewayError> {
+        let operation = self
+            .journal
+            .operation(authorized.request().operation_id())?
+            .ok_or(GatewayError::InvalidPersistedState)?;
+        let journal::LoadedOperation::Requested(requested) = operation else {
+            return Err(GatewayError::InvalidTransition);
+        };
+        self.journal.mark_authorized(&requested, authorized)
     }
 
     #[cfg(test)]
@@ -324,10 +419,8 @@ impl Gateway {
     ) -> Result<Option<journal::LoadedOperation>, GatewayError> {
         let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
         let request = ValidatedRequest::try_from(request)?;
-        if !authorization_matches(&verified.authorization, request.as_request()) {
-            return Err(GatewayError::AuthorizationMismatch);
-        }
-        self.journal.authorized_operation(&request, &verified)
+        let authorized = AuthorizedRequest::bind(request, verified)?;
+        self.journal.authorized_operation(&authorized)
     }
 
     /// Reads a frozen receiver result when observation has completed.
@@ -388,20 +481,12 @@ impl Gateway {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        let operation = self
-            .journal
-            .next_operation(OperationState::ReceiverObserved)?
-            .or(self
-                .journal
-                .next_operation(OperationState::ReceiptPrepared)?)
-            .or(self
-                .journal
-                .next_operation(OperationState::ReceiptWritten)?);
+        let operation = self.journal.next_receipt_finalization_operation()?;
         let Some(operation) = operation else {
             return Ok(None);
         };
         self.finalize_locked_operation_receipt_once(
-            operation.request().operation_id.as_str(),
+            operation.request().operation_id(),
             settings,
             fault,
         )
@@ -472,7 +557,7 @@ impl Gateway {
     fn build_receipt(
         operation: &journal::ReceiverObservedOperation,
         settings: &ReceiptSettings<'_>,
-    ) -> Result<FrozenReceipt, GatewayError> {
+    ) -> Result<ReceiptToPrepare, GatewayError> {
         let operation_id = operation.operation_id();
         let bytes = sign_statement(
             operation.statement(),
@@ -487,12 +572,14 @@ impl Gateway {
         if path.to_str().is_none() {
             return Err(GatewayError::ReceiptPublication);
         }
-        Ok(FrozenReceipt {
-            operation_id: operation_id.to_owned(),
-            bytes,
-            digest,
-            path,
-            key_id: settings.key_id.to_owned(),
+        Ok(ReceiptToPrepare {
+            receipt: FrozenReceipt {
+                operation_id: operation_id.to_owned(),
+                bytes,
+                digest,
+                path,
+                key_id: settings.key_id.to_owned(),
+            },
         })
     }
 
@@ -569,7 +656,8 @@ impl Gateway {
         };
         match operation {
             journal::LoadedOperation::Authorized(operation) => {
-                let target = match adapter.identify(operation.request()).await {
+                let adapter_request = operation.request().to_adapter_request();
+                let target = match adapter.identify(&adapter_request).await {
                     Ok(target) => target,
                     Err(TargetReadError::Transient) => {
                         self.journal.defer_target_retry(&operation)?;
@@ -586,8 +674,9 @@ impl Gateway {
                 if fault == Some(FaultPoint::TargetObserved) {
                     return Err(GatewayError::InjectedFault);
                 }
-                self.journal
-                    .mark_apply_started(&operation, WRITE_STRATEGY, &target)?;
+                let target = ValidatedTargetIdentity::try_from(target)
+                    .map_err(|_| GatewayError::InvalidKubernetesFact)?;
+                self.journal.mark_apply_started(&operation, &target)?;
                 if fault == Some(FaultPoint::ApplyStartedCommitted) {
                     return Err(GatewayError::InjectedFault);
                 }
@@ -596,8 +685,9 @@ impl Gateway {
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
+                let adapter_target = target.to_adapter_target();
                 let outcome = adapter
-                    .apply(started.request(), &target)
+                    .apply(&adapter_request, &adapter_target)
                     .await
                     .map_err(|()| GatewayError::KubernetesApply)?;
                 #[cfg(feature = "demo-harness")]
@@ -616,7 +706,7 @@ impl Gateway {
                     return Err(GatewayError::InvalidPersistedState);
                 };
                 let observation = adapter
-                    .observe(started.request())
+                    .observe(&adapter_request)
                     .await
                     .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
                 if fault == Some(FaultPoint::ReceiverRead) {
@@ -630,8 +720,9 @@ impl Gateway {
             },
             // Loaded ApplyStarted is recovery-only here. It has no path to adapter.apply.
             journal::LoadedOperation::ApplyStarted(operation) => {
+                let adapter_request = operation.request().to_adapter_request();
                 let observation = adapter
-                    .observe(operation.request())
+                    .observe(&adapter_request)
                     .await
                     .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
                 self.journal.freeze_observation(&operation, &observation)?;
@@ -658,15 +749,12 @@ impl Gateway {
         adapter: &mut A,
         fault: Option<FaultPoint>,
     ) -> Result<Option<OperationState>, GatewayError> {
-        let operation = self
-            .journal
-            .next_operation(OperationState::Authorized)?
-            .or(self.journal.next_operation(OperationState::ApplyStarted)?);
+        let operation = self.journal.next_executable_operation()?;
         let Some(operation) = operation else {
             return Ok(None);
         };
         self.run_operation_once_with_adapter_and_fault(
-            operation.request().operation_id.as_str(),
+            operation.request().operation_id(),
             adapter,
             fault,
         )
@@ -844,15 +932,12 @@ pub(crate) fn validate_immutable_image(value: &str) -> Result<(), GatewayError> 
     }
 }
 
-fn authorization_matches(
-    authorization: &ExactAuthorization,
-    request: &SetDeploymentImageRequest,
-) -> bool {
-    authorization.operation_id == request.operation_id
-        && authorization.namespace == request.namespace
-        && authorization.deployment == request.deployment
-        && authorization.container == request.container
-        && authorization.immutable_image_digest == request.immutable_image_digest
+fn authorization_matches(authorization: &ExactAuthorization, request: &ValidatedRequest) -> bool {
+    authorization.operation_id == request.operation_id()
+        && authorization.namespace == request.namespace()
+        && authorization.deployment == request.deployment()
+        && authorization.container == request.container()
+        && authorization.immutable_image_digest == request.immutable_image_digest()
 }
 
 #[cfg(test)]

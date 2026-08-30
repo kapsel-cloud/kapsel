@@ -1509,10 +1509,10 @@ fn assert_decoded_operation_state(gateway: &Gateway, state: &str) {
     assert_eq!(
         gateway
             .journal
-            .operation(OPERATION_ID)
+            .operation_snapshot(OPERATION_ID)
             .unwrap()
             .unwrap()
-            .state(),
+            .state,
         operation_state(state)
     );
 }

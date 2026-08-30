@@ -303,6 +303,7 @@ mod tests {
     use tower_test::mock;
 
     use super::*;
+    use crate::gateway::ValidatedRequest;
 
     fn request() -> SetDeploymentImageRequest {
         SetDeploymentImageRequest {
@@ -743,7 +744,7 @@ mod tests {
 
         assert_eq!(observation.unavailable_replicas, Some(0));
         assert_eq!(
-            observation.classify(&request, &outcome),
+            observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
             crate::OperationResult::Succeeded
         );
         responder.await.unwrap();
@@ -798,7 +799,7 @@ mod tests {
 
         assert!(!observation.has_terminal_rollout_signal(&request));
         assert_eq!(
-            observation.classify(&request, &outcome),
+            observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
             crate::OperationResult::Unknown
         );
         responder.await.unwrap();

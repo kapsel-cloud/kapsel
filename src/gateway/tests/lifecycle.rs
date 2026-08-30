@@ -17,6 +17,10 @@
                 gateway.get(&request.operation_id).unwrap(),
                 Some(OperationState::Requested)
             );
+            assert!(matches!(
+                gateway.journal.operation(&request.operation_id).unwrap(),
+                Some(journal::LoadedOperation::Requested(_))
+            ));
         }
         let gateway = Gateway::open_for_test(&path).unwrap();
         let mut mismatch = authorization.clone();
@@ -79,6 +83,130 @@
     }
 
     #[tokio::test]
+    async fn production_writers_reload_as_their_exact_next_phase() {
+        let path = database_path("writer-decoder-symmetry");
+        let output = path.parent().unwrap().join("receipts");
+        private_directory(&output);
+        let output = fs::canonicalize(output).unwrap();
+        let request = request();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway
+            .submit_exact_for_test(&request, &authorization(&request))
+            .unwrap();
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::Authorized(_))
+        ));
+
+        let mut adapter = failed_adapter(&path, &request);
+        assert!(matches!(
+            gateway
+                .run_operation_once_with_adapter_and_fault(
+                    &request.operation_id,
+                    &mut adapter,
+                    Some(FaultPoint::ApplyStartedCommitted),
+                )
+                .await,
+            Err(GatewayError::InjectedFault)
+        ));
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::ApplyStarted(_))
+        ));
+        assert_eq!(adapter.apply_calls, 0);
+
+        assert_eq!(
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await
+                .unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::ReceiverObserved(_))
+        ));
+        assert_eq!(adapter.apply_calls, 0);
+
+        let settings = ReceiptSettings {
+            signing_seed: &[51_u8; 32],
+            key_id: "symmetry-receipt-key",
+            output_directory: &output,
+        };
+        assert!(matches!(
+            gateway.finalize_operation_receipt_once_with_fault(
+                &request.operation_id,
+                &settings,
+                Some(FaultPoint::ReceiptPreparedCommitted),
+            ),
+            Err(GatewayError::InjectedFault)
+        ));
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::ReceiptPrepared(_))
+        ));
+
+        assert!(matches!(
+            gateway.finalize_operation_receipt_once_with_fault(
+                &request.operation_id,
+                &settings,
+                Some(FaultPoint::ReceiptWrittenCommitted),
+            ),
+            Err(GatewayError::InjectedFault)
+        ));
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::ReceiptWritten(_))
+        ));
+
+        assert!(matches!(
+            gateway.finalize_operation_receipt_once_with_fault(
+                &request.operation_id,
+                &settings,
+                Some(FaultPoint::FinalizedCommitted),
+            ),
+            Err(GatewayError::InjectedFault)
+        ));
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::Finalized(_))
+        ));
+
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn apply_outcome_writer_reloads_as_apply_started_with_complete_response_facts() {
+        let path = database_path("apply-outcome-writer-decoder-symmetry");
+        let request = request();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway
+            .submit_exact_for_test(&request, &authorization(&request))
+            .unwrap();
+        let mut adapter = failed_adapter(&path, &request);
+
+        assert!(matches!(
+            gateway
+                .run_operation_once_with_adapter_and_fault(
+                    &request.operation_id,
+                    &mut adapter,
+                    Some(FaultPoint::ApplyOutcomeCommitted),
+                )
+                .await,
+            Err(GatewayError::InjectedFault)
+        ));
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::ApplyStarted(_))
+        ));
+        assert_eq!(adapter.apply_calls, 1);
+
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
     async fn permanent_target_rejection_is_terminal_and_does_not_block_later_operations() {
         let path = database_path("permanent-target-rejection");
         let mut rejected = request();
@@ -114,6 +242,10 @@
                 gateway.target_rejection(&rejected.operation_id).unwrap(),
                 Some(TargetRejection::ContainerNotFound)
             );
+            assert!(matches!(
+                gateway.journal.operation(&rejected.operation_id).unwrap(),
+                Some(journal::LoadedOperation::NotAttempted(_))
+            ));
             assert_eq!(gateway.result(&rejected.operation_id).unwrap(), None);
             assert_eq!(
                 gateway.receipt_reference(&rejected.operation_id).unwrap(),

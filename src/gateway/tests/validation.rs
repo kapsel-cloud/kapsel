@@ -16,17 +16,119 @@
 
     #[test]
     fn exact_authorization_is_required_before_persistence() {
-        let path = database_path("authorization-mismatch");
+        let request = request();
+        let exact = authorization(&request);
+        let mismatches = [
+            {
+                let mut value = exact.clone();
+                value.operation_id = "other-operation".into();
+                ("operation_id", value)
+            },
+            {
+                let mut value = exact.clone();
+                value.namespace = "other".into();
+                ("namespace", value)
+            },
+            {
+                let mut value = exact.clone();
+                value.deployment = "other-api".into();
+                ("deployment", value)
+            },
+            {
+                let mut value = exact.clone();
+                value.container = "other".into();
+                ("container", value)
+            },
+            {
+                let mut value = exact;
+                value.immutable_image_digest = concat!(
+                    "registry.example/example/other-api@sha256:",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                )
+                .into();
+                ("immutable_image_digest", value)
+            },
+        ];
+
+        for (field, mismatched) in mismatches {
+            let path = database_path(&format!("authorization-mismatch-{field}"));
+            let gateway = Gateway::open_for_test(&path).unwrap();
+            assert!(
+                matches!(
+                    gateway.submit_exact_for_test(&request, &mismatched),
+                    Err(GatewayError::AuthorizationMismatch)
+                ),
+                "{field}"
+            );
+            assert_eq!(gateway.get(&request.operation_id).unwrap(), None, "{field}");
+
+            assert!(matches!(
+                gateway.submit_exact_with_fault_for_test(
+                    &request,
+                    &authorization(&request),
+                    Some(FaultPoint::RequestedCommitted),
+                ),
+                Err(GatewayError::InjectedFault)
+            ));
+            assert!(matches!(
+                gateway.submit_exact_for_test(&request, &mismatched),
+                Err(GatewayError::AuthorizationMismatch)
+            ));
+            assert_eq!(
+                gateway.get(&request.operation_id).unwrap(),
+                Some(OperationState::Requested),
+                "{field}"
+            );
+            drop(gateway);
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn requested_phase_cannot_be_authorized_with_another_bound_operation() {
+        let path = database_path("requested-bound-authorization-mismatch");
         let gateway = Gateway::open_for_test(&path).unwrap();
         let request = request();
-        let mut authorization = authorization(&request);
-        authorization.container = "other".into();
+        assert!(matches!(
+            gateway.submit_exact_with_fault_for_test(
+                &request,
+                &authorization(&request),
+                Some(FaultPoint::RequestedCommitted),
+            ),
+            Err(GatewayError::InjectedFault)
+        ));
+        let loaded = gateway.journal.operation(&request.operation_id).unwrap();
+        assert!(matches!(loaded, Some(journal::LoadedOperation::Requested(_))));
+        let Some(journal::LoadedOperation::Requested(requested)) = loaded else {
+            return;
+        };
+
+        let mut other = request.clone();
+        other.operation_id = "other-operation".into();
+        let signed = sign_authorization_grant(
+            &authorization(&other),
+            &[7_u8; 32],
+            "effect-gateway-authorization-test-key",
+        )
+        .unwrap();
+        let verified = verify_authorization_grant(&signed, &gateway.authorization_trust).unwrap();
+        let authorized = AuthorizedRequest::bind(
+            ValidatedRequest::try_from(&other).unwrap(),
+            verified,
+        )
+        .unwrap();
 
         assert!(matches!(
-            gateway.submit_exact_for_test(&request, &authorization),
-            Err(GatewayError::AuthorizationMismatch)
+            gateway.journal.mark_authorized(&requested, &authorized),
+            Err(GatewayError::InvalidTransition)
         ));
-        assert_eq!(gateway.get(&request.operation_id).unwrap(), None);
+        assert!(matches!(
+            gateway.journal.operation(&request.operation_id).unwrap(),
+            Some(journal::LoadedOperation::Requested(_))
+        ));
+        assert_eq!(gateway.get(&other.operation_id).unwrap(), None);
+
+        drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
