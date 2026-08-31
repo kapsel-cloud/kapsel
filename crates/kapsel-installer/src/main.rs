@@ -25,18 +25,30 @@ use std::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use http::{uri::Scheme, Uri};
 #[cfg(target_os = "linux")]
+use http_body_util::Limited;
+#[cfg(target_os = "linux")]
+use k8s_openapi::api::{
+    apps::v1::Deployment,
+    core::v1::{Namespace, ServiceAccount},
+    rbac::v1::{Role, RoleBinding},
+};
+#[cfg(target_os = "linux")]
+use kube::{api::Api, config::KubeConfigOptions, Config};
+#[cfg(target_os = "linux")]
 use rustix::fs::{
     self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, XattrFlags, CWD,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+#[cfg(target_os = "linux")]
+use tower_http::map_response_body::MapResponseBodyLayer;
 
 #[cfg(target_os = "linux")]
 struct OperatorInput {
     _directory: OwnedFd,
     directory_metadata: Stat,
     files: BTreeMap<&'static str, Vec<u8>>,
-    _identity: kapsel_authority::ValidatedServiceOperatorInputs,
+    identity: kapsel_authority::ValidatedServiceOperatorInputs,
     path: String,
     bootstrap: BootstrapAuthority,
 }
@@ -47,9 +59,16 @@ struct OperatorInput;
 #[cfg(not(target_os = "linux"))]
 struct InstallerLock;
 
+#[cfg(target_os = "linux")]
+struct OpenTransaction {
+    directory: OwnedFd,
+    record: InstallerTransaction,
+}
+
 struct BootstrapAuthority {
     server: String,
     certificate_authority: Vec<u8>,
+    selected_context: String,
     _credential: BootstrapCredential,
 }
 
@@ -269,6 +288,8 @@ enum InstallerError {
     InvalidOperatorInput,
     InstallerLockFailure,
     TransactionFailure,
+    HostPreflightFailure,
+    KubernetesPreflightFailure,
 }
 
 impl InstallerError {
@@ -281,6 +302,8 @@ impl InstallerError {
             Self::InvalidOperatorInput => "invalid_operator_input",
             Self::InstallerLockFailure => "installer_lock_failure",
             Self::TransactionFailure => "transaction_failure",
+            Self::HostPreflightFailure => "host_preflight_failure",
+            Self::KubernetesPreflightFailure => "kubernetes_preflight_failure",
         }
     }
 }
@@ -299,18 +322,69 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerError> {
     let invocation = parse_arguments(arguments)?;
     validate_embedded_bundle()?;
     let operator_input =
         validate_operator_input(&invocation.operator_input, &invocation.kube_context)?;
+    validate_fixed_authority(&operator_input.identity)?;
     let _lock = acquire_installer_lock()?;
-    if invocation.action == Action::Install {
-        let _transaction = bootstrap_transaction(&invocation, &operator_input)?;
-    }
+    let mut transaction = open_transaction(&invocation, &operator_input)?;
 
-    let _ = invocation.kube_context;
+    if invocation.action != Action::Install {
+        return Err(InstallerError::ImplementationIncomplete);
+    }
+    match classify_install_phase(transaction.record.phase)? {
+        InstallPhase::Prepared => {},
+        InstallPhase::Installing => return Err(InstallerError::ImplementationIncomplete),
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+    runtime.block_on(run_preflight(&operator_input))?;
+
+    let old = transaction.record.clone();
+    transaction.record.phase = TransactionPhase::Installing;
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
     Err(InstallerError::ImplementationIncomplete)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerError> {
+    let _ = parse_arguments(arguments)?;
+    validate_embedded_bundle()?;
+    Err(InstallerError::ImplementationIncomplete)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstallPhase {
+    Prepared,
+    Installing,
+}
+
+fn classify_install_phase(phase: TransactionPhase) -> Result<InstallPhase, InstallerError> {
+    match phase {
+        TransactionPhase::Prepared => Ok(InstallPhase::Prepared),
+        TransactionPhase::Installing => Ok(InstallPhase::Installing),
+        _ => Err(InstallerError::TransactionFailure),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn validate_fixed_authority(
+    identity: &kapsel_authority::ValidatedServiceOperatorInputs,
+) -> Result<(), InstallerError> {
+    let authorization = &identity.authorization;
+    if authorization.namespace == "demo"
+        && authorization.deployment == "agent-api"
+        && authorization.container == "api"
+    {
+        Ok(())
+    } else {
+        Err(InstallerError::InvalidOperatorInput)
+    }
 }
 
 fn parse_arguments(
@@ -511,6 +585,7 @@ fn parse_bootstrap_kubeconfig(
     Ok(BootstrapAuthority {
         server,
         certificate_authority,
+        selected_context: selected_context.to_owned(),
         _credential: credential,
     })
 }
@@ -628,19 +703,11 @@ fn digest_named_input(input: &OperatorInput, name: &str) -> Result<String, Insta
         .ok_or(InstallerError::TransactionFailure)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn bootstrap_transaction(
-    _: &Invocation,
-    _: &OperatorInput,
-) -> Result<InstallerTransaction, InstallerError> {
-    Err(InstallerError::TransactionFailure)
-}
-
 #[cfg(target_os = "linux")]
-fn bootstrap_transaction(
+fn open_transaction(
     invocation: &Invocation,
     input: &OperatorInput,
-) -> Result<InstallerTransaction, InstallerError> {
+) -> Result<OpenTransaction, InstallerError> {
     let root = rfs::openat(
         CWD,
         "/",
@@ -653,7 +720,7 @@ fn bootstrap_transaction(
     let lib = open_directory(&var, "lib", InstallerError::TransactionFailure)?;
     validate_transaction_parent(&lib, true)?;
 
-    let created =
+    let created = if invocation.action == Action::Install {
         match with_exact_creation_mode(|| rfs::mkdirat(&lib, "kapsel-installer", Mode::RWXU)) {
             Ok(()) => {
                 stop_at_test_seam("transaction-directory");
@@ -661,7 +728,10 @@ fn bootstrap_transaction(
             },
             Err(rustix::io::Errno::EXIST) => false,
             Err(_) => return Err(InstallerError::TransactionFailure),
-        };
+        }
+    } else {
+        false
+    };
     let directory = open_directory(&lib, "kapsel-installer", InstallerError::TransactionFailure)?;
     if created {
         rfs::fchmod(&directory, Mode::RWXU).map_err(|_| InstallerError::TransactionFailure)?;
@@ -677,7 +747,10 @@ fn bootstrap_transaction(
         let transaction = initial_transaction(invocation, input, new_transaction_id()?)?;
         let bytes = encode_transaction(&transaction)?;
         publish_initial_transaction(&directory, &bytes)?;
-        return Ok(transaction);
+        return Ok(OpenTransaction {
+            directory,
+            record: transaction,
+        });
     }
     let (transaction, recovered_successor) =
         if names.len() == 1 && names.contains("transaction.json") {
@@ -689,21 +762,47 @@ fn bootstrap_transaction(
             && names.contains("transaction.json")
             && names.contains(".transaction.next")
         {
-            (recover_transaction_successor(&directory)?, true)
+            let old = read_transaction_leaf(&directory, "transaction.json", false)?;
+            let expected = initial_transaction(invocation, input, old.transaction_id.clone())?;
+            if !matches_stable_identity(&old, &expected) {
+                return Err(InstallerError::TransactionFailure);
+            }
+            (
+                recover_transaction_successor(
+                    &directory,
+                    &old,
+                    &digest_named_input(input, "bootstrap-kubeconfig.yaml")?,
+                )?,
+                true,
+            )
         } else {
             return Err(InstallerError::TransactionFailure);
         };
     let expected = initial_transaction(invocation, input, transaction.transaction_id.clone())?;
-    if !matches_prepared_identity(&transaction, &expected) {
+    if !matches_stable_identity(&transaction, &expected) {
         return Err(InstallerError::TransactionFailure);
     }
+    let current_digest = digest_named_input(input, "bootstrap-kubeconfig.yaml")?;
+    let (transaction, published_digest_successor) = if invocation.action != Action::Install
+        || transaction.bootstrap_kubeconfig_sha256 == current_digest
+    {
+        (transaction, false)
+    } else {
+        let mut renewed = transaction.clone();
+        renewed.bootstrap_kubeconfig_sha256 = current_digest;
+        publish_transaction_successor(&directory, &transaction, &renewed)?;
+        (renewed, true)
+    };
     let after = rfs::fstat(&directory).map_err(|_| InstallerError::TransactionFailure)?;
     if !valid_transaction_directory(&after)
-        || !recovered_successor && !stable_directory(&before, &after)
+        || !recovered_successor && !published_digest_successor && !stable_directory(&before, &after)
     {
         return Err(InstallerError::TransactionFailure);
     }
-    Ok(transaction)
+    Ok(OpenTransaction {
+        directory,
+        record: transaction,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -794,13 +893,15 @@ fn publish_transaction_successor(
     old: &InstallerTransaction,
     next: &InstallerTransaction,
 ) -> Result<(), InstallerError> {
-    if !legal_phase_successor(old, next) {
+    if !legal_transaction_successor(old, next) {
         return Err(InstallerError::TransactionFailure);
     }
     let bytes = encode_transaction(next)?;
     let file = write_transaction_inode(directory, &bytes, Some(&next.transaction_id))?;
+    stop_at_test_seam("successor-inode-synced");
     link_transaction_inode(directory, &file, ".transaction.next")?;
     rfs::fsync(directory).map_err(|_| InstallerError::TransactionFailure)?;
+    stop_at_test_seam("successor-linked");
     install_transaction_successor(directory)
 }
 
@@ -813,6 +914,7 @@ fn install_transaction_successor(directory: &OwnedFd) -> Result<(), InstallerErr
         "transaction.json",
     )
     .map_err(|_| InstallerError::TransactionFailure)?;
+    stop_at_test_seam("successor-renamed");
     rfs::fsync(directory).map_err(|_| InstallerError::TransactionFailure)
 }
 
@@ -870,13 +972,11 @@ fn validate_transaction_marker(
     }
 }
 
-fn matches_prepared_identity(
+fn matches_stable_identity(
     transaction: &InstallerTransaction,
     expected: &InstallerTransaction,
 ) -> bool {
-    transaction.bootstrap_kubeconfig_initial_sha256 == expected.bootstrap_kubeconfig_initial_sha256
-        && transaction.bootstrap_kubeconfig_sha256 == expected.bootstrap_kubeconfig_sha256
-        && transaction.cluster == expected.cluster
+    transaction.cluster == expected.cluster
         && transaction.input_directory == expected.input_directory
         && transaction.installer_sha256 == expected.installer_sha256
         && transaction.kube_context == expected.kube_context
@@ -887,10 +987,13 @@ fn matches_prepared_identity(
 #[cfg(target_os = "linux")]
 fn recover_transaction_successor(
     directory: &OwnedFd,
+    old: &InstallerTransaction,
+    validated_bootstrap_digest: &str,
 ) -> Result<InstallerTransaction, InstallerError> {
-    let old = read_transaction_leaf(directory, "transaction.json", false)?;
     let next = read_transaction_leaf(directory, ".transaction.next", true)?;
-    if !legal_phase_successor(&old, &next) {
+    if !legal_transaction_successor(old, &next)
+        || old.phase == next.phase && next.bootstrap_kubeconfig_sha256 != validated_bootstrap_digest
+    {
         return Err(InstallerError::TransactionFailure);
     }
     install_transaction_successor(directory)?;
@@ -940,8 +1043,6 @@ fn validate_transaction(transaction: &InstallerTransaction) -> Result<(), Instal
         transaction.transaction_id.as_str(),
     ];
     if transaction.schema != 1
-        || transaction.bootstrap_kubeconfig_initial_sha256
-            != transaction.bootstrap_kubeconfig_sha256
         || transaction.credential_expiration.is_some()
         || !transaction.host_resources.is_empty()
         || !transaction.kubernetes_resources.is_empty()
@@ -986,7 +1087,7 @@ fn valid_action_phase(action: Action, phase: TransactionPhase) -> bool {
     }
 }
 
-fn legal_phase_successor(old: &InstallerTransaction, next: &InstallerTransaction) -> bool {
+fn legal_transaction_successor(old: &InstallerTransaction, next: &InstallerTransaction) -> bool {
     let transition = matches!(
         (old.phase, next.phase),
         (TransactionPhase::Prepared, TransactionPhase::Installing)
@@ -1021,10 +1122,20 @@ fn legal_phase_successor(old: &InstallerTransaction, next: &InstallerTransaction
         (TransactionPhase::Installed, TransactionPhase::UninstallingLocal) => Action::Uninstall,
         _ => old.action,
     };
-    transition
+    let phase_successor = transition
         && old.pending.is_none()
         && valid_action_phase(next.action, next.phase)
-        && next == &expected
+        && next == &expected;
+
+    let mut renewed = old.clone();
+    renewed
+        .bootstrap_kubeconfig_sha256
+        .clone_from(&next.bootstrap_kubeconfig_sha256);
+    let digest_successor = old.phase == next.phase
+        && old.bootstrap_kubeconfig_sha256 != next.bootstrap_kubeconfig_sha256
+        && valid_digest(&next.bootstrap_kubeconfig_sha256)
+        && next == &renewed;
+    phase_successor || digest_successor
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -1058,6 +1169,341 @@ fn new_transaction_id() -> Result<String, InstallerError> {
         }
     }
     Ok(hex_bytes(&bytes))
+}
+
+#[cfg(target_os = "linux")]
+async fn run_preflight(input: &OperatorInput) -> Result<(), InstallerError> {
+    run_host_preflight().await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        run_kubernetes_preflight(input),
+    )
+    .await
+    .map_err(|_| InstallerError::KubernetesPreflightFailure)??;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+const HOST_TOOLS: &[&str] = &[
+    "/usr/sbin/groupadd",
+    "/usr/sbin/useradd",
+    "/usr/sbin/usermod",
+    "/usr/sbin/nologin",
+    "/usr/bin/getent",
+    "/usr/bin/systemctl",
+];
+
+#[cfg(target_os = "linux")]
+const ABSENT_HOST_PATHS: &[&str] = &[
+    "/etc/kapsel",
+    "/var/lib/kapsel",
+    "/run/kapsel",
+    "/usr/libexec/kapsel",
+    "/usr/share/kapsel",
+    "/usr/share/doc/kapsel",
+    "/usr/bin/kapsel",
+    "/usr/bin/kapsel-service-client",
+    "/usr/lib/systemd/system/kapseld.service",
+    "/usr/lib/sysusers.d/kapseld.conf",
+    "/etc/systemd/system/multi-user.target.wants/kapseld.service",
+];
+
+#[cfg(target_os = "linux")]
+fn host_path(path: &str) -> PathBuf {
+    #[cfg(kapsel_installer_test_crash_seams)]
+    if let Some(root) = env::var_os("KAPSEL_INSTALLER_TEST_HOST_ROOT") {
+        return PathBuf::from(root).join(path.trim_start_matches('/'));
+    }
+    PathBuf::from(path)
+}
+
+#[cfg(target_os = "linux")]
+fn open_host_directory(path: &Path) -> Result<OwnedFd, InstallerError> {
+    let mut directory = rfs::openat(
+        CWD,
+        "/",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::HostPreflightFailure)?;
+    for component in path.components() {
+        match component {
+            Component::RootDir => {},
+            Component::Normal(name) => {
+                directory = rfs::openat(
+                    &directory,
+                    name,
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|_| InstallerError::HostPreflightFailure)?;
+                let metadata =
+                    rfs::fstat(&directory).map_err(|_| InstallerError::HostPreflightFailure)?;
+                if !root_owned_directory(&metadata) || metadata.st_mode & 0o022 != 0 {
+                    return Err(InstallerError::HostPreflightFailure);
+                }
+            },
+            _ => return Err(InstallerError::HostPreflightFailure),
+        }
+    }
+    Ok(directory)
+}
+
+#[cfg(target_os = "linux")]
+fn open_host_file(path: &Path) -> Result<OwnedFd, InstallerError> {
+    let parent = path.parent().ok_or(InstallerError::HostPreflightFailure)?;
+    let name = path
+        .file_name()
+        .ok_or(InstallerError::HostPreflightFailure)?;
+    let directory = open_host_directory(parent)?;
+    rfs::openat(
+        &directory,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::HostPreflightFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn require_host_leaf_absent(path: &Path) -> Result<(), InstallerError> {
+    let parent = path.parent().ok_or(InstallerError::HostPreflightFailure)?;
+    let name = path
+        .file_name()
+        .ok_or(InstallerError::HostPreflightFailure)?;
+    let directory = open_host_directory(parent)?;
+    match rfs::statat(&directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        _ => Err(InstallerError::HostPreflightFailure),
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn run_host_preflight() -> Result<(), InstallerError> {
+    if rustix::process::geteuid().is_root() == false
+        || !cfg!(all(target_arch = "x86_64", target_env = "gnu"))
+    {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    for tool in HOST_TOOLS {
+        let path = host_path(tool);
+        let descriptor = open_host_file(&path)?;
+        let metadata = rfs::fstat(&descriptor).map_err(|_| InstallerError::HostPreflightFailure)?;
+        if !FileType::from_raw_mode(metadata.st_mode).is_file()
+            || metadata.st_uid != 0
+            || metadata.st_nlink != 1
+            || metadata.st_mode & 0o111 == 0
+            || metadata.st_mode & 0o022 != 0
+        {
+            return Err(InstallerError::HostPreflightFailure);
+        }
+    }
+    let systemd = open_host_directory(&host_path("/run/systemd/system"))?;
+    let systemd = rfs::fstat(&systemd).map_err(|_| InstallerError::HostPreflightFailure)?;
+    if !root_owned_directory(&systemd) || systemd.st_mode & 0o022 != 0 {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    let systemctl = host_path("/usr/bin/systemctl");
+    if run_bounded_command(&systemctl, &["show-environment"]).await? != 0
+        || run_bounded_command(&systemctl, &["cat", "--no-pager", "kapseld.service"]).await? != 1
+        || run_bounded_command(&systemctl, &["is-active", "--quiet", "kapseld.service"]).await? != 3
+        || run_bounded_command(&systemctl, &["is-enabled", "--quiet", "kapseld.service"]).await?
+            != 1
+    {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    let getent = host_path("/usr/bin/getent");
+    for (database, name) in [
+        ("passwd", "kapsel"),
+        ("passwd", "kapsel-service-caller"),
+        ("group", "kapsel"),
+        ("group", "kapsel-service-callers"),
+    ] {
+        if run_bounded_command(&getent, &[database, name]).await? != 2 {
+            return Err(InstallerError::HostPreflightFailure);
+        }
+    }
+    for path in ABSENT_HOST_PATHS {
+        require_host_leaf_absent(&host_path(path))?;
+    }
+    probe_destination_filesystems()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn run_bounded_command(path: &Path, arguments: &[&str]) -> Result<i32, InstallerError> {
+    let mut command = tokio::process::Command::new(path);
+    command
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), command.status())
+        .await
+        .map_err(|_| InstallerError::HostPreflightFailure)?
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+    status.code().ok_or(InstallerError::HostPreflightFailure)
+}
+
+#[cfg(target_os = "linux")]
+fn probe_destination_filesystems() -> Result<(), InstallerError> {
+    let mut devices = BTreeSet::new();
+    for parent in [
+        "/etc",
+        "/var/lib",
+        "/run",
+        "/usr",
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/share",
+    ] {
+        let path = host_path(parent);
+        let directory = open_host_directory(&path)?;
+        let metadata = rfs::fstat(&directory).map_err(|_| InstallerError::HostPreflightFailure)?;
+        if !root_owned_directory(&metadata) {
+            return Err(InstallerError::HostPreflightFailure);
+        }
+        if devices.insert(metadata.st_dev) {
+            let file = rfs::openat(
+                &directory,
+                ".",
+                OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+                Mode::RUSR | Mode::WUSR,
+            )
+            .map_err(|_| InstallerError::HostPreflightFailure)?;
+            rfs::fsetxattr(
+                &file,
+                "user.kapsel.transaction-id",
+                b"probe",
+                XattrFlags::CREATE,
+            )
+            .map_err(|_| InstallerError::HostPreflightFailure)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn run_kubernetes_preflight(input: &OperatorInput) -> Result<(), InstallerError> {
+    let client = load_bootstrap_client(input).await?;
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let namespace = namespaces
+        .get("demo")
+        .await
+        .map_err(|_| InstallerError::KubernetesPreflightFailure)?;
+    if namespace.metadata.name.as_deref() != Some("demo") {
+        return Err(InstallerError::KubernetesPreflightFailure);
+    }
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), "demo");
+    let deployment = deployments
+        .get("agent-api")
+        .await
+        .map_err(|_| InstallerError::KubernetesPreflightFailure)?;
+    validate_deployment_target(&deployment)?;
+    if Api::<ServiceAccount>::namespaced(client.clone(), "demo")
+        .get_opt("kapsel-service")
+        .await
+        .map_err(|_| InstallerError::KubernetesPreflightFailure)?
+        .is_some()
+        || Api::<Role>::namespaced(client.clone(), "demo")
+            .get_opt("kapsel-service-agent-api")
+            .await
+            .map_err(|_| InstallerError::KubernetesPreflightFailure)?
+            .is_some()
+        || Api::<RoleBinding>::namespaced(client, "demo")
+            .get_opt("kapsel-service-agent-api")
+            .await
+            .map_err(|_| InstallerError::KubernetesPreflightFailure)?
+            .is_some()
+    {
+        return Err(InstallerError::KubernetesPreflightFailure);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_deployment_target(deployment: &Deployment) -> Result<(), InstallerError> {
+    if deployment.metadata.name.as_deref() != Some("agent-api")
+        || deployment.metadata.namespace.as_deref() != Some("demo")
+        || deployment.metadata.uid.as_deref().is_none_or(str::is_empty)
+        || !deployment.spec.as_ref().is_some_and(|spec| {
+            spec.template.spec.as_ref().is_some_and(|pod| {
+                pod.containers
+                    .iter()
+                    .any(|container| container.name == "api")
+            })
+        })
+    {
+        return Err(InstallerError::KubernetesPreflightFailure);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn load_bootstrap_client(input: &OperatorInput) -> Result<kube::Client, InstallerError> {
+    const RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
+    let text = std::str::from_utf8(
+        input
+            .files
+            .get("bootstrap-kubeconfig.yaml")
+            .ok_or(InstallerError::KubernetesPreflightFailure)?,
+    )
+    .map_err(|_| InstallerError::KubernetesPreflightFailure)?;
+    let mut kubeconfig = kube::config::Kubeconfig::from_yaml(text)
+        .map_err(|_| InstallerError::KubernetesPreflightFailure)?;
+    kubeconfig.current_context = Some(input.bootstrap.selected_context.clone());
+    let proxy_placeholder = configure_explicit_kubeconfig(&mut kubeconfig)?;
+    let options = KubeConfigOptions {
+        context: Some(input.bootstrap.selected_context.clone()),
+        ..KubeConfigOptions::default()
+    };
+    let mut config = Config::from_custom_kubeconfig(kubeconfig, &options)
+        .await
+        .map_err(|_| InstallerError::KubernetesPreflightFailure)?;
+    if proxy_placeholder {
+        config.proxy_url = None;
+    }
+    config.connect_timeout = Some(std::time::Duration::from_secs(10));
+    config.read_timeout = Some(std::time::Duration::from_secs(10));
+    config.write_timeout = Some(std::time::Duration::from_secs(10));
+    let limit = MapResponseBodyLayer::new(|body| Limited::new(body, RESPONSE_BYTES_MAX));
+    Ok(kube::client::ClientBuilder::try_from(config)
+        .map_err(|_| InstallerError::KubernetesPreflightFailure)?
+        .with_layer(&limit)
+        .build())
+}
+
+#[cfg(target_os = "linux")]
+fn configure_explicit_kubeconfig(
+    kubeconfig: &mut kube::config::Kubeconfig,
+) -> Result<bool, InstallerError> {
+    let current = kubeconfig
+        .current_context
+        .as_deref()
+        .ok_or(InstallerError::KubernetesPreflightFailure)?;
+    let context = kubeconfig
+        .contexts
+        .iter()
+        .find(|value| value.name == current)
+        .and_then(|value| value.context.as_ref())
+        .ok_or(InstallerError::KubernetesPreflightFailure)?;
+    let cluster_name = context.cluster.clone();
+    let cluster = kubeconfig
+        .clusters
+        .iter_mut()
+        .find(|value| value.name == cluster_name)
+        .and_then(|value| value.cluster.as_mut())
+        .ok_or(InstallerError::KubernetesPreflightFailure)?;
+    if cluster.certificate_authority.is_some() {
+        return Err(InstallerError::KubernetesPreflightFailure);
+    }
+    if cluster.proxy_url.as_deref().is_none_or(str::is_empty) {
+        cluster.proxy_url = Some(String::from("http://127.0.0.1"));
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1277,7 +1723,7 @@ fn validate_operator_input(
         _directory: directory,
         directory_metadata: after,
         files: inputs,
-        _identity: identity,
+        identity,
         path: path
             .to_str()
             .ok_or(InstallerError::InvalidOperatorInput)?
@@ -1677,14 +2123,81 @@ mod tests {
             let mut next = old.clone();
             next.action = next_action;
             next.phase = next_phase;
-            assert!(legal_phase_successor(&old, &next));
+            assert!(legal_transaction_successor(&old, &next));
             next.cluster.ca_sha256 = "99".repeat(32);
-            assert!(!legal_phase_successor(&old, &next));
+            assert!(!legal_transaction_successor(&old, &next));
         }
         let old = initial_transaction();
         let mut skipped = old.clone();
         skipped.phase = TransactionPhase::Installed;
-        assert!(!legal_phase_successor(&old, &skipped));
+        assert!(!legal_transaction_successor(&old, &skipped));
+    }
+
+    #[test]
+    fn bootstrap_digest_successor_is_same_phase_and_initial_digest_is_immutable() {
+        let old = initial_transaction();
+        let mut renewed = old.clone();
+        renewed.bootstrap_kubeconfig_sha256 = "99".repeat(32);
+        assert!(legal_transaction_successor(&old, &renewed));
+        renewed.bootstrap_kubeconfig_initial_sha256 = "99".repeat(32);
+        assert!(!legal_transaction_successor(&old, &renewed));
+
+        let mut installing = old.clone();
+        installing.phase = TransactionPhase::Installing;
+        installing.bootstrap_kubeconfig_sha256 = "99".repeat(32);
+        assert!(!legal_transaction_successor(&old, &installing));
+    }
+
+    #[test]
+    fn install_phase_reopening_is_explicit_and_other_phases_fail_closed() {
+        assert_eq!(
+            classify_install_phase(TransactionPhase::Prepared).unwrap(),
+            InstallPhase::Prepared
+        );
+        assert_eq!(
+            classify_install_phase(TransactionPhase::Installing).unwrap(),
+            InstallPhase::Installing
+        );
+        assert!(classify_install_phase(TransactionPhase::Installed).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fixed_authority_and_deployment_target_are_exact() {
+        let mut authorization = kapsel_authority::ExactAuthorization {
+            authorization_id: String::from("authorization-1"),
+            operation_id: String::from("operation-1"),
+            namespace: String::from("demo"),
+            deployment: String::from("agent-api"),
+            container: String::from("api"),
+            immutable_image_digest: format!("registry.example/image@sha256:{}", "11".repeat(32)),
+        };
+        let identity = |authorization| kapsel_authority::ValidatedServiceOperatorInputs {
+            authorization,
+            authorization_signing_key_id: String::from("owner-key"),
+            receipt_signing_key_id: String::from("receipt-key"),
+        };
+        assert!(validate_fixed_authority(&identity(authorization.clone())).is_ok());
+        authorization.container = String::from("sidecar");
+        assert!(validate_fixed_authority(&identity(authorization)).is_err());
+
+        let deployment: Deployment = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "agent-api", "namespace": "demo", "uid": "uid-1"},
+            "spec": {
+                "selector": {"matchLabels": {"app": "agent-api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "agent-api"}},
+                    "spec": {"containers": [{"name": "api", "image": "example@sha256:11"}]}
+                }
+            }
+        }))
+        .unwrap();
+        assert!(validate_deployment_target(&deployment).is_ok());
+        let mut hostile = deployment;
+        hostile.metadata.namespace = Some(String::from("other"));
+        assert!(validate_deployment_target(&hostile).is_err());
     }
 
     #[cfg(target_os = "linux")]
@@ -1848,11 +2361,16 @@ mod tests {
         link_transaction_inode(directory, &staged, ".transaction.next")
             .expect("successor must link no-replace");
         assert_eq!(
-            recover_transaction_successor(directory).expect("linked successor must recover"),
+            recover_transaction_successor(
+                directory,
+                &initial_transaction(),
+                &next.bootstrap_kubeconfig_sha256,
+            )
+            .expect("linked successor must recover"),
             next
         );
         assert!(!path.join(".transaction.next").exists());
-        let mut installed = next;
+        let mut installed = next.clone();
         installed.phase = TransactionPhase::Installed;
         publish_transaction_successor(
             directory,
@@ -1871,8 +2389,10 @@ mod tests {
         link_transaction_inode(directory, &conflicting, ".transaction.next")
             .expect("conflicting successor must link");
         rfs::fsync(directory).expect("conflicting successor name must sync");
+        let current = read_transaction_leaf(directory, "transaction.json", true)
+            .expect("current transaction must decode");
         assert!(matches!(
-            recover_transaction_successor(directory),
+            recover_transaction_successor(directory, &current, &next.bootstrap_kubeconfig_sha256,),
             Err(InstallerError::TransactionFailure)
         ));
         assert!(path.join(".transaction.next").exists());

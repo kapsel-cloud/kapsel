@@ -117,10 +117,12 @@ crash-safe transaction publication, marked phase-successor update and recovery, 
 python3 scripts/test-kapsel-installer-bundle.py
 ```
 
-No host preflight, installation, Kubernetes mutation, credential issuance, activation, refresh, or
-uninstall runs yet. No candidate assembly command exists. Exact metadata schema and provenance, real
-feature-free payload construction, deterministic assembly, and the final linked installer's 64 MiB
-bound remain candidate-assembly work.
+Install now performs fixed read-only host and Kubernetes clean-install preflight and durably enters
+`installing` before returning `implementation_incomplete`; it still performs no installation,
+Kubernetes mutation, credential issuance, activation, refresh, or uninstall. No candidate assembly
+command exists. Exact metadata schema and provenance, real feature-free payload construction,
+deterministic assembly, and the final linked installer's 64 MiB bound remain candidate-assembly
+work.
 
 ## Upgrade and rollback fixture gate
 

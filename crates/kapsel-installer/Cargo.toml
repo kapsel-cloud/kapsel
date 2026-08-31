@@ -12,12 +12,17 @@ build = "build.rs"
 [dependencies]
 base64 = "0.23.1"
 http.workspace = true
+http-body-util = "0.1.5"
+k8s-openapi = { version = "0.28.0", features = ["v1_33"] }
 kapsel-authority.workspace = true
+kube.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "rand", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 serde-saphyr = { version = "1.1.0", default-features = false, features = ["deserialize"] }
 sha2.workspace = true
+tokio = { workspace = true, features = ["process", "rt", "time"] }
+tower-http = { version = "0.7.0", default-features = false, features = ["map-response-body"] }
 
 [build-dependencies]
 rustix = { workspace = true, features = ["fs", "std"] }

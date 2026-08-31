@@ -230,9 +230,10 @@ inventory, path, special-file, bounds, authority, lock, and transaction refusal 
 grammar, canonical prepared record, and hostile aliases, duplicates, unknowns, external references,
 credential forms, decoded bounds, and URL shapes. The Docker smoke explicitly runs the Linux root
 unit test for unnamed-inode initial publication, marked phase-successor update, interruption seams,
-and conflicting-successor evidence preservation. These gates prove no host preflight, pending-action
-or resource-evidence successor, payload provenance, metadata schema, final-size bound, runnable
-installation, or candidate qualification.
+and conflicting-successor evidence preservation. These gates prove fixed read-only host and
+Kubernetes clean-install preflight plus the phase-only `prepared -> installing` successor. They
+prove no pending-action or resource-evidence successor, payload provenance, metadata schema,
+final-size bound, runnable installation, or candidate qualification.
 
 The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
 suites remain authoritative for v0.2.0.

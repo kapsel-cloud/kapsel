@@ -183,11 +183,14 @@ explicit restart attempts startup once.
 
 The installer creates the `kapsel` private group, `kapsel-service-callers`, and locked `kapsel` user
 through fixed absolute no-shell identity commands using transaction-preselected numeric IDs and the
-exact transaction identity as GECOS. It creates the locked external caller separately and binds its
-exact caller-group membership. It does not invoke `systemd-sysusers`; the installed sysusers record
-is a vendor asset only and is never installer ownership or recovery evidence. The caller's
-supervisor must set effective `Group=kapsel-service-callers`; supplementary membership alone is
-insufficient.
+exact transaction identity as GECOS. The Debian preview appoints `/usr/sbin/groupadd`,
+`/usr/sbin/useradd`, `/usr/sbin/usermod`, `/usr/sbin/nologin`, `/usr/bin/getent`, and
+`/usr/bin/systemctl`; preflight uses only fixed bounded `getent` and `systemctl` read-only queries.
+This contract does not yet appoint future identity-mutation argv. The installer creates the locked
+external caller separately and binds its exact caller-group membership. It does not invoke
+`systemd-sysusers`; the installed sysusers record is a vendor asset only and is never installer
+ownership or recovery evidence. The caller's supervisor must set effective
+`Group=kapsel-service-callers`; supplementary membership alone is insufficient.
 
 Systemd state plus successful authenticated socket use is the health boundary. The socket exposes no
 administration, key management, migration, purge, health, or shutdown request. Diagnostics are
@@ -299,8 +302,12 @@ directory and the installer's memory; they never enter `/etc/kapsel`, the instal
 service environment, output, or diagnostics. Every install, refresh, and uninstall requires that
 same directory identity, context, server, CA, and four stable non-bootstrap input digests. A renewed
 inline bootstrap token or client certificate/key may replace `bootstrap-kubeconfig.yaml` at the same
-strongly owned directory; the installer records its new digest after validation. This renewal may
-change no cluster, CA, context, grant, authorization key, receipt seed, or receipt trust.
+strongly owned directory. After strictly validating the renewed bootstrap input and before using
+that credential, the installer durably publishes a same-phase successor changing only
+`bootstrap_kubeconfig_sha256` to the new exact-file digest. The
+`bootstrap_kubeconfig_initial_sha256` remains immutable. This renewal may change no action, phase,
+pending action, resource array, transaction identity, directory identity, installer digest, cluster,
+CA, context, grant, authorization key, receipt seed, or receipt trust.
 
 ### Short-lived service credential
 
@@ -505,9 +512,13 @@ record. A crash after link leaves the old record plus `.transaction.next`; recov
 latter only when its marker, schema, transaction identity, immutable fields, and phase/pending
 change are exactly one legal successor of the old record, then completes rename and directory sync.
 Any other candidate conflicts. Thus no partial named JSON is ever parsed or discarded. At the
-transaction-foundation boundary, a successor may change only `phase` along one edge in the legal
-phase graph while `pending` is null and every other field, including both resource arrays, is
-byte-for-byte unchanged. `action` remains `install` through install and rollback, changes to
+transaction-foundation boundary, a successor may either change only `phase` along one edge in the
+legal phase graph while `pending` is null, or remain in the same phase and change only
+`bootstrap_kubeconfig_sha256` to the digest of a strictly validated renewed bootstrap input before
+credential use. Recovery accepts that digest successor only when the current validated bootstrap
+input has its exact digest. The initial bootstrap digest is immutable. Every other field, including
+both resource arrays, is byte-for-byte unchanged. In particular, `prepared -> installing` is a
+phase-only successor. `action` remains `install` through install and rollback, changes to
 `refresh-credential` only on `installed -> refreshing`, remains so on `refreshing -> installed`, and
 changes to `uninstall` only on `installed -> uninstalling_local`, remaining so thereafter.
 Pending-action and ownership-evidence successors become legal only with the later implementation of

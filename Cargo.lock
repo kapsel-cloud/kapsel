@@ -778,12 +778,17 @@ version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "http",
+ "http-body-util",
+ "k8s-openapi",
  "kapsel-authority",
+ "kube",
  "rustix",
  "serde",
  "serde-saphyr 1.1.0",
  "serde_json",
  "sha2",
+ "tokio",
+ "tower-http 0.7.0",
 ]
 
 [[package]]
