@@ -1,7 +1,7 @@
 # Kapsel service
 
-Status: accepted unpublished service implementation; installer foundation and first recoverable
-identity mutation implemented, complete installer journey not implemented.
+Status: accepted unpublished service implementation; installer foundation and first two recoverable
+group mutations implemented, complete installer journey not implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
@@ -222,10 +222,31 @@ the supported host having no concurrent identity administrator: the group format
 marker, so another identity authority that creates the exact pending name/GID after clean preflight
 is indistinguishable. Such concurrent administration is outside the disposable preview boundary.
 
-Install rollback verifies the same two exact observations, durably publishes `remove_group` with the
-complete recorded ownership, and executes exactly:
+The second identity mutation creates only the `kapsel-service-callers` group. After binding the
+first group, the installer repeats the same bounded group and passwd enumeration, strict parsing,
+highest-free selection in 101–999, and exact numeric-GID absence check. The first group's bound GID
+is therefore unavailable to the second selection. It durably publishes `create_group` with exact
+name `kapsel-service-callers`, the second selected GID, and the same transaction identity before
+executing exactly:
 
 ```text
+/usr/bin/timeout --signal=KILL 10s /usr/sbin/groupadd --system --gid <decimal-gid> kapsel-service-callers
+```
+
+Completion requires separate bounded `/usr/bin/getent group kapsel-service-callers` and
+`/usr/bin/getent group <decimal-gid>` queries to return the same single exact
+`kapsel-service-callers:x:<decimal-gid>:` record with an empty member list. Both absent means not
+started. Every mixed, malformed, additional, replaced-name, replaced-GID, or member-bearing result
+is an ownership conflict. Exact completion appends the second group ownership record and clears
+pending in one durable successor. The inherited-lock lifetime, command and output bounds, and
+exclusive identity-administration assumption are identical to the first group.
+
+Install rollback removes bound groups in reverse creation order. For each last-owned group it
+verifies the same two exact observations, durably publishes `remove_group` with the complete
+recorded ownership, and executes exactly one of:
+
+```text
+/usr/bin/timeout --signal=KILL 10s /usr/sbin/groupdel kapsel-service-callers
 /usr/bin/timeout --signal=KILL 10s /usr/sbin/groupdel kapsel
 ```
 
@@ -233,14 +254,15 @@ The same inherited installer-lock lifetime, null-input, ten-second kill, and dis
 apply. Before publishing removal pending and again immediately before every `groupdel` attempt,
 bounded `/usr/bin/getent passwd` must establish that no returned account has the recorded GID as its
 primary GID. Both exact observations mean removal has not started and may be retried; both absent
-establish completion and remove the ownership record while clearing pending in one durable
+establish completion and pop only that last ownership record while clearing pending in one durable
 successor. Every mixed, replaced, or malformed observation is an ownership conflict and is never
-deleted. `remove_group` is an install-rollback action only; successful uninstall retains identities
-as specified below.
+deleted. The first group is never considered for removal while second-group ownership or pending
+evidence remains. `remove_group` is an install-rollback action only; successful uninstall retains
+identities as specified below.
 
-Later identity mutation argv remain unappointed and unimplemented. The installer does not invoke
-`systemd-sysusers`; the installed sysusers record is a vendor asset only and is never installer
-ownership or recovery evidence. The caller's supervisor must set effective
+Later user and membership mutation argv remain unappointed and unimplemented. The installer does not
+invoke `systemd-sysusers`; the installed sysusers record is a vendor asset only and is never
+installer ownership or recovery evidence. The caller's supervisor must set effective
 `Group=kapsel-service-callers`; supplementary membership alone is insufficient.
 
 Systemd state plus successful authenticated socket use is the health boundary. The socket exposes no
@@ -665,6 +687,15 @@ and VM cleanup.
 The explicit live-kind gate also passed healthy, `ProgressDeadlineExceeded`, and deleted-after-patch
 `UNKNOWN` cases against the pinned node image.
 
+The installer bundle smoke additionally crossed both complete fixed-group creates, exact two-key
+observations, ownership binds, a primary-GID refusal, reverse rollback, and exact final two-key
+absence with Debian 12's native `groupadd`, `groupdel`, `getent`, and `timeout`. It established
+native exit 0 for creation and removal, exit 9 for duplicate-name creation, exit 8 when `groupdel`
+encounters a primary-GID user, exit 6 for absent removal, exit 2 with empty output for absent
+`getent` group queries, the exact empty-member `name:x:gid:` record for name, numeric-key, and
+enumeration queries, and exit 137 for `timeout --signal=KILL` termination. Fixed executable fixtures
+remain the exhaustive crash-seam and hostile-output proof.
+
 ## Unsupported behavior
 
 No published Kapsel service release, production use, host-loss continuity, backup, HA, fleet
@@ -682,9 +713,10 @@ systemd-owned.
 ## Residual risk
 
 Source qualification covers one fresh x86-64 Debian 12/systemd 252 and Kubernetes 1.33 environment.
-First-group recovery additionally relies on exclusive host identity administration while the
-installer transaction is nonterminal; group records cannot carry a transaction marker. Its current
-mutation proof uses fixed executable fixtures and does not yet qualify native Debian `groupadd` or
-`groupdel` behavior. This finite evidence establishes the exact unpublished service journey only. It
-does not establish production safety, another platform, upgrade compatibility, backup, HA, repeated
-external operation, or protection from compromised host root, kernel, or service identity.
+Group recovery additionally relies on exclusive host identity administration while the installer
+transaction is nonterminal; group records cannot carry a transaction marker. Native two-group
+identity qualification covers one ephemeral x86-64 Debian 12 container; exhaustive crash seams,
+hostile output, and delayed mutation remain fixture-based. This finite evidence establishes the
+exact unpublished service journey only. It does not establish production safety, another platform,
+upgrade compatibility, backup, HA, repeated external operation, or protection from compromised host
+root, kernel, or service identity.

@@ -66,7 +66,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), I
         },
         InstallPhase::Installing => {},
         InstallPhase::RollingBack => {
-            runtime.block_on(rollback_first_group(&lock, &mut transaction))?;
+            runtime.block_on(rollback_groups(&lock, &mut transaction))?;
             return Err(InstallerError::ImplementationIncomplete);
         },
         InstallPhase::RolledBack => {
@@ -76,9 +76,18 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), I
             enter_installing(&runtime, &operator_input, &mut transaction)?;
         },
     }
-    runtime.block_on(ensure_first_group(&lock, &mut transaction))?;
+    runtime.block_on(ensure_group(&lock, &mut transaction, "kapsel"))?;
     if fail_at_test_seam("first-group-complete") {
-        runtime.block_on(rollback_first_group(&lock, &mut transaction))?;
+        runtime.block_on(rollback_groups(&lock, &mut transaction))?;
+        return Err(InstallerError::ImplementationIncomplete);
+    }
+    runtime.block_on(ensure_group(
+        &lock,
+        &mut transaction,
+        "kapsel-service-callers",
+    ))?;
+    if fail_at_test_seam("second-group-complete") {
+        runtime.block_on(rollback_groups(&lock, &mut transaction))?;
     }
     Err(InstallerError::ImplementationIncomplete)
 }
@@ -541,16 +550,21 @@ struct BoundedCommandOutput {
     stdout: Vec<u8>,
 }
 
-async fn ensure_first_group(
+async fn ensure_group(
     lock: &OwnedFd,
     transaction: &mut OpenTransaction,
+    name: &'static str,
 ) -> Result<(), InstallerError> {
-    if let [resource] = transaction.record.host_resources.as_slice() {
-        if transaction.record.pending.is_none()
-            && observe_group(resource.gid).await? == GroupObservation::Exact
+    let index = usize::from(name == "kapsel-service-callers");
+    if let Some(resource) = transaction.record.host_resources.get(index) {
+        if resource.name == name
+            && observe_group(name, resource.gid).await? == GroupObservation::Exact
         {
             return Ok(());
         }
+        return Err(InstallerError::HostMutationFailure);
+    }
+    if transaction.record.host_resources.len() != index {
         return Err(InstallerError::HostMutationFailure);
     }
 
@@ -563,28 +577,28 @@ async fn ensure_first_group(
         }
         let gid = select_group_gid(&groups.stdout, &passwd.stdout)
             .map_err(|_| InstallerError::HostMutationFailure)?;
-        if observe_group(gid).await? != GroupObservation::Absent {
+        if observe_group(name, gid).await? != GroupObservation::Absent {
             return Err(InstallerError::HostMutationFailure);
         }
         let old = transaction.record.clone();
         transaction.record.pending = Some(PendingAction::CreateGroup {
             gid,
-            name: String::from("kapsel"),
+            name: String::from(name),
             transaction_id: transaction.record.transaction_id.clone(),
         });
         publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
-        stop_at_test_seam("group-pending");
+        stop_at_group_seam(name, "group-pending", "second-group-pending");
     }
 
     let gid = match transaction.record.pending.as_ref() {
         Some(PendingAction::CreateGroup {
             gid,
-            name,
+            name: pending_name,
             transaction_id,
-        }) if name == "kapsel" && transaction_id == &transaction.record.transaction_id => *gid,
+        }) if pending_name == name && transaction_id == &transaction.record.transaction_id => *gid,
         _ => return Err(InstallerError::HostMutationFailure),
     };
-    match observe_group(gid).await? {
+    match observe_group(name, gid).await? {
         GroupObservation::Absent => {
             run_identity_mutation(
                 lock,
@@ -593,15 +607,19 @@ async fn ensure_first_group(
                     OsString::from("--system"),
                     OsString::from("--gid"),
                     gid.to_string().into(),
-                    OsString::from("kapsel"),
+                    OsString::from(name),
                 ],
             )
             .await?;
-            stop_at_test_seam("group-command-complete");
+            stop_at_group_seam(
+                name,
+                "group-command-complete",
+                "second-group-command-complete",
+            );
         },
         GroupObservation::Exact => {},
     }
-    if observe_group(gid).await? != GroupObservation::Exact {
+    if observe_group(name, gid).await? != GroupObservation::Exact {
         return Err(InstallerError::HostMutationFailure);
     }
 
@@ -610,12 +628,12 @@ async fn ensure_first_group(
     transaction.record.host_resources.push(HostResource {
         gid,
         kind: HostResourceKind::Group,
-        name: String::from("kapsel"),
+        name: String::from(name),
     });
     publish_transaction_successor(&transaction.directory, &old, &transaction.record)
 }
 
-async fn rollback_first_group(
+async fn rollback_groups(
     lock: &OwnedFd,
     transaction: &mut OpenTransaction,
 ) -> Result<(), InstallerError> {
@@ -624,61 +642,70 @@ async fn rollback_first_group(
         transaction.record.phase = TransactionPhase::RollingBack;
         publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
     }
-    if transaction.record.host_resources.is_empty() && transaction.record.pending.is_none() {
-        let old = transaction.record.clone();
-        transaction.record.phase = TransactionPhase::RolledBack;
-        return publish_transaction_successor(&transaction.directory, &old, &transaction.record);
-    }
-
-    stop_at_test_seam("group-rollback-before-pending");
-    let group = transaction
-        .record
-        .host_resources
-        .first()
-        .cloned()
-        .ok_or(InstallerError::HostMutationFailure)?;
-    if transaction.record.pending.is_none() {
-        if observe_group(group.gid).await? != GroupObservation::Exact {
+    while let Some(group) = transaction.record.host_resources.last().cloned() {
+        stop_at_group_seam(
+            &group.name,
+            "group-rollback-before-pending",
+            "second-group-rollback-before-pending",
+        );
+        if transaction.record.pending.is_none() {
+            if observe_group(&group.name, group.gid).await? != GroupObservation::Exact {
+                return Err(InstallerError::HostMutationFailure);
+            }
+            require_gid_without_primary_user(group.gid).await?;
+            let old = transaction.record.clone();
+            transaction.record.pending = Some(PendingAction::RemoveGroup {
+                group: group.clone(),
+            });
+            publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+            stop_at_group_seam(
+                &group.name,
+                "group-remove-pending",
+                "second-group-remove-pending",
+            );
+        } else if transaction.record.pending
+            != Some(PendingAction::RemoveGroup {
+                group: group.clone(),
+            })
+        {
             return Err(InstallerError::HostMutationFailure);
         }
-        require_gid_without_primary_user(group.gid).await?;
-        let old = transaction.record.clone();
-        transaction.record.pending = Some(PendingAction::RemoveGroup {
-            group: group.clone(),
-        });
-        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
-        stop_at_test_seam("group-remove-pending");
-    } else if transaction.record.pending
-        != Some(PendingAction::RemoveGroup {
-            group: group.clone(),
-        })
-    {
-        return Err(InstallerError::HostMutationFailure);
-    }
 
-    match observe_group(group.gid).await? {
-        GroupObservation::Exact => {
-            require_gid_without_primary_user(group.gid).await?;
-            run_identity_mutation(
-                lock,
-                &host_path("/usr/sbin/groupdel"),
-                &[OsString::from("kapsel")],
-            )
-            .await?;
-            stop_at_test_seam("group-remove-command-complete");
-        },
-        GroupObservation::Absent => {},
+        match observe_group(&group.name, group.gid).await? {
+            GroupObservation::Exact => {
+                require_gid_without_primary_user(group.gid).await?;
+                run_identity_mutation(
+                    lock,
+                    &host_path("/usr/sbin/groupdel"),
+                    &[OsString::from(&group.name)],
+                )
+                .await?;
+                stop_at_group_seam(
+                    &group.name,
+                    "group-remove-command-complete",
+                    "second-group-remove-command-complete",
+                );
+            },
+            GroupObservation::Absent => {},
+        }
+        if observe_group(&group.name, group.gid).await? != GroupObservation::Absent {
+            return Err(InstallerError::HostMutationFailure);
+        }
+        let old = transaction.record.clone();
+        transaction.record.pending = None;
+        transaction.record.host_resources.pop();
+        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
     }
-    if observe_group(group.gid).await? != GroupObservation::Absent {
+    if transaction.record.pending.is_some() {
         return Err(InstallerError::HostMutationFailure);
     }
-    let old = transaction.record.clone();
-    transaction.record.pending = None;
-    transaction.record.host_resources.clear();
-    publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
     let old = transaction.record.clone();
     transaction.record.phase = TransactionPhase::RolledBack;
     publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+fn stop_at_group_seam(name: &str, first: &str, second: &str) {
+    stop_at_test_seam(if name == "kapsel" { first } else { second });
 }
 
 async fn require_gid_without_primary_user(gid: u32) -> Result<(), InstallerError> {
@@ -693,9 +720,9 @@ async fn require_gid_without_primary_user(gid: u32) -> Result<(), InstallerError
     Ok(())
 }
 
-async fn observe_group(gid: u32) -> Result<GroupObservation, InstallerError> {
+async fn observe_group(name: &str, gid: u32) -> Result<GroupObservation, InstallerError> {
     let getent = host_path("/usr/bin/getent");
-    let by_name = run_bounded_query(&getent, &["group", "kapsel"], 4 * 1024).await?;
+    let by_name = run_bounded_query(&getent, &["group", name], 4 * 1024).await?;
     let gid_string = gid.to_string();
     let by_gid = run_bounded_query(&getent, &["group", &gid_string], 4 * 1024).await?;
     classify_group_observation(
@@ -703,6 +730,7 @@ async fn observe_group(gid: u32) -> Result<GroupObservation, InstallerError> {
         &by_name.stdout,
         by_gid.status,
         &by_gid.stdout,
+        name,
         gid,
     )
     .map_err(|_| InstallerError::HostMutationFailure)
@@ -831,12 +859,13 @@ fn classify_group_observation(
     name_output: &[u8],
     gid_status: i32,
     gid_output: &[u8],
+    name: &str,
     gid: u32,
 ) -> Result<GroupObservation, InstallerError> {
     if name_status == 2 && name_output.is_empty() && gid_status == 2 && gid_output.is_empty() {
         return Ok(GroupObservation::Absent);
     }
-    let expected = format!("kapsel:x:{gid}:\n");
+    let expected = format!("{name}:x:{gid}:\n");
     if name_status == 0
         && gid_status == 0
         && name_output == expected.as_bytes()
@@ -1421,11 +1450,17 @@ mod tests {
 
         let exact = b"kapsel:x:999:\n";
         assert_eq!(
-            classify_group_observation(0, exact, 0, exact, 999).unwrap(),
+            classify_group_observation(0, exact, 0, exact, "kapsel", 999).unwrap(),
+            GroupObservation::Exact
+        );
+        let callers = b"kapsel-service-callers:x:998:\n";
+        assert_eq!(
+            classify_group_observation(0, callers, 0, callers, "kapsel-service-callers", 998,)
+                .unwrap(),
             GroupObservation::Exact
         );
         assert_eq!(
-            classify_group_observation(2, b"", 2, b"", 999).unwrap(),
+            classify_group_observation(2, b"", 2, b"", "kapsel", 999).unwrap(),
             GroupObservation::Absent
         );
         for (name_status, name, gid_status, gid) in [
@@ -1440,7 +1475,10 @@ mod tests {
                 exact.as_slice(),
             ),
         ] {
-            assert!(classify_group_observation(name_status, name, gid_status, gid, 999).is_err());
+            assert!(
+                classify_group_observation(name_status, name, gid_status, gid, "kapsel", 999)
+                    .is_err()
+            );
         }
     }
 

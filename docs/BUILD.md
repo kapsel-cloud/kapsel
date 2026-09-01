@@ -110,22 +110,26 @@ root-owned test operator input; it proves bundle generation, descriptor-relative
 inventory and metadata checks, grant/key/receipt consistency, valid kubeconfig composition, hostile
 filesystem refusal, exact installer-lock handling and named-object modes under a hostile umask,
 kill/restart recovery after lock and transaction-directory creation, recovered-parent sync before
-crash-safe transaction publication, marked phase and first-group pending successors, exact group
-creation observation, inherited-lock command lifetime, ownership-safe group rollback, and the next
-`implementation_incomplete` boundary:
+crash-safe transaction publication, marked pending and ownership successors for both fixed groups,
+exact group creation observation, inherited-lock command lifetime, reverse ownership-safe group
+rollback, and the next `implementation_incomplete` boundary. The same smoke then runs both group
+creations, exact observations and binds, a primary-GID refusal, reverse rollback, and final absence
+through Debian 12's native `groupadd`, `groupdel`, `getent`, and `timeout`:
 
 ```sh
 python3 scripts/test-kapsel-installer-bundle.py
 ```
 
 Install now performs fixed read-only host and Kubernetes clean-install preflight, durably enters
-`installing`, and creates or recovers the exact transaction-owned `kapsel` private group before
-returning `implementation_incomplete`. Test-only failure injection also proves ownership-safe
-removal and `rolled_back` recovery. It still performs no later identity or asset installation,
-Kubernetes mutation, credential issuance, activation, refresh, or uninstall. No candidate assembly
-command exists. Exact metadata schema and provenance, real feature-free payload construction,
-deterministic assembly, and the final linked installer's 64 MiB bound remain candidate-assembly
-work.
+`installing`, and creates or recovers the exact transaction-owned `kapsel` and
+`kapsel-service-callers` groups before returning `implementation_incomplete`. Test-only failure
+injection also proves conflict-safe reverse removal and `rolled_back` recovery. Native qualification
+covers one ephemeral x86-64 Debian 12 container; exhaustive crash seams, hostile output, and delayed
+mutation remain executable-fixture proof. It still performs no user, membership, or asset
+installation, Kubernetes mutation, credential issuance, activation, refresh, or uninstall. No
+candidate assembly command exists. Exact metadata schema and provenance, real feature-free payload
+construction, deterministic assembly, and the final linked installer's 64 MiB bound remain
+candidate-assembly work.
 
 ## Upgrade and rollback fixture gate
 

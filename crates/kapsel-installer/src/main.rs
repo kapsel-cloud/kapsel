@@ -668,45 +668,56 @@ fn validate_transaction(transaction: &InstallerTransaction) -> Result<(), Instal
 }
 
 fn valid_transaction_state(transaction: &InstallerTransaction) -> bool {
-    let group = transaction.host_resources.as_slice();
+    let groups = transaction.host_resources.as_slice();
     let pending = transaction.pending.as_ref();
-    let valid_group = |resource: &HostResource| {
+    let valid_group = |resource: &HostResource, name: &str| {
         resource.kind == HostResourceKind::Group
-            && resource.name == "kapsel"
+            && resource.name == name
             && (101..=999).contains(&resource.gid)
     };
+    let valid_groups = |resources: &[HostResource]| match resources {
+        [] => true,
+        [first] => valid_group(first, "kapsel"),
+        [first, second] => {
+            valid_group(first, "kapsel")
+                && valid_group(second, "kapsel-service-callers")
+                && first.gid != second.gid
+        },
+        _ => false,
+    };
     let valid_create = |gid: u32, name: &str, transaction_id: &str| {
-        name == "kapsel"
+        let expected_name = match groups {
+            [] => "kapsel",
+            [_] => "kapsel-service-callers",
+            _ => return false,
+        };
+        name == expected_name
             && (101..=999).contains(&gid)
+            && groups.iter().all(|resource| resource.gid != gid)
             && transaction_id == transaction.transaction_id
     };
 
     match transaction.phase {
         TransactionPhase::Prepared | TransactionPhase::RolledBack => {
-            group.is_empty() && pending.is_none()
+            groups.is_empty() && pending.is_none()
         },
-        TransactionPhase::Installing => match (group, pending) {
-            ([], None) => true,
-            (
-                [],
-                Some(PendingAction::CreateGroup {
-                    gid,
-                    name,
-                    transaction_id,
-                }),
-            ) => valid_create(*gid, name, transaction_id),
-            ([resource], None) => valid_group(resource),
+        TransactionPhase::Installing => match pending {
+            None => valid_groups(groups),
+            Some(PendingAction::CreateGroup {
+                gid,
+                name,
+                transaction_id,
+            }) => valid_groups(groups) && valid_create(*gid, name, transaction_id),
             _ => false,
         },
-        TransactionPhase::RollingBack => match (group, pending) {
-            ([], None) => true,
-            ([resource], None) => valid_group(resource),
-            ([resource], Some(PendingAction::RemoveGroup { group })) => {
-                valid_group(resource) && resource == group
+        TransactionPhase::RollingBack => match pending {
+            None => valid_groups(groups),
+            Some(PendingAction::RemoveGroup { group }) => {
+                valid_groups(groups) && groups.last() == Some(group)
             },
             _ => false,
         },
-        _ => group.is_empty() && pending.is_none(),
+        _ => groups.is_empty() && pending.is_none(),
     }
 }
 
@@ -792,13 +803,15 @@ fn legal_transaction_successor(old: &InstallerTransaction, next: &InstallerTrans
 
     let pending_successor = if old.phase == next.phase && old.action == next.action {
         let mut expected = old.clone();
-        match (&old.host_resources[..], old.pending.as_ref()) {
-            ([], None) if old.phase == TransactionPhase::Installing => {
+        match (old.host_resources.last(), old.pending.as_ref()) {
+            (_, None)
+                if old.phase == TransactionPhase::Installing && old.host_resources.len() < 2 =>
+            {
                 expected.pending.clone_from(&next.pending);
                 matches!(next.pending, Some(PendingAction::CreateGroup { .. })) && next == &expected
             },
             (
-                [],
+                _,
                 Some(PendingAction::CreateGroup {
                     gid,
                     name,
@@ -813,17 +826,17 @@ fn legal_transaction_successor(old: &InstallerTransaction, next: &InstallerTrans
                 });
                 next == &expected
             },
-            ([resource], None) if old.phase == TransactionPhase::RollingBack => {
+            (Some(resource), None) if old.phase == TransactionPhase::RollingBack => {
                 expected.pending = Some(PendingAction::RemoveGroup {
                     group: resource.clone(),
                 });
                 next == &expected
             },
-            ([resource], Some(PendingAction::RemoveGroup { group }))
+            (Some(resource), Some(PendingAction::RemoveGroup { group }))
                 if old.phase == TransactionPhase::RollingBack && resource == group =>
             {
                 expected.pending = None;
-                expected.host_resources.clear();
+                expected.host_resources.pop();
                 next == &expected
             },
             _ => false,
@@ -1191,6 +1204,62 @@ mod tests {
             transaction_id: hostile.transaction_id.clone(),
         });
         assert!(!legal_transaction_successor(&installing, &hostile));
+    }
+
+    #[test]
+    fn second_group_pending_ownership_and_reverse_removal_are_exact() {
+        let mut first_created = test_initial_transaction();
+        first_created.phase = TransactionPhase::Installing;
+        first_created.host_resources.push(HostResource {
+            gid: 999,
+            kind: HostResourceKind::Group,
+            name: String::from("kapsel"),
+        });
+        let mut second_pending = first_created.clone();
+        second_pending.pending = Some(PendingAction::CreateGroup {
+            gid: 998,
+            name: String::from("kapsel-service-callers"),
+            transaction_id: first_created.transaction_id.clone(),
+        });
+        assert!(legal_transaction_successor(&first_created, &second_pending));
+
+        let second = HostResource {
+            gid: 998,
+            kind: HostResourceKind::Group,
+            name: String::from("kapsel-service-callers"),
+        };
+        let mut second_created = second_pending.clone();
+        second_created.pending = None;
+        second_created.host_resources.push(second.clone());
+        assert!(legal_transaction_successor(
+            &second_pending,
+            &second_created
+        ));
+
+        let mut rolling_back = second_created.clone();
+        rolling_back.phase = TransactionPhase::RollingBack;
+        assert!(legal_transaction_successor(&second_created, &rolling_back));
+        let mut removing_second = rolling_back.clone();
+        removing_second.pending = Some(PendingAction::RemoveGroup { group: second });
+        assert!(legal_transaction_successor(&rolling_back, &removing_second));
+        let mut second_removed = removing_second.clone();
+        second_removed.pending = None;
+        second_removed.host_resources.pop();
+        assert!(legal_transaction_successor(
+            &removing_second,
+            &second_removed
+        ));
+
+        let mut duplicate_gid = second_pending;
+        if let Some(PendingAction::CreateGroup { gid, .. }) = duplicate_gid.pending.as_mut() {
+            *gid = 999;
+        }
+        assert!(validate_transaction(&duplicate_gid).is_err());
+        let mut wrong_removal = rolling_back;
+        wrong_removal.pending = Some(PendingAction::RemoveGroup {
+            group: first_created.host_resources[0].clone(),
+        });
+        assert!(validate_transaction(&wrong_removal).is_err());
     }
 
     #[test]
