@@ -17,6 +17,7 @@ use kube::{api::Api, config::KubeConfigOptions, Config};
 use rustix::fs::{
     self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, XattrFlags, CWD,
 };
+use tokio::io::AsyncReadExt as _;
 use tower_http::map_response_body::MapResponseBodyLayer;
 
 use super::*;
@@ -49,26 +50,48 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), I
     let operator_input =
         validate_operator_input(&invocation.operator_input, &invocation.kube_context)?;
     validate_fixed_authority(&operator_input.identity)?;
-    let _lock = acquire_installer_lock()?;
+    let lock = acquire_installer_lock()?;
     let mut transaction = open_transaction(&invocation, &operator_input)?;
 
     if invocation.action != Action::Install {
         return Err(InstallerError::ImplementationIncomplete);
     }
-    match classify_install_phase(transaction.record.phase)? {
-        InstallPhase::Prepared => {},
-        InstallPhase::Installing => return Err(InstallerError::ImplementationIncomplete),
-    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| InstallerError::HostPreflightFailure)?;
-    runtime.block_on(run_preflight(&operator_input))?;
+    match classify_install_phase(transaction.record.phase)? {
+        InstallPhase::Prepared => {
+            enter_installing(&runtime, &operator_input, &mut transaction)?;
+        },
+        InstallPhase::Installing => {},
+        InstallPhase::RollingBack => {
+            runtime.block_on(rollback_first_group(&lock, &mut transaction))?;
+            return Err(InstallerError::ImplementationIncomplete);
+        },
+        InstallPhase::RolledBack => {
+            let old = transaction.record.clone();
+            transaction.record.phase = TransactionPhase::Prepared;
+            publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+            enter_installing(&runtime, &operator_input, &mut transaction)?;
+        },
+    }
+    runtime.block_on(ensure_first_group(&lock, &mut transaction))?;
+    if fail_at_test_seam("first-group-complete") {
+        runtime.block_on(rollback_first_group(&lock, &mut transaction))?;
+    }
+    Err(InstallerError::ImplementationIncomplete)
+}
 
+fn enter_installing(
+    runtime: &tokio::runtime::Runtime,
+    operator_input: &OperatorInput,
+    transaction: &mut OpenTransaction,
+) -> Result<(), InstallerError> {
+    runtime.block_on(run_preflight(operator_input))?;
     let old = transaction.record.clone();
     transaction.record.phase = TransactionPhase::Installing;
-    publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
-    Err(InstallerError::ImplementationIncomplete)
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)
 }
 
 const INSTALLER_BYTES_MAX: usize = 64 * 1024 * 1024;
@@ -388,7 +411,8 @@ fn recover_transaction_successor(
 ) -> Result<InstallerTransaction, InstallerError> {
     let next = read_transaction_leaf(directory, ".transaction.next", true)?;
     if !legal_transaction_successor(old, &next)
-        || old.phase == next.phase && next.bootstrap_kubeconfig_sha256 != validated_bootstrap_digest
+        || old.bootstrap_kubeconfig_sha256 != next.bootstrap_kubeconfig_sha256
+            && next.bootstrap_kubeconfig_sha256 != validated_bootstrap_digest
     {
         return Err(InstallerError::TransactionFailure);
     }
@@ -423,11 +447,13 @@ async fn run_preflight(input: &OperatorInput) -> Result<(), InstallerError> {
 
 const HOST_TOOLS: &[&str] = &[
     "/usr/sbin/groupadd",
+    "/usr/sbin/groupdel",
     "/usr/sbin/useradd",
     "/usr/sbin/usermod",
     "/usr/sbin/nologin",
     "/usr/bin/getent",
     "/usr/bin/systemctl",
+    "/usr/bin/timeout",
 ];
 
 const ABSENT_HOST_PATHS: &[&str] = &[
@@ -510,6 +536,317 @@ fn require_host_leaf_absent(path: &Path) -> Result<(), InstallerError> {
     }
 }
 
+struct BoundedCommandOutput {
+    status: i32,
+    stdout: Vec<u8>,
+}
+
+async fn ensure_first_group(
+    lock: &OwnedFd,
+    transaction: &mut OpenTransaction,
+) -> Result<(), InstallerError> {
+    if let [resource] = transaction.record.host_resources.as_slice() {
+        if transaction.record.pending.is_none()
+            && observe_group(resource.gid).await? == GroupObservation::Exact
+        {
+            return Ok(());
+        }
+        return Err(InstallerError::HostMutationFailure);
+    }
+
+    if transaction.record.pending.is_none() {
+        let getent = host_path("/usr/bin/getent");
+        let groups = run_bounded_query(&getent, &["group"], 64 * 1024).await?;
+        let passwd = run_bounded_query(&getent, &["passwd"], 64 * 1024).await?;
+        if groups.status != 0 || passwd.status != 0 {
+            return Err(InstallerError::HostMutationFailure);
+        }
+        let gid = select_group_gid(&groups.stdout, &passwd.stdout)
+            .map_err(|_| InstallerError::HostMutationFailure)?;
+        if observe_group(gid).await? != GroupObservation::Absent {
+            return Err(InstallerError::HostMutationFailure);
+        }
+        let old = transaction.record.clone();
+        transaction.record.pending = Some(PendingAction::CreateGroup {
+            gid,
+            name: String::from("kapsel"),
+            transaction_id: transaction.record.transaction_id.clone(),
+        });
+        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+        stop_at_test_seam("group-pending");
+    }
+
+    let gid = match transaction.record.pending.as_ref() {
+        Some(PendingAction::CreateGroup {
+            gid,
+            name,
+            transaction_id,
+        }) if name == "kapsel" && transaction_id == &transaction.record.transaction_id => *gid,
+        _ => return Err(InstallerError::HostMutationFailure),
+    };
+    match observe_group(gid).await? {
+        GroupObservation::Absent => {
+            run_identity_mutation(
+                lock,
+                &host_path("/usr/sbin/groupadd"),
+                &[
+                    OsString::from("--system"),
+                    OsString::from("--gid"),
+                    gid.to_string().into(),
+                    OsString::from("kapsel"),
+                ],
+            )
+            .await?;
+            stop_at_test_seam("group-command-complete");
+        },
+        GroupObservation::Exact => {},
+    }
+    if observe_group(gid).await? != GroupObservation::Exact {
+        return Err(InstallerError::HostMutationFailure);
+    }
+
+    let old = transaction.record.clone();
+    transaction.record.pending = None;
+    transaction.record.host_resources.push(HostResource {
+        gid,
+        kind: HostResourceKind::Group,
+        name: String::from("kapsel"),
+    });
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+async fn rollback_first_group(
+    lock: &OwnedFd,
+    transaction: &mut OpenTransaction,
+) -> Result<(), InstallerError> {
+    if transaction.record.phase == TransactionPhase::Installing {
+        let old = transaction.record.clone();
+        transaction.record.phase = TransactionPhase::RollingBack;
+        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+    }
+    if transaction.record.host_resources.is_empty() && transaction.record.pending.is_none() {
+        let old = transaction.record.clone();
+        transaction.record.phase = TransactionPhase::RolledBack;
+        return publish_transaction_successor(&transaction.directory, &old, &transaction.record);
+    }
+
+    stop_at_test_seam("group-rollback-before-pending");
+    let group = transaction
+        .record
+        .host_resources
+        .first()
+        .cloned()
+        .ok_or(InstallerError::HostMutationFailure)?;
+    if transaction.record.pending.is_none() {
+        if observe_group(group.gid).await? != GroupObservation::Exact {
+            return Err(InstallerError::HostMutationFailure);
+        }
+        require_gid_without_primary_user(group.gid).await?;
+        let old = transaction.record.clone();
+        transaction.record.pending = Some(PendingAction::RemoveGroup {
+            group: group.clone(),
+        });
+        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+        stop_at_test_seam("group-remove-pending");
+    } else if transaction.record.pending
+        != Some(PendingAction::RemoveGroup {
+            group: group.clone(),
+        })
+    {
+        return Err(InstallerError::HostMutationFailure);
+    }
+
+    match observe_group(group.gid).await? {
+        GroupObservation::Exact => {
+            require_gid_without_primary_user(group.gid).await?;
+            run_identity_mutation(
+                lock,
+                &host_path("/usr/sbin/groupdel"),
+                &[OsString::from("kapsel")],
+            )
+            .await?;
+            stop_at_test_seam("group-remove-command-complete");
+        },
+        GroupObservation::Absent => {},
+    }
+    if observe_group(group.gid).await? != GroupObservation::Absent {
+        return Err(InstallerError::HostMutationFailure);
+    }
+    let old = transaction.record.clone();
+    transaction.record.pending = None;
+    transaction.record.host_resources.clear();
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+    let old = transaction.record.clone();
+    transaction.record.phase = TransactionPhase::RolledBack;
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+async fn require_gid_without_primary_user(gid: u32) -> Result<(), InstallerError> {
+    let passwd = run_bounded_query(&host_path("/usr/bin/getent"), &["passwd"], 64 * 1024).await?;
+    if passwd.status != 0
+        || parse_identity_gids(&passwd.stdout, 3, 7)
+            .map_err(|_| InstallerError::HostMutationFailure)?
+            .contains(&gid)
+    {
+        return Err(InstallerError::HostMutationFailure);
+    }
+    Ok(())
+}
+
+async fn observe_group(gid: u32) -> Result<GroupObservation, InstallerError> {
+    let getent = host_path("/usr/bin/getent");
+    let by_name = run_bounded_query(&getent, &["group", "kapsel"], 4 * 1024).await?;
+    let gid_string = gid.to_string();
+    let by_gid = run_bounded_query(&getent, &["group", &gid_string], 4 * 1024).await?;
+    classify_group_observation(
+        by_name.status,
+        &by_name.stdout,
+        by_gid.status,
+        &by_gid.stdout,
+        gid,
+    )
+    .map_err(|_| InstallerError::HostMutationFailure)
+}
+
+async fn run_bounded_query(
+    path: &Path,
+    arguments: &[&str],
+    maximum: usize,
+) -> Result<BoundedCommandOutput, InstallerError> {
+    let mut command = tokio::process::Command::new(path);
+    command
+        .args(arguments)
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or(InstallerError::HostMutationFailure)?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+        let mut bytes = Vec::with_capacity(maximum.saturating_add(1));
+        stdout
+            .take(u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1))
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| InstallerError::HostMutationFailure)?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|_| InstallerError::HostMutationFailure)?;
+        if bytes.len() > maximum {
+            return Err(InstallerError::HostMutationFailure);
+        }
+        Ok(BoundedCommandOutput {
+            status: status.code().ok_or(InstallerError::HostMutationFailure)?,
+            stdout: bytes,
+        })
+    })
+    .await
+    .map_err(|_| InstallerError::HostMutationFailure)?
+}
+
+async fn run_identity_mutation(
+    lock: &OwnedFd,
+    program: &Path,
+    arguments: &[OsString],
+) -> Result<(), InstallerError> {
+    let inherited = rustix::io::fcntl_dupfd_cloexec(lock, 3)
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    rustix::io::fcntl_setfd(&inherited, rustix::io::FdFlags::empty())
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    let mut command = tokio::process::Command::new(host_path("/usr/bin/timeout"));
+    command
+        .arg("--signal=KILL")
+        .arg("10s")
+        .arg(program)
+        .args(arguments)
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    drop(inherited);
+    let _status = tokio::time::timeout(std::time::Duration::from_secs(11), child.wait())
+        .await
+        .map_err(|_| InstallerError::HostMutationFailure)?
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GroupObservation {
+    Absent,
+    Exact,
+}
+
+fn select_group_gid(groups: &[u8], passwd: &[u8]) -> Result<u32, InstallerError> {
+    let mut used = parse_identity_gids(groups, 2, 4)?;
+    used.extend(parse_identity_gids(passwd, 3, 7)?);
+    (101..=999)
+        .rev()
+        .find(|gid| !used.contains(gid))
+        .ok_or(InstallerError::HostPreflightFailure)
+}
+
+fn parse_identity_gids(
+    bytes: &[u8],
+    gid_field: usize,
+    field_count: usize,
+) -> Result<BTreeSet<u32>, InstallerError> {
+    if bytes.is_empty() || !bytes.ends_with(b"\n") {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| InstallerError::HostPreflightFailure)?;
+    let mut gids = BTreeSet::new();
+    for line in text.lines() {
+        let fields = line.split(':').collect::<Vec<_>>();
+        if fields.len() != field_count || fields[0].is_empty() {
+            return Err(InstallerError::HostPreflightFailure);
+        }
+        let encoded = fields
+            .get(gid_field)
+            .ok_or(InstallerError::HostPreflightFailure)?;
+        let gid = encoded
+            .parse::<u32>()
+            .map_err(|_| InstallerError::HostPreflightFailure)?;
+        if encoded != &gid.to_string() {
+            return Err(InstallerError::HostPreflightFailure);
+        }
+        gids.insert(gid);
+    }
+    Ok(gids)
+}
+
+fn classify_group_observation(
+    name_status: i32,
+    name_output: &[u8],
+    gid_status: i32,
+    gid_output: &[u8],
+    gid: u32,
+) -> Result<GroupObservation, InstallerError> {
+    if name_status == 2 && name_output.is_empty() && gid_status == 2 && gid_output.is_empty() {
+        return Ok(GroupObservation::Absent);
+    }
+    let expected = format!("kapsel:x:{gid}:\n");
+    if name_status == 0
+        && gid_status == 0
+        && name_output == expected.as_bytes()
+        && gid_output == expected.as_bytes()
+    {
+        return Ok(GroupObservation::Exact);
+    }
+    Err(InstallerError::HostPreflightFailure)
+}
+
 async fn run_host_preflight() -> Result<(), InstallerError> {
     if rustix::process::geteuid().is_root() == false
         || !cfg!(all(target_arch = "x86_64", target_env = "gnu"))
@@ -565,6 +902,7 @@ async fn run_bounded_command(path: &Path, arguments: &[&str]) -> Result<i32, Ins
     let mut command = tokio::process::Command::new(path);
     command
         .args(arguments)
+        .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -764,6 +1102,16 @@ fn stop_at_test_seam(seam: &str) {
 
 #[cfg(not(kapsel_installer_test_crash_seams))]
 fn stop_at_test_seam(_: &str) {}
+
+#[cfg(kapsel_installer_test_crash_seams)]
+fn fail_at_test_seam(seam: &str) -> bool {
+    std::env::var("KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM").as_deref() == Ok(seam)
+}
+
+#[cfg(not(kapsel_installer_test_crash_seams))]
+fn fail_at_test_seam(_: &str) -> bool {
+    false
+}
 
 fn acquire_installer_lock() -> Result<OwnedFd, InstallerError> {
     let root = rfs::openat(
@@ -1058,6 +1406,68 @@ fn stable_file(before: &Stat, after: &Stat, length: usize) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn group_selection_and_observation_are_exact_and_fail_closed() {
+        assert_eq!(
+            select_group_gid(
+                b"root:x:0:\ndaemon:x:1:\nunrelated:x:998:member\n",
+                b"root:x:0:0:root:/root:/bin/sh\nservice:x:1:999::/:/usr/sbin/nologin\n",
+            )
+            .unwrap(),
+            997
+        );
+        assert!(select_group_gid(b"malformed\n", b"root:x:0:0:root:/root:/bin/sh\n").is_err());
+
+        let exact = b"kapsel:x:999:\n";
+        assert_eq!(
+            classify_group_observation(0, exact, 0, exact, 999).unwrap(),
+            GroupObservation::Exact
+        );
+        assert_eq!(
+            classify_group_observation(2, b"", 2, b"", 999).unwrap(),
+            GroupObservation::Absent
+        );
+        for (name_status, name, gid_status, gid) in [
+            (0, exact.as_slice(), 2, b"".as_slice()),
+            (0, b"kapsel:x:998:\n".as_slice(), 0, exact.as_slice()),
+            (0, b"other:x:999:\n".as_slice(), 0, exact.as_slice()),
+            (0, b"kapsel:x:999:member\n".as_slice(), 0, exact.as_slice()),
+            (
+                0,
+                b"kapsel:x:999:\nextra:x:1:\n".as_slice(),
+                0,
+                exact.as_slice(),
+            ),
+        ] {
+            assert!(classify_group_observation(name_status, name, gid_status, gid, 999).is_err());
+        }
+    }
+
+    #[test]
+    fn bounded_query_rejects_oversized_timed_out_and_signaled_commands() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime must build");
+        runtime.block_on(async {
+            assert!(
+                run_bounded_query(Path::new("/bin/sh"), &["-c", "printf 12345"], 4)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                run_bounded_query(Path::new("/bin/sh"), &["-c", "kill -TERM $$"], 4)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                run_bounded_query(Path::new("/bin/sh"), &["-c", "sleep 11"], 4)
+                    .await
+                    .is_err()
+            );
+        });
+    }
 
     #[test]
     fn named_creation_has_exact_mode_before_repair_under_hostile_umask() {

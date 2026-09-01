@@ -142,13 +142,13 @@ struct InstallerTransaction {
     bootstrap_kubeconfig_sha256: String,
     cluster: TransactionCluster,
     credential_expiration: Option<String>,
-    host_resources: Vec<serde_json::Value>,
+    host_resources: Vec<HostResource>,
     input_directory: TransactionInputDirectory,
     installer_sha256: String,
     kube_context: String,
     kubernetes_resources: Vec<serde_json::Value>,
     operator_inputs: TransactionOperatorInputs,
-    pending: Option<serde_json::Value>,
+    pending: Option<PendingAction>,
     phase: TransactionPhase,
     schema: u64,
     transaction_id: String,
@@ -182,6 +182,33 @@ struct TransactionOperatorInputs {
     receipt_seed: String,
     #[serde(rename = "receipt.trust")]
     receipt_trust: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct HostResource {
+    gid: u32,
+    kind: HostResourceKind,
+    name: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HostResourceKind {
+    Group,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+enum PendingAction {
+    CreateGroup {
+        gid: u32,
+        name: String,
+        transaction_id: String,
+    },
+    RemoveGroup {
+        group: HostResource,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -237,6 +264,7 @@ enum InstallerError {
     InstallerLockFailure,
     TransactionFailure,
     HostPreflightFailure,
+    HostMutationFailure,
     KubernetesPreflightFailure,
 }
 
@@ -251,6 +279,7 @@ impl InstallerError {
             Self::InstallerLockFailure => "installer_lock_failure",
             Self::TransactionFailure => "transaction_failure",
             Self::HostPreflightFailure => "host_preflight_failure",
+            Self::HostMutationFailure => "host_mutation_failure",
             Self::KubernetesPreflightFailure => "kubernetes_preflight_failure",
         }
     }
@@ -286,12 +315,16 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerErr
 enum InstallPhase {
     Prepared,
     Installing,
+    RollingBack,
+    RolledBack,
 }
 
 fn classify_install_phase(phase: TransactionPhase) -> Result<InstallPhase, InstallerError> {
     match phase {
         TransactionPhase::Prepared => Ok(InstallPhase::Prepared),
         TransactionPhase::Installing => Ok(InstallPhase::Installing),
+        TransactionPhase::RollingBack => Ok(InstallPhase::RollingBack),
+        TransactionPhase::RolledBack => Ok(InstallPhase::RolledBack),
         _ => Err(InstallerError::TransactionFailure),
     }
 }
@@ -619,10 +652,9 @@ fn validate_transaction(transaction: &InstallerTransaction) -> Result<(), Instal
     ];
     if transaction.schema != 1
         || transaction.credential_expiration.is_some()
-        || !transaction.host_resources.is_empty()
         || !transaction.kubernetes_resources.is_empty()
-        || transaction.pending.is_some()
         || !valid_action_phase(transaction.action, transaction.phase)
+        || !valid_transaction_state(transaction)
         || transaction.input_directory.uid != 0
         || transaction.input_directory.mode != 0o700
         || !valid_transaction_path(&transaction.input_directory.path)
@@ -633,6 +665,49 @@ fn validate_transaction(transaction: &InstallerTransaction) -> Result<(), Instal
         return Err(InstallerError::TransactionFailure);
     }
     Ok(())
+}
+
+fn valid_transaction_state(transaction: &InstallerTransaction) -> bool {
+    let group = transaction.host_resources.as_slice();
+    let pending = transaction.pending.as_ref();
+    let valid_group = |resource: &HostResource| {
+        resource.kind == HostResourceKind::Group
+            && resource.name == "kapsel"
+            && (101..=999).contains(&resource.gid)
+    };
+    let valid_create = |gid: u32, name: &str, transaction_id: &str| {
+        name == "kapsel"
+            && (101..=999).contains(&gid)
+            && transaction_id == transaction.transaction_id
+    };
+
+    match transaction.phase {
+        TransactionPhase::Prepared | TransactionPhase::RolledBack => {
+            group.is_empty() && pending.is_none()
+        },
+        TransactionPhase::Installing => match (group, pending) {
+            ([], None) => true,
+            (
+                [],
+                Some(PendingAction::CreateGroup {
+                    gid,
+                    name,
+                    transaction_id,
+                }),
+            ) => valid_create(*gid, name, transaction_id),
+            ([resource], None) => valid_group(resource),
+            _ => false,
+        },
+        TransactionPhase::RollingBack => match (group, pending) {
+            ([], None) => true,
+            ([resource], None) => valid_group(resource),
+            ([resource], Some(PendingAction::RemoveGroup { group })) => {
+                valid_group(resource) && resource == group
+            },
+            _ => false,
+        },
+        _ => group.is_empty() && pending.is_none(),
+    }
 }
 
 fn valid_action_phase(action: Action, phase: TransactionPhase) -> bool {
@@ -663,6 +738,9 @@ fn valid_action_phase(action: Action, phase: TransactionPhase) -> bool {
 }
 
 fn legal_transaction_successor(old: &InstallerTransaction, next: &InstallerTransaction) -> bool {
+    if validate_transaction(old).is_err() || validate_transaction(next).is_err() {
+        return false;
+    }
     let transition = matches!(
         (old.phase, next.phase),
         (TransactionPhase::Prepared, TransactionPhase::Installing)
@@ -707,10 +785,53 @@ fn legal_transaction_successor(old: &InstallerTransaction, next: &InstallerTrans
         .bootstrap_kubeconfig_sha256
         .clone_from(&next.bootstrap_kubeconfig_sha256);
     let digest_successor = old.phase == next.phase
+        && old.pending.is_none()
         && old.bootstrap_kubeconfig_sha256 != next.bootstrap_kubeconfig_sha256
         && valid_digest(&next.bootstrap_kubeconfig_sha256)
         && next == &renewed;
-    phase_successor || digest_successor
+
+    let pending_successor = if old.phase == next.phase && old.action == next.action {
+        let mut expected = old.clone();
+        match (&old.host_resources[..], old.pending.as_ref()) {
+            ([], None) if old.phase == TransactionPhase::Installing => {
+                expected.pending.clone_from(&next.pending);
+                matches!(next.pending, Some(PendingAction::CreateGroup { .. })) && next == &expected
+            },
+            (
+                [],
+                Some(PendingAction::CreateGroup {
+                    gid,
+                    name,
+                    transaction_id: _,
+                }),
+            ) if old.phase == TransactionPhase::Installing => {
+                expected.pending = None;
+                expected.host_resources.push(HostResource {
+                    gid: *gid,
+                    kind: HostResourceKind::Group,
+                    name: name.clone(),
+                });
+                next == &expected
+            },
+            ([resource], None) if old.phase == TransactionPhase::RollingBack => {
+                expected.pending = Some(PendingAction::RemoveGroup {
+                    group: resource.clone(),
+                });
+                next == &expected
+            },
+            ([resource], Some(PendingAction::RemoveGroup { group }))
+                if old.phase == TransactionPhase::RollingBack && resource == group =>
+            {
+                expected.pending = None;
+                expected.host_resources.clear();
+                next == &expected
+            },
+            _ => false,
+        }
+    } else {
+        false
+    };
+    phase_successor || digest_successor || pending_successor
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -1010,6 +1131,69 @@ mod tests {
     }
 
     #[test]
+    fn first_group_pending_and_ownership_successors_are_exact() {
+        let mut installing = test_initial_transaction();
+        installing.phase = TransactionPhase::Installing;
+
+        let pending = PendingAction::CreateGroup {
+            name: String::from("kapsel"),
+            gid: 999,
+            transaction_id: installing.transaction_id.clone(),
+        };
+        let mut creating = installing.clone();
+        creating.pending = Some(pending.clone());
+        assert!(legal_transaction_successor(&installing, &creating));
+        assert_eq!(
+            serde_json::to_string(&pending).unwrap(),
+            format!(
+                r#"{{"action":"create_group","gid":999,"name":"kapsel","transaction_id":"{}"}}"#,
+                installing.transaction_id
+            )
+        );
+
+        let group = HostResource {
+            gid: 999,
+            kind: HostResourceKind::Group,
+            name: String::from("kapsel"),
+        };
+        let mut created = creating.clone();
+        created.pending = None;
+        created.host_resources.push(group.clone());
+        assert!(legal_transaction_successor(&creating, &created));
+
+        let mut rolling_back = created.clone();
+        rolling_back.phase = TransactionPhase::RollingBack;
+        assert!(legal_transaction_successor(&created, &rolling_back));
+        let mut removing = rolling_back.clone();
+        removing.pending = Some(PendingAction::RemoveGroup { group });
+        assert!(legal_transaction_successor(&rolling_back, &removing));
+        let mut removed = removing.clone();
+        removed.pending = None;
+        removed.host_resources.clear();
+        assert!(legal_transaction_successor(&removing, &removed));
+
+        let mut missing_evidence = creating.clone();
+        missing_evidence.pending = None;
+        assert!(!legal_transaction_successor(&creating, &missing_evidence));
+
+        let mut wrong_evidence = missing_evidence;
+        wrong_evidence.host_resources.push(HostResource {
+            gid: 998,
+            kind: HostResourceKind::Group,
+            name: String::from("kapsel"),
+        });
+        assert!(!legal_transaction_successor(&creating, &wrong_evidence));
+
+        let mut hostile = creating;
+        hostile.pending = Some(PendingAction::CreateGroup {
+            name: String::from("other"),
+            gid: 999,
+            transaction_id: hostile.transaction_id.clone(),
+        });
+        assert!(!legal_transaction_successor(&installing, &hostile));
+    }
+
+    #[test]
     fn bootstrap_digest_successor_is_same_phase_and_initial_digest_is_immutable() {
         let old = test_initial_transaction();
         let mut renewed = old.clone();
@@ -1033,6 +1217,14 @@ mod tests {
         assert_eq!(
             classify_install_phase(TransactionPhase::Installing).unwrap(),
             InstallPhase::Installing
+        );
+        assert_eq!(
+            classify_install_phase(TransactionPhase::RollingBack).unwrap(),
+            InstallPhase::RollingBack
+        );
+        assert_eq!(
+            classify_install_phase(TransactionPhase::RolledBack).unwrap(),
+            InstallPhase::RolledBack
         );
         assert!(classify_install_phase(TransactionPhase::Installed).is_err());
     }

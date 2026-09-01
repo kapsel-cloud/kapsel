@@ -1,7 +1,7 @@
 # Kapsel service
 
-Status: accepted unpublished service implementation; installer contract approved but not
-implemented.
+Status: accepted unpublished service implementation; installer foundation and first recoverable
+identity mutation implemented, complete installer journey not implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
@@ -181,13 +181,64 @@ The systemd unit uses `Type=exec`, `User=kapsel`, `Group=kapsel-service-callers`
 limiting, the fixed argv above, and `WantedBy=multi-user.target`. Every boot, explicit start, or
 explicit restart attempts startup once.
 
-The installer creates the `kapsel` private group, `kapsel-service-callers`, and locked `kapsel` user
-through fixed absolute no-shell identity commands using transaction-preselected numeric IDs and the
-exact transaction identity as GECOS. The Debian preview appoints `/usr/sbin/groupadd`,
-`/usr/sbin/useradd`, `/usr/sbin/usermod`, `/usr/sbin/nologin`, `/usr/bin/getent`, and
-`/usr/bin/systemctl`; preflight uses only fixed bounded `getent` and `systemctl` read-only queries.
-This contract does not yet appoint future identity-mutation argv. The installer creates the locked
-external caller separately and binds its exact caller-group membership. It does not invoke
+Identity installation begins with the `kapsel` private group, then creates `kapsel-service-callers`,
+the locked `kapsel` user, the locked external caller, and the caller's exact group membership.
+Numeric IDs are transaction-preselected before their mutation, and created users carry the exact
+transaction identity as GECOS. The Debian preview appoints `/usr/sbin/groupadd`,
+`/usr/sbin/groupdel`, `/usr/sbin/useradd`, `/usr/sbin/usermod`, `/usr/sbin/nologin`,
+`/usr/bin/getent`, `/usr/bin/systemctl`, and `/usr/bin/timeout`; all execution is direct without a
+shell.
+
+The first identity mutation creates only the `kapsel` private group. After clean-install preflight,
+the installer runs bounded `/usr/bin/getent group` and `/usr/bin/getent passwd`, accepts at most 64
+KiB of stdout from each, and strictly parses every returned group GID and passwd primary GID. It
+preselects the highest value unused by either database in the installer's fixed preview range
+101–999, then requires bounded `/usr/bin/getent group <decimal-gid>` to report absence. Exhaustion,
+malformed or oversized output, timeout, signal termination, or any result other than exact absence
+fails before pending publication. Selection does not call this fixed range the host's system range,
+consult `login.defs`, accept an ambient range, or permit a duplicate or existing primary GID.
+
+The installer durably publishes `create_group` with exact name `kapsel`, the selected GID, and the
+transaction identity before executing exactly:
+
+```text
+/usr/bin/timeout --signal=KILL 10s /usr/sbin/groupadd --system --gid <decimal-gid> kapsel
+```
+
+The installer gives the wrapper an inherited duplicate of its already-held installer-lock open file
+description. The duplicate has close-on-exec cleared only for this serial spawn; the installer drops
+its copy immediately after spawn. The wrapper and mutation child therefore retain the exclusive lock
+if the installer dies, and recovery cannot acquire the installer lock until that command has exited.
+The wrapper receives null standard input, kills the mutation at ten seconds, and discards stdout and
+stderr. Failure to establish this inherited-lock lifetime fails before command execution. Completion
+is established only by separate bounded queries `/usr/bin/getent group kapsel` and
+`/usr/bin/getent group <decimal-gid>`, each with at most 4 KiB of stdout. Both absent means not
+started; both must otherwise return the same single exact `kapsel:x:<decimal-gid>:` record,
+including an empty member list, to establish completion under the already durable pending
+transaction. One absent result, additional or malformed output, another name or GID, or any other
+mismatch is an ownership conflict. Command exit alone never establishes completion. Exact completion
+adds the group ownership record and clears pending in one durable successor. This evidence relies on
+the supported host having no concurrent identity administrator: the group format has no transaction
+marker, so another identity authority that creates the exact pending name/GID after clean preflight
+is indistinguishable. Such concurrent administration is outside the disposable preview boundary.
+
+Install rollback verifies the same two exact observations, durably publishes `remove_group` with the
+complete recorded ownership, and executes exactly:
+
+```text
+/usr/bin/timeout --signal=KILL 10s /usr/sbin/groupdel kapsel
+```
+
+The same inherited installer-lock lifetime, null-input, ten-second kill, and discarded-output bounds
+apply. Before publishing removal pending and again immediately before every `groupdel` attempt,
+bounded `/usr/bin/getent passwd` must establish that no returned account has the recorded GID as its
+primary GID. Both exact observations mean removal has not started and may be retried; both absent
+establish completion and remove the ownership record while clearing pending in one durable
+successor. Every mixed, replaced, or malformed observation is an ownership conflict and is never
+deleted. `remove_group` is an install-rollback action only; successful uninstall retains identities
+as specified below.
+
+Later identity mutation argv remain unappointed and unimplemented. The installer does not invoke
 `systemd-sysusers`; the installed sysusers record is a vendor asset only and is never installer
 ownership or recovery evidence. The caller's supervisor must set effective
 `Group=kapsel-service-callers`; supplementary membership alone is insufficient.
@@ -458,6 +509,7 @@ bootstrap credential, private key, seed, grant bytes, or trust bytes.
 | `issue_credential`   | ServiceAccount UID, requested seconds, destination, staging leaf, owner/mode, transaction marker, then staged inode/digest/length/expiration when known | No leaf repeats issuance; a marked unbound leaf is removed and reissued; a bound inode continues publication. |
 | `replace_credential` | destination and recorded staged device/inode, expiration                                                                                                | Destination same inode is complete; staging same inode is not started; every other shape conflicts.           |
 | `remove_membership`  | recorded membership                                                                                                                                     | Absence is complete; exact membership is not started; changed identities conflict.                            |
+| `remove_group`       | complete recorded group ownership                                                                                                                       | Absence is complete; exact name/GID is not started; changed identity conflicts.                               |
 | `disable_service`    | recorded enablement link identities                                                                                                                     | All absent is complete; exact recorded links remain not started; any replacement conflicts.                   |
 | `delete_kubernetes`  | complete recorded Kubernetes ownership                                                                                                                  | Delete uses UID precondition; absence is complete; same UID remains not started; replacement conflicts.       |
 | `remove_host`        | complete recorded host ownership                                                                                                                        | Absence is complete; exact recorded inode remains not started; any replacement conflicts.                     |
@@ -630,6 +682,9 @@ systemd-owned.
 ## Residual risk
 
 Source qualification covers one fresh x86-64 Debian 12/systemd 252 and Kubernetes 1.33 environment.
-This finite evidence establishes the exact unpublished service journey only. It does not establish
-production safety, another platform, upgrade compatibility, backup, HA, repeated external operation,
-or protection from compromised host root, kernel, or service identity.
+First-group recovery additionally relies on exclusive host identity administration while the
+installer transaction is nonterminal; group records cannot carry a transaction marker. Its current
+mutation proof uses fixed executable fixtures and does not yet qualify native Debian `groupadd` or
+`groupdel` behavior. This finite evidence establishes the exact unpublished service journey only. It
+does not establish production safety, another platform, upgrade compatibility, backup, HA, repeated
+external operation, or protection from compromised host root, kernel, or service identity.

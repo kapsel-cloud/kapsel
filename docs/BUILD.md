@@ -110,15 +110,18 @@ root-owned test operator input; it proves bundle generation, descriptor-relative
 inventory and metadata checks, grant/key/receipt consistency, valid kubeconfig composition, hostile
 filesystem refusal, exact installer-lock handling and named-object modes under a hostile umask,
 kill/restart recovery after lock and transaction-directory creation, recovered-parent sync before
-crash-safe transaction publication, marked phase-successor update and recovery, and the next
+crash-safe transaction publication, marked phase and first-group pending successors, exact group
+creation observation, inherited-lock command lifetime, ownership-safe group rollback, and the next
 `implementation_incomplete` boundary:
 
 ```sh
 python3 scripts/test-kapsel-installer-bundle.py
 ```
 
-Install now performs fixed read-only host and Kubernetes clean-install preflight and durably enters
-`installing` before returning `implementation_incomplete`; it still performs no installation,
+Install now performs fixed read-only host and Kubernetes clean-install preflight, durably enters
+`installing`, and creates or recovers the exact transaction-owned `kapsel` private group before
+returning `implementation_incomplete`. Test-only failure injection also proves ownership-safe
+removal and `rolled_back` recovery. It still performs no later identity or asset installation,
 Kubernetes mutation, credential issuance, activation, refresh, or uninstall. No candidate assembly
 command exists. Exact metadata schema and provenance, real feature-free payload construction,
 deterministic assembly, and the final linked installer's 64 MiB bound remain candidate-assembly

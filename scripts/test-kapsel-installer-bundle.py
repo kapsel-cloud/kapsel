@@ -171,8 +171,43 @@ cat >"$host/usr/bin/systemctl" <<'EOF'
 #!/bin/sh
 case "$1" in show-environment) exit 0;; cat) exit 1;; is-active) exit 3;; is-enabled) exit 1;; *) exit 9;; esac
 EOF
-printf '#!/bin/sh\nexit 2\n' >"$host/usr/bin/getent"
-for tool in groupadd useradd usermod nologin; do cp "$host/usr/bin/getent" "$host/usr/sbin/$tool"; done
+cat >"$host/usr/bin/getent" <<'EOF'
+#!/bin/sh
+database=$1; key=${{2-}}
+case "$database:$key" in
+ passwd:) printf 'root:x:0:0:root:/root:/bin/sh\nservice:x:1:999::/:/usr/sbin/nologin\n'; test ! -f /target/passwd-extra || /bin/cat /target/passwd-extra;;
+ passwd:*) exit 2;;
+ group:) printf 'root:x:0:\nunrelated:x:998:member\n'; test ! -f /target/group-state || /bin/cat /target/group-state;;
+ group:kapsel) test -f /target/group-state || exit 2; /bin/cat /target/group-state;;
+ group:unrelated) printf 'unrelated:x:998:member\n';;
+ group:*) test -f /target/group-state || exit 2; /bin/grep -q "^kapsel:x:$key:$" /target/group-state || exit 2; /bin/cat /target/group-state;;
+ *) exit 1;;
+esac
+EOF
+cat >"$host/usr/sbin/groupadd" <<'EOF'
+#!/bin/sh
+{{ printf 'groupadd'; printf ' %s' "$@"; printf '\n'; }} >>/target/identity-commands
+test "$#" = 4 && test "$1" = --system && test "$2" = --gid && test "$4" = kapsel || exit 2
+if test -f /target/group-timeout; then : >/target/group-command-started; /bin/sleep 12
+elif test -f /target/group-delay; then : >/target/group-command-started; /bin/sleep 3
+fi
+test ! -e /target/group-state || exit 9
+printf 'kapsel:x:%s:\n' "$3" >/target/group-state
+EOF
+cat >"$host/usr/sbin/groupdel" <<'EOF'
+#!/bin/sh
+{{ printf 'groupdel'; printf ' %s' "$@"; printf '\n'; }} >>/target/identity-commands
+test "$#" = 1 && test "$1" = kapsel || exit 2
+test -f /target/group-state || exit 6
+/bin/rm /target/group-state
+EOF
+printf '#!/bin/sh\nexit 2\n' >"$host/usr/sbin/useradd"
+for tool in usermod nologin; do cp "$host/usr/sbin/useradd" "$host/usr/sbin/$tool"; done
+cat >"$host/usr/bin/timeout" <<'EOF'
+#!/bin/sh
+{{ printf 'timeout'; printf ' %s' "$@"; printf '\n'; }} >>/target/timeout-commands
+exec /usr/bin/timeout "$@"
+EOF
 chmod 0755 "$host/usr/bin/"* "$host/usr/sbin/"*; chown -R 0:0 "$host"
 export KAPSEL_INSTALLER_TEST_HOST_ROOT="$host"
 : >/target/kube-requests; echo success >/target/kube-mode; /target/kube-server.py & kube_pid=$!
@@ -191,18 +226,23 @@ run_killed() {{
  stopped=false; for _ in $(seq 1 1500); do case "$(ps -o stat= -p "$pid" 2>/dev/null || true)" in *T*) stopped=true; break;; esac; kill -0 "$pid" 2>/dev/null || break; sleep .01; done
  test "$stopped" = true; kill -KILL "$pid"; status=0; wait "$pid" || status=$?; test "$status" = 137
 }}
-reset() {{ rm -rf /var/lib/kapsel-installer; rm -f /run/lock/kapsel-installer.lock; : >/target/kube-requests; echo success >/target/kube-mode; }}
+reset() {{ rm -rf /var/lib/kapsel-installer; rm -f /run/lock/kapsel-installer.lock /target/group-state /target/group-delay /target/group-command-started /target/group-timeout /target/passwd-extra; : >/target/identity-commands; : >/target/timeout-commands; : >/target/kube-requests; echo success >/target/kube-mode; }}
 prepared() {{ grep -F '"phase":"prepared"' /var/lib/kapsel-installer/transaction.json >/dev/null; }}
 installing() {{ grep -F '"phase":"installing"' /var/lib/kapsel-installer/transaction.json >/dev/null; }}
+rolled_back() {{ grep -F '"phase":"rolled_back"' /var/lib/kapsel-installer/transaction.json >/dev/null; }}
+group_owned() {{ test "$(cat /target/group-state)" = 'kapsel:x:997:'; grep -F '"host_resources":[{{"gid":997,"kind":"group","name":"kapsel"}}]' /var/lib/kapsel-installer/transaction.json >/dev/null; grep -F '"pending":null' /var/lib/kapsel-installer/transaction.json >/dev/null; }}
 get_only() {{ test -s /target/kube-requests; ! grep -Ev '^GET /' /target/kube-requests; }}
-no_resources() {{ for p in etc/kapsel var/lib/kapsel run/kapsel usr/libexec/kapsel usr/share/kapsel usr/share/doc/kapsel usr/bin/kapsel usr/bin/kapsel-service-client usr/lib/systemd/system/kapseld.service usr/lib/sysusers.d/kapseld.conf; do test ! -e "$host/$p"; done; }}
+unrelated_preserved() {{ test "$("$host/usr/bin/getent" group unrelated)" = 'unrelated:x:998:member'; }}
+no_files() {{ for p in etc/kapsel var/lib/kapsel run/kapsel usr/libexec/kapsel usr/share/kapsel usr/share/doc/kapsel usr/bin/kapsel usr/bin/kapsel-service-client usr/lib/systemd/system/kapseld.service usr/lib/sysusers.d/kapseld.conf; do test ! -e "$host/$p"; done; }}
 
 reset; run_failure transaction_failure refresh-credential; test ! -e /var/lib/kapsel-installer
 run_failure transaction_failure uninstall; test ! -e /var/lib/kapsel-installer; test ! -s /target/kube-requests
-reset; run_failure implementation_incomplete; installing; get_only; test "$(wc -l </target/kube-requests)" = 5
+reset; run_failure implementation_incomplete; installing; group_owned; get_only; test "$(wc -l </target/kube-requests)" = 5
+test "$(cat /target/identity-commands)" = 'groupadd --system --gid 997 kapsel'
+test "$(cat /target/timeout-commands)" = "timeout --signal=KILL 10s $host/usr/sbin/groupadd --system --gid 997 kapsel"
 cp /var/lib/kapsel-installer/transaction.json /target/installing.json; requests=$(wc -l </target/kube-requests)
-run_failure implementation_incomplete; cmp /var/lib/kapsel-installer/transaction.json /target/installing.json; test "$(wc -l </target/kube-requests)" = "$requests"
-run_failure implementation_incomplete refresh-credential; run_failure implementation_incomplete uninstall; test "$(wc -l </target/kube-requests)" = "$requests"; no_resources
+run_failure implementation_incomplete; cmp /var/lib/kapsel-installer/transaction.json /target/installing.json; test "$(wc -l </target/kube-requests)" = "$requests"; test "$(wc -l </target/identity-commands)" = 1
+run_failure implementation_incomplete refresh-credential; run_failure implementation_incomplete uninstall; test "$(wc -l </target/kube-requests)" = "$requests"; group_owned; no_files
 initial=$(sed -n 's/.*"bootstrap_kubeconfig_initial_sha256":"\([0-9a-f]*\)".*/\1/p' /var/lib/kapsel-installer/transaction.json)
 sed -i 's/token: fixture-token/token: renewed-token/' /secure/kapsel/bootstrap-kubeconfig.yaml; run_failure implementation_incomplete
 current=$(sed -n 's/.*"bootstrap_kubeconfig_sha256":"\([0-9a-f]*\)".*/\1/p' /var/lib/kapsel-installer/transaction.json)
@@ -211,12 +251,46 @@ sed -i 's/token: renewed-token/token: fixture-token/' /secure/kapsel/bootstrap-k
 
 reset; printf sentinel >"$host/usr/bin/kapsel"; chmod 0711 "$host/usr/bin/kapsel"; before=$(stat -c '%i:%s:%a' "$host/usr/bin/kapsel"):$(sha256sum "$host/usr/bin/kapsel")
 run_failure host_preflight_failure; prepared; after=$(stat -c '%i:%s:%a' "$host/usr/bin/kapsel"):$(sha256sum "$host/usr/bin/kapsel"); test "$before" = "$after"; rm "$host/usr/bin/kapsel"; test ! -s /target/kube-requests
-reset; echo role-conflict >/target/kube-mode; run_failure kubernetes_preflight_failure; prepared; get_only; no_resources
-reset; echo api-failure >/target/kube-mode; run_failure kubernetes_preflight_failure; prepared; get_only; no_resources
+reset; echo role-conflict >/target/kube-mode; run_failure kubernetes_preflight_failure; prepared; get_only; no_files; test ! -e /target/group-state
+reset; echo api-failure >/target/kube-mode; run_failure kubernetes_preflight_failure; prepared; get_only; no_files; test ! -e /target/group-state
 
-reset; run_killed successor-inode-synced; prepared; test ! -e /var/lib/kapsel-installer/.transaction.next; first=$(wc -l </target/kube-requests); run_failure implementation_incomplete; installing; test "$(wc -l </target/kube-requests)" -gt "$first"
-reset; run_killed successor-linked; prepared; test -f /var/lib/kapsel-installer/.transaction.next; first=$(wc -l </target/kube-requests); run_failure implementation_incomplete; installing; test ! -e /var/lib/kapsel-installer/.transaction.next; test "$(wc -l </target/kube-requests)" = "$first"
-reset; run_killed successor-renamed; installing; test ! -e /var/lib/kapsel-installer/.transaction.next; first=$(wc -l </target/kube-requests); run_failure implementation_incomplete; test "$(wc -l </target/kube-requests)" = "$first"
+reset; run_killed successor-inode-synced; prepared; test ! -e /var/lib/kapsel-installer/.transaction.next; first=$(wc -l </target/kube-requests); run_failure implementation_incomplete; installing; group_owned; test "$(wc -l </target/kube-requests)" -gt "$first"
+reset; run_killed successor-linked; prepared; test -f /var/lib/kapsel-installer/.transaction.next; first=$(wc -l </target/kube-requests); run_failure implementation_incomplete; installing; group_owned; test ! -e /var/lib/kapsel-installer/.transaction.next; test "$(wc -l </target/kube-requests)" = "$first"
+reset; run_killed successor-renamed; installing; test ! -e /var/lib/kapsel-installer/.transaction.next; first=$(wc -l </target/kube-requests); run_failure implementation_incomplete; group_owned; test "$(wc -l </target/kube-requests)" = "$first"
+
+reset; run_killed group-pending; installing; grep -F '"action":"create_group"' /var/lib/kapsel-installer/transaction.json >/dev/null; test ! -e /target/group-state
+run_failure implementation_incomplete; group_owned; test "$(wc -l </target/identity-commands)" = 1
+reset; run_killed group-command-complete; test -f /target/group-state; grep -F '"action":"create_group"' /var/lib/kapsel-installer/transaction.json >/dev/null
+run_failure implementation_incomplete; group_owned; test "$(wc -l </target/identity-commands)" = 1
+
+reset; run_killed group-pending; printf 'kapsel:x:996:\n' >/target/group-state; cp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction
+run_failure host_mutation_failure; cmp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction; test "$(cat /target/group-state)" = 'kapsel:x:996:'; test ! -s /target/identity-commands
+reset; run_failure implementation_incomplete; printf 'kapsel:x:996:\n' >/target/group-state; cp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction
+run_failure host_mutation_failure; cmp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction; test "$(cat /target/group-state)" = 'kapsel:x:996:'; test "$(wc -l </target/identity-commands)" = 1
+
+reset; export KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM=first-group-complete; run_failure implementation_incomplete; unset KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM
+rolled_back; test ! -e /target/group-state; test "$(cat /target/identity-commands)" = 'groupadd --system --gid 997 kapsel
+groupdel kapsel'; test "$(cat /target/timeout-commands)" = "timeout --signal=KILL 10s $host/usr/sbin/groupadd --system --gid 997 kapsel
+timeout --signal=KILL 10s $host/usr/sbin/groupdel kapsel"; unrelated_preserved; no_files
+reset; export KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM=first-group-complete; run_killed group-rollback-before-pending; unset KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM
+printf 'kapsel:x:996:\n' >/target/group-state; cp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction
+run_failure host_mutation_failure; cmp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction; test "$(cat /target/group-state)" = 'kapsel:x:996:'; test "$(wc -l </target/identity-commands)" = 1
+reset; export KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM=first-group-complete; run_killed group-remove-command-complete; unset KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM
+test ! -e /target/group-state; grep -F '"action":"remove_group"' /var/lib/kapsel-installer/transaction.json >/dev/null
+run_failure implementation_incomplete; rolled_back; test ! -e /target/group-state; test "$(wc -l </target/identity-commands)" = 2
+reset; export KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM=first-group-complete; run_killed group-remove-pending; unset KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM
+printf 'late:x:2000:997::/:/usr/sbin/nologin\n' >/target/passwd-extra; cp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction
+run_failure host_mutation_failure; cmp /var/lib/kapsel-installer/transaction.json /target/conflict-transaction; test "$(cat /target/group-state)" = 'kapsel:x:997:'; grep -F '"action":"remove_group"' /var/lib/kapsel-installer/transaction.json >/dev/null; test "$(wc -l </target/identity-commands)" = 1
+
+reset; : >/target/group-timeout; run_failure host_mutation_failure; test ! -e /target/group-state; grep -F '"action":"create_group"' /var/lib/kapsel-installer/transaction.json >/dev/null; test "$(wc -l </target/identity-commands)" = 1; unrelated_preserved
+
+reset; : >/target/group-delay; : >/target/stdout; : >/target/stderr
+"$installer" install --operator-input /secure/kapsel --kube-context nonprod >/target/stdout 2>/target/stderr & pid=$!
+for _ in $(seq 1 1500); do test -f /target/group-command-started && break; kill -0 "$pid"; sleep .01; done
+test -f /target/group-command-started; kill -KILL "$pid"; status=0; wait "$pid" || status=$?; test "$status" = 137
+run_failure installer_lock_failure
+for _ in $(seq 1 500); do test -f /target/group-state && break; sleep .01; done
+test -f /target/group-state; rm /target/group-delay; run_failure implementation_incomplete; group_owned; test "$(wc -l </target/identity-commands)" = 1
 
 reset; run_killed successor-inode-synced; transaction=/var/lib/kapsel-installer/transaction.json; successor=/var/lib/kapsel-installer/.transaction.next
 sed 's/"phase":"prepared"/"phase":"installed"/' "$transaction" >"$successor"; chmod 0600 "$successor"
@@ -227,7 +301,7 @@ int main(int c, char **v) {{ return c != 3 || setxattr(v[1], "user.kapsel.transa
 EOF
 cc /target/set-xattr.c -o /target/set-xattr; transaction_id=$(sed -n 's/.*"transaction_id":"\([0-9a-f]*\)".*/\1/p' "$transaction")
 /target/set-xattr "$successor" "$transaction_id"; cp "$successor" /target/hostile-next
-run_failure transaction_failure; cmp "$successor" /target/hostile-next; run_failure transaction_failure refresh-credential; cmp "$successor" /target/hostile-next; prepared; get_only; no_resources
+run_failure transaction_failure; cmp "$successor" /target/hostile-next; run_failure transaction_failure refresh-credential; cmp "$successor" /target/hostile-next; prepared; get_only; no_files; test ! -e /target/group-state
 '''
         container = f"kapsel-installer-bundle-{os.getpid()}-{secrets.token_hex(4)}"
         command = ["docker", "run", "--rm", "--name", container, "--platform", "linux/amd64", "--volume", f"{ROOT}:/workspace:ro", "--volume", f"{stage}:/stage:ro", "--volume", f"{target}:/target", "--volume", f"{operator}:/operator-fixture:ro", "--workdir", "/workspace", "--env", "CARGO_TARGET_DIR=/target", "--env", "KAPSEL_INSTALLER_STAGE=/stage", "--env", f"HOST_UID={os.getuid()}", "--env", f"HOST_GID={os.getgid()}", BUILDER_IMAGE, "sh", "-eu", "-c", script]

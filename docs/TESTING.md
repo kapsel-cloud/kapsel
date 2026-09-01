@@ -227,12 +227,17 @@ under a hostile umask, kill/restart recovery after lock and transaction-director
 recovered-parent sync before crash-safe canonical transaction publication, and hostile metadata,
 inventory, path, special-file, bounds, authority, lock, and transaction refusal before requiring
 `implementation_incomplete`. Portable package unit tests own the strict bounded bootstrap-kubeconfig
-grammar, canonical prepared record, and hostile aliases, duplicates, unknowns, external references,
-credential forms, decoded bounds, and URL shapes. The Docker smoke explicitly runs the Linux root
-unit test for unnamed-inode initial publication, marked phase-successor update, interruption seams,
-and conflicting-successor evidence preservation. These gates prove fixed read-only host and
-Kubernetes clean-install preflight plus the phase-only `prepared -> installing` successor. They
-prove no pending-action or resource-evidence successor, payload provenance, metadata schema,
+grammar, canonical transaction records, exact first-group pending and ownership successors, fixed
+GID selection, and hostile aliases, duplicates, unknowns, external references, credential forms,
+decoded bounds, and URL shapes. The Docker smoke explicitly runs the Linux root unit tests and
+crosses unnamed-inode publication, marked phase and pending successors, exact group command argv and
+observation, interruption before and after the command, installer death while the inherited-lock
+mutation child remains live, conflicting identities before rollback intent, bounded oversized,
+timed-out, and signaled queries, mutation timeout, ownership-safe rollback, explicit unrelated
+identity preservation, and conflicting-successor evidence preservation. These gates prove fixed
+read-only host and Kubernetes clean-install preflight, `prepared -> installing`, and the first
+recoverable `kapsel` private-group mutation. They prove no later identity, asset, Kubernetes,
+credential, activation, refresh, or uninstall mutation, payload provenance, metadata schema,
 final-size bound, runnable installation, or candidate qualification.
 
 The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
