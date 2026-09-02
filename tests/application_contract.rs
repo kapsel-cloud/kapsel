@@ -12,8 +12,6 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
-use tower_test::mock;
-
 use kapsel::{
     open_application_from_fixed_operator_document, provision_exact_grant,
     validate_service_operator_inputs, AgentRequest, Application, ApplicationError,
@@ -21,6 +19,7 @@ use kapsel::{
     OperatorConfiguration, ReceiptTrust, SetDeploymentImageReceipt, SetDeploymentImageStatus,
     TargetRejection,
 };
+use tower_test::mock;
 
 fn request() -> AgentRequest {
     AgentRequest {

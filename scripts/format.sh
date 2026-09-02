@@ -3,16 +3,16 @@ set -eu
 
 case "${1:-write}" in
   write)
-    cargo fmt --all
+    cargo +nightly-2026-07-03 fmt --all -- --config-path rustfmt-nightly.toml
     if [ -f fuzz/Cargo.toml ]; then
-      cargo fmt --manifest-path fuzz/Cargo.toml
+      cargo +nightly-2026-07-03 fmt --manifest-path fuzz/Cargo.toml -- --config-path rustfmt-nightly.toml
     fi
     prettier_mode=--write
     ;;
   check | --check)
-    cargo fmt --all --check
+    cargo +nightly-2026-07-03 fmt --all -- --config-path rustfmt-nightly.toml --check
     if [ -f fuzz/Cargo.toml ]; then
-      cargo fmt --manifest-path fuzz/Cargo.toml --check
+      cargo +nightly-2026-07-03 fmt --manifest-path fuzz/Cargo.toml -- --config-path rustfmt-nightly.toml --check
     fi
     prettier_mode=--check
     ;;

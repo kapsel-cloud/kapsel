@@ -7,19 +7,15 @@
     reason = "controlled process fixtures must fail the Linux gate immediately"
 )]
 
-use ed25519_dalek::SigningKey;
-use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
-use sha2::Digest as _;
-
 use std::{
     fmt::Write as _,
     fs,
     io::{Read as _, Write as _},
     net::{TcpListener, TcpStream},
     ops::{Deref, DerefMut},
-    os::{
-        unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
-        unix::net::{UnixListener as StdUnixListener, UnixStream},
+    os::unix::{
+        fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
+        net::{UnixListener as StdUnixListener, UnixStream},
     },
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -30,6 +26,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+use ed25519_dalek::SigningKey;
+use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+use sha2::Digest as _;
 
 const IMAGE: &str = concat!(
     "registry.example/agent-api@sha256:",

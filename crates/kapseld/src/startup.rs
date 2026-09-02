@@ -3,7 +3,7 @@
 use std::{
     fs::File,
     io::Read as _,
-    os::{unix::fs::MetadataExt as _, unix::net::UnixStream as StdUnixStream},
+    os::unix::{fs::MetadataExt as _, net::UnixStream as StdUnixStream},
     path::{Path, PathBuf},
 };
 
@@ -258,7 +258,7 @@ fn read_flags() -> OFlags {
 mod tests {
     use std::{
         fs,
-        os::{unix::fs::PermissionsExt as _, unix::net::UnixListener},
+        os::unix::{fs::PermissionsExt as _, net::UnixListener},
         path::{Path, PathBuf},
     };
 

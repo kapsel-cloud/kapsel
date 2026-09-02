@@ -27,7 +27,6 @@ pub use gateway::{
     InspectionStatus, OperationResult, OperationState, ReceiptError, ReceiptReference,
     ReceiptStatement, ReceiptTrust, SetDeploymentImageRequest, TargetRejection,
 };
-
 #[cfg(test)]
 use gateway::{DeploymentImageAdapter, Gateway, ReceiptSettings, TargetReadError};
 #[cfg(test)]

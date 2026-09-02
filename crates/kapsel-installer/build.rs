@@ -14,7 +14,6 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
 };
-
 #[cfg(target_os = "linux")]
 use std::{collections::BTreeSet, io::Read as _, mem::MaybeUninit, os::fd::OwnedFd};
 

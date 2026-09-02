@@ -2,11 +2,6 @@
 //!
 //! Hard rules cover objective rustdoc structure that compiler tooling does not express.
 
-use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
-use syn::{
-    spanned::Spanned, Attribute, Expr, Fields, ImplItem, Item, Lit, Meta, TraitItem, Visibility,
-};
-
 use std::{
     env,
     ffi::OsStr,
@@ -14,6 +9,11 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+};
+
+use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
+use syn::{
+    spanned::Spanned, Attribute, Expr, Fields, ImplItem, Item, Lit, Meta, TraitItem, Visibility,
 };
 
 const HEADING_ORDER: &[(&str, usize)] = &[

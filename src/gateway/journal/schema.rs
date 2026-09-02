@@ -3,9 +3,10 @@
 //! This implementation stays behind the journal interface. Callers cannot select a schema, SQL,
 //! marker, migration step, or durable transition.
 
+use rusqlite::{Connection, OptionalExtension, Transaction};
+
 use super::{GatewayError, OPERATION_COUNT_MAX};
 use crate::gateway::receipt::RECEIPT_BYTES_MAX;
-use rusqlite::{Connection, OptionalExtension, Transaction};
 
 pub(super) const JOURNAL_FORMAT_VERSION: u32 = 2;
 

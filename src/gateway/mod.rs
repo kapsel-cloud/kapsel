@@ -33,13 +33,12 @@ use kubernetes::{
     ApplyOutcome, KubernetesDeploymentImageAdapter, ReceiverObservation, TargetIdentity,
     ValidatedTargetIdentity,
 };
-pub(crate) use receipt::publication::validate_private_directory;
-pub(crate) use receipt::validate_key_id;
 pub use receipt::{
     inspect_receipt, InspectionLimits, InspectionReport, InspectionStatus, ReceiptError,
     ReceiptStatement, ReceiptTrust,
 };
 use receipt::{publication, sign_statement};
+pub(crate) use receipt::{publication::validate_private_directory, validate_key_id};
 
 /// The one bounded Kubernetes effect accepted by the gateway.
 #[derive(Clone, Debug, Eq, PartialEq)]

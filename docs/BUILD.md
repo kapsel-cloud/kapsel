@@ -5,8 +5,8 @@ strategy; direct contracts own behavior and evidence limits.
 
 ## Prerequisites
 
-The deterministic gate uses Rust 1.98, Python 3.11+, Node.js 24, and Prettier 3.6.2 as pinned by the
-repository. Additional lanes require:
+The deterministic gate uses Rust 1.98, rustfmt from nightly-2026-07-03, Python 3.11+, Node.js 24,
+and Prettier 3.6.2 as pinned by the repository. Additional lanes require:
 
 - Docker and kind 0.32+ for live Kubernetes;
 - kubectl 1.30+ for the public demonstration;
