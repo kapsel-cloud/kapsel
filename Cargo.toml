@@ -29,7 +29,6 @@ include = [
 
 [workspace]
 members = [
-  "crates/kapsel-dev",
   "crates/kapsel-installer",
   "crates/kapsel-authority",
   "crates/kapseld",

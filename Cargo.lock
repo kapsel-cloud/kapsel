@@ -765,14 +765,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kapsel-dev"
-version = "0.2.0"
-dependencies = [
- "proc-macro2",
- "syn 3.0.4",
-]
-
-[[package]]
 name = "kapsel-installer"
 version = "0.2.0"
 dependencies = [

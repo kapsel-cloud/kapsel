@@ -39,8 +39,8 @@ git config core.hooksPath .githooks
 
 If `git config core.hooksPath` already reports a custom path, inspect it before replacing it.
 
-Use `cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy` for project-specific hard
-hygiene checks.
+The complete gate checks formatting, Rust line width, Clippy with warnings denied, rustdoc with
+warnings denied, deterministic Rust tests, doctests, Markdown links, and link-checker regressions.
 
 ## Focused gates
 

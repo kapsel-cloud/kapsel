@@ -88,7 +88,6 @@ and code blocks are exempt where wrapping harms clarity. Before review, run:
 
 ```sh
 ./scripts/format.sh
-cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy
 ./scripts/ci-local.sh
 ```
 

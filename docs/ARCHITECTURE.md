@@ -96,8 +96,6 @@ kapseld (unpublished service)
 
 kapsel-installer (partial, unpublished)
   -> kapsel-authority
-
-kapsel-dev (repository tooling)
 ```
 
 `kapsel-authority` is a fixed-purpose source-composition seam. It owns the exact authorization-grant
@@ -106,9 +104,7 @@ and installer consume the same implementation without giving the installer the K
 or gateway dependency graph. It is not an installed process, runtime package, public SDK, generic
 validation library, or supported Rust interface.
 
-`kapsel-dev` owns hook installation, tidy checks, and style audits. It is repository tooling, not a
-product package or dependency in the runtime path. The excluded `fuzz` package contains
-hostile-input proof targets.
+The excluded `fuzz` package contains hostile-input proof targets.
 
 ## Unpublished service
 

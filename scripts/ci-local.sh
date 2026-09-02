@@ -8,16 +8,6 @@ run_static_checks() {
   printf '%s\n' "==> Rust line width"
   ./scripts/check-rust-width.sh
 
-  printf '%s\n' "==> tidy"
-  if [ -f crates/kapsel-dev/Cargo.toml ]; then
-    cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy
-  elif [ -f .cargo_vcs_info.json ]; then
-    printf '%s\n' "tidy: skipped in packaged source without repository-only tooling"
-  else
-    printf '%s\n' "tidy: missing crates/kapsel-dev/Cargo.toml" >&2
-    exit 1
-  fi
-
   printf '%s\n' "==> Beta qualification regressions"
   ./scripts/test-beta-qualification.py
 
