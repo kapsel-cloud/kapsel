@@ -9,6 +9,3 @@ Accepted decisions explain durable choices. Current owner documents define behav
 - [0008 — Use one Kubernetes effect-gateway canary](0008-use-one-kubernetes-effect-gateway-canary.md)
 - [0009 — Use a conditional Kubernetes image patch](0009-use-conditional-kubernetes-image-patch.md)
 - [0010 — Keep provider authority in an operator-resident effect gateway](0010-evolve-through-a-resident-effect-gateway.md)
-
-The retired hosted-sandbox decisions remain with the archived implementation linked from the
-[historical record](../HISTORICAL_SANDBOX.md).

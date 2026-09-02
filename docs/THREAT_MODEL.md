@@ -1,177 +1,179 @@
 # Threat model
 
 > A durable operation record narrows crash ambiguity. It does not make a provider action exactly
-> once, prove the receiver is truthful, or prove no action bypassed Kapsel.
+> once, prove that the receiver is truthful, or prove that no action bypassed Kapsel.
 
-Status: active experiment design.
+This page owns adversaries, surviving claims, assumptions, and non-claims for the active Kubernetes
+effect gateway and the unpublished service boundary. The
+[effect-gateway contract](EFFECT_GATEWAY.md) owns exact semantics; [technical scope](SCOPE.md) owns
+maturity and support posture.
 
-Kind: design. Authority: adversaries, surviving claims, and explicit non-claims for the Kubernetes
-effect-gateway experiment.
+## Assets, trust, and seams
 
-Owns: Experiment threat analysis, result limits, and security assumptions.
-
-Does not own: Kubernetes authorization policy, credential operations, retired hosted-sandbox
-details, or production assurance.
-
-## Assets and seams
-
-The experiment protects the integrity of disclosed receipt bytes, the distinction between a durable
-Kubernetes attempt and an observed outcome, bounded offline inspection, and the ability to identify
-an unresolved crash window.
+Kapsel protects the integrity of disclosed receipt bytes, the distinction between a durable attempt
+and an observed outcome, bounded offline inspection, and visible unresolved crash windows.
 
 The relevant seams are:
 
-- request-only agent intent and the application composition boundary;
-- separately provisioned owner-signed exact grant and out-of-band application-configured grant
-  trust;
-- effect-gateway journal and signing key;
-- Kubernetes credentials and API;
-- Kubernetes deployment controller and observed rollout state;
-- receipt transport and offline inspector; and
-- externally supplied inspection trust.
+- request-only caller intent and the `Application` composition boundary;
+- a separately provisioned owner-signed exact grant and operator-configured grant trust;
+- the private journal, receipt directory, and signing key;
+- Kubernetes credentials, API, controller, and observed rollout state;
+- receipt transport and the offline inspector; and
+- externally supplied inspection trust, time, and limits.
 
-Collusion, compromised credentials, or a bypassed gateway remove independence. The receipt must not
-imply otherwise. The [historical hosted-sandbox record](HISTORICAL_SANDBOX.md) points to the retired
-controls.
+The owner protects credentials, journal storage, signing material, and inspection trust. Kubernetes
+RBAC should limit the configured credential to the intended target, but Kapsel's concrete
+adapter—not RBAC—owns the image-only patch. Collusion, compromised credentials, compromised host
+administration, or bypass of the gateway removes independence. Receipts must not imply otherwise.
 
 ## Surviving claims
 
-| Event                | What Kapsel can establish                                                       | What remains unproven                                                             |
-| -------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Authorized request   | An owner-trusted key signed the exact fixed-purpose operation grant.            | That Kubernetes RBAC permits it or a human made the decision.                     |
-| `not_attempted`      | A permanent target rejection occurred before any mutation attempt was recorded. | A receiver failure, unknown receiver state, or Kubernetes write outcome.          |
-| `apply_started`      | Target identity and the attempt marker committed before the Kubernetes attempt. | That Kubernetes received, applied, or rejected the request.                       |
-| Receiver observation | Kubernetes reported the disclosed classifier inputs at the observation point.   | Causation, complete cluster state, or that no other actor changed the deployment. |
-| Signed receipt       | The signing key authenticated classifier-complete bytes and recomputed result.  | Truth, authority beyond the grant, or completeness.                               |
-| `UNKNOWN`            | Defined bounded reconciliation could not establish a result.                    | Failure, success, safety, or harmlessness.                                        |
+| Event                | What Kapsel can establish                                                                | What remains unproven                                                      |
+| -------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Authorized request   | An owner-trusted key signed the exact fixed-purpose operation grant.                     | RBAC permission, legal authority, or a human decision.                     |
+| `NOT_ATTEMPTED`      | A permanent target rejection finished before a mutation attempt was recorded.            | A receiver result, receiver failure, or Kubernetes write outcome.          |
+| `apply_started`      | Target identity and attempt marker committed before the Kubernetes attempt.              | That Kubernetes received, applied, or rejected the request.                |
+| Receiver observation | Kubernetes reported the disclosed classifier inputs at the observation point.            | Causation, complete cluster state, or absence of another writer.           |
+| Signed receipt       | The signing key authenticated frozen classifier bytes; inspection recomputed the result. | Truth, authority beyond the grant, causation, or completeness.             |
+| `INSPECTED`          | Signature, trust, bounds, and classifier consistency passed under supplied data.         | Kubernetes truth, causation, complete capture, compliance, or `VERIFIED`.  |
+| `UNKNOWN`            | Bounded reconciliation established neither defined receiver result.                      | Failure, success, no effect, safety, harmlessness, or permission to retry. |
 
-## Principal threats
+## Principal threats and controls
 
-### Ambiguous provider attempt
+### Ambiguous provider attempt and recovery
 
-Permanent missing or invalid targets become terminal `not_attempted` dispositions before the
-mutation marker; transient reads are deferred fairly so one operation cannot block all later work.
-Neither path becomes a receiver result.
+Permanent missing or invalid targets become terminal `NOT_ATTEMPTED` before the mutation marker;
+transient reads defer fairly. Neither disposition becomes a receiver result.
 
 The process can fail after Kubernetes receives a request but before Kapsel records the response.
-Kapsel first safely validates the target, atomically records target identity with `apply_started`,
-and then reconciles by observation after ambiguity. It must not blindly apply again or promote a
-timeout into `SUCCEEDED` or `FAILED`.
+Kapsel safely validates the target, atomically records target identity with `apply_started`, and
+only then attempts the conditional patch. Recovery from ambiguity observes the same target and
+requested image. It never blindly applies again.
 
-### Demonstration fault-control misuse
-
-The release harness must stop processes at two exact crash windows without adding lifecycle control
-to agent input. Ordinary builds contain no demonstration pause behavior. The separately built
-`demo-harness` executable accepts only two fixed environment-selected seams and one owner-private
-control directory; malformed, partial, symlinked, or repeated controls fail closed. This feature is
-an evaluator mechanism, not an authorization boundary or a production-safe binary. Anyone able to
-replace the executable or its process environment already controls that local demonstration process.
-Markers and the harness-owned apply counter make no claim about Kubernetes truth or exactly-once
-real-world effects.
-
-### MCP transport confusion and hostile input
-
-The local MCP client can send malformed, duplicated, oversized, out-of-order, or unknown protocol
-messages, attempt another tool, or place operator authority in tool arguments. The fixed stdio
-adapter bounds each frame before JSON allocation, rejects duplicate and extra fields, exposes one
-five-field tool, loads operator configuration separately at process startup, and returns only
-bounded protocol or typed application vocabulary. Standard output is protocol-only. Cancellation,
-disconnect, or transport completion cannot establish that an application operation was unattempted,
-failed, rolled back, or safe; restart uses the same application reconciliation semantics.
-
-### Release substitution or provenance overclaim
-
-An archive or checksum can be replaced, built from a dirty tree, mislabeled for another target, or
-presented as authenticated because its SHA-256 matches. Release assembly records the exact source
-revision, dirty state, target, pinned builder, and binary digests; normalizes archive bytes; and
-checks the final archive digest before extraction. Clean smoke rejects unsafe entries and executes
-only extracted bytes. These controls detect mismatches and make assembly repeatable; they do not
-sign the archive, authenticate a publisher, witness build inputs, prove source review, support other
-targets, or establish production safety.
+Request acceptance, transport completion, process exit, and command success establish no rollout
+result. A timeout or evidence that satisfies neither exact classifier is `UNKNOWN`, not `SUCCEEDED`
+or `FAILED`.
 
 ### Authorization mismatch or excessive authority
 
-An agent can request destructive or broader operations or construct self-asserted authorization. The
-experiment accepts only one exact namespace, deployment, container, and immutable image digest in a
-fixed-purpose grant signed by the configured owner key. The application receives that grant, trust,
-Kubernetes client, signing material, and paths through operator configuration; its request-only
-caller cannot select them. Trust is never taken from agent or grant contents. This reduces the
-gateway input surface; it does not replace Kubernetes RBAC or prevent credential misuse outside
-Kapsel.
+A caller may request broader or destructive behavior or supply self-asserted authorization. Kapsel
+accepts one exact namespace, Deployment, container, and immutable digest-bound image under a grant
+signed by the configured owner key. The operator supplies grant, trust, Kubernetes client, receipt
+key, journal, and paths outside the request. Trust never comes from caller or grant contents.
 
-### Gateway bypass
+This narrows caller authority but does not replace Kubernetes RBAC or prevent someone who
+independently holds credentials from bypassing Kapsel. A receipt covers one Kapsel operation, not
+every cluster change.
 
-Another actor holding Kubernetes credentials can change the deployment without Kapsel. The
-experiment cannot detect universal capture. Receipts name one Kapsel operation, not all operations.
+### MCP confusion and hostile input
 
-### Kapsel service source boundary
+A local MCP client can send malformed, duplicated, oversized, out-of-order, unknown, or wrong-tool
+messages and can try to place operator authority in arguments. The fixed stdio adapter bounds frames
+before JSON allocation, rejects duplicate and extra fields, exposes one five-field tool, loads
+operator configuration at startup, and returns bounded protocol or typed application vocabulary.
+Standard output is protocol-only.
 
-The Kapsel service adds one fixed local admission boundary. The locked `kapsel` service identity
-exclusively owns exact `0700` configuration/state roots and exact `0600` authority/state files. The
-caller group can traverse only the `0750` runtime directory and use the `0660` socket; Linux peer
-credentials must also report the exact caller-group effective GID before any frame is read.
-Supplementary membership alone is not the peer authentication fact.
+Cancellation, disconnect, late messages, or transport completion cannot establish that an operation
+was unattempted, failed, rolled back, or safe. Restart uses ordinary application reconciliation.
 
-Startup retains no-follow descriptor-relative configuration, state, and runtime roots, consumes
-validated regular single-link authority files from opened descriptors, reconciles before admission,
-and removes only an exact inactive stale socket. The daemon refuses every other leaf without
-unlinking it; systemd then owns failed-state runtime-directory cleanup, so a refused leaf does not
-survive the failed activation. Systemd also owns activation and diagnostics with no automatic
-restart. The exact Role limits Kubernetes authorization to `get` and `patch` for one named
-Deployment; it cannot constrain patch fields, so the concrete adapter remains the image-only patch
-owner.
+### Demonstration control misuse
 
-Host root, the kernel, and the `kapsel` service identity remain trusted. A process already running
-with the authenticated effective group is authorized, and removing group membership does not change
-cached credentials in an existing process. The operator must stop the service and relevant client
-before revocation. Fixed roots do not protect against compromised host administration, kernel, or
-service identity, and RBAC does not prevent credential bypass outside Kapsel. One disposable Debian
-12 gate supplied bounded account, systemd, short-lived credential, Kubernetes RBAC, clean-install,
-revocation, retained-data, and cleanup evidence. It does not establish production safety or support
-for another environment.
+The bundled harness stops a process at two fixed crash windows without adding lifecycle control to
+caller input. Ordinary builds contain no pause behavior. The separately built executable accepts
+only fixed environment-selected seams and an owner-private control directory; malformed, symlinked,
+partial, or repeated controls fail closed.
+
+The harness is evaluator tooling, not a production binary or authorization boundary. Anyone able to
+replace its executable or process environment already controls that local process. Markers and its
+apply counter do not prove Kubernetes truth or exactly-once real-world effects.
 
 ### False or changing receiver state
 
-Kubernetes reports may be stale, incomplete, or overwritten by another change after observation.
-Kapsel records bounded facts, including deployment identity and generation, and states result
-meaning narrowly. It does not claim Kubernetes truth or causal attribution.
+Kubernetes observations may be stale, incomplete, deceptive, or overwritten by another actor. Kapsel
+records bounded facts including target identity and generation and classifies only those facts. It
+does not claim Kubernetes truth, workload correctness, causal attribution, or complete cluster
+health.
 
-### Secret, response, and receipt disclosure
+### Receipt substitution and malicious inspection input
 
-Agent input, SQLite, reports, and receipts must not contain Kubernetes credentials, signing keys, or
-unbounded provider response bodies. Private paths are validated before use. Receipt fields can still
-disclose deployment identifiers, image digests, timing, and operational relationships.
+Receipt bytes may be malformed, oversized, self-trusting, reordered, or substituted. Parsing and
+reports are bounded. Inspection takes trust, evaluation time, and limits explicitly, recomputes the
+result from every signed classifier input, and performs no network or ambient lookup.
 
-### Malicious receipt input
+Receipt signing authenticates frozen Kapsel evidence under the named key. It does not witness the
+effect, prove existence time, prevent omission, or make disclosed receiver facts true. Immutable
+publication protects the selected frozen bytes and path; it is not generic durable storage or
+backup.
 
-Offline inspection input may be malformed, oversized, self-trusting, or substituted. Parsing and
-reports are bounded, inspection uses explicit external trust, and no inspection step performs
-network access.
+### Secret and metadata disclosure
 
-## Historical sandbox threats
+Caller input, SQLite, reports, receipts, errors, and logs must not contain Kubernetes credentials,
+signing keys, private trust decisions, or unbounded provider response bodies. Private paths are
+validated before use. Receipts still disclose identifiers, image digests, timing, receiver facts,
+key identities, and operational relationships. [Privacy](PRIVACY.md) owns the disclosure checklist.
 
-The removed hosted sandbox explored abuse control, process isolation, authority staging, scheduling,
-cleanup, storage, and public exposure. Its [historical record](HISTORICAL_SANDBOX.md) links the
-complete archived design. Those controls were never accepted for live deployment and are not part of
-the active Kapsel service threat boundary.
+### Release substitution and provenance overclaim
+
+An archive or checksum can be replaced, built from another tree, or mislabeled for another target.
+Assembly records source, tree, lockfile, target, builder, and binary identities; normalizes output;
+and checks final digests before extraction. Publisher authentication covers the signed digest
+manifest and named bytes.
+
+Checksums alone do not authenticate a publisher. Reproducibility and Sigstore identity do not prove
+source review, workflow or builder integrity, dependency safety, current non-withdrawal, production
+fitness, or another platform. [Release artifacts](RELEASE.md) owns exact controls and limits.
+
+## Unpublished service boundary
+
+The service adds a local admission and lifetime boundary but does not change gateway semantics. The
+locked service identity owns exact mode-`0700` configuration and state roots and mode-`0600`
+authority and state files. Callers can traverse only the mode-`0750` runtime directory and use its
+mode-`0660` group-owned socket; Linux peer credentials must report the exact caller-group effective
+GID before any frame is read. Supplementary membership alone is not authentication.
+
+Startup opens fixed configuration, state, receipt, and runtime roots descriptor-relatively, rejects
+symlinks, consumes validated regular single-link authority files, and reconciles before admission.
+It leaves every unexpected leaf unchanged and removes only an exact inactive service-owned stale
+socket. Systemd owns process lifecycle, failed-start runtime cleanup, health, and diagnostics, with
+no automatic restart. One in-flight submission is a bound, not a queue. `ACCEPTED` means only that
+the process owns execution; it is never `SUCCEEDED`.
+
+The exact Role allows namespaced `get` and `patch` on one Deployment. Because RBAC cannot constrain
+patch fields, the concrete adapter remains the field-level authority owner. Host root, kernel,
+service identity, and already authenticated caller processes remain trusted. Membership revocation
+does not change credentials cached by an existing process, so the operator must stop relevant
+service and client processes.
+
+One disposable Debian 12 qualification lane supplies bounded service evidence for accounts, systemd,
+short-lived credentials, namespaced RBAC, clean installation, revocation, retained data, and
+cleanup. It does not establish production safety or support for another environment.
+
+Service and installer code in repository HEAD is unpublished and absent from v0.2.0. Installer tests
+currently cross only bounded operator input, clean-install preflight, durable transaction recovery,
+and two fixed group mutations; they do not establish a runnable installation. The exact authority,
+filesystem, recovery, qualification, and unsupported boundaries are owned by
+[Kapsel service](KAPSEL_SERVICE.md).
 
 ## Non-claims
 
-The experiment does not establish:
+Kapsel does not establish:
 
-- exactly-once real-world Kubernetes mutation;
+- exactly-once real-world mutation;
 - Kubernetes truth, workload correctness, or complete cluster health;
 - authorization legality, policy compliance, or complete capture;
 - causation between a Kapsel request and a receiver state;
-- complete history, non-omission, or no gateway bypass;
-- independent witnessing, trusted existence time, or `VERIFIED`; or
-- production readiness, authenticated confidentiality, anonymous fairness, or hard tenant isolation.
+- complete history, non-omission, or absence of gateway bypass;
+- independent witnessing, trusted existence time, or `VERIFIED`;
+- confidentiality, anonymity, fairness, or hard tenant isolation; or
+- production readiness, availability, remediation, backup, high availability, or another platform.
 
-## Security assumptions
+## Assumptions
 
-- The owner protects Kubernetes credentials, SQLite storage, and signing keys.
-- Kubernetes RBAC limits the configured credential to the experiment's intended scope.
-- The `kind` cluster is disposable and controlled by the demonstrator.
-- The deployment controller exposes the documented receiver facts needed for the experiment's result
-  classification.
-- External trust supplied to offline inspection is reviewed separately from receipt bytes.
+- The operator protects Kubernetes credentials, journal storage, receipt signing keys, and private
+  paths.
+- Kubernetes RBAC limits the configured credential to the intended experiment scope.
+- Demonstration `kind` clusters are disposable and controlled by the evaluator.
+- The Kubernetes Deployment controller exposes the receiver facts required by the classifier.
+- Inspection trust, time, and limits are reviewed separately from receipt contents.
+- For the unpublished service, host root, kernel, systemd, and the service identity are trusted.

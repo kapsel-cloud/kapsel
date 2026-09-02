@@ -1,259 +1,164 @@
 # Testing
 
-Status: active experiment strategy.
+This page owns proof strategy, test placement, deterministic inputs, hostile-input coverage, and
+crash recovery expectations. [Build and test](BUILD.md) owns runnable commands; direct contracts own
+exact behavior and evidence limits.
 
-Kind: design. Authority: proof strategy for the active experiment.
+## Test through the owning interface
 
-Owns: Test placement, deterministic inputs, hostile-input coverage, and recovery proof expectations.
+Place each test at the lowest layer whose interface states the behavior. Moving a test outward must
+not require widening a production seam. A higher layer should add a composition or external-contract
+assertion rather than repeat an implementation matrix.
 
-Does not own: Build commands, technical scope, exact receipt bytes, or public-sandbox wire and
-deployment semantics.
+| Location                              | Owns                                                                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Implementation-local `#[cfg(test)]`   | Pure parsing, classification, SQL and filesystem invariants, and private adapter or fault seams. |
+| Root package `tests/application_*.rs` | Exported `Application` behavior with the product compiled without `cfg(test)`.                   |
+| Root package `tests/e2e_*.rs`         | Production binaries, machine output, exit classes, restart, and operator workflows.              |
+| `crates/<crate>/tests/`               | Exported interfaces of independently meaningful workspace packages.                              |
+| `fuzz/`                               | Hostile bytes entering only through production interfaces.                                       |
+| Ignored simulation targets            | Seeded lifecycle schedules, repeated recovery, and invariant checks.                             |
+| Explicit live-kind scripts and tests  | Disposable-cluster behavior and real process termination.                                        |
 
-## Short answer
+The root is both workspace root and product package, so `application_` and `e2e_` prefixes
+distinguish package integration from binary end-to-end tests. A test-support crate or public
+provider seam requires multiple real consumers; one production Kubernetes adapter does not justify
+either.
 
-The active Kubernetes experiment must be tested through its one deep interface: authorized
-`kubernetes.set_deployment_image` request in, durable state and inspected receipt out. Internal
-tests may exist for parsers and pure state transitions, but the important proof is crash recovery
-across provider-attempt windows.
+Assert pure implementation rules exhaustively once at their owner. At higher layers, assert
+authority separation, durable outcomes, composition, observable output, and non-disclosure. Prefer
+table-driven cases with shared setup, and use separate precise assertions when distinct contract
+facts matter.
 
-## Placement and ownership
+## Core effect-gateway proof matrix
 
-Tests live at the lowest layer whose interface states the behavior under test. Moving a test outward
-must not require widening a production seam, and crossing a deeper interface must add a distinct
-contract assertion rather than repeat the same implementation matrix.
+| Layer                | Required proof                                                                                          |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| Request validation   | Bounds for identity, namespace, Deployment, container, digest, and authorization.                       |
+| Authorization        | Signed grant, configured trust, exact tuple, and rejection before persistence.                          |
+| Journal transition   | Deterministic fault injection at every durable state.                                                   |
+| Target disposition   | Permanent invalid targets are pre-attempt `NOT_ATTEMPTED`; transient reads defer fairly.                |
+| Provider attempt     | Safe GET precedes atomic target identity and `apply_started`; mutation follows that commit.             |
+| Recovery             | Every injected window and process kill reopens without a blind second mutation.                         |
+| Receiver observation | Request acceptance, timeout, transport completion, and rollout result remain distinct.                  |
+| Classification       | Timeout and unresolved evidence are `UNKNOWN`, never false success or failure.                          |
+| Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.   |
+| Publication          | Bytes, path, digest, and key ID freeze before collision-safe publication; kill recovery preserves them. |
+| Migration            | Legacy self-asserted authorization fails closed rather than becoming trusted provenance.                |
+| Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                  |
+| Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.          |
 
-| Location                                 | Owns                                                                                             |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Implementation-local `#[cfg(test)]`      | Pure parsing, classification, SQL and filesystem invariants, and private adapter or fault seams. |
-| Root package `tests/application_*.rs`    | The exported `Application` interface with the product package compiled without `cfg(test)`.      |
-| Root package `tests/e2e_*.rs`            | Black-box production binaries, machine output, exit classes, restart, and operator workflows.    |
-| `crates/<crate>/tests/`                  | Exported interfaces of independently meaningful workspace packages.                              |
-| `fuzz/`                                  | Hostile-byte entry points reached only through production interfaces.                            |
-| Ignored long-simulation targets          | Seeded lifecycle schedules, repeated recovery, and invariant checks.                             |
-| Explicit live-kind script and root tests | Disposable-cluster behavior and real process termination required by the release contract.       |
+`INSPECTED` means authenticated bytes and classifier consistency under supplied trust. It is not
+receiver truth, causation, complete capture, compliance, or `VERIFIED`.
 
-The repository root is also the `kapsel` product package. Its `tests/` directory therefore contains
-both package integration tests and true binary end-to-end tests; the `application_` and `e2e_`
-prefixes keep those lanes explicit. A test-support crate is justified only after fixtures are shared
-by multiple real package interfaces. The private Kubernetes adapter seam remains private while only
-one production adapter exists.
+## Determinism and crash proof
 
-Pure implementation rules are asserted exhaustively once at their owner. Higher-layer tests assert
-composition, authority separation, durable outcomes, observable output, and non-disclosure; they do
-not repeat every parser or classifier mutation. Tests use several precise assertions when different
-facts matter, rather than hiding contract failures behind one snapshot or compound predicate.
+Default semantic tests do not depend on wall-clock time, random keys, live services, ambient trust,
+locale, or filesystem order. Use fixed keys, explicit evaluation time, private temporary
+directories, seeded inputs, and sorted output. A subprocess test may use a bounded monotonic
+coordination deadline; result meaning must not depend on polling order or timing.
 
-## Required proof stack for effect-gateway
+Fault tests, simulations, process recovery, and compile-time demonstration controls cross the same
+private operation-selected provider and publication implementations used by `Application`.
+Queue-oriented helpers may select one identity but own no lifecycle transition. Process-kill proof
+must cross both the ambiguous mutation seam and the receipt-publication seam, establish one provider
+attempt, and prove prepared receipt bytes are neither re-signed nor relocated.
 
-| Layer                | Required proof                                                                                           |
-| -------------------- | -------------------------------------------------------------------------------------------------------- |
-| Request validation   | Namespace, deployment, container, digest, authorization, and operation identity bounds.                  |
-| Authorization        | Signed grant parsing, application-configured trust, exact tuple, and pre-persistence rejection.          |
-| Journal transition   | Every durable state has a deterministic fault-injection test.                                            |
-| Target disposition   | Missing/invalid target becomes terminal `not_attempted`; transient reads defer fairly without blocking.  |
-| Provider attempt     | Safe target GET precedes atomic target identity plus `apply_started`; mutation follows that commit.      |
-| Recovery             | Reopen after every injected window and real process kill reconciles without a blind second apply.        |
-| Receiver observation | Request acceptance and rollout outcome remain distinct.                                                  |
-| Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes result under explicit trust/limits. |
-| Publication          | Exact bytes/path/digest/key ID freeze before publication; no-follow paths, fsync, kill recovery.         |
-| Migration            | Legacy self-asserted authorization fails closed rather than being promoted to trusted provenance.        |
-| Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing grant/receipt records fail closed.     |
-| Disclosure           | Secrets and unbounded provider bodies do not enter SQLite, receipts, reports, errors, or logs.           |
+A live `kind` lane is explicit, environment-owning evidence. It complements but never replaces
+fault-injection around every journal window.
 
-## Determinism
+## Evidence classes
 
-Default semantic tests do not depend on wall-clock time, random keys, live cloud services, ambient
-trust, locale, or filesystem ordering. Use fixed keys, explicit evaluation time, temporary private
-directories, seeded inputs, and sorted output. Subprocess kill tests may use a bounded monotonic
-coordination deadline and marker-file polling; result semantics must not depend on the polling
-schedule. Use deterministic `kind` setup where a test actually crosses Kubernetes.
+### Deterministic suite
 
-A live `kind` demonstration is allowed only when its setup and cleanup are explicit. It does not
-replace fault-injection tests around the journal. Process-kill tests must cross both the ambiguous
-mutation seam and the receipt-publication seam. Deterministic faults, simulations, subprocess
-recovery, and the compile-time demo controls cross the same private operation-selected provider and
-receipt implementations used by `Application`; queue-oriented helpers may select an identity but own
-no lifecycle transition. These tests must prove that recovery does not issue a second mutation and
-does not re-sign or relocate already prepared receipt bytes.
+The default suite contains implementation-local tests, package integration tests, binary tests
+needing no external service, and documentation tests. It owns repeatable semantic and hostile-input
+proof. Source coverage is an informational review aid only; no percentage establishes crash safety,
+Kubernetes semantics, release integrity, or production readiness.
 
-## Suite shape and robustness lanes
+The MCP subprocess lane proves bounded newline-delimited framing, one five-field tool, operator
+configuration outside caller input, typed `SUCCEEDED`, `FAILED`, `UNKNOWN`, and `NOT_ATTEMPTED`
+vocabulary, restart, protocol-only standard output, bounded hostile input, and secret-free failures.
+Cancellation, EOF, or transport completion never determines receiver outcome.
 
-The default deterministic suite stays small and runs implementation-local unit tests, package
-integration tests, binary tests that need no external service, and documentation tests. Every test
-names one contract behavior, but may use many assertions to prove all facts owned by that behavior.
-Table-driven cases are preferred when the setup and expected invariant are identical.
+The v0.1.1 fixture lane covers every historical lifecycle state, migration and restore interruption,
+repeated reopen, provider-call counts, and frozen receipt bytes without Kubernetes or network
+access. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
 
-Fuzz targets are separate from the default gate. They call production hostile-input interfaces,
-start from canonical corpus vectors when available, never depend on network or ambient authority,
-and retain minimized regressions. A reported failure must include the target, seed or artifact, and
-exact replay command.
+### Robustness
 
-Long simulations are also separate from the default gate. They use an explicit seed to generate
-bounded lifecycle schedules, injected crash windows, retry deferrals, and reopen operations. Each
-step checks durable-state, provider-call-count, terminal-state, and frozen-receipt invariants. The
-seed is always printed on failure and accepted as input for exact replay. Simulation duration or
-case count may vary by lane; semantics and generated schedules may not depend on wall-clock timing.
+Fuzzing calls production hostile-input interfaces from canonical corpus vectors without network or
+ambient authority. Failures retain a minimized artifact and exact replay information.
 
-The live-kind lane remains explicit and environment-owning. It is not called a fuzz test or
-simulation and is never used as evidence that a deterministic invariant holds for every crash
-window.
+Long simulations generate bounded lifecycle schedules, crash windows, retry deferrals, and reopen
+operations from an explicit seed. Every step checks durable state, provider-call count, terminal
+state, and frozen-receipt invariants. The seed is always replayable; wall-clock duration may change
+only how many cases run, not their semantics.
 
-## Coverage interpretation
+### Live Kubernetes and demonstration
 
-CI publishes source-based coverage for the deterministic Rust suite as an informational review aid.
-The hosted lane starts independently of the default gate, keeps its instrumented target and cache
-separate, and bounds report generation to ten minutes. It uploads only a nonempty completed report;
-generation failure or timeout emits a visible warning and completes without changing the default
-gate's correctness result. The outer job remains explicitly non-blocking if setup itself fails or
-exceeds its separate safety bound.
+The live-kind gate owns real Kubernetes success, defined failed rollout, bounded `UNKNOWN`, and
+process loss against a uniquely owned disposable cluster. It must show no blind second patch and
+must clean up or export bounded failure evidence.
 
-Coverage can reveal unexecuted branches or unexpected regressions, but its percentage is not a
-correctness, crash-safety, Kubernetes-semantics, release-integrity, or production-readiness claim.
-It does not represent the separate live-kind, artifact, shell, Python, fuzz, or long-simulation
-lanes. Repository and patch statuses therefore remain informational: no percentage target can
-replace the owner-specific assertions and explicit proof stack above.
+The public demonstration adds an observable evaluator path through healthy,
+`ProgressDeadlineExceeded`, mutation-loss, and receipt-publication-loss cases. Compile-time harness
+controls remain outside caller input and the ordinary executable. A visual demonstration is finite
+evidence, not exhaustive recovery proof.
 
-## MCP adapter proof
+### Release artifact
 
-The thin MCP adapter is tested as a production subprocess over newline-delimited stdio. Its focused
-black-box target proves:
+Artifact proof crosses extracted `x86_64-unknown-linux-gnu` bytes rather than a Cargo test binary.
+Two isolated assemblies must produce identical archive, checksum, SBOM, and digest-manifest bytes.
+Hostile archive validation precedes extraction; smoke uses only extracted files to prove identity,
+grant provisioning, operation and restart, offline inspection, MCP equivalence, demonstration-binary
+separation, cleanup, and uninstall. It kills the extracted demonstration executable at both owned
+seams and preserves one provider attempt and frozen receipt bytes under rotated settings. The
+Sigstore bundle receives identity and failure checks rather than a false reproducibility
+requirement.
 
-- initialization, version negotiation, and exactly one five-field tool;
-- operator configuration outside tool input;
-- successful `AgentRequest` and typed-outcome equivalence with the local adapter, repeated calls
-  followed by an ordinary local-process restart, and explicit `SUCCEEDED`, `FAILED`, `UNKNOWN`, and
-  `NOT_ATTEMPTED` MCP vocabulary;
-- lifecycle ordering, string/numeric/null/invalid request IDs, ignored late cancellation without
-  disclosure, and clean EOF; and
-- incomplete, invalid UTF-8, batch, duplicate, exact-limit, and oversized frame handling, bounded
-  response lines, hostile-field rejection, and secret-free errors.
+The live artifact demonstration is a separate environment-owning gate. Exact layout, publisher
+authentication, provenance, and evidence limits belong to [Release artifacts](RELEASE.md).
 
-The fixture uses the same explicit owner-private files and deterministic local HTTP Kubernetes
-server as the evaluator command tests. It requires no Docker, `kind`, ambient kubeconfig, credential
-lookup, trust lookup, clock, external service, public provider seam, or demonstration fault control.
-Protocol parser tests stay at this black-box boundary because framing, stdout purity, process exit,
-and startup authority separation are transport behavior.
+### Kapsel service
 
-## Release artifact proof
+The unpublished service evidence remains layered around `Application`:
 
-The release artifact lane crosses a fixed `x86_64-unknown-linux-gnu` archive rather than a Cargo
-test binary. Assembly runs in a pinned x86-64 Debian 12 Rust container, records exact source, tree,
-lockfile, builder, and binary provenance, normalizes archive metadata, and writes deterministic
-checksum, SPDX 2.3, and signed-manifest inputs over the final downloadable bytes.
-
-The proof assembles strict isolated A once outside the worktree, runs exact layout and hostile
-archive verification plus extracted smoke against A, then assembles B once with a separate target
-and output directory. Archive, checksum, SBOM, and digest-manifest bytes must match exactly. No
-compiled output or target directory is shared. Only after smoke and comparison pass may the exact A
-bytes be copied to `dist/` and uploaded; B is discarded. Pull requests run the same two-build proof
-without upload. The separate keyless Sigstore bundle is event-derived and receives semantic
-identity/failure tests instead of a false byte-reproducibility requirement.
-
-The clean smoke verifies checksum and digest manifest, SPDX/archive/binary/source bindings, exact
-entries, ordering, types, modes, metadata, target, revision, license, binary digests, and traversal,
-link, special-file, unsafe-mode, and size rejection before executing only extracted A files in a
-pinned x86-64 Debian 12 Python container. A deterministic HTTP Kubernetes fixture proves installed
-version identity, grant provisioning, operation and restart, offline inspection, MCP discovery and
-call equivalence, bounded output, cleanup, and uninstall. The separately extracted demo executable
-is killed at both owned seams; recovery retains one provider attempt, frozen receipt bytes under
-rotated settings, and offline classification. This lane never calls Cargo, reads `target/`, or
-introduces a public provider seam after extraction.
-
-The live artifact demo remains an explicit environment-owning gate on the supported target. It uses
-the same bundled demo script and feature-gated executable, preserves prerequisite-before-mutation
-and owned-cleanup behavior, and is separate from deterministic artifact smoke.
-
-## Release demonstration proof
-
-The release demonstration has two complementary lanes. A deterministic black-box test builds the
-production `kapsel` executable with the private `demo-harness` feature, drives a local HTTP
-Kubernetes fixture, kills the real process at both fixed markers, and verifies one apply, restart,
-frozen receipt bytes, rotated settings, and offline inspection. Separate prerequisite tests stub
-Docker, `kind`, and `kubectl` to prove failures occur before cluster creation.
-
-The explicit live harness then crosses the same executable and markers against its owned `kind`
-cluster. It proves healthy, `ProgressDeadlineExceeded`, and deleted-after-patch bounded `UNKNOWN`
-receiver paths, the unchanged untargeted container, one harness-counted apply per operation, frozen
-digest and path under rotation, bounded failure logs, no-network inspection, and ownership-safe
-cleanup. The compile-time feature and its environment are harness control, not agent input or a
-public lifecycle interface. Existing internal fault tests remain the exhaustive transition proof;
-the visual demonstration does not replace them.
-
-## Historical public sandbox evidence
-
-The fixed `v1` fixture bytes explain the historical HTTP contract but carry no executable
-compatibility or deployment promise. One fixture receipt remains an input to the root offline
-inspection test because it is valid classifier-complete effect-gateway evidence. The sandbox is not
-an active package, proof lane, or deployable alternative. The root real-process harness and
-disposable-`kind` demonstration remain the supported mechanism proof.
-
-## Kapsel service proof categories
-
-The focused runnable gates are documented in
-[Kapsel service candidate](BUILD.md#kapsel-service-candidate). They remain layered around the
-existing `Application`:
-
-- projected status and frozen-receipt retrieval make no Kubernetes call and advance no lifecycle
-  state;
-- Unix-socket tests cover peer-credential allow/deny, framing and allocation bounds, hostile fields,
+- projection reads status and frozen receipts without Kubernetes access or lifecycle advancement;
+- Unix-socket tests cover effective-group peer credentials, framing, allocation, hostile fields,
   disclosure, one in-flight submission, and no queue;
-- process tests cover `ACCEPTED`, immediate `BUSY`, caller disconnect, concurrent status, one
-  provider attempt, and one journal;
-- process-loss tests kill `kapseld` after mutation and receipt-publication seams, require startup
-  reconciliation before bind, and preserve frozen receipt bytes; and
-- startup tests cover fixed-root mode/type/link/component checks, stable consumed bytes, exact argv,
-  post-bind socket identity, exact inactive stale-socket removal, and refusal of every other leaf.
+- process tests cover `ACCEPTED` as process ownership only, immediate `BUSY`, caller disconnect,
+  concurrent status, one provider attempt, and one journal;
+- process-loss tests require startup reconciliation before bind and preserve frozen receipt bytes;
+  and
+- startup and asset tests freeze fixed roots, no-follow file rules, exact argv, stale-socket
+  handling, systemd, sysusers, and namespaced RBAC bytes.
 
-Static tests freeze the systemd unit, sysusers file, and ServiceAccount/Role/RoleBinding bytes.
-Linux process tests use only compile-time-private root and finite-connection controls; ordinary
-startup accepts neither. Service-client tests freeze its three-command grammar, bounded framing,
-lowercase receipt decoding, digest verification, exclusive mode-`0600` output, and refusal to
-replace an existing receipt.
+Service-client tests freeze its three-command grammar, bounded framing, receipt digest verification,
+exclusive mode-`0600` output, and refusal to replace an existing file. `kapsel-authority` tests
+freeze shared grant/trust vectors and consistency without turning that package into a public SDK.
+The [Kapsel service contract](KAPSEL_SERVICE.md) owns the complete unpublished boundary.
 
-The fixed-purpose `kapsel-authority` package freezes the exact grant and receipt-trust vectors,
-hostile codec rejection, returned public identities, and combined authority consistency. The root
-package separately proves that every shared validation failure retains
-`invalid_operator_configuration`. The package is an unpublished source seam, not a public SDK or
-runtime surface.
+### Installer
 
-The `kapsel-installer` package's black-box binary tests freeze its exact three-command grammar,
-required-once options, absolute operator-input path, Kubernetes context bounds, secret-free failure
-class, and empty stdout. They also prove that a default development build reaches
-`bundle_unavailable` without creating anything in its working directory. The explicit Docker bundle
-smoke constructs an exact stage with clearly test-only ELF fixtures and root-owned operator input.
-It crosses release-stage generation, descriptor-relative exact input validation, cryptographic
-consistency, one valid bootstrap kubeconfig, exact installer-lock handling, exact named-object modes
-under a hostile umask, kill/restart recovery after lock and transaction-directory creation,
-recovered-parent sync before crash-safe canonical transaction publication, and hostile metadata,
-inventory, path, special-file, bounds, authority, lock, and transaction refusal before requiring
-`implementation_incomplete`. Portable package unit tests own the strict bounded bootstrap-kubeconfig
-grammar, canonical transaction records, exact two-group pending, ordered ownership, and reverse
-removal successors, fixed GID selection, and hostile aliases, duplicates, unknowns, external
-references, credential forms, decoded bounds, and URL shapes. The Docker smoke explicitly runs the
-Linux root unit tests and crosses unnamed-inode publication, marked phase and pending successors,
-exact group command argv and observation, interruption before and after the command, installer death
-while the inherited-lock mutation child remains live, conflicting identities before rollback intent,
-bounded oversized, timed-out, and signaled queries, mutation timeout, ownership-safe rollback,
-explicit unrelated identity preservation, and conflicting-successor evidence preservation. The same
-smoke crosses Debian 12's native `groupadd`, `groupdel`, `getent`, and `timeout` for both fixed
-group creations, exact observations and binds, a primary-GID refusal, reverse rollback, and final
-absence, and freezes their relevant exit statuses and record shapes. Native qualification covers one
-ephemeral x86-64 Debian 12 container; exhaustive crash seams, hostile output, and delayed mutation
-remain fixture-based. These gates prove fixed read-only host and Kubernetes clean-install preflight,
-`prepared -> installing`, and the first two recoverable group mutations. They prove no user,
-membership, asset, Kubernetes, credential, activation, refresh, or uninstall mutation, payload
-provenance, metadata schema, final-size bound, runnable installation, or candidate qualification.
+The partial, unpublished installer has three current evidence layers:
 
-The Kapsel service is unpublished and absent from v0.2.0. The default CLI/MCP and effect-gateway
-suites remain authoritative for v0.2.0.
+- portable package tests cover fixed command grammar, fail-closed payload absence, bounded
+  bootstrap-kubeconfig parsing, canonical transaction records, two-group pending/ownership states,
+  fixed GID selection, and reverse rollback;
+- the explicit Docker fixture crosses bundle generation, exact descriptor-relative operator input,
+  authority consistency, hostile filesystem and metadata refusal, durable lock/transaction recovery,
+  bounded command execution, group observation, and ownership-safe rollback; and
+- one ephemeral x86-64 Debian 12 lane crosses native `groupadd`, `groupdel`, `getent`, and `timeout`
+  for both fixed groups.
 
-## Review record
+Current evidence ends after read-only host and Kubernetes clean-install preflight, durable
+`installing`, and recoverable creation or rollback of `kapsel` and `kapsel-service-callers`. Fixture
+proof covers more hostile output and crash windows than the single native environment. No test
+proves user or membership installation, assets, Kubernetes mutation, credential issuance,
+activation, refresh, uninstall, real payload provenance, final metadata or size bounds, runnable
+installation, candidate assembly, or candidate qualification. The default payload-free build stops
+at `bundle_unavailable`; staged test builds stop at `implementation_incomplete` after the
+implemented group boundary.
 
-Meaningful changes report:
-
-```text
-Contract: <owner document>
-Surface: <validation | journal | recovery | receipt | demo | docs>
-Gate: <narrowest command run>
-Risk: <what remains unproved>
-```
+The service and installer are absent from v0.2.0 and remain unpublished.

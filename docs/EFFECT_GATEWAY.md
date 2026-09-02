@@ -1,17 +1,11 @@
 # Kubernetes effect-gateway experiment boundary
 
-Status: active experiment and v0.2 beta semantic owner. It establishes no stable package, generic
-capability, policy, or provider contract.
+Status: active experiment and v0.2 beta semantic owner.
 
-Kind: experiment boundary. Authority: the active experiment's scope and claim limits. Scope: one
-self-hosted, local-cluster demonstration of a crash-safe Kubernetes deployment-image change.
-
-Owns: Experiment vocabulary, one operation's durable lifecycle, receiver observation, result
-meaning, receipt bytes, and demonstration.
-
-Does not own: A generic agent runtime, MCP protocol semantics, Kubernetes API semantics, a reusable
-provider seam, a stable package format, external witnessing, sandbox
-admission/projection/deployment, or production assurance.
+This contract owns one operation's authorization, durable lifecycle, receiver observation, result
+meaning, receipt bytes, and demonstration. It does not define a generic agent runtime, MCP or
+Kubernetes protocol semantics, reusable provider seam, stable package format, external witnessing,
+or production assurance.
 
 ## Short answer
 
@@ -69,10 +63,6 @@ trust from the request or grant.
 
 The release-owned experiment uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
-
-The [historical hosted sandbox](HISTORICAL_SANDBOX.md) used two fixed synthetic scenarios. It
-appoints no active implementation or compatibility, cannot alter effect-gateway semantics or receipt
-bytes, and does not replace the release-owned local demonstration.
 
 ## Operation lifecycle
 

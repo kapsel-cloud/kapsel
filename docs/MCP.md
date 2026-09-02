@@ -69,8 +69,8 @@ at most 4 KiB and never contains request bytes, operator values, provider bodies
 The first request is `initialize`. Kapsel accepts a numeric non-null request ID or a non-null string
 request ID of at most 128 UTF-8 bytes and echoes its exact JSON value. Longer strings and other ID
 types receive `Invalid Request` with `id: null`; this bound guarantees the echoed ID cannot exceed
-the response limit. Initialization returns the following shape. The example shows the v0.2.0
-candidate package identity; every v0.2.x process reports its own exact package version.
+the response limit. Initialization returns the following shape. The example shows the published
+v0.2.0 package identity; every v0.2.x process reports its own exact package version.
 
 ```json
 {

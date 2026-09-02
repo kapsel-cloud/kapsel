@@ -1,71 +1,76 @@
-# Contributor guide
+# Kapsel contributor guide
 
-Read this file first. Current technical truth lives in the linked owners.
+This repository owns Kapsel's code, technical contracts, tests, release evidence, and public
+technical claims.
 
 ## Start here
 
-1. Read [`README.md`](README.md), [`docs/SCOPE.md`](docs/SCOPE.md), and
+1. Check Git status and preserve unrelated work.
+2. Read [`README.md`](README.md), [`docs/SCOPE.md`](docs/SCOPE.md), and
    [`docs/INDEX.md`](docs/INDEX.md).
-2. Read the direct contract, tests, and vectors for the surface you will change.
-3. Run `./scripts/format.sh`; it formats Rust and Markdown and expands Markdown tables.
-4. Select the narrowest meaningful gate from [`docs/BUILD.md`](docs/BUILD.md).
-5. Review with [`docs/REVIEW.md`](docs/REVIEW.md).
+3. Read the direct contract, implementation, tests, and vectors for the surface you will change.
+4. Run `./scripts/format.sh`; it formats Rust and Markdown and expands Markdown tables.
+5. Choose the narrowest useful gate from [`docs/BUILD.md`](docs/BUILD.md).
+6. Follow the human workflow, style, and review guidance in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Current technical state
+## Find technical truth
 
-Kapsel publishes a verified v0.2.0 x86-64 GNU/Linux developer-beta artifact for the sole
-`kubernetes.set_deployment_image` capability. The hosted sandbox was removed; its contracts are
-historical evidence only.
+[`docs/SCOPE.md`](docs/SCOPE.md) owns the current product boundary.
+[`docs/EFFECT_GATEWAY.md`](docs/EFFECT_GATEWAY.md) owns authorization, lifecycle, receiver-result,
+recovery, and receipt semantics. [`docs/INDEX.md`](docs/INDEX.md) routes every other question.
 
-The repository also contains the unpublished, source-independent `kapseld -> kapsel` Kapsel service.
-The published v0.2.0 artifact does not include it. The
-[Kapsel service contract](docs/KAPSEL_SERVICE.md) owns its exact boundary, evidence, and limits.
-
-Lifecycle, receiver-result, and receipt semantics are owned by
-[`docs/EFFECT_GATEWAY.md`](docs/EFFECT_GATEWAY.md). Use [`docs/INDEX.md`](docs/INDEX.md) for every
-other owner.
-
-## Correction protocol
+The published `v0.2.0` developer beta and repository HEAD are different promises. Source may contain
+unpublished service or installer work; do not present it as a released or supported path until its
+release owner says so.
 
 When code and an owner disagree:
 
-1. Stop the conflicting edit.
-2. Compare against [`docs/SCOPE.md`](docs/SCOPE.md) and the direct owner.
-3. Correct the canonical owner before implementation.
-4. Record unresolved contradictions in the final report.
+1. stop the conflicting edit;
+2. compare the direct owner with `docs/SCOPE.md`;
+3. correct the canonical owner before implementation; and
+4. leave unresolved contradictions visible.
 
-The technical-scope and effect-gateway owners outrank implementation. Decisions explain rationale;
-they do not override current contract text.
+Contracts define behavior. Decisions explain why. Guides describe commands that actually exist.
+Tests provide executable evidence.
 
-## Change rules
+## Keep the product narrow
 
 - Keep `kubernetes.set_deployment_image` as the only active capability.
-- Keep the caller interface bounded: no shell, `kubectl`, manifest, arbitrary patch, tag, wildcard,
-  or credential input.
-- Keep receipt, trust, authorization, lifecycle, and Kubernetes semantics inside the active deep
-  module.
-- Do not add runtime plugins, a generic capability SDK, policy engine, queue, hosted control plane,
-  dashboard, public provider interface, or second capability.
-- Treat MCP as one fixed stdio adapter for the sole capability, not as project identity or a generic
-  interface.
-- Do not promote a timeout, request acceptance, or provider ambiguity into receiver success or
-  failure. Preserve explicit `UNKNOWN`.
-- Contracts state behavior. Decisions state rationale. Guides describe commands that exist.
-- Keep repository content public, reproducible, and technical; omit private operational context.
-- Never create a shadow memory or context file instead of correcting the owner.
+- Keep credentials, grants, trust, signing material, paths, and lifecycle controls outside caller
+  input.
+- Keep authorization, durable ordering, recovery, receiver classification, `UNKNOWN`, and receipts
+  inside the deep effect-gateway module.
+- Treat MCP as one fixed stdio adapter, not Kapsel's identity or a generic interface.
+- Do not add runtime plugins, a provider SDK, policy language, workflow engine, queue, hosted
+  control plane, dashboard, second capability, or speculative package seam.
+- Never turn timeout, request acceptance, transport completion, or provider ambiguity into receiver
+  success or failure.
+- Keep public content reproducible and technical. Omit private operational or company context.
 
-## Validation
+## Documentation
 
-Docs-only changes: check local links and anchors, run focused terminology searches,
-`./scripts/format.sh --check`, `git diff --check`, and the narrowest repository gate. Contract or
-code changes: add owner-specific tests before broadening to `./scripts/ci-local.sh`. The live
-Kubernetes gate is separate and requires Docker plus `kind`.
+Write for a technical reader who is new to this mechanism.
 
-Report meaningful work as:
+- Keep the high-level idea visible: narrow authority, durable state before the effect,
+  observation-only recovery after ambiguity, honest `UNKNOWN`, and an inspectable receipt.
+- Explain why a mechanism exists before listing its exact rules.
+- Start with the shortest useful mental model or runnable path, then link deeper.
+- Use short sections, concrete examples, diagrams, and plain language. Define unavoidable jargon.
+- Separate tutorials, how-to guides, explanations, and reference when combining them makes the page
+  harder to use.
+- Prefer one canonical owner over repeated summaries. Delete stale explanation instead of preserving
+  it as another truth source.
+- Keep the tone calm and interesting. Fun comes from the engineering ideas and examples, not from
+  weakening limits or forcing jokes.
 
-```text
-Contract: <owner document>
-Surface: <authorization | lifecycle | receipt | kind demo | MCP | docs>
-Gate: <commands and result>
-Risk: <what remains unproved>
-```
+Security and compatibility contracts may be dense when precision requires it. Entry points and
+learning material should not make readers cross that density before they understand the idea.
+
+## Validate the change
+
+Documentation-only work still checks local links and anchors, focused terminology, formatting, and
+`git diff --check`. Code or contract changes add the smallest owner-specific test before broader
+gates. The live Kubernetes lane is separate and requires Docker plus `kind`.
+
+Before finishing, run the narrowest relevant proof and then the owning broader gate when practical.
+State what changed, what ran, and what remains unproved. Do not commit or push unless asked.

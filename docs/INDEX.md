@@ -1,58 +1,60 @@
-# Documentation map
+# Documentation
 
-Start with the shortest page that answers your question. Contracts own behavior; guides show how to
-run it.
+Start with the [technical tour](TOUR.md) to understand the mechanism or the
+[evaluation guide](EVALUATOR.md) to run the published beta. Exact contracts remain the authority for
+behavior.
 
-## I want to…
+## Learn
 
-| Goal                                       | Read                                                      |
-| ------------------------------------------ | --------------------------------------------------------- |
-| Understand Kapsel in five minutes          | [README](../README.md)                                    |
-| Run the published demonstration            | [Evaluator guide](EVALUATOR.md)                           |
-| Build or test the repository               | [Build and test](BUILD.md)                                |
-| Understand results, recovery, and receipts | [Effect-gateway contract](EFFECT_GATEWAY.md)              |
-| Use the local CLI                          | [Evaluator commands](COMMANDS.md)                         |
-| Use the fixed MCP tool                     | [MCP adapter](MCP.md)                                     |
-| Verify a release                           | [Release artifacts](RELEASE.md)                           |
-| Work on the unpublished service            | [Kapsel service](KAPSEL_SERVICE.md)                       |
-| Review the planned installer journey       | [Service operator journey](KAPSEL_SERVICE_OPERATOR.md)    |
-| Contribute a change                        | [Contributor guide](../AGENTS.md) and [Review](REVIEW.md) |
+| Goal                              | Read                            |
+| --------------------------------- | ------------------------------- |
+| Understand Kapsel in five minutes | [README](../README.md)          |
+| Follow one operation end to end   | [Technical tour](TOUR.md)       |
+| Understand the product boundary   | [Technical scope](SCOPE.md)     |
+| See how the code is composed      | [Architecture](ARCHITECTURE.md) |
 
-## Current product contracts
+## Use the published beta
 
-- [Technical scope](SCOPE.md) — purpose, sole capability, maturity, and non-goals.
-- [Effect-gateway contract](EFFECT_GATEWAY.md) — authorization, lifecycle, receiver results,
-  `UNKNOWN`, and receipts.
-- [Architecture](ARCHITECTURE.md) — current composition and module ownership.
-- [Threat model](THREAT_MODEL.md) and [Privacy](PRIVACY.md) — security assumptions, disclosures, and
-  non-claims.
+| Goal                                  | Read                              |
+| ------------------------------------- | --------------------------------- |
+| Authenticate and run the artifact     | [Evaluation guide](EVALUATOR.md)  |
+| Use the local CLI                     | [Evaluator commands](COMMANDS.md) |
+| Use the fixed stdio MCP tool          | [MCP adapter](MCP.md)             |
+| Verify release artifacts              | [Release contract](RELEASE.md)    |
+| Upgrade or roll back a v0.1.1 journal | [Upgrade guide](UPGRADE.md)       |
 
-## Published v0.2.0
+## Exact reference
 
-- [v0.2.0 contract](V0.2.md) — supported beta surfaces and acceptance.
-- [Evaluator commands](COMMANDS.md) and [MCP adapter](MCP.md) — public interfaces.
-- [Release artifacts](RELEASE.md), [Upgrade and rollback](UPGRADE.md), and
-  [Evaluator guide](EVALUATOR.md) — distribution and operation.
+| Question                                                     | Owner                                                     |
+| ------------------------------------------------------------ | --------------------------------------------------------- |
+| What is in scope now?                                        | [Technical scope](SCOPE.md)                               |
+| What do authorization, recovery, results, and receipts mean? | [Effect-gateway contract](EFFECT_GATEWAY.md)              |
+| What does v0.2.0 promise?                                    | [v0.2.0 release contract](V0.2.md)                        |
+| What threats and disclosures remain?                         | [Threat model](THREAT_MODEL.md) and [privacy](PRIVACY.md) |
+| How do I report a vulnerability?                             | [Security policy](../SECURITY.md)                         |
 
-## Unpublished and prospective
+## Contribute
 
-- [Kapsel service](KAPSEL_SERVICE.md) — accepted source implementation and installer contract.
-- [Service operator journey](KAPSEL_SERVICE_OPERATOR.md) — approved plan; not yet runnable.
-- [V1 technical direction](VISION.md) — possible future shape, not a commitment.
+| Goal                           | Read                                      |
+| ------------------------------ | ----------------------------------------- |
+| Contribute code or docs        | [Contributing](../CONTRIBUTING.md)        |
+| Build or choose a focused gate | [Build and test](BUILD.md)                |
+| Understand the proof strategy  | [Testing](TESTING.md)                     |
+| Understand why a design exists | [Accepted decisions](decisions/README.md) |
 
-## Project reference
+## Unpublished work
 
-- [Testing](TESTING.md), [Rust style](STYLE.md), and [Review](REVIEW.md)
-- [Glossary](GLOSSARY.md)
-- [Accepted decisions](decisions/README.md)
-- [Security policy](../SECURITY.md)
-- [Historical hosted sandbox](HISTORICAL_SANDBOX.md)
+Repository HEAD contains an unpublished customer-resident service and partial installer. Neither is
+part of v0.2.0 or a supported installation path.
+
+- [Kapsel service contract](KAPSEL_SERVICE.md)
+- [Planned service operator journey](KAPSEL_SERVICE_OPERATOR.md)
 
 ## Authority order
 
 When documents disagree:
 
-1. [Technical scope](SCOPE.md) and [Effect-gateway contract](EFFECT_GATEWAY.md);
+1. [Technical scope](SCOPE.md) and the [effect-gateway contract](EFFECT_GATEWAY.md);
 2. the direct contract for that surface;
 3. conforming implementation and tests; then
-4. accepted decisions, which explain rationale but do not override current contracts.
+4. accepted decisions, which explain why but do not override current contracts.

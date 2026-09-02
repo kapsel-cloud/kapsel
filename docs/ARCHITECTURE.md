@@ -1,197 +1,161 @@
 # Architecture
 
-Status: current architecture for the published v0.2.0 product and unpublished Kapsel service.
+This page owns the current code composition and compile-time dependency direction. The
+[effect-gateway contract](EFFECT_GATEWAY.md) owns exact authorization, lifecycle, recovery, result,
+and receipt semantics. [Technical scope](SCOPE.md) owns release and support boundaries.
 
-Kind: design. Authority: current module ownership, dependency direction, and composition status.
+## Root product package
 
-Owns: The active effect gateway's modules, seams, and compile-time dependency direction.
-
-Does not own: Exact lifecycle/result semantics, Kubernetes truth, exact receipt bytes, MCP protocol
-semantics, or public-sandbox wire/deployment behavior.
-
-## Short answer
-
-effect-gateway is one deep Rust product package, `kapsel`, for one bounded Kubernetes Deployment
-image operation. `Application` is the caller-facing deep module; its private `Gateway` semantic
-engine owns validation, journaling, conditional mutation, reconciliation, receiver classification,
-receipt construction, immutable publication, and offline inspection. Concrete operation names,
-including `SetDeploymentImageRequest`, keep the Kubernetes scope visible at the interface.
+The repository root is the `kapsel` product package and workspace root. It composes one bounded
+Kubernetes Deployment image operation through a deep application interface:
 
 ```text
-bounded request + signed exact grant + application-configured trust
-  -> Kubernetes effect-gateway module
-       -> bounded grant verification
-       -> SQLite journal
-       -> concrete Kubernetes adapter
-       -> receiver-fact classification
-       -> durable receipt preparation and immutable publication
+local operate command or fixed stdio MCP adapter
+  -> Application
+       -> private Gateway
+            -> exact grant authorization
+            -> SQLite journal
+            -> concrete Kubernetes adapter
+            -> receiver-fact classification
+            -> receipt preparation, signing, and publication
 
-receipt bytes + explicit trust + time + limits
-  -> offline inspector
+kapsel inspect
+  -> offline receipt inspector
+       <- receipt bytes + explicit trust + evaluation time + limits
 ```
 
-The fixed evaluator command and thin fixed-schema MCP stdio adapter are v0.2.x beta interfaces.
-Source and package identity do not establish release identity; authenticated release evidence owns
-that state.
+`Application` is the caller-facing composition root. `OperatorConfiguration` supplies the exact
+owner-signed grant, configured grant trust, concrete Kubernetes client, receipt signing material,
+journal path, and receipt directory. The caller submits only `AgentRequest`, an alias for the
+concrete `SetDeploymentImageRequest`; it cannot select authority, trust, credentials, paths, signing
+material, or lifecycle controls.
 
-## Implemented modules
+`Application::execute` owns submission and lifecycle sequencing and returns an `OperationReport`.
+`Application::reconcile` resumes the configured operation after restart and returns an optional
+report when that operation exists. Application failures expose configuration, request-rejection, and
+operation-failure classes instead of private gateway errors. Submission and snapshot helpers remain
+private so callers cannot sequence durable states.
 
-| Module                              | Owns                                                                                             | Refuses to own                                                        |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
-| `kapsel` / `Gateway`                | One request grammar, signed exact-grant verification, lifecycle, recovery, and finalization      | Another capability, generic runtime, or policy language               |
-| SQLite journal                      | FULL-synchronous rollback journal, bounded operations, guarded transitions, frozen receipt bytes | Generic storage interface or distributed scheduling                   |
-| Kubernetes Deployment image adapter | Safe target reads, one conditional strategic merge patch, and bounded rollout observation        | Generic Kubernetes abstraction or arbitrary manifests/patches         |
-| Receiver-fact module                | Bounded Kubernetes facts and `SUCCEEDED`/`FAILED`/`UNKNOWN` classification                       | Provider truth, causation, or complete cluster health                 |
-| Receipt module                      | Classifier-complete prototype bytes, signing, parsing, recomputation, trust/time/limits          | Stable package format, generic verifier, ambient trust, or `VERIFIED` |
-| Publication module                  | Unix descriptor-relative, owner-private, collision-safe frozen-byte installation                 | Generic blob storage or hosted publication                            |
+The private `Gateway` owns validation, authorization, journaling, conditional mutation,
+observation-only recovery, receiver classification, and frozen receipt construction and publication.
+The crate-level offline inspector consumes receipt bytes directly without opening `Application`, the
+journal, or a Kubernetes client. The journal provides one interface for rows, snapshots, worker
+locking, capacity, and guarded transitions. Private `schema` and `opening` children own exact layout
+and migration, and safe SQLite entry and owner-private pathname identity, respectively.
 
-The source tree keeps these owners local. `lib.rs` is a compact workspace-visible interface map;
-`application` owns the shared deep application interface and sequencing; `transport_support` owns
-bounded operator-file composition plus domain report and application-error projection for the two
-production adapters; `command` owns bounded CLI input, deterministic envelopes, and exit classes;
-`mcp` owns protocol framing and lifecycle; and `main.rs` owns only process arguments, streams, and
-exit handling. Deleting the private transport-support module would move operator loading, exact
-application failure classification, and operation-state/result/rejection/receipt projection back
-into both adapters. Authorization, lifecycle, the concrete Kubernetes adapter and classification,
-receipt encoding/inspection, publication, and their private seam tests live beneath the private
-`gateway` module. The journal retains one deep interface for rows, snapshots, worker locking,
-capacity, and guarded transitions. Its private `schema` child concentrates exact layout recognition
-and legacy migration, while its private `opening` child concentrates durable SQLite entry, v0.1.1
-backup verification, rollback-file recovery, and owner-private Unix pathname identity. Gateway
-callers cannot select either child, SQL, storage, or lifecycle sequencing. A concern earns another
-file only when it owns policy or a durable fact behind a smaller internal interface.
+## Concrete Kubernetes boundary
 
-The experiment owner defines the exact lifecycle, recovery, result, and receipt semantics:
-[effect-gateway](EFFECT_GATEWAY.md).
+The Kubernetes adapter performs safe target reads, one conditional strategic merge patch, and
+bounded rollout observation for the sole operation. Receiver facts and classification are separate
+from transport and request-acceptance facts.
 
-## Application composition
+A private adapter seam supports deterministic provider-call and crash-recovery tests. One production
+adapter does not establish a reusable provider model, public provider interface, or generic
+Kubernetes abstraction.
 
-The root `kapsel` package exposes one compile-time `Application` composition root. Its
-`OperatorConfiguration` supplies one owner-signed exact grant, application-configured grant trust, a
-concrete Kubernetes client, receipt signing material, journal path, and receipt directory. The
-configuration type deliberately has no `Debug` implementation. Grant trust and canonical bytes,
-receipt key identity, the private receipt directory, and an absolute journal path beneath a private
-non-symlink directory are validated before the journal is opened. Journal and worker-lock files are
-owner-private.
+## CLI and MCP composition
 
-The caller submits only `AgentRequest`, an alias for the concrete `SetDeploymentImageRequest`; it
-cannot provide grants, trust, Kubernetes authority, signing material, paths, or fault controls. The
-`Application::execute` method submits intent and owns all subsequent lifecycle sequencing with the
-configured Kubernetes and receipt authority. `Application::reconcile` resumes the exact configured
-operation after restart, and both return one typed `OperationReport`. Submission and report-snapshot
-helpers remain private so callers cannot sequence internal durable states. Application failures
-expose only configuration, request-rejection, and operation-failure classes rather than low-level
-gateway errors. Reconciliation and receipt finalization select that exact operation identity even if
-the journal contains another operation. Provider execution/recovery and receipt
-preparation/publication each have one private operation-selected implementation used by production
-and deterministic fault proofs. Queue-oriented test helpers select one exact identity and delegate
-without owning lifecycle transitions. Exact grant provisioning is a separate operator function
-requiring signing material.
+`src/lib.rs` is the workspace-visible interface map. The executable layers remain shallow:
 
-This Rust application interface is not itself a configuration-file or command grammar. The
-[evaluator command contract](COMMANDS.md) owns the implemented local adapter, which converts its
-fixed files into this same interface without sequencing durable states or exposing credentials. The
-[MCP adapter contract](MCP.md) owns the implemented stdio transport, which converts only its five
-request fields into the same `AgentRequest` and loads operator configuration out of band.
+- `transport_support` loads bounded operator files and projects typed application reports and errors
+  for both adapters;
+- `command` owns fixed CLI input, deterministic envelopes, and exit classes;
+- `mcp` owns bounded stdio framing and protocol lifecycle; and
+- `main.rs` owns process arguments, streams, and exit handling.
 
-## Dependency direction
+The evaluator CLI and fixed-schema stdio MCP adapter both convert their inputs into the same
+`Application` interface. Neither sequences private durable states. MCP exposes only request fields;
+operator configuration remains out of band. [Evaluator commands](COMMANDS.md) and [MCP](MCP.md) own
+their exact external contracts.
+
+## Receipt and publication composition
+
+The receipt module owns canonical classifier-complete bytes, signatures, bounded parsing,
+recomputation, and explicit trust, time, and limit inputs. Inspection is offline. The publication
+module owns Unix descriptor-relative, owner-private, collision-safe installation of already frozen
+bytes. Neither module appoints ambient trust or establishes receiver truth, causation, or complete
+capture.
+
+## Release composition
+
+Release assembly packages the same compile-time root product for the sole release target. The
+ordinary `kapsel` executable is feature-free. A separately named `libexec` demonstration executable
+contains compile-time `demo-harness` controls and is used only by the bundled demonstration.
+Checksums, metadata, SBOM, and smoke automation are distribution concerns; they add no runtime
+plugin, provider interface, trust source, or result vocabulary. The [release contract](RELEASE.md)
+owns the exact archive.
+
+## Workspace packages
 
 ```text
-local evaluator command or thin MCP adapter (both implemented)
-  -> `kapsel` application composition
-       -> effect-gateway module
-            -> private concrete implementation modules
+kapsel (root product)
+  -> kapsel-authority
+
+kapseld (unpublished service)
+  -> kapsel
+
+kapsel-installer (partial, unpublished)
+  -> kapsel-authority
+
+kapsel-dev (repository tooling)
 ```
 
-The private Kubernetes adapter seam exists to prove provider call counts and crash recovery with a
-deterministic fake. One production adapter does not establish a reusable provider model. The
-repository-only `kapsel-dev` package owns development automation such as hook installation, hard
-tidy checks, and advisory style audits; it is tooling, not part of the product package, gateway
-interface, or dependency path.
+`kapsel-authority` is a fixed-purpose source-composition seam. It owns the exact authorization-grant
+codec, receipt-trust codec, and their combined operator-input consistency check. The root product
+and installer consume the same implementation without giving the installer the Kubernetes, journal,
+or gateway dependency graph. It is not an installed process, runtime package, public SDK, generic
+validation library, or supported Rust interface.
 
-Release assembly packages that same compile-time product composition for one supported target. The
-ordinary executable remains feature-free. A separately named `libexec` executable contains the
-compile-time `demo-harness` fault controls and is invoked only by the bundled owned demonstration.
-Artifact metadata, checksums, installation docs, and smoke automation are distribution concerns;
-they do not add a runtime plugin, provider interface, application seam, trust source, or result
-vocabulary. [Release artifacts](RELEASE.md) owns the exact distribution contract.
+`kapsel-dev` owns hook installation, tidy checks, and style audits. It is repository tooling, not a
+product package or dependency in the runtime path. The excluded `fuzz` package contains
+hostile-input proof targets.
 
-The repository root is both the `kapsel` product package and the workspace root. This keeps the sole
-product implementation together while allowing the unpublished `crates/kapsel-dev` tooling package,
-the unpublished fixed-purpose `kapsel-authority` package, and the excluded `fuzz` package. The
-fixed-purpose package owns the exact authorization-grant codec, receipt-trust codec, and their
-combined service operator-input consistency check. Both `kapsel` and the installer consume that one
-implementation; the installer therefore avoids the root package's Kubernetes, journal, and gateway
-dependency graph. The package is an internal source-composition seam, not a runtime package, SDK,
-generic validation library, or supported Rust interface. Its extraction is justified by the measured
-installer dependency isolation and two concrete repository consumers.
+## Unpublished service
 
-Hosted orchestration is not part of the product architecture. No product package named
-`kapsel-core`, `kapsel-gateway`, `kapsel-k8s`, `kapsel-adapters`, `kapsel-api`, or `kapsel-testing`
-exists. Other product code may be extracted only after an independent deployment need, multiple real
-consumers, or measured dependency isolation proves a package seam. Neither the 0.1 release, v0.2
-beta, nor retired sandbox establishes a supported external Rust interface. Public Rust visibility
-may contract when compiler and retained consumers prove it unused and may change within v0.2.x
-without external migration support; crates.io, docs.rs, and `cargo install` remain unsupported.
-
-## Kapsel service composition
-
-The removed sandbox's HTTP admission, scheduler, authority staging, runner isolation, cleanup, and
-second SQLite store are historical. They are not part of the root or Kapsel service architecture.
-
-The published architecture is:
-
-```text
-local CLI or fixed stdio MCP adapter
-  -> deep kapsel Application
-       -> exact authorization and operator-held Kubernetes authority
-       -> durable lifecycle and observation-only recovery
-       -> receiver-bounded result
-       -> frozen signed receipt
-```
-
-The repository also contains this unpublished Kapsel service composition:
+Repository HEAD also composes an unpublished resident service:
 
 ```text
 bounded local service client
   -> authenticated Linux Unix socket
        -> kapseld
-            -> deep kapsel Application
+            -> Application
                  -> sole SQLite effect journal
-
-installer + kapsel
-  -> fixed-purpose service operator-input validation
-       -> exact grant and receipt-trust consistency
 ```
 
-The validation package participates only in source composition. It adds no installed process,
-runtime package, caller interface, authority source, or lifecycle owner.
+`kapseld` provides caller-independent process lifetime, startup reconciliation, read-only status,
+and exact frozen-receipt retrieval across a separate OS identity. It accepts fixed operator and
+socket arguments, validates fixed roots descriptor-relatively, reconciles before binding, and
+removes only an exact inactive service-owned stale socket. Systemd owns process lifecycle,
+runtime-directory cleanup, health, and diagnostics. Static inputs define one service identity and
+namespaced Kubernetes RBAC.
 
-The Kapsel service exists because CLI/MCP cannot provide caller-independent lifetime, read-only
-status, or exact receipt retrieval across a separate OS identity. It accepts fixed operator/socket
-arguments, retains descriptor-relative `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` roots,
-consumes validated authority bytes, reconciles before binding, and removes only an exact inactive
-service-owned stale socket. Systemd owns process lifecycle, runtime-directory cleanup, service
-health, and diagnostics. Static inputs define one service identity and exact namespaced Kubernetes
-RBAC.
+The service adapter composes `Application::execute`, `Application::reconcile`, non-mutating
+exact-grant matching, projected status, and frozen-receipt reads. It does not query SQLite directly,
+duplicate publication rules, sequence lifecycle states, add another store, or create a queue. The
+[Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
+boundary.
 
-The adapter composes `Application::execute`, `Application::reconcile`, non-mutating exact-grant
-matching, projected status, and frozen-receipt reads. It does not query SQLite directly, duplicate
-publication rules, sequence lifecycle states, or add a second store. One in-flight submission is a
-bound, not a queue.
+## Partial installer
 
-## Effect-gateway boundary
+The unpublished `kapsel-installer` package has a fixed three-command grammar and consumes
+`kapsel-authority` directly. Default workspace builds carry no embedded service payload, so a
+mutating invocation stops at `bundle_unavailable` before host access. The release-only
+`KAPSEL_INSTALLER_STAGE` build seam accepts one structurally bounded fixed stage; the current Docker
+smoke supplies test-only ELF fixtures.
 
-The private gateway owns authorization, durable attempt ordering, target validation,
-observation-only recovery, receiver classification, frozen receipt construction and publication, and
-offline inspection. The [effect-gateway contract](EFFECT_GATEWAY.md) defines their exact behavior
-and failure semantics.
+Current implementation validates operator input and bootstrap kubeconfig, performs read-only host
+and Kubernetes clean-install preflight, durably enters `installing`, and creates or recovers the
+exact `kapsel` and `kapsel-service-callers` groups. It then stops at `implementation_incomplete`. It
+does not install users, memberships, assets, Kubernetes resources, credentials, activation, refresh,
+or uninstall, and no candidate assembly command exists. [Build](BUILD.md) lists its runnable gates;
+[Kapsel service](KAPSEL_SERVICE.md) owns the approved future contract and exact current boundary.
 
-## Decisions
+## Dependency rule
 
-- [ADR 0008](decisions/0008-use-one-kubernetes-effect-gateway-canary.md) selects one Kubernetes
-  operation as the effect-gateway canary.
-- [ADR 0009](decisions/0009-use-conditional-kubernetes-image-patch.md) selects the conditional
-  strategic merge patch for this one operation.
-- [ADR 0010](decisions/0010-evolve-through-a-resident-effect-gateway.md) selects the prospective
-  operator-resident shape and evidence-backed package seams.
+Transport and service adapters depend inward on `Application`; `Application` depends inward on the
+private gateway and concrete implementations. Authority codecs may be shared only through the narrow
+fixed-purpose package. A new package or public interface requires a demonstrated deployment or
+dependency boundary and real consumers, not a speculative reuse case.
+
+Accepted [architecture decisions](decisions/README.md) explain why this composition exists without
+overriding current contracts.

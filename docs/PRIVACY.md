@@ -1,50 +1,30 @@
 # Privacy
 
-Status: active experiment design.
-
-Kind: design. Authority: data-exposure boundary for the Kubernetes effect-gateway experiment.
-
-Owns: Disclosure risks for requests, journals, receipts, reports, and demo artifacts.
-
-Does not own: Legal compliance, production retention, Kubernetes credential operations, or retired
-hosted-sandbox details.
-
-## Short answer
-
-The active experiment is local and self-hosted, but its receipts and reports still disclose
-operational metadata. Treat them as sensitive unless intentionally published.
+Kapsel is local and self-hosted, but its journals, receipts, reports, and demonstration artifacts
+can disclose operational metadata. Treat them as sensitive unless they are intentionally published.
 
 Potentially revealing material includes:
 
-- namespace, deployment, container, and image digest;
-- operation identity and timing;
-- Kubernetes target and receiver UIDs, image and operation marker, generations, resource versions,
-  replica counts, and rollout condition;
+- namespace, Deployment, container, immutable image digest, operation identity, and timing;
+- Kubernetes target and receiver UIDs, operation marker, generations, resource versions, replica
+  counts, and rollout condition;
 - authorization and receipt key identifiers, signed-grant digest, and trust anchors; and
-- failure classes and unknown-outcome reports.
+- rejection, failure, and unknown-outcome classes.
 
-## Rules
+## Disclosure checklist
 
-- Agent requests must not contain Kubernetes credentials, signing keys, arbitrary manifests, shell
-  commands, prompts, or private logs.
-- SQLite, receipts, reports, errors, and captured demo logs must not contain secrets or unbounded
-  Kubernetes response bodies.
-- The receipt includes only the fields needed to explain the exact operation and result.
-- Offline inspection uses externally supplied trust; receipt-carried keys or metadata do not appoint
-  themselves.
-- Public demos must use disposable local `kind` resources and synthetic image digests or clearly
-  safe public images.
+- Keep Kubernetes credentials, signing keys, arbitrary manifests, shell commands, prompts, and
+  private logs out of caller requests.
+- Keep secrets and unbounded Kubernetes response bodies out of SQLite, receipts, reports, errors,
+  and captured logs.
+- Include only the fields required to explain the exact operation and result in a receipt.
+- Supply inspection trust externally. Receipt-carried keys or metadata cannot appoint themselves.
+- Use disposable local `kind` resources and synthetic digests or clearly safe public images in
+  public demonstrations.
 - Release artifacts may contain source revision, target, builder identity, binary digests, public
-  documentation, and synthetic vectors; they must not contain evaluator grants, trust decisions,
-  credentials, seeds, kubeconfigs, journals, receipts, reports, logs, or private paths.
-
-## Historical sandbox data
-
-The removed hosted sandbox used only synthetic request and receiver fields. Its
-[historical record and fixtures](HISTORICAL_SANDBOX.md) contain no live data. No hosted collection,
-retention, telemetry, provider audit, or deletion policy is active.
-
-## Non-claims
+  documentation, and synthetic vectors. They must not contain evaluator grants, private trust
+  decisions, credentials, seeds, kubeconfigs, journals, receipts, reports, logs, or private paths.
 
 Kapsel does not guarantee anonymity, unlinkability, legal compliance, production retention safety,
-or absence of sensitive inference.
+or absence of sensitive inference. See the [threat model](THREAT_MODEL.md) for the wider security
+boundary.

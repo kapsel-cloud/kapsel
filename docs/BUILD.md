@@ -1,39 +1,46 @@
 # Build and test Kapsel
 
-Status: current.
+Use this page to find runnable commands and prerequisites. [Testing](TESTING.md) explains proof
+strategy; direct contracts own behavior and evidence limits.
 
-Use this page to find a runnable command. Contracts explain behavior; this page does not repeat
-their rationale or evidence.
+## Prerequisites
 
-## Start here
+The deterministic gate uses Rust 1.98, Python 3.11+, Node.js 24, and Prettier 3.6.2 as pinned by the
+repository. Additional lanes require:
 
-Kapsel uses Rust, Python 3.11+, Node.js 24, and Prettier 3.6.2. Prettier remains the deterministic
-Markdown prose-wrapping and table-expansion owner; the link and whitespace checks do not replace it.
-Run the complete deterministic gate:
+- Docker and kind 0.32+ for live Kubernetes;
+- kubectl 1.30+ for the public demonstration;
+- cargo-fuzz 0.13+ and the pinned Rust nightly for fuzzing;
+- Linux and `sg` for the ignored distinct-effective-group service test;
+- Docker for installer bundle and release-artifact lanes; and
+- Docker, kind, kubectl, cargo-fuzz, Rust nightly, cargo-audit 0.22.2, Trivy 0.72.0 with current
+  databases, the pinned builder image, and the host Cargo registry for finite qualification.
+
+## Deterministic gate and formatting
+
+Run the complete local gate:
 
 ```sh
 ./scripts/ci-local.sh
 ```
 
-The gate formats and checks Rust and Markdown, validates local documentation links and anchors, runs
-Clippy and rustdoc with warnings denied, and executes workspace tests.
-
-Before review:
+Format Rust and Markdown, or check formatting without changing files:
 
 ```sh
 ./scripts/format.sh
 ./scripts/format.sh --check
 ```
 
-Install the repository-managed pre-commit hook with:
+Install the repository-managed pre-commit hook:
 
 ```sh
 cargo run --quiet --locked -p kapsel-dev --bin kapsel-hooks -- install
 ```
 
-It runs the complete gate for every content-changing commit.
+Use `cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy` for project-specific hard
+hygiene checks. Replace `tidy` with `style-audit` for non-blocking review prompts.
 
-## Choose a focused gate
+## Focused gates
 
 | Change                           | Smallest useful command                                                                    |
 | -------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -54,12 +61,9 @@ It runs the complete gate for every content-changing commit.
 | Release artifact                 | `python3 scripts/assemble-release-artifact.py --output-directory dist`                     |
 | Finite beta qualification        | `python3 scripts/run-beta-qualification.py --output /tmp/beta-qualification-baseline.json` |
 
-Use `cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy` for project-specific hard
-hygiene checks. Replace `tidy` with `style-audit` for non-blocking review prompts.
-
 ## Kapsel service candidate
 
-The unpublished service has deterministic package tests:
+The service in repository HEAD is unpublished. Run its package, lint, and private-harness gates:
 
 ```sh
 cargo test --locked -p kapseld
@@ -67,94 +71,65 @@ cargo clippy --locked -p kapseld --all-targets -- -D warnings
 cargo test --locked -p kapseld --features test-harness
 ```
 
-The Linux-only process test proves peer credentials, disconnect-independent execution, reconnect,
-and process loss without creating users or touching systemd:
+Run the Linux-only process test:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process
 ```
 
-The ignored distinct-effective-group case requires Linux and `sg`:
+On Linux with `sg`, run the ignored distinct-effective-group case:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
-The service contract owns what these gates prove and do not prove. See
-[Kapsel service](KAPSEL_SERVICE.md).
+See [Kapsel service](KAPSEL_SERVICE.md) for exact service evidence and limits.
 
 ## Kapsel installer skeleton
 
-The unpublished fixed-purpose validation seam and installer package have portable gates. The first
-freezes exact grant and receipt-trust bytes plus their combined public-identity validation; the
-second proves its fixed command grammar, fail-closed development build, strict bootstrap-kubeconfig
-parser, and canonical prepared-transaction codec:
+The installer in repository HEAD is partial and unpublished. Run its fixed authority seam and
+portable package gates:
 
 ```sh
 cargo test --locked -p kapsel-authority
 ```
-
-The installer gate is:
 
 ```sh
 cargo test --locked -p kapsel-installer
 cargo clippy --locked -p kapsel-installer --all-targets --all-features -- -D warnings
 ```
 
-The installer produced by default workspace builds deliberately contains no embedded service
-payloads. An otherwise valid mutating invocation exits before host access with `bundle_unavailable`;
-installation is not yet runnable. The release-only build seam accepts one structurally bounded fixed
-stage through `KAPSEL_INSTALLER_STAGE`. The explicit Docker smoke uses test-only ELF fixtures and
-root-owned test operator input; it proves bundle generation, descriptor-relative exact input
-inventory and metadata checks, grant/key/receipt consistency, valid kubeconfig composition, hostile
-filesystem refusal, exact installer-lock handling and named-object modes under a hostile umask,
-kill/restart recovery after lock and transaction-directory creation, recovered-parent sync before
-crash-safe transaction publication, marked pending and ownership successors for both fixed groups,
-exact group creation observation, inherited-lock command lifetime, reverse ownership-safe group
-rollback, and the next `implementation_incomplete` boundary. The same smoke then runs both group
-creations, exact observations and binds, a primary-GID refusal, reverse rollback, and final absence
-through Debian 12's native `groupadd`, `groupdel`, `getent`, and `timeout`:
+Run the Linux/Docker bundle smoke:
 
 ```sh
 python3 scripts/test-kapsel-installer-bundle.py
 ```
 
-Install now performs fixed read-only host and Kubernetes clean-install preflight, durably enters
-`installing`, and creates or recovers the exact transaction-owned `kapsel` and
-`kapsel-service-callers` groups before returning `implementation_incomplete`. Test-only failure
-injection also proves conflict-safe reverse removal and `rolled_back` recovery. Native qualification
-covers one ephemeral x86-64 Debian 12 container; exhaustive crash seams, hostile output, and delayed
-mutation remain executable-fixture proof. It still performs no user, membership, or asset
-installation, Kubernetes mutation, credential issuance, activation, refresh, or uninstall. No
-candidate assembly command exists. Exact metadata schema and provenance, real feature-free payload
-construction, deterministic assembly, and the final linked installer's 64 MiB bound remain
-candidate-assembly work.
+Default builds stop at `bundle_unavailable`; the Docker smoke uses test-only staged payloads to
+cross the implemented recovery seams. [Architecture](ARCHITECTURE.md#partial-installer) summarizes
+the current implementation, and [Kapsel service](KAPSEL_SERVICE.md) owns its exact boundary.
 
 ## Upgrade and rollback fixture gate
 
-Run the source fixture matrix with:
+Run the source fixture matrix without Kubernetes or network access:
 
 ```sh
 python3 scripts/test-v011-upgrade-fixtures.py
 ```
 
-The direct command is `python3 scripts/test-v011-upgrade-fixtures.py`. It checks all nine historical
-lifecycle states, migration interruption, restore interruption, repeated reopen, exact rows,
-provider-call counts, and frozen receipt bytes. It uses no Kubernetes cluster or network. The
-[upgrade contract](UPGRADE.md) owns supported behavior and limits.
+See [Upgrade and rollback](UPGRADE.md) for supported behavior and limits.
 
 ## Robustness lanes
 
-Compile or briefly run the receipt-inspection fuzz target:
+Check the fuzz target with the pinned nightly, or run the bounded smoke script:
 
 ```sh
 rustup run nightly-2026-07-03 cargo fuzz check --manifest-path fuzz/Cargo.toml inspect_receipt
 ./scripts/test-fuzz.sh
 ```
 
-These commands require cargo-fuzz 0.13+ and Rust nightly. For a longer session, run
-`cargo +nightly fuzz run inspect_receipt` from `fuzz/`.
+For a longer session, run `cargo +nightly fuzz run inspect_receipt` from `fuzz/`.
 
 Run the seeded lifecycle simulation:
 
@@ -162,7 +137,7 @@ Run the seeded lifecycle simulation:
 ./scripts/test-simulation.sh
 ```
 
-Override its defaults when reproducing or extending a run:
+Override its defaults for replay or a longer run:
 
 ```sh
 KAPSEL_SIMULATION_SEED=21182435914953528 \
@@ -178,16 +153,14 @@ Run every finite qualification lane against one committed clean candidate:
 python3 scripts/run-beta-qualification.py --output /tmp/beta-qualification-baseline.json
 ```
 
-This requires Docker, kind, kubectl, cargo-fuzz and Rust nightly, cargo-audit 0.22.2, Trivy 0.72.0
-with current databases, the pinned builder image, and the host Cargo registry. A successful run
-writes `/tmp/beta-qualification-baseline.json`. Validate it with:
+Validate the resulting baseline:
 
 ```sh
 python3 scripts/validate-beta-qualification-baseline.py \
   /absolute/beta-qualification-baseline.json
 ```
 
-Qualification is candidate evidence, not a production or support claim.
+Qualification is finite candidate evidence, not a production or support claim.
 
 ## Live Kubernetes gate
 
@@ -197,9 +170,8 @@ With Docker and kind 0.32+:
 ./scripts/test-kind-effect-gateway.sh
 ```
 
-The gate creates and removes one uniquely named cluster. It exercises successful, failed, and
-bounded-unknown receiver paths without a blind second patch. On failure it exports kind logs under
-`$TMPDIR` before cleanup. It is separate from deterministic CI.
+The script owns creation, failure-log export, and cleanup of its uniquely named cluster. This lane
+is separate from deterministic CI.
 
 ## Public crash-recovery demonstration
 
@@ -209,9 +181,11 @@ With Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 ./scripts/demo-kind-crash-recovery.sh
 ```
 
-The demonstration creates its own cluster, runs healthy and failed-rollout paths, kills the real
-process around mutation and receipt publication, restarts, inspects the frozen receipt, and cleans
-up. Test the harness without Docker using `./scripts/test-demo-harness.sh`.
+Test the demonstration harness without Docker:
+
+```sh
+./scripts/test-demo-harness.sh
+```
 
 ## Evaluator CLI
 
@@ -221,7 +195,7 @@ Build the executable:
 cargo build --locked --bin kapsel
 ```
 
-Its fixed forms are:
+Run its fixed forms:
 
 ```sh
 target/debug/kapsel provision-grant \
@@ -240,23 +214,22 @@ target/debug/kapsel inspect \
   --evaluation-time-unix-s 150
 ```
 
-See [Evaluator commands](COMMANDS.md) for exact inputs, authority separation, output, and exit
-classes.
+See [Evaluator commands](COMMANDS.md) for input, authority, output, and exit contracts.
 
 ## MCP adapter
 
-Run its black-box proof and start the fixed stdio process with:
+Run the black-box proof and start the fixed stdio process:
 
 ```sh
 cargo test --locked --test e2e_mcp_adapter
 target/debug/kapsel mcp --operator-config /absolute/operator.json
 ```
 
-See [MCP adapter](MCP.md) for the protocol and fixed tool schema.
+See [MCP](MCP.md) for protocol details.
 
-## Release artifact proof
+## Release artifact
 
-The sole release target is `x86_64-unknown-linux-gnu`. Assemble deterministic files under `dist/`:
+The sole release target is `x86_64-unknown-linux-gnu`. Assemble files under `dist/`:
 
 ```sh
 python3 scripts/assemble-release-artifact.py --output-directory dist
@@ -271,17 +244,16 @@ python3 scripts/test-release-artifact.py --archive "$archive_a"
 python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
 ```
 
-The proof validates and smoke-tests A, independently assembles B, and compares all deterministic
-bytes. Remove `"$a_dir"` afterward. See [Release artifacts](RELEASE.md) for layout, authentication,
-publication, and withdrawal rules.
+Remove `"$a_dir"` afterward. [Release artifacts](RELEASE.md) owns layout, authentication,
+publication, evidence, and withdrawal rules.
 
-Drive an extracted artifact through the live demonstration from its top-level directory:
+From an extracted artifact top-level directory, run the live demonstration:
 
 ```sh
 ./share/kapsel/demo-kind-crash-recovery.sh
 ```
 
-Or use a named archive from a checkout:
+Or run a named archive from a checkout:
 
 ```sh
 python3 scripts/smoke-release-artifact.py \
@@ -291,7 +263,7 @@ python3 scripts/smoke-release-artifact.py \
 
 ## Coverage
 
-Generate informational coverage with:
+Generate informational source coverage:
 
 ```sh
 cargo llvm-cov --locked --workspace --codecov --output-path codecov.json
@@ -301,7 +273,7 @@ Coverage is non-blocking information, not correctness evidence.
 
 ## Toolchain ownership
 
-The executable build inputs are `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`,
+Executable build inputs are `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `rustfmt.toml`,
 `rustfmt-nightly.toml`, `clippy.toml`, `.github/workflows/ci.yml`, `scripts/format.sh`, and
-`scripts/ci-local.sh`. When this guide disagrees with an executable command, correct the guide and
-its direct contract before relying on the prose.
+`scripts/ci-local.sh`. When prose and an executable command disagree, correct the guide and its
+direct contract before relying on the prose.

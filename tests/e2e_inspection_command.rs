@@ -138,15 +138,13 @@ fn canonical_vectors_are_inspected_at_the_explicit_time() {
 }
 
 #[test]
-fn sandbox_unavailable_image_fixture_is_classifier_complete() {
+fn failed_rollout_fixture_is_classifier_complete() {
     let (root, _, _) = fixture();
-    let receipt = root.join("sandbox-receipt.bin");
-    let trust = root.join("sandbox-trust.bin");
+    let receipt = root.join("failed-rollout-receipt.bin");
+    let trust = root.join("failed-rollout-trust.bin");
     fs::write(
         &receipt,
-        decode_hex(include_str!(
-            "../docs/fixtures/sandbox-v1/unavailable-image.receipt.hex"
-        )),
+        decode_hex(include_str!("fixtures/failed-rollout.receipt.hex")),
     )
     .unwrap();
     fs::write(

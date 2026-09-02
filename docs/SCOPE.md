@@ -1,88 +1,91 @@
 # Technical scope
 
-> Give an agent one bounded Kubernetes operation without giving it Kubernetes credentials.
+> Kapsel gives an automated workflow one tightly bounded Kubernetes operation without giving it
+> cluster credentials, then returns the strongest honest result supported by bounded receiver
+> observations: `SUCCEEDED`, `FAILED`, or `UNKNOWN`.
 
-Status: active experiment.
+Status: active experiment. The published release is the v0.2.0 developer beta.
 
-This document owns Kapsel's purpose, sole capability, maturity, and technical non-goals. The
-[effect-gateway contract](EFFECT_GATEWAY.md) owns exact authorization, lifecycle, result, and
-receipt semantics.
+This page owns Kapsel's current product boundary, maturity, and technical non-goals. The
+[effect-gateway contract](EFFECT_GATEWAY.md) owns exact authorization, lifecycle, recovery, result,
+and receipt semantics.
 
-## What Kapsel does
-
-Kapsel turns one authorized request into a durable provider attempt, receiver observation or
-explicit uncertainty, and an inspectable receipt:
-
-```text
-agent request
-  -> operator-owned exact grant and trust
-  -> durable pre-attempt rejection or mutation marker
-  -> conditional Kubernetes mutation
-  -> receiver observation or UNKNOWN
-  -> signed receipt
-```
-
-The sole capability is:
+## One capability
 
 ```text
 kubernetes.set_deployment_image(namespace, deployment, container, immutable_image_digest)
 ```
 
-The caller supplies only those bounded request fields. The operator separately owns the grant,
-trust, Kubernetes authority, signing material, journal, and receipt paths.
+The caller supplies one stable operation identity plus the namespace, Deployment, container, and
+immutable digest-bound image. The operator separately supplies the exact signed grant and trusted
+key, Kubernetes authority, receipt signing material, journal, and private paths.
 
-## What exists
+Caller input cannot contain credentials, trust, grants, shell commands, `kubectl`, manifests,
+arbitrary patches, tags, wildcards, paths, or lifecycle controls.
 
-The published [v0.2.0 developer beta](V0.2.md) provides:
+## One durable path
 
-- one x86-64 GNU/Linux release;
+```text
+bounded request
+  -> exact operator-owned authorization
+  -> durable pre-attempt rejection or mutation marker
+  -> one conditional Kubernetes patch opportunity
+  -> bounded rollout observation
+  -> SUCCEEDED / FAILED / UNKNOWN
+  -> frozen signed receipt
+```
+
+Kapsel commits target identity and `apply_started` before attempting the patch. Recovery from that
+state observes rather than blindly mutating again.
+
+`SUCCEEDED` and `FAILED` are defined classifications over bounded observations of the same target,
+image, and generation. `UNKNOWN` means reconciliation established neither result. It does not mean
+failure, no effect, safety, or permission to retry.
+
+A permanent missing or invalid target may finish as `NOT_ATTEMPTED` before the mutation marker. That
+is a local disposition with no receiver result or effect receipt.
+
+An inspected receipt authenticates frozen bytes and classifier consistency under separately supplied
+trust. It does not prove causation, exactly-once effects, complete cluster health, complete capture,
+compliance, or Kubernetes truth.
+
+## What is published
+
+The [v0.2.0 developer beta](V0.2.md) provides:
+
+- one authenticated x86-64 GNU/Linux archive;
 - a local CLI and fixed-schema stdio MCP adapter;
-- signed exact grants and receipts;
+- signed exact grants and classifier-complete receipts;
 - SQLite-backed crash recovery;
-- a disposable-`kind` demonstration; and
-- upgrade and rollback evidence from v0.1.1.
+- a disposable-`kind` crash-recovery demonstration; and
+- bounded v0.1.1 journal, grant, and receipt continuity.
 
-The repository also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md).
-It adds caller-independent process lifetime, reconnectable status, and exact receipt retrieval over
-an authenticated local socket. It is not part of v0.2.0 and is not production-ready.
+Only the named v0.2.x CLI, MCP, grant, receipt, archive, and journal-upgrade surfaces have the
+bounded compatibility described by their direct contracts. Public Rust APIs, another platform, and
+production support do not.
 
-The hosted sandbox was removed. Its [historical record](HISTORICAL_SANDBOX.md) points to the retired
-contracts and fixtures; none are current interfaces.
-
-## Result meaning
-
-Kapsel may report:
-
-- `SUCCEEDED` when the bounded receiver facts satisfy the available-rollout classifier;
-- `FAILED` when they contain the defined `ProgressDeadlineExceeded` condition;
-- `UNKNOWN` when bounded reconciliation cannot establish either result; or
-- `NOT_ATTEMPTED` when a permanent local target rejection occurs before mutation is recorded.
-
-These results do not prove exactly-once effects, Kubernetes truth, causation, complete cluster
-health, complete capture, or compliance. An inspected receipt authenticates its bytes under supplied
-trust; it does not prove that every disclosed external fact is true.
+Repository HEAD also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md)
+and partial installer work. They add no v0.2.0 promise and are not currently a supported
+installation path.
 
 ## Maturity
 
-Kapsel 0.2.0 is a developer beta, not production software. Its named CLI, MCP, grant, receipt,
-archive, and journal-upgrade surfaces have bounded v0.2.x compatibility. Public Rust APIs, the
-Kapsel service, another platform, and production support do not.
-
-The [V1 technical direction](VISION.md) describes possible future requirements, not a roadmap or
-commitment.
+Kapsel is a developer beta, not production software. It has finite proof for one operation, one
+Kubernetes adapter, one release target, and named crash windows. It has no production availability,
+remediation, support, high-availability, backup, or platform promise.
 
 ## Non-goals
 
 Kapsel does not provide:
 
-- arbitrary shell, `kubectl`, manifest, patch, tag, wildcard, or credential input;
-- a second Kubernetes operation;
-- a generic MCP host, provider SDK, policy language, or workflow engine;
-- runtime plugins or a public Rust SDK;
-- a hosted service, managed control plane, dashboard, or fleet manager;
-- a generic receipt or compliance product;
-- production support, high availability, or another platform target; or
-- exactly-once mutation, universal capture, or independent witnessing.
+- a Kubernetes operation suite or arbitrary administration;
+- a generic provider SDK, capability system, policy language, or workflow engine;
+- runtime plugins, a public Rust SDK, or a stable package ecosystem;
+- a hosted control plane, dashboard, fleet manager, or managed authority;
+- a generic receipt, witnessing, compliance, or audit product;
+- exactly-once mutation, universal capture, causal proof, or universal Kubernetes truth;
+- production support, high availability, or a second platform target; or
+- a second capability without its own concrete semantics and evidence.
 
-A second capability or wider platform requires its own evidence and owner. It is not implied by the
-current experiment.
+The [architecture](ARCHITECTURE.md) describes the current composition. Accepted
+[decisions](decisions/README.md) explain why it remains deliberately narrow.

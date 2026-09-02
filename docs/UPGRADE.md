@@ -18,10 +18,10 @@ gate.
 ## Supported path
 
 This procedure supports an owner-private journal last opened by exact Kapsel `v0.1.1` and the
-candidate v0.2 binary on x86-64 GNU/Linux. The operation schema is identical between those versions,
-so the upgrade does not transform operation rows or receipt facts. The v0.2 opener records one
-private format marker after recognizing the store. It does not add a command or change the adopted
-`provision-grant`, `operate`, `inspect`, or `mcp` grammar.
+published v0.2.0 binary on x86-64 GNU/Linux. The operation schema is identical between those
+versions, so the upgrade does not transform operation rows or receipt facts. The v0.2 opener records
+one private format marker after recognizing the store. It does not add a command or change the
+adopted `provision-grant`, `operate`, `inspect`, or `mcp` grammar.
 
 The marker changes database bytes, so an existing unmarked store requires a verified backup even
 though its operation rows need no migration. The active database and exact backup must each be no
