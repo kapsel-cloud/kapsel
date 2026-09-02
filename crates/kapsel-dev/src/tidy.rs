@@ -1,7 +1,6 @@
 //! Repository-local Rust documentation hygiene checks.
 //!
-//! Hard rules cover objective rustdoc structure that compiler tooling does not express. Advisory
-//! rules remain review prompts and never fail the style-audit command.
+//! Hard rules cover objective rustdoc structure that compiler tooling does not express.
 
 use proc_macro2::{Delimiter, Span, TokenStream, TokenTree};
 use syn::{
@@ -27,68 +26,32 @@ const HEADING_ORDER: &[(&str, usize)] = &[
     ("Platform-specific behavior", 5),
     ("Examples", 6),
 ];
-const DOC_STATUS_WORDS: &[&str] = &["currently", "eventually", "placeholder", "temporary"];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Severity {
-    Error,
-    Warning,
-}
-
-impl Severity {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warning => "warning",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Rule {
-    code: &'static str,
-    severity: Severity,
-}
-
-const HEADING_NAME: Rule = Rule::error("rustdoc-heading-name");
-const HEADING_ORDER_RULE: Rule = Rule::error("rustdoc-heading-order");
-const HEADING_DUPLICATE: Rule = Rule::error("rustdoc-heading-duplicate");
-const SECTION_EMPTY: Rule = Rule::error("rustdoc-section-empty");
-const SAFETY_SECTION: Rule = Rule::error("rustdoc-safety-section");
-const EXAMPLE_FENCE: Rule = Rule::error("rustdoc-example-fence");
-const EXAMPLE_UNWRAP: Rule = Rule::error("rustdoc-example-unwrap");
-const EXAMPLE_PARSE: Rule = Rule::error("rustdoc-example-parse");
-const DYNAMIC_DOC: Rule = Rule::error("rustdoc-dynamic-content");
-const SOURCE_PARSE: Rule = Rule::error("rustdoc-source-parse");
-const STATUS_WORD: Rule = Rule::warning("rustdoc-status-word");
-const CANCELLATION_SECTION: Rule = Rule::warning("rustdoc-cancellation-section");
-
-impl Rule {
-    const fn error(code: &'static str) -> Self {
-        Self {
-            code,
-            severity: Severity::Error,
-        }
-    }
-
-    const fn warning(code: &'static str) -> Self {
-        Self {
-            code,
-            severity: Severity::Warning,
-        }
-    }
-}
+const HEADING_NAME: &str = "rustdoc-heading-name";
+const HEADING_ORDER_RULE: &str = "rustdoc-heading-order";
+const HEADING_DUPLICATE: &str = "rustdoc-heading-duplicate";
+const SECTION_EMPTY: &str = "rustdoc-section-empty";
+const SAFETY_SECTION: &str = "rustdoc-safety-section";
+const EXAMPLE_FENCE: &str = "rustdoc-example-fence";
+const EXAMPLE_UNWRAP: &str = "rustdoc-example-unwrap";
+const EXAMPLE_PARSE: &str = "rustdoc-example-parse";
+const DYNAMIC_DOC: &str = "rustdoc-dynamic-content";
+const SOURCE_PARSE: &str = "rustdoc-source-parse";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Finding {
-    rule: Rule,
+    rule: &'static str,
     path: PathBuf,
     line_number: usize,
     message: String,
 }
 
 impl Finding {
-    fn new(rule: Rule, path: &Path, line_number: usize, message: impl Into<String>) -> Self {
+    fn new(
+        rule: &'static str,
+        path: &Path,
+        line_number: usize,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             rule,
             path: path.to_path_buf(),
@@ -102,11 +65,10 @@ impl fmt::Display for Finding {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "{}:{}: {}[{}]: {}",
+            "{}:{}: error[{}]: {}",
             self.path.display(),
             self.line_number,
-            self.rule.severity.label(),
-            self.rule.code,
+            self.rule,
             self.message
         )
     }
@@ -115,7 +77,6 @@ impl fmt::Display for Finding {
 #[derive(Debug)]
 struct DocumentedItem {
     line_number: usize,
-    is_async: bool,
     is_unsafe: bool,
     has_dynamic_doc: bool,
     lines: Vec<(usize, String)>,
@@ -139,37 +100,29 @@ fn main() -> ExitCode {
 }
 
 fn run(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Result<(), String> {
+    run_at(Path::new("."), arguments)
+}
+
+fn run_at(
+    root: &Path,
+    arguments: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), String> {
     let mut arguments = arguments.into_iter();
     let command = arguments.next().and_then(|value| value.into_string().ok());
-    if arguments.next().is_some() {
-        return Err("usage: kapsel-tidy [tidy|style-audit]".into());
+    if arguments.next().is_some() || command.as_deref() != Some("tidy") {
+        return Err("usage: kapsel-tidy tidy".into());
     }
-    match command.as_deref() {
-        Some("tidy") => run_tidy(Path::new(".")),
-        Some("style-audit") => run_style_audit(Path::new(".")),
-        _ => Err("usage: kapsel-tidy [tidy|style-audit]".into()),
-    }
+    run_tidy(root)
 }
 
 fn run_tidy(root: &Path) -> Result<(), String> {
-    let findings = collect_findings(root, check_hard_rules)?;
+    let findings = collect_findings(root)?;
     if findings.is_empty() {
         let _ = writeln!(io::stdout().lock(), "tidy: OK");
         return Ok(());
     }
     report_findings(&findings);
     Err(format!("tidy: {} error(s)", findings.len()))
-}
-
-fn run_style_audit(root: &Path) -> Result<(), String> {
-    let findings = collect_findings(root, check_advisory_rules)?;
-    report_findings(&findings);
-    let _ = writeln!(
-        io::stdout().lock(),
-        "style-audit: {} warning(s)",
-        findings.len()
-    );
-    Ok(())
 }
 
 fn report_findings(findings: &[Finding]) {
@@ -180,26 +133,19 @@ fn report_findings(findings: &[Finding]) {
     }
 }
 
-fn collect_findings(
-    root: &Path,
-    check: fn(&Path, &str, &mut Vec<Finding>),
-) -> Result<Vec<Finding>, String> {
+fn collect_findings(root: &Path) -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
-    walk_rust_sources(root, check, &mut findings)?;
+    walk_rust_sources(root, &mut findings)?;
     findings.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
             .then(left.line_number.cmp(&right.line_number))
-            .then(left.rule.code.cmp(right.rule.code))
+            .then(left.rule.cmp(right.rule))
     });
     Ok(findings)
 }
 
-fn walk_rust_sources(
-    path: &Path,
-    check: fn(&Path, &str, &mut Vec<Finding>),
-    findings: &mut Vec<Finding>,
-) -> Result<(), String> {
+fn walk_rust_sources(path: &Path, findings: &mut Vec<Finding>) -> Result<(), String> {
     if should_skip(path) {
         return Ok(());
     }
@@ -212,12 +158,12 @@ fn walk_rust_sources(
         let entries = fs::read_dir(path).map_err(|error| format!("{}: {error}", path.display()))?;
         for entry in entries {
             let entry = entry.map_err(|error| format!("{}: {error}", path.display()))?;
-            walk_rust_sources(&entry.path(), check, findings)?;
+            walk_rust_sources(&entry.path(), findings)?;
         }
     } else if metadata.is_file() && path.extension() == Some(OsStr::new("rs")) {
         let text =
             fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        check(path, &text, findings);
+        check_hard_rules(path, &text, findings);
     }
     Ok(())
 }
@@ -263,27 +209,6 @@ fn check_hard_rules(path: &Path, text: &str, findings: &mut Vec<Finding>) {
     }
 }
 
-fn check_advisory_rules(path: &Path, text: &str, findings: &mut Vec<Finding>) {
-    let Ok(items) = documented_public_items(text) else {
-        return;
-    };
-    for item in items {
-        check_status_words(path, &item, findings);
-        if item.is_async
-            && !sections(&item)
-                .iter()
-                .any(|section| section.name == "Cancellation safety")
-        {
-            findings.push(Finding::new(
-                CANCELLATION_SECTION,
-                path,
-                item.line_number,
-                "public async API may need `# Cancellation safety`",
-            ));
-        }
-    }
-}
-
 fn documented_public_items(text: &str) -> Result<Vec<DocumentedItem>, syn::Error> {
     let file = syn::parse_file(text)?;
     let mut documented = Vec::new();
@@ -291,7 +216,7 @@ fn documented_public_items(text: &str) -> Result<Vec<DocumentedItem>, syn::Error
         .attrs
         .first()
         .map_or_else(Span::call_site, Spanned::span);
-    push_documented(&file.attrs, file_span, false, false, &mut documented);
+    push_documented(&file.attrs, file_span, false, &mut documented);
     collect_items(&file.items, &mut documented);
     Ok(documented)
 }
@@ -300,12 +225,12 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
     for item in items {
         match item {
             Item::Const(item) if is_public(&item.vis) => {
-                push_documented(&item.attrs, item.span(), false, false, documented);
+                push_documented(&item.attrs, item.span(), false, documented);
             },
             Item::Enum(item) if is_public(&item.vis) => {
-                push_documented(&item.attrs, item.span(), false, false, documented);
+                push_documented(&item.attrs, item.span(), false, documented);
                 for variant in &item.variants {
-                    push_documented(&variant.attrs, variant.span(), false, false, documented);
+                    push_documented(&variant.attrs, variant.span(), false, documented);
                     collect_fields(&variant.fields, true, documented);
                 }
             },
@@ -313,61 +238,58 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
                 push_documented(
                     &item.attrs,
                     item.span(),
-                    item.sig.asyncness.is_some(),
                     matches!(item.sig.safety, syn::Safety::Unsafe(_)),
                     documented,
                 );
             },
             Item::Mod(item) => {
                 if is_public(&item.vis) {
-                    push_documented(&item.attrs, item.span(), false, false, documented);
+                    push_documented(&item.attrs, item.span(), false, documented);
                 }
                 if let Some((_, items)) = &item.content {
                     collect_items(items, documented);
                 }
             },
             Item::Static(item) if is_public(&item.vis) => {
-                push_documented(&item.attrs, item.span(), false, false, documented);
+                push_documented(&item.attrs, item.span(), false, documented);
             },
             Item::Struct(item) if is_public(&item.vis) => {
-                push_documented(&item.attrs, item.span(), false, false, documented);
+                push_documented(&item.attrs, item.span(), false, documented);
                 collect_fields(&item.fields, false, documented);
             },
             Item::Trait(item) if is_public(&item.vis) => {
                 push_documented(
                     &item.attrs,
                     item.span(),
-                    false,
                     item.unsafety.is_some(),
                     documented,
                 );
                 for trait_item in &item.items {
                     match trait_item {
                         TraitItem::Const(item) => {
-                            push_documented(&item.attrs, item.span(), false, false, documented);
+                            push_documented(&item.attrs, item.span(), false, documented);
                         },
                         TraitItem::Fn(item) => push_documented(
                             &item.attrs,
                             item.span(),
-                            item.sig.asyncness.is_some(),
                             matches!(item.sig.safety, syn::Safety::Unsafe(_)),
                             documented,
                         ),
                         TraitItem::Type(item) => {
-                            push_documented(&item.attrs, item.span(), false, false, documented);
+                            push_documented(&item.attrs, item.span(), false, documented);
                         },
                         TraitItem::Macro(_) | TraitItem::Verbatim(_) | _ => {},
                     }
                 }
             },
             Item::Type(item) if is_public(&item.vis) => {
-                push_documented(&item.attrs, item.span(), false, false, documented);
+                push_documented(&item.attrs, item.span(), false, documented);
             },
             Item::Union(item) if is_public(&item.vis) => {
-                push_documented(&item.attrs, item.span(), false, false, documented);
+                push_documented(&item.attrs, item.span(), false, documented);
                 for field in &item.fields.named {
                     if is_public(&field.vis) {
-                        push_documented(&field.attrs, field.span(), false, false, documented);
+                        push_documented(&field.attrs, field.span(), false, documented);
                     }
                 }
             },
@@ -375,17 +297,16 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
                 for impl_item in &item.items {
                     match impl_item {
                         ImplItem::Const(item) if is_public(&item.vis) => {
-                            push_documented(&item.attrs, item.span(), false, false, documented);
+                            push_documented(&item.attrs, item.span(), false, documented);
                         },
                         ImplItem::Fn(item) if is_public(&item.vis) => push_documented(
                             &item.attrs,
                             item.span(),
-                            item.sig.asyncness.is_some(),
                             matches!(item.sig.safety, syn::Safety::Unsafe(_)),
                             documented,
                         ),
                         ImplItem::Type(item) if is_public(&item.vis) => {
-                            push_documented(&item.attrs, item.span(), false, false, documented);
+                            push_documented(&item.attrs, item.span(), false, documented);
                         },
                         _ => {},
                     }
@@ -399,7 +320,7 @@ fn collect_items(items: &[Item], documented: &mut Vec<DocumentedItem>) {
 fn collect_fields(fields: &Fields, inherited_public: bool, documented: &mut Vec<DocumentedItem>) {
     for field in fields {
         if inherited_public || is_public(&field.vis) {
-            push_documented(&field.attrs, field.span(), false, false, documented);
+            push_documented(&field.attrs, field.span(), false, documented);
         }
     }
 }
@@ -411,7 +332,6 @@ fn is_public(visibility: &Visibility) -> bool {
 fn push_documented(
     attributes: &[Attribute],
     span: Span,
-    is_async: bool,
     is_unsafe: bool,
     documented: &mut Vec<DocumentedItem>,
 ) {
@@ -421,7 +341,6 @@ fn push_documented(
     }
     documented.push(DocumentedItem {
         line_number: span.start().line,
-        is_async,
         is_unsafe,
         has_dynamic_doc,
         lines,
@@ -770,24 +689,6 @@ fn collect_forbidden_calls(tokens: TokenStream, lines: &mut Vec<usize>) {
     }
 }
 
-fn check_status_words(path: &Path, item: &DocumentedItem, findings: &mut Vec<Finding>) {
-    for (line_number, line) in &item.lines {
-        let words = line.split(|character: char| !character.is_ascii_alphanumeric());
-        if let Some(word) = words
-            .filter(|word| !word.is_empty())
-            .map(str::to_ascii_lowercase)
-            .find(|word| DOC_STATUS_WORDS.contains(&word.as_str()))
-        {
-            findings.push(Finding::new(
-                STATUS_WORD,
-                path,
-                *line_number,
-                format!("public docs use status word `{word}`"),
-            ));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -796,7 +697,7 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
 
-    use super::{check_advisory_rules, check_hard_rules, collect_findings};
+    use super::{collect_findings, run_at};
 
     static FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -828,7 +729,7 @@ mod tests {
             ),
         )?;
 
-        let findings = collect_findings(fixture.path(), check_hard_rules)?;
+        let findings = collect_findings(fixture.path())?;
 
         assert!(findings.is_empty(), "unexpected findings: {findings:#?}");
         Ok(())
@@ -910,10 +811,10 @@ mod tests {
             ),
         )?;
 
-        let findings = collect_findings(fixture.path(), check_hard_rules)?;
+        let findings = collect_findings(fixture.path())?;
         let heading_findings = findings
             .iter()
-            .filter(|finding| finding.rule.code == "rustdoc-heading-name")
+            .filter(|finding| finding.rule == "rustdoc-heading-name")
             .count();
 
         assert_eq!(heading_findings, 3);
@@ -1010,10 +911,10 @@ mod tests {
             ),
         )?;
 
-        let findings = collect_findings(fixture.path(), check_hard_rules)?;
+        let findings = collect_findings(fixture.path())?;
         let heading_findings = findings
             .iter()
-            .filter(|finding| finding.rule.code == "rustdoc-heading-name")
+            .filter(|finding| finding.rule == "rustdoc-heading-name")
             .count();
 
         assert_eq!(heading_findings, 6);
@@ -1037,7 +938,7 @@ mod tests {
             ),
         )?;
 
-        let findings = collect_findings(fixture.path(), check_hard_rules)?;
+        let findings = collect_findings(fixture.path())?;
 
         assert!(findings.is_empty(), "unexpected findings: {findings:#?}");
         Ok(())
@@ -1061,38 +962,31 @@ mod tests {
             ),
         )?;
 
-        let findings = collect_findings(fixture.path(), check_hard_rules)?;
+        let findings = collect_findings(fixture.path())?;
         let unwrap_findings = findings
             .iter()
-            .filter(|finding| finding.rule.code == "rustdoc-example-unwrap")
+            .filter(|finding| finding.rule == "rustdoc-example-unwrap")
             .count();
         assert_eq!(unwrap_findings, 3);
         Ok(())
     }
 
     #[test]
-    fn style_audit_reports_status_and_cancellation_prompts() -> Result<(), String> {
-        let fixture = Fixture::new("audit")?;
-        fixture.write(
-            "src/lib.rs",
-            "/// Currently applies one request.\npub async fn apply() {}\n",
-        )?;
+    fn only_tidy_command_is_accepted() -> Result<(), String> {
+        let fixture = Fixture::new("commands")?;
 
-        let findings = collect_findings(fixture.path(), check_advisory_rules)?;
-        let codes = findings
-            .iter()
-            .map(|finding| finding.rule.code)
-            .collect::<Vec<_>>();
-
-        assert!(codes.contains(&"rustdoc-status-word"));
-        assert!(codes.contains(&"rustdoc-cancellation-section"));
+        assert_eq!(run_at(fixture.path(), ["tidy".into()]), Ok(()));
+        assert_eq!(
+            run_at(fixture.path(), ["style-audit".into()]),
+            Err("usage: kapsel-tidy tidy".into())
+        );
         Ok(())
     }
 
     fn hard_codes(root: &Path) -> Result<Vec<&'static str>, String> {
-        Ok(collect_findings(root, check_hard_rules)?
+        Ok(collect_findings(root)?
             .iter()
-            .map(|finding| finding.rule.code)
+            .map(|finding| finding.rule)
             .collect())
     }
 
