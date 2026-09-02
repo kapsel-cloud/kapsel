@@ -13,10 +13,6 @@ proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 syn = { version = "3.0.4", features = ["full", "parsing"] }
 
 [[bin]]
-name = "kapsel-hooks"
-path = "src/hooks.rs"
-
-[[bin]]
 name = "kapsel-tidy"
 path = "src/tidy.rs"
 

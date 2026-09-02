@@ -31,11 +31,13 @@ Format Rust and Markdown, or check formatting without changing files:
 ./scripts/format.sh --check
 ```
 
-Install the repository-managed pre-commit hook:
+Use the tracked pre-commit hook:
 
 ```sh
-cargo run --quiet --locked -p kapsel-dev --bin kapsel-hooks -- install
+git config core.hooksPath .githooks
 ```
+
+If `git config core.hooksPath` already reports a custom path, inspect it before replacing it.
 
 Use `cargo run --quiet --locked -p kapsel-dev --bin kapsel-tidy -- tidy` for project-specific hard
 hygiene checks. Replace `tidy` with `style-audit` for non-blocking review prompts.

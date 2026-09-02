@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+# Content checks add no evidence when an amend or reword preserves the tree.
+if git rev-parse --verify HEAD >/dev/null 2>&1 &&
+    git diff --cached --quiet HEAD --; then
+    exit 0
+fi
+
+./scripts/ci-local.sh
