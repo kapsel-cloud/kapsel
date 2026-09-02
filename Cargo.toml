@@ -127,15 +127,6 @@ inefficient_to_string = "deny"
 unnecessary_self_imports = "deny"
 unused_async = "deny"
 
-[profile.dev]
-opt-level = 0
-debug = true
-incremental = true
-
-[profile.test]
-opt-level = 0
-debug = true
-
 [profile.test.package.sha2]
 opt-level = 3
 

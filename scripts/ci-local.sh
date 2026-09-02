@@ -43,7 +43,7 @@ run_documentation_tests() {
 }
 
 case "${1:-all}" in
-  all | check)
+  all)
     run_static_checks
     run_rust_checks
     run_documentation_tests
@@ -62,7 +62,7 @@ case "${1:-all}" in
     echo "==> Documentation tests passed"
     ;;
   *)
-    printf '%s\n' "usage: $0 [all|check|static|rust|doc]" >&2
+    printf '%s\n' "usage: $0 [all|static|rust|doc]" >&2
     exit 2
     ;;
 esac
