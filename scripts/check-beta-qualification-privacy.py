@@ -44,7 +44,7 @@ AFFIRMATIVE_OVERCLAIMS = (
 PRIVATE_ARTIFACT_SUFFIXES = (".key", ".kubeconfig", ".pem", ".receipt", ".seed", ".sqlite3")
 PATTERN_FIXTURE_FILES = {
     "scripts/check-beta-qualification-privacy.py",
-    "scripts/test-check-beta-qualification-privacy.py",
+    "scripts/test-beta-qualification.py",
     "scripts/validate-beta-qualification-baseline.py",
 }
 

@@ -18,6 +18,9 @@ run_static_checks() {
     exit 1
   fi
 
+  printf '%s\n' "==> Beta qualification regressions"
+  ./scripts/test-beta-qualification.py
+
   printf '%s\n' "==> Markdown link checker regressions"
   ./scripts/test-check-markdown-links.py
 

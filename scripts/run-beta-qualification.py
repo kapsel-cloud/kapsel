@@ -327,10 +327,7 @@ def main() -> None:
         **source_input,
         "checked-source": privacy_document["checked_source_sha256"],
         "privacy-check": digest_paths(
-            [
-                ROOT / "scripts/check-beta-qualification-privacy.py",
-                ROOT / "scripts/test-check-beta-qualification-privacy.py",
-            ]
+            [ROOT / "scripts/check-beta-qualification-privacy.py"]
         ),
     }
     security_inputs = {

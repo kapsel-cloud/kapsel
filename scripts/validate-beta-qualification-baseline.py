@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-import functools
 import hashlib
 import json
 from pathlib import Path
@@ -237,16 +236,7 @@ MEASUREMENT_HARNESS_PATHS = [
     "scripts/run-beta-qualification-measurements.py",
     "src/gateway/tests/qualification.rs",
 ]
-PRIVACY_CHECK_PATHS = [
-    "scripts/check-beta-qualification-privacy.py",
-    "scripts/test-check-beta-qualification-privacy.py",
-]
-HISTORICAL_PATH_MARKERS = {
-    "scripts/measure-beta-qualification.py": b"x86-64 measurement workloads with bounded JSON output.",
-    "scripts/run-beta-qualification-measurements.py": b"x86-64 resource measurements.",
-    "scripts/check-beta-qualification-privacy.py": b"root privacy and overclaim review.",
-    "scripts/test-check-beta-qualification-privacy.py": b"privacy review.",
-}
+PRIVACY_CHECK_PATHS = ["scripts/check-beta-qualification-privacy.py"]
 
 
 def fail(message: str) -> None:
@@ -292,31 +282,9 @@ def git_output(*arguments: str) -> bytes:
         fail(f"baseline Git identity is unavailable: {error}")
 
 
-@functools.cache
-def git_path_for_role(commit: str, path: str) -> str:
-    if subprocess.run(
-        ["git", "cat-file", "-e", f"{commit}:{path}"],
-        cwd=Path(__file__).resolve().parent.parent,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0:
-        return path
-    marker = HISTORICAL_PATH_MARKERS.get(path)
-    if marker is None:
-        fail(f"baseline Git path is unavailable: {path}")
-    output = git_output(
-        "grep", "-l", "-F", marker.decode(), commit, "--", "scripts/*.py"
-    ).decode()
-    matches = [line.split(":", 1)[1] for line in output.splitlines()]
-    if len(matches) != 1:
-        fail(f"baseline Git role is unavailable: {path}")
-    return matches[0]
-
-
 def canonical_git_digest(commit: str, paths: list[str]) -> str:
     digest = hashlib.sha256()
-    resolved = [git_path_for_role(commit, path) for path in paths]
-    for path in sorted(resolved):
+    for path in sorted(paths):
         contents = git_output("show", f"{commit}:{path}")
         digest.update(path.encode())
         digest.update(b"\0")
