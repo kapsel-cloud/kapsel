@@ -877,7 +877,7 @@ fn classify_group_observation(
 }
 
 async fn run_host_preflight() -> Result<(), InstallerError> {
-    if rustix::process::geteuid().is_root() == false
+    if !rustix::process::geteuid().is_root()
         || !cfg!(all(target_arch = "x86_64", target_env = "gnu"))
     {
         return Err(InstallerError::HostPreflightFailure);
@@ -910,13 +910,13 @@ async fn run_host_preflight() -> Result<(), InstallerError> {
         return Err(InstallerError::HostPreflightFailure);
     }
     let getent = host_path("/usr/bin/getent");
-    for (database, name) in [
-        ("passwd", "kapsel"),
-        ("passwd", "kapsel-service-caller"),
-        ("group", "kapsel"),
-        ("group", "kapsel-service-callers"),
+    for arguments in [
+        ["passwd", "kapsel"],
+        ["passwd", "kapsel-service-caller"],
+        ["group", "kapsel"],
+        ["group", "kapsel-service-callers"],
     ] {
-        if run_bounded_command(&getent, &[database, name]).await? != 2 {
+        if run_bounded_command(&getent, &arguments).await? != 2 {
             return Err(InstallerError::HostPreflightFailure);
         }
     }
