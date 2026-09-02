@@ -108,9 +108,10 @@ Run the Linux/Docker bundle smoke:
 python3 scripts/test-kapsel-installer-bundle.py
 ```
 
-Default builds stop at `bundle_unavailable`; the Docker smoke uses test-only staged payloads to
-cross the implemented recovery seams. [Architecture](ARCHITECTURE.md#partial-installer) summarizes
-the current implementation, and [Kapsel service](KAPSEL_SERVICE.md) owns its exact boundary.
+CI enforces this smoke in a Linux job after the default deterministic gate. Default builds stop at
+`bundle_unavailable`; the Docker smoke uses test-only staged payloads to cross the implemented
+recovery seams. [Architecture](ARCHITECTURE.md#partial-installer) summarizes the current
+implementation, and [Kapsel service](KAPSEL_SERVICE.md) owns its exact boundary.
 
 ## Upgrade and rollback fixture gate
 
