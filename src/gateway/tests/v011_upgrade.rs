@@ -187,6 +187,7 @@ impl DeploymentImageAdapter for SideEffectAdapter {
     async fn observe(
         &mut self,
         _: &SetDeploymentImageRequest,
+        _: &ApplyOutcome,
     ) -> Result<ReceiverObservation, ()> {
         Err(())
     }

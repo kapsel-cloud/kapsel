@@ -174,7 +174,7 @@ impl ApplyStartedOperation {
         self.authorized.request()
     }
 
-    fn classification_outcome(&self) -> ApplyOutcome {
+    pub(in crate::gateway) fn classification_outcome(&self) -> ApplyOutcome {
         ApplyOutcome {
             accepted: self
                 .attempt

@@ -85,7 +85,11 @@ impl DeploymentImageAdapter for SimulationAdapter {
         })
     }
 
-    async fn observe(&mut self, _: &SetDeploymentImageRequest) -> Result<ReceiverObservation, ()> {
+    async fn observe(
+        &mut self,
+        _: &SetDeploymentImageRequest,
+        _: &ApplyOutcome,
+    ) -> Result<ReceiverObservation, ()> {
         Ok(self.observation.clone())
     }
 }

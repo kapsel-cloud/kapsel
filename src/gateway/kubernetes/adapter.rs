@@ -88,6 +88,7 @@ impl KubernetesDeploymentImageAdapter {
     async fn observe_until_terminal(
         &self,
         request: &SetDeploymentImageRequest,
+        outcome: &ApplyOutcome,
     ) -> ReceiverObservation {
         let mut latest_observation = ReceiverObservation::unknown();
         for attempt in 0..self.observation_attempts {
@@ -99,7 +100,7 @@ impl KubernetesDeploymentImageAdapter {
                     |_| ReceiverObservation::unknown(),
                     |deployment| receiver_observation(request, &deployment),
                 );
-            if latest_observation.has_terminal_rollout_signal(request)
+            if latest_observation.observation_is_complete(request, outcome)
                 || attempt + 1 == self.observation_attempts
             {
                 break;
@@ -192,10 +193,11 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
     async fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
+        outcome: &ApplyOutcome,
     ) -> Result<ReceiverObservation, ()> {
         Ok(tokio::time::timeout(
             self.observation_deadline,
-            self.observe_until_terminal(request),
+            self.observe_until_terminal(request, outcome),
         )
         .await
         .unwrap_or_else(|_| ReceiverObservation::unknown()))
@@ -323,6 +325,15 @@ mod tests {
         TargetIdentity {
             deployment_uid: "deployment-uid-1".into(),
             resource_version: "resource-version-1".into(),
+        }
+    }
+
+    fn apply_outcome() -> ApplyOutcome {
+        ApplyOutcome {
+            accepted: true,
+            requested_generation: Some(2),
+            deployment_uid: Some("deployment-uid-1".into()),
+            resource_version: Some("resource-version-2".into()),
         }
     }
 
@@ -679,7 +690,7 @@ mod tests {
             }
         });
 
-        let observation = adapter.observe(&request()).await.unwrap();
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
 
         assert_eq!(
             observation.rollout_condition_reason.as_deref(),
@@ -701,7 +712,7 @@ mod tests {
             )));
         });
 
-        let observation = adapter.observe(&request()).await.unwrap();
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
 
         assert_eq!(
             observation.rollout_condition_type.as_deref(),
@@ -734,13 +745,8 @@ mod tests {
         });
 
         let request = request();
-        let observation = adapter.observe(&request).await.unwrap();
-        let outcome = ApplyOutcome {
-            accepted: true,
-            requested_generation: Some(2),
-            deployment_uid: Some("deployment-uid-1".into()),
-            resource_version: Some("resource-version-2".into()),
-        };
+        let outcome = apply_outcome();
+        let observation = adapter.observe(&request, &outcome).await.unwrap();
 
         assert_eq!(observation.unavailable_replicas, Some(0));
         assert_eq!(
@@ -767,7 +773,7 @@ mod tests {
             }
         });
 
-        let observation = adapter.observe(&request()).await.unwrap();
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
 
         assert_eq!(
             observation.rollout_condition_reason.as_deref(),
@@ -789,15 +795,10 @@ mod tests {
         });
 
         let request = request();
-        let observation = adapter.observe(&request).await.unwrap();
-        let outcome = ApplyOutcome {
-            accepted: true,
-            requested_generation: Some(2),
-            deployment_uid: Some("deployment-uid-1".into()),
-            resource_version: Some("resource-version-2".into()),
-        };
+        let outcome = apply_outcome();
+        let observation = adapter.observe(&request, &outcome).await.unwrap();
 
-        assert!(!observation.has_terminal_rollout_signal(&request));
+        assert!(!observation.observation_is_complete(&request, &outcome));
         assert_eq!(
             observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
             crate::OperationResult::Unknown
@@ -820,7 +821,7 @@ mod tests {
             pending::<()>().await;
         });
 
-        let observation = adapter.observe(&request()).await.unwrap();
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
 
         assert_eq!(observation, ReceiverObservation::unknown());
         responder.abort();
@@ -837,7 +838,7 @@ mod tests {
             )));
         });
 
-        let observation = adapter.observe(&request()).await.unwrap();
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
 
         assert_eq!(
             observation.rollout_condition_reason.as_deref(),

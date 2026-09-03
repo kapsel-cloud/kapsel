@@ -144,6 +144,7 @@
         async fn observe(
             &mut self,
             _: &SetDeploymentImageRequest,
+            _: &ApplyOutcome,
         ) -> Result<ReceiverObservation, ()> {
             self.observe_calls += 1;
             Ok(self.observation.clone())
@@ -227,6 +228,7 @@
         async fn observe(
             &mut self,
             request: &SetDeploymentImageRequest,
+            _: &ApplyOutcome,
         ) -> Result<ReceiverObservation, ()> {
             self.observe_order.push(request.operation_id.clone());
             let mut observation = unknown_observation(request);
@@ -275,6 +277,7 @@
         async fn observe(
             &mut self,
             _: &SetDeploymentImageRequest,
+            _: &ApplyOutcome,
         ) -> Result<ReceiverObservation, ()> {
             Err(())
         }

@@ -233,6 +233,7 @@ pub(crate) trait DeploymentImageAdapter {
     fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
+        outcome: &ApplyOutcome,
     ) -> impl Future<Output = Result<ReceiverObservation, ()>> + Send;
 }
 
@@ -704,8 +705,9 @@ impl Gateway {
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
+                let outcome = started.classification_outcome();
                 let observation = adapter
-                    .observe(&adapter_request)
+                    .observe(&adapter_request, &outcome)
                     .await
                     .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
                 if fault == Some(FaultPoint::ReceiverRead) {
@@ -720,8 +722,9 @@ impl Gateway {
             // Loaded ApplyStarted is recovery-only here. It has no path to adapter.apply.
             journal::LoadedOperation::ApplyStarted(operation) => {
                 let adapter_request = operation.request().to_adapter_request();
+                let outcome = operation.classification_outcome();
                 let observation = adapter
-                    .observe(&adapter_request)
+                    .observe(&adapter_request, &outcome)
                     .await
                     .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
                 self.journal.freeze_observation(&operation, &observation)?;

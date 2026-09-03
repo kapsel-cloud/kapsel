@@ -71,8 +71,9 @@ impl DeploymentImageAdapter for CountingAdapter {
     async fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
+        outcome: &crate::ApplyOutcome,
     ) -> Result<crate::ReceiverObservation, ()> {
-        self.inner.observe(request).await
+        self.inner.observe(request, outcome).await
     }
 }
 

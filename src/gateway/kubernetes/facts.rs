@@ -147,22 +147,17 @@ impl ReceiverObservation {
         Ok(())
     }
 
-    pub(crate) fn has_terminal_rollout_signal(&self, request: &SetDeploymentImageRequest) -> bool {
-        let operation_matches = self.operation_marker.as_deref()
-            == Some(request.operation_id.as_str())
-            && self.image.as_deref() == Some(request.immutable_image_digest.as_str());
-        let generation_observed = self.current_generation.is_some_and(|generation| {
-            self.observed_generation
-                .is_some_and(|observed| observed >= generation)
-        });
-        let replicas_available = self.desired_replicas.is_some()
-            && self.updated_replicas == self.desired_replicas
-            && self.available_replicas == self.desired_replicas
-            && self.unavailable_replicas == Some(0);
-        operation_matches
-            && generation_observed
-            && (self.progress_deadline_exceeded()
-                || (replicas_available && self.available_condition()))
+    pub(crate) fn observation_is_complete(
+        &self,
+        request: &SetDeploymentImageRequest,
+        outcome: &ApplyOutcome,
+    ) -> bool {
+        self.observation_decision(
+            &request.operation_id,
+            &request.immutable_image_digest,
+            outcome,
+        )
+        .complete
     }
 
     pub(in crate::gateway) fn requested_generation(
@@ -170,8 +165,75 @@ impl ReceiverObservation {
         request: &ValidatedRequest,
         outcome: &ApplyOutcome,
     ) -> Option<i64> {
-        let operation_matches = self.operation_marker.as_deref() == Some(request.operation_id())
-            && self.image.as_deref() == Some(request.immutable_image_digest());
+        self.requested_generation_for(
+            request.operation_id(),
+            request.immutable_image_digest(),
+            outcome,
+        )
+    }
+
+    pub(in crate::gateway) fn classify(
+        &self,
+        request: &ValidatedRequest,
+        outcome: &ApplyOutcome,
+    ) -> OperationResult {
+        self.observation_decision(
+            request.operation_id(),
+            request.immutable_image_digest(),
+            outcome,
+        )
+        .result
+    }
+
+    fn observation_decision(
+        &self,
+        operation_id: &str,
+        immutable_image_digest: &str,
+        outcome: &ApplyOutcome,
+    ) -> ObservationDecision {
+        let operation_matches = self.operation_marker.as_deref() == Some(operation_id)
+            && self.image.as_deref() == Some(immutable_image_digest);
+        let generation_observed = self.current_generation.is_some_and(|generation| {
+            self.observed_generation
+                .is_some_and(|observed| observed >= generation)
+        });
+        let desired_replicas_available = self.desired_replicas.is_some()
+            && self.updated_replicas == self.desired_replicas
+            && self.available_replicas == self.desired_replicas
+            && self.unavailable_replicas == Some(0);
+        let available = desired_replicas_available && self.available_condition();
+        let progress_deadline_exceeded = self.progress_deadline_exceeded();
+        let complete =
+            operation_matches && generation_observed && (available || progress_deadline_exceeded);
+        let requested_generation =
+            self.requested_generation_for(operation_id, immutable_image_digest, outcome);
+        let receiver_establishes_requested_generation = requested_generation.is_some_and(|value| {
+            operation_matches
+                && outcome.deployment_uid.is_some()
+                && self.deployment_uid == outcome.deployment_uid
+                && self.current_generation == Some(value)
+                && self
+                    .observed_generation
+                    .is_some_and(|observed| observed >= value)
+        });
+        let result = if receiver_establishes_requested_generation && progress_deadline_exceeded {
+            OperationResult::Failed
+        } else if receiver_establishes_requested_generation && available {
+            OperationResult::Succeeded
+        } else {
+            OperationResult::Unknown
+        };
+        ObservationDecision { complete, result }
+    }
+
+    fn requested_generation_for(
+        &self,
+        operation_id: &str,
+        immutable_image_digest: &str,
+        outcome: &ApplyOutcome,
+    ) -> Option<i64> {
+        let operation_matches = self.operation_marker.as_deref() == Some(operation_id)
+            && self.image.as_deref() == Some(immutable_image_digest);
         let receiver_uid_matches =
             outcome.deployment_uid.is_some() && self.deployment_uid == outcome.deployment_uid;
         outcome
@@ -181,43 +243,6 @@ impl ReceiverObservation {
             } else {
                 None
             })
-    }
-
-    pub(in crate::gateway) fn classify(
-        &self,
-        request: &ValidatedRequest,
-        outcome: &ApplyOutcome,
-    ) -> OperationResult {
-        let operation_matches = self.operation_marker.as_deref() == Some(request.operation_id())
-            && self.image.as_deref() == Some(request.immutable_image_digest());
-        let requested_generation = self.requested_generation(request, outcome);
-        let Some(requested_generation) = requested_generation else {
-            return OperationResult::Unknown;
-        };
-
-        let receiver_establishes_requested_generation = operation_matches
-            && outcome.deployment_uid.is_some()
-            && self.deployment_uid == outcome.deployment_uid
-            && self.current_generation == Some(requested_generation)
-            && self
-                .observed_generation
-                .is_some_and(|value| value >= requested_generation);
-        if !receiver_establishes_requested_generation {
-            return OperationResult::Unknown;
-        }
-
-        if self.progress_deadline_exceeded() {
-            return OperationResult::Failed;
-        }
-        let desired_replicas_available = self.desired_replicas.is_some()
-            && self.updated_replicas == self.desired_replicas
-            && self.available_replicas == self.desired_replicas
-            && self.unavailable_replicas == Some(0);
-        if desired_replicas_available && self.available_condition() {
-            OperationResult::Succeeded
-        } else {
-            OperationResult::Unknown
-        }
     }
 
     fn available_condition(&self) -> bool {
@@ -230,6 +255,12 @@ impl ReceiverObservation {
             && self.rollout_condition_status.as_deref() == Some("False")
             && self.rollout_condition_reason.as_deref() == Some("ProgressDeadlineExceeded")
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ObservationDecision {
+    complete: bool,
+    result: OperationResult,
 }
 
 fn validate_required_fact(value: &str) -> Result<(), GatewayError> {
@@ -427,6 +458,26 @@ mod tests {
             observation.classify(&validated(&request), &apply_outcome()),
             OperationResult::Unknown
         );
-        assert!(!observation.has_terminal_rollout_signal(&request));
+        assert!(!observation.observation_is_complete(&request, &apply_outcome()));
+    }
+
+    #[test]
+    fn a_terminal_signal_from_a_later_generation_completes_with_unknown() {
+        let request = request();
+        let outcome = apply_outcome();
+        let mut observation = unknown_observation(&request);
+        observation.current_generation = Some(3);
+        observation.observed_generation = Some(3);
+        observation.updated_replicas = Some(1);
+        observation.available_replicas = Some(1);
+        observation.unavailable_replicas = Some(0);
+        observation.rollout_condition_type = Some("Available".into());
+        observation.rollout_condition_status = Some("True".into());
+
+        assert_eq!(
+            observation.classify(&validated(&request), &outcome),
+            OperationResult::Unknown
+        );
+        assert!(observation.observation_is_complete(&request, &outcome));
     }
 }
