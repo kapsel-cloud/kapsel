@@ -342,6 +342,7 @@ test "$primary_status" = 8; test "$("$host/usr/bin/getent" group kapsel)" = "$ex
 export KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM=second-group-complete
 run_failure host_mutation_failure
 unset KAPSEL_INSTALLER_TEST_FAIL_AT_SEAM
+# This disposable guard account is not an installer-created Kapsel identity. Production never userdel.
 /usr/sbin/userdel kapsel-native-primary
 run_failure implementation_incomplete; rolled_back
 set +e; absent=$("$host/usr/bin/getent" group kapsel); name_status=$?; absent_gid=$("$host/usr/bin/getent" group "$gid"); gid_status=$?; absent_callers=$("$host/usr/bin/getent" group kapsel-service-callers); callers_status=$?; absent_callers_gid=$("$host/usr/bin/getent" group "$callers_gid"); callers_gid_status=$?; "$host/usr/sbin/groupdel" kapsel >/dev/null 2>&1; delete_status=$?; /usr/bin/timeout --signal=KILL 1s /bin/sh -c 'sleep 30' >/dev/null 2>&1; timeout_status=$?; set -e

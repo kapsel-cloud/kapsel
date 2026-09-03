@@ -1,7 +1,8 @@
 # Kapsel service
 
 Status: accepted unpublished service implementation; installer foundation and first two recoverable
-group mutations implemented, complete installer journey not implemented.
+group mutations implemented, direct user-identity argv qualified but not implemented, complete
+installer journey not implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
@@ -47,7 +48,7 @@ unsupported status store, receipt copying, and supervision.
 | Operator configuration      | Generated fixed `/etc/kapsel/operator.json`; authority beneath `/etc/kapsel`; journal and receipts beneath `/var/lib/kapsel`                                  |
 | Startup path validation     | Descriptor-relative fixed roots; exact owners/modes; regular single-link files; no symlinks; stable consumed bytes                                            |
 | OS ownership                | Locked non-login `kapsel`; `0700` private roots and `0600` private files                                                                                      |
-| Caller identity             | Fixed locked `kapsel-service-caller`, created separately; supervisor-set effective group is distinct from supplementary membership                            |
+| Caller identity             | Fixed locked `kapsel-service-caller` with `kapsel-service-callers` as its primary group; no supplementary membership mutation                                 |
 | Kubernetes authority        | Short-lived TokenRequest credential for `ServiceAccount/demo/kapsel-service`; namespaced `get` and `patch` on exact Deployment `agent-api`                    |
 | Installed assets            | Three executables, systemd unit, sysusers record, non-secret RBAC manifest, and operator guide; no socket unit, tmpfiles rule, PID file, wrapper, or workload |
 | Runtime dependencies        | Rust executables, Linux Unix sockets, systemd, existing SQLite and Kubernetes stack; no Python, shell, daemon framework, RPC SDK, or new DB                   |
@@ -146,8 +147,8 @@ prints one bounded JSON record containing `status`, `receipt_sha256`, and the ca
 pathname; it never prints receipt bytes. Other daemon statuses fail without creating an output.
 
 The caller has no SDK or reusable protocol package. The supported operator journey invokes it as the
-fixed `kapsel-service-caller` identity with effective group `kapsel-service-callers`; supplementary
-membership alone remains insufficient.
+fixed `kapsel-service-caller` identity with primary and effective group `kapsel-service-callers`.
+The group database member list remains empty; no supplementary membership is required or installed.
 
 ## Execution and process lifecycle
 
@@ -182,12 +183,14 @@ limiting, the fixed argv above, and `WantedBy=multi-user.target`. Every boot, ex
 explicit restart attempts startup once.
 
 Identity installation begins with the `kapsel` private group, then creates `kapsel-service-callers`,
-the locked `kapsel` user, the locked external caller, and the caller's exact group membership.
-Numeric IDs are transaction-preselected before their mutation, and created users carry the exact
-transaction identity as GECOS. The Debian preview appoints `/usr/sbin/groupadd`,
-`/usr/sbin/groupdel`, `/usr/sbin/useradd`, `/usr/sbin/usermod`, `/usr/sbin/nologin`,
-`/usr/bin/getent`, `/usr/bin/systemctl`, and `/usr/bin/timeout`; all execution is direct without a
-shell.
+the locked `kapsel` user, and the locked external caller. The caller's primary group is
+`kapsel-service-callers`; there is no `usermod` or supplementary-membership step. Numeric IDs are
+transaction-preselected before mutation, and created users carry the exact transaction identity as
+GECOS. The Debian preview appoints `/usr/sbin/groupadd`, `/usr/sbin/groupdel`, `/usr/sbin/useradd`,
+`/usr/sbin/nologin`, `/usr/bin/getent`, `/usr/bin/systemctl`, and `/usr/bin/timeout`; all production
+execution is direct without a shell. The current group-only implementation also preflights
+`/usr/sbin/usermod`. That inert check must be removed when implementing this contract because no
+approved mutation invokes it.
 
 The first identity mutation creates only the `kapsel` private group. After clean-install preflight,
 the installer runs bounded `/usr/bin/getent group` and `/usr/bin/getent passwd`, accepts at most 64
@@ -260,10 +263,52 @@ deleted. The first group is never considered for removal while second-group owne
 evidence remains. `remove_group` is an install-rollback action only; successful uninstall retains
 identities as specified below.
 
-Later user and membership mutation argv remain unappointed and unimplemented. The installer does not
-invoke `systemd-sysusers`; the installed sysusers record is a vendor asset only and is never
-installer ownership or recovery evidence. The caller's supervisor must set effective
-`Group=kapsel-service-callers`; supplementary membership alone is insufficient.
+The next two approved mutations preselect the highest UID unused by the strictly parsed passwd
+enumeration in the same fixed preview range 101–999. Before pending publication, both the fixed name
+and decimal UID must be exactly absent through separate bounded `/usr/bin/getent passwd` queries.
+The `kapsel` user binds the already owned private-group GID; `kapsel-service-caller` binds the
+already owned caller-group GID. The installer then publishes `create_user` with the complete
+expected passwd identity, exact transaction GECOS, and required locked-shadow facts before executing
+exactly:
+
+```text
+/usr/bin/timeout --signal=KILL 10s /usr/sbin/useradd --system --uid <service-uid> --gid <kapsel-gid> --no-create-home --home-dir /var/lib/kapsel --shell /usr/sbin/nologin --comment <transaction-id> --no-user-group --no-log-init --password '!' kapsel
+/usr/bin/timeout --signal=KILL 10s /usr/sbin/useradd --system --uid <caller-uid> --gid <caller-group-gid> --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --comment <transaction-id> --no-user-group --no-log-init --password '!' kapsel-service-caller
+```
+
+The inherited installer-lock lifetime, null input, ten-second kill, and discarded output are the
+same as for group creation. `--no-create-home`, `--no-user-group`, `--no-log-init`, and every passwd
+field are explicit so hostile `useradd` and `login.defs` defaults cannot create a home, private
+user-group, log initialization, or alternate shell, home, or GECOS. Both users have password field
+exactly `!`; this is the required locked state.
+
+Recovery performs separate NSS queries by name and UID and by shadow name. Each query executes
+through `/usr/bin/timeout --signal=KILL 10s` with `/usr/bin/getent` as the direct child. Its stdout
+collector reads at most 4,097 bytes before parsing, treats the 4,097th byte as an over-limit
+sentinel, and retains at most 4 KiB as observation data. Exactly absent means all three queries exit
+2 with empty output. Exactly complete means both passwd queries exit 0 and return the same exact
+single newline-terminated seven-field record with the pending name, UID, primary GID, transaction
+GECOS, home, and `/usr/sbin/nologin`. The shadow query must exit 0 and return exactly one
+newline-terminated nine-field record with that name, password field exactly `!`, a nonempty
+all-decimal last-change day, and all six remaining fields empty. A name or UID bound to another
+account, or an expected account with a changed immutable field, is a conflict. Mixed passwd absence,
+a missing or inconsistent shadow row, malformed, unterminated, additional, or over-limit output,
+query timeout, signal termination, or an unclassifiable NSS result is ambiguous/partial. Command
+exit and transport completion never establish absence or completion.
+
+Exactly absent may retry the pending mutation. Exactly complete may bind the user ownership record
+and continue. Conflict or ambiguous/partial evidence, including any query timeout, signal, or stdout
+over-limit result, stops installation and consumes the disposable host; it causes no mutation or
+rollback, and no later mutation or rollback action may proceed. The installer never invokes
+`userdel`. Once either user is exactly complete, installer-created users and their primary groups
+are permanently retained, including after failed install or uninstall. Group rollback remains legal
+only before any user effect and only when no user ownership or pending user evidence exists and the
+bounded passwd scan proves no primary-GID account.
+
+The installer does not invoke `systemd-sysusers`; the installed sysusers record is a vendor asset
+only and is never installer ownership or recovery evidence. The caller's supervisor sets effective
+`Group=kapsel-service-callers`, matching the caller account's primary group. User creation and its
+transaction recovery remain contract and experiment evidence only; they are not implemented.
 
 Systemd state plus successful authenticated socket use is the health boundary. The socket exposes no
 administration, key management, migration, purge, health, or shutdown request. Diagnostics are
@@ -289,10 +334,10 @@ Role granting `apps/deployments` `get` and `patch` for `resourceNames: ["agent-a
 RoleBinding. It creates no credential, token Secret, Namespace, Deployment, workload, ClusterRole,
 wildcard, or field policy.
 
-Removal stops and disables the service, waits for process and connection closure, removes caller
-group membership, revokes Kubernetes authority, and only then removes all three executables, unit,
-sysusers record, RBAC manifest, operator guide, and runtime socket. It retains identities, operator
-files, installer transaction evidence, journal, and receipts. Destructive purge is unsupported.
+Removal stops and disables the service, waits for process, connection, and socket closure, revokes
+Kubernetes authority, and only then removes all three executables, unit, sysusers record, RBAC
+manifest, operator guide, and runtime socket. It retains identities, operator files, installer
+transaction evidence, journal, and receipts. Destructive purge is unsupported.
 
 ## Approved installer contract
 
@@ -508,34 +553,32 @@ be initially published.
 
 A host file or directory record contains exactly `kind`, `path`, `device`, `inode`, `file_type`,
 `uid`, `gid`, and `mode`, plus `length` and `sha256` for a file. A user record contains `kind`,
-`name`, `uid`, `primary_gid`, and `gecos_transaction_id`; a group contains `kind`, `name`, and
-`gid`; a membership contains `kind`, `user`, `uid`, `group`, and `gid`. A systemd enablement record
-contains the unit inode and digest plus each created enablement link's descriptor-relative path,
-device, inode, file type, and exact target. A Kubernetes record contains exactly `api_version`,
-`kind`, `namespace`, `name`, `uid`, and `transaction_id_annotation`. The record contains no token,
-bootstrap credential, private key, seed, grant bytes, or trust bytes.
+`name`, `uid`, `primary_gid`, `gecos_transaction_id`, `home`, `shell`, and `locked`; a group
+contains `kind`, `name`, and `gid`. A systemd enablement record contains the unit inode and digest
+plus each created enablement link's descriptor-relative path, device, inode, file type, and exact
+target. A Kubernetes record contains exactly `api_version`, `kind`, `namespace`, `name`, `uid`, and
+`transaction_id_annotation`. The record contains no token, bootstrap credential, private key, seed,
+grant bytes, or trust bytes.
 
 `pending` is `null` or one object with exact `action` plus these variant fields:
 
-| Pending action       | Required fields                                                                                                                                         | Recovery observation                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `stage_host`         | destination, staging leaf, type, owner, mode, length/digest, transaction marker                                                                         | Bind only a staging inode carrying the transaction marker and every expected fact.                            |
-| `publish_host`       | destination plus recorded staging device/inode                                                                                                          | Destination same inode is complete; staging same inode is not started; every other shape conflicts.           |
-| `create_group`       | name, preselected GID, transaction identity                                                                                                             | Absent is not started; exact name/GID under the pending transaction is complete; other identity conflicts.    |
-| `create_user`        | name, preselected UID/GID, transaction GECOS                                                                                                            | Absent is not started; every exact identity fact is complete; any mismatch conflicts.                         |
-| `add_membership`     | name/UID and group/GID                                                                                                                                  | Exact membership is complete; absence is not started; changed identities conflict.                            |
-| `enable_service`     | unit device/inode/digest and exact enablement link path/target                                                                                          | Bind link inodes only under exact unit and target identity; any pre-existing or changed link conflicts.       |
-| `start_service`      | exact unit                                                                                                                                              | Active exact unit is complete; inactive is not started; failed state is a typed activation failure.           |
-| `stop_service`       | exact unit                                                                                                                                              | Inactive with no process/socket is complete; otherwise repeat stop and wait at most ten seconds for closure.  |
-| `create_kubernetes`  | API version, kind, namespace, name, transaction annotation                                                                                              | Bind UID only from the same cluster and annotation; absence is not started; mismatch conflicts.               |
-| `issue_credential`   | ServiceAccount UID, requested seconds, destination, staging leaf, owner/mode, transaction marker, then staged inode/digest/length/expiration when known | No leaf repeats issuance; a marked unbound leaf is removed and reissued; a bound inode continues publication. |
-| `replace_credential` | destination and recorded staged device/inode, expiration                                                                                                | Destination same inode is complete; staging same inode is not started; every other shape conflicts.           |
-| `remove_membership`  | recorded membership                                                                                                                                     | Absence is complete; exact membership is not started; changed identities conflict.                            |
-| `remove_group`       | complete recorded group ownership                                                                                                                       | Absence is complete; exact name/GID is not started; changed identity conflicts.                               |
-| `disable_service`    | recorded enablement link identities                                                                                                                     | All absent is complete; exact recorded links remain not started; any replacement conflicts.                   |
-| `delete_kubernetes`  | complete recorded Kubernetes ownership                                                                                                                  | Delete uses UID precondition; absence is complete; same UID remains not started; replacement conflicts.       |
-| `remove_host`        | complete recorded host ownership                                                                                                                        | Absence is complete; exact recorded inode remains not started; any replacement conflicts.                     |
-| `daemon_reload`      | exact unit                                                                                                                                              | Safe to repeat; it neither establishes nor removes ownership.                                                 |
+| Pending action       | Required fields                                                                                                                                         | Recovery observation                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `stage_host`         | destination, staging leaf, type, owner, mode, length/digest, transaction marker                                                                         | Bind only a staging inode carrying the transaction marker and every expected fact.                                |
+| `publish_host`       | destination plus recorded staging device/inode                                                                                                          | Destination same inode is complete; staging same inode is not started; every other shape conflicts.               |
+| `create_group`       | name, preselected GID, transaction identity                                                                                                             | Absent is not started; exact name/GID under the pending transaction is complete; other identity conflicts.        |
+| `create_user`        | name, preselected UID/primary GID, transaction GECOS, home, shell, and locked-shadow requirement                                                        | Classify only exactly absent, exactly complete, conflict, or ambiguous/partial; only the first two permit action. |
+| `enable_service`     | unit device/inode/digest and exact enablement link path/target                                                                                          | Bind link inodes only under exact unit and target identity; any pre-existing or changed link conflicts.           |
+| `start_service`      | exact unit                                                                                                                                              | Active exact unit is complete; inactive is not started; failed state is a typed activation failure.               |
+| `stop_service`       | exact unit                                                                                                                                              | Inactive with no process/socket is complete; otherwise repeat stop and wait at most ten seconds for closure.      |
+| `create_kubernetes`  | API version, kind, namespace, name, transaction annotation                                                                                              | Bind UID only from the same cluster and annotation; absence is not started; mismatch conflicts.                   |
+| `issue_credential`   | ServiceAccount UID, requested seconds, destination, staging leaf, owner/mode, transaction marker, then staged inode/digest/length/expiration when known | No leaf repeats issuance; a marked unbound leaf is removed and reissued; a bound inode continues publication.     |
+| `replace_credential` | destination and recorded staged device/inode, expiration                                                                                                | Destination same inode is complete; staging same inode is not started; every other shape conflicts.               |
+| `remove_group`       | complete recorded group ownership                                                                                                                       | Absence is complete; exact name/GID is not started; changed identity conflicts.                                   |
+| `disable_service`    | recorded enablement link identities                                                                                                                     | All absent is complete; exact recorded links remain not started; any replacement conflicts.                       |
+| `delete_kubernetes`  | complete recorded Kubernetes ownership                                                                                                                  | Delete uses UID precondition; absence is complete; same UID remains not started; replacement conflicts.           |
+| `remove_host`        | complete recorded host ownership                                                                                                                        | Absence is complete; exact recorded inode remains not started; any replacement conflicts.                         |
+| `daemon_reload`      | exact unit                                                                                                                                              | Safe to repeat; it neither establishes nor removes ownership.                                                     |
 
 A staged regular file is first an unnamed `O_TMPFILE` inode in the destination parent. The installer
 writes it, sets and verifies a Linux extended attribute carrying the transaction identity, syncs the
@@ -606,46 +649,48 @@ is durable.
 
 Host ownership is stronger than a name or matching bytes. Published files and directories retain the
 recorded staged inode. Users and groups use transaction-selected numeric IDs recorded before
-creation; users also carry the transaction identity in their GECOS field. Membership records bind
-the exact user UID and group GID. `kapseld.conf` is published only after the transaction has durably
-bound every identity it names; rollback removes that asset before removing any created identity, and
-no boot or recovery path may use sysusers to complete a pending identity action. Kubernetes objects
-carry the random transaction identity annotation and are bound to the selected server, CA, and
-returned UID. A lost Kubernetes create response may be recovered only by observing that same
-annotation and then durably binding the returned UID. A missing or conflicting marker, UID, inode,
-numeric identity, type, owner, mode, digest, link target, or cluster identity is an ownership
-conflict, not permission to replace or delete.
+creation; users also carry the transaction identity in their GECOS field and bind exact primary GID,
+home, shell, and locked-shadow facts. `kapseld.conf` is published only after the transaction has
+durably bound every identity it names; rollback removes that asset before removing any created
+identity, and no boot or recovery path may use sysusers to complete a pending identity action.
+Kubernetes objects carry the random transaction identity annotation and are bound to the selected
+server, CA, and returned UID. A lost Kubernetes create response may be recovered only by observing
+that same annotation and then durably binding the returned UID. A missing or conflicting marker,
+UID, inode, numeric identity, type, owner, mode, digest, link target, or cluster identity is an
+ownership conflict, not permission to replace or delete.
 
 ### Recovery, rollback, and uninstall
 
 Every command opens and validates the transaction before preflight or mutation. A nonterminal
-install observes its exact pending seam, then continues a provably incomplete action or enters
-`rolling_back`. Install rollback stops local use and removes only resources carrying complete
-ownership evidence, in reverse creation order. A nonterminal refresh never enters install rollback:
+install observes its exact pending seam. It retries an exactly absent identity action, continues an
+exactly complete one, and stops permanently on conflict or ambiguous/partial evidence. Install
+rollback is available only before any user effect and removes strongly owned groups in reverse
+creation order. It never invokes name-only `userdel`, and it never removes a group after a user has
+been observed or bound with that primary GID. A nonterminal refresh never enters install rollback:
 it retains all installed resources, observes or completes `replace_credential`, remains stopped on
 failure, and resumes refresh until it can return to `installed`. An uninstall requested during
 refresh first normalizes any credential replacement to one strongly identified installed kubeconfig,
 without requiring service restart, then begins local revocation.
 
 Every nonterminal uninstall resumes monotonically from its pending seam. It never rolls back caller
-or service revocation, re-adds membership, restarts the service, or recreates Kubernetes authority.
-It repeats exact stop/removal actions only under the pending table and cannot enter static removal
-before UID-bound Kubernetes revocation.
+or service revocation, restores local caller access, restarts the service, or recreates Kubernetes
+authority. It repeats exact stop/removal actions only under the pending table and cannot enter
+static removal before UID-bound Kubernetes revocation.
 
 No recovery deletes from an expected name, preflight absence, transaction intent, matching bytes, or
-an RBAC shape alone. Unresolved or conflicting ownership stops recovery nonzero and retains the
-record and resource for a disposable-host operator; installation never continues around it. A fully
-`rolled_back` first attempt may be retried with the same authenticated installer and inputs. An
-`installed`, `partial_uninstall`, or `uninstalled` transaction can never install again.
+an RBAC shape alone. Ambiguous/partial, unresolved, or conflicting ownership stops recovery nonzero,
+retains the record and resource, and consumes the disposable host; installation never continues
+around it. A fully `rolled_back` first attempt may be retried with the same authenticated installer
+and inputs. An `installed`, `partial_uninstall`, or `uninstalled` transaction can never install
+again.
 
 Uninstall orders revocation as follows:
 
 1. disable and stop `kapseld`, wait for process and connection closure, and verify socket removal;
-2. remove the caller's exact recorded group membership;
-3. using the explicit bootstrap context, delete the recorded RoleBinding, ServiceAccount, and Role
+2. using the explicit bootstrap context, delete the recorded RoleBinding, ServiceAccount, and Role
    only when each observed UID and transaction annotation matches;
-4. remove the strongly owned static service assets and reload systemd; and
-5. enter `uninstalled` while retaining identities, `/etc/kapsel`, `/var/lib/kapsel`, journal, worker
+3. remove the strongly owned static service assets and reload systemd; and
+4. enter `uninstalled` while retaining identities, `/etc/kapsel`, `/var/lib/kapsel`, journal, worker
    lock, receipts, and `/var/lib/kapsel-installer` evidence.
 
 If Kubernetes authority is unavailable after local revocation, uninstall enters `partial_uninstall`,
@@ -694,7 +739,21 @@ native exit 0 for creation and removal, exit 9 for duplicate-name creation, exit
 encounters a primary-GID user, exit 6 for absent removal, exit 2 with empty output for absent
 `getent` group queries, the exact empty-member `name:x:gid:` record for name, numeric-key, and
 enumeration queries, and exit 137 for `timeout --signal=KILL` termination. Fixed executable fixtures
-remain the exhaustive crash-seam and hostile-output proof.
+remain the exhaustive group crash-seam and hostile-output proof.
+
+The separately runnable `./scripts/test-debian12-installer-identities.sh` experiment uses the pinned
+Debian 12 slim image with explicit `linux/amd64`. With passwd 4.13, glibc 2.36, and sudo 1.9.13p3,
+it crossed both exact useradd argv under hostile defaults. Each user mutation changed only
+`/etc/passwd`, `/etc/passwd-`, `/etc/shadow`, and `/etc/shadow-` among all regular `/etc` files;
+`/etc/group`, `/etc/group-`, `/etc/gshadow`, `/etc/gshadow-`, `/etc/subuid`, `/etc/subgid`,
+`/var/log/lastlog`, and `/var/log/faillog` remained unchanged. Name and numeric NSS queries returned
+the same exact passwd row, shadow carried password field `!`, no home was created, and both group
+member lists stayed empty. Duplicate name and UID were conflicts with exits 9 and 4, an injected
+pre-exec timeout was exactly absent despite exit 137, process loss after useradd returned was
+exactly complete despite exit 137, and an injected passwd-only row was ambiguous/partial. The exact
+`sudo -n -u kapsel-service-caller -g kapsel-service-callers -- id` path produced UID 996 and
+effective GID 998 with no supplementary group membership. These numeric values and the fixed
+transaction ID are experiment fixtures; production selection remains transaction-specific.
 
 ## Unsupported behavior
 
@@ -713,10 +772,11 @@ systemd-owned.
 ## Residual risk
 
 Source qualification covers one fresh x86-64 Debian 12/systemd 252 and Kubernetes 1.33 environment.
-Group recovery additionally relies on exclusive host identity administration while the installer
-transaction is nonterminal; group records cannot carry a transaction marker. Native two-group
-identity qualification covers one ephemeral x86-64 Debian 12 container; exhaustive crash seams,
-hostile output, and delayed mutation remain fixture-based. This finite evidence establishes the
-exact unpublished service journey only. It does not establish production safety, another platform,
-upgrade compatibility, backup, HA, repeated external operation, or protection from compromised host
-root, kernel, or service identity.
+Identity recovery additionally relies on exclusive host identity administration while the installer
+transaction is nonterminal. Group records cannot carry a transaction marker, and NSS observation
+cannot prove which actor created an otherwise exact row. The two-group and user-argv container lanes
+use Debian's x86-64 tools under the available Docker platform, which may be emulated by the host;
+they are not fresh-VM or cross-distribution evidence. User recovery classification is contract-only
+and not implemented or fixture-exhaustive. This finite evidence establishes no runnable installer,
+production safety, another platform, upgrade compatibility, backup, HA, repeated external operation,
+or protection from compromised host root, kernel, or service identity.

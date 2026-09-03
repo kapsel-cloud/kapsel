@@ -141,24 +141,33 @@ The [Kapsel service contract](KAPSEL_SERVICE.md) owns the complete unpublished b
 
 ### Installer
 
-The partial, unpublished installer has three current evidence layers:
+The partial, unpublished installer has four current evidence layers:
 
 - portable package tests cover fixed command grammar, fail-closed payload absence, bounded
   bootstrap-kubeconfig parsing, canonical transaction records, two-group pending/ownership states,
   fixed GID selection, and reverse rollback;
 - the explicit Docker fixture crosses bundle generation, exact descriptor-relative operator input,
   authority consistency, hostile filesystem and metadata refusal, durable lock/transaction recovery,
-  bounded command execution, group observation, and ownership-safe rollback; and
-- one ephemeral x86-64 Debian 12 lane crosses native `groupadd`, `groupdel`, `getent`, and `timeout`
-  for both fixed groups.
+  bounded command execution, group observation, and ownership-safe rollback;
+- its embedded ephemeral x86-64 Debian 12 lane crosses Debian `groupadd`, `groupdel`, `getent`, and
+  `timeout` for both fixed groups; and
+- `./scripts/test-debian12-installer-identities.sh` runs the exact approved groupadd and useradd
+  argv against a pinned Debian 12 `linux/amd64` image. It records all changed account files, passwd
+  and shadow rows, NSS name and numeric visibility, lock state, home, shell, GECOS, hostile
+  defaults, duplicate name and UID, timeout, process loss, injected partial state, and the exact
+  sudo effective GID path without supplementary membership.
 
-Current evidence ends after read-only host and Kubernetes clean-install preflight, durable
-`installing`, and recoverable creation or rollback of `kapsel` and `kapsel-service-callers`. Fixture
-proof covers more hostile output and crash windows than the single native environment. No test
-proves user or membership installation, assets, Kubernetes mutation, credential issuance,
-activation, refresh, uninstall, real payload provenance, final metadata or size bounds, runnable
-installation, candidate assembly, or candidate qualification. The default payload-free build stops
-at `bundle_unavailable`; staged test builds stop at `implementation_incomplete` after the
-implemented group boundary.
+The direct identity experiment must classify only exactly absent, exactly complete, conflict, or
+ambiguous/partial. It must derive no-effect or completion from command status. The container is
+always disposable; conflict or ambiguous/partial evidence permits no repair or continuation.
+
+Implemented evidence ends after read-only host and Kubernetes clean-install preflight, durable
+`installing`, and recoverable creation or rollback of `kapsel` and `kapsel-service-callers`. The
+user argv and recovery rules are contract and experiment evidence only. No test proves user
+installation by the installer, assets, Kubernetes mutation, credential issuance, activation,
+refresh, uninstall, real payload provenance, final metadata or size bounds, runnable installation,
+candidate assembly, or candidate qualification. The default payload-free build stops at
+`bundle_unavailable`; staged test builds stop at `implementation_incomplete` after the implemented
+group boundary.
 
 The service and installer are absent from v0.2.0 and remain unpublished.

@@ -141,10 +141,12 @@ smoke supplies test-only ELF fixtures.
 
 Current implementation validates operator input and bootstrap kubeconfig, performs read-only host
 and Kubernetes clean-install preflight, durably enters `installing`, and creates or recovers the
-exact `kapsel` and `kapsel-service-callers` groups. It then stops at `implementation_incomplete`. It
-does not install users, memberships, assets, Kubernetes resources, credentials, activation, refresh,
-or uninstall, and no candidate assembly command exists. [Build](BUILD.md) lists its runnable gates;
-[Kapsel service](KAPSEL_SERVICE.md) owns the approved future contract and exact current boundary.
+exact `kapsel` and `kapsel-service-callers` groups. It then stops at `implementation_incomplete`.
+The approved direct useradd argv and primary-group design have bounded Debian 12 experiment
+evidence, but no user or user-recovery code exists. The installer does not install users, assets,
+Kubernetes resources, credentials, activation, refresh, or uninstall, and no candidate assembly
+command exists. [Build](BUILD.md) lists its runnable gates; [Kapsel service](KAPSEL_SERVICE.md) owns
+the approved future contract and exact current boundary.
 
 ## Dependency rule
 

@@ -52,6 +52,7 @@ warnings denied, deterministic Rust tests, doctests, Markdown links, and link-ch
 | Service operator-input seam      | `cargo test --locked -p kapsel-authority`                                                  |
 | Installer skeleton               | `cargo test --locked -p kapsel-installer`                                                  |
 | Linux-only installer/bundle code | `python3 scripts/test-kapsel-installer-bundle.py`                                          |
+| Debian 12 identity argv contract | `./scripts/test-debian12-installer-identities.sh`                                          |
 | Service installed assets         | `cargo test --locked -p kapseld --test install_assets`                                     |
 | MCP adapter                      | `cargo test --locked --test e2e_mcp_adapter`                                               |
 | Upgrade and rollback             | `python3 scripts/test-v011-upgrade-fixtures.py`                                            |
@@ -112,6 +113,16 @@ CI enforces this smoke in a Linux job after the default deterministic gate. Defa
 `bundle_unavailable`; the Docker smoke uses test-only staged payloads to cross the implemented
 recovery seams. [Architecture](ARCHITECTURE.md#partial-installer) summarizes the current
 implementation, and [Kapsel service](KAPSEL_SERVICE.md) owns its exact boundary.
+
+Run the separate direct identity experiment against its pinned Debian 12 x86-64 container:
+
+```sh
+./scripts/test-debian12-installer-identities.sh
+```
+
+This experiment requires Docker, network access to install `sudo` inside the disposable container,
+and `linux/amd64` execution. It qualifies approved useradd argv and recovery observations. It does
+not implement or qualify installer user creation.
 
 ## Upgrade and rollback fixture gate
 

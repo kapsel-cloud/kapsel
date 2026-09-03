@@ -65,9 +65,10 @@ sudo kapsel-installer install \
 The command validates every private input descriptor-relatively, creates the durable installer
 transaction through its crash-safe bootstrap, then performs clean-host and fixed Kubernetes
 preflight before any service, identity, or Kubernetes mutation. It installs the embedded assets and
-locked identities, creates UID-bound narrow RBAC, requests a short-lived ServiceAccount token,
-generates `/etc/kapsel/operator.json` and `/etc/kapsel/kubeconfig.yaml`, activates systemd, and
-checks both systemd state and authenticated socket use.
+locked identities, with `kapsel-service-callers` as the caller's primary group and no supplementary
+membership, creates UID-bound narrow RBAC, requests a short-lived ServiceAccount token, generates
+`/etc/kapsel/operator.json` and `/etc/kapsel/kubeconfig.yaml`, activates systemd, and checks both
+systemd state and authenticated socket use.
 
 The TokenRequest asks for 3,600 seconds with a ten-second deadline and a streamed 64 KiB response
 limit. The installer accepts only a nonempty ASCII token of at most 16 KiB and a server-issued
@@ -98,6 +99,10 @@ sudo -u kapsel-service-caller -g kapsel-service-callers -- \
 sudo -u kapsel-service-caller -g kapsel-service-callers -- \
   /usr/bin/kapsel-service-client status "$operation_id"
 ```
+
+The caller account's primary group is `kapsel-service-callers`. The fixed `-g` therefore supplies
+the authenticated effective GID without a supplementary membership entry. The disposable Debian 12
+identity experiment in the service contract confirms this exact `sudo` identity path.
 
 `ACCEPTED` is not success. Reconnect until status is `SUCCEEDED`, `FAILED`, `UNKNOWN`, or
 `NOT_ATTEMPTED`; never convert a timeout, disconnect, expired credential, or Kubernetes outage into
@@ -147,16 +152,23 @@ establish another result.
 ## Interrupted install or refresh
 
 Every invocation validates `/var/lib/kapsel-installer/transaction.json` and recovers before new
-preflight or mutation. An interrupted install either continues the exact pending action or rolls
-back only strongly owned resources. An interrupted refresh retains installed resources and resumes
-credential replacement. An interrupted uninstall resumes monotonically and never restores local or
-Kubernetes use. Recovery follows the pending-action table in the service contract and never deletes
-from an expected name, preflight absence, matching bytes, or an RBAC shape alone.
+preflight or mutation. Identity recovery classifies only exactly absent, exactly complete, conflict,
+or ambiguous/partial. Exactly absent may retry and exactly complete may continue. Command exit,
+timeout, or transport completion never proves either state. A conflict or ambiguous/partial user
+creation stops permanently and consumes the disposable host. Once a user is exactly complete, the
+installer never invokes name-only `userdel`, and neither that user nor its primary group
+participates in install rollback.
+
+Before any user effect, an interrupted install may roll back its strongly owned groups. An
+interrupted refresh retains installed resources and resumes credential replacement. An interrupted
+uninstall resumes monotonically and never restores local or Kubernetes use. Recovery follows the
+pending-action table in the service contract and never deletes from an expected name, preflight
+absence, matching bytes, or an RBAC shape alone.
 
 If complete ownership cannot be established, the command exits nonzero, leaves the evidence and
 resource unchanged, and does not continue installation. This preview provides no force or manual
-adoption path; dispose of the host. A fully rolled-back first attempt may be retried with the same
-authenticated installer, input directory, and context.
+adoption path; dispose of the host. A fully rolled-back group-only first attempt may be retried with
+the same authenticated installer, input directory, and context.
 
 ## Ordered uninstall and partial result
 
@@ -172,10 +184,9 @@ Uninstall recovers first, then:
 
 1. disables and stops `kapseld`, waits for process and connection closure, and verifies socket
    removal;
-2. removes the caller's recorded group membership;
-3. deletes only the transaction-marker- and UID-matching RoleBinding, ServiceAccount, and Role;
-4. removes strongly owned static assets and reloads systemd; and
-5. records terminal `uninstalled` state.
+2. deletes only the transaction-marker- and UID-matching RoleBinding, ServiceAccount, and Role;
+3. removes strongly owned static assets and reloads systemd; and
+4. records terminal `uninstalled` state.
 
 If Kubernetes is unavailable after local revocation, the command retains all static assets,
 operator/state roots, and installer ownership evidence, exits with status 20, and prints only:

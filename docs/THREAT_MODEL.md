@@ -130,7 +130,8 @@ The service adds a local admission and lifetime boundary but does not change gat
 locked service identity owns exact mode-`0700` configuration and state roots and mode-`0600`
 authority and state files. Callers can traverse only the mode-`0750` runtime directory and use its
 mode-`0660` group-owned socket; Linux peer credentials must report the exact caller-group effective
-GID before any frame is read. Supplementary membership alone is not authentication.
+GID before any frame is read. The fixed caller uses that group as its primary group; no
+supplementary-membership mutation is installed.
 
 Startup opens fixed configuration, state, receipt, and runtime roots descriptor-relatively, rejects
 symlinks, consumes validated regular single-link authority files, and reconciles before admission.
@@ -141,18 +142,19 @@ the process owns execution; it is never `SUCCEEDED`.
 
 The exact Role allows namespaced `get` and `patch` on one Deployment. Because RBAC cannot constrain
 patch fields, the concrete adapter remains the field-level authority owner. Host root, kernel,
-service identity, and already authenticated caller processes remain trusted. Membership revocation
-does not change credentials cached by an existing process, so the operator must stop relevant
-service and client processes.
+service identity, and already authenticated caller processes remain trusted. Identity database
+changes would not revoke credentials cached by an existing process, so revocation stops the service,
+waits for client and connection closure, and removes the socket before later uninstall work.
 
 One disposable Debian 12 qualification lane supplies bounded service evidence for accounts, systemd,
 short-lived credentials, namespaced RBAC, clean installation, revocation, retained data, and
 cleanup. It does not establish production safety or support for another environment.
 
-Service and installer code in repository HEAD is unpublished and absent from v0.2.0. Installer tests
-currently cross only bounded operator input, clean-install preflight, durable transaction recovery,
-and two fixed group mutations; they do not establish a runnable installation. The exact authority,
-filesystem, recovery, qualification, and unsupported boundaries are owned by
+Service and installer code in repository HEAD is unpublished and absent from v0.2.0. Implemented
+installer tests currently cross only bounded operator input, clean-install preflight, durable
+transaction recovery, and two fixed group mutations. A separate disposable Debian 12 experiment
+qualifies direct useradd argv, not installer user creation or a runnable installation. The exact
+authority, filesystem, recovery, qualification, and unsupported boundaries are owned by
 [Kapsel service](KAPSEL_SERVICE.md).
 
 ## Non-claims
