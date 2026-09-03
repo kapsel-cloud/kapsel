@@ -244,6 +244,70 @@
     }
 
     #[tokio::test]
+    async fn receipt_access_directory_keeps_stable_reference_out_of_replacement() {
+        let path = database_path("receipt-access-directory");
+        let stable_directory = path.parent().unwrap().join("receipts");
+        let access_directory = path.parent().unwrap().join("receipts-retained");
+        private_directory(&stable_directory);
+        private_directory(&access_directory);
+        let stable_directory = fs::canonicalize(stable_directory).unwrap();
+        let access_directory = fs::canonicalize(access_directory).unwrap();
+        let request = request();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway
+            .submit_exact_for_test(&request, &authorization(&request))
+            .unwrap();
+        gateway
+            .run_once_with_adapter(&mut failed_adapter(&path, &request), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            gateway
+                .finalize_operation_receipt_once(
+                    &request.operation_id,
+                    &ReceiptSettings {
+                        signing_seed: &[11_u8; 32],
+                        key_id: "effect-gateway-test-key",
+                        output_directory: &stable_directory,
+                    },
+                    Some(&access_directory),
+                )
+                .unwrap(),
+            Some(OperationState::Finalized)
+        );
+
+        let reference = gateway
+            .receipt_reference(&request.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reference.path.parent(), Some(stable_directory.as_path()));
+        assert!(!reference.path.exists());
+        let access_path = access_directory.join(reference.path.file_name().unwrap());
+        assert!(access_path.is_file());
+        assert_eq!(fs::read_dir(&stable_directory).unwrap().count(), 0);
+        let signed_grant = sign_authorization_grant(
+            &authorization(&request),
+            &[7_u8; 32],
+            "effect-gateway-authorization-test-key",
+        )
+        .unwrap();
+        let loaded = gateway
+            .authorized_operation(&request, &signed_grant)
+            .unwrap()
+            .unwrap();
+        let (bytes, digest) = Gateway::read_loaded_receipt(
+            loaded,
+            &stable_directory,
+            Some(&access_directory),
+        )
+        .unwrap();
+        assert_eq!(publication::receipt_digest_hex(&bytes), digest);
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
     async fn receipt_preparation_is_durable_before_external_publication() {
         let path = database_path("receipt-prepared-recovery");
         let output_directory = path.parent().unwrap().join("receipts");

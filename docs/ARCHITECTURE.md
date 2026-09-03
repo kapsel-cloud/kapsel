@@ -120,10 +120,13 @@ bounded local service client
 
 `kapseld` provides caller-independent process lifetime, startup reconciliation, read-only status,
 and exact frozen-receipt retrieval across a separate OS identity. It accepts fixed operator and
-socket arguments, validates fixed roots descriptor-relatively, reconciles before binding, and
-removes only an exact inactive service-owned stale socket. Systemd owns process lifecycle,
-runtime-directory cleanup, health, and diagnostics. Static inputs define one service identity and
-namespaced Kubernetes RBAC.
+socket arguments, validates fixed roots descriptor-relatively, then keeps journal, receipt, and
+socket I/O beneath the retained directory handles through verified Linux `/proc/self/fd` paths. It
+reconciles before binding and removes only an exact inactive service-owned stale socket. Unavailable
+or inconsistent procfs fails startup before durable or socket effects; SQLite's moved-database
+refusal fails later journal writes rather than reopening a replaced state root. Systemd owns process
+lifecycle, runtime-directory cleanup, health, and diagnostics. Static inputs define one service
+identity and namespaced Kubernetes RBAC.
 
 The service adapter composes `Application::execute`, `Application::reconcile`, non-mutating
 exact-grant matching, projected status, and frozen-receipt reads. It does not query SQLite directly,

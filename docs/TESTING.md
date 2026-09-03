@@ -130,9 +130,11 @@ The unpublished service evidence remains layered around `Application`:
 - process tests cover `ACCEPTED` as process ownership only, immediate `BUSY`, caller disconnect,
   concurrent status, one provider attempt, and one journal;
 - process-loss tests require startup reconciliation before bind and preserve frozen receipt bytes;
-  and
 - startup and asset tests freeze fixed roots, no-follow file rules, exact argv, stale-socket
-  handling, systemd, sysusers, and namespaced RBAC bytes.
+  handling, systemd, sysusers, and namespaced RBAC bytes; and
+- deterministic root-substitution tests rename and replace state, receipt, and runtime names after
+  validation, then prove journal creation, receipt access, and socket bind stay with the retained
+  directory identities.
 
 Service-client tests freeze its three-command grammar, bounded framing, receipt digest verification,
 exclusive mode-`0600` output, and refusal to replace an existing file. `kapsel-authority` tests

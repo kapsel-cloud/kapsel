@@ -80,8 +80,9 @@ pub async fn open_application_from_operator_document(
     open_operator_document(operator, None, read_file).await
 }
 
-/// Opens the application only when the operator document uses the supplied state paths.
+/// Opens the application only when the operator document uses the supplied fixed state paths.
 ///
+/// The access paths must resolve through retained handles for the same journal and receipt roots.
 /// The supplied reader owns file-opening policy and must return bytes from the validated opened
 /// inode. Kapsel service startup uses this form to retain the existing grammar without allowing
 /// another journal or receipt root.
@@ -93,12 +94,28 @@ pub async fn open_application_from_operator_document(
 /// application configuration errors are preserved.
 pub async fn open_application_from_fixed_operator_document(
     document: &[u8],
-    journal_path: &Path,
-    receipt_directory: &Path,
+    fixed_journal_path: &Path,
+    fixed_receipt_directory: &Path,
+    journal_access_path: &Path,
+    receipt_access_directory: &Path,
     read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
 ) -> Result<Application, ApplicationError> {
     let operator = parse_operator_document(document)?;
-    open_operator_document(operator, Some((journal_path, receipt_directory)), read_file).await
+    let fixed_paths = FixedStatePaths {
+        journal: fixed_journal_path,
+        receipt_directory: fixed_receipt_directory,
+        journal_access: journal_access_path,
+        receipt_access: receipt_access_directory,
+    };
+    open_operator_document(operator, Some(fixed_paths), read_file).await
+}
+
+#[derive(Clone, Copy)]
+struct FixedStatePaths<'a> {
+    journal: &'a Path,
+    receipt_directory: &'a Path,
+    journal_access: &'a Path,
+    receipt_access: &'a Path,
 }
 
 fn parse_operator_document(document: &[u8]) -> Result<OperatorDocument, ApplicationError> {
@@ -107,7 +124,7 @@ fn parse_operator_document(document: &[u8]) -> Result<OperatorDocument, Applicat
 
 async fn open_operator_document(
     operator: OperatorDocument,
-    fixed_state_paths: Option<(&Path, &Path)>,
+    fixed_state_paths: Option<FixedStatePaths<'_>>,
     mut read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
 ) -> Result<Application, ApplicationError> {
     for path in [
@@ -122,12 +139,23 @@ async fn open_operator_document(
             return Err(ApplicationError::InvalidOperatorConfiguration);
         }
     }
-    if let Some((journal_path, receipt_directory)) = fixed_state_paths {
-        if operator.journal != journal_path || operator.receipt_directory != receipt_directory {
+    if let Some(paths) = fixed_state_paths {
+        if operator.journal != paths.journal
+            || operator.receipt_directory != paths.receipt_directory
+        {
             return Err(ApplicationError::InvalidOperatorConfiguration);
         }
     }
-    let persisted_receipt_directory = fixed_state_paths.map(|(_, directory)| directory.to_owned());
+    let persisted_receipt_directory =
+        fixed_state_paths.map(|paths| paths.receipt_directory.to_owned());
+    let receipt_access_directory = fixed_state_paths.map(|paths| paths.receipt_access.to_owned());
+    let journal_path = fixed_state_paths.map_or_else(
+        || operator.journal.clone(),
+        |paths| paths.journal_access.to_owned(),
+    );
+    let receipt_output_directory = receipt_access_directory
+        .clone()
+        .unwrap_or_else(|| operator.receipt_directory.clone());
     let signed_authorization_grant = read_operator_file(
         &mut read_file,
         &operator.signed_authorization_grant,
@@ -141,8 +169,8 @@ async fn open_operator_document(
     let kubernetes_client = load_operator_kubernetes_client(&kubeconfig).await?;
 
     let mut application = Application::open(OperatorConfiguration {
-        journal_path: operator.journal,
-        receipt_output_directory: operator.receipt_directory,
+        journal_path,
+        receipt_output_directory,
         authorization_trust: AuthorizationTrust {
             key_id: operator.authorization_key_id,
             public_key: authorization_public_key,
@@ -152,7 +180,11 @@ async fn open_operator_document(
         receipt_signing_seed,
         receipt_signing_key_id: operator.receipt_signing_key_id,
     })?;
-    application.persisted_receipt_directory = persisted_receipt_directory;
+    if let Some(persisted_directory) = persisted_receipt_directory {
+        application.persisted_receipt_directory = Some(persisted_directory.clone());
+        application.receipt_output_directory = persisted_directory;
+        application.receipt_access_directory = receipt_access_directory;
+    }
     Ok(application)
 }
 
@@ -360,6 +392,7 @@ pub struct Application {
     receipt_signing_key: SigningKey,
     receipt_signing_key_id: String,
     receipt_output_directory: PathBuf,
+    receipt_access_directory: Option<PathBuf>,
     persisted_receipt_directory: Option<PathBuf>,
 }
 
@@ -410,6 +443,7 @@ impl Application {
             receipt_signing_key: SigningKey::from_bytes(&configuration.receipt_signing_seed),
             receipt_signing_key_id: configuration.receipt_signing_key_id,
             receipt_output_directory: configuration.receipt_output_directory,
+            receipt_access_directory: None,
             persisted_receipt_directory: None,
         })
     }
@@ -494,8 +528,12 @@ impl Application {
         if snapshot.state() != OperationState::Finalized {
             return Ok(SetDeploymentImageReceipt::NotReady);
         }
-        let (bytes, sha256) = Gateway::read_loaded_receipt(snapshot)
-            .map_err(|_| ApplicationError::OperationFailure)?;
+        let (bytes, sha256) = Gateway::read_loaded_receipt(
+            snapshot,
+            &self.receipt_output_directory,
+            self.receipt_access_directory.as_deref(),
+        )
+        .map_err(|_| ApplicationError::OperationFailure)?;
         Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 })
     }
 
@@ -587,6 +625,7 @@ impl Application {
                         .finalize_operation_receipt_once(
                             &self.authorized_request.operation_id,
                             &receipt_settings,
+                            self.receipt_access_directory.as_deref(),
                         )
                         .map_err(|_| ApplicationError::OperationFailure)?;
                     if receipt_state_after_finalization.is_none() {

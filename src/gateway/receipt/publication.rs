@@ -11,7 +11,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::unix::fs::MetadataExt,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use rustix::fs::{fchmod, fstat, linkat, openat, statat, unlinkat, AtFlags, Mode, OFlags, CWD};
@@ -148,14 +148,27 @@ fn open_parent(path: &Path) -> Result<(File, OsString), PublicationError> {
         }
     }
     let destination = names.pop().ok_or(PublicationError::UnsafePath)?;
-    let start = if absolute {
-        OsStr::new("/")
+    let descriptor_root = descriptor_root(&names, absolute)?;
+    let (mut directory, consumed) = if let Some(root) = descriptor_root {
+        (
+            File::from(
+                openat(CWD, &root, descriptor_directory_flags(), Mode::empty())
+                    .map_err(io_error)?,
+            ),
+            4,
+        )
     } else {
-        OsStr::new(".")
+        let start = if absolute {
+            OsStr::new("/")
+        } else {
+            OsStr::new(".")
+        };
+        (
+            File::from(openat(CWD, start, directory_flags(), Mode::empty()).map_err(io_error)?),
+            0,
+        )
     };
-    let mut directory =
-        File::from(openat(CWD, start, directory_flags(), Mode::empty()).map_err(io_error)?);
-    for name in names {
+    for name in names.into_iter().skip(consumed) {
         directory = File::from(
             openat(&directory, name, directory_flags(), Mode::empty()).map_err(io_error)?,
         );
@@ -165,6 +178,21 @@ fn open_parent(path: &Path) -> Result<(File, OsString), PublicationError> {
         return Err(PublicationError::UnsafePath);
     }
     Ok((directory, destination))
+}
+
+fn descriptor_root(
+    names: &[OsString],
+    absolute: bool,
+) -> Result<Option<PathBuf>, PublicationError> {
+    if !absolute || names.len() < 4 || names[0] != "proc" || names[1] != "self" || names[2] != "fd"
+    {
+        return Ok(None);
+    }
+    let descriptor = names[3]
+        .to_str()
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or(PublicationError::UnsafePath)?;
+    Ok(Some(Path::new("/proc/self/fd").join(descriptor)))
 }
 
 fn pending_name(destination: &OsStr) -> Result<OsString, PublicationError> {
@@ -262,6 +290,10 @@ fn directory_flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
 }
 
+fn descriptor_directory_flags() -> OFlags {
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC
+}
+
 fn read_flags() -> OFlags {
     OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC
 }
@@ -324,6 +356,8 @@ fn hex_digit(value: u8) -> char {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::os::fd::AsRawFd;
     use std::{
         fs,
         os::unix::fs::{symlink, PermissionsExt},
@@ -383,6 +417,26 @@ mod tests {
         symlink(&target, real.join("other.pending")).unwrap();
         assert!(publish_receipt(&real.join("other"), b"receipt").is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_descriptor_root_keeps_publication_out_of_replacement_directory() {
+        let root = directory("proc-descriptor");
+        let handle = File::open(&root).unwrap();
+        let access = PathBuf::from(format!("/proc/self/fd/{}", handle.as_raw_fd()));
+        let retained = root.with_extension("retained");
+        fs::rename(&root, &retained).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+
+        publish_receipt(&access.join("receipt"), b"receipt").unwrap();
+
+        assert_eq!(fs::read(retained.join("receipt")).unwrap(), b"receipt");
+        assert!(!root.join("receipt").exists());
+        drop(handle);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(retained).unwrap();
     }
 
     #[test]

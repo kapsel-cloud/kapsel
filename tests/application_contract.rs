@@ -733,6 +733,11 @@ async fn fixed_operator_document_composes_the_existing_application_grammar() {
     let receipts = root.join("receipts");
     private_directory(&receipts);
     let journal = root.join("journal.sqlite3");
+    let access = root.join("retained");
+    private_directory(&access);
+    let access_receipts = access.join("receipts");
+    private_directory(&access_receipts);
+    let access_journal = access.join("journal.sqlite3");
     let request = request();
     let authorization_seed = [91_u8; 32];
     let authorization_key = SigningKey::from_bytes(&authorization_seed);
@@ -767,6 +772,8 @@ async fn fixed_operator_document_composes_the_existing_application_grammar() {
         &document,
         &root.join("journal.sqlite3"),
         &root.join("receipts"),
+        &access_journal,
+        &access_receipts,
         |path, maximum| {
             let bytes = match path.to_str().unwrap() {
                 "/etc/kapsel/grant.bin" => grant.clone(),
@@ -792,6 +799,8 @@ async fn fixed_operator_document_composes_the_existing_application_grammar() {
             .unwrap(),
         SetDeploymentImageStatus::NotFound
     );
+    assert!(access_journal.is_file());
+    assert!(!journal.exists());
     drop(application);
     fs::remove_dir_all(root).unwrap();
 }
@@ -814,6 +823,8 @@ async fn fixed_operator_document_rejects_changed_state_paths_before_file_reads()
         document,
         Path::new("/var/lib/kapsel/journal.sqlite3"),
         Path::new("/var/lib/kapsel/receipts"),
+        Path::new("/proc/self/fd/7/journal.sqlite3"),
+        Path::new("/proc/self/fd/8"),
         |_, _| {
             reads += 1;
             Err(ApplicationError::InvalidOperatorConfiguration)

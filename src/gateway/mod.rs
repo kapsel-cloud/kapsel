@@ -454,10 +454,15 @@ impl Gateway {
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
+        access_directory: Option<&Path>,
     ) -> Result<Option<OperationState>, GatewayError> {
-        self.finalize_operation_receipt_once_with_fault(operation_id, settings, None)
+        let Some(_worker_lock) = self.journal.try_lock_worker()? else {
+            return Ok(None);
+        };
+        self.finalize_locked_operation_receipt_once(operation_id, settings, access_directory, None)
     }
 
+    #[cfg(test)]
     fn finalize_operation_receipt_once_with_fault(
         &self,
         operation_id: &str,
@@ -467,7 +472,7 @@ impl Gateway {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        self.finalize_locked_operation_receipt_once(operation_id, settings, fault)
+        self.finalize_locked_operation_receipt_once(operation_id, settings, None, fault)
     }
 
     // Queue-oriented tests select only an exact identity while holding worker exclusion, then cross
@@ -488,6 +493,7 @@ impl Gateway {
         self.finalize_locked_operation_receipt_once(
             operation.request().operation_id(),
             settings,
+            None,
             fault,
         )
     }
@@ -496,6 +502,7 @@ impl Gateway {
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
+        access_directory: Option<&Path>,
         fault: Option<FaultPoint>,
     ) -> Result<Option<OperationState>, GatewayError> {
         #[cfg(not(test))]
@@ -507,8 +514,10 @@ impl Gateway {
             match operation {
                 journal::LoadedOperation::ReceiverObserved(operation) => {
                     let receipt = Self::build_receipt(&operation, settings)?;
-                    publication::validate_private_directory(settings.output_directory)
-                        .map_err(publication_error)?;
+                    publication::validate_private_directory(
+                        access_directory.unwrap_or(settings.output_directory),
+                    )
+                    .map_err(publication_error)?;
                     self.journal.prepare_receipt(&operation, &receipt)?;
                     #[cfg(test)]
                     if fault == Some(FaultPoint::ReceiptPreparedCommitted) {
@@ -517,7 +526,9 @@ impl Gateway {
                 },
                 journal::LoadedOperation::ReceiptPrepared(operation) => {
                     let receipt = operation.receipt();
-                    publication::publish_receipt(&receipt.path, &receipt.bytes)
+                    let access_path =
+                        receipt_access_path(receipt, settings.output_directory, access_directory)?;
+                    publication::publish_receipt(&access_path, &receipt.bytes)
                         .map_err(publication_error)?;
                     #[cfg(feature = "demo-harness")]
                     demo_control::checkpoint_after_receipt_publish()
@@ -534,8 +545,10 @@ impl Gateway {
                         return Err(GatewayError::InjectedFault);
                     }
                     let receipt = operation.receipt();
-                    if !stored_receipt_matches(&receipt.path, &receipt.bytes)? {
-                        publication::publish_receipt(&receipt.path, &receipt.bytes)
+                    let access_path =
+                        receipt_access_path(receipt, settings.output_directory, access_directory)?;
+                    if !stored_receipt_matches(&access_path, &receipt.bytes)? {
+                        publication::publish_receipt(&access_path, &receipt.bytes)
                             .map_err(publication_error)?;
                     }
                     self.journal.mark_finalized(&operation)?;
@@ -585,12 +598,15 @@ impl Gateway {
 
     pub(crate) fn read_loaded_receipt(
         operation: journal::LoadedOperation,
+        output_directory: &Path,
+        access_directory: Option<&Path>,
     ) -> Result<(Vec<u8>, String), GatewayError> {
         let journal::LoadedOperation::Finalized(operation) = operation else {
             return Err(GatewayError::InvalidPersistedState);
         };
         let receipt = operation.receipt();
-        let bytes = publication::read_receipt(&receipt.path).map_err(publication_error)?;
+        let access_path = receipt_access_path(receipt, output_directory, access_directory)?;
+        let bytes = publication::read_receipt(&access_path).map_err(publication_error)?;
         if bytes != receipt.bytes || publication::receipt_digest_hex(&bytes) != receipt.digest {
             return Err(GatewayError::ReceiptDigestMismatch);
         }
@@ -766,6 +782,24 @@ impl Gateway {
 
 fn publication_error(_: publication::PublicationError) -> GatewayError {
     GatewayError::ReceiptPublication
+}
+
+fn receipt_access_path(
+    receipt: &FrozenReceipt,
+    output_directory: &Path,
+    access_directory: Option<&Path>,
+) -> Result<PathBuf, GatewayError> {
+    let Some(access_directory) = access_directory else {
+        return Ok(receipt.path.clone());
+    };
+    if receipt.path.parent() != Some(output_directory) {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    let name = receipt
+        .path
+        .file_name()
+        .ok_or(GatewayError::InvalidPersistedState)?;
+    Ok(access_directory.join(name))
 }
 
 fn stored_receipt_matches(path: &Path, expected: &[u8]) -> Result<bool, GatewayError> {

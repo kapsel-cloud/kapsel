@@ -3,7 +3,10 @@
 use std::{
     fs::File,
     io::Read as _,
-    os::unix::{fs::MetadataExt as _, net::UnixStream as StdUnixStream},
+    os::{
+        fd::AsRawFd as _,
+        unix::{fs::MetadataExt as _, net::UnixStream as StdUnixStream},
+    },
     path::{Path, PathBuf},
 };
 
@@ -30,7 +33,9 @@ pub(crate) struct InstallationInputs {
     receipt_seed: Vec<u8>,
     journal_path: PathBuf,
     receipt_path: PathBuf,
-    socket_path: PathBuf,
+    journal_access_path: PathBuf,
+    receipt_access_path: PathBuf,
+    socket_access_path: PathBuf,
 }
 
 impl InstallationInputs {
@@ -59,6 +64,9 @@ impl InstallationInputs {
             read_private_file(&configuration, "kubeconfig.yaml", KUBECONFIG_BYTES_MAX)?;
         let receipt_seed = read_private_file(&configuration, "receipt.seed", KEY_BYTES)?;
         let configuration_path = installation_root.join("etc/kapsel");
+        let state_access_path = descriptor_directory_path(&state)?;
+        let receipt_access_path = descriptor_directory_path(&receipts)?;
+        let runtime_access_path = descriptor_directory_path(&runtime)?;
         Ok(Self {
             _configuration_root: configuration,
             _state_root: state,
@@ -72,20 +80,28 @@ impl InstallationInputs {
             receipt_seed,
             journal_path: installation_root.join("var/lib/kapsel/journal.sqlite3"),
             receipt_path: installation_root.join("var/lib/kapsel/receipts"),
-            socket_path: installation_root.join("run/kapsel/kapseld.sock"),
+            journal_access_path: state_access_path.join("journal.sqlite3"),
+            receipt_access_path,
+            socket_access_path: runtime_access_path.join("kapseld.sock"),
         })
     }
 
     pub(crate) fn bind_listener(&self) -> std::io::Result<UnixListener> {
-        prepare_socket_path(&self.runtime_root, &self.socket_path)?;
-        let listener = UnixListener::bind(&self.socket_path)?;
-        chmodat(
+        prepare_socket_path(&self.runtime_root, &self.socket_access_path)?;
+        let listener = UnixListener::bind(&self.socket_access_path)?;
+        let configured = chmodat(
             &self.runtime_root,
             "kapseld.sock",
             socket_mode(),
             AtFlags::empty(),
-        )?;
-        require_socket_identity(&self.runtime_root)?;
+        )
+        .map_err(std::io::Error::from)
+        .and_then(|()| require_socket_identity(&self.runtime_root));
+        if let Err(error) = configured {
+            drop(listener);
+            let _ = unlinkat(&self.runtime_root, "kapseld.sock", AtFlags::empty());
+            return Err(error);
+        }
         Ok(listener)
     }
 
@@ -94,6 +110,8 @@ impl InstallationInputs {
             &self.document,
             &self.journal_path,
             &self.receipt_path,
+            &self.journal_access_path,
+            &self.receipt_access_path,
             |path, maximum| {
                 let bytes = if path == self.configuration_path.join("grant.bin") {
                     &self.grant
@@ -114,6 +132,25 @@ impl InstallationInputs {
         )
         .await
     }
+}
+
+fn descriptor_directory_path(directory: &File) -> std::io::Result<PathBuf> {
+    let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    let descriptor = directory.metadata()?;
+    let named = path.metadata()?;
+    if !named.is_dir()
+        || descriptor.dev() != named.dev()
+        || descriptor.ino() != named.ino()
+        || descriptor.uid() != named.uid()
+        || descriptor.gid() != named.gid()
+        || descriptor.mode() != named.mode()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "validated directory descriptor is unavailable",
+        ));
+    }
+    Ok(path)
 }
 
 fn prepare_socket_path(runtime: &File, socket_path: &Path) -> std::io::Result<()> {
@@ -258,12 +295,18 @@ fn read_flags() -> OFlags {
 mod tests {
     use std::{
         fs,
+        io::{Read as _, Write as _},
+        net::{TcpListener, TcpStream},
         os::unix::{fs::PermissionsExt as _, net::UnixListener},
         path::{Path, PathBuf},
+        thread,
+        time::Duration,
     };
 
     use ed25519_dalek::SigningKey;
-    use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+    use kapsel::{
+        provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning, OperationResult,
+    };
 
     use super::{InstallationInputs, GRANT_BYTES_MAX};
 
@@ -294,6 +337,10 @@ mod tests {
     }
 
     fn valid_root(name: &str) -> PathBuf {
+        valid_root_with_server(name, "http://127.0.0.1:1234")
+    }
+
+    fn valid_root_with_server(name: &str, server: &str) -> PathBuf {
         let root = root(name);
         let authorization_seed = [101_u8; 32];
         let authorization_key = SigningKey::from_bytes(&authorization_seed);
@@ -322,14 +369,14 @@ mod tests {
         );
         private_file(
             &root.join("etc/kapsel/kubeconfig.yaml"),
-            concat!(
+            format!(concat!(
                 "apiVersion: v1\nkind: Config\ncurrent-context: fixture\n",
                 "clusters:\n- name: fixture\n  cluster:\n",
-                "    server: http://127.0.0.1:1234\n",
+                "    server: {server}\n",
                 "contexts:\n- name: fixture\n  context:\n",
                 "    cluster: fixture\n    user: fixture\n",
-                "users:\n- name: fixture\n  user: {}\n"
-            )
+                "users:\n- name: fixture\n  user: {{}}\n"
+            ))
             .as_bytes(),
         );
         private_file(&root.join("etc/kapsel/receipt.seed"), &[102_u8; 32]);
@@ -348,6 +395,128 @@ mod tests {
             .unwrap(),
         );
         root
+    }
+
+    fn request() -> AgentRequest {
+        AgentRequest {
+            operation_id: "service-op".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: concat!(
+                "registry.example/agent-api@sha256:",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .into(),
+        }
+    }
+
+    fn deployment(resource_version: &str, generation: u64, updated: bool, ready: bool) -> String {
+        let old_image = concat!(
+            "registry.example/agent-api@sha256:",
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        );
+        let image = if updated {
+            request().immutable_image_digest
+        } else {
+            old_image.into()
+        };
+        serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": "agent-api",
+                "namespace": "demo",
+                "uid": "uid-1",
+                "resourceVersion": resource_version,
+                "generation": generation,
+                "annotations": if updated {
+                    serde_json::json!({"kapsel.dev/kap0038-operation-id": "service-op"})
+                } else {
+                    serde_json::json!({})
+                }
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": {"app": "agent-api"}},
+                "template": {
+                    "metadata": {"labels": {"app": "agent-api"}},
+                    "spec": {"containers": [{"name": "api", "image": image}]}
+                }
+            },
+            "status": if ready {
+                serde_json::json!({
+                    "observedGeneration": generation,
+                    "updatedReplicas": 1,
+                    "availableReplicas": 1,
+                    "unavailableReplicas": 0
+                })
+            } else {
+                serde_json::json!({"observedGeneration": generation})
+            }
+        })
+        .to_string()
+    }
+
+    fn read_provider_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 4096];
+            let read = stream.read(&mut chunk).unwrap();
+            assert!(read > 0, "provider request ended before framing completed");
+            bytes.extend_from_slice(&chunk[..read]);
+            assert!(bytes.len() <= 16 * 1024, "provider request exceeded bound");
+            let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let header_end = header_end + 4;
+            let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+            let content_length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
+            if bytes.len() >= header_end + content_length {
+                return headers.lines().next().unwrap().to_owned();
+            }
+        }
+    }
+
+    fn write_provider_response(stream: &mut TcpStream, body: &str) {
+        write!(
+            stream,
+            concat!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
+                "content-length: {}\r\nconnection: close\r\n\r\n"
+            ),
+            body.len()
+        )
+        .unwrap();
+        stream.write_all(body.as_bytes()).unwrap();
+    }
+
+    fn success_server() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let thread = thread::spawn(move || {
+            for (expected_method, response) in [
+                ("GET", deployment("1", 1, false, false)),
+                ("PATCH", deployment("2", 2, true, false)),
+                ("GET", deployment("3", 2, true, true)),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request_line = read_provider_request(&mut stream);
+                assert!(request_line.starts_with(expected_method));
+                write_provider_response(&mut stream, &response);
+            }
+        });
+        (url, thread)
     }
 
     #[test]
@@ -375,6 +544,178 @@ mod tests {
             .unwrap()
             .eq(&kapsel::SetDeploymentImageStatus::NotFound));
         drop(application);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn state_root_rename_and_replacement_keep_journal_on_validated_directory() {
+        for replacement in [false, true] {
+            let root = valid_root(if replacement {
+                "state-replacement"
+            } else {
+                "state-rename"
+            });
+            let inputs = InstallationInputs::open_at(&root).unwrap();
+            let state = root.join("var/lib/kapsel");
+            let retained = root.join("var/lib/kapsel.retained");
+            fs::rename(&state, &retained).unwrap();
+            if replacement {
+                directory(&state, 0o700);
+                directory(&state.join("receipts"), 0o700);
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            let application = runtime.block_on(inputs.open_application()).unwrap();
+
+            assert!(retained.join("journal.sqlite3").is_file());
+            assert!(retained
+                .join("journal.sqlite3.kap0038-worker.lock")
+                .is_file());
+            for name in [
+                "journal.sqlite3",
+                "journal.sqlite3.kap0038-worker.lock",
+                "journal.sqlite3-journal",
+                "journal.sqlite3-wal",
+                "journal.sqlite3-shm",
+            ] {
+                assert!(!state.join(name).exists());
+            }
+            if replacement {
+                assert_eq!(fs::read_dir(&state).unwrap().count(), 1);
+            }
+            drop(application);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn receipt_root_rename_and_replacement_publish_only_on_validated_directory() {
+        for replacement in [false, true] {
+            let (server, provider) = success_server();
+            let root = valid_root_with_server(
+                if replacement {
+                    "receipt-replacement"
+                } else {
+                    "receipt-rename"
+                },
+                &server,
+            );
+            let inputs = InstallationInputs::open_at(&root).unwrap();
+            let receipts = root.join("var/lib/kapsel/receipts");
+            let retained = root.join("var/lib/kapsel/receipts.retained");
+            fs::rename(&receipts, &retained).unwrap();
+            if replacement {
+                directory(&receipts, 0o700);
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            let mut application = runtime.block_on(inputs.open_application()).unwrap();
+            let report = runtime.block_on(application.execute(&request())).unwrap();
+
+            assert_eq!(report.result, Some(OperationResult::Succeeded));
+            assert!(report.receipt.is_some());
+            assert_eq!(fs::read_dir(&retained).unwrap().count(), 1);
+            assert!(fs::read_dir(&retained)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path()
+                .is_file());
+            if replacement {
+                assert_eq!(fs::read_dir(&receipts).unwrap().count(), 0);
+            } else {
+                assert!(!receipts.exists());
+            }
+            provider.join().unwrap();
+            drop(application);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_root_rename_and_replacement_bind_only_on_validated_directory() {
+        for replacement in [false, true] {
+            let root = valid_root(if replacement {
+                "runtime-replacement"
+            } else {
+                "runtime-rename"
+            });
+            let inputs = InstallationInputs::open_at(&root).unwrap();
+            let runtime_path = root.join("run/kapsel");
+            let retained = root.join("run/kapsel.retained");
+            fs::rename(&runtime_path, &retained).unwrap();
+            if replacement {
+                directory(&runtime_path, 0o750);
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+
+            let listener = runtime.block_on(async { inputs.bind_listener() }).unwrap();
+
+            assert!(retained.join("kapseld.sock").exists());
+            assert!(!runtime_path.join("kapseld.sock").exists());
+            drop(listener);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn active_socket_is_preserved_and_rejected() {
+        let root = valid_root("active-socket");
+        let inputs = InstallationInputs::open_at(&root).unwrap();
+        let socket = UnixListener::bind(&inputs.socket_access_path).unwrap();
+        fs::set_permissions(
+            &inputs.socket_access_path,
+            fs::Permissions::from_mode(0o660),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(async { inputs.bind_listener() })
+            .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        assert!(inputs.socket_access_path.exists());
+        drop(socket);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_socket_is_removed_before_rebinding() {
+        let root = valid_root("stale-socket");
+        let inputs = InstallationInputs::open_at(&root).unwrap();
+        let stale = UnixListener::bind(&inputs.socket_access_path).unwrap();
+        fs::set_permissions(
+            &inputs.socket_access_path,
+            fs::Permissions::from_mode(0o660),
+        )
+        .unwrap();
+        let stale_inode = fs::metadata(&inputs.socket_access_path).unwrap().ino();
+        drop(stale);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let listener = runtime.block_on(async { inputs.bind_listener() }).unwrap();
+
+        let replacement = fs::metadata(&inputs.socket_access_path).unwrap();
+        assert_ne!(replacement.ino(), stale_inode);
+        assert_eq!(replacement.permissions().mode() & 0o7777, 0o660);
+        drop(listener);
         fs::remove_dir_all(root).unwrap();
     }
 

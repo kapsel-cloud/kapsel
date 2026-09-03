@@ -8,7 +8,7 @@ use std::{
     fs::{self, File},
     io::{self, Read as _, Seek as _, SeekFrom},
     os::unix::fs::MetadataExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 #[cfg(test)]
@@ -504,7 +504,11 @@ fn require_private_parent(path: &Path) -> io::Result<()> {
             "journal has no private parent",
         )
     })?;
-    let metadata = fs::symlink_metadata(parent)?;
+    let metadata = if is_proc_self_fd_directory(parent) {
+        fs::metadata(parent)?
+    } else {
+        fs::symlink_metadata(parent)?
+    };
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || (metadata.mode() & 0o7777) != 0o700
@@ -515,6 +519,23 @@ fn require_private_parent(path: &Path) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+fn is_proc_self_fd_directory(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(components.next(), Some(Component::RootDir))
+        && matches!(components.next(), Some(Component::Normal(name)) if name == "proc")
+        && matches!(components.next(), Some(Component::Normal(name)) if name == "self")
+        && matches!(components.next(), Some(Component::Normal(name)) if name == "fd")
+        && matches!(
+            components.next(),
+            Some(Component::Normal(descriptor))
+                if descriptor
+                    .to_str()
+                    .is_some_and(|value| !value.is_empty()
+                        && value.bytes().all(|byte| byte.is_ascii_digit()))
+        )
+        && components.next().is_none()
 }
 
 fn require_named_identity(path: &Path, expected: &fs::Metadata) -> io::Result<()> {
@@ -542,6 +563,8 @@ fn worker_lock_path(database_path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use std::os::fd::AsRawFd;
     use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::*;
@@ -570,6 +593,43 @@ mod tests {
 
         drop(original);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sqlite_fails_closed_after_opened_descriptor_root_is_replaced() {
+        let directory =
+            std::env::temp_dir().join(format!("kapsel-journal-proc-root-{}", std::process::id()));
+        let retained = directory.with_extension("retained");
+        let _ = fs::remove_dir_all(&directory);
+        let _ = fs::remove_dir_all(&retained);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let handle = File::open(&directory).unwrap();
+        let path = PathBuf::from(format!(
+            "/proc/self/fd/{}/journal.sqlite3",
+            handle.as_raw_fd()
+        ));
+        let journal = Journal::open(&path).unwrap();
+        fs::rename(&directory, &retained).unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let result = journal
+            .connection
+            .execute_batch("BEGIN EXCLUSIVE; CREATE TABLE descriptor_probe(value INTEGER);");
+
+        assert!(matches!(
+            result,
+            Err(rusqlite::Error::SqliteFailure(ref error, _))
+                if error.code == rusqlite::ErrorCode::ReadOnly && error.extended_code == 1032
+        ));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        assert!(!retained.join("journal.sqlite3-journal").exists());
+        drop(journal);
+        drop(handle);
+        fs::remove_dir_all(directory).unwrap();
+        fs::remove_dir_all(retained).unwrap();
     }
 
     #[test]

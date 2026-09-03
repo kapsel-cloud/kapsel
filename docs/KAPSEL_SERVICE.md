@@ -80,9 +80,20 @@ regular, single-link, service-owned mode `0600`.
 Startup opens fixed `/etc/kapsel`, `/var/lib/kapsel`, `/var/lib/kapsel/receipts`, and `/run/kapsel`
 roots descriptor-relatively. It validates exact owners, modes, file types, link counts, path
 components, and stable consumed bytes. It retains handles for the configuration, state, receipt, and
-runtime roots. Authority and receipt reads use validated opened inodes, and frozen receipt paths
-remain beneath the fixed receipt directory. Host root, the kernel, and the service identity remain
-trusted.
+runtime roots.
+
+On Linux, journal and SQLite sidecar access, receipt publication and reads, and socket preparation
+and bind resolve through `/proc/self/fd/<fd>` paths for those retained handles. Startup requires
+each procfs path to resolve to the same device, inode, owner, group, type, and mode as its handle;
+unavailable or inconsistent procfs fails before journal creation, reconciliation, or socket bind.
+Frozen receipt references keep the fixed `/var/lib/kapsel/receipts` pathname in durable state, while
+I/O maps only the already-validated receipt filename into the retained receipt directory. Renaming a
+root or replacing its old name after validation cannot redirect state, receipts, or the listening
+socket into the substitute. If the state root moves after SQLite opens, SQLite's file-move defense
+rejects later writes with `SQLITE_READONLY_DBMOVED`; Kapsel returns an operation failure rather than
+reopening the replacement. A renamed runtime root can make the fixed client socket pathname
+unreachable until restart; startup through a substituted fixed root must validate that root anew.
+Host root, procfs, the kernel, and the service identity remain trusted.
 
 The locked `kapsel` identity exclusively owns operator files, Kubernetes credentials, grant trust,
 receipt signing material, journal, worker lock, and receipts. The caller never selects or receives

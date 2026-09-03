@@ -405,7 +405,7 @@
         );
         assert_eq!(
             gateway
-                .finalize_operation_receipt_once(&configured.operation_id, &receipt_settings)
+                .finalize_operation_receipt_once(&configured.operation_id, &receipt_settings, None)
                 .unwrap(),
             Some(OperationState::Finalized)
         );
