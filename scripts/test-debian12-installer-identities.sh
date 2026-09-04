@@ -261,7 +261,7 @@ for _ in $(seq 1 500); do
 done
 kill -KILL "$parent" 2>/dev/null || true
 set +e
-wait "$parent"
+wait "$parent" 2>/dev/null
 process_loss_status=$?
 set -e
 snapshot_etc /tmp/etc.4

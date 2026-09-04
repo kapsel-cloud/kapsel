@@ -297,7 +297,10 @@ mod tests {
         fs,
         io::{Read as _, Write as _},
         net::{TcpListener, TcpStream},
-        os::unix::{fs::PermissionsExt as _, net::UnixListener},
+        os::unix::{
+            fs::{MetadataExt as _, PermissionsExt as _},
+            net::UnixListener,
+        },
         path::{Path, PathBuf},
         thread,
         time::Duration,
@@ -369,14 +372,17 @@ mod tests {
         );
         private_file(
             &root.join("etc/kapsel/kubeconfig.yaml"),
-            format!(concat!(
-                "apiVersion: v1\nkind: Config\ncurrent-context: fixture\n",
-                "clusters:\n- name: fixture\n  cluster:\n",
-                "    server: {server}\n",
-                "contexts:\n- name: fixture\n  context:\n",
-                "    cluster: fixture\n    user: fixture\n",
-                "users:\n- name: fixture\n  user: {{}}\n"
-            ))
+            format!(
+                concat!(
+                    "apiVersion: v1\nkind: Config\ncurrent-context: fixture\n",
+                    "clusters:\n- name: fixture\n  cluster:\n",
+                    "    server: {server}\n",
+                    "contexts:\n- name: fixture\n  context:\n",
+                    "    cluster: fixture\n    user: fixture\n",
+                    "users:\n- name: fixture\n  user: {{}}\n"
+                ),
+                server = server
+            )
             .as_bytes(),
         );
         private_file(&root.join("etc/kapsel/receipt.seed"), &[102_u8; 32]);
@@ -449,7 +455,12 @@ mod tests {
                     "observedGeneration": generation,
                     "updatedReplicas": 1,
                     "availableReplicas": 1,
-                    "unavailableReplicas": 0
+                    "unavailableReplicas": 0,
+                    "conditions": [{
+                        "type": "Available",
+                        "status": "True",
+                        "reason": "MinimumReplicasAvailable"
+                    }]
                 })
             } else {
                 serde_json::json!({"observedGeneration": generation})

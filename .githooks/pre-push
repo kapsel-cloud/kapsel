@@ -1,4 +1,50 @@
 #!/bin/sh
 set -eu
 
+head_tree=$(git rev-parse 'HEAD^{tree}')
+pushed_tree=
+
+while read -r local_ref local_oid remote_ref remote_oid; do
+    test -n "$local_ref" || continue
+    case "$local_oid" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+
+    tree=$(git rev-parse "$local_oid^{tree}") || {
+        printf '%s\n' "Kapsel pre-push could not resolve $local_ref ($local_oid) to a tree." >&2
+        exit 1
+    }
+    if test "$tree" != "$head_tree"; then
+        printf '%s\n' \
+            "Kapsel pre-push refuses $local_ref because its tree is not the current HEAD tree." \
+            'Check out the exact tree being pushed, then retry.' >&2
+        exit 1
+    fi
+    pushed_tree=$tree
+done
+
+# A deletion-only push has no local tree to validate.
+test -n "$pushed_tree" || exit 0
+
+if test -n "$(git status --porcelain --untracked-files=normal)"; then
+    printf '%s\n' \
+        'Kapsel pre-push checks require a clean worktree matching the pushed tree.' \
+        'Commit, stage, or move local changes aside, then retry.' >&2
+    exit 1
+fi
+
+stamp=$(git rev-parse --git-path kapsel-pre-push-tree)
+if test -f "$stamp" && test "$(cat "$stamp")" = "$pushed_tree"; then
+    printf '%s\n' "Kapsel pre-push gate already passed for tree $pushed_tree"
+    exit 0
+fi
+
 ./scripts/ci-local.sh
+
+if test -n "$(git status --porcelain --untracked-files=normal)"; then
+    printf '%s\n' 'Kapsel pre-push gate changed the worktree; refusing to cache or push.' >&2
+    exit 1
+fi
+mkdir -p "$(dirname "$stamp")"
+printf '%s\n' "$pushed_tree" >"$stamp"

@@ -7,4 +7,14 @@ if git rev-parse --verify HEAD >/dev/null 2>&1 &&
     exit 0
 fi
 
-./scripts/ci-local.sh
+if ! git diff --quiet -- || test -n "$(git ls-files --others --exclude-standard)"; then
+    printf '%s\n' \
+        'Kapsel pre-commit checks require no unstaged or untracked files.' \
+        'Stage the complete tree or move unrelated work aside, then retry.' >&2
+    exit 1
+fi
+
+./scripts/format.sh --check
+./scripts/check-rust-width.sh
+cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --offline --locked -p kapsel-installer

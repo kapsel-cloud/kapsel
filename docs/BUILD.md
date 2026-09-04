@@ -12,7 +12,8 @@ and Prettier 3.6.2 as pinned by the repository. Additional lanes require:
 - kubectl 1.30+ for the public demonstration;
 - cargo-fuzz 0.13+ and the pinned Rust nightly for fuzzing;
 - Linux and `sg` for the ignored distinct-effective-group service test;
-- Docker for installer bundle and release-artifact lanes; and
+- Docker with `linux/amd64` support and OpenSSL for the installer bundle lane;
+- Docker for release-artifact lanes; and
 - Docker, kind, kubectl, cargo-fuzz, Rust nightly, cargo-audit 0.22.2, Trivy 0.72.0 with current
   databases, the pinned builder image, and the host Cargo registry for finite qualification.
 
@@ -37,13 +38,17 @@ Use the tracked pre-commit and pre-push hooks:
 git config core.hooksPath .githooks
 ```
 
-If `git config core.hooksPath` already reports a custom path, inspect it before replacing it. Both
-hooks run the complete local gate. On non-Linux hosts, that gate uses the pinned Linux builder image
-to check the Linux-only installer with Clippy, so Docker is required.
+If `git config core.hooksPath` already reports a custom path, inspect it before replacing it. The
+pre-commit hook runs formatting, Rust width, native workspace Clippy, and the portable installer
+package tests. It is offline-capable after Cargo dependencies are present and never starts Docker.
+It refuses unstaged or untracked files so the checked worktree is the staged snapshot.
 
-The complete gate checks formatting, Rust line width, native and Linux-installer Clippy with
+The pre-push hook consumes Git's pushed-ref list. Deletion-only pushes need no content gate. Every
+other pushed object must resolve to the current `HEAD` tree, and the worktree must be clean. The
+hook records that exact tree under `.git` after the complete local gate passes and skips a later
+push of the same tree. The complete gate checks formatting, Rust line width, native Clippy with
 warnings denied, rustdoc with warnings denied, deterministic Rust tests, doctests, Markdown links,
-and link-checker regressions.
+and link-checker regressions. It does not start Docker.
 
 ## Focused gates
 
@@ -106,16 +111,29 @@ cargo test --locked -p kapsel-installer
 cargo clippy --locked -p kapsel-installer --all-targets --all-features -- -D warnings
 ```
 
-Run the Linux/Docker bundle smoke:
+Run the Linux/Docker bundle scenarios:
 
 ```sh
 python3 scripts/test-kapsel-installer-bundle.py
 ```
 
-CI enforces this smoke in a Linux job after the default deterministic gate. Default builds stop at
-`bundle_unavailable`; the Docker smoke uses test-only staged payloads to cross the implemented
-recovery seams. [Architecture](ARCHITECTURE.md#partial-installer) summarizes the current
-implementation, and [Kapsel service](KAPSEL_SERVICE.md) owns its exact boundary.
+CI enforces this lane after native Linux workspace Clippy. Default builds stop at
+`bundle_unavailable`; the Docker lane uses test-only staged payloads to run the ignored, named Rust
+integration tests in `linux_installer_scenarios`. Those tests own the HTTPS fixture, fake host
+state, transaction parsing, process control, and assertions for crash, ambiguity, conflict, timeout,
+lock, rollback, preflight, transaction, and native-tool cases. The Python wrapper only stages the
+bundle and operator input, generates disposable TLS material, mounts caches, and starts the
+container.
+
+The launcher binds three build-only caches below `~/.cache/kapsel/installer`, or below
+`KAPSEL_INSTALLER_CACHE_DIR` when set. The cache key includes the pinned builder digest, Rust 1.98,
+`x86_64-unknown-linux-gnu`, and `Cargo.lock`. The staged bundle, operator input, fake host, TLS
+server state, transaction state, and process state remain fresh for every container. A warm run
+therefore avoids toolchain synchronization, registry downloads, and unchanged dependency compilation
+without reusing test-host evidence. CI persists only those build caches.
+
+[Architecture](ARCHITECTURE.md#partial-installer) summarizes the current implementation, and
+[Kapsel service](KAPSEL_SERVICE.md) owns its exact boundary.
 
 Run the separate direct identity experiment against its pinned Debian 12 x86-64 container:
 
@@ -125,7 +143,28 @@ Run the separate direct identity experiment against its pinned Debian 12 x86-64 
 
 This experiment requires Docker, network access to install `sudo` inside the disposable container,
 and `linux/amd64` execution. It qualifies approved useradd argv and recovery observations. It does
-not implement or qualify installer user creation.
+not implement or qualify installer user creation, and remains separate from the single
+installer-through-native-tools composition scenario in the bundle lane.
+
+### Installer runtime profile
+
+On the pre-refactor macOS host, warm native workspace Clippy took 0.71 seconds. The old cold
+Linux/Docker bundle command exceeded its 1,200-second bound while synchronizing Rust, downloading
+the registry, and compiling dependencies.
+
+After the portable split, warm native workspace Clippy took 0.27 seconds and the portable installer
+package tests took 5.24 seconds. On the same arm64 macOS host, initial cache fill exceeded 1,500
+seconds and the resumed emulated `linux/amd64` dependency compilation exceeded 2,100 seconds. A
+post-migration debug Linux check completed in 47.76 seconds and warm Linux Clippy in 5.85 seconds,
+but a release integration build still exceeded a further 600-second bound under emulation. Each
+stopped attempt had its disposable container removed.
+
+On native x86-64 Linux with the pinned builder image already present, an empty build cache completed
+all nine release-mode scenarios in 139 seconds. An unchanged warm rerun completed in 61 seconds
+without toolchain synchronization, registry downloads, or dependency compilation. The separate
+Debian 12 identity experiment completed in 20 seconds. The persistent cache retained only build
+inputs and compiler output. The launcher allows 2,400 seconds for cache fill and execution, leaving
+five minutes for the 45-minute CI job's setup and cleanup.
 
 ## Upgrade and rollback fixture gate
 

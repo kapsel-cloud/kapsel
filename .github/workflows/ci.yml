@@ -35,7 +35,7 @@ jobs:
         run: ./scripts/ci-local.sh doc
 
   installer-bundle:
-    name: Linux installer bundle smoke
+    name: Linux installer adapter and bundle scenarios
     needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -44,7 +44,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Run Linux installer bundle smoke
+      - name: Restore pinned installer build cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/kapsel/installer
+          key: linux-installer-1.98.0-x86_64-gnu-82150a52-${{ hashFiles('Cargo.lock') }}
+      - name: Run named Linux installer scenarios
         run: python3 scripts/test-kapsel-installer-bundle.py
 
   coverage:
