@@ -1,8 +1,7 @@
 # Kapsel service
 
-Status: accepted unpublished service implementation; installer foundation and first two recoverable
-group mutations implemented, direct user-identity argv qualified but not implemented, complete
-installer journey not implemented.
+Status: accepted unpublished service implementation; installer foundation and four recoverable fixed
+identity mutations implemented, complete installer journey not implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
@@ -199,9 +198,8 @@ the locked `kapsel` user, and the locked external caller. The caller's primary g
 transaction-preselected before mutation, and created users carry the exact transaction identity as
 GECOS. The Debian preview appoints `/usr/sbin/groupadd`, `/usr/sbin/groupdel`, `/usr/sbin/useradd`,
 `/usr/sbin/nologin`, `/usr/bin/getent`, `/usr/bin/systemctl`, and `/usr/bin/timeout`; all production
-execution is direct without a shell. The current group-only implementation also preflights
-`/usr/sbin/usermod`. That inert check must be removed when implementing this contract because no
-approved mutation invokes it.
+execution is direct without a shell. The installer does not preflight or invoke `/usr/sbin/usermod`
+because no approved mutation uses supplementary membership.
 
 The first identity mutation creates only the `kapsel` private group. After clean-install preflight,
 the installer runs bounded `/usr/bin/getent group` and `/usr/bin/getent passwd`, accepts at most 64
@@ -309,17 +307,20 @@ exit and transport completion never establish absence or completion.
 
 Exactly absent may retry the pending mutation. Exactly complete may bind the user ownership record
 and continue. Conflict or ambiguous/partial evidence, including any query timeout, signal, or stdout
-over-limit result, stops installation and consumes the disposable host; it causes no mutation or
-rollback, and no later mutation or rollback action may proceed. The installer never invokes
-`userdel`. Once either user is exactly complete, installer-created users and their primary groups
-are permanently retained, including after failed install or uninstall. Group rollback remains legal
-only before any user effect and only when no user ownership or pending user evidence exists and the
-bounded passwd scan proves no primary-GID account.
+over-limit result, durably changes only the phase to terminal `identity_blocked` before returning an
+error. Existing pending and ownership evidence remains unchanged. Recovery from `identity_blocked`
+performs no observation, mutation, or rollback, so no later invocation can continue even if the
+hostile or partial row disappears. The installer never invokes `userdel`. Once either user is
+exactly complete, installer-created users and their primary groups are permanently retained,
+including after failed install or uninstall. Group rollback remains legal only before any user
+effect and only when no user ownership or pending user evidence exists and the bounded passwd scan
+proves no primary-GID account.
 
 The installer does not invoke `systemd-sysusers`; the installed sysusers record is a vendor asset
 only and is never installer ownership or recovery evidence. The caller's supervisor sets effective
 `Group=kapsel-service-callers`, matching the caller account's primary group. User creation and its
-transaction recovery remain contract and experiment evidence only; they are not implemented.
+transaction recovery are implemented and covered by deterministic classifier and staged-bundle
+crash-seam evidence.
 
 Systemd state plus successful authenticated socket use is the health boundary. The socket exposes no
 administration, key management, migration, purge, health, or shutdown request. Diagnostics are
@@ -615,6 +616,7 @@ Legal phase transitions are exact:
 
 ```text
 prepared -> installing -> installed
+installing -> identity_blocked
 installing -> rolling_back -> rolled_back
 rolled_back -> prepared
 installed -> refreshing -> installed
@@ -651,7 +653,10 @@ phase-only successor. `action` remains `install` through install and rollback, c
 changes to `uninstall` only on `installed -> uninstalling_local`, remaining so thereafter.
 Pending-action and ownership-evidence successors become legal only with the later implementation of
 their corresponding resource mutation; until then they fail closed rather than being treated as
-opaque updates.
+opaque updates. The sole exception to the null-pending phase rule is
+`installing -> identity_blocked`: it preserves the exact pending action and both resource arrays,
+and is legal only after both group ownership records exist at a user-observation boundary.
+`identity_blocked` has no successor.
 
 Before every pending action, that update protocol durably installs the pending object. After
 observation, it installs the successor that adds ownership evidence or removes the owned slot,
@@ -674,14 +679,15 @@ ownership conflict, not permission to replace or delete.
 
 Every command opens and validates the transaction before preflight or mutation. A nonterminal
 install observes its exact pending seam. It retries an exactly absent identity action, continues an
-exactly complete one, and stops permanently on conflict or ambiguous/partial evidence. Install
-rollback is available only before any user effect and removes strongly owned groups in reverse
-creation order. It never invokes name-only `userdel`, and it never removes a group after a user has
-been observed or bound with that primary GID. A nonterminal refresh never enters install rollback:
-it retains all installed resources, observes or completes `replace_credential`, remains stopped on
-failure, and resumes refresh until it can return to `installed`. An uninstall requested during
-refresh first normalizes any credential replacement to one strongly identified installed kubeconfig,
-without requiring service restart, then begins local revocation.
+exactly complete one, and durably enters terminal `identity_blocked` on conflict or
+ambiguous/partial evidence. Reopening `identity_blocked` fails without another observation or
+effect. Install rollback is available only before any user effect and removes strongly owned groups
+in reverse creation order. It never invokes name-only `userdel`, and it never removes a group after
+a user has been observed or bound with that primary GID. A nonterminal refresh never enters install
+rollback: it retains all installed resources, observes or completes `replace_credential`, remains
+stopped on failure, and resumes refresh until it can return to `installed`. An uninstall requested
+during refresh first normalizes any credential replacement to one strongly identified installed
+kubeconfig, without requiring service restart, then begins local revocation.
 
 Every nonterminal uninstall resumes monotonically from its pending seam. It never rolls back caller
 or service revocation, restores local caller access, restarts the service, or recreates Kubernetes
@@ -743,14 +749,16 @@ and VM cleanup.
 The explicit live-kind gate also passed healthy, `ProgressDeadlineExceeded`, and deleted-after-patch
 `UNKNOWN` cases against the pinned node image.
 
-The installer bundle smoke additionally crossed both complete fixed-group creates, exact two-key
-observations, ownership binds, a primary-GID refusal, reverse rollback, and exact final two-key
-absence with Debian 12's native `groupadd`, `groupdel`, `getent`, and `timeout`. It established
-native exit 0 for creation and removal, exit 9 for duplicate-name creation, exit 8 when `groupdel`
-encounters a primary-GID user, exit 6 for absent removal, exit 2 with empty output for absent
-`getent` group queries, the exact empty-member `name:x:gid:` record for name, numeric-key, and
-enumeration queries, and exit 137 for `timeout --signal=KILL` termination. Fixed executable fixtures
-remain the exhaustive group crash-seam and hostile-output proof.
+The installer bundle smoke additionally crossed all four fixed identity creates, exact name and
+numeric-key observations, user shadow and immutable-field classification, durable ownership binds,
+user crash and timeout recovery, ambiguous and conflicting partial-user refusal, a primary-GID
+refusal, and pre-user reverse group rollback. Its Debian 12 native lane uses `groupadd`, `groupdel`,
+`useradd`, `getent`, and `timeout`. It established native exit 0 for creation and removal, exit 9
+for duplicate-name creation, exit 8 when `groupdel` encounters a primary-GID user, exit 2 with empty
+output for absent `getent` group queries, the exact empty-member `name:x:gid:` record for name,
+numeric-key, and enumeration queries, and exit 137 for `timeout --signal=KILL` termination. Fixed
+executable fixtures provide the exhaustive deterministic identity crash-seam and hostile-output
+proof.
 
 The separately runnable `./scripts/test-debian12-installer-identities.sh` experiment uses the pinned
 Debian 12 slim image with explicit `linux/amd64`. With passwd 4.13, glibc 2.36, and sudo 1.9.13p3,
@@ -787,7 +795,8 @@ Identity recovery additionally relies on exclusive host identity administration 
 transaction is nonterminal. Group records cannot carry a transaction marker, and NSS observation
 cannot prove which actor created an otherwise exact row. The two-group and user-argv container lanes
 use Debian's x86-64 tools under the available Docker platform, which may be emulated by the host;
-they are not fresh-VM or cross-distribution evidence. User recovery classification is contract-only
-and not implemented or fixture-exhaustive. This finite evidence establishes no runnable installer,
-production safety, another platform, upgrade compatibility, backup, HA, repeated external operation,
-or protection from compromised host root, kernel, or service identity.
+they are not fresh-VM or cross-distribution evidence. User recovery classification and both fixed
+mutations are implemented, but the staged fixture is not fresh-VM identity evidence. This finite
+evidence establishes no runnable installer, production safety, another platform, upgrade
+compatibility, backup, HA, repeated external operation, or protection from compromised host root,
+kernel, or service identity.

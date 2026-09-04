@@ -146,11 +146,12 @@ The [Kapsel service contract](KAPSEL_SERVICE.md) owns the complete unpublished b
 The partial, unpublished installer has four current evidence layers:
 
 - portable package tests cover fixed command grammar, fail-closed payload absence, bounded
-  bootstrap-kubeconfig parsing, canonical transaction records, two-group pending/ownership states,
-  fixed GID selection, and reverse rollback;
+  bootstrap-kubeconfig parsing, canonical transaction records, four-identity pending/ownership
+  states, fixed GID/UID selection, exact user classification, and pre-user reverse group rollback;
 - the explicit Docker fixture crosses bundle generation, exact descriptor-relative operator input,
   authority consistency, hostile filesystem and metadata refusal, durable lock/transaction recovery,
-  bounded command execution, group observation, and ownership-safe rollback;
+  bounded command execution, group/user observation, user crash seams, terminal conflict and
+  ambiguous-user reopening, and ownership-safe pre-user rollback;
 - its embedded ephemeral x86-64 Debian 12 lane crosses Debian `groupadd`, `groupdel`, `getent`, and
   `timeout` for both fixed groups; and
 - `./scripts/test-debian12-installer-identities.sh` runs the exact approved groupadd and useradd
@@ -164,12 +165,11 @@ ambiguous/partial. It must derive no-effect or completion from command status. T
 always disposable; conflict or ambiguous/partial evidence permits no repair or continuation.
 
 Implemented evidence ends after read-only host and Kubernetes clean-install preflight, durable
-`installing`, and recoverable creation or rollback of `kapsel` and `kapsel-service-callers`. The
-user argv and recovery rules are contract and experiment evidence only. No test proves user
-installation by the installer, assets, Kubernetes mutation, credential issuance, activation,
-refresh, uninstall, real payload provenance, final metadata or size bounds, runnable installation,
-candidate assembly, or candidate qualification. The default payload-free build stops at
-`bundle_unavailable`; staged test builds stop at `implementation_incomplete` after the implemented
-group boundary.
+`installing`, and recoverable creation of both fixed groups and users. Group rollback remains
+available only before a user effect. No test proves assets, Kubernetes mutation, credential
+issuance, activation, refresh, uninstall, real payload provenance, final metadata or size bounds,
+runnable installation, candidate assembly, or candidate qualification. The default payload-free
+build stops at `bundle_unavailable`; staged test builds stop at `implementation_incomplete` after
+the implemented identity boundary.
 
 The service and installer are absent from v0.2.0 and remain unpublished.

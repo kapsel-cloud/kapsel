@@ -65,9 +65,9 @@ bounded compatibility described by their direct contracts. Public Rust APIs, ano
 production support do not.
 
 Repository HEAD also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md)
-and partial installer work. The installer implements only its foundation and first two group
-mutations; approved user identity argv has disposable Debian 12 experiment evidence but no installer
-implementation. They add no v0.2.0 promise and are not currently a supported installation path.
+and partial installer work. The installer implements its foundation plus the two fixed groups and
+two fixed users, but no assets, Kubernetes mutation, credential, activation, refresh, or uninstall.
+They add no v0.2.0 promise and are not currently a supported installation path.
 
 ## Maturity
 

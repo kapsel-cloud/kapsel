@@ -151,10 +151,11 @@ short-lived credentials, namespaced RBAC, clean installation, revocation, retain
 cleanup. It does not establish production safety or support for another environment.
 
 Service and installer code in repository HEAD is unpublished and absent from v0.2.0. Implemented
-installer tests currently cross only bounded operator input, clean-install preflight, durable
-transaction recovery, and two fixed group mutations. A separate disposable Debian 12 experiment
-qualifies direct useradd argv, not installer user creation or a runnable installation. The exact
-authority, filesystem, recovery, qualification, and unsupported boundaries are owned by
+installer tests currently cross bounded operator input, clean-install preflight, durable transaction
+recovery, and the two fixed group and two fixed locked-user mutations. The installer durably blocks
+on conflicting or ambiguous user evidence. It does not implement assets, Kubernetes resources or
+credentials, activation, refresh, uninstall, or a runnable installation. The exact authority,
+filesystem, recovery, qualification, and unsupported boundaries are owned by
 [Kapsel service](KAPSEL_SERVICE.md).
 
 ## Non-claims

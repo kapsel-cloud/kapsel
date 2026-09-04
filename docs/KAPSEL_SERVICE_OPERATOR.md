@@ -155,9 +155,10 @@ Every invocation validates `/var/lib/kapsel-installer/transaction.json` and reco
 preflight or mutation. Identity recovery classifies only exactly absent, exactly complete, conflict,
 or ambiguous/partial. Exactly absent may retry and exactly complete may continue. Command exit,
 timeout, or transport completion never proves either state. A conflict or ambiguous/partial user
-creation stops permanently and consumes the disposable host. Once a user is exactly complete, the
-installer never invokes name-only `userdel`, and neither that user nor its primary group
-participates in install rollback.
+creation durably enters terminal `identity_blocked`, stops permanently, and consumes the disposable
+host. Reopening that transaction performs no new observation, mutation, or rollback even if the
+hostile evidence later disappears. Once a user is exactly complete, the installer never invokes
+name-only `userdel`, and neither that user nor its primary group participates in install rollback.
 
 Before any user effect, an interrupted install may roll back its strongly owned groups. An
 interrupted refresh retains installed resources and resumes credential replacement. An interrupted

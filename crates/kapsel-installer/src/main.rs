@@ -185,17 +185,43 @@ struct TransactionOperatorInputs {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+enum HostResource {
+    Group(GroupResource),
+    User(UserResource),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct HostResource {
+struct GroupResource {
     gid: u32,
-    kind: HostResourceKind,
+    kind: GroupResourceKind,
     name: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum HostResourceKind {
+enum GroupResourceKind {
     Group,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UserResource {
+    gecos_transaction_id: String,
+    home: String,
+    kind: UserResourceKind,
+    locked: bool,
+    name: String,
+    primary_gid: u32,
+    shell: String,
+    uid: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UserResourceKind {
+    User,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -206,14 +232,24 @@ enum PendingAction {
         name: String,
         transaction_id: String,
     },
+    CreateUser {
+        gecos_transaction_id: String,
+        home: String,
+        locked: bool,
+        name: String,
+        primary_gid: u32,
+        shell: String,
+        uid: u32,
+    },
     RemoveGroup {
-        group: HostResource,
+        group: GroupResource,
     },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum TransactionPhase {
+    IdentityBlocked,
     Installed,
     Installing,
     PartialUninstall,
@@ -313,6 +349,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), InstallerErr
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InstallPhase {
+    Blocked,
     Prepared,
     Installing,
     RollingBack,
@@ -321,6 +358,7 @@ enum InstallPhase {
 
 fn classify_install_phase(phase: TransactionPhase) -> Result<InstallPhase, InstallerError> {
     match phase {
+        TransactionPhase::IdentityBlocked => Ok(InstallPhase::Blocked),
         TransactionPhase::Prepared => Ok(InstallPhase::Prepared),
         TransactionPhase::Installing => Ok(InstallPhase::Installing),
         TransactionPhase::RollingBack => Ok(InstallPhase::RollingBack),
@@ -668,57 +706,239 @@ fn validate_transaction(transaction: &InstallerTransaction) -> Result<(), Instal
 }
 
 fn valid_transaction_state(transaction: &InstallerTransaction) -> bool {
-    let groups = transaction.host_resources.as_slice();
+    let resources = transaction.host_resources.as_slice();
     let pending = transaction.pending.as_ref();
-    let valid_group = |resource: &HostResource, name: &str| {
-        resource.kind == HostResourceKind::Group
-            && resource.name == name
-            && (101..=999).contains(&resource.gid)
-    };
-    let valid_groups = |resources: &[HostResource]| match resources {
+    let valid_resources = match resources {
         [] => true,
-        [first] => valid_group(first, "kapsel"),
-        [first, second] => {
+        [HostResource::Group(first)] => valid_group(first, "kapsel"),
+        [HostResource::Group(first), HostResource::Group(second)] => {
             valid_group(first, "kapsel")
                 && valid_group(second, "kapsel-service-callers")
                 && first.gid != second.gid
         },
+        [HostResource::Group(first), HostResource::Group(second), HostResource::User(user)] => {
+            valid_group(first, "kapsel")
+                && valid_group(second, "kapsel-service-callers")
+                && first.gid != second.gid
+                && valid_user(user, "kapsel", first.gid, "/var/lib/kapsel", transaction)
+        },
+        [first, second, service, caller] => {
+            valid_complete_identities(first, second, service, caller, transaction)
+        },
         _ => false,
     };
-    let valid_create = |gid: u32, name: &str, transaction_id: &str| {
-        let expected_name = match groups {
-            [] => "kapsel",
-            [_] => "kapsel-service-callers",
-            _ => return false,
-        };
-        name == expected_name
-            && (101..=999).contains(&gid)
-            && groups.iter().all(|resource| resource.gid != gid)
-            && transaction_id == transaction.transaction_id
-    };
+    if !valid_resources {
+        return false;
+    }
+    let group_count = resources
+        .iter()
+        .take_while(|resource| matches!(resource, HostResource::Group(_)))
+        .count();
+    let user_resources_empty = group_count == resources.len();
+    valid_transaction_phase_state(
+        transaction,
+        resources,
+        pending,
+        group_count,
+        user_resources_empty,
+    )
+}
 
+fn valid_transaction_phase_state(
+    transaction: &InstallerTransaction,
+    resources: &[HostResource],
+    pending: Option<&PendingAction>,
+    group_count: usize,
+    user_resources_empty: bool,
+) -> bool {
     match transaction.phase {
         TransactionPhase::Prepared | TransactionPhase::RolledBack => {
-            groups.is_empty() && pending.is_none()
+            resources.is_empty() && pending.is_none()
         },
         TransactionPhase::Installing => match pending {
-            None => valid_groups(groups),
+            None => true,
             Some(PendingAction::CreateGroup {
                 gid,
                 name,
                 transaction_id,
-            }) => valid_groups(groups) && valid_create(*gid, name, transaction_id),
+            }) => {
+                user_resources_empty
+                    && valid_pending_group(
+                        &resources[..group_count],
+                        *gid,
+                        name,
+                        transaction_id,
+                        transaction,
+                    )
+            },
+            Some(PendingAction::CreateUser {
+                gecos_transaction_id,
+                home,
+                locked,
+                name,
+                primary_gid,
+                shell,
+                uid,
+            }) => valid_pending_user(
+                resources,
+                *uid,
+                *primary_gid,
+                name,
+                gecos_transaction_id,
+                home,
+                shell,
+                *locked,
+                transaction,
+            ),
             _ => false,
         },
+        TransactionPhase::IdentityBlocked => {
+            resources.len() >= 2
+                && match pending {
+                    None => true,
+                    Some(PendingAction::CreateUser {
+                        gecos_transaction_id,
+                        home,
+                        locked,
+                        name,
+                        primary_gid,
+                        shell,
+                        uid,
+                    }) => valid_pending_user(
+                        resources,
+                        *uid,
+                        *primary_gid,
+                        name,
+                        gecos_transaction_id,
+                        home,
+                        shell,
+                        *locked,
+                        transaction,
+                    ),
+                    _ => false,
+                }
+        },
         TransactionPhase::RollingBack => match pending {
-            None => valid_groups(groups),
+            None => user_resources_empty,
             Some(PendingAction::RemoveGroup { group }) => {
-                valid_groups(groups) && groups.last() == Some(group)
+                user_resources_empty
+                    && resources
+                        .last()
+                        .is_some_and(|resource| resource == &HostResource::Group(group.clone()))
             },
             _ => false,
         },
-        _ => groups.is_empty() && pending.is_none(),
+        _ => pending.is_none(),
     }
+}
+
+fn valid_complete_identities(
+    first: &HostResource,
+    second: &HostResource,
+    service: &HostResource,
+    caller: &HostResource,
+    transaction: &InstallerTransaction,
+) -> bool {
+    let HostResource::Group(first) = first else {
+        return false;
+    };
+    let HostResource::Group(second) = second else {
+        return false;
+    };
+    let HostResource::User(service) = service else {
+        return false;
+    };
+    let HostResource::User(caller) = caller else {
+        return false;
+    };
+    valid_group(first, "kapsel")
+        && valid_group(second, "kapsel-service-callers")
+        && first.gid != second.gid
+        && valid_user(service, "kapsel", first.gid, "/var/lib/kapsel", transaction)
+        && valid_user(
+            caller,
+            "kapsel-service-caller",
+            second.gid,
+            "/nonexistent",
+            transaction,
+        )
+        && service.uid != caller.uid
+}
+
+fn valid_group(resource: &GroupResource, name: &str) -> bool {
+    resource.kind == GroupResourceKind::Group
+        && resource.name == name
+        && (101..=999).contains(&resource.gid)
+}
+
+fn valid_user(
+    resource: &UserResource,
+    name: &str,
+    primary_gid: u32,
+    home: &str,
+    transaction: &InstallerTransaction,
+) -> bool {
+    resource.kind == UserResourceKind::User
+        && resource.name == name
+        && (101..=999).contains(&resource.uid)
+        && resource.primary_gid == primary_gid
+        && resource.gecos_transaction_id == transaction.transaction_id
+        && resource.home == home
+        && resource.shell == "/usr/sbin/nologin"
+        && resource.locked
+}
+
+fn valid_pending_group(
+    resources: &[HostResource],
+    gid: u32,
+    name: &str,
+    transaction_id: &str,
+    transaction: &InstallerTransaction,
+) -> bool {
+    let expected_name = match resources {
+        [] => "kapsel",
+        [HostResource::Group(_)] => "kapsel-service-callers",
+        _ => return false,
+    };
+    name == expected_name
+        && (101..=999).contains(&gid)
+        && resources.iter().all(|resource| match resource {
+            HostResource::Group(group) => group.gid != gid,
+            HostResource::User(_) => true,
+        })
+        && transaction_id == transaction.transaction_id
+}
+
+#[allow(clippy::too_many_arguments)]
+fn valid_pending_user(
+    resources: &[HostResource],
+    uid: u32,
+    primary_gid: u32,
+    name: &str,
+    gecos_transaction_id: &str,
+    home: &str,
+    shell: &str,
+    locked: bool,
+    transaction: &InstallerTransaction,
+) -> bool {
+    let expected = match resources {
+        [HostResource::Group(service), HostResource::Group(_)] => {
+            ("kapsel", service.gid, "/var/lib/kapsel")
+        },
+        [HostResource::Group(_), HostResource::Group(callers), HostResource::User(_)] => {
+            ("kapsel-service-caller", callers.gid, "/nonexistent")
+        },
+        _ => return false,
+    };
+    (101..=999).contains(&uid)
+        && resources.iter().all(|resource| match resource {
+            HostResource::User(user) => user.uid != uid,
+            HostResource::Group(_) => true,
+        })
+        && (name, primary_gid, home) == expected
+        && gecos_transaction_id == transaction.transaction_id
+        && shell == "/usr/sbin/nologin"
+        && locked
 }
 
 fn valid_action_phase(action: Action, phase: TransactionPhase) -> bool {
@@ -727,6 +947,7 @@ fn valid_action_phase(action: Action, phase: TransactionPhase) -> bool {
             phase,
             TransactionPhase::Prepared
                 | TransactionPhase::Installing
+                | TransactionPhase::IdentityBlocked
                 | TransactionPhase::Installed
                 | TransactionPhase::RollingBack
                 | TransactionPhase::RolledBack
@@ -796,55 +1017,96 @@ fn legal_transaction_successor(old: &InstallerTransaction, next: &InstallerTrans
         .bootstrap_kubeconfig_sha256
         .clone_from(&next.bootstrap_kubeconfig_sha256);
     let digest_successor = old.phase == next.phase
+        && old.phase != TransactionPhase::IdentityBlocked
         && old.pending.is_none()
         && old.bootstrap_kubeconfig_sha256 != next.bootstrap_kubeconfig_sha256
         && valid_digest(&next.bootstrap_kubeconfig_sha256)
         && next == &renewed;
 
-    let pending_successor = if old.phase == next.phase && old.action == next.action {
-        let mut expected = old.clone();
-        match (old.host_resources.last(), old.pending.as_ref()) {
-            (_, None)
-                if old.phase == TransactionPhase::Installing && old.host_resources.len() < 2 =>
-            {
-                expected.pending.clone_from(&next.pending);
-                matches!(next.pending, Some(PendingAction::CreateGroup { .. })) && next == &expected
-            },
-            (
-                _,
-                Some(PendingAction::CreateGroup {
-                    gid,
-                    name,
-                    transaction_id: _,
-                }),
-            ) if old.phase == TransactionPhase::Installing => {
-                expected.pending = None;
-                expected.host_resources.push(HostResource {
+    let identity_block_successor = old.action == Action::Install
+        && old.phase == TransactionPhase::Installing
+        && next.phase == TransactionPhase::IdentityBlocked
+        && old.host_resources.len() >= 2
+        && !matches!(old.pending, Some(PendingAction::CreateGroup { .. }))
+        && next == &expected;
+
+    phase_successor
+        || digest_successor
+        || identity_block_successor
+        || legal_pending_successor(old, next)
+}
+
+fn legal_pending_successor(old: &InstallerTransaction, next: &InstallerTransaction) -> bool {
+    if old.phase != next.phase || old.action != next.action {
+        return false;
+    }
+    let mut expected = old.clone();
+    match old.pending.as_ref() {
+        None if old.phase == TransactionPhase::Installing => {
+            expected.pending.clone_from(&next.pending);
+            matches!(
+                next.pending,
+                Some(PendingAction::CreateGroup { .. } | PendingAction::CreateUser { .. })
+            ) && next == &expected
+        },
+        Some(PendingAction::CreateGroup {
+            gid,
+            name,
+            transaction_id: _,
+        }) if old.phase == TransactionPhase::Installing => {
+            expected.pending = None;
+            expected
+                .host_resources
+                .push(HostResource::Group(GroupResource {
                     gid: *gid,
-                    kind: HostResourceKind::Group,
+                    kind: GroupResourceKind::Group,
                     name: name.clone(),
-                });
-                next == &expected
-            },
-            (Some(resource), None) if old.phase == TransactionPhase::RollingBack => {
-                expected.pending = Some(PendingAction::RemoveGroup {
-                    group: resource.clone(),
-                });
-                next == &expected
-            },
-            (Some(resource), Some(PendingAction::RemoveGroup { group }))
-                if old.phase == TransactionPhase::RollingBack && resource == group =>
-            {
-                expected.pending = None;
-                expected.host_resources.pop();
-                next == &expected
-            },
-            _ => false,
-        }
-    } else {
-        false
-    };
-    phase_successor || digest_successor || pending_successor
+                }));
+            next == &expected
+        },
+        Some(PendingAction::CreateUser {
+            gecos_transaction_id,
+            home,
+            locked,
+            name,
+            primary_gid,
+            shell,
+            uid,
+        }) if old.phase == TransactionPhase::Installing => {
+            expected.pending = None;
+            expected
+                .host_resources
+                .push(HostResource::User(UserResource {
+                    gecos_transaction_id: gecos_transaction_id.clone(),
+                    home: home.clone(),
+                    kind: UserResourceKind::User,
+                    locked: *locked,
+                    name: name.clone(),
+                    primary_gid: *primary_gid,
+                    shell: shell.clone(),
+                    uid: *uid,
+                }));
+            next == &expected
+        },
+        None if old.phase == TransactionPhase::RollingBack => {
+            let Some(HostResource::Group(group)) = old.host_resources.last() else {
+                return false;
+            };
+            expected.pending = Some(PendingAction::RemoveGroup {
+                group: group.clone(),
+            });
+            next == &expected
+        },
+        Some(PendingAction::RemoveGroup { group })
+            if old.phase == TransactionPhase::RollingBack
+                && old.host_resources.last() == Some(&HostResource::Group(group.clone())) =>
+        {
+            expected.pending = None;
+            expected.host_resources.pop();
+            next == &expected
+        },
+        _ => false,
+    }
 }
 
 fn valid_digest(value: &str) -> bool {
@@ -1164,14 +1426,16 @@ mod tests {
             )
         );
 
-        let group = HostResource {
+        let group = GroupResource {
             gid: 999,
-            kind: HostResourceKind::Group,
+            kind: GroupResourceKind::Group,
             name: String::from("kapsel"),
         };
         let mut created = creating.clone();
         created.pending = None;
-        created.host_resources.push(group.clone());
+        created
+            .host_resources
+            .push(HostResource::Group(group.clone()));
         assert!(legal_transaction_successor(&creating, &created));
 
         let mut rolling_back = created.clone();
@@ -1190,11 +1454,13 @@ mod tests {
         assert!(!legal_transaction_successor(&creating, &missing_evidence));
 
         let mut wrong_evidence = missing_evidence;
-        wrong_evidence.host_resources.push(HostResource {
-            gid: 998,
-            kind: HostResourceKind::Group,
-            name: String::from("kapsel"),
-        });
+        wrong_evidence
+            .host_resources
+            .push(HostResource::Group(GroupResource {
+                gid: 998,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel"),
+            }));
         assert!(!legal_transaction_successor(&creating, &wrong_evidence));
 
         let mut hostile = creating;
@@ -1210,11 +1476,13 @@ mod tests {
     fn second_group_pending_ownership_and_reverse_removal_are_exact() {
         let mut first_created = test_initial_transaction();
         first_created.phase = TransactionPhase::Installing;
-        first_created.host_resources.push(HostResource {
-            gid: 999,
-            kind: HostResourceKind::Group,
-            name: String::from("kapsel"),
-        });
+        first_created
+            .host_resources
+            .push(HostResource::Group(GroupResource {
+                gid: 999,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel"),
+            }));
         let mut second_pending = first_created.clone();
         second_pending.pending = Some(PendingAction::CreateGroup {
             gid: 998,
@@ -1223,14 +1491,16 @@ mod tests {
         });
         assert!(legal_transaction_successor(&first_created, &second_pending));
 
-        let second = HostResource {
+        let second = GroupResource {
             gid: 998,
-            kind: HostResourceKind::Group,
+            kind: GroupResourceKind::Group,
             name: String::from("kapsel-service-callers"),
         };
         let mut second_created = second_pending.clone();
         second_created.pending = None;
-        second_created.host_resources.push(second.clone());
+        second_created
+            .host_resources
+            .push(HostResource::Group(second.clone()));
         assert!(legal_transaction_successor(
             &second_pending,
             &second_created
@@ -1256,10 +1526,156 @@ mod tests {
         }
         assert!(validate_transaction(&duplicate_gid).is_err());
         let mut wrong_removal = rolling_back;
+        let HostResource::Group(first_group) = &first_created.host_resources[0] else {
+            return;
+        };
         wrong_removal.pending = Some(PendingAction::RemoveGroup {
-            group: first_created.host_resources[0].clone(),
+            group: first_group.clone(),
         });
         assert!(validate_transaction(&wrong_removal).is_err());
+    }
+
+    #[test]
+    fn user_pending_and_ownership_successors_are_exact() {
+        let mut installing = test_initial_transaction();
+        installing.phase = TransactionPhase::Installing;
+        installing
+            .host_resources
+            .push(HostResource::Group(GroupResource {
+                gid: 999,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel"),
+            }));
+        installing
+            .host_resources
+            .push(HostResource::Group(GroupResource {
+                gid: 998,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel-service-callers"),
+            }));
+        let pending = PendingAction::CreateUser {
+            gecos_transaction_id: installing.transaction_id.clone(),
+            home: String::from("/var/lib/kapsel"),
+            locked: true,
+            name: String::from("kapsel"),
+            primary_gid: 999,
+            shell: String::from("/usr/sbin/nologin"),
+            uid: 997,
+        };
+        let mut creating = installing.clone();
+        creating.pending = Some(pending.clone());
+        assert!(legal_transaction_successor(&installing, &creating));
+        let encoded_pending = [
+            r#"{"action":"create_user","gecos_transaction_id":""#,
+            &installing.transaction_id,
+            r#"","home":"/var/lib/kapsel","locked":true,"name":"kapsel","#,
+            r#""primary_gid":999,"shell":"/usr/sbin/nologin","uid":997}"#,
+        ]
+        .concat();
+        assert_eq!(serde_json::to_string(&pending).unwrap(), encoded_pending);
+        let mut created = creating.clone();
+        created.pending = None;
+        created
+            .host_resources
+            .push(HostResource::User(UserResource {
+                gecos_transaction_id: installing.transaction_id.clone(),
+                home: String::from("/var/lib/kapsel"),
+                kind: UserResourceKind::User,
+                locked: true,
+                name: String::from("kapsel"),
+                primary_gid: 999,
+                shell: String::from("/usr/sbin/nologin"),
+                uid: 997,
+            }));
+        assert!(legal_transaction_successor(&creating, &created));
+
+        let mut caller_pending = created.clone();
+        caller_pending.pending = Some(PendingAction::CreateUser {
+            gecos_transaction_id: installing.transaction_id.clone(),
+            home: String::from("/nonexistent"),
+            locked: true,
+            name: String::from("kapsel-service-caller"),
+            primary_gid: 998,
+            shell: String::from("/usr/sbin/nologin"),
+            uid: 996,
+        });
+        assert!(legal_transaction_successor(&created, &caller_pending));
+        let mut caller_created = caller_pending.clone();
+        caller_created.pending = None;
+        caller_created
+            .host_resources
+            .push(HostResource::User(UserResource {
+                gecos_transaction_id: installing.transaction_id.clone(),
+                home: String::from("/nonexistent"),
+                kind: UserResourceKind::User,
+                locked: true,
+                name: String::from("kapsel-service-caller"),
+                primary_gid: 998,
+                shell: String::from("/usr/sbin/nologin"),
+                uid: 996,
+            }));
+        assert!(legal_transaction_successor(
+            &caller_pending,
+            &caller_created
+        ));
+
+        let mut wrong_uid = creating;
+        if let Some(PendingAction::CreateUser { uid, .. }) = wrong_uid.pending.as_mut() {
+            *uid = 1_000;
+        }
+        assert!(validate_transaction(&wrong_uid).is_err());
+        let mut duplicate_uid = caller_pending;
+        if let Some(PendingAction::CreateUser { uid, .. }) = duplicate_uid.pending.as_mut() {
+            *uid = 997;
+        }
+        assert!(validate_transaction(&duplicate_uid).is_err());
+        let mut rollback = created;
+        rollback.phase = TransactionPhase::RollingBack;
+        assert!(validate_transaction(&rollback).is_err());
+    }
+
+    #[test]
+    fn identity_block_is_durable_terminal_state_at_user_boundaries() {
+        let mut installing = test_initial_transaction();
+        installing.phase = TransactionPhase::Installing;
+        installing
+            .host_resources
+            .push(HostResource::Group(GroupResource {
+                gid: 999,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel"),
+            }));
+        installing
+            .host_resources
+            .push(HostResource::Group(GroupResource {
+                gid: 998,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel-service-callers"),
+            }));
+        let mut creating = installing.clone();
+        creating.pending = Some(PendingAction::CreateUser {
+            gecos_transaction_id: installing.transaction_id.clone(),
+            home: String::from("/var/lib/kapsel"),
+            locked: true,
+            name: String::from("kapsel"),
+            primary_gid: 999,
+            shell: String::from("/usr/sbin/nologin"),
+            uid: 997,
+        });
+        for source in [&installing, &creating] {
+            let mut blocked = source.clone();
+            blocked.phase = TransactionPhase::IdentityBlocked;
+            assert!(legal_transaction_successor(source, &blocked));
+            let mut resumed = blocked.clone();
+            resumed.phase = TransactionPhase::Installing;
+            assert!(!legal_transaction_successor(&blocked, &resumed));
+            let mut rolling_back = blocked.clone();
+            rolling_back.phase = TransactionPhase::RollingBack;
+            assert!(!legal_transaction_successor(&blocked, &rolling_back));
+            let mut renewed = blocked.clone();
+            renewed.bootstrap_kubeconfig_sha256 = "99".repeat(32);
+            assert!(!legal_transaction_successor(&blocked, &renewed));
+        }
     }
 
     #[test]
@@ -1279,6 +1695,10 @@ mod tests {
 
     #[test]
     fn install_phase_reopening_is_explicit_and_other_phases_fail_closed() {
+        assert_eq!(
+            classify_install_phase(TransactionPhase::IdentityBlocked).unwrap(),
+            InstallPhase::Blocked
+        );
         assert_eq!(
             classify_install_phase(TransactionPhase::Prepared).unwrap(),
             InstallPhase::Prepared

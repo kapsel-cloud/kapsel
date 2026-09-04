@@ -61,6 +61,7 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), I
         .build()
         .map_err(|_| InstallerError::HostPreflightFailure)?;
     match classify_install_phase(transaction.record.phase)? {
+        InstallPhase::Blocked => return Err(InstallerError::HostMutationFailure),
         InstallPhase::Prepared => {
             enter_installing(&runtime, &operator_input, &mut transaction)?;
         },
@@ -88,7 +89,10 @@ pub(super) fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), I
     ))?;
     if fail_at_test_seam("second-group-complete") {
         runtime.block_on(rollback_groups(&lock, &mut transaction))?;
+        return Err(InstallerError::ImplementationIncomplete);
     }
+    runtime.block_on(ensure_user(&lock, &mut transaction, &SERVICE_USER))?;
+    runtime.block_on(ensure_user(&lock, &mut transaction, &CALLER_USER))?;
     Err(InstallerError::ImplementationIncomplete)
 }
 
@@ -458,7 +462,6 @@ const HOST_TOOLS: &[&str] = &[
     "/usr/sbin/groupadd",
     "/usr/sbin/groupdel",
     "/usr/sbin/useradd",
-    "/usr/sbin/usermod",
     "/usr/sbin/nologin",
     "/usr/bin/getent",
     "/usr/bin/systemctl",
@@ -557,10 +560,12 @@ async fn ensure_group(
 ) -> Result<(), InstallerError> {
     let index = usize::from(name == "kapsel-service-callers");
     if let Some(resource) = transaction.record.host_resources.get(index) {
-        if resource.name == name
-            && observe_group(name, resource.gid).await? == GroupObservation::Exact
-        {
-            return Ok(());
+        if let HostResource::Group(group) = resource {
+            if group.name == name
+                && observe_group(name, group.gid).await? == GroupObservation::Exact
+            {
+                return Ok(());
+            }
         }
         return Err(InstallerError::HostMutationFailure);
     }
@@ -625,12 +630,355 @@ async fn ensure_group(
 
     let old = transaction.record.clone();
     transaction.record.pending = None;
-    transaction.record.host_resources.push(HostResource {
-        gid,
-        kind: HostResourceKind::Group,
-        name: String::from(name),
-    });
+    transaction
+        .record
+        .host_resources
+        .push(HostResource::Group(GroupResource {
+            gid,
+            kind: GroupResourceKind::Group,
+            name: String::from(name),
+        }));
     publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+struct UserSpec {
+    name: &'static str,
+    group_name: &'static str,
+    home: &'static str,
+}
+
+const SERVICE_USER: UserSpec = UserSpec {
+    name: "kapsel",
+    group_name: "kapsel",
+    home: "/var/lib/kapsel",
+};
+const CALLER_USER: UserSpec = UserSpec {
+    name: "kapsel-service-caller",
+    group_name: "kapsel-service-callers",
+    home: "/nonexistent",
+};
+
+async fn ensure_user(
+    lock: &OwnedFd,
+    transaction: &mut OpenTransaction,
+    spec: &UserSpec,
+) -> Result<(), InstallerError> {
+    let index = if spec.name == "kapsel" { 2 } else { 3 };
+    let primary_gid = owned_group_gid(&transaction.record, spec.group_name)?;
+    if let Some(resource) = transaction.record.host_resources.get(index) {
+        if let HostResource::User(user) = resource {
+            if user.name == spec.name && user.primary_gid == primary_gid {
+                if observe_user(user).await? == UserObservation::Exact {
+                    return Ok(());
+                }
+                block_identity(transaction)?;
+            }
+        }
+        return Err(InstallerError::HostMutationFailure);
+    }
+    if transaction.record.host_resources.len() != index {
+        return Err(InstallerError::HostMutationFailure);
+    }
+
+    if transaction.record.pending.is_none() {
+        let passwd =
+            run_bounded_query(&host_path("/usr/bin/getent"), &["passwd"], 64 * 1024).await?;
+        if passwd.status != 0 {
+            return Err(InstallerError::HostMutationFailure);
+        }
+        let uid =
+            select_user_uid(&passwd.stdout).map_err(|_| InstallerError::HostMutationFailure)?;
+        let expected = pending_user(spec, uid, primary_gid, &transaction.record.transaction_id);
+        if observe_pending_user(&expected).await? != UserObservation::Absent {
+            block_identity(transaction)?;
+            return Err(InstallerError::HostMutationFailure);
+        }
+        let old = transaction.record.clone();
+        transaction.record.pending = Some(expected);
+        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+        stop_at_user_seam(spec.name, "service-user-pending", "caller-user-pending");
+    }
+
+    let user = user_from_pending(&transaction.record, spec)?;
+    match observe_user(&user).await? {
+        UserObservation::Absent => {
+            run_identity_mutation(
+                lock,
+                &host_path("/usr/sbin/useradd"),
+                &[
+                    OsString::from("--system"),
+                    OsString::from("--uid"),
+                    user.uid.to_string().into(),
+                    OsString::from("--gid"),
+                    user.primary_gid.to_string().into(),
+                    OsString::from("--no-create-home"),
+                    OsString::from("--home-dir"),
+                    OsString::from(&user.home),
+                    OsString::from("--shell"),
+                    OsString::from(&user.shell),
+                    OsString::from("--comment"),
+                    OsString::from(&user.gecos_transaction_id),
+                    OsString::from("--no-user-group"),
+                    OsString::from("--no-log-init"),
+                    OsString::from("--password"),
+                    OsString::from("!"),
+                    OsString::from(&user.name),
+                ],
+            )
+            .await?;
+            stop_at_user_seam(
+                spec.name,
+                "service-user-command-complete",
+                "caller-user-command-complete",
+            );
+        },
+        UserObservation::Exact => {},
+        UserObservation::Conflict | UserObservation::Ambiguous => {
+            block_identity(transaction)?;
+            return Err(InstallerError::HostMutationFailure);
+        },
+    }
+    match observe_user(&user).await? {
+        UserObservation::Exact => {},
+        UserObservation::Absent => return Err(InstallerError::HostMutationFailure),
+        UserObservation::Conflict | UserObservation::Ambiguous => {
+            block_identity(transaction)?;
+            return Err(InstallerError::HostMutationFailure);
+        },
+    }
+    let old = transaction.record.clone();
+    transaction.record.pending = None;
+    transaction
+        .record
+        .host_resources
+        .push(HostResource::User(user));
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+fn block_identity(transaction: &mut OpenTransaction) -> Result<(), InstallerError> {
+    let old = transaction.record.clone();
+    transaction.record.phase = TransactionPhase::IdentityBlocked;
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+fn owned_group_gid(transaction: &InstallerTransaction, name: &str) -> Result<u32, InstallerError> {
+    transaction
+        .host_resources
+        .iter()
+        .find_map(|resource| match resource {
+            HostResource::Group(group) if group.name == name => Some(group.gid),
+            _ => None,
+        })
+        .ok_or(InstallerError::HostMutationFailure)
+}
+
+fn pending_user(
+    spec: &UserSpec,
+    uid: u32,
+    primary_gid: u32,
+    transaction_id: &str,
+) -> PendingAction {
+    PendingAction::CreateUser {
+        gecos_transaction_id: transaction_id.to_owned(),
+        home: spec.home.to_owned(),
+        locked: true,
+        name: spec.name.to_owned(),
+        primary_gid,
+        shell: String::from("/usr/sbin/nologin"),
+        uid,
+    }
+}
+
+fn user_from_pending(
+    transaction: &InstallerTransaction,
+    spec: &UserSpec,
+) -> Result<UserResource, InstallerError> {
+    match transaction.pending.as_ref() {
+        Some(
+            pending @ PendingAction::CreateUser {
+                gecos_transaction_id,
+                name,
+                ..
+            },
+        ) if name == spec.name && gecos_transaction_id == &transaction.transaction_id => {
+            user_resource_from_pending(pending)
+        },
+        _ => Err(InstallerError::HostMutationFailure),
+    }
+}
+
+fn user_resource_from_pending(pending: &PendingAction) -> Result<UserResource, InstallerError> {
+    match pending {
+        PendingAction::CreateUser {
+            gecos_transaction_id,
+            home,
+            locked,
+            name,
+            primary_gid,
+            shell,
+            uid,
+        } => Ok(UserResource {
+            gecos_transaction_id: gecos_transaction_id.clone(),
+            home: home.clone(),
+            kind: UserResourceKind::User,
+            locked: *locked,
+            name: name.clone(),
+            primary_gid: *primary_gid,
+            shell: shell.clone(),
+            uid: *uid,
+        }),
+        _ => Err(InstallerError::HostMutationFailure),
+    }
+}
+
+fn stop_at_user_seam(name: &str, service: &str, caller: &str) {
+    stop_at_test_seam(if name == "kapsel" { service } else { caller });
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserObservation {
+    Absent,
+    Exact,
+    Conflict,
+    Ambiguous,
+}
+
+fn select_user_uid(passwd: &[u8]) -> Result<u32, InstallerError> {
+    let used = parse_identity_gids(passwd, 2, 7)?;
+    (101..=999)
+        .rev()
+        .find(|uid| !used.contains(uid))
+        .ok_or(InstallerError::HostPreflightFailure)
+}
+
+async fn observe_pending_user(pending: &PendingAction) -> Result<UserObservation, InstallerError> {
+    observe_user(&user_resource_from_pending(pending)?).await
+}
+
+async fn observe_user(user: &UserResource) -> Result<UserObservation, InstallerError> {
+    let uid = user.uid.to_string();
+    let Ok(by_name) = run_user_query("passwd", &user.name).await else {
+        return Ok(UserObservation::Ambiguous);
+    };
+    let Ok(by_uid) = run_user_query("passwd", &uid).await else {
+        return Ok(UserObservation::Ambiguous);
+    };
+    let Ok(shadow) = run_user_query("shadow", &user.name).await else {
+        return Ok(UserObservation::Ambiguous);
+    };
+    Ok(classify_user_observation(&by_name, &by_uid, &shadow, user))
+}
+
+async fn run_user_query(database: &str, key: &str) -> Result<BoundedCommandOutput, InstallerError> {
+    let timeout = host_path("/usr/bin/timeout");
+    let getent = host_path("/usr/bin/getent");
+    let getent = getent.to_str().ok_or(InstallerError::HostMutationFailure)?;
+    run_bounded_query(
+        &timeout,
+        &["--signal=KILL", "10s", getent, database, key],
+        4 * 1024,
+    )
+    .await
+}
+
+fn classify_user_observation(
+    by_name: &BoundedCommandOutput,
+    by_uid: &BoundedCommandOutput,
+    shadow: &BoundedCommandOutput,
+    user: &UserResource,
+) -> UserObservation {
+    let expected_passwd = format!(
+        "{}:x:{}:{}:{}:{}:{}\n",
+        user.name, user.uid, user.primary_gid, user.gecos_transaction_id, user.home, user.shell
+    );
+    let name = classify_passwd_query(by_name, expected_passwd.as_bytes());
+    let uid = classify_passwd_query(by_uid, expected_passwd.as_bytes());
+    if name == RecordObservation::Conflict || uid == RecordObservation::Conflict {
+        return UserObservation::Conflict;
+    }
+
+    let shadow = classify_shadow_query(shadow, user);
+    match (name, uid, shadow) {
+        (RecordObservation::Absent, RecordObservation::Absent, RecordObservation::Absent) => {
+            UserObservation::Absent
+        },
+        (RecordObservation::Exact, RecordObservation::Exact, RecordObservation::Exact) => {
+            UserObservation::Exact
+        },
+        _ => UserObservation::Ambiguous,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordObservation {
+    Absent,
+    Exact,
+    Conflict,
+    Ambiguous,
+}
+
+fn classify_passwd_query(query: &BoundedCommandOutput, expected: &[u8]) -> RecordObservation {
+    if query.status == 2 && query.stdout.is_empty() {
+        return RecordObservation::Absent;
+    }
+    if query.status != 0 {
+        return RecordObservation::Ambiguous;
+    }
+    if query.stdout == expected {
+        return RecordObservation::Exact;
+    }
+    if valid_single_passwd_record(&query.stdout) {
+        RecordObservation::Conflict
+    } else {
+        RecordObservation::Ambiguous
+    }
+}
+
+fn valid_single_passwd_record(bytes: &[u8]) -> bool {
+    let Ok(record) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Some(record) = record.strip_suffix('\n') else {
+        return false;
+    };
+    let fields = record.split(':').collect::<Vec<_>>();
+    fields.len() == 7
+        && !fields[0].is_empty()
+        && canonical_u32(fields[2])
+        && canonical_u32(fields[3])
+}
+
+fn classify_shadow_query(query: &BoundedCommandOutput, user: &UserResource) -> RecordObservation {
+    if query.status == 2 && query.stdout.is_empty() {
+        return RecordObservation::Absent;
+    }
+    if query.status != 0 {
+        return RecordObservation::Ambiguous;
+    }
+    let Ok(record) = std::str::from_utf8(&query.stdout) else {
+        return RecordObservation::Ambiguous;
+    };
+    let Some(record) = record.strip_suffix('\n') else {
+        return RecordObservation::Ambiguous;
+    };
+    let fields = record.split(':').collect::<Vec<_>>();
+    if fields.len() == 9
+        && fields[0] == user.name
+        && fields[1] == "!"
+        && !fields[2].is_empty()
+        && fields[2].bytes().all(|byte| byte.is_ascii_digit())
+        && fields[3..].iter().all(|field| field.is_empty())
+    {
+        RecordObservation::Exact
+    } else {
+        RecordObservation::Ambiguous
+    }
+}
+
+fn canonical_u32(encoded: &str) -> bool {
+    encoded
+        .parse::<u32>()
+        .is_ok_and(|value| encoded == value.to_string())
 }
 
 async fn rollback_groups(
@@ -642,7 +990,10 @@ async fn rollback_groups(
         transaction.record.phase = TransactionPhase::RollingBack;
         publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
     }
-    while let Some(group) = transaction.record.host_resources.last().cloned() {
+    while let Some(resource) = transaction.record.host_resources.last().cloned() {
+        let HostResource::Group(group) = resource else {
+            return Err(InstallerError::HostMutationFailure);
+        };
         stop_at_group_seam(
             &group.name,
             "group-rollback-before-pending",
@@ -1480,6 +1831,123 @@ mod tests {
                 classify_group_observation(name_status, name, gid_status, gid, "kapsel", 999)
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn user_selection_and_observation_cover_all_four_classifications() {
+        assert_eq!(
+            select_user_uid(
+                b"root:x:0:0:root:/root:/bin/sh\nservice:x:998:999::/:/usr/sbin/nologin\n",
+            )
+            .unwrap(),
+            999
+        );
+        assert!(select_user_uid(b"malformed\n").is_err());
+        let exhausted = (101..=999)
+            .map(|uid| format!("u{uid}:x:{uid}:1::/:/usr/sbin/nologin\n"))
+            .collect::<String>();
+        assert!(select_user_uid(exhausted.as_bytes()).is_err());
+
+        let user = UserResource {
+            gecos_transaction_id: "88".repeat(32),
+            home: String::from("/var/lib/kapsel"),
+            kind: UserResourceKind::User,
+            locked: true,
+            name: String::from("kapsel"),
+            primary_gid: 999,
+            shell: String::from("/usr/sbin/nologin"),
+            uid: 997,
+        };
+        let output = |status, bytes: &[u8]| BoundedCommandOutput {
+            status,
+            stdout: bytes.to_vec(),
+        };
+        let passwd = format!(
+            "kapsel:x:997:999:{}:/var/lib/kapsel:/usr/sbin/nologin\n",
+            user.gecos_transaction_id
+        );
+        let shadow = b"kapsel:!:20600::::::\n";
+        let classify = |name: BoundedCommandOutput,
+                        uid: BoundedCommandOutput,
+                        shadow: BoundedCommandOutput| {
+            classify_user_observation(&name, &uid, &shadow, &user)
+        };
+
+        assert_eq!(
+            classify(
+                output(0, passwd.as_bytes()),
+                output(0, passwd.as_bytes()),
+                output(0, shadow),
+            ),
+            UserObservation::Exact
+        );
+        assert_eq!(
+            classify(output(2, b""), output(2, b""), output(2, b"")),
+            UserObservation::Absent
+        );
+
+        for (name, uid, shadow) in [
+            (
+                output(
+                    0,
+                    b"kapsel:x:996:999:other:/var/lib/kapsel:/usr/sbin/nologin\n",
+                ),
+                output(2, b""),
+                output(2, b""),
+            ),
+            (
+                output(2, b""),
+                output(0, b"other:x:997:999:other:/:/usr/sbin/nologin\n"),
+                output(2, b""),
+            ),
+            (
+                output(0, b"kapsel:x:997:999:other:/wrong:/usr/sbin/nologin\n"),
+                output(0, b"kapsel:x:997:999:other:/wrong:/usr/sbin/nologin\n"),
+                output(0, shadow),
+            ),
+        ] {
+            assert_eq!(classify(name, uid, shadow), UserObservation::Conflict);
+        }
+
+        for (name, uid, shadow) in [
+            (output(0, passwd.as_bytes()), output(2, b""), output(2, b"")),
+            (
+                output(0, passwd.as_bytes()),
+                output(0, passwd.as_bytes()),
+                output(2, b""),
+            ),
+            (
+                output(0, passwd.as_bytes()),
+                output(0, passwd.as_bytes()),
+                output(0, b"kapsel:*:20600::::::\n"),
+            ),
+            (
+                output(0, passwd.as_bytes()),
+                output(0, passwd.as_bytes()),
+                output(0, b"kapsel:!:not-a-day::::::\n"),
+            ),
+            (
+                output(
+                    0,
+                    b"kapsel:x:997:999:unterminated:/var/lib/kapsel:/usr/sbin/nologin",
+                ),
+                output(0, passwd.as_bytes()),
+                output(0, shadow),
+            ),
+            (
+                output(0, b"malformed\n"),
+                output(0, passwd.as_bytes()),
+                output(0, shadow),
+            ),
+            (
+                output(124, b""),
+                output(0, passwd.as_bytes()),
+                output(0, shadow),
+            ),
+            (output(2, b"unexpected"), output(2, b""), output(2, b"")),
+        ] {
+            assert_eq!(classify(name, uid, shadow), UserObservation::Ambiguous);
         }
     }
 
