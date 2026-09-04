@@ -31,16 +31,19 @@ Format Rust and Markdown, or check formatting without changing files:
 ./scripts/format.sh --check
 ```
 
-Use the tracked pre-commit hook:
+Use the tracked pre-commit and pre-push hooks:
 
 ```sh
 git config core.hooksPath .githooks
 ```
 
-If `git config core.hooksPath` already reports a custom path, inspect it before replacing it.
+If `git config core.hooksPath` already reports a custom path, inspect it before replacing it. Both
+hooks run the complete local gate. On non-Linux hosts, that gate uses the pinned Linux builder image
+to check the Linux-only installer with Clippy, so Docker is required.
 
-The complete gate checks formatting, Rust line width, Clippy with warnings denied, rustdoc with
-warnings denied, deterministic Rust tests, doctests, Markdown links, and link-checker regressions.
+The complete gate checks formatting, Rust line width, native and Linux-installer Clippy with
+warnings denied, rustdoc with warnings denied, deterministic Rust tests, doctests, Markdown links,
+and link-checker regressions.
 
 ## Focused gates
 

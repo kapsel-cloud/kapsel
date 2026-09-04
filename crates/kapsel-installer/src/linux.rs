@@ -1784,7 +1784,7 @@ fn stable_file(before: &Stat, after: &Stat, length: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::{fmt::Write as _, os::unix::fs::PermissionsExt as _};
 
     use super::*;
 
@@ -1835,7 +1835,7 @@ mod tests {
     }
 
     #[test]
-    fn user_selection_and_observation_cover_all_four_classifications() {
+    fn user_selection_is_bounded_and_fail_closed() {
         assert_eq!(
             select_user_uid(
                 b"root:x:0:0:root:/root:/bin/sh\nservice:x:998:999::/:/usr/sbin/nologin\n",
@@ -1844,11 +1844,15 @@ mod tests {
             999
         );
         assert!(select_user_uid(b"malformed\n").is_err());
-        let exhausted = (101..=999)
-            .map(|uid| format!("u{uid}:x:{uid}:1::/:/usr/sbin/nologin\n"))
-            .collect::<String>();
+        let mut exhausted = String::new();
+        for uid in 101..=999 {
+            writeln!(exhausted, "u{uid}:x:{uid}:1::/:/usr/sbin/nologin").unwrap();
+        }
         assert!(select_user_uid(exhausted.as_bytes()).is_err());
+    }
 
+    #[test]
+    fn user_observation_covers_all_four_classifications() {
         let user = UserResource {
             gecos_transaction_id: "88".repeat(32),
             home: String::from("/var/lib/kapsel"),

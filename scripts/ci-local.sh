@@ -22,6 +22,9 @@ run_static_checks() {
 run_rust_checks() {
   echo "==> clippy"
   cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+  if [ "$(uname -s)" != Linux ]; then
+    ./scripts/check-linux-installer-clippy.sh
+  fi
 
   echo "==> rustdoc"
   RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
