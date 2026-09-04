@@ -3,17 +3,43 @@
 [![CI](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml)
 [![Developer beta](https://img.shields.io/badge/developer_beta-v0.2.0-orange)](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0)
 
-**Bounded Kubernetes authority with honest outcomes.**
+**Controlled execution for autonomous systems. Kubernetes first.**
 
-Kapsel lets an automated workflow request one tightly bounded Kubernetes change without receiving
-cluster credentials. It records state before attempting the effect, recovers from crashes without a
-blind second mutation, and returns a durable, inspectable `SUCCEEDED`, `FAILED`, or `UNKNOWN` result
-based on bounded Kubernetes observations.
+Kapsel lets an AI agent or automated workflow request one tightly bounded Kubernetes change without
+receiving cluster credentials. It records state before attempting the effect, recovers from crashes
+without a blind second mutation, and returns a durable, inspectable `SUCCEEDED`, `FAILED`, or
+`UNKNOWN` result based on bounded Kubernetes observations.
 
 > [!WARNING]
 >
 > Kapsel 0.2.0 is a developer beta. It is not production-ready. Do not use it for consequential
 > production changes.
+
+## Why Kapsel exists
+
+As infrastructure is increasingly operated by agents that observe, propose changes, and evaluate
+results, the systems deciding what to do remain fallible. More capable reasoning does not remove the
+need for a dependable boundary around consequential actions.
+
+Kapsel's direction is to be that small execution component beside operator-owned authority. The
+caller proposes an action. The operator authorizes it. Kapsel controls the bounded effect and
+preserves what it can honestly establish, even when execution breaks.
+
+Three questions must stay separate:
+
+- **May this action happen?** Exact authorization determines permission, not an agent's confidence.
+- **What happened?** Durable state and receiver observations support a bounded execution outcome.
+- **Was it a good decision?** Application evaluation and operational judgment remain outside Kapsel.
+  An available rollout does not establish that the application behaves correctly.
+
+Kubernetes is the first proving ground, not the permanent product identity. It gives us real
+asynchronous effects, concurrent changes, and observable outcomes. The same execution boundary is
+useful to conventional automation and human callers. It should not depend on a particular model or
+agent framework; MCP is just one adapter.
+
+This is a direction to grow through concrete operations, not a shipped general platform. Today
+Kapsel supports only the image change below. It is not a planner, an AI SRE, or a general Kubernetes
+reliability service. [Technical scope](docs/SCOPE.md) owns current capabilities and limits.
 
 ## The problem is not the patch
 

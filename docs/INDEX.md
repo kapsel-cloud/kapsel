@@ -1,7 +1,8 @@
 # Documentation
 
-Start with the [technical tour](TOUR.md) to understand the mechanism or the
-[evaluation guide](EVALUATOR.md) to run the published beta. Exact contracts remain the authority for
+Start with [Why Kapsel exists](../README.md#why-kapsel-exists) for the technical vision, the
+[technical tour](TOUR.md) to follow the mechanism, or the [evaluation guide](EVALUATOR.md) to run
+the published beta. The vision explains the direction; exact contracts remain the authority for
 behavior.
 
 ## Learn

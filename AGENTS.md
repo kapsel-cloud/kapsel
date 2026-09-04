@@ -33,6 +33,17 @@ When code and an owner disagree:
 Contracts define behavior. Decisions explain why. Guides describe commands that actually exist.
 Tests provide executable evidence.
 
+## Keep the direction visible
+
+Read [Why Kapsel exists](README.md#why-kapsel-exists) as the public technical motivation. Kapsel is
+being built as a controlled execution component beneath fallible autonomous systems. Kubernetes is
+the first proving ground, not its permanent identity or a general reliability-service promise.
+
+Preserve the separation between authorization, execution evidence, and decision quality. Improve the
+concrete operation and its usability under failure rather than adding speculative platform
+machinery. The wider direction does not expand the current scope or establish distributed
+guarantees.
+
 ## Keep the product narrow
 
 - Keep `kubernetes.set_deployment_image` as the only active capability.

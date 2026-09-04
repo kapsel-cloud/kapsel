@@ -3,9 +3,10 @@
 Kapsel is built around an awkward gap: a system can know that it attempted an external effect
 without knowing whether the receiver reached the intended state.
 
-This tour follows one Kubernetes image change across that gap. The exact rules live in the
-[effect-gateway contract](EFFECT_GATEWAY.md); this page explains why the pieces are arranged this
-way.
+This tour follows one Kubernetes image change across that gap. It is the first concrete example of
+[controlled execution beneath autonomous systems](../README.md#why-kapsel-exists). The exact rules
+live in the [effect-gateway contract](EFFECT_GATEWAY.md); this page explains why the pieces are
+arranged this way.
 
 ## The request is intentionally boring
 
@@ -167,6 +168,20 @@ operation or configuration error
 ```
 
 Those distinctions survive process loss and remain inspectable later. They are narrow on purpose.
+
+### When the result is unknown
+
+Suppose an agent requests the approved image change and loses its connection. That disconnect is not
+a rollout result. Recovery belongs to Kapsel under operator control, using the same durable
+operation, not to an agent guessing whether it should send another mutation.
+
+If bounded reconciliation finishes as `UNKNOWN`, the surrounding workflow should stop dependent
+mutations and present the operation identity and available receipt for operator inspection. Creating
+a fresh operation identity or automatically rolling back is not a way to resolve the uncertainty.
+Any corrective action needs its own authorization and reasoning about current state.
+
+This handoff is outside Kapsel's planner-free core. A signed receipt preserves the bounded account;
+it does not eliminate the need for operational judgment or prove that the application is healthy.
 
 ## Where to go next
 

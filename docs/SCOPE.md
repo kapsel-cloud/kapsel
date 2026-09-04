@@ -10,6 +10,21 @@ This page owns Kapsel's current product boundary, maturity, and technical non-go
 [effect-gateway contract](EFFECT_GATEWAY.md) owns exact authorization, lifecycle, recovery, result,
 and receipt semantics.
 
+## Direction and current boundary
+
+The [public technical vision](../README.md#why-kapsel-exists) is controlled execution beneath
+fallible autonomous systems. Kubernetes is the first concrete proving ground. That motivation does
+not make Kapsel a general Kubernetes reliability service or extend the implemented boundary below.
+
+Kapsel separates permission from execution evidence. Choosing a useful action and evaluating
+application quality belong to the caller's surrounding system. Neither model confidence nor an
+application evaluator can replace the exact grant or redefine a receiver result.
+
+The current local journal and conditional Kubernetes patch do not coordinate independent agents
+across journals or hosts. They provide no fleet ordering, distributed transaction, or system-wide
+invariant guarantee. Broader coordination and additional operations require their own concrete
+semantics and evidence, not a generic interface added in anticipation.
+
 ## One capability
 
 ```text

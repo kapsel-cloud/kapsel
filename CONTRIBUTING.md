@@ -1,9 +1,10 @@
 # Contributing to Kapsel
 
-Start by checking Git status and preserving unrelated work. Then read the
-[technical scope](docs/SCOPE.md), the [documentation map](docs/INDEX.md), and the direct contract,
-implementation, tests, and vectors for the surface you will change. Contracts own behavior;
-decisions explain why; guides own runnable commands; tests provide executable evidence.
+Start by checking Git status and preserving unrelated work. Then read
+[Why Kapsel exists](README.md#why-kapsel-exists), the [technical scope](docs/SCOPE.md), the
+[documentation map](docs/INDEX.md), and the direct contract, implementation, tests, and vectors for
+the surface you will change. Contracts own behavior; decisions explain why; guides own runnable
+commands; tests provide executable evidence.
 
 The published v0.2.0 developer beta and repository HEAD are different promises. The service and
 installer in HEAD remain unpublished. Link their exact owners rather than presenting them as
