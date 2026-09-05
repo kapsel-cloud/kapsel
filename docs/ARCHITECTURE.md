@@ -144,10 +144,13 @@ smoke supplies test-only ELF fixtures.
 
 Current implementation validates operator input and bootstrap kubeconfig, performs read-only host
 and Kubernetes clean-install preflight, durably enters `installing`, and creates or recovers the
-exact two groups and two fixed users. It then stops at `implementation_incomplete`. The installer
-does not install assets, Kubernetes resources, credentials, activation, refresh, or uninstall, and
-no candidate assembly command exists. [Build](BUILD.md) lists its runnable gates;
-[Kapsel service](KAPSEL_SERVICE.md) owns the approved future contract and exact current boundary.
+exact two groups and two fixed users. A private host-file foundation also owns exact staged-file
+facts, inode-bound publication, and recovery under a fixed absolute destination. No production asset
+order calls that foundation, so execution still stops at `implementation_incomplete` after identity
+creation. The installer does not install assets, Kubernetes resources, credentials, activation,
+refresh, or uninstall, and no candidate assembly command exists. [Build](BUILD.md) lists its
+runnable gates; [Kapsel service](KAPSEL_SERVICE.md) owns the approved future contract and exact
+current boundary.
 
 ## Dependency rule
 

@@ -189,8 +189,36 @@ struct TransactionOperatorInputs {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(untagged)]
 enum HostResource {
+    File(FileResource),
     Group(GroupResource),
     User(UserResource),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FileResource {
+    device: u64,
+    file_type: HostFileType,
+    gid: u32,
+    inode: u64,
+    kind: FileResourceKind,
+    length: u64,
+    mode: u32,
+    path: String,
+    sha256: String,
+    uid: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FileResourceKind {
+    File,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HostFileType {
+    Regular,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -243,8 +271,34 @@ enum PendingAction {
         shell: String,
         uid: u32,
     },
+    PublishHost {
+        destination: String,
+        device: u64,
+        file_type: HostFileType,
+        gid: u32,
+        inode: u64,
+        length: u64,
+        mode: u32,
+        sha256: String,
+        staging: String,
+        transaction_id: String,
+        uid: u32,
+    },
     RemoveGroup {
         group: GroupResource,
+    },
+    StageHost {
+        destination: String,
+        device: Option<u64>,
+        file_type: HostFileType,
+        gid: u32,
+        inode: Option<u64>,
+        length: u64,
+        mode: u32,
+        sha256: String,
+        staging: String,
+        transaction_id: String,
+        uid: u32,
     },
 }
 

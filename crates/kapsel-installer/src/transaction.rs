@@ -104,8 +104,13 @@ pub(super) fn validate_transaction(
 
 pub(super) fn valid_transaction_state(transaction: &InstallerTransaction) -> bool {
     let resources = transaction.host_resources.as_slice();
-    let pending = transaction.pending.as_ref();
-    let valid_resources = match resources {
+    let identity_count = resources
+        .iter()
+        .take_while(|resource| !matches!(resource, HostResource::File(_)))
+        .count();
+    let identities = &resources[..identity_count];
+    let files = &resources[identity_count..];
+    let valid_identities = match identities {
         [] => true,
         [HostResource::Group(first)] => valid_group(first, "kapsel"),
         [HostResource::Group(first), HostResource::Group(second)] => {
@@ -124,18 +129,26 @@ pub(super) fn valid_transaction_state(transaction: &InstallerTransaction) -> boo
         },
         _ => false,
     };
-    if !valid_resources {
+    let valid_files = identities.len() == 4
+        && files
+            .iter()
+            .enumerate()
+            .all(|(index, resource)| match resource {
+                HostResource::File(file) => valid_host_file(file, &files[..index]),
+                HostResource::Group(_) | HostResource::User(_) => false,
+            });
+    if !valid_identities || !files.is_empty() && !valid_files {
         return false;
     }
-    let group_count = resources
+    let group_count = identities
         .iter()
         .take_while(|resource| matches!(resource, HostResource::Group(_)))
         .count();
-    let user_resources_empty = group_count == resources.len();
+    let user_resources_empty = group_count == identities.len();
     valid_transaction_phase_state(
         transaction,
         resources,
-        pending,
+        transaction.pending.as_ref(),
         group_count,
         user_resources_empty,
     )
@@ -187,7 +200,13 @@ pub(super) fn valid_transaction_phase_state(
                 *locked,
                 transaction,
             ),
-            _ => false,
+            Some(stage @ PendingAction::StageHost { .. }) => {
+                resources.len() >= 4 && valid_stage_host(stage, resources, transaction)
+            },
+            Some(publish @ PendingAction::PublishHost { .. }) => {
+                resources.len() >= 4 && valid_publish_host(publish, resources, transaction)
+            },
+            Some(PendingAction::RemoveGroup { .. }) => false,
         },
         TransactionPhase::IdentityBlocked => {
             resources.len() >= 2
@@ -285,6 +304,126 @@ pub(super) fn valid_user(
         && resource.locked
 }
 
+const HOST_FILE_BYTES_MAX: u64 = 64 * 1024 * 1024;
+
+pub(super) fn valid_host_file(resource: &FileResource, earlier: &[HostResource]) -> bool {
+    resource.kind == FileResourceKind::File
+        && resource.file_type == HostFileType::Regular
+        && resource.device != 0
+        && resource.inode != 0
+        && resource.length > 0
+        && resource.length <= HOST_FILE_BYTES_MAX
+        && valid_host_mode(resource.mode)
+        && valid_transaction_path(&resource.path)
+        && resource.path != "/"
+        && valid_digest(&resource.sha256)
+        && earlier.iter().all(|item| match item {
+            HostResource::File(file) => {
+                file.path != resource.path
+                    && (file.device != resource.device || file.inode != resource.inode)
+            },
+            HostResource::Group(_) | HostResource::User(_) => true,
+        })
+}
+
+pub(super) fn valid_stage_host(
+    pending: &PendingAction,
+    resources: &[HostResource],
+    transaction: &InstallerTransaction,
+) -> bool {
+    let PendingAction::StageHost {
+        destination,
+        device,
+        file_type,
+        gid: _,
+        inode,
+        length,
+        mode,
+        sha256,
+        staging,
+        transaction_id,
+        uid: _,
+    } = pending
+    else {
+        return false;
+    };
+    *file_type == HostFileType::Regular
+        && matches!((device, inode), (None, None) | (Some(_), Some(_)))
+        && device.is_none_or(|value| value != 0)
+        && inode.is_none_or(|value| value != 0)
+        && *length > 0
+        && *length <= HOST_FILE_BYTES_MAX
+        && valid_host_mode(*mode)
+        && valid_transaction_path(destination)
+        && destination != "/"
+        && valid_staging_leaf(staging)
+        && valid_digest(sha256)
+        && transaction_id == &transaction.transaction_id
+        && resources.iter().all(|resource| match resource {
+            HostResource::File(file) => {
+                file.path != *destination
+                    && device
+                        .zip(*inode)
+                        .is_none_or(|identity| identity != (file.device, file.inode))
+            },
+            HostResource::Group(_) | HostResource::User(_) => true,
+        })
+}
+
+pub(super) fn valid_publish_host(
+    pending: &PendingAction,
+    resources: &[HostResource],
+    transaction: &InstallerTransaction,
+) -> bool {
+    let PendingAction::PublishHost {
+        destination,
+        device,
+        file_type,
+        gid: _,
+        inode,
+        length,
+        mode,
+        sha256,
+        staging,
+        transaction_id,
+        uid: _,
+    } = pending
+    else {
+        return false;
+    };
+    *file_type == HostFileType::Regular
+        && *device != 0
+        && *inode != 0
+        && *length > 0
+        && *length <= HOST_FILE_BYTES_MAX
+        && valid_host_mode(*mode)
+        && valid_transaction_path(destination)
+        && destination != "/"
+        && valid_staging_leaf(staging)
+        && valid_digest(sha256)
+        && transaction_id == &transaction.transaction_id
+        && resources.iter().all(|resource| match resource {
+            HostResource::File(file) => {
+                file.path != *destination && (file.device != *device || file.inode != *inode)
+            },
+            HostResource::Group(_) | HostResource::User(_) => true,
+        })
+}
+
+fn valid_host_mode(mode: u32) -> bool {
+    mode != 0 && mode & !0o777 == 0
+}
+
+fn valid_staging_leaf(value: &str) -> bool {
+    let path = std::path::Path::new(value);
+    !value.is_empty()
+        && value.len() <= 255
+        && matches!(
+            path.components().collect::<Vec<_>>().as_slice(),
+            [std::path::Component::Normal(_)]
+        )
+}
+
 pub(super) fn valid_pending_group(
     resources: &[HostResource],
     gid: u32,
@@ -301,7 +440,7 @@ pub(super) fn valid_pending_group(
         && (101..=999).contains(&gid)
         && resources.iter().all(|resource| match resource {
             HostResource::Group(group) => group.gid != gid,
-            HostResource::User(_) => true,
+            HostResource::File(_) | HostResource::User(_) => true,
         })
         && transaction_id == transaction.transaction_id
 }
@@ -330,7 +469,7 @@ pub(super) fn valid_pending_user(
     (101..=999).contains(&uid)
         && resources.iter().all(|resource| match resource {
             HostResource::User(user) => user.uid != uid,
-            HostResource::Group(_) => true,
+            HostResource::File(_) | HostResource::Group(_) => true,
         })
         && (name, primary_gid, home) == expected
         && gecos_transaction_id == transaction.transaction_id
@@ -443,14 +582,28 @@ pub(super) fn legal_pending_successor(
     if old.phase != next.phase || old.action != next.action {
         return false;
     }
+    if matches!(
+        old.pending,
+        Some(PendingAction::StageHost { .. } | PendingAction::PublishHost { .. })
+    ) {
+        return legal_host_file_successor(old, next);
+    }
     let mut expected = old.clone();
     match old.pending.as_ref() {
         None if old.phase == TransactionPhase::Installing => {
             expected.pending.clone_from(&next.pending);
-            matches!(
+            let valid_new_pending = matches!(
                 next.pending,
                 Some(PendingAction::CreateGroup { .. } | PendingAction::CreateUser { .. })
-            ) && next == &expected
+            ) || matches!(
+                next.pending,
+                Some(PendingAction::StageHost {
+                    device: None,
+                    inode: None,
+                    ..
+                })
+            );
+            valid_new_pending && next == &expected
         },
         Some(PendingAction::CreateGroup {
             gid,
@@ -506,6 +659,99 @@ pub(super) fn legal_pending_successor(
         {
             expected.pending = None;
             expected.host_resources.pop();
+            next == &expected
+        },
+        _ => false,
+    }
+}
+
+fn legal_host_file_successor(old: &InstallerTransaction, next: &InstallerTransaction) -> bool {
+    if old.phase != TransactionPhase::Installing {
+        return false;
+    }
+    let mut expected = old.clone();
+    match old.pending.as_ref() {
+        Some(PendingAction::StageHost {
+            device: None,
+            inode: None,
+            ..
+        }) => {
+            let Some(PendingAction::StageHost {
+                device: Some(device),
+                inode: Some(inode),
+                ..
+            }) = next.pending.as_ref()
+            else {
+                return false;
+            };
+            let Some(PendingAction::StageHost {
+                device: expected_device,
+                inode: expected_inode,
+                ..
+            }) = expected.pending.as_mut()
+            else {
+                return false;
+            };
+            *expected_device = Some(*device);
+            *expected_inode = Some(*inode);
+            next == &expected
+        },
+        Some(PendingAction::StageHost {
+            destination,
+            device: Some(device),
+            file_type,
+            gid,
+            inode: Some(inode),
+            length,
+            mode,
+            sha256,
+            staging,
+            transaction_id,
+            uid,
+        }) => {
+            expected.pending = Some(PendingAction::PublishHost {
+                destination: destination.clone(),
+                device: *device,
+                file_type: *file_type,
+                gid: *gid,
+                inode: *inode,
+                length: *length,
+                mode: *mode,
+                sha256: sha256.clone(),
+                staging: staging.clone(),
+                transaction_id: transaction_id.clone(),
+                uid: *uid,
+            });
+            next == &expected
+        },
+        Some(PendingAction::PublishHost {
+            destination,
+            device,
+            file_type,
+            gid,
+            inode,
+            length,
+            mode,
+            sha256,
+            staging: _,
+            transaction_id: _,
+            uid,
+        }) => {
+            expected.pending = None;
+            expected
+                .host_resources
+                .push(HostResource::File(FileResource {
+                    device: *device,
+                    file_type: *file_type,
+                    gid: *gid,
+                    inode: *inode,
+                    kind: FileResourceKind::File,
+                    length: *length,
+                    mode: *mode,
+                    path: destination.clone(),
+                    sha256: sha256.clone(),
+                    uid: *uid,
+                }));
             next == &expected
         },
         _ => false,
@@ -1021,6 +1267,357 @@ mod tests {
         installing.phase = TransactionPhase::Installing;
         installing.bootstrap_kubeconfig_sha256 = "99".repeat(32);
         assert!(!legal_transaction_successor(&old, &installing));
+    }
+
+    fn complete_identity_transaction() -> InstallerTransaction {
+        let mut transaction = test_initial_transaction();
+        transaction.phase = TransactionPhase::Installing;
+        transaction.host_resources = vec![
+            HostResource::Group(GroupResource {
+                gid: 999,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel"),
+            }),
+            HostResource::Group(GroupResource {
+                gid: 998,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel-service-callers"),
+            }),
+            HostResource::User(UserResource {
+                gecos_transaction_id: transaction.transaction_id.clone(),
+                home: String::from("/var/lib/kapsel"),
+                kind: UserResourceKind::User,
+                locked: true,
+                name: String::from("kapsel"),
+                primary_gid: 999,
+                shell: String::from("/usr/sbin/nologin"),
+                uid: 997,
+            }),
+            HostResource::User(UserResource {
+                gecos_transaction_id: transaction.transaction_id.clone(),
+                home: String::from("/nonexistent"),
+                kind: UserResourceKind::User,
+                locked: true,
+                name: String::from("kapsel-service-caller"),
+                primary_gid: 998,
+                shell: String::from("/usr/sbin/nologin"),
+                uid: 996,
+            }),
+        ];
+        transaction
+    }
+
+    fn host_stage(transaction: &InstallerTransaction) -> PendingAction {
+        PendingAction::StageHost {
+            destination: String::from("/usr/bin/kapsel"),
+            device: None,
+            file_type: HostFileType::Regular,
+            gid: 0,
+            inode: None,
+            length: 120,
+            mode: 0o755,
+            sha256: "99".repeat(32),
+            staging: String::from(".kapsel-stage-fixture"),
+            transaction_id: transaction.transaction_id.clone(),
+            uid: 0,
+        }
+    }
+
+    fn host_publish(transaction: &InstallerTransaction) -> PendingAction {
+        PendingAction::PublishHost {
+            destination: String::from("/usr/bin/kapsel"),
+            device: 7,
+            file_type: HostFileType::Regular,
+            gid: 0,
+            inode: 11,
+            length: 120,
+            mode: 0o755,
+            sha256: "99".repeat(32),
+            staging: String::from(".kapsel-stage-fixture"),
+            transaction_id: transaction.transaction_id.clone(),
+            uid: 0,
+        }
+    }
+
+    fn assert_publish_pending_rejected(
+        bound: &InstallerTransaction,
+        mutate: impl FnOnce(&mut PendingAction),
+    ) {
+        let mut candidate = bound.clone();
+        candidate.pending = Some(host_publish(bound));
+        mutate(
+            candidate
+                .pending
+                .as_mut()
+                .expect("publish pending must exist"),
+        );
+        assert!(!legal_transaction_successor(bound, &candidate));
+    }
+
+    fn assert_file_ownership_rejected(
+        publishing: &InstallerTransaction,
+        mutate: impl FnOnce(&mut FileResource),
+    ) {
+        let PendingAction::PublishHost {
+            destination,
+            device,
+            file_type,
+            gid,
+            inode,
+            length,
+            mode,
+            sha256,
+            uid,
+            ..
+        } = publishing
+            .pending
+            .as_ref()
+            .expect("publish pending must exist")
+        else {
+            return;
+        };
+        let mut candidate = publishing.clone();
+        candidate.pending = None;
+        let mut file = FileResource {
+            device: *device,
+            file_type: *file_type,
+            gid: *gid,
+            inode: *inode,
+            kind: FileResourceKind::File,
+            length: *length,
+            mode: *mode,
+            path: destination.clone(),
+            sha256: sha256.clone(),
+            uid: *uid,
+        };
+        mutate(&mut file);
+        candidate.host_resources.push(HostResource::File(file));
+        assert!(!legal_transaction_successor(publishing, &candidate));
+    }
+
+    #[test]
+    fn host_file_stage_bind_publish_and_ownership_successors_are_exact() {
+        let installing = complete_identity_transaction();
+        let mut staging = installing.clone();
+        staging.pending = Some(host_stage(&installing));
+        assert!(legal_transaction_successor(&installing, &staging));
+
+        let mut bound = staging.clone();
+        let PendingAction::StageHost { device, inode, .. } = bound.pending.as_mut().unwrap() else {
+            return;
+        };
+        *device = Some(7);
+        *inode = Some(11);
+        assert!(legal_transaction_successor(&staging, &bound));
+
+        let mut publishing = bound.clone();
+        publishing.pending = Some(host_publish(&bound));
+        assert!(legal_transaction_successor(&bound, &publishing));
+
+        let file = FileResource {
+            device: 7,
+            file_type: HostFileType::Regular,
+            gid: 0,
+            inode: 11,
+            kind: FileResourceKind::File,
+            length: 120,
+            mode: 0o755,
+            path: String::from("/usr/bin/kapsel"),
+            sha256: "99".repeat(32),
+            uid: 0,
+        };
+        let mut published = publishing.clone();
+        published.pending = None;
+        published.host_resources.push(HostResource::File(file));
+        assert!(legal_transaction_successor(&publishing, &published));
+        let encoded = encode_transaction(&published).expect("host file record must encode");
+        assert_eq!(
+            decode_transaction(&encoded).expect("host file record must decode"),
+            published
+        );
+
+        let mut skipped = staging.clone();
+        skipped.pending = publishing.pending;
+        assert!(!legal_transaction_successor(&staging, &skipped));
+        let mut unrelated = bound.clone();
+        unrelated.cluster.ca_sha256 = "aa".repeat(32);
+        assert!(!legal_transaction_successor(&staging, &unrelated));
+    }
+
+    #[test]
+    fn host_file_successors_reject_every_changed_frozen_fact() {
+        let mut bound = complete_identity_transaction();
+        bound.pending = Some(PendingAction::StageHost {
+            destination: String::from("/usr/bin/kapsel"),
+            device: Some(7),
+            file_type: HostFileType::Regular,
+            gid: 0,
+            inode: Some(11),
+            length: 120,
+            mode: 0o755,
+            sha256: "99".repeat(32),
+            staging: String::from(".kapsel-stage-fixture"),
+            transaction_id: bound.transaction_id.clone(),
+            uid: 0,
+        });
+        let mut publishing = bound.clone();
+        publishing.pending = Some(host_publish(&bound));
+
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { destination, .. } = pending else {
+                return;
+            };
+            *destination = String::from("/usr/bin/other");
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { device, .. } = pending else {
+                return;
+            };
+            *device = 8;
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { gid, .. } = pending else {
+                return;
+            };
+            *gid = 1;
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { inode, .. } = pending else {
+                return;
+            };
+            *inode = 12;
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { length, .. } = pending else {
+                return;
+            };
+            *length = 121;
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { mode, .. } = pending else {
+                return;
+            };
+            *mode = 0o644;
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { sha256, .. } = pending else {
+                return;
+            };
+            *sha256 = "aa".repeat(32);
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { staging, .. } = pending else {
+                return;
+            };
+            *staging = String::from(".other-stage");
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { transaction_id, .. } = pending else {
+                return;
+            };
+            *transaction_id = "aa".repeat(32);
+        });
+        assert_publish_pending_rejected(&bound, |pending| {
+            let PendingAction::PublishHost { uid, .. } = pending else {
+                return;
+            };
+            *uid = 1;
+        });
+
+        assert_file_ownership_rejected(&publishing, |file| {
+            file.path = String::from("/usr/bin/other");
+        });
+        assert_file_ownership_rejected(&publishing, |file| file.device = 8);
+        assert_file_ownership_rejected(&publishing, |file| file.gid = 1);
+        assert_file_ownership_rejected(&publishing, |file| file.inode = 12);
+        assert_file_ownership_rejected(&publishing, |file| file.length = 121);
+        assert_file_ownership_rejected(&publishing, |file| file.mode = 0o644);
+        assert_file_ownership_rejected(&publishing, |file| file.sha256 = "aa".repeat(32));
+        assert_file_ownership_rejected(&publishing, |file| file.uid = 1);
+    }
+
+    #[test]
+    fn host_file_state_rejects_hostile_shapes_and_duplicate_destinations() {
+        let installing = complete_identity_transaction();
+        let mut stage = installing.clone();
+        stage.pending = Some(host_stage(&installing));
+        let canonical = encode_transaction(&stage).expect("stage must encode");
+        let canonical = String::from_utf8(canonical).expect("stage must be UTF-8");
+        for (index, hostile) in [
+            canonical.replacen("\"device\":null", "\"device\":1", 1),
+            canonical.replacen("\"mode\":493", "\"mode\":4096", 1),
+            canonical.replacen("\"length\":120", "\"length\":0", 1),
+            canonical.replacen("/usr/bin/kapsel", "relative", 1),
+            canonical.replacen(".kapsel-stage-fixture", "../stage", 1),
+            canonical.replacen(&"99".repeat(32), "bad", 1),
+            canonical.replacen("\"uid\":0", "\"unknown\":0,\"uid\":0", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                decode_transaction(hostile.as_bytes()).is_err(),
+                "hostile host-file case {index} was accepted"
+            );
+        }
+
+        let mut publishing = installing.clone();
+        publishing.pending = Some(host_publish(&installing));
+        let file = FileResource {
+            device: 7,
+            file_type: HostFileType::Regular,
+            gid: 0,
+            inode: 11,
+            kind: FileResourceKind::File,
+            length: 120,
+            mode: 0o755,
+            path: String::from("/usr/bin/kapsel"),
+            sha256: "99".repeat(32),
+            uid: 0,
+        };
+        publishing
+            .host_resources
+            .push(HostResource::File(file.clone()));
+        assert!(validate_transaction(&publishing).is_err());
+
+        let mut duplicate = installing;
+        duplicate
+            .host_resources
+            .push(HostResource::File(file.clone()));
+        let mut second = file.clone();
+        second.device = 8;
+        second.inode = 12;
+        duplicate.host_resources.push(HostResource::File(second));
+        assert!(validate_transaction(&duplicate).is_err());
+
+        let mut duplicate_inode = complete_identity_transaction();
+        duplicate_inode
+            .host_resources
+            .push(HostResource::File(file.clone()));
+        let mut second = file.clone();
+        second.path = String::from("/usr/bin/other");
+        duplicate_inode
+            .host_resources
+            .push(HostResource::File(second));
+        assert!(validate_transaction(&duplicate_inode).is_err());
+
+        let mut reused_stage = complete_identity_transaction();
+        reused_stage.host_resources.push(HostResource::File(file));
+        let mut pending = host_stage(&reused_stage);
+        let PendingAction::StageHost {
+            destination,
+            device,
+            inode,
+            ..
+        } = &mut pending
+        else {
+            return;
+        };
+        *destination = String::from("/usr/bin/other");
+        *device = Some(7);
+        *inode = Some(11);
+        reused_stage.pending = Some(pending);
+        assert!(validate_transaction(&reused_stage).is_err());
     }
 
     #[test]

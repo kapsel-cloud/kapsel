@@ -1,7 +1,8 @@
 # Kapsel service
 
-Status: accepted unpublished service implementation; installer foundation and four recoverable fixed
-identity mutations implemented, complete installer journey not implemented.
+Status: accepted unpublished service implementation; installer foundation, four recoverable fixed
+identity mutations, and private host-file publication foundation implemented; complete installer
+journey not implemented.
 
 Kind: product contract. Authority: service process boundary, local protocol, installed assets,
 installer trust and recovery, qualification envelope, unsupported behavior, and residual risk.
@@ -574,33 +575,38 @@ grant bytes, or trust bytes.
 
 `pending` is `null` or one object with exact `action` plus these variant fields:
 
-| Pending action       | Required fields                                                                                                                                         | Recovery observation                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `stage_host`         | destination, staging leaf, type, owner, mode, length/digest, transaction marker                                                                         | Bind only a staging inode carrying the transaction marker and every expected fact.                                |
-| `publish_host`       | destination plus recorded staging device/inode                                                                                                          | Destination same inode is complete; staging same inode is not started; every other shape conflicts.               |
-| `create_group`       | name, preselected GID, transaction identity                                                                                                             | Absent is not started; exact name/GID under the pending transaction is complete; other identity conflicts.        |
-| `create_user`        | name, preselected UID/primary GID, transaction GECOS, home, shell, and locked-shadow requirement                                                        | Classify only exactly absent, exactly complete, conflict, or ambiguous/partial; only the first two permit action. |
-| `enable_service`     | unit device/inode/digest and exact enablement link path/target                                                                                          | Bind link inodes only under exact unit and target identity; any pre-existing or changed link conflicts.           |
-| `start_service`      | exact unit                                                                                                                                              | Active exact unit is complete; inactive is not started; failed state is a typed activation failure.               |
-| `stop_service`       | exact unit                                                                                                                                              | Inactive with no process/socket is complete; otherwise repeat stop and wait at most ten seconds for closure.      |
-| `create_kubernetes`  | API version, kind, namespace, name, transaction annotation                                                                                              | Bind UID only from the same cluster and annotation; absence is not started; mismatch conflicts.                   |
-| `issue_credential`   | ServiceAccount UID, requested seconds, destination, staging leaf, owner/mode, transaction marker, then staged inode/digest/length/expiration when known | No leaf repeats issuance; a marked unbound leaf is removed and reissued; a bound inode continues publication.     |
-| `replace_credential` | destination and recorded staged device/inode, expiration                                                                                                | Destination same inode is complete; staging same inode is not started; every other shape conflicts.               |
-| `remove_group`       | complete recorded group ownership                                                                                                                       | Absence is complete; exact name/GID is not started; changed identity conflicts.                                   |
-| `disable_service`    | recorded enablement link identities                                                                                                                     | All absent is complete; exact recorded links remain not started; any replacement conflicts.                       |
-| `delete_kubernetes`  | complete recorded Kubernetes ownership                                                                                                                  | Delete uses UID precondition; absence is complete; same UID remains not started; replacement conflicts.           |
-| `remove_host`        | complete recorded host ownership                                                                                                                        | Absence is complete; exact recorded inode remains not started; any replacement conflicts.                         |
-| `daemon_reload`      | exact unit                                                                                                                                              | Safe to repeat; it neither establishes nor removes ownership.                                                     |
+| Pending action       | Required fields                                                                                                                                                         | Recovery observation                                                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `stage_host`         | `destination`, `staging`, `file_type`, `uid`, `gid`, `mode`, `length`, `sha256`, `transaction_id`, and `device`/`inode` as either both `null` or both unsigned integers | Bind only a staging inode carrying the transaction marker and every expected fact.                                   |
+| `publish_host`       | `destination`, `staging`, `device`, `inode`, `file_type`, `uid`, `gid`, `mode`, `length`, `sha256`, and `transaction_id`                                                | Destination same inode with every frozen file fact is complete; staging is not started; every other shape conflicts. |
+| `create_group`       | name, preselected GID, transaction identity                                                                                                                             | Absent is not started; exact name/GID under the pending transaction is complete; other identity conflicts.           |
+| `create_user`        | name, preselected UID/primary GID, transaction GECOS, home, shell, and locked-shadow requirement                                                                        | Classify only exactly absent, exactly complete, conflict, or ambiguous/partial; only the first two permit action.    |
+| `enable_service`     | unit device/inode/digest and exact enablement link path/target                                                                                                          | Bind link inodes only under exact unit and target identity; any pre-existing or changed link conflicts.              |
+| `start_service`      | exact unit                                                                                                                                                              | Active exact unit is complete; inactive is not started; failed state is a typed activation failure.                  |
+| `stop_service`       | exact unit                                                                                                                                                              | Inactive with no process/socket is complete; otherwise repeat stop and wait at most ten seconds for closure.         |
+| `create_kubernetes`  | API version, kind, namespace, name, transaction annotation                                                                                                              | Bind UID only from the same cluster and annotation; absence is not started; mismatch conflicts.                      |
+| `issue_credential`   | ServiceAccount UID, requested seconds, destination, staging leaf, owner/mode, transaction marker, then staged inode/digest/length/expiration when known                 | No leaf repeats issuance; a marked unbound leaf is removed and reissued; a bound inode continues publication.        |
+| `replace_credential` | destination and recorded staged device/inode, expiration                                                                                                                | Destination same inode is complete; staging same inode is not started; every other shape conflicts.                  |
+| `remove_group`       | complete recorded group ownership                                                                                                                                       | Absence is complete; exact name/GID is not started; changed identity conflicts.                                      |
+| `disable_service`    | recorded enablement link identities                                                                                                                                     | All absent is complete; exact recorded links remain not started; any replacement conflicts.                          |
+| `delete_kubernetes`  | complete recorded Kubernetes ownership                                                                                                                                  | Delete uses UID precondition; absence is complete; same UID remains not started; replacement conflicts.              |
+| `remove_host`        | complete recorded host ownership                                                                                                                                        | Absence is complete; exact recorded inode remains not started; any replacement conflicts.                            |
+| `daemon_reload`      | exact unit                                                                                                                                                              | Safe to repeat; it neither establishes nor removes ownership.                                                        |
 
-A staged regular file is first an unnamed `O_TMPFILE` inode in the destination parent. The installer
-writes it, sets and verifies a Linux extended attribute carrying the transaction identity, syncs the
-inode, links it no-replace to the predeclared same-parent staging leaf, syncs the parent, then
-records its inode before publication. A crash before link leaves no named inode. A staged directory
-uses a predeclared cryptographically random leaf containing the transaction identity; recovery may
-bind it only while it is root-owned, exact-mode, empty, in the already opened parent, and still
-named by that pending transaction, after which it sets and syncs the same extended-attribute marker.
-Any other shape conflicts. If the filesystem cannot provide these operations and markers, preflight
-rejects the host. No recovery binds an ordinary expected name or matching bytes alone.
+A staged regular file is first represented by `stage_host` with both `device` and `inode` set to
+`null`. They may move only together to the exact observed unsigned values in one same-variant
+successor. The installer creates an unnamed `O_TMPFILE` inode in the destination parent, writes it,
+sets and verifies a Linux extended attribute carrying the transaction identity, syncs the inode,
+links it no-replace to the predeclared same-parent staging leaf, syncs the parent, then records its
+device and inode before publication. The next successor is the exact `publish_host` record above; it
+retains every frozen `stage_host` file fact and cannot change any of them. The final file ownership
+successor is derived entirely from those retained facts. A crash before link leaves no named inode.
+A staged directory uses a predeclared cryptographically random leaf containing the transaction
+identity; recovery may bind it only while it is root-owned, exact-mode, empty, in the already opened
+parent, and still named by that pending transaction, after which it sets and syncs the same
+extended-attribute marker. Any other shape conflicts. If the filesystem cannot provide these
+operations and markers, preflight rejects the host. No recovery binds an ordinary expected name or
+matching bytes alone.
 
 `issue_credential` owns TokenRequest through credential staging as one seam. After receiving a
 token, the installer constructs the bounded kubeconfig in memory, writes and marks an unnamed
@@ -752,13 +758,15 @@ The explicit live-kind gate also passed healthy, `ProgressDeadlineExceeded`, and
 The installer bundle smoke additionally crossed all four fixed identity creates, exact name and
 numeric-key observations, user shadow and immutable-field classification, durable ownership binds,
 user crash and timeout recovery, ambiguous and conflicting partial-user refusal, a primary-GID
-refusal, and pre-user reverse group rollback. Its Debian 12 native lane uses `groupadd`, `groupdel`,
-`useradd`, `getent`, and `timeout`. It established native exit 0 for creation and removal, exit 9
-for duplicate-name creation, exit 8 when `groupdel` encounters a primary-GID user, exit 2 with empty
-output for absent `getent` group queries, the exact empty-member `name:x:gid:` record for name,
-numeric-key, and enumeration queries, and exit 137 for `timeout --signal=KILL` termination. Fixed
-executable fixtures provide the exhaustive deterministic identity crash-seam and hostile-output
-proof.
+refusal, and pre-user reverse group rollback. Its private Linux host-file tests cross exact marker
+readback, inode and parent sync, no-replace staging and publication, full-fact transaction
+successors, destination-parent resolution, and probe cleanup. No production asset order invokes that
+foundation. Its Debian 12 native lane uses `groupadd`, `groupdel`, `useradd`, `getent`, and
+`timeout`. It established native exit 0 for creation and removal, exit 9 for duplicate-name
+creation, exit 8 when `groupdel` encounters a primary-GID user, exit 2 with empty output for absent
+`getent` group queries, the exact empty-member `name:x:gid:` record for name, numeric-key, and
+enumeration queries, and exit 137 for `timeout --signal=KILL` termination. Fixed executable fixtures
+provide the exhaustive deterministic identity crash-seam and hostile-output proof.
 
 The separately runnable `./scripts/test-debian12-installer-identities.sh` experiment uses the pinned
 Debian 12 slim image with explicit `linux/amd64`. With passwd 4.13, glibc 2.36, and sudo 1.9.13p3,
@@ -795,8 +803,8 @@ Identity recovery additionally relies on exclusive host identity administration 
 transaction is nonterminal. Group records cannot carry a transaction marker, and NSS observation
 cannot prove which actor created an otherwise exact row. The two-group and user-argv container lanes
 use Debian's x86-64 tools under the available Docker platform, which may be emulated by the host;
-they are not fresh-VM or cross-distribution evidence. User recovery classification and both fixed
-mutations are implemented, but the staged fixture is not fresh-VM identity evidence. This finite
-evidence establishes no runnable installer, production safety, another platform, upgrade
-compatibility, backup, HA, repeated external operation, or protection from compromised host root,
-kernel, or service identity.
+they are not fresh-VM or cross-distribution evidence. User recovery classification, both fixed user
+mutations, and the private host-file publication foundation are implemented, but the staged fixture
+is not fresh-VM identity or production-asset evidence. This finite evidence establishes no runnable
+installer, production safety, another platform, upgrade compatibility, backup, HA, repeated external
+operation, or protection from compromised host root, kernel, or service identity.

@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read as _,
+    io::{Read as _, Seek as _, SeekFrom},
     mem::MaybeUninit,
     os::fd::OwnedFd,
     path::{Component, Path},
@@ -15,7 +15,8 @@ use k8s_openapi::api::{
 };
 use kube::{api::Api, config::KubeConfigOptions, Config};
 use rustix::fs::{
-    self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, Stat, XattrFlags, CWD,
+    self as rfs, AtFlags, FileType, FlockOperation, Mode, OFlags, RawDir, RenameFlags, Stat,
+    XattrFlags, CWD,
 };
 use tokio::io::AsyncReadExt as _;
 use tower_http::map_response_body::MapResponseBodyLayer;
@@ -47,6 +48,25 @@ struct OperatorInput {
 struct OpenTransaction {
     directory: OwnedFd,
     record: InstallerTransaction,
+}
+
+#[allow(
+    dead_code,
+    reason = "host-file installation order is intentionally not wired in this milestone"
+)]
+struct HostFileSpec<'a> {
+    bytes: &'a [u8],
+    destination: &'a str,
+    gid: u32,
+    mode: u32,
+    staging: &'a str,
+    uid: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostFilePublication {
+    Complete,
+    NotStarted,
 }
 
 const OPERATOR_FILES: &[(&str, usize)] = &[
@@ -444,6 +464,463 @@ fn recover_transaction_successor(
     }
     install_transaction_successor(directory)?;
     Ok(next)
+}
+
+#[allow(
+    dead_code,
+    reason = "host-file installation order is intentionally not wired in this milestone"
+)]
+fn ensure_host_file(
+    transaction: &mut OpenTransaction,
+    spec: &HostFileSpec<'_>,
+) -> Result<(), InstallerError> {
+    let parent = open_destination_parent(spec.destination)?;
+    let expected_digest = hex_digest(spec.bytes);
+    let expected_length =
+        u64::try_from(spec.bytes.len()).map_err(|_| InstallerError::HostMutationFailure)?;
+    if let Some(resource) = transaction.record.host_resources.iter().find(
+        |resource| matches!(resource, HostResource::File(file) if file.path == spec.destination),
+    ) {
+        let HostResource::File(file) = resource else {
+            return Err(InstallerError::HostMutationFailure);
+        };
+        if transaction.record.pending.is_none()
+            && file_matches_spec(file, spec, &expected_digest)
+            && validate_named_host_file(
+                &parent,
+                destination_leaf(spec.destination)?,
+                spec,
+                &transaction.record.transaction_id,
+                file.device,
+                file.inode,
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+        return Err(InstallerError::HostMutationFailure);
+    }
+
+    if transaction.record.pending.is_none() {
+        let old = transaction.record.clone();
+        transaction.record.pending = Some(PendingAction::StageHost {
+            destination: String::from(spec.destination),
+            device: None,
+            file_type: HostFileType::Regular,
+            gid: spec.gid,
+            inode: None,
+            length: expected_length,
+            mode: spec.mode,
+            sha256: expected_digest.clone(),
+            staging: String::from(spec.staging),
+            transaction_id: transaction.record.transaction_id.clone(),
+            uid: spec.uid,
+        });
+        publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+    }
+
+    let pending = transaction
+        .record
+        .pending
+        .clone()
+        .ok_or(InstallerError::HostMutationFailure)?;
+    match pending {
+        PendingAction::StageHost {
+            destination,
+            device,
+            file_type,
+            gid,
+            inode,
+            length,
+            mode,
+            sha256,
+            staging,
+            transaction_id,
+            uid,
+        } => {
+            if destination != spec.destination
+                || file_type != HostFileType::Regular
+                || gid != spec.gid
+                || length != expected_length
+                || mode != spec.mode
+                || sha256 != expected_digest
+                || staging != spec.staging
+                || transaction_id != transaction.record.transaction_id
+                || uid != spec.uid
+            {
+                return Err(InstallerError::HostMutationFailure);
+            }
+            let (device, inode) = match (device, inode) {
+                (None, None) => {
+                    let metadata = stage_or_recover_host_file(
+                        &parent,
+                        spec,
+                        &transaction.record.transaction_id,
+                    )?;
+                    let old = transaction.record.clone();
+                    let Some(PendingAction::StageHost { device, inode, .. }) =
+                        transaction.record.pending.as_mut()
+                    else {
+                        return Err(InstallerError::HostMutationFailure);
+                    };
+                    *device = Some(metadata.st_dev);
+                    *inode = Some(metadata.st_ino);
+                    publish_transaction_successor(
+                        &transaction.directory,
+                        &old,
+                        &transaction.record,
+                    )?;
+                    (metadata.st_dev, metadata.st_ino)
+                },
+                (Some(device), Some(inode)) => {
+                    require_destination_absent(&parent, destination_leaf(spec.destination)?)?;
+                    validate_named_host_file(
+                        &parent,
+                        OsStr::new(spec.staging),
+                        spec,
+                        &transaction.record.transaction_id,
+                        device,
+                        inode,
+                    )?;
+                    (device, inode)
+                },
+                _ => return Err(InstallerError::HostMutationFailure),
+            };
+            let old = transaction.record.clone();
+            transaction.record.pending = Some(PendingAction::PublishHost {
+                destination: String::from(spec.destination),
+                device,
+                file_type,
+                gid,
+                inode,
+                length,
+                mode,
+                sha256,
+                staging,
+                transaction_id,
+                uid,
+            });
+            publish_transaction_successor(&transaction.directory, &old, &transaction.record)?;
+        },
+        PendingAction::PublishHost { .. } => {},
+        _ => return Err(InstallerError::HostMutationFailure),
+    }
+
+    let PendingAction::PublishHost {
+        destination,
+        device,
+        file_type,
+        gid,
+        inode,
+        length,
+        mode,
+        sha256,
+        staging,
+        transaction_id,
+        uid,
+    } = transaction
+        .record
+        .pending
+        .clone()
+        .ok_or(InstallerError::HostMutationFailure)?
+    else {
+        return Err(InstallerError::HostMutationFailure);
+    };
+    if destination != spec.destination
+        || file_type != HostFileType::Regular
+        || gid != spec.gid
+        || length != expected_length
+        || mode != spec.mode
+        || sha256 != expected_digest
+        || staging != spec.staging
+        || transaction_id != transaction.record.transaction_id
+        || uid != spec.uid
+    {
+        return Err(InstallerError::HostMutationFailure);
+    }
+    publish_or_recover_host_file(
+        &parent,
+        spec,
+        &transaction.record.transaction_id,
+        device,
+        inode,
+    )?;
+    let old = transaction.record.clone();
+    transaction.record.pending = None;
+    transaction
+        .record
+        .host_resources
+        .push(HostResource::File(FileResource {
+            device,
+            file_type: HostFileType::Regular,
+            gid: spec.gid,
+            inode,
+            kind: FileResourceKind::File,
+            length: expected_length,
+            mode: spec.mode,
+            path: String::from(spec.destination),
+            sha256: expected_digest,
+            uid: spec.uid,
+        }));
+    publish_transaction_successor(&transaction.directory, &old, &transaction.record)
+}
+
+fn file_matches_spec(file: &FileResource, spec: &HostFileSpec<'_>, digest: &str) -> bool {
+    file.file_type == HostFileType::Regular
+        && file.gid == spec.gid
+        && file.kind == FileResourceKind::File
+        && file.length == u64::try_from(spec.bytes.len()).unwrap_or(u64::MAX)
+        && file.mode == spec.mode
+        && file.path == spec.destination
+        && file.sha256 == digest
+        && file.uid == spec.uid
+}
+
+fn open_destination_parent(destination: &str) -> Result<OwnedFd, InstallerError> {
+    let destination = Path::new(destination);
+    if !destination.is_absolute()
+        || destination
+            .components()
+            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(InstallerError::HostMutationFailure);
+    }
+    let parent = destination
+        .parent()
+        .ok_or(InstallerError::HostMutationFailure)?;
+    open_host_directory(&host_path(
+        parent.to_str().ok_or(InstallerError::HostMutationFailure)?,
+    ))
+    .map_err(|_| InstallerError::HostMutationFailure)
+}
+
+fn destination_leaf(destination: &str) -> Result<&OsStr, InstallerError> {
+    Path::new(destination)
+        .file_name()
+        .ok_or(InstallerError::HostMutationFailure)
+}
+
+fn stage_or_recover_host_file(
+    parent: &OwnedFd,
+    spec: &HostFileSpec<'_>,
+    transaction_id: &str,
+) -> Result<Stat, InstallerError> {
+    require_destination_absent(parent, destination_leaf(spec.destination)?)?;
+    match rfs::statat(parent, spec.staging, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => create_staged_host_file(parent, spec, transaction_id),
+        Ok(_) => {
+            validate_named_host_file(parent, OsStr::new(spec.staging), spec, transaction_id, 0, 0)
+        },
+        Err(_) => Err(InstallerError::HostMutationFailure),
+    }
+}
+
+fn create_staged_host_file(
+    parent: &OwnedFd,
+    spec: &HostFileSpec<'_>,
+    transaction_id: &str,
+) -> Result<Stat, InstallerError> {
+    let descriptor = rfs::openat(
+        parent,
+        ".",
+        OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+        Mode::from_raw_mode(spec.mode),
+    )
+    .map_err(|_| InstallerError::HostMutationFailure)?;
+    rfs::fchown(
+        &descriptor,
+        Some(rustix::process::Uid::from_raw(spec.uid)),
+        Some(rustix::process::Gid::from_raw(spec.gid)),
+    )
+    .map_err(|_| InstallerError::HostMutationFailure)?;
+    rfs::fchmod(&descriptor, Mode::from_raw_mode(spec.mode))
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    file.write_all(spec.bytes)
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    rfs::fdatasync(&file).map_err(|_| InstallerError::HostMutationFailure)?;
+    rfs::fsetxattr(
+        &file,
+        "user.kapsel.transaction-id",
+        transaction_id.as_bytes(),
+        XattrFlags::CREATE,
+    )
+    .map_err(|_| InstallerError::HostMutationFailure)?;
+    validate_host_file_marker(&file, transaction_id)?;
+    rfs::fsync(&file).map_err(|_| InstallerError::HostMutationFailure)?;
+    validate_open_host_file(&mut file, spec, transaction_id, 0, 0, 0)?;
+    rfs::linkat(&file, "", parent, spec.staging, AtFlags::EMPTY_PATH)
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    rfs::fsync(parent).map_err(|_| InstallerError::HostMutationFailure)?;
+    validate_named_host_file(parent, OsStr::new(spec.staging), spec, transaction_id, 0, 0)
+}
+
+fn validate_named_host_file(
+    parent: &OwnedFd,
+    name: &OsStr,
+    spec: &HostFileSpec<'_>,
+    transaction_id: &str,
+    expected_device: u64,
+    expected_inode: u64,
+) -> Result<Stat, InstallerError> {
+    let descriptor = rfs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::HostMutationFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    validate_open_host_file(
+        &mut file,
+        spec,
+        transaction_id,
+        expected_device,
+        expected_inode,
+        1,
+    )
+}
+
+fn validate_open_host_file(
+    file: &mut std::fs::File,
+    spec: &HostFileSpec<'_>,
+    transaction_id: &str,
+    expected_device: u64,
+    expected_inode: u64,
+    expected_links: u64,
+) -> Result<Stat, InstallerError> {
+    let before = rfs::fstat(&*file).map_err(|_| InstallerError::HostMutationFailure)?;
+    let expected_length =
+        i64::try_from(spec.bytes.len()).map_err(|_| InstallerError::HostMutationFailure)?;
+    if !FileType::from_raw_mode(before.st_mode).is_file()
+        || before.st_uid != spec.uid
+        || before.st_gid != spec.gid
+        || before.st_mode & 0o7777 != spec.mode
+        || before.st_nlink != expected_links
+        || before.st_size != expected_length
+        || expected_device != 0 && before.st_dev != expected_device
+        || expected_inode != 0 && before.st_ino != expected_inode
+    {
+        return Err(InstallerError::HostMutationFailure);
+    }
+    validate_host_file_marker(file, transaction_id)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    let maximum = u64::try_from(spec.bytes.len())
+        .map_err(|_| InstallerError::HostMutationFailure)?
+        .checked_add(1)
+        .ok_or(InstallerError::HostMutationFailure)?;
+    let mut bytes = Vec::with_capacity(spec.bytes.len());
+    (&mut *file)
+        .take(maximum)
+        .read_to_end(&mut bytes)
+        .map_err(|_| InstallerError::HostMutationFailure)?;
+    let after = rfs::fstat(&*file).map_err(|_| InstallerError::HostMutationFailure)?;
+    if bytes != spec.bytes || !stable_file(&before, &after, bytes.len()) {
+        return Err(InstallerError::HostMutationFailure);
+    }
+    Ok(after)
+}
+
+fn validate_host_file_marker(
+    file: &std::fs::File,
+    transaction_id: &str,
+) -> Result<(), InstallerError> {
+    let mut marker = [0_u8; 65];
+    match rfs::fgetxattr(file, "user.kapsel.transaction-id", &mut marker) {
+        Ok(length) if length == 64 && marker[..length] == *transaction_id.as_bytes() => Ok(()),
+        _ => Err(InstallerError::HostMutationFailure),
+    }
+}
+
+fn require_destination_absent(parent: &OwnedFd, name: &OsStr) -> Result<(), InstallerError> {
+    match rfs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        _ => Err(InstallerError::HostMutationFailure),
+    }
+}
+
+fn publish_or_recover_host_file(
+    parent: &OwnedFd,
+    spec: &HostFileSpec<'_>,
+    transaction_id: &str,
+    expected_device: u64,
+    expected_inode: u64,
+) -> Result<(), InstallerError> {
+    match classify_host_file_publication(
+        parent,
+        spec,
+        transaction_id,
+        expected_device,
+        expected_inode,
+    )? {
+        HostFilePublication::Complete => Ok(()),
+        HostFilePublication::NotStarted => {
+            rfs::renameat_with(
+                parent,
+                spec.staging,
+                parent,
+                destination_leaf(spec.destination)?,
+                RenameFlags::NOREPLACE,
+            )
+            .map_err(|_| InstallerError::HostMutationFailure)?;
+            rfs::fsync(parent).map_err(|_| InstallerError::HostMutationFailure)?;
+            validate_named_host_file(
+                parent,
+                destination_leaf(spec.destination)?,
+                spec,
+                transaction_id,
+                expected_device,
+                expected_inode,
+            )?;
+            Ok(())
+        },
+    }
+}
+
+fn classify_host_file_publication(
+    parent: &OwnedFd,
+    spec: &HostFileSpec<'_>,
+    transaction_id: &str,
+    expected_device: u64,
+    expected_inode: u64,
+) -> Result<HostFilePublication, InstallerError> {
+    let destination = destination_leaf(spec.destination)?;
+    let destination_exists = match rfs::statat(parent, destination, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => true,
+        Err(rustix::io::Errno::NOENT) => false,
+        Err(_) => return Err(InstallerError::HostMutationFailure),
+    };
+    let staging_exists = match rfs::statat(parent, spec.staging, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => true,
+        Err(rustix::io::Errno::NOENT) => false,
+        Err(_) => return Err(InstallerError::HostMutationFailure),
+    };
+    match (destination_exists, staging_exists) {
+        (true, false) => {
+            validate_named_host_file(
+                parent,
+                destination,
+                spec,
+                transaction_id,
+                expected_device,
+                expected_inode,
+            )?;
+            Ok(HostFilePublication::Complete)
+        },
+        (false, true) => {
+            validate_named_host_file(
+                parent,
+                OsStr::new(spec.staging),
+                spec,
+                transaction_id,
+                expected_device,
+                expected_inode,
+            )?;
+            Ok(HostFilePublication::NotStarted)
+        },
+        _ => Err(InstallerError::HostMutationFailure),
+    }
 }
 
 fn new_transaction_id() -> Result<String, InstallerError> {
@@ -1034,40 +1511,150 @@ async fn run_bounded_command(path: &Path, arguments: &[&str]) -> Result<i32, Ins
 }
 
 fn probe_destination_filesystems() -> Result<(), InstallerError> {
-    let mut devices = BTreeSet::new();
     for parent in [
         "/etc",
         "/var/lib",
         "/run",
-        "/usr",
         "/usr/bin",
-        "/usr/lib",
+        "/usr/libexec",
+        "/usr/lib/systemd/system",
+        "/usr/lib/sysusers.d",
         "/usr/share",
+        "/usr/share/doc",
     ] {
-        let path = host_path(parent);
-        let directory = open_host_directory(&path)?;
+        let directory = open_host_directory(&host_path(parent))?;
         let metadata = rfs::fstat(&directory).map_err(|_| InstallerError::HostPreflightFailure)?;
         if !root_owned_directory(&metadata) {
             return Err(InstallerError::HostPreflightFailure);
         }
-        if devices.insert(metadata.st_dev) {
-            let file = rfs::openat(
-                &directory,
-                ".",
-                OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(|_| InstallerError::HostPreflightFailure)?;
-            rfs::fsetxattr(
-                &file,
-                "user.kapsel.transaction-id",
-                b"probe",
-                XattrFlags::CREATE,
-            )
-            .map_err(|_| InstallerError::HostPreflightFailure)?;
-        }
+        probe_destination_filesystem(&directory)?;
     }
     Ok(())
+}
+
+fn probe_destination_filesystem(directory: &OwnedFd) -> Result<(), InstallerError> {
+    const STAGING: &str = ".kapsel-installer-filesystem-probe.stage";
+    const DESTINATION: &str = ".kapsel-installer-filesystem-probe";
+    const MARKER: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    const BYTES: &[u8] = b"kapsel installer filesystem probe";
+
+    require_probe_leaf_absent(directory, STAGING)?;
+    require_probe_leaf_absent(directory, DESTINATION)?;
+    let probe = (|| {
+        let descriptor = rfs::openat(
+            directory,
+            ".",
+            OFlags::RDWR | OFlags::TMPFILE | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+        rfs::fchmod(&descriptor, Mode::RUSR | Mode::WUSR)
+            .map_err(|_| InstallerError::HostPreflightFailure)?;
+        let mut file = std::fs::File::from(descriptor);
+        file.write_all(BYTES)
+            .map_err(|_| InstallerError::HostPreflightFailure)?;
+        rfs::fdatasync(&file).map_err(|_| InstallerError::HostPreflightFailure)?;
+        rfs::fsetxattr(
+            &file,
+            "user.kapsel.transaction-id",
+            MARKER.as_bytes(),
+            XattrFlags::CREATE,
+        )
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+        validate_probe_file(&mut file, MARKER, 0)?;
+        rfs::fsync(&file).map_err(|_| InstallerError::HostPreflightFailure)?;
+        rfs::linkat(&file, "", directory, STAGING, AtFlags::EMPTY_PATH)
+            .map_err(|_| InstallerError::HostPreflightFailure)?;
+        rfs::fsync(directory).map_err(|_| InstallerError::HostPreflightFailure)?;
+        validate_named_probe_file(directory, STAGING, MARKER)?;
+        rfs::renameat_with(
+            directory,
+            STAGING,
+            directory,
+            DESTINATION,
+            RenameFlags::NOREPLACE,
+        )
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+        rfs::fsync(directory).map_err(|_| InstallerError::HostPreflightFailure)?;
+        validate_named_probe_file(directory, DESTINATION, MARKER)?;
+        Ok(())
+    })();
+    let cleanup = cleanup_probe_file(directory, STAGING, MARKER)
+        .and_then(|()| cleanup_probe_file(directory, DESTINATION, MARKER))
+        .and_then(|()| rfs::fsync(directory).map_err(|_| InstallerError::HostPreflightFailure));
+    probe.and(cleanup)
+}
+
+fn require_probe_leaf_absent(directory: &OwnedFd, name: &str) -> Result<(), InstallerError> {
+    match rfs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        _ => Err(InstallerError::HostPreflightFailure),
+    }
+}
+
+fn validate_named_probe_file(
+    directory: &OwnedFd,
+    name: &str,
+    marker: &str,
+) -> Result<(), InstallerError> {
+    let descriptor = rfs::openat(
+        directory,
+        name,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| InstallerError::HostPreflightFailure)?;
+    let mut file = std::fs::File::from(descriptor);
+    validate_probe_file(&mut file, marker, 1)
+}
+
+fn validate_probe_file(
+    file: &mut std::fs::File,
+    marker: &str,
+    expected_links: u64,
+) -> Result<(), InstallerError> {
+    const BYTES: &[u8] = b"kapsel installer filesystem probe";
+    let before = rfs::fstat(&*file).map_err(|_| InstallerError::HostPreflightFailure)?;
+    if !FileType::from_raw_mode(before.st_mode).is_file()
+        || before.st_uid != 0
+        || before.st_gid != 0
+        || before.st_mode & 0o7777 != 0o600
+        || before.st_nlink != expected_links
+        || usize::try_from(before.st_size) != Ok(BYTES.len())
+    {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    let mut observed_marker = [0_u8; 65];
+    if !matches!(
+        rfs::fgetxattr(&*file, "user.kapsel.transaction-id", &mut observed_marker),
+        Ok(64) if observed_marker[..64] == *marker.as_bytes()
+    ) {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+    let mut bytes = Vec::with_capacity(BYTES.len());
+    (&mut *file)
+        .take(u64::try_from(BYTES.len()).unwrap_or(u64::MAX) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| InstallerError::HostPreflightFailure)?;
+    let after = rfs::fstat(&*file).map_err(|_| InstallerError::HostPreflightFailure)?;
+    if bytes != BYTES || !stable_file(&before, &after, bytes.len()) {
+        return Err(InstallerError::HostPreflightFailure);
+    }
+    Ok(())
+}
+
+fn cleanup_probe_file(directory: &OwnedFd, name: &str, marker: &str) -> Result<(), InstallerError> {
+    match rfs::statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Ok(_) => {
+            validate_named_probe_file(directory, name, marker)?;
+            rfs::unlinkat(directory, name, AtFlags::empty())
+                .map_err(|_| InstallerError::HostPreflightFailure)
+        },
+        Err(_) => Err(InstallerError::HostPreflightFailure),
+    }
 }
 
 async fn run_kubernetes_preflight(input: &OperatorInput) -> Result<(), InstallerError> {
@@ -1746,5 +2333,161 @@ mod tests {
             .expect("conflicting successor must be removed by the test");
         drop(conflicting);
         drop(staged);
+    }
+
+    #[test]
+    fn filesystem_probe_exercises_publication_and_leaves_no_named_artifact() {
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+        let path = std::path::PathBuf::from("/root").join(format!(
+            "kapsel-installer-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("probe fixture must be created");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("probe fixture mode must be set");
+        let directory = open_host_directory(&path).expect("probe fixture must open");
+        probe_destination_filesystem(&directory).expect("filesystem probe must pass");
+        assert_eq!(std::fs::read_dir(&path).unwrap().count(), 0);
+
+        let conflict = path.join(".kapsel-installer-filesystem-probe");
+        std::fs::write(&conflict, b"unowned").expect("probe conflict must be written");
+        assert!(probe_destination_filesystem(&directory).is_err());
+        assert_eq!(std::fs::read(&conflict).unwrap(), b"unowned");
+
+        drop(directory);
+        std::fs::remove_dir_all(path).expect("probe fixture must be removed");
+    }
+
+    #[test]
+    fn host_file_foundation_publishes_exact_inode_and_rejects_unmarked_staging() {
+        if !rustix::process::geteuid().is_root() {
+            return;
+        }
+        let (transaction_path, transaction_directory) =
+            transaction_test_directory().expect("root fixture must be available");
+        let host_path = std::path::PathBuf::from("/root").join(format!(
+            "kapsel-installer-host-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&host_path).expect("host fixture must be created");
+        std::fs::set_permissions(&host_path, std::fs::Permissions::from_mode(0o755))
+            .expect("host fixture mode must be set");
+        let first_destination = host_path.join("asset-one");
+        let first_destination = first_destination
+            .to_str()
+            .expect("host fixture destination must be UTF-8");
+        let second_destination = host_path.join("asset-two");
+        let second_destination = second_destination
+            .to_str()
+            .expect("host fixture destination must be UTF-8");
+
+        let record = complete_identity_test_transaction();
+        publish_initial_transaction(
+            &transaction_directory,
+            &encode_transaction(&record).expect("identity record must encode"),
+        )
+        .expect("identity record must publish");
+        let mut transaction = OpenTransaction {
+            directory: transaction_directory,
+            record,
+        };
+        let first = HostFileSpec {
+            bytes: b"first fixture bytes",
+            destination: first_destination,
+            gid: 0,
+            mode: 0o644,
+            staging: ".kapsel-stage-one",
+            uid: 0,
+        };
+        ensure_host_file(&mut transaction, &first).expect("host file must publish");
+        assert_eq!(
+            std::fs::read(host_path.join("asset-one")).unwrap(),
+            first.bytes
+        );
+        assert!(transaction.record.pending.is_none());
+        assert_eq!(transaction.record.host_resources.len(), 5);
+        ensure_host_file(&mut transaction, &first).expect("exact published inode must reopen");
+
+        std::fs::write(host_path.join("asset-one"), b"changed").unwrap();
+        assert!(ensure_host_file(&mut transaction, &first).is_err());
+        std::fs::write(host_path.join("asset-one"), first.bytes).unwrap();
+        ensure_host_file(&mut transaction, &first).expect("restored exact inode must reopen");
+
+        let second = HostFileSpec {
+            bytes: b"second fixture bytes",
+            destination: second_destination,
+            gid: 0,
+            mode: 0o644,
+            staging: ".kapsel-stage-two",
+            uid: 0,
+        };
+        std::fs::write(host_path.join(second.staging), second.bytes).unwrap();
+        std::fs::set_permissions(
+            host_path.join(second.staging),
+            std::fs::Permissions::from_mode(second.mode),
+        )
+        .unwrap();
+        assert!(ensure_host_file(&mut transaction, &second).is_err());
+        assert!(!host_path.join("asset-two").exists());
+        assert!(matches!(
+            transaction.record.pending,
+            Some(PendingAction::StageHost {
+                device: None,
+                inode: None,
+                ..
+            })
+        ));
+
+        drop(transaction.directory);
+        std::fs::remove_dir_all(host_path).unwrap();
+        std::fs::remove_dir_all(transaction_path).unwrap();
+    }
+
+    fn complete_identity_test_transaction() -> InstallerTransaction {
+        let mut transaction = test_initial_transaction();
+        transaction.phase = TransactionPhase::Installing;
+        transaction.host_resources = vec![
+            HostResource::Group(GroupResource {
+                gid: 999,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel"),
+            }),
+            HostResource::Group(GroupResource {
+                gid: 998,
+                kind: GroupResourceKind::Group,
+                name: String::from("kapsel-service-callers"),
+            }),
+            HostResource::User(UserResource {
+                gecos_transaction_id: transaction.transaction_id.clone(),
+                home: String::from("/var/lib/kapsel"),
+                kind: UserResourceKind::User,
+                locked: true,
+                name: String::from("kapsel"),
+                primary_gid: 999,
+                shell: String::from("/usr/sbin/nologin"),
+                uid: 997,
+            }),
+            HostResource::User(UserResource {
+                gecos_transaction_id: transaction.transaction_id.clone(),
+                home: String::from("/nonexistent"),
+                kind: UserResourceKind::User,
+                locked: true,
+                name: String::from("kapsel-service-caller"),
+                primary_gid: 998,
+                shell: String::from("/usr/sbin/nologin"),
+                uid: 996,
+            }),
+        ];
+        transaction
     }
 }

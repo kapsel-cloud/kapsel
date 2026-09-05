@@ -246,6 +246,8 @@ def main() -> int:
             "set -eu; "
             "trap 'chown -R \"$HOST_UID:$HOST_GID\" /target' EXIT; "
             f"cargo test --release --locked --target {TARGET} -p kapsel-installer "
+            "--bin kapsel-installer; "
+            f"cargo test --release --locked --target {TARGET} -p kapsel-installer "
             "--test linux_installer_scenarios -- --ignored --test-threads=1"
         )
         command = [
