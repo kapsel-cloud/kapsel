@@ -297,10 +297,7 @@ mod tests {
         fs,
         io::{Read as _, Write as _},
         net::{TcpListener, TcpStream},
-        os::unix::{
-            fs::{MetadataExt as _, PermissionsExt as _},
-            net::UnixListener,
-        },
+        os::unix::{fs::PermissionsExt as _, net::UnixListener},
         path::{Path, PathBuf},
         thread,
         time::Duration,
@@ -714,7 +711,6 @@ mod tests {
             fs::Permissions::from_mode(0o660),
         )
         .unwrap();
-        let stale_inode = fs::metadata(&inputs.socket_access_path).unwrap().ino();
         drop(stale);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -724,8 +720,10 @@ mod tests {
         let listener = runtime.block_on(async { inputs.bind_listener() }).unwrap();
 
         let replacement = fs::metadata(&inputs.socket_access_path).unwrap();
-        assert_ne!(replacement.ino(), stale_inode);
         assert_eq!(replacement.permissions().mode() & 0o7777, 0o660);
+        let client = StdUnixStream::connect(&inputs.socket_access_path).unwrap();
+        let (_connection, _) = runtime.block_on(listener.accept()).unwrap();
+        drop(client);
         drop(listener);
         fs::remove_dir_all(root).unwrap();
     }
