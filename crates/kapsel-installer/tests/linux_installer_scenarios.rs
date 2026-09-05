@@ -1,6 +1,6 @@
 //! Named Linux integration scenarios for the staged installer bundle.
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 #![allow(
     clippy::expect_used,
     clippy::panic,
@@ -188,10 +188,12 @@ fn serve_kubernetes_request(stream: TcpStream, config: Arc<ServerConfig>) {
     let (status, body) = kubernetes_response(&mode, method, path);
     let response = format!(
         concat!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n",
-            "Content-Length: {}\r\nConnection: close\r\n\r\n{body}"
+            "HTTP/1.1 {}\r\nContent-Type: application/json\r\n",
+            "Content-Length: {}\r\nConnection: close\r\n\r\n{}"
         ),
-        body.len()
+        status,
+        body.len(),
+        body
     );
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
