@@ -10,6 +10,8 @@ mod authorization;
 mod demo_control;
 mod journal;
 mod kubernetes;
+#[cfg(test)]
+mod protected_tool_tests;
 mod receipt;
 
 use std::{error::Error, fmt, future::Future, path::Path};

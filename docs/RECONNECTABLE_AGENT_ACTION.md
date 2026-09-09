@@ -51,8 +51,10 @@ the handle, and reconnected after their own session loss.
    receiver without resending; the operation finalized while the rollout was still settling.
 4. A new agent session reconnected to the same handle, polled status, retrieved the frozen receipt,
    and reported without re-submitting.
-5. A separate approval was invalidated by a same-name recreation and by ordinary status churn; both
-   submissions durably terminated as `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes.
+5. The retained narrative describes stale approvals after same-name recreation and ordinary status
+   churn. The completion summary instead attributes both counted rejections to status churn. No
+   per-attempt ledger resolves that difference. Both reported rejections terminated as
+   `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes.
 6. An inconclusive action was handed to a human: the operator retrieved the frozen receipt and
    verified it offline with `kapsel inspect`.
 
@@ -72,13 +74,14 @@ the handle, and reconnected after their own session loss.
   (60-second `minReadySeconds`) could not settle inside it after a restart, which is what produced
   the `UNKNOWN` above. The bounded window is shorter than the 45-180 second observation span this
   workflow asks for.
-- Stale approvals: two of five submission attempts were durably rejected as
-  `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes. Both invalidating changes were ordinary and
-  irrelevant to the requested intent: a Deployment status update between approval and submission
-  moved the resourceVersion, and the receiver observation projected the observed resourceVersion
-  alongside the approved one so the mismatch was explicit. Reapproval cost was measured at two
-  seconds and three operator commands (new snapshot grant, service restart to load it, new handle
-  record); no existing handle ever acquired replacement authority.
+- Stale approvals: the completion summary reports two of five submission attempts rejected as
+  `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes, and resourceVersion changes `500` to `591` and
+  `494` to `586`. Those opaque version pairs do not identify the writes that caused them. The
+  narrative also names recreation, and the harness exposes separate annotation-change and recreation
+  commands. Without a per-attempt ledger, the causes cannot be reconciled. The reported count is not
+  a representative rejection rate, nor evidence that both changes were intent-irrelevant. Reapproval
+  was reported as two seconds and three operator commands (new snapshot grant, service restart to
+  load it, new handle record). No existing handle acquired replacement authority.
 - Real agents and asserted authority: on first contact, both real agent sessions refused a
   submission requested through prompt-asserted authority alone, treating it as an injection. The
   invocation succeeded only after the operator published standing caller configuration and a handle
@@ -95,21 +98,25 @@ the handle, and reconnected after their own session loss.
 
 ## Outcome
 
-Kapsel reduced caller-side recovery logic to zero and made every outcome inspectable from durable
-evidence; no session needed bespoke continuation code, and no outcome had to be guessed after
-ambiguity. It did not reduce operator effort relative to an ordinary protected typed tool: strict
-snapshot approval converted two ordinary, intent-irrelevant target churns into reapprovals, and the
-bounded observation window converted one ordinary healthy rollout into a terminal `UNKNOWN` handoff.
-The broker thesis survives on evidence quality and authority isolation, not on operator effort.
+No agent session wrote bespoke recovery code. Kapsel retained attempted-action receipts and
+status-only rejection facts, so reconnect did not require guessing an outcome or repeating the
+mutation. The short observation window produced a concrete `UNKNOWN` handoff for a later healthy
+rollout. Strict snapshot approval also produced reapproval work, with the rejection causes bounded
+as above.
+
+No equally protected typed tool ran in this experiment. Its earlier claim about relative operator
+effort was therefore unproved. The subsequent
+[protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) executes that separate comparison and
+distinguishes its fixed cases from this historical accounting.
 
 ## Smallest concrete gaps recorded
 
 - The 30-second receiver-observation window is shorter than this workflow's own 45-180 second
   observation span, so post-`apply_started` recovery can terminalize a still-settling rollout as
   `UNKNOWN`.
-- Whole-object resourceVersion churn from Kubernetes status updates invalidates exact-snapshot
-  approvals even when nothing about the requested mutation's intent changed; the experiment records
-  this as the measured cost of the accepted design, not as a defect.
+- Whole-object resourceVersion churn invalidates exact-snapshot approval even when the desired image
+  change is unaffected. This is an accepted semantic cost, not a defect or a frequency established
+  by this experiment's mixed rejection accounting.
 
 ## Earlier stop condition (retained)
 

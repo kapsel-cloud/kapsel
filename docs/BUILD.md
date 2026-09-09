@@ -137,6 +137,20 @@ python3 scripts/test-independent-kubectl.py
 The [kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md) uses a loopback fixture, not a cluster or
 Kapsel runtime. It is separate from the default gate.
 
+## Protected typed-tool comparison
+
+This deterministic experiment needs only the repository Rust toolchain, not Docker or credentials:
+
+```sh
+cargo test --locked -p kapsel --lib gateway::protected_tool_tests -- --nocapture
+KAPSEL_COMPARISON_ONLY=pre-send cargo test --locked -p kapsel --lib \
+  gateway::protected_tool_tests::protected_tool_comparison -- --exact --nocapture
+```
+
+The [comparison report](PROTECTED_TOOL_COMPARISON.md) owns requirements, tested source identities,
+operator cost and evidence limits. Both actual implementations run against an independent HTTP
+service fixture with real process exits. The full matrix is included in the default gate.
+
 ## Kapsel service candidate
 
 The service remains unpublished. The focused package command above includes its private harness. On

@@ -53,6 +53,7 @@ part of v0.2.0 or a supported installation path.
 - [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)
 - [Later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md)
 - [Independent kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md)
+- [Protected typed-tool comparison](PROTECTED_TOOL_COMPARISON.md)
 
 ## Authority order
 
