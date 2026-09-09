@@ -11,6 +11,9 @@ run_static_checks() {
   printf '%s\n' "==> Formatting pipeline regressions"
   python3 scripts/test-format.py
 
+  printf '%s\n' "==> Later-observation launcher regressions"
+  python3 scripts/test-kind-later-observation.py --self-test
+
   printf '%s\n' "==> Rust line width"
   ./scripts/check-rust-width.sh
 

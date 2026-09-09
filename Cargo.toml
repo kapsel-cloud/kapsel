@@ -77,7 +77,7 @@ tower-http = { version = "0.7.0", default-features = false, features = ["map-res
 
 [dev-dependencies]
 http.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
 tower-test.workspace = true
 
 [lints]
