@@ -30,23 +30,77 @@ authority separation, durable outcomes, composition, observable output, and non-
 table-driven cases with shared setup, and use separate precise assertions when distinct contract
 facts matter.
 
+## Action-boundary evidence
+
+The [accepted scope](SCOPE.md#direction-and-current-boundary) retains the bounded broker. This map
+separates improvements adopted into unreleased source from evidence that did not change production
+behavior. None changes the published v0.2.0 artifact.
+
+| Evidence                          | Exact retained revision                                                                                | Result and limit                                                                                                                                                                                                                                                    |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Recovery policies                 | `93552ccf220d605c02671f0e66259191d730efec`                                                             | [ADR 0011](decisions/0011-retain-observation-only-recovery.md) retains no-replay after live stale strategic PATCH repeated admission effects. Temporal is a projection, not an executed workflow.                                                                   |
+| Snapshot approval and proof       | `39c66c929a0df2a9a484a40358d88cdc179b706d`, `9df5fad32723d2da3a988c66aea44c7e25ba63ed`                 | Adopted exact UID/version approval and zero-PATCH stale rejection. Live race proof complements deterministic restart/receipt cases.                                                                                                                                 |
+| Real-agent reconnect              | `30567790892164d6e3eb4353f5667cc93fa90bd6`                                                             | [Workflow report](RECONNECTABLE_AGENT_ACTION.md) establishes reconnect and slow-rollout friction, not relative operator effort or a representative stale-rejection rate.                                                                                            |
+| Independent kubectl               | `b73d30753347faa8523aceb02b572fcb7caab2e0`                                                             | [Corpus](INDEPENDENT_TOOL_CORPUS.md) found ordinary adapter risks, no added standalone failure-kit value in seven fixed cases. No project demotion adopted.                                                                                                         |
+| SQLite receipt completion         | `b27d8e0a6c3dea91d2d4333ea111d32629a04f26`                                                             | Adopted format 4. Signed bytes and terminal state commit together. Removed publication-dependent completion, durable output paths and receipt-root startup coupling. Older journals rejected.                                                                       |
+| Event kernel and retry correction | `21f0a2534e9555130025a4082e935194886a6cb2`                                                             | Kernel rejected before integration. Bounded explorer and scratch SQLite runner share test-only decisions. Separately fixed hidden HTTP retries.                                                                                                                     |
+| Sequential dispatch               | `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`, consolidated as `59b4f04f513f1dfd4131f722b6c44b210d73b453` | Adopted private consumed permission at the real adapter boundary. [ADR 0011](decisions/0011-retain-observation-only-recovery.md#sequential-boundary-comparison) records removed apply arguments, request counts and I/O obligations. No shared pure kernel claimed. |
+| Guarded JSON Patch                | `430e7f20aed71ef8daec81b681625a641d98ee18`                                                             | [Live comparison](#frozen-json-patch-receiver-comparison) reduced some stale admissions but retained pending/unpersisted ambiguity. Keep strategic merge/no-replay.                                                                                                 |
+| Later observation                 | `426c17f0152f9cdb5036895c25cdcbed11b20e43`                                                             | [Prototype](LATER_OBSERVATION_EXPERIMENT.md) supplies useful later evidence without changing UNKNOWN or mutating again. Test-only, not a supported lifecycle.                                                                                                       |
+| Protected typed tool              | `cad49d7881c19abe666215d7fd8fd76c2f1a5019`                                                             | [Comparison](PROTECTED_TOOL_COMPARISON.md) executed thirteen fixed cases per arm with identical receiver evidence. Durable core recurs. No production equivalence or signature-removal decision.                                                                    |
+
+These revisions were verified locally. Another checkout must obtain them from a repository
+containing them, for example `git fetch /path/to/owning/kapsel master`; local availability does not
+imply a remote push. The two original kernel/dispatch branch commits can be fetched from a
+containing local branch or tag. Current master contains their retained executable evidence in
+`59b4f04`.
+
+The kernel's former report is historical at
+`21f0a2534e9555130025a4082e935194886a6cb2:docs/APPROVAL_KERNEL_EXPERIMENT.md`. It was removed during
+consolidation to avoid parallel rationale. The retained `approval_kernel_prototype` tests cover
+1,714 explored states through depth 7, 252 healthy interleavings, and duplicate-acknowledgement and
+recovery-resend counterexamples. No production orchestration was replaced by that event machine. Its
+fresh acknowledgement and driver/I/O correspondence remain assumptions, not durability proof.
+
+Receipt consumers were checked through the application/service retrieval path, not just SQL.
+`gateway::tests::receipt` covers signing failure, commit-acknowledgement loss, process exit before
+and after commitment and frozen observation/signer bytes. `e2e_demo_recovery` covers real executable
+restart and export under changed settings. The Linux service process lane retrieves and inspects
+original bytes while the export destination is unavailable. The application client retry and
+snapshot regressions retain independent request counts. Process exits do not prove power loss.
+
+Reproduce the retained deterministic evidence on the current checkout:
+
+```sh
+cargo test --locked -p kapsel --lib approval_kernel_prototype
+cargo test --locked -p kapsel --lib gateway::tests
+cargo test --locked -p kapsel --lib gateway::protected_tool_tests
+cargo test --locked -p kapsel --test application_retry
+cargo test --locked -p kapsel --test later_observation
+./scripts/ci-local.sh
+```
+
+The reports and [build guide](BUILD.md) own separate live/platform commands and historical input
+manifests. This map does not claim those lanes were rerun during documentation reconciliation.
+
 ## Core effect-gateway proof matrix
 
-| Layer                | Required proof                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------------- |
-| Request validation   | Bounds for identity, namespace, Deployment, container, digest, and authorization.                       |
-| Authorization        | Signed grant, configured trust, exact tuple, and rejection before persistence.                          |
-| Journal transition   | Deterministic fault injection at every durable state.                                                   |
-| Target disposition   | Permanent invalid targets are pre-attempt `NOT_ATTEMPTED`; transient reads defer fairly.                |
-| Provider attempt     | Safe GET precedes atomic target identity and `apply_started`; mutation follows that commit.             |
-| Recovery             | Every injected window and process kill reopens without a blind second mutation.                         |
-| Receiver observation | Request acceptance, timeout, transport completion, and rollout result remain distinct.                  |
-| Classification       | Timeout and unresolved evidence are `UNKNOWN`, never false success or failure.                          |
-| Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.   |
-| Publication          | Bytes, path, digest, and key ID freeze before collision-safe publication; kill recovery preserves them. |
-| Migration            | Legacy self-asserted authorization fails closed rather than becoming trusted provenance.                |
-| Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                  |
-| Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.          |
+| Layer                | Required proof                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| Request validation   | Bounds for identity, namespace, Deployment, container, digest, and authorization.                      |
+| Authorization        | Signed grant, configured trust, exact tuple, and rejection before persistence.                         |
+| Journal transition   | Deterministic fault injection at every durable state.                                                  |
+| Target disposition   | Permanent invalid targets are pre-attempt `NOT_ATTEMPTED`; transient reads defer fairly.               |
+| Provider attempt     | Safe GET precedes atomic target identity and `apply_started`; mutation follows that commit.            |
+| Recovery             | Every injected window and process kill reopens without a blind second mutation.                        |
+| Receiver observation | Request acceptance, timeout, transport completion, and rollout result remain distinct.                 |
+| Classification       | Timeout and unresolved evidence are `UNKNOWN`, never false success or failure.                         |
+| Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.  |
+| Receipt completion   | Frozen observation precedes signing; bytes, digest, signer and finalized state commit together.        |
+| Export               | Collision-safe export uses committed bytes. Failure cannot reopen completion or block later retrieval. |
+| Compatibility        | Format 4 rejects older journals before action processing; grant/receipt wire meanings remain explicit. |
+| Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                 |
+| Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.         |
 
 `INSPECTED` means authenticated bytes and classifier consistency under supplied trust. It is not
 receiver truth, causation, complete capture, compliance, or `VERIFIED`.
@@ -59,10 +113,11 @@ directories, seeded inputs, and sorted output. A subprocess test may use a bound
 coordination deadline; result meaning must not depend on polling order or timing.
 
 Fault tests, simulations, process recovery, and compile-time demonstration controls cross the same
-private operation-selected provider and publication implementations used by `Application`.
+private operation-selected provider and receipt-completion implementations used by `Application`.
 Queue-oriented helpers may select one identity but own no lifecycle transition. Process-kill proof
-must cross both the ambiguous mutation seam and the receipt-publication seam, establish one provider
-attempt, and prove prepared receipt bytes are neither re-signed nor relocated.
+crosses the ambiguous mutation and receipt-commit seams, establishes no second mutation request, and
+preserves committed bytes without re-signing. Export may use a new destination without changing the
+durable action or signing identity.
 
 A live `kind` lane is explicit, environment-owning evidence. It complements but never replaces
 fault-injection around every journal window.
@@ -81,9 +136,9 @@ configuration outside caller input, typed `SUCCEEDED`, `FAILED`, `UNKNOWN`, and 
 vocabulary, restart, protocol-only standard output, bounded hostile input, and secret-free failures.
 Cancellation, EOF, or transport completion never determines receiver outcome.
 
-The v0.1.1 fixture lane covers every historical lifecycle state, migration and restore interruption,
-repeated reopen, provider-call counts, and frozen receipt bytes without Kubernetes or network
-access. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
+The current version-rejection test proves older journals remain untouched. Historical v0.1.1
+migration/restore fixtures describe the published pre-format-4 baseline, not a current migration
+path. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
 
 ### Robustness
 
@@ -110,7 +165,8 @@ conflict remains `apply_started`, not a pre-attempt conclusion; deterministic fa
 exhaustive restart and receipt-projection matrix around it.
 
 The public demonstration adds an observable evaluator path through healthy,
-`ProgressDeadlineExceeded`, mutation-loss, and receipt-publication-loss cases. Compile-time harness
+`ProgressDeadlineExceeded`, mutation-loss, and receipt-commit-loss cases in current source. The
+published v0.2.0 artifact instead uses its historical publication seam. Compile-time harness
 controls remain outside caller input and the ordinary executable. A visual demonstration is finite
 evidence, not exhaustive recovery proof.
 
@@ -206,8 +262,9 @@ machinery. Earlier rejection may still justify future adoption on its own merits
 adopts nothing and adds no production dependency. Arbitrary webhook behavior, proxies, other
 Kubernetes versions, actual storage failure, and power-loss durability remain unproved.
 
-The measured baseline is `59b4f04f513f1dfd4131f722b6c44b210d73b453`, with the test-only changes in
-this section's owning files. Obtain a checkout containing those changes and run:
+The measured baseline is `59b4f04f513f1dfd4131f722b6c44b210d73b453`. The test-only changes and this
+report are preserved at `430e7f20aed71ef8daec81b681625a641d98ee18`. Obtain a checkout containing
+that revision and run:
 
 ```sh
 cargo test --locked -p kapsel --lib \
@@ -222,7 +279,7 @@ refused rather than omitted from evidence. The pinned node image is
 `kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4`. The
 audit policy and unauthenticated webhook control port are disposable test infrastructure only. The
 launcher creates a uniquely named cluster and removes only its owned cluster, image, and workspace.
-Local uncommitted evidence is not a remotely retrievable commit or a published release.
+The local evidence commit is not a published release or proof of remote availability.
 
 ### Release artifact
 
@@ -250,9 +307,9 @@ The unpublished service evidence remains layered around `Application`:
 - process-loss tests require startup reconciliation before bind and preserve frozen receipt bytes;
 - startup and asset tests freeze fixed roots, no-follow file rules, exact argv, stale-socket
   handling, systemd, sysusers, and namespaced RBAC bytes; and
-- deterministic root-substitution tests rename and replace state, receipt, and runtime names after
-  validation, then prove journal creation, receipt access, and socket bind stay with the retained
-  directory identities.
+- deterministic root-substitution tests rename and replace state and runtime names after validation,
+  then prove journal creation and socket bind stay with the retained directory identities. Receipt
+  retrieval uses the journal, with no receipt-root dependency.
 
 Service-client tests freeze its three-command grammar, bounded framing, receipt digest verification,
 exclusive mode-`0600` output, and refusal to replace an existing file. `kapsel-authority` tests
@@ -261,7 +318,8 @@ The [Kapsel service contract](KAPSEL_SERVICE.md) owns the complete unpublished b
 
 ### Installer
 
-The partial, unpublished installer has four current evidence layers:
+The dormant partial installer has four retained evidence layers. They protect existing mechanisms,
+not a requirement to finish the withdrawn installer journey:
 
 - private platform-neutral `identity` and `transaction` modules own fixed GID/UID selection, exact
   observation classification, canonical transaction validation, pending-effect transitions, identity

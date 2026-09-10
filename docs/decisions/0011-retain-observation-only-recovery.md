@@ -219,10 +219,13 @@ The full deterministic gate passed, with 114 root library tests passed and 9 ign
 independent review found no concrete fix-worthy findings. Ignored live or extended lanes are not
 counted as proved.
 
-Find the local adoption revision and reproduce the evidence with:
+The local adoption revision is `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`. Current master retains
+the same executable changes in consolidated commit `59b4f04f513f1dfd4131f722b6c44b210d73b453`. The
+consolidation removed the separate rejected-kernel report, not its test-only evidence or the retry
+correction. Reproduce the retained checks with:
 
 ```sh
-git log -1 --format='%H %T %s' --grep='^gateway: adopt sequential dispatch permission$'
+git show --stat 59b4f04f513f1dfd4131f722b6c44b210d73b453
 cargo test --locked -p kapsel --lib gateway::tests::dispatch -- --nocapture
 cargo test --locked -p kapsel --test application_retry
 KAPSEL_SIMULATION_SEED=21182435914953528 KAPSEL_SIMULATION_CASES=256 \

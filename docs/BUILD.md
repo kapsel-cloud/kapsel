@@ -172,8 +172,9 @@ See [Kapsel service](KAPSEL_SERVICE.md) for the current boundary and
 
 ## Kapsel installer skeleton
 
-The installer remains partial and unpublished. Default builds stop at `bundle_unavailable`. Portable
-tests run without Docker; the Linux bundle lane needs Docker with `linux/amd64` support and OpenSSL:
+The installer is dormant, partial and unpublished. These are maintenance checks, not steps toward a
+promised installer release. Default builds stop at `bundle_unavailable`. Portable tests run without
+Docker; the Linux bundle lane needs Docker with `linux/amd64` support and OpenSSL:
 
 ```sh
 python3 scripts/test-kapsel-installer-bundle.py

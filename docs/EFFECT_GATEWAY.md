@@ -51,8 +51,12 @@ agent intent
   -> signed, classifier-complete receipt
 ```
 
-The receipt is a consequence of the execution guarantee. It is not a compliance product, evidence of
-complete capture, or a claim that a signature proves the Kubernetes state was true.
+The receipt preserves the execution account. It is not a compliance product, evidence of complete
+capture, or a claim that a signature proves the Kubernetes state was true. Signatures allow a
+consumer with separately appointed trust to authenticate portable bytes and reject tampering. They
+do not add receiver knowledge. The scripted reconnect and protected-tool experiments found no
+next-action branch changed by signature verification. That bounded finding does not remove the
+current signed grant or receipt contract.
 
 ## One capability
 
@@ -132,12 +136,11 @@ approved UID and resourceVersion. An intervening conflict after the marker is st
 path, never `NOT_ATTEMPTED`. The marker does not establish network transmission. Recovery after it
 only observes and never resends.
 
-Journal format 3 adds nullable approved UID/version and preflight observed UID/version columns to
-recognized format 2 layouts in one exclusive transaction. Legacy rows retain null approval and their
-original frozen receipts. Format 0 upgrade still requires the exact offline backup. Older binaries
-reject format 3. New requests bind original grant identity, signer and digest at their first durable
-insertion, including the requested window. Preexisting unbound requested rows may resume only with
-legacy authority. Snapshot authority never replaces authority on an existing row.
+Journal format 4 retains nullable approved UID/version and preflight observed UID/version columns.
+Legacy-grant actions have null approval and retain their original meaning. Older journal versions,
+including the former format-3 snapshot layout, are rejected without migration before processing. New
+requests bind original grant identity, signer and digest at their first durable insertion, including
+the requested window. Snapshot authority never replaces authority on an existing row.
 
 `approved_target` is the signed approval or null for legacy authority. `attempt_target` is the
 frozen PATCH precondition pair or null before the marker. `observed_target` is the successful
@@ -179,9 +182,9 @@ requested
   crash before the next transition leaves the operation `authorized`, so this non-mutating read may
   be repeated.
 - `not_attempted` is terminal and records exactly one bounded pre-attempt rejection:
-  `deployment_not_found`, `container_not_found`, or `invalid_target`. No mutation marker, provider
-  write, receiver observation, receiver result, or effect receipt exists for this disposition. It is
-  never reported as receiver `FAILED` or `UNKNOWN`.
+  `deployment_not_found`, `container_not_found`, `invalid_target`, or `stale_approval`. No mutation
+  marker, provider write, receiver observation, receiver result, or effect receipt exists for this
+  disposition. It is never reported as receiver `FAILED` or `UNKNOWN`.
 - `apply_started` atomically records the target Deployment UID, target resource version,
   write-strategy identity, and attempt marker before Kubernetes mutation. The strategic merge patch
   carries both target preconditions, changes the exact name-keyed container image, and writes the
@@ -222,15 +225,14 @@ from request success or a timeout.
 | `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                   |
 
 The implementation explicitly uses SQLite's rollback journal with `synchronous=FULL` and verifies
-both settings whenever it opens the journal. The main journal and exact offline backup are each at
-most 64 MiB; a rollback-journal artifact is at most 65 MiB to allow bounded SQLite framing around
-the owned database pages. Every persisted text or blob value is additionally at most 16 KiB,
-SQLite's per-value-or-row allocation limit is 64 KiB, and every reopen checks those bounds and the
-10,000-row ceiling before operation loading. Files are exact mode 0600 and their parent is exact
-mode 0700. Larger, permissive, linked, or replaced artifacts fail before SQLite reads or recovery.
-These physical and logical caps bound integrity checking, backup hashing, and persisted allocation
-even when an owner-controlled journal is malformed; they are not a storage-capacity or retention
-promise beyond the finite operation ceiling.
+both settings whenever it opens the journal. The main journal is at most 64 MiB; a rollback-journal
+artifact is at most 65 MiB to allow bounded SQLite framing around the owned database pages. Every
+persisted text or blob value is additionally at most 16 KiB, SQLite's per-value-or-row allocation
+limit is 64 KiB, and every reopen checks those bounds and the 10,000-row ceiling before operation
+loading. Files are exact mode 0600 and their parent is exact mode 0700. Larger, permissive, linked,
+or replaced artifacts fail before SQLite reads or recovery. These physical and logical caps bound
+integrity checking and persisted allocation even when an owner-controlled journal is malformed; they
+are not a storage-capacity or retention promise beyond the finite operation ceiling.
 
 The implementation holds one crash-released exclusive worker lock around provider and receiver I/O
 so two processes cannot advance the same journal concurrently. A contender performs no provider or
@@ -465,16 +467,18 @@ operation identity is already path-component safe by the request grammar. Public
 pre-existing owner-private output directory and installs owner-private immutable bytes without
 following symlinks or replacing different existing bytes. This descriptor-relative publication
 implementation supports Unix platforms only. The stored receipt digest is the SHA-256 of the exact
-installed receipt bytes, not of decoded statement facts or report text.
+SQLite-committed receipt bytes, whether exported or not, rather than decoded facts or report text.
 
 ## Required release demonstration
 
-The release-owned Unix harness runs from one repository command against one uniquely named,
-disposable `kind` cluster. In the fixed archive layout, the script safely locates its adjacent
-public vector and the separate demonstration executable; source mode and explicit artifact overrides
-remain available for repository and packaging proofs. It uses the supported
-`kapsel provision-grant`, `kapsel operate`, and `kapsel inspect` grammar and fixed operator-owned
-files.
+The sequence below describes current source. The published v0.2.0 demonstration retains its original
+filesystem-publication seam and is not evidence that the release includes format-4 completion.
+
+The source Unix harness runs from one repository command against one uniquely named, disposable
+`kind` cluster. In the fixed archive layout, the script safely locates its adjacent public vector
+and the separate demonstration executable; source mode and explicit artifact overrides remain
+available for repository and packaging proofs. It uses the supported `kapsel provision-grant`,
+`kapsel operate`, and `kapsel inspect` grammar and fixed operator-owned files.
 
 Before creating a workspace or inspecting clusters, the harness reports the detected prerequisite
 versions and refuses an unavailable Docker daemon, `kind` older than 0.32, unavailable or pre-1.30
@@ -504,10 +508,10 @@ The harness demonstrates:
 4. restart reconciles rather than blindly patching again, the harness-owned apply counter remains
    exactly one, and the unavailable image reaches `FAILED` only from `ProgressDeadlineExceeded`
    receiver facts;
-5. exact receipt bytes are durably prepared and installed, then the exact `kapsel operate` process
-   is killed before `receipt_written` is recorded;
-6. restart under a rotated receipt key and changed output directory finalizes only the frozen bytes,
-   leaving the rotated directory empty and preserving the frozen receipt digest; and
+5. exact receipt bytes and terminal state commit together, then the exact `kapsel operate` process
+   is killed before export;
+6. restart under a rotated receipt key and changed output directory retrieves the original signed
+   bytes and exports them to the new directory without re-signing or reopening the action; and
 7. `kapsel inspect` runs with unavailable network and ambient Kubernetes configuration and reports
    `INSPECTED`, `FAILED`, the signed classifier inputs exposed by the inspector, and the fixed
    non-claims without `VERIFIED` vocabulary.
@@ -515,7 +519,7 @@ The harness demonstrates:
 Fault control is not part of the agent request, operator JSON, ordinary command grammar, public Rust
 interface, journal, or receipt. The harness builds the same `kapsel` binary with the private
 `demo-harness` compile-time feature and supplies an owner-private control directory plus exactly one
-of two fixed process-environment values: `after_apply` or `after_receipt_publish`. At the selected
+of two fixed process-environment values: `after_apply` or `after_receipt_commit`. At the selected
 internal seam Kapsel creates one owner-private readiness marker, syncs it, and waits to be
 terminated. The mutation seam also creates a no-replace `provider-apply-count` file containing `1`;
 encountering it again fails closed. Builds without `demo-harness` do not read these variables or

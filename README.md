@@ -96,7 +96,8 @@ cluster health, or universal Kubernetes truth.
 
 Before crossing the mutation seam, Kapsel commits `apply_started` with the target Deployment UID,
 resource version, and write strategy. If the process later restarts from that state, recovery only
-observes. It does not blindly patch again.
+observes. It does not send the patch again, even when the process may have died before sending it.
+The marker records uncertainty about dispatch, not proof of network transmission.
 
 That ordering is the core mechanism: durable state before the effect, observation after ambiguity.
 The [technical tour](docs/TOUR.md) follows one operation through the complete path.
@@ -132,8 +133,11 @@ mutation, inspects the frozen receipt, and removes the cluster it created.
   interfaces.
 - [Documentation map](docs/INDEX.md) — find architecture, security, release, and contributor docs.
 
-Repository HEAD also contains unpublished service and installer work. It is not part of v0.2.0 and
-is not a supported installation path. [Technical scope](docs/SCOPE.md) owns the exact current
-boundary.
+Repository HEAD retains the bounded action broker and an unpublished resident service. It adds
+exact-snapshot approval, one-use dispatch permission, and SQLite-owned receipt completion, with
+export separate from completion. These are not v0.2.0 features. The partial installer is dormant,
+not a supported installation path. [Technical scope](docs/SCOPE.md) owns the accepted baseline and
+[testing evidence](docs/TESTING.md#action-boundary-evidence) separates retained improvements from
+unadopted experiments.
 
 Licensed under the [Apache License, Version 2.0](LICENSE).

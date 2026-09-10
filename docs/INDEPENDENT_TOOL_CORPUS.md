@@ -14,13 +14,14 @@ the original action, and a successful non-watching status command can describe a
 None is claimed as an upstream kubectl bug. They are ordinary client-contract tests.
 
 **The failure-kit thesis is rejected for this experiment.** The cases travel without Kapsel, but do
-not establish practical value beyond ordinary adapter tests. My recommendation is to retain only a
-compact reference implementation rather than make a failure kit primary or deepen the resident
-broker on this evidence alone. That recommendation combines this negative result with the earlier
-[workflow experiment](RECONNECTABLE_AGENT_ACTION.md), which found no reduction in operator effort.
-It does not remove any implementation, change a contract, or establish that a broker cannot be
-useful in another concrete workflow. [Technical scope](SCOPE.md) remains authoritative until an
-explicit direction decision is accepted.
+not establish practical value beyond ordinary adapter tests. The original compact-reference
+recommendation was not adopted. Its reliance on the earlier
+[workflow experiment](RECONNECTABLE_AGENT_ACTION.md) overstated that experiment: no equally
+protected alternative ran there, so relative operator effort was unproved. The later
+[protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) supplies a bounded executed comparison.
+The [accepted scope](SCOPE.md) retains the broker, not a standalone failure kit or a
+compact-reference pivot. These seven client cases establish neither a general product verdict nor
+production replacement evidence.
 
 ## Reproduce
 

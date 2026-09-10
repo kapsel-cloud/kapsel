@@ -27,9 +27,9 @@ kapsel inspect
 
 `Application` is the caller-facing composition root. `OperatorConfiguration` supplies the exact
 owner-signed grant, configured grant trust, concrete Kubernetes client, receipt signing material,
-journal path, and receipt directory. The caller submits only `AgentRequest`, an alias for the
-concrete `SetDeploymentImageRequest`; it cannot select authority, trust, credentials, paths, signing
-material, or lifecycle controls.
+journal path, and optional export directory. The caller submits only `AgentRequest`, an alias for
+the concrete `SetDeploymentImageRequest`; it cannot select authority, trust, credentials, paths,
+signing material, or lifecycle controls.
 
 `Application::execute` owns submission and lifecycle sequencing and returns an `OperationReport`.
 `Application::reconcile` resumes the configured operation after restart and returns an optional
@@ -43,8 +43,8 @@ signed receipt and terminal state together in SQLite. Filesystem export is a sep
 operation. The crate-level offline inspector consumes receipt bytes directly without opening
 `Application`, the journal, or a Kubernetes client. The journal provides one interface for rows,
 snapshots, worker locking, capacity, and guarded transitions. Private `schema` and `opening`
-children own exact layout and migration, and safe SQLite entry and owner-private pathname identity,
-respectively.
+children own exact format-4 layout/version rejection, and safe SQLite entry and private pathname
+identity, respectively.
 
 ## Concrete Kubernetes boundary
 
@@ -144,7 +144,7 @@ duplicate export rules, sequence lifecycle states, add another store, or create 
 [Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
 boundary.
 
-## Partial installer
+## Dormant partial installer
 
 The unpublished `kapsel-installer` package has a fixed three-command grammar and consumes
 `kapsel-authority` directly. Default workspace builds carry no embedded service payload, so a
@@ -159,8 +159,14 @@ facts, inode-bound publication, and recovery under a fixed absolute destination.
 order calls that foundation, so execution still stops at `implementation_incomplete` after identity
 creation. The installer does not install assets, Kubernetes resources, credentials, activation,
 refresh, or uninstall, and no candidate assembly command exists. [Build](BUILD.md) lists its
-runnable gates; [Kapsel service](KAPSEL_SERVICE.md) owns the approved future contract and exact
-current boundary.
+runnable gates; [Kapsel service](KAPSEL_SERVICE.md#dormant-installer-mechanisms) owns the retained
+constraints. The former complete installer journey is withdrawn, not the next implementation plan.
+
+Maintenance retains the application/gateway, single request grammar, service protocol/runtime,
+SQLite receipt completion, signed codecs and adapter/export paths. The test-only event kernel, JSON
+Patch, later observation and protected-tool comparison are evidence, not additional production
+owners. Installer mechanisms require a separate retain, replace or delete assessment. Do not deepen
+unused foundations merely because they exist.
 
 ## Dependency rule
 

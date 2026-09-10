@@ -45,11 +45,12 @@ behavior.
 
 ## Unpublished work
 
-Repository HEAD contains an unpublished customer-resident service and partial installer. Neither is
-part of v0.2.0 or a supported installation path.
+Repository HEAD retains an unpublished resident service and dormant partial installer. Neither is
+part of v0.2.0 or a supported installation path. [Technical scope](SCOPE.md) names the accepted
+baseline; the [evidence map](TESTING.md#action-boundary-evidence) pins experiments and their limits.
 
 - [Kapsel service contract](KAPSEL_SERVICE.md)
-- [Planned service operator journey](KAPSEL_SERVICE_OPERATOR.md)
+- [Service source operator guide](KAPSEL_SERVICE_OPERATOR.md)
 - [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)
 - [Later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md)
 - [Independent kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md)

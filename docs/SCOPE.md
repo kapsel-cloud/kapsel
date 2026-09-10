@@ -21,6 +21,22 @@ Kapsel separates permission from execution evidence. Choosing a useful action an
 application quality belong to the caller's surrounding system. Neither model confidence nor an
 application evaluator can replace the exact grant or redefine a receiver result.
 
+The accepted current shape is a bounded action broker, including the unpublished resident service.
+It is not being replaced by a failure kit or reduced to a reference implementation. The retained
+core is exact authority, stable action identity, worker exclusion, durable attempt ordering,
+observation-only recovery, bounded classification, and immutable evidence.
+
+Current source retains SQLite-owned receipt completion and a private one-use dispatch permission.
+The larger event-machine kernel was rejected. Strategic merge and no-replay remain selected after
+the guarded JSON Patch comparison. A useful later-observation prototype remains test-only, not a
+status side effect or a supported continuation command. The
+[testing evidence](TESTING.md#action-boundary-evidence) distinguishes adopted changes from findings.
+
+Signed grants, signed receipts, offline inspection, CLI/MCP adapters, and service retrieval remain.
+The protected-tool comparison motivates questioning their cost, but does not qualify private
+approval rows or unsigned evidence as replacements. Retaining the service does not select a future
+hosting or installation model. The partial installer is dormant, not an installation commitment.
+
 The current local journal and conditional Kubernetes patch do not coordinate independent agents
 across journals or hosts. They provide no fleet ordering, distributed transaction, or system-wide
 invariant guarantee. Broader coordination and additional operations require their own concrete
@@ -58,8 +74,11 @@ state observes rather than blindly mutating again.
 image, and generation. `UNKNOWN` means reconciliation established neither result. It does not mean
 failure, no effect, safety, or permission to retry.
 
-A permanent missing or invalid target may finish as `NOT_ATTEMPTED` before the mutation marker. That
-is a local disposition with no receiver result or effect receipt.
+A permanent missing or invalid target may finish as `NOT_ATTEMPTED` before the mutation marker.
+Current exact-snapshot approval also rejects a changed UID or resourceVersion as
+`NOT_ATTEMPTED / STALE_APPROVAL`. These are local dispositions with no receiver result or effect
+receipt. The service requires snapshot approval; legacy CLI/MCP grants retain their late-bound
+meaning. Approval is never refreshed on an existing action.
 
 An inspected receipt authenticates frozen bytes and classifier consistency under separately supplied
 trust. It does not prove causation, exactly-once effects, complete cluster health, complete capture,
@@ -81,9 +100,15 @@ bounded compatibility described by their direct contracts. Public Rust APIs, ano
 production support do not.
 
 Repository HEAD also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md)
-and partial installer work. The installer implements its foundation plus the two fixed groups and
-two fixed users, but no assets, Kubernetes mutation, credential, activation, refresh, or uninstall.
-They add no v0.2.0 promise and are not currently a supported installation path.
+and dormant partial installer work. The installer implements its foundation plus the two fixed
+groups and two fixed users, but no assets, Kubernetes mutation, credential, activation, refresh, or
+uninstall. Completing that installer is not the current product direction. Its retained mechanisms
+need a separate retain, replace, or delete decision before extension.
+
+HEAD's exact-snapshot grants, sequential dispatch permission and SQLite-owned receipt completion are
+not v0.2.0 promises. Current journal format 4 rejects older journals without migration. The
+published beta's bounded upgrade path applies only to that release, not HEAD. Neither the service
+nor installer is a supported installation path.
 
 ## Maturity
 

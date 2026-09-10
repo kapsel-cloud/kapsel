@@ -2,6 +2,10 @@
 
 Kind: test-only comparison. No production adoption, new command, or supported alternative.
 
+Evidence commit: `cad49d7881c19abe666215d7fd8fd76c2f1a5019`. This supersedes the original
+uncommitted handoff below. The [accepted scope](SCOPE.md) retains the broker and existing signed
+interfaces. Private approval rows and unsigned evidence remain unadopted simplification ideas.
+
 ## Requirements frozen before execution
 
 Both arms execute one exact approved Deployment image change. Caller input is only operation ID,
@@ -96,8 +100,8 @@ KAPSEL_COMPARISON_ONLY=pre-send cargo test --locked -p kapsel --lib \
 Unknown case names fail rather than reporting an empty passing comparison. Successful runs remove
 only their created temporary workspaces. Failed runs preserve them for inspection. The complete
 receiver log is asserted before cleanup, and stdout retains per-case counts, conclusions and frozen
-byte digests. This manifest identifies uncommitted source atop the named base, not an obtainable
-release or an implied authorized commit.
+byte digests. This historical manifest identifies the tested source atop the named base,
+subsequently preserved in the evidence commit above. It does not identify a published release.
 
 ## Executed result
 

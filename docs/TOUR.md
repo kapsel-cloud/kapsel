@@ -6,7 +6,9 @@ without knowing whether the receiver reached the intended state.
 This tour follows one Kubernetes image change across that gap. It is the first concrete example of
 [controlled execution beneath autonomous systems](../README.md#why-kapsel-exists). The exact rules
 live in the [effect-gateway contract](EFFECT_GATEWAY.md); this page explains why the pieces are
-arranged this way.
+arranged this way. It describes current unreleased source. The published v0.2.0 beta has older
+approval and receipt-storage behavior, as separated in
+[Technical scope](SCOPE.md#what-is-published).
 
 ## The request is intentionally boring
 
@@ -34,13 +36,17 @@ caller
 operator
   -> exact signed grant + trusted grant key
   -> Kubernetes credentials
-  -> journal and receipt paths
+  -> private journal and optional export destination
   -> receipt signing key
 ```
 
 The signed grant binds the operation identity, namespace, Deployment, container, and immutable image
 digest. Kapsel checks it against application-configured trust before Kubernetes access. The request
-cannot appoint its own authority.
+cannot appoint its own authority. Current snapshot grants also bind the operator-acquired Deployment
+UID and opaque resourceVersion. The resident service requires this approval. A changed version, even
+from status or annotation churn, stops as `NOT_ATTEMPTED / STALE_APPROVAL` before a PATCH.
+Reapproval needs an operator decision and a new action identity, never replacement authority on the
+old handle. Legacy CLI/MCP grants retain their original late-bound target meaning.
 
 ## First, make the intent durable
 
@@ -68,7 +74,9 @@ explain.
 Once Kapsel has safely identified the target, it commits `apply_started` to SQLite. That durable
 record includes the Deployment UID, resource version, write strategy, and attempt marker.
 
-Only after that commit may Kapsel send the conditional strategic merge patch.
+Only the fresh, successfully acknowledged conditional commit gives the adapter a private one-use
+dispatch permission. The adapter consumes it to send the conditional strategic merge patch. Loading
+an attempted row cannot recreate permission, and the application disables automatic PATCH retries.
 
 ```text
 SQLite commit: apply_started
@@ -77,7 +85,8 @@ SQLite commit: apply_started
 
 The patch changes one named container image and writes the operation identity as a Deployment
 annotation. The UID and resource-version preconditions make replacement or concurrent desired-state
-changes fail closed instead of forcing the patch through.
+changes fail closed at persistence instead of forcing the patch through. They do not prevent
+mutating admission from producing effects before a conflict is returned.
 
 This does not provide exactly-once mutation. It creates a trustworthy boundary: before
 `apply_started`, no attempt was recorded; after it, Kapsel must assume the request may have crossed
@@ -89,7 +98,9 @@ Imagine Kubernetes applies the patch, but Kapsel dies before recording the respo
 journal says `apply_started`. It does not say whether Kubernetes received, rejected, or applied the
 request.
 
-The tempting recovery strategy is to send the patch again. Kapsel deliberately refuses.
+The tempting recovery strategy is to send the patch again. Kapsel deliberately refuses. The same
+attempted state can also mean the process died before sending anything. That authorized action may
+remain unsent. Avoiding a second mutation opportunity costs useful completion in that window.
 
 Recovery loads the stored target identity and observes the Deployment. It issues no blind second
 patch. When the original response is missing, Kapsel can associate an observed generation with the
@@ -126,14 +137,16 @@ happen or that retrying is safe.
 The useful promise is not universal truth. It is the strongest honest conclusion Kapsel can support
 from the bounded observations it retained.
 
-## Freeze the story before publishing it
+## Freeze the story before exporting it
 
-After classification, Kapsel records the receiver facts and result. It then prepares the exact
-signed receipt bytes and durably freezes their digest, path, signing-key identity, and write
-strategy before publishing the file.
+After classification, `receiver_observed` durably freezes the receiver facts and result. Kapsel
+signs those facts, then commits the exact bytes, digest, signing-key identity and `finalized` state
+together in SQLite. A signing failure cannot trigger a new observation to improve the old result.
 
-If the process dies during publication, restart installs or verifies those same bytes. Changed
-process configuration cannot move the receipt or cause it to be re-signed.
+Retrieval returns the committed bytes without re-signing. Filesystem export is optional and separate
+from completion. A failed export cannot reopen the action, and the service can retrieve the original
+receipt without an output directory. The database must remain available for retrieval. An exported
+copy may survive its loss, but execution does not guarantee creating that copy.
 
 The receipt contains enough classifier input for offline inspection to recompute the result. The
 inspector receives trust, evaluation time, and resource limits explicitly and performs no Kubernetes
@@ -182,6 +195,12 @@ Any corrective action needs its own authorization and reasoning about current st
 
 This handoff is outside Kapsel's planner-free core. A signed receipt preserves the bounded account;
 it does not eliminate the need for operational judgment or prove that the application is healthy.
+
+A rollout may become available after the original `UNKNOWN`. Ordinary status and receipt reads still
+return historical evidence without contacting Kubernetes. A
+[later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) showed that a separate bounded read
+can help choose the next investigation while preserving the old receipt. That prototype is not a
+supported command and does not establish that the original action caused the later state.
 
 ## Where to go next
 

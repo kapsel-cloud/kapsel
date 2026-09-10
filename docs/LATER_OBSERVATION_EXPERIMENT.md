@@ -57,7 +57,9 @@ application status and receipt reads remain offline and do not invoke the protot
 
 ## Reproduction and proof placement
 
-From the baseline plus this experiment's working-tree files:
+The experiment is committed at `426c17f0152f9cdb5036895c25cdcbed11b20e43`. Obtain it from a
+repository containing that revision, for example `git fetch /path/to/owning/kapsel master`. Local
+preservation does not imply remote availability or adoption. From that checkout or current HEAD:
 
 ```sh
 cargo test --locked --test later_observation -- --nocapture
@@ -69,7 +71,8 @@ python3 scripts/test-kind-later-observation.py
 
 No commit or publication is performed by these commands. The live launcher prints the baseline and
 SHA-256 of each executable experiment input, including untracked source, without staging files. The
-experiment must be committed separately before another checkout can consume it by Git revision.
+recorded commit supersedes the original uncommitted handoff. The historical live-input hashes below
+still distinguish the measured run from subsequent self-test consolidation.
 
 The deterministic matrix executes the real application and adapter through a mock HTTP service. The
 pending fixture remains pending for the actual 30-attempt observation loop, with virtual time rather

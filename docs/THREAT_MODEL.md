@@ -102,9 +102,9 @@ reports are bounded. Inspection takes trust, evaluation time, and limits explici
 result from every signed classifier input, and performs no network or ambient lookup.
 
 Receipt signing authenticates frozen Kapsel evidence under the named key. It does not witness the
-effect, prove existence time, prevent omission, or make disclosed receiver facts true. Immutable
-publication protects the selected frozen bytes and path; it is not generic durable storage or
-backup.
+effect, prove existence time, prevent omission, or make disclosed receiver facts true. SQLite
+completion preserves the original signed bytes and terminal state together. Export protects a
+separate copy without becoming part of completion. Neither supplies automatic backup.
 
 ### Secret and metadata disclosure
 
@@ -133,22 +133,24 @@ mode-`0660` group-owned socket; Linux peer credentials must report the exact cal
 GID before any frame is read. The fixed caller uses that group as its primary group; no
 supplementary-membership mutation is installed.
 
-Startup opens fixed configuration, state, receipt, and runtime roots descriptor-relatively, rejects
-symlinks, consumes validated regular single-link authority files, and reconciles before admission.
-It leaves every unexpected leaf unchanged and removes only an exact inactive service-owned stale
-socket. Systemd owns process lifecycle, failed-start runtime cleanup, health, and diagnostics, with
-no automatic restart. One in-flight submission is a bound, not a queue. `ACCEPTED` means only that
-the process owns execution; it is never `SUCCEEDED`.
+Startup opens fixed configuration, state, and runtime roots descriptor-relatively, rejects symlinks,
+consumes validated regular single-link authority files, and reconciles before admission. It leaves
+every unexpected leaf unchanged and removes only an exact inactive service-owned stale socket.
+Systemd owns process lifecycle, failed-start runtime cleanup, health, and diagnostics, with no
+automatic restart. One in-flight submission is a bound, not a queue. `ACCEPTED` means only that the
+process owns execution; it is never `SUCCEEDED`.
 
 The exact Role allows namespaced `get` and `patch` on one Deployment. Because RBAC cannot constrain
 patch fields, the concrete adapter remains the field-level authority owner. Host root, kernel,
 service identity, and already authenticated caller processes remain trusted. Identity database
 changes would not revoke credentials cached by an existing process, so revocation stops the service,
-waits for client and connection closure, and removes the socket before later uninstall work.
+waits for client and connection closure, and removes the socket before any operator-owned resource
+removal. The partial installer implements no uninstall.
 
 One disposable Debian 12 qualification lane supplies bounded service evidence for accounts, systemd,
-short-lived credentials, namespaced RBAC, clean installation, revocation, retained data, and
-cleanup. It does not establish production safety or support for another environment.
+short-lived credentials, namespaced RBAC, direct-source provisioning, revocation, retained data, and
+cleanup. That historical run predates format-4 completion. It does not establish fresh-native
+acceptance of current HEAD, production safety or support for another environment.
 
 Service and installer code in repository HEAD is unpublished and absent from v0.2.0. Implemented
 installer tests currently cross bounded operator input, clean-install preflight, durable transaction
