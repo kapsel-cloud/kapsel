@@ -18,4 +18,3 @@ fi
 ruff check --no-cache --config ruff.toml .
 ./scripts/check-rust-width.sh
 cargo clippy --offline --locked --workspace --all-targets --all-features -- -D warnings
-cargo test --offline --locked -p kapsel-installer

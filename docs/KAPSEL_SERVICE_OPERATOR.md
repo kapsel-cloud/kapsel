@@ -3,8 +3,8 @@
 Status: unreleased source workflow. No supported installer or published service artifact.
 
 The resident service is retained, but the former one-command install, refresh and uninstall journey
-is withdrawn. Do not run the partial installer to obtain a working service. This guide describes
-caller use only after explicit operator provisioning in a disposable environment. The
+is withdrawn. The partial installer has been removed. This guide describes caller use only after
+explicit operator provisioning in a disposable environment. The
 [service contract](KAPSEL_SERVICE.md) owns fixed paths, identities, authority and process lifecycle.
 
 ## Reproduce before provisioning
@@ -24,8 +24,7 @@ private storage and process controls outside the caller boundary.
 
 The configured operation ID and tuple are fixed for that service instance. Reapproval requires an
 operator decision, a new grant and a new handle. Restart must not refresh authority on an existing
-action. Credential provisioning/renewal remains explicit operator work. No installer refresh command
-is implemented.
+action. Credential provisioning/renewal remains explicit operator work. There is no refresh command.
 
 ## Submit and inspect
 

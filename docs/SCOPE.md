@@ -35,7 +35,8 @@ status side effect or a supported continuation command. The
 Signed grants, signed receipts, offline inspection, CLI/MCP adapters, and service retrieval remain.
 The protected-tool comparison motivates questioning their cost, but does not qualify private
 approval rows or unsigned evidence as replacements. Retaining the service does not select a future
-hosting or installation model. The partial installer is dormant, not an installation commitment.
+hosting or installation model. The unpublished partial installer has been retired without a
+replacement installation commitment.
 
 The current local journal and conditional Kubernetes patch do not coordinate independent agents
 across journals or hosts. They provide no fleet ordering, distributed transaction, or system-wide
@@ -99,16 +100,16 @@ Only the named v0.2.x CLI, MCP, grant, receipt, archive, and journal-upgrade sur
 bounded compatibility described by their direct contracts. Public Rust APIs, another platform, and
 production support do not.
 
-Repository HEAD also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md)
-and dormant partial installer work. The installer implements its foundation plus the two fixed
-groups and two fixed users, but no assets, Kubernetes mutation, credential, activation, refresh, or
-uninstall. Completing that installer is not the current product direction. Its retained mechanisms
-need a separate retain, replace, or delete decision before extension.
+Repository HEAD also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md).
+Its source provisioning remains explicit operator work. The partial installer, its exclusive tests
+and build wiring have been removed. [Installer retirement](KAPSEL_SERVICE.md#installer-retirement)
+records the historical revision, retrieval instructions and technical lessons. This creates no
+upgrade, migration, replacement installer or cleanup promise.
 
 HEAD's exact-snapshot grants, sequential dispatch permission and SQLite-owned receipt completion are
 not v0.2.0 promises. Current journal format 4 rejects older journals without migration. The
 published beta's bounded upgrade path applies only to that release, not HEAD. Neither the service
-nor installer is a supported installation path.
+nor its source provisioning is a supported installation path.
 
 ## Maturity
 

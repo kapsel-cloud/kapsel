@@ -1,7 +1,7 @@
 # Build and test Kapsel
 
 For source development, start below. To install and try the published beta instead, use the
-[evaluation guide](EVALUATOR.md). The service and installer in repository HEAD remain unpublished.
+[evaluation guide](EVALUATOR.md). The service in repository HEAD remains unpublished.
 [Testing](TESTING.md) explains what each test proves; this page owns setup and commands.
 
 ## Prerequisites
@@ -72,11 +72,11 @@ git config --get core.hooksPath
 git config core.hooksPath .githooks
 ```
 
-Pre-commit checks formatting, Python lint, Rust width, workspace Clippy, and portable installer
-tests. It requires no unstaged or untracked files and works offline after tools and Cargo
-dependencies are installed. Pre-push requires a clean checkout matching the pushed tree and runs the
-complete local gate, reusing a previous passing result for the same tree. Neither hook starts
-Docker. See [the hooks](../.githooks/) for exact refusal and caching behavior.
+Pre-commit checks formatting, Python lint, Rust width, and workspace Clippy. It requires no unstaged
+or untracked files and works offline after tools and Cargo dependencies are installed. Pre-push
+requires a clean checkout matching the pushed tree and runs the complete local gate, reusing a
+previous passing result for the same tree. Neither hook starts Docker. See
+[the hooks](../.githooks/) for exact refusal and caching behavior.
 
 ## Focused gates
 
@@ -90,15 +90,12 @@ when practical. Additional environment requirements are listed in the sections b
 | Effect gateway                     | `cargo test --locked -p kapsel`                          |
 | Service and private harness        | `cargo test --locked -p kapseld --features test-harness` |
 | Shared operator authority          | `cargo test --locked -p kapsel-authority`                |
-| Portable installer                 | `cargo test --locked -p kapsel-installer`                |
 | Service installed assets           | `cargo test --locked -p kapseld --test install_assets`   |
 | MCP adapter                        | `cargo test --locked --test e2e_mcp_adapter`             |
 | Crash-demo harness, without Docker | `./scripts/test-demo-harness.sh`                         |
 | Seeded lifecycle simulation        | `./scripts/test-simulation.sh`                           |
 | Receipt-inspection fuzz smoke      | `./scripts/test-fuzz.sh`                                 |
 | Live Kubernetes behavior           | `./scripts/test-kind-effect-gateway.sh`                  |
-| Linux installer/bundle scenarios   | `python3 scripts/test-kapsel-installer-bundle.py`        |
-| Debian 12 identity experiment      | `./scripts/test-debian12-installer-identities.sh`        |
 
 ## Live Kubernetes gate
 
@@ -169,34 +166,6 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
 
 See [Kapsel service](KAPSEL_SERVICE.md) for the current boundary and
 [service testing](TESTING.md#kapsel-service) for evidence coverage.
-
-## Kapsel installer skeleton
-
-The installer is dormant, partial and unpublished. These are maintenance checks, not steps toward a
-promised installer release. Default builds stop at `bundle_unavailable`. Portable tests run without
-Docker; the Linux bundle lane needs Docker with `linux/amd64` support and OpenSSL:
-
-```sh
-python3 scripts/test-kapsel-installer-bundle.py
-```
-
-The launcher stages test-only payloads and runs named Rust integration tests in a disposable
-container. CI runs this lane separately after the default gate. It is not a supported installation
-path. [Installer testing](TESTING.md#installer) owns the exact proof and unimplemented boundaries.
-
-Build caches live under `~/.cache/kapsel/installer`, overridden by `KAPSEL_INSTALLER_CACHE_DIR`.
-Their key binds the builder image, toolchain, target, and lockfile. Only build inputs and compiler
-output are reused; test-host state is always fresh. The launcher allows 2,400 seconds. Prefer native
-x86-64 Linux for this lane; cold compilation under ARM emulation can exceed that bound.
-
-The separate Debian 12 identity experiment also requires network access to install `sudo` inside its
-disposable container:
-
-```sh
-./scripts/test-debian12-installer-identities.sh
-```
-
-It checks native account-tool behavior, not an installed Kapsel system.
 
 ## Upgrade and rollback fixture gate
 

@@ -24,5 +24,5 @@ These documents own the current security claims and limits:
 - [Threat model](docs/THREAT_MODEL.md) — adversaries, assumptions, surviving claims, and non-claims.
 - [Privacy](docs/PRIVACY.md) — sensitive fields and disclosure rules.
 
-The service and installer present in repository HEAD remain unpublished and unsupported. Their
-presence does not extend the v0.2.0 support posture.
+The service present in repository HEAD remains unpublished and unsupported. Its presence does not
+extend the v0.2.0 support posture.

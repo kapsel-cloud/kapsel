@@ -1,8 +1,7 @@
 //! Fixed-purpose signed authorization grants for the effect gateway.
 //!
-//! Canonical bytes and validation live in the unpublished service operator-input package so the
-//! root gateway and installer consume one implementation. This private module preserves gateway
-//! error classes and internal verified-fact ownership.
+//! Canonical bytes and validation live in kapsel-authority alongside shared request grammar.
+//! This private module preserves gateway error classes and internal verified-fact ownership.
 
 use kapsel_authority::{
     self as authority, AuthorizationGrantError, AuthorizationInputField,

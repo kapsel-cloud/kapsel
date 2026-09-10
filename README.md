@@ -135,9 +135,9 @@ mutation, inspects the frozen receipt, and removes the cluster it created.
 
 Repository HEAD retains the bounded action broker and an unpublished resident service. It adds
 exact-snapshot approval, one-use dispatch permission, and SQLite-owned receipt completion, with
-export separate from completion. These are not v0.2.0 features. The partial installer is dormant,
-not a supported installation path. [Technical scope](docs/SCOPE.md) owns the accepted baseline and
-[testing evidence](docs/TESTING.md#action-boundary-evidence) separates retained improvements from
-unadopted experiments.
+export separate from completion. These are not v0.2.0 features. The partial installer has been
+retired without a replacement installation promise. [Technical scope](docs/SCOPE.md) owns the
+accepted baseline and [testing evidence](docs/TESTING.md#action-boundary-evidence) separates
+retained improvements from unadopted experiments.
 
 Licensed under the [Apache License, Version 2.0](LICENSE).

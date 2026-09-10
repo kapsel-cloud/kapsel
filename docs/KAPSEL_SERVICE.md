@@ -3,7 +3,7 @@
 Status: accepted implementation in unreleased source. Not a published or supported installation.
 
 This page owns the `kapseld -> kapsel` composition, authenticated local protocol, fixed filesystem
-roots, process lifecycle, static assets, and retained partial-installer constraints. The
+roots, process lifecycle, static assets, and installer retirement. The
 [effect-gateway contract](EFFECT_GATEWAY.md) owns authorization, action lifecycle, recovery,
 receiver results and receipts. [Technical scope](SCOPE.md) owns the accepted product boundary.
 
@@ -21,7 +21,7 @@ bounded local caller
 The service gives execution a lifetime independent of a caller connection. A reconnecting caller can
 read the same action's status and original receipt without gaining credentials or deciding whether
 to send a mutation again. It is retained as the current bounded broker composition, not a permanent
-hosting commitment or a reason to complete the dormant installer.
+hosting or installation commitment.
 
 The sole capability is `kubernetes.set_deployment_image`. The service requires an exact-snapshot v2
 grant at startup and restart, binding the operation tuple and independently acquired Deployment UID
@@ -50,8 +50,8 @@ distinctions. The service composes `Application`, never gateway internals.
 
 ## Authority and filesystem
 
-The operator provisions the existing operator-document grammar at these exact paths. The installer
-does not generate a working installation:
+The operator provisions the existing operator-document grammar at these exact paths. There is no
+installer in the active source tree:
 
 ```text
 /etc/kapsel/operator.json
@@ -209,53 +209,56 @@ one Role for `apps/deployments` `get`/`patch` with `resourceNames: ["agent-api"]
 RoleBinding. It creates no credential, token Secret, Namespace, Deployment, workload or ClusterRole.
 Static files are source assets, not an authenticated installer or accepted current release.
 
-## Dormant installer mechanisms
+## Installer retirement
 
-The installer-first journey is withdrawn. There is no selected replacement installation model.
-Current `kapsel-installer` code is retained only as partial unpublished machinery for a separate
-retain, replace or delete assessment. Its presence does not promise future assets, Kubernetes
-provisioning, credential issuance/refresh, activation, uninstall, candidate assembly or publication.
-The previous full journey remains discoverable in Git, not an ongoing compatibility commitment.
+The partial, unpublished installer was removed rather than maintained around an undecided
+installation model. Future installation work must start from a concrete maintainer or user workflow
+and a sufficiently settled product shape. This retirement selects no replacement, migration or
+upgrade path and changes no published v0.2.0 artifact or contract.
 
-Default builds have no payload and stop at `bundle_unavailable` before host access. Staged test
-builds validate fixed operator inputs and bootstrap kubeconfig, perform read-only clean-install
-preflight, create durable transaction state, and create/recover two groups and two locked users.
-They stop at `implementation_incomplete`. The private host-file foundation has no production asset
-caller. [Installer tests](TESTING.md#installer) own the finite proof inventory.
+The final pre-deletion revision is `244687740d535bc4ee97e9fe51021745e8b8e30d`. At that revision,
+`linux.rs::run` ends at `ImplementationIncomplete` after creating the two groups and two locked
+users. `ensure_host_file` has only test callers. No working installation was delivered.
 
-These implemented safety constraints remain load-bearing until code is removed or deliberately
-changed:
+From a checkout containing that revision, inspect the removed source without restoring active code:
 
-- Fixed operator inputs are descriptor-relative, root-private regular single-link files. Bootstrap
-  kubeconfig is explicit, bounded, embedded-credential-only and cannot execute credential commands
-  or discover ambient authority. Shared grant/trust validation stays in `kapsel-authority`.
-- One crash-released installer lock excludes concurrent recovery. Bounded native identity commands
-  inherit the lock through their process lifetime. Command exit or timeout is never ownership
-  evidence. Concurrent host identity administration is unsupported.
-- A root-private bounded canonical transaction binds original input identity, digests, cluster and
-  pending effects before mutation. `transaction.json` and marked `.transaction.next` successors use
-  descriptor-relative no-replace publication, inode/parent sync and strict one-step validation.
-  Unknown or unimplemented effect successors fail closed. Transaction evidence is never discarded to
-  resume work.
-- Group GIDs and user UIDs are preselected from 101–999 through bounded NSS enumeration and exact
-  name/numeric absence checks. The two groups are `kapsel` and `kapsel-service-callers`. Locked
-  `kapsel` and `kapsel-service-caller` users have fixed primary groups, explicit no-home/no-login
-  settings and transaction GECOS. There is no supplementary-membership mutation.
-- Recovery classifies exactly absent, exactly complete, conflict or ambiguous/partial using separate
-  bounded name/numeric passwd/group and shadow observations. Only the first two permit continuation.
-  User conflict or ambiguity durably enters terminal `identity_blocked`, retaining pending evidence.
-  Reopen performs no new observation, effect or rollback, even if the conflict disappears.
-- Created users and their primary groups are retained. No `userdel` occurs. Group rollback is
-  reverse order and allowed only before any user effect, with exact ownership and no primary-GID
-  users.
-- Host-file staging/publication uses transaction markers, exact inode and complete frozen file
-  facts. An expected name, matching bytes or preflight absence alone never permits adoption or
-  deletion.
+```sh
+git show 244687740d535bc4ee97e9fe51021745e8b8e30d:crates/kapsel-installer/src/linux.rs
+git ls-tree -r --name-only 244687740d535bc4ee97e9fe51021745e8b8e30d crates/kapsel-installer
+git show 244687740d535bc4ee97e9fe51021745e8b8e30d:docs/KAPSEL_SERVICE.md
+```
 
-The private `identity` and `transaction` modules, Linux adapters and their tests specify the exact
-retained internal grammar and native argv. Removing the unimplemented journey here changes no
-installer code, supported command, stored bytes or recovery rule. Do not extend dormant schema
-variants merely because they remain representable.
+If needed, first fetch from a repository containing the revision, for example
+`git fetch /path/to/owning/kapsel master`. Availability in one local checkout does not imply a
+published release or remote availability. Git is the archive, not a second maintained source tree.
+
+Removed: `crates/kapsel-installer`, its embedded-bundle build script and generated test fixtures,
+the bundle and Debian identity launchers, workspace membership, installer-only CI and hook checks,
+and its exclusive direct dependencies. Identity, transaction, host-file publication and recovery
+tests inside that crate covered only the retired mechanism, so they were deleted, not ported.
+
+Retained: `kapsel-authority` owns grant/trust codecs, request grammar and the combined authority
+check exposed through `Application`. Its vectors and application-contract tests remain. `kapseld`,
+its client, static systemd/sysusers/RBAC assets and `install_assets` tests still own the service
+composition. Linux process and root-substitution tests still establish service admission, private
+paths, restart and receipt retrieval. Core approval, dispatch, recovery and receipt tests remain
+unchanged. The published archive assembly, authentication and smoke consumers remain separate.
+
+Reusable lessons from the removed implementation:
+
+- A command exit or timeout does not establish ownership. Recovery needs independent, exact
+  observations and must stop on conflict or partial evidence.
+- Durable pending-effect facts must precede host mutation. A lock must cover child processes too,
+  not just the process that spawned them.
+- Matching names or bytes do not justify adoption or deletion. Publication and recovery need exact
+  inode/parent identity and explicit ownership evidence.
+
+Source deletion is not uninstall. On any disposable host that ran a staged build, an operator must
+inventory the `kapsel` and `kapsel-service-callers` groups, `kapsel` and `kapsel-service-caller`
+users, `/var/lib/kapsel-installer` transaction evidence, `/run/lock/kapsel-installer.lock`, and any
+separately provisioned service files or Kubernetes objects before deciding what to retain. Do not
+infer installer ownership from a matching name. Preserve ambiguous evidence. No identities, host
+files or Kubernetes objects are removed by this retirement, and no fleet-wide cleanup is claimed.
 
 ## Qualification envelope and residual risk
 
@@ -271,11 +274,10 @@ later-observation reports distinguish live Kubernetes evidence from mock HTTP, p
 model evidence. [Testing](TESTING.md) owns proof placement and
 [action-boundary evidence](TESTING.md#action-boundary-evidence) pins source revisions.
 
-The dormant installer has portable and Linux container tests, including native Debian identity-tool
-composition. Container evidence may use host emulation and is not fresh-VM installation proof.
-Process-exit tests do not prove power-loss durability. None of this establishes production safety,
-HA, host/disk-loss continuity, backup automation, another platform, broad upgrade/rollback, online
-identity rotation, remote callers or protection from compromised host root, kernel or service UID.
+Container evidence may use host emulation and is not fresh-VM installation proof. Process-exit tests
+do not prove power-loss durability. None of this establishes production safety, HA, host/disk-loss
+continuity, backup automation, another platform, broad upgrade/rollback, online identity rotation,
+remote callers or protection from compromised host root, kernel or service UID.
 
 No queue, periodic controller, HTTP/TCP/MCP server, SDK, generic protocol, second store, policy
 engine, dashboard, hosted authority, second capability or new installation promise is added.

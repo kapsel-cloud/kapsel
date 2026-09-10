@@ -104,18 +104,15 @@ kapsel (root product)
 kapseld (unpublished service)
   -> kapsel
   -> kapsel-authority
-
-kapsel-installer (partial, unpublished)
-  -> kapsel-authority
 ```
 
 `kapsel-authority` is a fixed-purpose source-composition seam. It owns the exact authorization-grant
 codec, receipt-trust codec, their combined operator-input consistency check, and the bounded
 [request grammar](EFFECT_GATEWAY.md#one-capability). The gateway and service consume the same pure
 grammar predicates. Each keeps its own error projection and rejection-before-effect boundary. The
-installer consumes operator-input validation without the Kubernetes, journal, or gateway dependency
-graph. It is not an installed process, runtime package, public SDK, generic validation library, or
-supported Rust interface.
+combined operator-input check remains exposed through `Application` and covered by its contract
+tests. The authority package is not an installed process, runtime package, public SDK, generic
+validation library, or supported Rust interface.
 
 The excluded `fuzz` package contains hostile-input proof targets.
 
@@ -147,29 +144,14 @@ duplicate export rules, sequence lifecycle states, add another store, or create 
 [Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
 boundary.
 
-## Dormant partial installer
-
-The unpublished `kapsel-installer` package has a fixed three-command grammar and consumes
-`kapsel-authority` directly. Default workspace builds carry no embedded service payload, so a
-mutating invocation stops at `bundle_unavailable` before host access. The release-only
-`KAPSEL_INSTALLER_STAGE` build seam accepts one structurally bounded fixed stage; the current Docker
-smoke supplies test-only ELF fixtures.
-
-Current implementation validates operator input and bootstrap kubeconfig, performs read-only host
-and Kubernetes clean-install preflight, durably enters `installing`, and creates or recovers the
-exact two groups and two fixed users. A private host-file foundation also owns exact staged-file
-facts, inode-bound publication, and recovery under a fixed absolute destination. No production asset
-order calls that foundation, so execution still stops at `implementation_incomplete` after identity
-creation. The installer does not install assets, Kubernetes resources, credentials, activation,
-refresh, or uninstall, and no candidate assembly command exists. [Build](BUILD.md) lists its
-runnable gates; [Kapsel service](KAPSEL_SERVICE.md#dormant-installer-mechanisms) owns the retained
-constraints. The former complete installer journey is withdrawn, not the next implementation plan.
+## Retained maintenance boundary
 
 Maintenance retains the application/gateway, single request grammar, service protocol/runtime,
 SQLite receipt completion, signed codecs and adapter/export paths. The test-only event kernel, JSON
 Patch, later observation and protected-tool comparison are evidence, not additional production
-owners. Installer mechanisms require a separate retain, replace or delete assessment. Do not deepen
-unused foundations merely because they exist.
+owners. The partial installer and its exclusive wiring have been removed.
+[Installer retirement](KAPSEL_SERVICE.md#installer-retirement) owns retrieval and lessons, not a
+replacement installation design.
 
 ## Dependency rule
 

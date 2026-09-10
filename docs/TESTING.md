@@ -319,50 +319,7 @@ before persistence or application access rather than repeating that grammar matr
 turn the authority package into a public SDK. The [Kapsel service contract](KAPSEL_SERVICE.md) owns
 the complete unpublished boundary.
 
-### Installer
-
-The dormant partial installer has four retained evidence layers. They protect existing mechanisms,
-not a requirement to finish the withdrawn installer journey:
-
-- private platform-neutral `identity` and `transaction` modules own fixed GID/UID selection, exact
-  observation classification, canonical transaction validation, pending-effect transitions, identity
-  blocking, reopening, reverse rollback rules, and exact staged/published host-file evidence. Their
-  implementation-local tests run under ordinary macOS package tests and workspace Clippy. Portable
-  CLI, bundle-refusal, kubeconfig, and fixed-authority tests remain beside their owners;
-- Linux-only implementation-local tests own bounded process execution, exact creation modes, and
-  descriptor-relative `O_TMPFILE`, xattr, link, rename, fsync, and recovery behavior;
-- ignored, named Linux Rust integration tests cross the staged bundle, exact descriptor-relative
-  operator input, a Rust TLS Kubernetes fixture, authority consistency, hostile filesystem and
-  metadata refusal, durable lock/transaction recovery, group/user process-kill seams, terminal
-  conflict and ambiguous-user reopening, ownership-safe pre-user rollback, and one native
-  Debian-tool composition. Rust owns fake host state, recovery classification, transaction parsing,
-  and assertions. Process-kill helpers assert the SIGKILL-equivalent status 137 without a shell
-  diagnostic. The outer Python and shell remain bundle-staging, cache-mount, and
-  disposable-container launch code only; and
-- `./scripts/test-debian12-installer-identities.sh` runs the exact approved groupadd and useradd
-  argv against a pinned Debian 12 `linux/amd64` image. It records all changed account files, passwd
-  and shadow rows, NSS name and numeric visibility, lock state, home, shell, GECOS, hostile
-  defaults, duplicate name and UID, timeout, process loss, injected partial state, and the exact
-  sudo effective GID path without supplementary membership.
-
-The direct identity experiment must classify only exactly absent, exactly complete, conflict, or
-ambiguous/partial. It must derive no-effect or completion from command status. The container is
-always disposable; conflict or ambiguous/partial evidence permits no repair or continuation.
-
-The Linux container keeps build caches separate from evidence. Its cache key includes the pinned
-builder, toolchain, target, and lockfile. Rustup state, the Cargo registry, and compiled
-dependencies may survive. The staged payload, operator directory, fake host, Kubernetes server,
-transactions, locks, and observations never do. Native Linux workspace Clippy remains authoritative
-for the thin Linux adapters; Docker is not part of pre-commit or the deterministic local gate.
-
-Implemented execution ends after read-only host and Kubernetes clean-install preflight, durable
-`installing`, and recoverable creation of both fixed groups and users. Private Linux tests also
-prove the regular-host-file staging, marker, inode, no-replace publication, and recovery foundation,
-including the required destination-filesystem operations, but no production asset order invokes it.
-Group rollback remains available only before a user effect. No test proves installed production
-assets, Kubernetes mutation, credential issuance, activation, refresh, uninstall, real payload
-provenance, final metadata or size bounds, runnable installation, candidate assembly, or candidate
-qualification. The default payload-free build stops at `bundle_unavailable`; staged test builds stop
-at `implementation_incomplete` after the implemented identity boundary.
-
-The service and installer are absent from v0.2.0 and remain unpublished.
+The service is absent from v0.2.0 and remains unpublished. Installer-only tests and launchers were
+removed with their implementation. [Installer retirement](KAPSEL_SERVICE.md#installer-retirement)
+records the deletion boundary and historical retrieval instructions. Service asset, process,
+authority and core safety coverage above remains active.

@@ -906,19 +906,20 @@ fn ordinary_startup_uses_fixed_inputs_and_serves_until_systemd_termination() {
     let root = installation_root("ordinary-startup");
     let socket = root.join("run/kapsel/kapseld.sock");
     let child = spawn_installed(&root, 1);
-    wait_for_socket(&socket);
-    let metadata = fs::symlink_metadata(&socket).unwrap();
-    assert!(metadata.file_type().is_socket());
-    assert_eq!(metadata.uid(), effective_uid());
-    assert_eq!(metadata.gid(), effective_gid());
-    assert_eq!(metadata.mode() & 0o7777, 0o660);
-    assert_eq!(metadata.nlink(), 1);
     let mut status = connect(&socket);
     write_frame(
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
     assert_eq!(read_frame(&mut status), br#"{"status":"NOT_FOUND"}"#);
+
+    // A response proves startup completed chmod and identity checks, not just bind.
+    let metadata = fs::symlink_metadata(&socket).unwrap();
+    assert!(metadata.file_type().is_socket());
+    assert_eq!(metadata.uid(), effective_uid());
+    assert_eq!(metadata.gid(), effective_gid());
+    assert_eq!(metadata.mode() & 0o7777, 0o660);
+    assert_eq!(metadata.nlink(), 1);
 
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());

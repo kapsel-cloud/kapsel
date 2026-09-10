@@ -24,8 +24,8 @@ technical claims.
 recovery, and receipt semantics. [`docs/INDEX.md`](docs/INDEX.md) routes every other question.
 
 The published `v0.2.0` developer beta and repository HEAD are different promises. Source may contain
-unpublished service or installer work; do not present it as a released or supported path until its
-release owner says so.
+unpublished service work; do not present it as a released or supported path until its release owner
+says so.
 
 When code and an owner disagree:
 

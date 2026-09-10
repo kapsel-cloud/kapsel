@@ -1,7 +1,8 @@
 //! Fixed-purpose Kapsel authority formats and validation.
 //!
 //! This unpublished package owns the exact authorization-grant and receipt-trust codecs needed by
-//! the root Kapsel package and its installer. It is not a generic authorization library, policy
+//! the root Kapsel package, plus request grammar shared with the service. It is not a generic
+//! authorization library, policy
 //! interface, runtime package, or supported SDK.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};

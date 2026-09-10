@@ -145,20 +145,18 @@ patch fields, the concrete adapter remains the field-level authority owner. Host
 service identity, and already authenticated caller processes remain trusted. Identity database
 changes would not revoke credentials cached by an existing process, so revocation stops the service,
 waits for client and connection closure, and removes the socket before any operator-owned resource
-removal. The partial installer implements no uninstall.
+removal. No service uninstall command is supplied.
 
 One disposable Debian 12 qualification lane supplies bounded service evidence for accounts, systemd,
 short-lived credentials, namespaced RBAC, direct-source provisioning, revocation, retained data, and
 cleanup. That historical run predates format-4 completion. It does not establish fresh-native
 acceptance of current HEAD, production safety or support for another environment.
 
-Service and installer code in repository HEAD is unpublished and absent from v0.2.0. Implemented
-installer tests currently cross bounded operator input, clean-install preflight, durable transaction
-recovery, and the two fixed group and two fixed locked-user mutations. The installer durably blocks
-on conflicting or ambiguous user evidence. It does not implement assets, Kubernetes resources or
-credentials, activation, refresh, uninstall, or a runnable installation. The exact authority,
-filesystem, recovery, qualification, and unsupported boundaries are owned by
-[Kapsel service](KAPSEL_SERVICE.md).
+Service code in repository HEAD is unpublished and absent from v0.2.0. The partial installer has
+been removed without removing identities or state on experimental hosts.
+[Installer retirement](KAPSEL_SERVICE.md#installer-retirement) records the operational handoff. The
+exact service authority, filesystem, recovery, qualification, and unsupported boundaries are owned
+by [Kapsel service](KAPSEL_SERVICE.md).
 
 ## Non-claims
 
