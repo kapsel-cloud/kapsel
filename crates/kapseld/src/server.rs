@@ -12,6 +12,9 @@ use kapsel::{
     AgentRequest, Application, ApplicationError, SetDeploymentImageReceipt,
     SetDeploymentImageStatus, TargetRejection,
 };
+use kapsel_authority::{
+    dns_label_is_valid, dns_subdomain_is_valid, identity_is_valid, immutable_image_is_valid,
+};
 use serde::Deserialize;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
@@ -649,7 +652,7 @@ async fn dispatch_with_state<R: ApplicationReads + 'static, E: ApplicationExecut
         return (invalid_request(), ResponseClass::Ordinary);
     };
     match request {
-        Request::Status { operation_id } if valid_identity(&operation_id) => {
+        Request::Status { operation_id } if identity_is_valid(&operation_id) => {
             let reads = state.reads.clone();
             let result = spawn_blocking(move || {
                 reads
@@ -661,7 +664,7 @@ async fn dispatch_with_state<R: ApplicationReads + 'static, E: ApplicationExecut
             .unwrap_or(Err(ApplicationError::OperationFailure));
             (render_status_with_targets(result), ResponseClass::Ordinary)
         },
-        Request::Receipt { operation_id } if valid_identity(&operation_id) => {
+        Request::Receipt { operation_id } if identity_is_valid(&operation_id) => {
             let reads = state.reads.clone();
             let result = spawn_blocking(move || {
                 reads
@@ -679,11 +682,11 @@ async fn dispatch_with_state<R: ApplicationReads + 'static, E: ApplicationExecut
             deployment,
             container,
             immutable_image_digest,
-        } if valid_identity(&operation_id)
-            && valid_dns_label(&namespace)
-            && valid_dns_subdomain(&deployment)
-            && valid_dns_label(&container)
-            && valid_image(&immutable_image_digest) =>
+        } if identity_is_valid(&operation_id)
+            && dns_label_is_valid(&namespace)
+            && dns_subdomain_is_valid(&deployment)
+            && dns_label_is_valid(&container)
+            && immutable_image_is_valid(&immutable_image_digest) =>
         {
             let request = AgentRequest {
                 operation_id,
@@ -838,61 +841,6 @@ const fn target_rejection(rejection: TargetRejection) -> &'static str {
     }
 }
 
-fn valid_identity(value: &str) -> bool {
-    (1..=128).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
-}
-
-fn valid_dns_label(value: &str) -> bool {
-    (1..=63).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && value
-            .as_bytes()
-            .first()
-            .is_some_and(u8::is_ascii_alphanumeric)
-        && value
-            .as_bytes()
-            .last()
-            .is_some_and(u8::is_ascii_alphanumeric)
-}
-
-fn valid_dns_subdomain(value: &str) -> bool {
-    (1..=253).contains(&value.len()) && value.split('.').all(valid_dns_label)
-}
-
-fn valid_image(value: &str) -> bool {
-    if value.len() > 512 || !value.is_ascii() {
-        return false;
-    }
-    let Some((name, digest)) = value.split_once("@sha256:") else {
-        return false;
-    };
-    digest.len() == 64
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        && name.split('/').all(|component| {
-            !component.is_empty()
-                && component.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'.' | b'_' | b'-')
-                })
-                && component
-                    .as_bytes()
-                    .first()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-                && component
-                    .as_bytes()
-                    .last()
-                    .is_some_and(u8::is_ascii_alphanumeric)
-        })
-}
-
 #[cfg(test)]
 mod parser_tests {
     use super::*;
@@ -938,19 +886,80 @@ mod parser_tests {
     }
 
     #[test]
-    fn operation_and_submit_field_grammars_are_exact() {
-        assert!(valid_identity("A._:-z0"));
-        assert!(!valid_identity(""));
-        assert!(!valid_identity("space value"));
-        assert!(valid_dns_label("agent-api"));
-        assert!(!valid_dns_label("Agent-api"));
-        assert!(valid_dns_subdomain("agent-api.demo"));
-        assert!(!valid_dns_subdomain("agent_api"));
-        assert!(valid_image(concat!(
-            "registry.example/agent-api@sha256:",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        )));
-        assert!(!valid_image("registry.example/agent-api:latest"));
+    fn shared_grammar_rejects_each_field_before_application_access() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct ApplicationAccess(Arc<AtomicUsize>);
+        impl ApplicationReads for ApplicationAccess {
+            fn status(&self, _: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(ApplicationError::OperationFailure)
+            }
+
+            fn receipt(&self, _: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(ApplicationError::OperationFailure)
+            }
+        }
+        impl ApplicationExecution for ApplicationAccess {
+            fn matches(&self, _: &AgentRequest) -> bool {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                false
+            }
+
+            fn execute(
+                &mut self,
+                _: AgentRequest,
+            ) -> impl Future<Output = Result<(), ApplicationError>> + Send {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err(ApplicationError::OperationFailure))
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let state = ServerState::new(
+                ApplicationAccess(calls.clone()),
+                ApplicationAccess(calls.clone()),
+            );
+            let valid = serde_json::json!({
+                "request": "submit_set_deployment_image",
+                "operation_id": "op-1",
+                "namespace": "demo",
+                "deployment": "agent-api",
+                "container": "api",
+                "immutable_image_digest": format!("image@sha256:{}", "0".repeat(64)),
+            });
+            for field in [
+                "operation_id",
+                "namespace",
+                "deployment",
+                "container",
+                "immutable_image_digest",
+            ] {
+                let mut invalid = valid.clone();
+                invalid[field] = "".into();
+                let (response, _) =
+                    dispatch_with_state(invalid.to_string().as_bytes(), &state).await;
+                assert_eq!(response, invalid_request(), "{field}");
+                assert_eq!(state.submission.available_permits(), 1);
+            }
+            for request in [
+                "get_set_deployment_image_status",
+                "get_set_deployment_image_receipt",
+            ] {
+                let invalid = serde_json::json!({"request": request, "operation_id": ""});
+                let (response, _) =
+                    dispatch_with_state(invalid.to_string().as_bytes(), &state).await;
+                assert_eq!(response, invalid_request());
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            let (response, _) = dispatch_with_state(valid.to_string().as_bytes(), &state).await;
+            assert_eq!(response, operation_failure());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        });
     }
 
     #[test]

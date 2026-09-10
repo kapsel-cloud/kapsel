@@ -791,6 +791,7 @@ dependencies = [
  "ed25519-dalek",
  "http",
  "kapsel",
+ "kapsel-authority",
  "kube",
  "rusqlite",
  "rustix",

@@ -15,6 +15,7 @@ test-harness = ["kapsel/demo-harness"]
 [dependencies]
 ed25519-dalek.workspace = true
 kapsel.workspace = true
+kapsel-authority.workspace = true
 kube.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 serde.workspace = true

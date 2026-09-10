@@ -905,6 +905,9 @@ fn digest_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+mod grammar_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1016,6 +1019,35 @@ mod tests {
             &[bytes.as_slice(), b"extra"].concat(),
         ] {
             assert!(verify_authorization_grant(hostile, &trust).is_err());
+        }
+    }
+
+    #[test]
+    fn grant_validation_projects_each_shared_grammar_error() {
+        for field in [
+            AuthorizationInputField::AuthorizationId,
+            AuthorizationInputField::OperationId,
+            AuthorizationInputField::Namespace,
+            AuthorizationInputField::Deployment,
+            AuthorizationInputField::Container,
+            AuthorizationInputField::ImmutableImageDigest,
+        ] {
+            let mut invalid = authorization();
+            let value = match field {
+                AuthorizationInputField::AuthorizationId => &mut invalid.authorization_id,
+                AuthorizationInputField::OperationId => &mut invalid.operation_id,
+                AuthorizationInputField::Namespace => &mut invalid.namespace,
+                AuthorizationInputField::Deployment => &mut invalid.deployment,
+                AuthorizationInputField::Container => &mut invalid.container,
+                AuthorizationInputField::ImmutableImageDigest => {
+                    &mut invalid.immutable_image_digest
+                },
+            };
+            value.clear();
+            assert!(matches!(
+                sign_authorization_grant(&invalid, &[7_u8; 32], "owner-key"),
+                Err(AuthorizationGrantError::InvalidInput(actual)) if actual == field
+            ));
         }
     }
 

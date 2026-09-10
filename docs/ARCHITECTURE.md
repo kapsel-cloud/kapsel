@@ -103,16 +103,19 @@ kapsel (root product)
 
 kapseld (unpublished service)
   -> kapsel
+  -> kapsel-authority
 
 kapsel-installer (partial, unpublished)
   -> kapsel-authority
 ```
 
 `kapsel-authority` is a fixed-purpose source-composition seam. It owns the exact authorization-grant
-codec, receipt-trust codec, and their combined operator-input consistency check. The root product
-and installer consume the same implementation without giving the installer the Kubernetes, journal,
-or gateway dependency graph. It is not an installed process, runtime package, public SDK, generic
-validation library, or supported Rust interface.
+codec, receipt-trust codec, their combined operator-input consistency check, and the bounded
+[request grammar](EFFECT_GATEWAY.md#one-capability). The gateway and service consume the same pure
+grammar predicates. Each keeps its own error projection and rejection-before-effect boundary. The
+installer consumes operator-input validation without the Kubernetes, journal, or gateway dependency
+graph. It is not an installed process, runtime package, public SDK, generic validation library, or
+supported Rust interface.
 
 The excluded `fuzz` package contains hostile-input proof targets.
 

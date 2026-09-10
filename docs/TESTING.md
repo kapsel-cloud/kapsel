@@ -313,8 +313,11 @@ The unpublished service evidence remains layered around `Application`:
 
 Service-client tests freeze its three-command grammar, bounded framing, receipt digest verification,
 exclusive mode-`0600` output, and refusal to replace an existing file. `kapsel-authority` tests
-freeze shared grant/trust vectors and consistency without turning that package into a public SDK.
-The [Kapsel service contract](KAPSEL_SERVICE.md) owns the complete unpublished boundary.
+freeze shared grant/trust vectors and consistency. Its `grammar_tests` own the table-driven request
+bounds and spelling cases. Gateway and service tests prove field-error projection and rejection
+before persistence or application access rather than repeating that grammar matrix. This does not
+turn the authority package into a public SDK. The [Kapsel service contract](KAPSEL_SERVICE.md) owns
+the complete unpublished boundary.
 
 ### Installer
 

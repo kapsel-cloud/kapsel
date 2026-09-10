@@ -240,125 +240,36 @@
     }
 
     #[test]
-    fn kubernetes_names_and_identities_enforce_contract_bounds() {
-        let path = database_path("input-bounds");
-        let invalid_requests = [
-            {
-                let mut value = request();
-                value.operation_id = "../outside".into();
-                value
-            },
-            {
-                let mut value = request();
-                value.namespace = "Uppercase".into();
-                value
-            },
-            {
-                let mut value = request();
-                value.namespace = "a".repeat(64);
-                value
-            },
-            {
-                let mut value = request();
-                value.deployment = format!("{}.valid", "a".repeat(64));
-                value
-            },
-            {
-                let mut value = request();
-                value.container = "-api".into();
-                value
-            },
-        ];
-        for invalid in invalid_requests {
-            let gateway = Gateway::open_for_test(&path).unwrap();
-            let authorization = authorization(&invalid);
+    fn shared_grammar_errors_preserve_field_classification_before_persistence() {
+        let path = database_path("input-projection");
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        for field in [
+            InputField::OperationId,
+            InputField::Namespace,
+            InputField::Deployment,
+            InputField::Container,
+            InputField::ImmutableImageDigest,
+            InputField::AuthorizationId,
+        ] {
+            let mut invalid = request();
+            let mut exact = authorization(&invalid);
+            let value = match field {
+                InputField::OperationId => &mut invalid.operation_id,
+                InputField::Namespace => &mut invalid.namespace,
+                InputField::Deployment => &mut invalid.deployment,
+                InputField::Container => &mut invalid.container,
+                InputField::ImmutableImageDigest => &mut invalid.immutable_image_digest,
+                InputField::AuthorizationId => &mut exact.authorization_id,
+            };
+            value.clear();
             assert!(matches!(
-                gateway.submit_exact_for_test(&invalid, &authorization),
-                Err(GatewayError::InvalidInput(_))
+                gateway.submit_exact_for_test(&invalid, &exact),
+                Err(GatewayError::InvalidInput(actual)) if actual == field
             ));
             assert_eq!(gateway.get(&invalid.operation_id).unwrap(), None);
         }
+        drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn contract_bounds_accept_exact_maxima_and_reject_values_above_them() {
-        let maximum_path = database_path("exact-maxima");
-        let mut maximum = request();
-        maximum.operation_id = "o".repeat(128);
-        maximum.namespace = "n".repeat(63);
-        maximum.deployment = format!(
-            "{}.{}.{}.{}",
-            "a".repeat(63),
-            "b".repeat(63),
-            "c".repeat(63),
-            "d".repeat(61)
-        );
-        maximum.container = "c".repeat(63);
-        maximum.immutable_image_digest = format!("{}@sha256:{}", "i".repeat(440), "0".repeat(64));
-        let mut maximum_authorization = authorization(&maximum);
-        maximum_authorization.authorization_id = "a".repeat(128);
-        let maximum_gateway = Gateway::open_for_test(&maximum_path).unwrap();
-        assert_eq!(
-            maximum_gateway
-                .submit_exact_for_test(&maximum, &maximum_authorization)
-                .unwrap(),
-            SubmissionResult::Created
-        );
-        drop(maximum_gateway);
-        fs::remove_dir_all(maximum_path.parent().unwrap()).unwrap();
-
-        let invalid_path = database_path("above-maxima");
-        let invalid_gateway = Gateway::open_for_test(&invalid_path).unwrap();
-        let invalid_requests = [
-            {
-                let mut value = request();
-                value.operation_id = "o".repeat(129);
-                value
-            },
-            {
-                let mut value = request();
-                value.deployment = format!(
-                    "{}.{}.{}.{}",
-                    "a".repeat(63),
-                    "b".repeat(63),
-                    "c".repeat(63),
-                    "d".repeat(62)
-                );
-                value
-            },
-            {
-                let mut value = request();
-                value.container = "c".repeat(64);
-                value
-            },
-            {
-                let mut value = request();
-                value.immutable_image_digest =
-                    format!("{}@sha256:{}", "i".repeat(441), "0".repeat(64));
-                value
-            },
-        ];
-        for invalid in invalid_requests {
-            assert!(matches!(
-                invalid_gateway.submit_exact_for_test(&invalid, &authorization(&invalid)),
-                Err(GatewayError::InvalidInput(_))
-            ));
-            assert_eq!(invalid_gateway.get(&invalid.operation_id).unwrap(), None);
-        }
-        let valid_request = request();
-        let mut invalid_authorization = authorization(&valid_request);
-        invalid_authorization.authorization_id = "a".repeat(129);
-        assert!(matches!(
-            invalid_gateway.submit_exact_for_test(&valid_request, &invalid_authorization),
-            Err(GatewayError::InvalidInput(InputField::AuthorizationId))
-        ));
-        assert_eq!(
-            invalid_gateway.get(&valid_request.operation_id).unwrap(),
-            None
-        );
-        drop(invalid_gateway);
-        fs::remove_dir_all(invalid_path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -507,43 +418,5 @@
                 .unwrap(),
             journal::OPERATION_COUNT_MAX
         );
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn image_grammar_rejects_every_mutable_or_ambiguous_form() {
-        let path = database_path("image-grammar");
-        let invalid_images = [
-            "registry.example/repo/image:tag",
-            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            concat!(
-                "registry.example/repo/image:tag@sha256:",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            ),
-            concat!(
-                "registry.example:5000/repo/image@sha256:",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            ),
-            concat!(
-                "Registry.example/repo/image@sha256:",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            ),
-            concat!(
-                "registry.example/repo/image@sha256:",
-                "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"
-            ),
-        ];
-        for image in invalid_images {
-            let gateway = Gateway::open_for_test(&path).unwrap();
-            let mut request = request();
-            request.operation_id = format!("op-{}", image.len());
-            request.immutable_image_digest = image.into();
-            let authorization = authorization(&request);
-            assert!(matches!(
-                gateway.submit_exact_for_test(&request, &authorization),
-                Err(GatewayError::InvalidInput(InputField::ImmutableImageDigest))
-            ));
-            assert_eq!(gateway.get(&request.operation_id).unwrap(), None);
-        }
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
