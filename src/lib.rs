@@ -29,7 +29,7 @@ pub use gateway::{
     inspect_receipt, ApprovedTarget, AuthorizationTrust, ExactAuthorization, InspectionLimits,
     InspectionReport, InspectionStatus, ObservedTarget, OperationResult, OperationState,
     OperationTargets, ReceiptError, ReceiptReference, ReceiptStatement, ReceiptTrust,
-    SetDeploymentImageRequest, TargetRejection,
+    TargetRejection,
 };
 #[cfg(test)]
 use gateway::{
@@ -40,4 +40,4 @@ use gateway::{
 #[cfg(test)]
 use gateway::{DeploymentImageAdapter, Gateway, ReceiptSettings, TargetReadError};
 #[cfg(test)]
-use gateway::{FaultPoint, GatewayError};
+use gateway::{FaultPoint, GatewayError, SetDeploymentImageRequest};
