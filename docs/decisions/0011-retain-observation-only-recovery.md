@@ -219,13 +219,17 @@ The full deterministic gate passed, with 114 root library tests passed and 9 ign
 independent review found no concrete fix-worthy findings. Ignored live or extended lanes are not
 counted as proved.
 
-The local adoption revision is `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`. Current master retains
-the same executable changes in consolidated commit `59b4f04f513f1dfd4131f722b6c44b210d73b453`. The
-consolidation removed the separate rejected-kernel report, not its test-only evidence or the retry
-correction. Reproduce the retained checks with:
+The local adoption revision is `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`. Consolidated commit
+`59b4f04f513f1dfd4131f722b6c44b210d73b453` preserves the same executable changes. Consolidation
+removed the separate rejected-kernel report, not its test-only evidence or the retry correction.
+Subsequent [prototype retirement](../TESTING.md#retired-approval-kernel-prototype) removes the
+rejected machine and its exclusive tests from HEAD, while retaining sequential dispatch and the
+retry correction. That section owns exact detached-checkout reproduction and retrieval evidence for
+the historical machine. The counts above describe adoption, not today's suite.
+
+Reproduce the retained sequential checks on the current checkout with:
 
 ```sh
-git show --stat 59b4f04f513f1dfd4131f722b6c44b210d73b453
 cargo test --locked -p kapsel --lib gateway::tests::dispatch -- --nocapture
 cargo test --locked -p kapsel --test application_retry
 KAPSEL_SIMULATION_SEED=21182435914953528 KAPSEL_SIMULATION_CASES=256 \

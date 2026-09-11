@@ -3,8 +3,6 @@
 //! This module owns orchestration and its private test seams. The crate root remains a compact map
 //! of the caller-visible interface and concrete internal owners.
 
-#[cfg(test)]
-mod approval_kernel_prototype;
 mod authorization;
 #[cfg(feature = "demo-harness")]
 mod demo_control;

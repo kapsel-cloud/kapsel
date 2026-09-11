@@ -43,7 +43,7 @@ behavior. None changes the published v0.2.0 artifact.
 | Real-agent reconnect              | `30567790892164d6e3eb4353f5667cc93fa90bd6`                                                             | [Workflow report](RECONNECTABLE_AGENT_ACTION.md) establishes reconnect and slow-rollout friction, not relative operator effort or a representative stale-rejection rate.                                                                                            |
 | Independent kubectl               | `b73d30753347faa8523aceb02b572fcb7caab2e0`                                                             | [Corpus](INDEPENDENT_TOOL_CORPUS.md) found ordinary adapter risks, no added standalone failure-kit value in seven fixed cases. No project demotion adopted.                                                                                                         |
 | SQLite receipt completion         | `b27d8e0a6c3dea91d2d4333ea111d32629a04f26`                                                             | Adopted format 4. Signed bytes and terminal state commit together. Removed publication-dependent completion, durable output paths and receipt-root startup coupling. Older journals rejected.                                                                       |
-| Event kernel and retry correction | `21f0a2534e9555130025a4082e935194886a6cb2`                                                             | Kernel rejected before integration. Bounded explorer and scratch SQLite runner share test-only decisions. Separately fixed hidden HTTP retries.                                                                                                                     |
+| Event kernel and retry correction | `21f0a2534e9555130025a4082e935194886a6cb2`                                                             | Kernel rejected before integration and later removed from HEAD. Historical bounded explorer and scratch SQLite runner shared test-only decisions. Separately fixed hidden HTTP retries remain adopted.                                                              |
 | Sequential dispatch               | `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`, consolidated as `59b4f04f513f1dfd4131f722b6c44b210d73b453` | Adopted private consumed permission at the real adapter boundary. [ADR 0011](decisions/0011-retain-observation-only-recovery.md#sequential-boundary-comparison) records removed apply arguments, request counts and I/O obligations. No shared pure kernel claimed. |
 | Guarded JSON Patch                | `430e7f20aed71ef8daec81b681625a641d98ee18`                                                             | [Live comparison](#frozen-json-patch-receiver-comparison) reduced some stale admissions but retained pending/unpersisted ambiguity. Keep strategic merge/no-replay.                                                                                                 |
 | Later observation                 | `426c17f0152f9cdb5036895c25cdcbed11b20e43`                                                             | [Prototype](LATER_OBSERVATION_EXPERIMENT.md) supplies useful later evidence without changing UNKNOWN or mutating again. Test-only, not a supported lifecycle.                                                                                                       |
@@ -52,15 +52,49 @@ behavior. None changes the published v0.2.0 artifact.
 These revisions were verified locally. Another checkout must obtain them from a repository
 containing them, for example `git fetch /path/to/owning/kapsel master`; local availability does not
 imply a remote push. The two original kernel/dispatch branch commits can be fetched from a
-containing local branch or tag. Current master contains their retained executable evidence in
-`59b4f04`.
+containing local branch or tag. Their consolidated executable evidence is historical at
+`59b4f04f513f1dfd4131f722b6c44b210d73b453`.
 
-The kernel's former report is historical at
-`21f0a2534e9555130025a4082e935194886a6cb2:docs/APPROVAL_KERNEL_EXPERIMENT.md`. It was removed during
-consolidation to avoid parallel rationale. The retained `approval_kernel_prototype` tests cover
-1,714 explored states through depth 7, 252 healthy interleavings, and duplicate-acknowledgement and
-recovery-resend counterexamples. No production orchestration was replaced by that event machine. Its
-fresh acknowledgement and driver/I/O correspondence remain assumptions, not durability proof.
+### Retired approval-kernel prototype
+
+The event machine was rejected because it added a second policy representation without replacing
+production orchestration. Its former report is historical at
+`21f0a2534e9555130025a4082e935194886a6cb2:docs/APPROVAL_KERNEL_EXPERIMENT.md`. Consolidation removed
+that report to avoid parallel rationale. Retirement removes the test-only machine, its exclusive
+tests and module registration from HEAD. `Journal::mark_apply_started` is now journal-private.
+Production still uses the conditional `begin_attempt` transition and fresh one-use
+`DispatchPermission`.
+
+Removed coverage includes rejected-machine bounded exploration (1,714 states through depth 7 and 252
+healthy interleavings), acknowledgement correlation, and duplicate-acknowledgement and
+recovery-resend mutant counterexamples. The retained sequential dispatch, process-loss,
+worker-exclusion and HTTP request-count tests do not replace that historical coverage. The
+prototype's fresh acknowledgement and driver/I/O correspondence were assumptions, not durability
+proof. Its removal does not remove the separately adopted hidden-HTTP-retry correction.
+
+For historical reproduction, first select a detached checkout of the exact consolidated revision.
+Run this from a checkout containing that commit, using a new scratch directory outside the tree:
+
+```sh
+source_repo=$(git rev-parse --show-toplevel)
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-kernel-history.XXXXXX")
+git init "$scratch/history"
+git -C "$scratch/history" fetch --no-tags "$source_repo" master
+git -C "$scratch/history" checkout --detach 59b4f04f513f1dfd4131f722b6c44b210d73b453
+cd "$scratch/history"
+git rev-parse HEAD
+git ls-tree -r HEAD -- src/gateway/approval_kernel_prototype.rs \
+  src/gateway/approval_kernel_prototype/tests.rs \
+  src/gateway/approval_kernel_prototype/tests/disk.rs
+cargo test --locked -p kapsel --lib approval_kernel_prototype -- --nocapture
+```
+
+Retirement validation fetched `master` from the owning local repository into an empty repository,
+selected that detached revision, verified all three files, and passed all six prototype tests.
+Separately, fetching the exact revision from `https://github.com/kapsel-cloud/kapsel.git` into
+another empty repository succeeded and returned the same three file blobs. Both local and remote
+retrieval were checked, not inferred from local history. This records availability at validation
+time, not a release or a guarantee of future remote retention. No archive is copied into HEAD.
 
 Receipt consumers were checked through the application/service retrieval path, not just SQL.
 `gateway::tests::receipt` covers signing failure, commit-acknowledgement loss, process exit before
@@ -69,10 +103,12 @@ restart and export under changed settings. The Linux service process lane retrie
 original bytes while the export destination is unavailable. The application client retry and
 snapshot regressions retain independent request counts. Process exits do not prove power loss.
 
-Reproduce the retained deterministic evidence on the current checkout:
+### Current deterministic evidence
+
+Reproduce the retained deterministic evidence on the current checkout, not the historical scratch
+checkout above:
 
 ```sh
-cargo test --locked -p kapsel --lib approval_kernel_prototype
 cargo test --locked -p kapsel --lib gateway::tests
 cargo test --locked -p kapsel --lib gateway::protected_tool_tests
 cargo test --locked -p kapsel --test application_retry

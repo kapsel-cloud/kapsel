@@ -1104,7 +1104,7 @@ impl Journal {
         changed_one(changed)
     }
 
-    pub(in crate::gateway) fn mark_apply_started(
+    fn mark_apply_started(
         &self,
         operation: &AuthorizedOperation,
         target: &ValidatedTargetIdentity,
