@@ -139,7 +139,7 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
         // No receiver mutation happened. Do not use the old fixture's independent failed rollout.
         adapter.observation = ReceiverObservation::unknown();
         gateway
-            .run_once_with_adapter(&mut adapter, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
             .await
             .unwrap();
         assert_eq!(
@@ -155,7 +155,7 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
             Some(OperationResult::Unknown)
         );
         gateway
-            .finalize_receipt_once(&ReceiptSettings {
+            .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                 signing_seed: &[13; 32],
                 key_id: "dispatch-receipt",
             })
@@ -167,7 +167,7 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             None
@@ -225,7 +225,9 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
             inner: failed_adapter(&path, &request),
             before_attempt,
         };
-        let mut execution = Box::pin(gateway.run_once_with_adapter(&mut adapter, None));
+        let mut execution = Box::pin(
+            gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter),
+        );
         assert!(matches!(
             std::future::poll_fn(|cx| std::task::Poll::Ready(execution.as_mut().poll(cx))).await,
             std::task::Poll::Pending
@@ -243,7 +245,7 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
         drop(gateway);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
-            .run_once_with_adapter(&mut adapter.inner, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter.inner)
             .await
             .unwrap();
         assert_eq!(adapter.inner.apply_calls, 1);

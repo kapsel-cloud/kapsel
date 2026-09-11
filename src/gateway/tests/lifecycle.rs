@@ -94,7 +94,7 @@
         let mut adapter = failed_adapter(&path, &request);
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
@@ -237,7 +237,11 @@
             let mut gateway = Gateway::open_for_test(&path).unwrap();
             assert!(matches!(
                 gateway
-                    .run_once_with_adapter(&mut adapter, Some(FaultPoint::TargetRejectedCommitted),)
+                    .run_operation_once_with_adapter_and_fault(
+                        &rejected.operation_id,
+                        &mut adapter,
+                        Some(FaultPoint::TargetRejectedCommitted),
+                    )
                     .await,
                 Err(GatewayError::InjectedFault)
             ));
@@ -262,7 +266,7 @@
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&later.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
@@ -279,53 +283,80 @@
     }
 
     #[tokio::test]
-    async fn transient_target_error_defers_fairly_without_head_of_line_blocking() {
-        let path = database_path("transient-target-deferral");
-        let mut deferred = request();
-        deferred.operation_id = "op-a".into();
-        let mut later = request();
-        later.operation_id = "op-b".into();
+    async fn transient_target_error_stays_authorized_and_retries_only_the_safe_get() {
+        let path = database_path("transient-target-retry");
+        let request = request();
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
-            .submit_exact_for_test(&deferred, &authorization(&deferred))
+            .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
-        gateway
-            .submit_exact_for_test(&later, &authorization(&later))
+        // Existing format-4 retry storage is inert, including a nonzero historical value.
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE kubernetes_image_operations SET target_read_failures = 7",
+                [],
+            )
             .unwrap();
-        let mut adapter = TargetRoutingAdapter::transient_once(&deferred.operation_id);
+        let data_version: i64 = connection
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .unwrap();
+        let mut adapter = TargetRoutingAdapter::transient_once(&request.operation_id);
 
         assert!(matches!(
-            gateway.run_once_with_adapter(&mut adapter, None).await,
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await,
             Err(GatewayError::KubernetesTargetObservation)
         ));
         assert_eq!(
-            gateway.get(&deferred.operation_id).unwrap(),
+            gateway.get(&request.operation_id).unwrap(),
             Some(OperationState::Authorized)
         );
+        assert_eq!(gateway.result(&request.operation_id).unwrap(), None);
+        assert_eq!(
+            gateway.receipt_reference(&request.operation_id).unwrap(),
+            None
+        );
+        assert!(adapter.apply_order.is_empty());
+        assert!(adapter.observe_order.is_empty());
+        assert_eq!(
+            connection
+                .pragma_query_value::<i64, _>(None, "data_version", |row| row.get(0),)
+                .unwrap(),
+            data_version
+        );
+        drop(gateway);
+
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
         );
+        assert_eq!(adapter.identify_order, ["op-001", "op-001"]);
+        assert_eq!(adapter.apply_order, ["op-001"]);
+        assert_eq!(adapter.observe_order, ["op-001"]);
         assert_eq!(
-            gateway
-                .run_once_with_adapter(&mut adapter, None)
-                .await
+            connection
+                .query_row(
+                    "SELECT target_read_failures FROM kubernetes_image_operations",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
                 .unwrap(),
-            Some(OperationState::ReceiverObserved)
+            7
         );
-        assert_eq!(adapter.identify_order, ["op-a", "op-b", "op-a"]);
-        assert_eq!(adapter.apply_order, ["op-b", "op-a"]);
-        assert_eq!(adapter.observe_order, ["op-b", "op-a"]);
+        drop(connection);
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[tokio::test]
-    async fn targeted_application_reconciliation_does_not_advance_another_operation() {
-        let path = database_path("targeted-application-operation");
+    async fn targeted_gateway_reconciliation_does_not_advance_another_operation() {
+        let path = database_path("targeted-gateway-operation");
         let mut first = request();
         first.operation_id = "op-a".into();
         let mut configured = request();
@@ -358,8 +389,8 @@
     }
 
     #[tokio::test]
-    async fn targeted_application_finalization_does_not_sign_another_operation() {
-        let path = database_path("targeted-application-finalization");
+    async fn targeted_gateway_finalization_does_not_sign_another_operation() {
+        let path = database_path("targeted-gateway-finalization");
         let mut first = request();
         first.operation_id = "op-a".into();
         let mut configured = request();
@@ -454,7 +485,7 @@
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)

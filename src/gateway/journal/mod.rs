@@ -235,17 +235,6 @@ impl LoadedOperation {
         }
     }
 
-    pub(in crate::gateway) fn request(&self) -> &ValidatedRequest {
-        match self {
-            Self::Requested(value) => &value.request.request,
-            Self::Authorized(value) => &value.request.request,
-            Self::NotAttempted(value) => value.authorized.request(),
-            Self::ApplyStarted(value) => value.request(),
-            Self::ReceiverObserved(value) => value.apply_started.request(),
-            Self::Finalized(value) => value.receiver_observed.apply_started.request(),
-        }
-    }
-
     fn request_facts(&self) -> &RequestFacts {
         match self {
             Self::Requested(v) => &v.request,
@@ -938,53 +927,6 @@ impl Journal {
             .and_then(|op| op.receipt_reference()))
     }
 
-    pub(in crate::gateway) fn next_executable_operation(
-        &self,
-    ) -> Result<Option<LoadedOperation>, GatewayError> {
-        let authorized = self.next_operation(OperationState::Authorized)?;
-        let apply_started = self.next_operation(OperationState::ApplyStarted)?;
-        Ok(authorized.or(apply_started))
-    }
-
-    #[cfg(test)]
-    pub(in crate::gateway) fn next_receipt_finalization_operation(
-        &self,
-    ) -> Result<Option<LoadedOperation>, GatewayError> {
-        let receiver_observed = self.next_operation(OperationState::ReceiverObserved)?;
-        Ok(receiver_observed)
-    }
-
-    fn next_operation(
-        &self,
-        state: OperationState,
-    ) -> Result<Option<LoadedOperation>, GatewayError> {
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
-                .map_err(GatewayError::Database)?;
-        let operation_id = transaction
-            .query_row(
-                "SELECT operation_id
-                 FROM kubernetes_image_operations
-                 WHERE state = ?1
-                 ORDER BY CASE WHEN ?1 = 'authorized' THEN target_read_failures ELSE 0 END,
-                          operation_id
-                 LIMIT 1",
-                [state.as_sql()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some(operation_id) = operation_id else {
-            return Ok(None);
-        };
-        let operation = loaded_operation_on(&transaction, &operation_id)?
-            .ok_or(GatewayError::InvalidPersistedState)?;
-        if operation.state() != state {
-            return Err(GatewayError::InvalidPersistedState);
-        }
-        Ok(Some(operation))
-    }
-
     pub(in crate::gateway) fn operation(
         &self,
         operation_id: &str,
@@ -993,24 +935,6 @@ impl Journal {
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
         loaded_operation_on(&transaction, operation_id)
-    }
-
-    pub(in crate::gateway) fn defer_target_retry(
-        &self,
-        operation: &AuthorizedOperation,
-    ) -> Result<(), GatewayError> {
-        let operation_id = operation.request().operation_id();
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET target_read_failures = target_read_failures + 1
-                 WHERE operation_id = ?1 AND state = ?2
-                       AND target_read_failures < 9223372036854775807",
-                params![operation_id, OperationState::Authorized.as_sql()],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
     }
 
     pub(in crate::gateway) fn mark_not_attempted(
@@ -1779,7 +1703,10 @@ mod tests {
                     | ("finalized", LoadedOperation::Finalized(_))
             );
             assert!(exact_variant, "{state}");
-            assert_eq!(operation.request().operation_id(), "snapshot-op");
+            assert_eq!(
+                operation.request_facts().request.operation_id(),
+                "snapshot-op"
+            );
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -1947,53 +1874,6 @@ mod tests {
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
-    }
-
-    #[test]
-    fn queue_selection_rejects_malformed_later_phase_rows_before_advancing() {
-        let (executable_journal, root) = journal("malformed-executable-queue");
-        insert_snapshot_row(&executable_journal, "apply_started", None, None, false);
-        executable_journal
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET operation_id = 'apply-op', target_uid = NULL
-                 WHERE operation_id = 'snapshot-op'",
-                [],
-            )
-            .unwrap();
-        insert_snapshot_row(&executable_journal, "authorized", None, None, false);
-
-        assert!(executable_journal.next_executable_operation().is_err());
-        drop(executable_journal);
-        fs::remove_dir_all(root).unwrap();
-
-        let (journal, root) = journal("malformed-receipt-queue");
-        insert_snapshot_row(&journal, "receipt_prepared", Some("SUCCEEDED"), None, true);
-        journal
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET operation_id = 'prepared-op', receipt_bytes = NULL
-                 WHERE operation_id = 'snapshot-op'",
-                [],
-            )
-            .unwrap();
-        insert_snapshot_row(
-            &journal,
-            "receiver_observed",
-            Some("SUCCEEDED"),
-            None,
-            false,
-        );
-
-        assert!(journal.operation("prepared-op").is_err());
-        assert!(journal
-            .next_receipt_finalization_operation()
-            .unwrap()
-            .is_some());
-        drop(journal);
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

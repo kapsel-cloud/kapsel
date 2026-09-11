@@ -512,16 +512,7 @@ impl Gateway {
         self.journal.target_rejection(operation_id)
     }
 
-    /// Writes or finalizes one receipt from frozen receiver facts without Kubernetes access.
-    #[cfg(test)]
-    pub(crate) fn finalize_receipt_once(
-        &self,
-        settings: &ReceiptSettings<'_>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        self.finalize_receipt_once_with_fault(settings, None)
-    }
-
-    fn finalize_operation_receipt_once(
+    pub(crate) fn finalize_operation_receipt_once(
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
@@ -533,7 +524,7 @@ impl Gateway {
     }
 
     #[cfg(test)]
-    fn finalize_operation_receipt_once_with_fault(
+    pub(crate) fn finalize_operation_receipt_once_with_fault(
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
@@ -543,28 +534,6 @@ impl Gateway {
             return Ok(None);
         };
         self.finalize_locked_operation_receipt_once(operation_id, settings, fault)
-    }
-
-    // Queue-oriented tests select only an exact identity while holding worker exclusion, then cross
-    // the same operation-selected implementation used by Application.
-    #[cfg(test)]
-    pub(crate) fn finalize_receipt_once_with_fault(
-        &self,
-        settings: &ReceiptSettings<'_>,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let Some(_worker_lock) = self.journal.try_lock_worker()? else {
-            return Ok(None);
-        };
-        let operation = self.journal.next_receipt_finalization_operation()?;
-        let Some(operation) = operation else {
-            return Ok(None);
-        };
-        self.finalize_locked_operation_receipt_once(
-            operation.request().operation_id(),
-            settings,
-            fault,
-        )
     }
 
     fn finalize_locked_operation_receipt_once(
@@ -643,20 +612,7 @@ impl Gateway {
         self.journal.receipt_reference(operation_id)
     }
 
-    /// Advances at most one operation using explicitly supplied Kubernetes authority.
-    ///
-    /// Application composition owns the client and keeps it outside request-only caller input. The
-    /// concrete client does not establish a generic provider interface.
-    #[cfg(test)]
-    pub(crate) async fn run_once(
-        &mut self,
-        client: kube::Client,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let mut adapter = KubernetesDeploymentImageAdapter::new(client);
-        self.run_once_with_adapter(&mut adapter, None).await
-    }
-
-    async fn run_operation_once(
+    pub(crate) async fn run_operation_once(
         &mut self,
         operation_id: &str,
         client: kube::Client,
@@ -667,7 +623,7 @@ impl Gateway {
     }
 
     #[cfg(test)]
-    async fn run_operation_once_with_adapter<A: DeploymentImageAdapter + Send>(
+    pub(crate) async fn run_operation_once_with_adapter<A: DeploymentImageAdapter + Send>(
         &mut self,
         operation_id: &str,
         adapter: &mut A,
@@ -679,7 +635,9 @@ impl Gateway {
     // The exclusive mutable caller borrow and worker lock prevent overlapping journal transitions
     // while provider I/O is pending.
     #[allow(clippy::needless_pass_by_ref_mut)]
-    async fn run_operation_once_with_adapter_and_fault<A: DeploymentImageAdapter + Send>(
+    pub(crate) async fn run_operation_once_with_adapter_and_fault<
+        A: DeploymentImageAdapter + Send,
+    >(
         &mut self,
         operation_id: &str,
         adapter: &mut A,
@@ -697,7 +655,6 @@ impl Gateway {
                 let target = match adapter.identify(&adapter_request).await {
                     Ok(target) => target,
                     Err(TargetReadError::Transient) => {
-                        self.journal.defer_target_retry(&operation)?;
                         return Err(GatewayError::KubernetesTargetObservation);
                     },
                     Err(TargetReadError::Permanent(rejection)) => {
@@ -778,27 +735,6 @@ impl Gateway {
             | journal::LoadedOperation::ReceiverObserved(_)
             | journal::LoadedOperation::Finalized(_) => Ok(None),
         }
-    }
-
-    // Queue-oriented tests select only an exact identity, then cross the same operation-selected
-    // implementation used by Application. The delegated implementation holds worker exclusion
-    // across every provider and receiver call.
-    #[allow(clippy::needless_pass_by_ref_mut, dead_code)]
-    pub(crate) async fn run_once_with_adapter<A: DeploymentImageAdapter + Send>(
-        &mut self,
-        adapter: &mut A,
-        fault: Option<FaultPoint>,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let operation = self.journal.next_executable_operation()?;
-        let Some(operation) = operation else {
-            return Ok(None);
-        };
-        self.run_operation_once_with_adapter_and_fault(
-            operation.request().operation_id(),
-            adapter,
-            fault,
-        )
-        .await
     }
 }
 

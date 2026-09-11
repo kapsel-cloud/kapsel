@@ -99,6 +99,7 @@ fn deployment_response(body: &serde_json::Value) -> http::Response<kube::client:
 }
 
 async fn respond_with_terminal_result(
+    request: AgentRequest,
     mut handle: KubernetesHandle,
     result: SetDeploymentImageStatus,
 ) -> KubernetesHandle {
@@ -106,8 +107,9 @@ async fn respond_with_terminal_result(
         "registry.example/agent-api@sha256:",
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
     );
-    let image = request().immutable_image_digest;
-    let (_, send) = handle.next_request().await.unwrap();
+    let image = request.immutable_image_digest;
+    let (wire_request, send) = handle.next_request().await.unwrap();
+    assert_eq!(wire_request.method(), "GET");
     send.send_response(deployment_response(&serde_json::json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -118,7 +120,8 @@ async fn respond_with_terminal_result(
                 "spec": {"containers": [{"name": "api", "image": old_image}]}}},
         "status": {"observedGeneration": 1}
     })));
-    let (_, send) = handle.next_request().await.unwrap();
+    let (wire_request, send) = handle.next_request().await.unwrap();
+    assert_eq!(wire_request.method(), "PATCH");
     send.send_response(deployment_response(&serde_json::json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -130,14 +133,15 @@ async fn respond_with_terminal_result(
     })));
     let failed = result == SetDeploymentImageStatus::Failed;
     let unknown = result == SetDeploymentImageStatus::Unknown;
-    let (_, send) = handle.next_request().await.unwrap();
+    let (wire_request, send) = handle.next_request().await.unwrap();
+    assert_eq!(wire_request.method(), "GET");
     send.send_response(deployment_response(&serde_json::json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {"name": "agent-api", "namespace": "demo",
             "uid": if unknown { "other-uid" } else { "uid-1" },
             "resourceVersion": "3", "generation": 2,
-            "annotations": {"kapsel.dev/kap0038-operation-id": "application-op-1"}},
+            "annotations": {"kapsel.dev/kap0038-operation-id": request.operation_id}},
         "spec": {"replicas": 1, "selector": {"matchLabels": {"app": "agent-api"}},
             "template": {"metadata": {"labels": {"app": "agent-api"}},
                 "spec": {"containers": [{"name": "api", "image": image}]}}},
@@ -311,6 +315,7 @@ async fn status_projects_an_active_operation_without_advancing_it() {
         );
     }
     let responder = tokio::spawn(respond_with_terminal_result(
+        request(),
         handle,
         SetDeploymentImageStatus::Succeeded,
     ));
@@ -421,7 +426,7 @@ async fn terminal_status_and_exact_receipt_reads_preserve_frozen_receiver_facts(
         private_directory(&root);
         let (configuration, handle) = configuration_and_handle(&root);
         let mut application = Application::open(configuration).unwrap();
-        let responder = tokio::spawn(respond_with_terminal_result(handle, expected));
+        let responder = tokio::spawn(respond_with_terminal_result(request(), handle, expected));
 
         let report = application.execute(&request()).await.unwrap();
         let mut handle = responder.await.unwrap();
@@ -479,6 +484,7 @@ async fn status_and_receipt_fail_closed_for_incomplete_finalized_receipt_facts()
     let journal_path = configuration.journal_path.clone();
     let mut application = Application::open(configuration).unwrap();
     let responder = tokio::spawn(respond_with_terminal_result(
+        request(),
         handle,
         SetDeploymentImageStatus::Succeeded,
     ));
@@ -519,6 +525,7 @@ async fn export_failure_cannot_reopen_action_or_prevent_receipt_reads() {
     fs::remove_dir(&output).unwrap();
     let mut application = Application::open(configuration).unwrap();
     let responder = tokio::spawn(respond_with_terminal_result(
+        request(),
         handle,
         SetDeploymentImageStatus::Succeeded,
     ));
@@ -864,6 +871,7 @@ async fn absent_export_configuration_does_not_block_execution_or_retrieval() {
     configuration.receipt_output_directory = None;
     let mut application = Application::open(configuration).unwrap();
     let responder = tokio::spawn(respond_with_terminal_result(
+        request(),
         handle,
         SetDeploymentImageStatus::Succeeded,
     ));
@@ -898,6 +906,7 @@ async fn relative_export_configuration_is_rejected_only_after_finalization() {
     configuration.receipt_output_directory = Some(relative.clone());
     let mut application = Application::open(configuration).unwrap();
     let responder = tokio::spawn(respond_with_terminal_result(
+        request(),
         handle,
         SetDeploymentImageStatus::Succeeded,
     ));
@@ -976,4 +985,172 @@ async fn mismatched_intent_does_not_create_an_operation() {
     assert_eq!(application.reconcile().await.unwrap(), None);
     drop(application);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn configured_reconciliation_neither_advances_nor_signs_another_operation() {
+    for other_state in [OperationState::Authorized, OperationState::ReceiverObserved] {
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-application-isolation-{}-{other_state:?}",
+            std::process::id(),
+        ));
+        private_directory(&root);
+        let first = request();
+        let connection = prepare_other_operation(&root, other_state).await;
+        let other_row = || {
+            connection
+                .query_row(
+                    "SELECT * FROM kubernetes_image_operations WHERE operation_id = ?1",
+                    [&first.operation_id],
+                    |row| {
+                        (0..row.as_ref().column_count())
+                            .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    },
+                )
+                .unwrap()
+        };
+        let original = other_row();
+
+        let mut selected = request();
+        selected.operation_id = "application-op-2".into();
+        let (mut selected_configuration, mut handle) = configuration_and_handle(&root);
+        selected_configuration.signed_authorization_grant =
+            provision_exact_grant(&GrantProvisioning {
+                authorization: &authorization(&selected),
+                signing_seed: &[41; 32],
+                signing_key_id: "application-authorization-key",
+            })
+            .unwrap();
+        let mut application = Application::open(selected_configuration).unwrap();
+        assert_eq!(application.reconcile().await.unwrap(), None);
+        assert_eq!(other_row(), original);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request(),)
+                .await
+                .is_err()
+        );
+        let responder = tokio::spawn(respond_with_terminal_result(
+            selected.clone(),
+            handle,
+            SetDeploymentImageStatus::Succeeded,
+        ));
+        let report = application.execute(&selected).await.unwrap();
+        let mut handle = responder.await.unwrap();
+        assert_eq!(report.operation_id, selected.operation_id);
+        assert_eq!(report.state, OperationState::Finalized);
+        let receipt = application
+            .read_set_deployment_image_receipt(&selected.operation_id)
+            .unwrap();
+        assert!(matches!(receipt, SetDeploymentImageReceipt::Ready { .. }));
+        assert_eq!(application.reconcile().await.unwrap(), Some(report));
+        assert_eq!(other_row(), original);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request(),)
+                .await
+                .is_err()
+        );
+        drop(application);
+
+        let (other_configuration, handle) = configuration_and_handle(&root);
+        let mut other = Application::open(other_configuration).unwrap();
+        assert_eq!(
+            other
+                .read_set_deployment_image_status(&first.operation_id)
+                .unwrap(),
+            SetDeploymentImageStatus::InProgress
+        );
+        assert_eq!(
+            other
+                .read_set_deployment_image_receipt(&first.operation_id)
+                .unwrap(),
+            SetDeploymentImageReceipt::NotReady
+        );
+        if other_state == OperationState::Authorized {
+            // Retry the original transient failure only when its own application is selected.
+            let responder = tokio::spawn(respond_with_terminal_result(
+                first.clone(),
+                handle,
+                SetDeploymentImageStatus::Succeeded,
+            ));
+            assert_eq!(
+                other.reconcile().await.unwrap().unwrap().state,
+                OperationState::Finalized
+            );
+            responder.await.unwrap();
+        }
+        drop(other);
+        drop(connection);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+async fn prepare_other_operation(root: &Path, state: OperationState) -> rusqlite::Connection {
+    let (other_configuration, mut handle) = configuration_and_handle(root);
+    let mut other = Application::open(other_configuration).unwrap();
+    let first = request();
+    if state == OperationState::Authorized {
+        let responder = tokio::spawn(async move {
+            let (wire_request, send) = handle.next_request().await.unwrap();
+            assert_eq!(wire_request.method(), "GET");
+            send.send_response(
+                http::Response::builder()
+                    .status(http::StatusCode::SERVICE_UNAVAILABLE)
+                    .body(kube::client::Body::from(Vec::<u8>::new()))
+                    .unwrap(),
+            );
+            handle
+        });
+        assert!(matches!(
+            other.execute(&first).await,
+            Err(ApplicationError::OperationFailure)
+        ));
+        handle = responder.await.unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request(),)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            other
+                .read_set_deployment_image_status(&first.operation_id)
+                .unwrap(),
+            SetDeploymentImageStatus::InProgress
+        );
+        assert_eq!(
+            other
+                .read_set_deployment_image_receipt(&first.operation_id)
+                .unwrap(),
+            SetDeploymentImageReceipt::NotReady
+        );
+    } else {
+        let responder = tokio::spawn(respond_with_terminal_result(
+            first.clone(),
+            handle,
+            SetDeploymentImageStatus::Succeeded,
+        ));
+        assert_eq!(
+            other.execute(&first).await.unwrap().state,
+            OperationState::Finalized
+        );
+        handle = responder.await.unwrap();
+    }
+    drop(handle);
+    drop(other);
+
+    let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
+    if state == OperationState::ReceiverObserved {
+        // Fixture setup only: retain the real application's frozen receiver facts, but remove
+        // completion to expose a row eligible for signing. This is not crash-durability proof.
+        connection
+            .execute(
+                "UPDATE kubernetes_image_operations
+             SET state = 'receiver_observed', receipt_bytes = NULL,
+                 receipt_digest = NULL, receipt_key_id = NULL
+             WHERE operation_id = ?1",
+                [&first.operation_id],
+            )
+            .unwrap();
+    }
+    connection
 }

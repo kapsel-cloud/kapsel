@@ -43,8 +43,10 @@ administration, or bypass of the gateway removes independence. Receipts must not
 
 ### Ambiguous provider attempt and recovery
 
-Permanent missing or invalid targets become terminal `NOT_ATTEMPTED` before the mutation marker;
-transient reads defer fairly. Neither disposition becomes a receiver result.
+Permanent missing or invalid targets become terminal `NOT_ATTEMPTED` before the mutation marker.
+Transient read errors leave the selected operation authorized without a PATCH. Neither becomes a
+receiver result. The [gateway contract](EFFECT_GATEWAY.md#durable-facts-and-recovery) owns retry and
+operation-selection semantics.
 
 The process can fail after Kubernetes receives a request but before Kapsel records the response.
 Kapsel safely validates the target, atomically records target identity with `apply_started`, and

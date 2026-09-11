@@ -58,7 +58,8 @@ status and receipt access, and explicit export.
 
 The execution helper reloads state under the worker lock before choosing fresh dispatch or
 observation-only recovery. This recheck prevents races without duplicating complete reconciliation.
-Execution and receipt helpers remain private seams for crash-window and queue-oriented owner tests.
+Execution and receipt helpers remain private, operation-selected seams for crash-window owner tests.
+There is no queue selector or scheduler.
 
 Moving sequencing into the gateway does not extend lock scope. Submission and report reads still use
 their existing journal transactions without worker exclusion. Execution holds the worker lock across

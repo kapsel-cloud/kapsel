@@ -75,7 +75,7 @@
         let mut recovery = failed_adapter(&path, &request);
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut recovery, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
@@ -106,7 +106,7 @@
 
         assert_eq!(
             second_gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             None
@@ -118,7 +118,7 @@
         drop(worker_lock);
         assert_eq!(
             second_gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
@@ -140,7 +140,11 @@
                 .unwrap();
             assert!(matches!(
                 gateway
-                    .run_once_with_adapter(&mut adapter, Some(FaultPoint::ApplyReturned))
+                    .run_operation_once_with_adapter_and_fault(
+                        &request.operation_id,
+                        &mut adapter,
+                        Some(FaultPoint::ApplyReturned),
+                    )
                     .await,
                 Err(GatewayError::InjectedFault)
             ));
@@ -153,7 +157,7 @@
 
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
@@ -194,14 +198,18 @@
                 .unwrap();
             assert!(matches!(
                 gateway
-                    .run_once_with_adapter(&mut adapter, Some(FaultPoint::ApplyReturned))
+                    .run_operation_once_with_adapter_and_fault(
+                        &request.operation_id,
+                        &mut adapter,
+                        Some(FaultPoint::ApplyReturned),
+                    )
                     .await,
                 Err(GatewayError::InjectedFault)
             ));
         }
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
-            .run_once_with_adapter(&mut adapter, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
             .await
             .unwrap();
         let statement = gateway

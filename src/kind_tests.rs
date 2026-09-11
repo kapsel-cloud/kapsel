@@ -388,7 +388,9 @@ async fn prove_matching_snapshot_patches_once(
     let mut adapter = CountingAdapter::new(client.clone());
 
     assert_eq!(
-        gateway.run_once_with_adapter(&mut adapter, None).await?,
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await?,
         Some(OperationState::ReceiverObserved)
     );
     assert_eq!(adapter.apply_calls, 1);
@@ -416,7 +418,9 @@ async fn prove_drifted_snapshot_rejects_before_patch(
     let mut adapter = CountingAdapter::new(client.clone());
 
     assert_eq!(
-        gateway.run_once_with_adapter(&mut adapter, None).await?,
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await?,
         Some(OperationState::NotAttempted)
     );
     assert_eq!(adapter.apply_calls, 0);
@@ -445,7 +449,9 @@ async fn prove_recreated_snapshot_rejects_before_patch(
     let mut adapter = CountingAdapter::new(client.clone());
 
     assert_eq!(
-        gateway.run_once_with_adapter(&mut adapter, None).await?,
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await?,
         Some(OperationState::NotAttempted)
     );
     assert_eq!(adapter.apply_calls, 0);
@@ -469,7 +475,9 @@ async fn prove_precondition_race_remains_attempted(
     let mut adapter = PreconditionRaceAdapter::new(client.clone());
 
     assert!(matches!(
-        gateway.run_once_with_adapter(&mut adapter, None).await,
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await,
         Err(GatewayError::KubernetesApply)
     ));
     assert_eq!(adapter.apply_calls, 1);
@@ -555,7 +563,7 @@ async fn wait_for_deployment_deletion(
         }
     })
     .await
-    .map_err(|_| "deleted snapshot Deployment remained observable for 10 seconds")??;
+    .map_err(|_| "deleted Deployment remained observable for 10 seconds")??;
     Ok(())
 }
 
@@ -788,7 +796,11 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
     gateway.submit_exact_for_test(&request, &authorization)?;
     let mut adapter = KubernetesDeploymentImageAdapter::new(client.clone());
     match gateway
-        .run_once_with_adapter(&mut adapter, Some(FaultPoint::ApplyReturned))
+        .run_operation_once_with_adapter_and_fault(
+            &request.operation_id,
+            &mut adapter,
+            Some(FaultPoint::ApplyReturned),
+        )
         .await
     {
         Err(GatewayError::InjectedFault) => {},
@@ -802,7 +814,9 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
     drop(gateway);
     let mut gateway = Gateway::open_for_test(&database)?;
 
-    let state = gateway.run_once(client).await?;
+    let state = gateway
+        .run_operation_once(&request.operation_id, client)
+        .await?;
 
     assert_eq!(state, Some(OperationState::ReceiverObserved));
     assert_eq!(
@@ -870,7 +884,11 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
     gateway.submit_exact_for_test(&request, &authorization)?;
     let mut first_adapter = CountingAdapter::new(client.clone());
     match gateway
-        .run_once_with_adapter(&mut first_adapter, Some(FaultPoint::ApplyReturned))
+        .run_operation_once_with_adapter_and_fault(
+            &request.operation_id,
+            &mut first_adapter,
+            Some(FaultPoint::ApplyReturned),
+        )
         .await
     {
         Err(GatewayError::InjectedFault) => {},
@@ -885,22 +903,13 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
         deployments.delete(UNKNOWN_DEPLOYMENT, &DeleteParams::default()),
     )
     .await??;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            if deployments.get_opt(UNKNOWN_DEPLOYMENT).await?.is_none() {
-                return Ok::<(), kube::Error>(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .map_err(|_| "deleted Deployment remained observable for 10 seconds")??;
+    wait_for_deployment_deletion(&deployments, UNKNOWN_DEPLOYMENT).await?;
 
     let mut gateway = Gateway::open_for_test(&database)?;
     let mut recovery_adapter = CountingAdapter::new(client);
     assert_eq!(
         gateway
-            .run_once_with_adapter(&mut recovery_adapter, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut recovery_adapter)
             .await?,
         Some(OperationState::ReceiverObserved)
     );
@@ -912,10 +921,13 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
 
     let receipt_seed = [43_u8; 32];
     assert_eq!(
-        gateway.finalize_receipt_once(&ReceiptSettings {
-            signing_seed: &receipt_seed,
-            key_id: "kind-unknown-receipt-key",
-        })?,
+        gateway.finalize_operation_receipt_once(
+            &request.operation_id,
+            &ReceiptSettings {
+                signing_seed: &receipt_seed,
+                key_id: "kind-unknown-receipt-key",
+            }
+        )?,
         Some(OperationState::Finalized)
     );
     let (receipt_bytes, _) =
@@ -971,7 +983,11 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
     gateway.submit_exact_for_test(&request, &authorization)?;
     let mut first_adapter = CountingAdapter::new(client.clone());
     match gateway
-        .run_once_with_adapter(&mut first_adapter, Some(FaultPoint::ApplyReturned))
+        .run_operation_once_with_adapter_and_fault(
+            &request.operation_id,
+            &mut first_adapter,
+            Some(FaultPoint::ApplyReturned),
+        )
         .await
     {
         Err(GatewayError::InjectedFault) => {},
@@ -985,7 +1001,7 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
     let mut recovery_adapter = CountingAdapter::new(client);
     assert_eq!(
         gateway
-            .run_once_with_adapter(&mut recovery_adapter, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut recovery_adapter)
             .await?,
         Some(OperationState::ReceiverObserved)
     );
@@ -997,10 +1013,13 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
 
     let receipt_seed = [41_u8; 32];
     assert_eq!(
-        gateway.finalize_receipt_once(&ReceiptSettings {
-            signing_seed: &receipt_seed,
-            key_id: "kind-failed-receipt-key",
-        })?,
+        gateway.finalize_operation_receipt_once(
+            &request.operation_id,
+            &ReceiptSettings {
+                signing_seed: &receipt_seed,
+                key_id: "kind-failed-receipt-key",
+            }
+        )?,
         Some(OperationState::Finalized)
     );
     let (receipt_bytes, _) =
@@ -1673,7 +1692,11 @@ mod patch_experiment {
         let mut adapter = CountingAdapter::new(client.clone());
         assert!(matches!(
             gateway
-                .run_once_with_adapter(&mut adapter, Some(FaultPoint::ApplyStartedCommitted))
+                .run_operation_once_with_adapter_and_fault(
+                    &frozen.request.operation_id,
+                    &mut adapter,
+                    Some(FaultPoint::ApplyStartedCommitted)
+                )
                 .await,
             Err(GatewayError::InjectedFault)
         ));

@@ -164,22 +164,22 @@ manifests. This map does not claim those lanes were rerun during documentation r
 
 ## Core effect-gateway proof matrix
 
-| Layer                | Required proof                                                                                         |
-| -------------------- | ------------------------------------------------------------------------------------------------------ |
-| Request validation   | Bounds for identity, namespace, Deployment, container, digest, and authorization.                      |
-| Authorization        | Signed grant, configured trust, exact tuple, and rejection before persistence.                         |
-| Journal transition   | Deterministic fault injection at every durable state.                                                  |
-| Target disposition   | Permanent invalid targets are pre-attempt `NOT_ATTEMPTED`; transient reads defer fairly.               |
-| Provider attempt     | Safe GET precedes atomic target identity and `apply_started`; mutation follows that commit.            |
-| Recovery             | Every injected window and process kill reopens without a blind second mutation.                        |
-| Receiver observation | Request acceptance, timeout, transport completion, and rollout result remain distinct.                 |
-| Classification       | Timeout and unresolved evidence are `UNKNOWN`, never false success or failure.                         |
-| Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.  |
-| Receipt completion   | Frozen observation precedes signing; bytes, digest, signer and finalized state commit together.        |
-| Export               | Collision-safe export uses committed bytes. Failure cannot reopen completion or block later retrieval. |
-| Compatibility        | Format 4 rejects older journals before action processing; grant/receipt wire meanings remain explicit. |
-| Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                 |
-| Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.         |
+| Layer                | Required proof                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| Request validation   | Bounds for identity, namespace, Deployment, container, digest, and authorization.                         |
+| Authorization        | Signed grant, configured trust, exact tuple, and rejection before persistence.                            |
+| Journal transition   | Deterministic fault injection at every durable state.                                                     |
+| Target disposition   | Permanent invalid targets are pre-attempt `NOT_ATTEMPTED`; transient reads stay authorized without PATCH. |
+| Provider attempt     | Safe GET precedes atomic target identity and `apply_started`; mutation follows that commit.               |
+| Recovery             | Every injected window and process kill reopens without a blind second mutation.                           |
+| Receiver observation | Request acceptance, timeout, transport completion, and rollout result remain distinct.                    |
+| Classification       | Timeout and unresolved evidence are `UNKNOWN`, never false success or failure.                            |
+| Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.     |
+| Receipt completion   | Frozen observation precedes signing; bytes, digest, signer and finalized state commit together.           |
+| Export               | Collision-safe export uses committed bytes. Failure cannot reopen completion or block later retrieval.    |
+| Compatibility        | Format 4 rejects older journals before action processing; grant/receipt wire meanings remain explicit.    |
+| Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                    |
+| Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.            |
 
 `INSPECTED` means authenticated bytes and classifier consistency under supplied trust. It is not
 receiver truth, causation, complete capture, compliance, or `VERIFIED`.
@@ -193,10 +193,20 @@ coordination deadline; result meaning must not depend on polling order or timing
 
 Fault tests, simulations, process recovery, and compile-time demonstration controls cross the same
 private operation-selected provider and receipt-completion implementations used by `Application`.
-Queue-oriented helpers may select one identity but own no lifecycle transition. Process-kill proof
-crosses the ambiguous mutation and receipt-commit seams, establishes no second mutation request, and
-preserves committed bytes without re-signing. Export may use a new destination without changing the
-durable action or signing identity.
+Tests explicitly select an operation identity, with no replacement scheduler. Queue fairness and
+queue-only ordering checks have been deliberately removed. Process-kill proof crosses the ambiguous
+mutation and receipt-commit seams, establishes no second mutation request, and preserves committed
+bytes without re-signing. Export may use a new destination without changing the durable action or
+signing identity.
+
+The transient-target gateway regression checks no journal update, no PATCH, safe GET repetition on
+reopen, and preservation of an existing inert `target_read_failures` value. Required format-4 schema
+validation remains unchanged. `application_contract` tests actual `Application` selection with
+another authorized or receiver-observed operation in the same journal, preserving every value in
+that other row while the configured operation completes. The receiver-observed fixture removes
+completion from real application-produced facts to expose a signing candidate. That setup tests
+selection isolation, not a crash window. Gateway fault tests retain targeted finalization and
+`target_read_crash_stays_authorized_and_repeats_only_the_safe_get` evidence.
 
 A live `kind` lane is explicit, environment-owning evidence. It complements but never replaces
 fault-injection around every journal window.
@@ -224,10 +234,10 @@ path. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
 Fuzzing calls production hostile-input interfaces from canonical corpus vectors without network or
 ambient authority. Failures retain a minimized artifact and exact replay information.
 
-Long simulations generate bounded lifecycle schedules, crash windows, retry deferrals, and reopen
-operations from an explicit seed. Every step checks durable state, provider-call count, terminal
-state, and frozen-receipt invariants. The seed is always replayable; wall-clock duration may change
-only how many cases run, not their semantics.
+Long simulations generate bounded lifecycle schedules, crash windows, transient target-read errors,
+and reopen operations from an explicit seed. Every step checks durable state, provider-call count,
+terminal state, and frozen-receipt invariants. The seed is always replayable; wall-clock duration
+may change only how many cases run, not their semantics.
 
 ### Live Kubernetes and demonstration
 

@@ -188,7 +188,9 @@ async fn run_case(
 
     for deferral in 0..schedule.target_deferrals {
         let mut gateway = Gateway::open_for_test(paths.journal)?;
-        let result = gateway.run_once_with_adapter(&mut adapter, None).await;
+        let result = gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await;
         assert!(
             matches!(result, Err(GatewayError::KubernetesTargetObservation)),
             "seed={seed} case={case} deferral={deferral} result={result:?}"
@@ -203,7 +205,11 @@ async fn run_case(
 
     let mut gateway = Gateway::open_for_test(paths.journal)?;
     let result = gateway
-        .run_once_with_adapter(&mut adapter, Some(schedule.apply_fault))
+        .run_operation_once_with_adapter_and_fault(
+            &request.operation_id,
+            &mut adapter,
+            Some(schedule.apply_fault),
+        )
         .await;
     assert!(
         matches!(result, Err(GatewayError::InjectedFault)),
@@ -217,7 +223,9 @@ async fn run_case(
         drop(gateway);
         gateway = Gateway::open_for_test(paths.journal)?;
         assert_eq!(
-            gateway.run_once_with_adapter(&mut adapter, None).await?,
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await?,
             None,
             "seed={seed} case={case} receiver_reopen={reopen}"
         );
@@ -261,7 +269,9 @@ async fn recover_receiver(
         OperationState::Authorized | OperationState::ApplyStarted
     ) {
         assert_eq!(
-            gateway.run_once_with_adapter(adapter, None).await?,
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, adapter)
+                .await?,
             Some(OperationState::ReceiverObserved),
             "seed={seed} case={case}"
         );
@@ -283,8 +293,11 @@ fn recover_receipt(
         signing_seed: &[13_u8; 32],
         key_id: "simulation-receipt-key",
     };
-    let result =
-        gateway.finalize_receipt_once_with_fault(&settings, Some(schedule.publication_fault));
+    let result = gateway.finalize_operation_receipt_once_with_fault(
+        &request.operation_id,
+        &settings,
+        Some(schedule.publication_fault),
+    );
     assert!(
         matches!(result, Err(GatewayError::InjectedFault)),
         "seed={seed} case={case} publication_fault={:?} result={result:?}",
@@ -295,10 +308,13 @@ fn recover_receipt(
     let gateway = Gateway::open_for_test(paths.journal)?;
     if gateway.get(&request.operation_id)? != Some(OperationState::Finalized) {
         assert_eq!(
-            gateway.finalize_receipt_once(&ReceiptSettings {
-                signing_seed: &[99_u8; 32],
-                key_id: "rotated-simulation-key",
-            })?,
+            gateway.finalize_operation_receipt_once(
+                &request.operation_id,
+                &ReceiptSettings {
+                    signing_seed: &[99_u8; 32],
+                    key_id: "rotated-simulation-key",
+                }
+            )?,
             Some(OperationState::Finalized),
             "seed={seed} case={case} publication_fault={:?}",
             schedule.publication_fault

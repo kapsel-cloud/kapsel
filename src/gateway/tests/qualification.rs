@@ -137,14 +137,14 @@
         let mut adapter = failed_adapter(&receipt_path, &request);
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
         );
         assert_eq!(
             gateway
-                .finalize_receipt_once(&ReceiptSettings {
+                .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                     signing_seed: &[13_u8; 32],
                     key_id: "qualification-receipt-key",
                 })
@@ -223,7 +223,11 @@
             let mut first = failed_adapter(&reconcile_path, &request);
             assert!(matches!(
                 gateway
-                    .run_once_with_adapter(&mut first, Some(FaultPoint::ApplyStartedCommitted))
+                    .run_operation_once_with_adapter_and_fault(
+                        &request.operation_id,
+                        &mut first,
+                        Some(FaultPoint::ApplyStartedCommitted),
+                    )
                     .await,
                 Err(GatewayError::InjectedFault)
             ));
@@ -234,7 +238,7 @@
             let mut recovery = failed_adapter(&reconcile_path, &request);
             assert_eq!(
                 gateway
-                    .run_once_with_adapter(&mut recovery, None)
+                    .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
                     .await
                     .unwrap(),
                 Some(OperationState::ReceiverObserved)
@@ -260,7 +264,7 @@
             let mut adapter = failed_adapter(&receipt_path, &request);
             assert_eq!(
                 gateway
-                    .run_once_with_adapter(&mut adapter, None)
+                    .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                     .await
                     .unwrap(),
                 Some(OperationState::ReceiverObserved)
@@ -269,7 +273,7 @@
             let started = Instant::now();
             assert_eq!(
                 gateway
-                    .finalize_receipt_once(&ReceiptSettings {
+                    .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                         signing_seed: &[13_u8; 32],
                         key_id: "qualification-receipt-key",
                     })
@@ -294,7 +298,11 @@
             let mut first = failed_adapter(&recovery_path, &request);
             assert!(matches!(
                 gateway
-                    .run_once_with_adapter(&mut first, Some(FaultPoint::ApplyReturned))
+                    .run_operation_once_with_adapter_and_fault(
+                        &request.operation_id,
+                        &mut first,
+                        Some(FaultPoint::ApplyReturned),
+                    )
                     .await,
                 Err(GatewayError::InjectedFault)
             ));
@@ -305,7 +313,7 @@
             let mut recovery = failed_adapter(&recovery_path, &request);
             assert_eq!(
                 gateway
-                    .run_once_with_adapter(&mut recovery, None)
+                    .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
                     .await
                     .unwrap(),
                 Some(OperationState::ReceiverObserved)

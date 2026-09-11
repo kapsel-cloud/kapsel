@@ -110,20 +110,23 @@ async fn run_operation(root: &Path, client: kube::Client, cut: &str) -> Value {
     };
     // A post-marker conflict is attempted, never a stale-approval rejection.
     if gateway
-        .run_once_with_adapter(&mut adapter, None)
+        .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
         .await
         .is_err()
     {
         gateway
-            .run_once_with_adapter(&mut adapter, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
             .await
             .unwrap();
     }
     gateway
-        .finalize_receipt_once(&ReceiptSettings {
-            signing_seed: &[42; 32],
-            key_id: "comparison-receipt",
-        })
+        .finalize_operation_receipt_once(
+            &request.operation_id,
+            &ReceiptSettings {
+                signing_seed: &[42; 32],
+                key_id: "comparison-receipt",
+            },
+        )
         .unwrap();
     let result = match gateway.result("comparison-op").unwrap() {
         Some(OperationResult::Succeeded) => "SUCCEEDED",

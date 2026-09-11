@@ -14,7 +14,7 @@
         adapter.observation.rollout_condition_status = Some("True".into());
         adapter.observation.rollout_condition_reason = Some("DifferentObservedReason".into());
         gateway
-            .run_once_with_adapter(&mut adapter, None)
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
             .await
             .unwrap();
 
@@ -43,7 +43,7 @@
         let mut adapter = failed_adapter(&path, &request);
         assert_eq!(
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap(),
             Some(OperationState::ReceiverObserved)
@@ -192,7 +192,10 @@
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
         first
-            .run_once_with_adapter(&mut failed_adapter(&path, &request), None)
+            .run_operation_once_with_adapter(
+                &request.operation_id,
+                &mut failed_adapter(&path, &request),
+            )
             .await
             .unwrap();
         let worker_lock = first.journal.try_lock_worker().unwrap().unwrap();
@@ -200,7 +203,7 @@
 
         assert_eq!(
             contender
-                .finalize_receipt_once(&ReceiptSettings {
+                .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                     signing_seed: &seed,
                     key_id: "effect-gateway-test-key",
                 })
@@ -216,7 +219,7 @@
         drop(worker_lock);
         assert_eq!(
             contender
-                .finalize_receipt_once(&ReceiptSettings {
+                .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                     signing_seed: &seed,
                     key_id: "effect-gateway-test-key",
                 })
@@ -244,7 +247,7 @@
                 .unwrap();
             let mut adapter = failed_adapter(&path, &request);
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap();
             assert_eq!(adapter.apply_calls, 1);
@@ -292,7 +295,8 @@
                 statement
             );
             assert!(matches!(
-                gateway.finalize_receipt_once_with_fault(
+                gateway.finalize_operation_receipt_once_with_fault(
+                    &request.operation_id,
                     &ReceiptSettings {
                         signing_seed: &[61; 32],
                         key_id: "original-key",
@@ -399,7 +403,7 @@
                 .unwrap();
             let mut adapter = failed_adapter(&path, &request);
             gateway
-                .run_once_with_adapter(&mut adapter, None)
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap();
             let statement = gateway
@@ -424,7 +428,7 @@
                 None
             };
             gateway
-                .finalize_receipt_once(&ReceiptSettings {
+                .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                     signing_seed: &[63; 32],
                     key_id: "after-restart",
                 })

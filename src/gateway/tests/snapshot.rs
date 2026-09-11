@@ -17,8 +17,11 @@ async fn snapshot_replacement_is_rejected_before_and_after_receipt_completion() 
         gateway.submit_exact_for_test(&request, &approval).unwrap();
         if finalized {
             let mut adapter = failed_adapter(&path, &request);
-            gateway.run_once_with_adapter(&mut adapter, None).await.unwrap();
-            gateway.finalize_receipt_once(&ReceiptSettings {
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await
+                .unwrap();
+            gateway.finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
                 signing_seed: &[42; 32],
                 key_id: "snapshot-receipt",
             }).unwrap();
@@ -74,7 +77,10 @@ async fn stale_snapshot_is_durable_status_only_without_patch_or_receipt() {
         gateway.submit_exact_for_test(&request, &approval).unwrap();
         let mut adapter = failed_adapter(&path, &request);
         assert_eq!(
-            gateway.run_once_with_adapter(&mut adapter, None).await.unwrap(),
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await
+                .unwrap(),
             Some(OperationState::NotAttempted)
         );
         assert_eq!((adapter.apply_calls, adapter.observe_calls), (0, 0));
@@ -94,7 +100,10 @@ async fn stale_snapshot_is_durable_status_only_without_patch_or_receipt() {
         assert!(row.result().is_none());
         assert!(row.frozen_receipt().is_none());
         assert_eq!(
-            gateway.run_once_with_adapter(&mut adapter, None).await.unwrap(),
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await
+                .unwrap(),
             None
         );
         assert_eq!((adapter.apply_calls, adapter.observe_calls), (0, 0));
@@ -111,7 +120,7 @@ async fn matching_snapshot_freezes_distinct_approved_observed_and_attempt_target
     let mut adapter = failed_adapter(&path, &request);
 
     assert_eq!(
-        gateway.run_once_with_adapter(&mut adapter, None).await.unwrap(),
+        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await.unwrap(),
         Some(OperationState::ReceiverObserved)
     );
     assert_eq!(adapter.apply_calls, 1);
@@ -155,7 +164,7 @@ async fn snapshot_apply_failure_after_marker_is_attempted_and_recovery_only_obse
     conflict.apply_failure = true;
 
     assert!(matches!(
-        gateway.run_once_with_adapter(&mut conflict, None).await,
+        gateway.run_operation_once_with_adapter(&request.operation_id, &mut conflict).await,
         Err(GatewayError::KubernetesApply)
     ));
     assert_eq!(gateway.get(&request.operation_id).unwrap(), Some(OperationState::ApplyStarted));
@@ -186,7 +195,10 @@ async fn snapshot_apply_failure_after_marker_is_attempted_and_recovery_only_obse
     let mut gateway = Gateway::open_for_test(&path).unwrap();
     let mut recovery = failed_adapter(&path, &request);
     assert_eq!(
-        gateway.run_once_with_adapter(&mut recovery, None).await.unwrap(),
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
+            .await
+            .unwrap(),
         Some(OperationState::ReceiverObserved)
     );
     assert_eq!((recovery.identify_calls, recovery.apply_calls, recovery.observe_calls), (0, 0, 1));
@@ -214,7 +226,7 @@ async fn restart_before_attempt_revalidates_the_original_snapshot_without_refres
     let mut adapter = failed_adapter(&path, &request);
     adapter.identified_target.resource_version = "intervening-write".into();
     assert_eq!(
-        gateway.run_once_with_adapter(&mut adapter, None).await.unwrap(),
+        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await.unwrap(),
         Some(OperationState::NotAttempted)
     );
     assert_eq!((adapter.identify_calls, adapter.apply_calls, adapter.observe_calls), (1, 0, 0));
@@ -264,7 +276,7 @@ async fn snapshot_restart_retains_authority_and_marker_recovery_never_resends() 
         assert!(matches!(legacy, Err(GatewayError::OperationIdentityConflict)));
         gateway.submit_exact_for_test(&request, &approval).unwrap();
         let mut adapter = failed_adapter(&path, &request);
-        gateway.run_once_with_adapter(&mut adapter, None).await.unwrap();
+        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await.unwrap();
         assert_eq!(
             adapter.apply_calls,
             usize::from(seam != FaultPoint::ApplyStartedCommitted)

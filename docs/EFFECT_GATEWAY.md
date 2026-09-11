@@ -177,10 +177,9 @@ requested
   application-configured owner trust. The signer identity and digest of the exact signed grant bytes
   are frozen.
 - From `authorized`, the adapter safely reads and validates the target Deployment and named
-  container. A transient API error increments a durable retry count used as queue-order backoff;
-  lower-count authorized operations run first, so one transient target cannot block later work. A
-  crash before the next transition leaves the operation `authorized`, so this non-mutating read may
-  be repeated.
+  container. A transient API error leaves the selected operation `authorized` without a journal
+  update or PATCH. A retry or crash before the next transition repeats only this safe GET before a
+  fresh attempt.
 - `not_attempted` is terminal and records exactly one bounded pre-attempt rejection:
   `deployment_not_found`, `container_not_found`, `invalid_target`, or `stale_approval`. No mutation
   marker, provider write, receiver observation, receiver result, or effect receipt exists for this
@@ -215,14 +214,20 @@ from request success or a timeout.
 
 ## Durable facts and recovery
 
-| State               | Durable facts written before entering the state                                                                                                                     | Recovery rule                                                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `requested`         | Operation identity plus bounded namespace, deployment, container, and image digest.                                                                                 | Re-run validation and grant verification before any Kubernetes call.                               |
-| `authorized`        | Authorization identity, exact authorized tuple, grant signer identity, signed-grant digest, and target-read retry count.                                            | Safely read the target; transient errors defer fairly, while permanent rejection becomes terminal. |
-| `not_attempted`     | One bounded permanent target-rejection reason and an explicit zero-attempt disposition.                                                                             | Read-only; do not observe Kubernetes, classify a receiver result, or prepare an effect receipt.    |
-| `apply_started`     | Target UID and resource version, write-strategy identity, and attempt marker, atomically committed.                                                                 | Do not blindly patch again. Observe the deployment and classify from receiver facts or `UNKNOWN`.  |
-| `receiver_observed` | Target and receiver UID, observed image and operation marker, current/requested/observed generations, resource versions, replica counts, rollout condition, result. | Prepare the receipt from frozen facts only. Do not call Kubernetes to improve the result.          |
-| `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                   |
+| State               | Durable facts written before entering the state                                                                                                                     | Recovery rule                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `requested`         | Operation identity plus bounded namespace, deployment, container, and image digest.                                                                                 | Re-run validation and grant verification before any Kubernetes call.                                |
+| `authorized`        | Authorization identity, exact authorized tuple, grant signer identity, and signed-grant digest.                                                                     | Safely read the selected target again after transient errors; permanent rejection becomes terminal. |
+| `not_attempted`     | One bounded permanent target-rejection reason and an explicit zero-attempt disposition.                                                                             | Read-only; do not observe Kubernetes, classify a receiver result, or prepare an effect receipt.     |
+| `apply_started`     | Target UID and resource version, write-strategy identity, and attempt marker, atomically committed.                                                                 | Do not blindly patch again. Observe the deployment and classify from receiver facts or `UNKNOWN`.   |
+| `receiver_observed` | Target and receiver UID, observed image and operation marker, current/requested/observed generations, resource versions, replica counts, rollout condition, result. | Prepare the receipt from frozen facts only. Do not call Kubernetes to improve the result.           |
+| `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                    |
+
+Execution and receipt completion select only the configured operation identity. Queue selection and
+its fairness guarantee have been deliberately removed. Format 4 retains the inert
+`target_read_failures` column and its required schema validation, without incrementing or using it.
+Existing values remain untouched. The former counter ordered a queue, not timed backoff. This change
+introduces no format version, migration, or reinterpretation of persisted rows.
 
 The implementation explicitly uses SQLite's rollback journal with `synchronous=FULL` and verifies
 both settings whenever it opens the journal. The main journal is at most 64 MiB; a rollback-journal
@@ -264,7 +269,7 @@ records its adoption and finite evidence.
 
 One consumed permission must not become multiple mutation requests through client retries. The
 shared application client disables kube-client's automatic server-response retries, including PATCH
-retries on 429, 503, and 504. Explicit bounded target-read deferral and receiver observation remain.
+retries on 429, 503, and 504. Explicit target-read retries and bounded receiver observation remain.
 Operator-supplied custom clients must uphold the same no-mutation-retry obligation. A local HTTP
 fixture verifies request counts across response loss, cancellation, and restart. It does not prove
 arbitrary proxy or HTTP/2 behavior, prevent admission reinvocation within one Kubernetes request, or
