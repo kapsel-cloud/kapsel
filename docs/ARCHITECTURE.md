@@ -31,11 +31,13 @@ journal path, and optional export directory. The caller submits only `AgentReque
 the concrete `SetDeploymentImageRequest`; it cannot select authority, trust, credentials, paths,
 signing material, or lifecycle controls.
 
-`Application::execute` owns submission and lifecycle sequencing and returns an `OperationReport`.
-`Application::reconcile` resumes the configured operation after restart and returns an optional
-report when that operation exists. Application failures expose configuration, request-rejection, and
-operation-failure classes instead of private gateway errors. Submission and snapshot helpers remain
-private so callers cannot sequence durable states.
+`Application::execute` submits the request and delegates complete reconciliation to
+`Gateway::reconcile`. `Application::reconcile` supplies the configured request, exact grant, client,
+and signing settings to that same gateway entry point, then projects its snapshot as an optional
+`OperationReport`. Neither application method interprets durable phases to drive execution.
+Application failures expose configuration, request-rejection, and operation-failure classes instead
+of private gateway errors. Submission and snapshot helpers remain private so callers cannot sequence
+durable states.
 
 The private `Gateway` owns validation, authorization, journaling, conditional mutation,
 observation-only recovery, receiver classification, and frozen receipt construction. It commits the
@@ -45,6 +47,30 @@ operation. The crate-level offline inspector consumes receipt bytes directly wit
 snapshots, worker locking, capacity, and guarded transitions. Private `schema` and `opening`
 children own exact format-4 layout/version rejection, and safe SQLite entry and private pathname
 identity, respectively.
+
+### Complete reconciliation
+
+`Gateway::reconcile` owns the sequence from an existing configured operation to its next blocked or
+terminal snapshot. It rechecks original authority, completes requested authorization, advances fresh
+or recovered execution, and commits receipts from frozen observations. It does not submit an absent
+operation. The application retains configuration, submission, report/error projection, read-only
+status and receipt access, and explicit export.
+
+The execution helper reloads state under the worker lock before choosing fresh dispatch or
+observation-only recovery. This recheck prevents races without duplicating complete reconciliation.
+Execution and receipt helpers remain private seams for crash-window and queue-oriented owner tests.
+
+Moving sequencing into the gateway does not extend lock scope. Submission and report reads still use
+their existing journal transactions without worker exclusion. Execution holds the worker lock across
+target, mutation and receiver I/O, then releases it before the next report read. Receipt completion
+separately locks through signing and the conditional SQLite commit. A contending worker returns the
+latest authorized snapshot without waiting or calling Kubernetes.
+
+Returns are unchanged: absent operations produce no report, blocked operations produce their current
+report, and terminal retrieval neither observes nor re-signs. Submission rejection remains distinct
+from advancement failure. Cancellation releases the worker lock and preserves the last committed
+state. Recovery after the attempt marker never resends, and export remains independent of
+completion.
 
 ## Concrete Kubernetes boundary
 

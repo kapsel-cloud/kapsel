@@ -253,13 +253,30 @@
                 .receipt_statement(&request.operation_id)
                 .unwrap()
                 .unwrap();
+            let signed_grant = sign_authorization_grant(
+                &authorization(&request),
+                &[7; 32],
+                "effect-gateway-authorization-test-key",
+            )
+            .unwrap();
+            let (service, mut handle) = tower_test::mock::pair::<
+                http::Request<kube::client::Body>,
+                http::Response<kube::client::Body>,
+            >();
+            let client = kube::Client::new(service, "demo");
             // Bad signing identity simulates a signer failure before the final transaction.
             assert!(
                 gateway
-                    .finalize_receipt_once(&ReceiptSettings {
-                        signing_seed: &[61; 32],
-                        key_id: "invalid key",
-                    })
+                    .reconcile(
+                        &request,
+                        &signed_grant,
+                        client.clone(),
+                        &ReceiptSettings {
+                            signing_seed: &[61; 32],
+                            key_id: "invalid key",
+                        },
+                    )
+                    .await
                     .is_err()
             );
             assert_eq!(
@@ -309,26 +326,24 @@
             assert_eq!(before.3.is_some(), committed);
             drop(gateway);
             let mut reopened = Gateway::open_for_test(&path).unwrap();
-            assert_eq!(
-                reopened
-                    .run_once_with_adapter(&mut adapter, None)
-                    .await
-                    .unwrap(),
-                None
-            );
             let result = reopened
-                .finalize_receipt_once(&ReceiptSettings {
-                    signing_seed: &[62; 32],
-                    key_id: "rotated-key",
-                })
+                .reconcile(
+                    &request,
+                    &signed_grant,
+                    client.clone(),
+                    &ReceiptSettings {
+                        signing_seed: &[62; 32],
+                        key_id: "rotated-key",
+                    },
+                )
+                .await
+                .unwrap()
                 .unwrap();
-            assert_eq!(
-                result,
-                if committed {
-                    None
-                } else {
-                    Some(OperationState::Finalized)
-                }
+            assert_eq!(result.state(), OperationState::Finalized);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request())
+                    .await
+                    .is_err()
             );
             let (bytes, digest) = Gateway::read_loaded_receipt(
                 reopened

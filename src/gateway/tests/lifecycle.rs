@@ -1,5 +1,5 @@
-    #[test]
-    fn requested_recovery_rechecks_exact_authorization_before_advancing() {
+    #[tokio::test]
+    async fn requested_recovery_rechecks_exact_authorization_before_advancing() {
         let path = database_path("requested-recovery");
         let request = request();
         let authorization = authorization(&request);
@@ -22,7 +22,7 @@
                 Some(journal::LoadedOperation::Requested(_))
             ));
         }
-        let gateway = Gateway::open_for_test(&path).unwrap();
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
         let mut mismatch = authorization.clone();
         mismatch.container = "other".into();
         assert!(matches!(
@@ -33,16 +33,40 @@
             gateway.get(&request.operation_id).unwrap(),
             Some(OperationState::Requested)
         );
-        assert_eq!(
-            gateway
-                .submit_exact_for_test(&request, &authorization)
-                .unwrap(),
-            SubmissionResult::Created
+        let signed_grant = sign_authorization_grant(
+            &authorization,
+            &[7; 32],
+            "effect-gateway-authorization-test-key",
+        )
+        .unwrap();
+        let (service, mut handle) = tower_test::mock::pair::<
+            http::Request<kube::client::Body>,
+            http::Response<kube::client::Body>,
+        >();
+        let client = kube::Client::new(service, "demo");
+        let lock_owner = Gateway::open_for_test(&path).unwrap();
+        let worker_lock = lock_owner.journal.try_lock_worker().unwrap().unwrap();
+        let operation = gateway
+            .reconcile(
+                &request,
+                &signed_grant,
+                client.clone(),
+                &ReceiptSettings {
+                    signing_seed: &[51; 32],
+                    key_id: "receipt-key",
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(operation.state(), OperationState::Authorized);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request())
+                .await
+                .is_err()
         );
-        assert_eq!(
-            gateway.get(&request.operation_id).unwrap(),
-            Some(OperationState::Authorized)
-        );
+        drop(worker_lock);
+        drop(lock_owner);
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

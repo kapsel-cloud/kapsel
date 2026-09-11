@@ -302,6 +302,7 @@ fn read_request(stream: &mut TcpStream) -> WireRequest {
 async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt() {
     let mut fixture = Fixture::new(200);
     let mut application = fixture.application().await;
+    assert_eq!(application.reconcile().await.unwrap(), None);
     let report = application.execute(&request()).await.unwrap();
     assert_eq!(report.result, Some(OperationResult::Succeeded));
     let original = application
@@ -309,6 +310,7 @@ async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_rec
         .unwrap();
     drop(application);
     let mut application = fixture.application().await;
+    assert_eq!(application.reconcile().await.unwrap(), Some(report.clone()));
     assert_eq!(application.execute(&request()).await.unwrap(), report);
     assert_eq!(
         application
@@ -350,6 +352,12 @@ async fn cancelled_application_dispatch_recovers_without_resending_to_available_
             }
         } => {}
     }
+    // The original worker still owns exclusion while its PATCH response is pending.
+    let mut contender = fixture.application().await;
+    let blocked = contender.execute(&requested).await.unwrap();
+    assert_eq!(blocked.state, OperationState::ApplyStarted);
+    assert_eq!(blocked.result, None);
+    drop(contender);
     drop(execution);
     drop(application);
     fixture.resume.send(()).unwrap();

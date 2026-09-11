@@ -20,8 +20,8 @@ use tower_http::map_response_body::MapResponseBodyLayer;
 use crate::gateway::{
     sign_authorization_grant, validate_key_id, validate_private_directory,
     verify_authorization_grant, AuthorizationTrust, ExactAuthorization, Gateway, GatewayError,
-    OperationResult, OperationState, ReceiptReference, ReceiptSettings, SetDeploymentImageRequest,
-    SubmissionResult, TargetRejection,
+    LoadedOperation, OperationResult, OperationState, ReceiptReference, ReceiptSettings,
+    ReconciliationError, SetDeploymentImageRequest, SubmissionResult, TargetRejection,
 };
 
 /// Request-only caller input for the sole supported operation.
@@ -598,7 +598,7 @@ impl Application {
             .map_err(|error| map_operation_error(&error))
     }
 
-    /// Submits request-only intent and owns all subsequent lifecycle sequencing.
+    /// Submits request-only intent and delegates complete reconciliation to the gateway.
     ///
     /// # Errors
     ///
@@ -634,73 +634,45 @@ impl Application {
     /// operator configuration resumes that exact operation; after `apply_started`, recovery
     /// observes rather than blindly issuing another mutation.
     pub async fn reconcile(&mut self) -> Result<Option<OperationReport>, ApplicationError> {
-        loop {
-            let Some(report) = self.report()? else {
-                return Ok(None);
-            };
-            match report.state {
-                OperationState::Requested => {
-                    self.gateway
-                        .submit_authorized(
-                            &self.authorized_request,
-                            &self.signed_authorization_grant,
-                        )
-                        .map_err(|error| map_operation_error(&error))?;
+        let receipt_settings = ReceiptSettings {
+            signing_seed: self.receipt_signing_key.as_bytes(),
+            key_id: &self.receipt_signing_key_id,
+        };
+        self.gateway
+            .reconcile(
+                &self.authorized_request,
+                &self.signed_authorization_grant,
+                self.kubernetes_client.clone(),
+                &receipt_settings,
+            )
+            .await
+            .map(|operation| operation.map(|snapshot| self.project_report(&snapshot)))
+            .map_err(|error| match error {
+                ReconciliationError::Submission(error) => map_operation_error(&error),
+                ReconciliationError::Advancement(error) => {
+                    let _ = error;
+                    ApplicationError::OperationFailure
                 },
-                OperationState::Authorized | OperationState::ApplyStarted => {
-                    let operation_state_after_run = self
-                        .gateway
-                        .run_operation_once(
-                            &self.authorized_request.operation_id,
-                            self.kubernetes_client.clone(),
-                        )
-                        .await
-                        .map_err(|_| ApplicationError::OperationFailure)?;
-                    if operation_state_after_run.is_none() {
-                        return self.report();
-                    }
-                },
-                OperationState::ReceiverObserved => {
-                    let receipt_settings = ReceiptSettings {
-                        signing_seed: self.receipt_signing_key.as_bytes(),
-                        key_id: &self.receipt_signing_key_id,
-                    };
-                    let receipt_state_after_finalization = self
-                        .gateway
-                        .finalize_operation_receipt_once(
-                            &self.authorized_request.operation_id,
-                            &receipt_settings,
-                        )
-                        .map_err(|_| ApplicationError::OperationFailure)?;
-                    if receipt_state_after_finalization.is_none() {
-                        return self.report();
-                    }
-                },
-                OperationState::NotAttempted | OperationState::Finalized => {
-                    return Ok(Some(report));
-                },
-            }
-        }
+            })
     }
 
     /// Reports the configured operation without provider or network access.
     fn report(&self) -> Result<Option<OperationReport>, ApplicationError> {
-        let operation_id = &self.authorized_request.operation_id;
-        let Some(snapshot) = self
-            .gateway
+        self.gateway
             .authorized_operation(&self.authorized_request, &self.signed_authorization_grant)
-            .map_err(|_| ApplicationError::OperationFailure)?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(OperationReport {
-            operation_id: operation_id.clone(),
+            .map(|operation| operation.map(|snapshot| self.project_report(&snapshot)))
+            .map_err(|_| ApplicationError::OperationFailure)
+    }
+
+    fn project_report(&self, snapshot: &LoadedOperation) -> OperationReport {
+        OperationReport {
+            operation_id: self.authorized_request.operation_id.clone(),
             state: snapshot.state(),
             result: snapshot.result(),
             target_rejection: snapshot.target_rejection(),
             receipt: snapshot.receipt_reference(),
             targets: snapshot.targets(),
-        }))
+        }
     }
 
     /// Exports committed receipt bytes for the legacy CLI/MCP filename response.

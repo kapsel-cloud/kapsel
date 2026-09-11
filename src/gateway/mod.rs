@@ -21,8 +21,8 @@ pub(crate) use authorization::{
     sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
 pub use authorization::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
-pub(crate) use journal::DispatchPermission;
 use journal::Journal;
+pub(crate) use journal::{DispatchPermission, LoadedOperation};
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
 #[cfg(test)]
 pub(crate) use kubernetes::{
@@ -446,6 +446,56 @@ impl Gateway {
         self.journal.authorized_operation(&authorized)
     }
 
+    /// Advances an existing exact-authorized operation to a blocked or terminal snapshot.
+    ///
+    /// Authority, client and signing settings are operator-owned. Each iteration rechecks the
+    /// original request and grant. Execution reloads under worker exclusion and holds it through
+    /// provider and receiver I/O; receipt completion acquires its own lock. Contention returns a
+    /// fresh snapshot without waiting. An absent operation is not submitted here.
+    ///
+    /// Cancellation leaves the last committed phase intact. Attempted history is observation-only,
+    /// and frozen observations are completed without further Kubernetes access. Export is separate.
+    pub(crate) async fn reconcile(
+        &mut self,
+        request: &SetDeploymentImageRequest,
+        signed_grant: &[u8],
+        client: kube::Client,
+        receipt_settings: &ReceiptSettings<'_>,
+    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
+        loop {
+            let Some(operation) = self
+                .authorized_operation(request, signed_grant)
+                .map_err(ReconciliationError::Advancement)?
+            else {
+                return Ok(None);
+            };
+            let advanced = match operation.state() {
+                OperationState::Requested => {
+                    self.submit_authorized(request, signed_grant)
+                        .map_err(ReconciliationError::Submission)?;
+                    true
+                },
+                OperationState::Authorized | OperationState::ApplyStarted => self
+                    .run_operation_once(&request.operation_id, client.clone())
+                    .await
+                    .map_err(ReconciliationError::Advancement)?
+                    .is_some(),
+                OperationState::ReceiverObserved => self
+                    .finalize_operation_receipt_once(&request.operation_id, receipt_settings)
+                    .map_err(ReconciliationError::Advancement)?
+                    .is_some(),
+                OperationState::NotAttempted | OperationState::Finalized => {
+                    return Ok(Some(operation));
+                },
+            };
+            if !advanced {
+                return self
+                    .authorized_operation(request, signed_grant)
+                    .map_err(ReconciliationError::Advancement);
+            }
+        }
+    }
+
     /// Reads a frozen receiver result when observation has completed.
     #[cfg(test)]
     pub(crate) fn result(
@@ -473,7 +523,7 @@ impl Gateway {
         self.finalize_receipt_once_with_fault(settings, None)
     }
 
-    pub(crate) fn finalize_operation_receipt_once(
+    fn finalize_operation_receipt_once(
         &self,
         operation_id: &str,
         settings: &ReceiptSettings<'_>,
@@ -608,7 +658,7 @@ impl Gateway {
         self.run_once_with_adapter(&mut adapter, None).await
     }
 
-    pub(crate) async fn run_operation_once(
+    async fn run_operation_once(
         &mut self,
         operation_id: &str,
         client: kube::Client,
@@ -752,6 +802,13 @@ impl Gateway {
         )
         .await
     }
+}
+
+/// Keeps submission rejection distinct from failures reading or advancing an existing operation.
+#[derive(Debug)]
+pub(crate) enum ReconciliationError {
+    Submission(GatewayError),
+    Advancement(GatewayError),
 }
 
 /// Name of an input field rejected by the bounded request grammar.
