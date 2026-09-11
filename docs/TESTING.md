@@ -47,7 +47,7 @@ behavior. None changes the published v0.2.0 artifact.
 | Sequential dispatch               | `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`, consolidated as `59b4f04f513f1dfd4131f722b6c44b210d73b453` | Adopted private consumed permission at the real adapter boundary. [ADR 0011](decisions/0011-retain-observation-only-recovery.md#sequential-boundary-comparison) records removed apply arguments, request counts and I/O obligations. No shared pure kernel claimed. |
 | Guarded JSON Patch                | `430e7f20aed71ef8daec81b681625a641d98ee18`                                                             | [Live comparison](#frozen-json-patch-receiver-comparison) reduced some stale admissions but retained pending/unpersisted ambiguity. Keep strategic merge/no-replay.                                                                                                 |
 | Later observation                 | `426c17f0152f9cdb5036895c25cdcbed11b20e43`                                                             | [Prototype](LATER_OBSERVATION_EXPERIMENT.md) supplies useful later evidence without changing UNKNOWN or mutating again. Test-only, not a supported lifecycle.                                                                                                       |
-| Protected typed tool              | `cad49d7881c19abe666215d7fd8fd76c2f1a5019`                                                             | [Comparison](PROTECTED_TOOL_COMPARISON.md) executed thirteen fixed cases per arm with identical receiver evidence. Durable core recurs. No production equivalence or signature-removal decision.                                                                    |
+| Protected typed tool              | `cad49d7881c19abe666215d7fd8fd76c2f1a5019`                                                             | [Historical comparison](PROTECTED_TOOL_COMPARISON.md) executed thirteen fixed cases per arm with identical receiver evidence. Typed arm retired from HEAD. No ongoing equivalence coverage or signature-removal decision.                                           |
 
 These revisions were verified locally. Another checkout must obtain them from a repository
 containing them, for example `git fetch /path/to/owning/kapsel master`; local availability does not
@@ -103,14 +103,57 @@ restart and export under changed settings. The Linux service process lane retrie
 original bytes while the export destination is unavailable. The application client retry and
 snapshot regressions retain independent request counts. Process exits do not prove power loss.
 
+### Receiver-recovery evidence
+
+`gateway::receiver_recovery_tests` crosses the real Kubernetes adapter, journal and receipt path
+against an independent HTTP service fixture. Eight scenarios retain evidence that isolated
+fake-adapter or classifier tests do not establish together:
+
+- process exit after attempt commitment but before send, and after a persisted PATCH loses its
+  response;
+- replacement UID, changed image or a later generation retaining the operation marker before
+  recovery;
+- a preflight-to-PATCH version race that records an attempt but persists no patch;
+- rollout completion after the observation budget, without changing frozen UNKNOWN on reconnect; and
+- a defined failed rollout through the complete adapter-to-receipt path.
+
+Expected results, GET/PATCH and persistence counts are independent of the gateway classifier.
+`receiver.rs` owns exact PATCH assertions and receiver state without importing the gateway.
+`assert_retained_facts` checks receipt inputs against that state. Every case reopens in a fresh
+process and proves byte-identical evidence and zero receiver I/O. This is a service fixture, not
+live admission or power-loss evidence.
+
+The original thirteen-case grouping and repeated general checks were consolidated rather than kept
+as an ongoing experiment. Existing tests own the removed repetition:
+
+| Removed repetition                                      | Retained owner and proof                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Healthy and identical reconnect scenarios               | `application_retry::healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt` checks the actual application, one PATCH/two GETs and original receipt on reopen. Adapter `omitted_zero_replica_counts_can_still_report_success` owns the missing-zero field case.                                                |
+| Status/annotation version churn and stale UID scenarios | `gateway::tests::snapshot_approval::stale_snapshot_is_durable_status_only_without_patch_or_receipt` asserts version/UID rejection, no apply/observe, preserved targets and no receipt across reopen. Adapter identification tests own extraction of UID/version. The two churn causes exercise the same opaque-version comparison. |
+| Five request mismatches on every child invocation       | `gateway::tests::validation::exact_authorization_is_required_before_persistence` checks every field, both fresh and already requested.                                                                                                                                                                                             |
+| Replacement snapshot approvals on every invocation      | `gateway::tests::snapshot_approval` checks original authority across crash seams and rejects changed UID/version before and after receipt completion, preserving original bytes.                                                                                                                                                   |
+| Worker-lock contention on every invocation              | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity` checks zero identify/apply/observe calls; `application_retry` also checks a contender while a real HTTP PATCH is pending.                                                                                                                           |
+| Scripted next-action text                               | Removed. It was a test-local result mapping, not an application caller or a tested product rule.                                                                                                                                                                                                                                   |
+
+This removes redundant full traces for routine success and stale approval. It does not claim that
+owner-level checks reproduce every historical trace. Fixture-only request/approval structs and their
+JSON handoff are removed as well.
+
+The typed tool's separate lifecycle and classifier, typed child execution and cross-arm equality
+checks are removed. Current Kapsel regressions do not prove ongoing unsigned-tool equivalence.
+[Detached-checkout reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) preserves the historical
+comparison and distinguishes verified local retrieval from public remote availability. Neither that
+comparison nor these regressions establish equal multi-user isolation or hostile-input hardening.
+
 ### Current deterministic evidence
 
 Reproduce the retained deterministic evidence on the current checkout, not the historical scratch
 checkout above:
 
 ```sh
+unset KAPSEL_RECEIVER_ONLY
 cargo test --locked -p kapsel --lib gateway::tests
-cargo test --locked -p kapsel --lib gateway::protected_tool_tests
+cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests
 cargo test --locked -p kapsel --test application_retry
 cargo test --locked -p kapsel --test later_observation
 ./scripts/ci-local.sh

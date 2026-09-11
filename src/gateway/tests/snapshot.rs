@@ -8,6 +8,55 @@ fn snapshot_authorization(request: &SetDeploymentImageRequest) -> ExactAuthoriza
 }
 
 #[tokio::test]
+async fn snapshot_replacement_is_rejected_before_and_after_receipt_completion() {
+    for finalized in [false, true] {
+        let path = database_path(&format!("snapshot-replacement-{finalized}"));
+        let request = request();
+        let approval = snapshot_authorization(&request);
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway.submit_exact_for_test(&request, &approval).unwrap();
+        if finalized {
+            let mut adapter = failed_adapter(&path, &request);
+            gateway.run_once_with_adapter(&mut adapter, None).await.unwrap();
+            gateway.finalize_receipt_once(&ReceiptSettings {
+                signing_seed: &[42; 32],
+                key_id: "snapshot-receipt",
+            }).unwrap();
+        }
+        let state = gateway.get(&request.operation_id).unwrap();
+        let original = finalized.then(|| {
+            Gateway::read_loaded_receipt(
+                gateway.loaded_for_test(&request.operation_id).unwrap().unwrap(),
+            ).unwrap()
+        });
+        drop(gateway);
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        for change_uid in [true, false] {
+            let mut replacement = approval.clone();
+            let target = replacement.approved_target.as_mut().unwrap();
+            if change_uid {
+                target.uid = "replacement".into();
+            } else {
+                target.resource_version = "replacement".into();
+            }
+            assert!(matches!(
+                gateway.submit_exact_for_test(&request, &replacement),
+                Err(GatewayError::OperationIdentityConflict)
+            ));
+            let retained = gateway.loaded_for_test(&request.operation_id).unwrap().unwrap();
+            assert_eq!(retained.targets().approved_target, approval.approved_target);
+            assert_eq!(gateway.get(&request.operation_id).unwrap(), state);
+            if let Some(original) = &original {
+                assert_eq!(&Gateway::read_loaded_receipt(retained).unwrap(), original);
+            }
+        }
+        gateway.submit_exact_for_test(&request, &approval).unwrap();
+        drop(gateway);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn stale_snapshot_is_durable_status_only_without_patch_or_receipt() {
     let stale = [
         ("drifted-version", "deployment-uid-1", "different"),
@@ -35,8 +84,11 @@ async fn stale_snapshot_is_durable_status_only_without_patch_or_receipt() {
         assert_eq!(row.target_rejection(), Some(TargetRejection::StaleApproval));
         assert_eq!(row.targets().approved_target, approval.approved_target);
         assert_eq!(
-            row.targets().observed_target.unwrap().uid.as_deref(),
-            Some("deployment-uid-1")
+            row.targets().observed_target,
+            Some(ObservedTarget {
+                uid: Some("deployment-uid-1".into()),
+                resource_version: Some("resource-version-0".into()),
+            })
         );
         assert!(row.targets().attempt_target.is_none());
         assert!(row.result().is_none());

@@ -134,19 +134,28 @@ python3 scripts/test-independent-kubectl.py
 The [kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md) uses a loopback fixture, not a cluster or
 Kapsel runtime. It is separate from the default gate.
 
-## Protected typed-tool comparison
+## Receiver-recovery regressions
 
-This deterministic experiment needs only the repository Rust toolchain, not Docker or credentials:
+These eight deterministic Kapsel scenarios need only the repository Rust toolchain, not Docker or
+credentials. Run the complete matrix without a reduced-case selection:
 
 ```sh
-cargo test --locked -p kapsel --lib gateway::protected_tool_tests -- --nocapture
-KAPSEL_COMPARISON_ONLY=pre-send cargo test --locked -p kapsel --lib \
-  gateway::protected_tool_tests::protected_tool_comparison -- --exact --nocapture
+unset KAPSEL_RECEIVER_ONLY
+cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests -- --nocapture
 ```
 
-The [comparison report](PROTECTED_TOOL_COMPARISON.md) owns requirements, tested source identities,
-operator cost and evidence limits. Both actual implementations run against an independent HTTP
-service fixture with real process exits. The full matrix is included in the default gate.
+For a reduced pre-send replay:
+
+```sh
+KAPSEL_RECEIVER_ONLY=pre-send cargo test --locked -p kapsel --lib \
+  gateway::receiver_recovery_tests::receiver_recovery_scenarios -- --exact --nocapture
+```
+
+Kapsel runs against an independent HTTP service fixture with exact PATCH assertions, real process
+exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. The
+second implementation and ongoing unsigned-tool equivalence checks have been retired. Use the
+[historical comparison reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) to run both arms at
+their exact evidence commit, not HEAD.
 
 ## Kapsel service candidate
 

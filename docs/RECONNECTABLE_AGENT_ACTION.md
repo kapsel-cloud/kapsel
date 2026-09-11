@@ -106,7 +106,7 @@ as above.
 
 No equally protected typed tool ran in this experiment. Its earlier claim about relative operator
 effort was therefore unproved. The subsequent
-[protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) executes that separate comparison and
+[historical protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) executed that comparison and
 distinguishes its fixed cases from this historical accounting.
 
 ## Smallest concrete gaps recorded

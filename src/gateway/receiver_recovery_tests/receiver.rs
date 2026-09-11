@@ -1,4 +1,4 @@
-//! Independent receiver facts and HTTP request accounting. Imports neither implementation.
+//! Independent receiver facts and HTTP request accounting. No gateway or classifier imports.
 
 use std::{
     fs::{self, OpenOptions},
@@ -38,8 +38,8 @@ pub(super) fn save(root: &Path, evidence: &Value) {
     file.sync_all().unwrap();
 }
 
-pub(super) fn initialize(root: &Path, case: &str) {
-    let mut object = json!({"apiVersion":"apps/v1", "kind":"Deployment", "metadata": {
+pub(super) fn initialize(root: &Path) {
+    let object = json!({"apiVersion":"apps/v1", "kind":"Deployment", "metadata": {
         "name":"api", "namespace":"demo", "uid":"uid-1", "resourceVersion":"opaque-1",
         "generation":1,"annotations":{}}, "spec":{"replicas":1,
         "selector":{"matchLabels":{"app":"api"}},
@@ -47,25 +47,10 @@ pub(super) fn initialize(root: &Path, case: &str) {
         "status":{"observedGeneration":1,"updatedReplicas":1,"availableReplicas":1,
             "unavailableReplicas":0,"conditions":[{"type":"Available","status":"True",
                 "reason":"MinimumReplicasAvailable"}]}});
-    if case == "healthy" {
-        object["status"]
-            .as_object_mut()
-            .unwrap()
-            .remove("unavailableReplicas");
-    }
-    if case.starts_with("stale-") {
-        object["metadata"]["resourceVersion"] = json!("opaque-churn");
-        match case {
-            "stale-status" => object["status"]["replicas"] = json!(2),
-            "stale-annotation" => object["metadata"]["annotations"]["unrelated"] = json!("changed"),
-            "stale-identity" => object["metadata"]["uid"] = json!("replacement"),
-            _ => panic!("unknown stale case"),
-        }
-    }
     save(
         root,
         &json!({"object":object,"requests":[],"persisted_patches":0,
-        "writer_changes":usize::from(case.starts_with("stale-"))}),
+        "writer_changes":0}),
     );
 }
 

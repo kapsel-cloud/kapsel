@@ -1,10 +1,42 @@
 # Kapsel and an equally protected typed tool
 
-Kind: test-only comparison. No production adoption, new command, or supported alternative.
+Kind: historical test-only comparison. The second implementation has been retired from HEAD. No
+production adoption, new command, or supported alternative.
 
-Evidence commit: `cad49d7881c19abe666215d7fd8fd76c2f1a5019`. This supersedes the original
-uncommitted handoff below. The [accepted scope](SCOPE.md) retains the broker and existing signed
-interfaces. Private approval rows and unsigned evidence remain unadopted simplification ideas.
+Evidence commit: `cad49d7881c19abe666215d7fd8fd76c2f1a5019`. The [accepted scope](SCOPE.md) retains
+the broker and existing signed interfaces. Private approval rows and unsigned evidence remain
+unadopted simplification ideas.
+
+## What remains at HEAD
+
+The comparison answered a bounded research question. Maintaining its separate approval store, SQLite
+lifecycle, worker lock, PATCH builder, observation loop and classifier would leave a second policy
+implementation to maintain without an adopted consumer. Those mechanisms and the typed child
+execution have been removed, not replaced with another model.
+
+The remaining Kapsel evidence has been consolidated into eight receiver-recovery scenarios. Each has
+an independently specified result, GET/PATCH counts and persisted-patch count. The receiver still
+owns exact payload assertions and state, without importing the gateway. Actual process exits,
+retained-fact assertions and immutable offline reconnect remain. Routine success/reconnect and
+stale-approval cases now rely on their existing owning tests rather than repeating them here.
+Request/snapshot mismatch and worker-exclusion checks also live at their direct owners, not inside
+every scenario. The fixture-only request/approval records and scripted caller projection are gone.
+[Testing](TESTING.md#receiver-recovery-evidence) records the retained and removed boundaries.
+
+Ongoing unsigned-tool equivalence coverage is removed, including cross-arm equality of complete
+receiver logs and state. Historical equivalence says nothing about future HEAD. It never established
+equal multi-user isolation or hostile-input hardening. The retained Kapsel checks do not replace
+that historical comparison, and neither signature removal nor a supported alternative is adopted.
+Application retry, later-observation and live admission evidence remain separate.
+
+Use [the current build commands](BUILD.md#receiver-recovery-regressions) for HEAD. The active suite
+is `gateway::receiver_recovery_tests`, with reduced selection through `KAPSEL_RECEIVER_ONLY`. The
+old `protected_tool_tests` selector and `KAPSEL_COMPARISON_ONLY` variable belong only to the
+historical checkout below.
+
+Everything below records the historical experiment at the evidence commit, including its source
+manifest, implementation descriptions, counts and recommendation. It is not a description of current
+HEAD code or a promise to maintain equivalence.
 
 ## Requirements frozen before execution
 
@@ -56,15 +88,37 @@ representative failure rate.
 
 ## Reproduction
 
-Run from this checkout with the repository Rust toolchain:
+Select a detached checkout of the exact evidence commit before running the comparison. From an
+owning checkout whose `master` contains that commit, use a new scratch directory outside the tree:
 
 ```sh
+source_repo=$(git rev-parse --show-toplevel)
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-tool-history.XXXXXX")
+git init "$scratch/history"
+git -C "$scratch/history" fetch --no-tags "$source_repo" master
+git -C "$scratch/history" checkout --detach cad49d7881c19abe666215d7fd8fd76c2f1a5019
+cd "$scratch/history"
 git rev-parse HEAD
+git ls-tree -r HEAD -- src/gateway/protected_tool_tests.rs \
+  src/gateway/protected_tool_tests/alternative.rs src/gateway/protected_tool_tests/receiver.rs
 shasum -a 256 src/gateway/protected_tool_tests.rs src/gateway/protected_tool_tests/*.rs
+unset KAPSEL_COMPARISON_ONLY
 cargo test --locked -p kapsel --lib gateway::protected_tool_tests -- --nocapture
-./scripts/format.sh
-./scripts/ci-local.sh
 ```
+
+Retirement validation ran that local fetch and detached checkout, verified all three comparison
+files, and passed all thirteen cases in both arms. A separate empty repository also successfully
+fetched the exact commit from the public source and returned the same three file blobs. To use that
+source instead of the local fetch above:
+
+```sh
+git -C "$scratch/history" fetch --no-tags https://github.com/kapsel-cloud/kapsel.git \
+  cad49d7881c19abe666215d7fd8fd76c2f1a5019
+```
+
+Continue with the same detached checkout and test commands. Local history and remote retrieval were
+checked separately. This records availability at validation time, not a release or a guarantee of
+future remote retention. No historical implementation is copied into HEAD.
 
 The HTTP service fixture supplies the same controlled receiver states to each implementation and
 retains requests and state independently of either classifier. It uses kube's service seam, not a
@@ -198,9 +252,10 @@ absent from the fixture and caller requests. The operator/caller separation is e
 typed calls, not distinct OS identities or a hostile caller process. Existing service isolation
 evidence is not attributed to the new tool.
 
-The retained alternative is 293 formatted lines. The composition/caller/fault test is another 583
-lines and the receiver another 192, so its cost is not just the short tool module. This supporting
-size evidence is not a LOC target or a comparison with all of Kapsel's broader obligations.
+At the evidence commit, the alternative is 293 formatted lines. The composition/caller/fault test is
+another 583 lines and the receiver another 192, so its cost is not just the short tool module. This
+supporting size evidence is not a LOC target or a comparison with all of Kapsel's broader
+obligations.
 
 The alternative is shorter than Kapsel, but it is not a production replacement. It deliberately
 omits portable signed evidence, wire compatibility, migration policy, private-path attack defenses,

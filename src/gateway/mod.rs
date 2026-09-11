@@ -8,9 +8,9 @@ mod authorization;
 mod demo_control;
 mod journal;
 mod kubernetes;
-#[cfg(test)]
-mod protected_tool_tests;
 mod receipt;
+#[cfg(test)]
+mod receiver_recovery_tests;
 
 use std::{error::Error, fmt, future::Future, path::Path};
 
