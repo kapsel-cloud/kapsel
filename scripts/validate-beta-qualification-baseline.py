@@ -487,7 +487,6 @@ EXPECTED_LANES = {
     "hostile-input",
     "simulation",
     "fuzz",
-    "subprocess",
     "demo",
     "live-kind",
     "measurement",
@@ -519,7 +518,6 @@ EXPECTED_LANE_SAMPLES = {
     "hostile-input": 1,
     "simulation": 10000,
     "fuzz": 10000,
-    "subprocess": 9,
     "demo": 1,
     "live-kind": 3,
     "measurement": 391,
@@ -567,7 +565,6 @@ EXPECTED_LANE_COMMANDS = {
     "hostile-input": ["./scripts/ci-local.sh"],
     "simulation": ["./scripts/test-simulation.sh"],
     "fuzz": ["./scripts/test-fuzz.sh"],
-    "subprocess": ["python3", "scripts/test-v011-upgrade-fixtures.py"],
     "demo": ["./scripts/test-demo-harness.sh"],
     "live-kind": ["./scripts/test-kind-effect-gateway.sh"],
     "measurement": [

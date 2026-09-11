@@ -303,12 +303,6 @@ def main() -> None:
         default = run_lane("default and hostile input", ["./scripts/ci-local.sh"], ROOT, 900)
         simulation = run_lane("seeded simulation", ["./scripts/test-simulation.sh"], ROOT, 900)
         fuzz = run_lane("seeded fuzz", ["./scripts/test-fuzz.sh"], ROOT, 900)
-        subprocess_lane = run_lane(
-            "v0.1.1 subprocess matrix",
-            ["python3", "scripts/test-v011-upgrade-fixtures.py"],
-            ROOT,
-            1800,
-        )
         demo = run_lane("deterministic demo", ["./scripts/test-demo-harness.sh"], ROOT, 900)
         live = run_lane("live kind", ["./scripts/test-kind-effect-gateway.sh"], ROOT, 1200)
         measurement_path = evidence / "measurement.json"
@@ -524,12 +518,6 @@ def main() -> None:
                 [("no-crash", "all seeded fuzz runs completed without finding")],
             ),
             lane_result(
-                "subprocess",
-                producer(subprocess_lane, "host", source_input),
-                9,
-                [("historical-compatibility", "all historical states and process seams passed")],
-            ),
-            lane_result(
                 "demo",
                 producer(demo, "host", source_input),
                 1,
@@ -605,7 +593,6 @@ def main() -> None:
             ("hostile-input", "root CLI MCP grant kubeconfig provider and journal denial matrices"),
             ("simulation", "seeded lifecycle crash simulation"),
             ("fuzz", "seeded receipt inspection fuzzing"),
-            ("subprocess", "historical migration restore and downgrade subprocess matrix"),
             ("demo", "real-process deterministic demonstration recovery"),
             ("live-kind", "healthy failed and bounded unknown live Kubernetes scenarios"),
             ("measurement", "pinned containerized native x86-64 resource measurements"),

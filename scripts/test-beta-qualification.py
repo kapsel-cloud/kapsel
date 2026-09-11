@@ -16,6 +16,15 @@ VALIDATOR = runpy.run_path(str(ROOT / "scripts/validate-beta-qualification-basel
 
 
 class BetaQualificationTests(unittest.TestCase):
+    def test_lane_inventories_exclude_historical_upgrade_execution(self) -> None:
+        lanes = VALIDATOR["EXPECTED_LANES"]
+        self.assertNotIn("subprocess", lanes)
+        self.assertEqual(lanes, set(VALIDATOR["EXPECTED_LANE_COMMANDS"]))
+        self.assertEqual(lanes, set(VALIDATOR["EXPECTED_LANE_SAMPLES"]))
+        self.assertTrue({"default", "simulation", "fuzz", "demo", "live-kind"} <= lanes)
+        for command in VALIDATOR["EXPECTED_LANE_COMMANDS"].values():
+            self.assertTrue((ROOT / command[0 if command[0].startswith("./") else 1]).is_file())
+
     def test_source_scopes_match(self) -> None:
         paths = [
             "Cargo.lock",

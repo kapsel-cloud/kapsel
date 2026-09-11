@@ -167,7 +167,7 @@ cargo test --locked -p kapseld --features test-harness --test linux_process \
 See [Kapsel service](KAPSEL_SERVICE.md) for the current boundary and
 [service testing](TESTING.md#kapsel-service) for evidence coverage.
 
-## Upgrade and rollback fixture gate
+## Journal version rejection
 
 Repository HEAD uses journal format 4 and rejects older versions without migration. Run the
 rejection proof:
@@ -177,9 +177,9 @@ cargo test --locked -p kapsel --lib \
   gateway::tests::v011_upgrade::older_journal_versions_are_rejected_without_touching_rows -- --exact
 ```
 
-The historical `scripts/test-v011-upgrade-fixtures.py` generator applies only to the pre-format-4
-published baseline, not current upgrade support. See [Upgrade and rollback](UPGRADE.md) before using
-historical fixtures or retained journals.
+Historical migration and rollback tests are not HEAD qualification or candidate requirements. Use
+[the pinned published-release reproduction](UPGRADE.md#reproduce-the-published-release-evidence) for
+that separate evidence. Rejection coverage does not replace historical migration coverage.
 
 ## Robustness lanes
 

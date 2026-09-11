@@ -245,11 +245,11 @@ synthetic hostile-archive matrix remains independent of the producer.
 strict assembly B and compares all four deterministic outputs byte-for-byte. Neither verifier hides
 another A assembly.
 
-`python3 scripts/smoke-release-upgrade.py` consumes the exact immutable v0.1.1 archive and candidate
-archive, then uses only their safely extracted executables to prove a finalized historical journal
-backup, migration-only open/reopen, retained receipt inspection, restore/re-mark, and direct
-exact-v0.1.1 downgrade. It complements the complete source-fixture state/process matrix and reads no
-checkout or `target/` candidate binary.
+HEAD qualification and candidate acceptance do not require historical migration, rollback, or
+downgrade. Current format 4 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
+artifact and source proofs remain separate
+[historical evidence](UPGRADE.md#reproduce-the-published-release-evidence), not compatibility
+obligations for a newly assembled HEAD candidate.
 
 The live artifact demo uses only the extracted script, feature-gated executable, and public vector
 against its uniquely owned disposable `kind` cluster. The ordinary binary contains no demonstration

@@ -8,7 +8,7 @@ pre-format-4 binary and its backup procedure for existing older journals. Never 
 version marker manually or treat a restored older database as permission to replay an action. The
 format-4 source is unreleased.
 
-Status: active v0.2 beta operator contract.
+Status: published v0.2.0 operator contract, not a HEAD upgrade path.
 
 Kind: guide and compatibility contract. Authority: the supported `v0.1.1` to v0.2 private-journal
 upgrade, backup, restore, rollback, and downgrade procedure.
@@ -20,8 +20,68 @@ Does not own: Internal SQL or fixture construction, another release pair, releas
 Kubernetes lifecycle and receipt meaning.
 
 See [Evaluator commands](COMMANDS.md) for the unchanged command grammar, [MCP](MCP.md) for EOF
-shutdown, and [Build](BUILD.md#upgrade-and-rollback-fixture-gate) for the focused source-fixture
-gate.
+shutdown, and [Build](BUILD.md#journal-version-rejection) for the current rejection proof. The
+source-fixture proof described below belongs to the pinned published release, not HEAD.
+
+## Reproduce the published release evidence
+
+The historical proof remains in the published source, not in HEAD's qualification or candidate
+workflow. It covers nine durable states, migration/restore process-loss seams, retained receipts,
+and exact-v0.1.1 downgrade. HEAD's unchanged-byte rejection test does not replace that coverage. Do
+not overlay HEAD's tests into historical source or pair a HEAD binary with this upgrade recipe.
+
+Retrieve a separate checkout and select the exact v0.2.0 source before running its fixture
+generator. It uses that revision's harness with exact v0.1.1 source at
+`ad799b39112ccd6ef06e1ec954c615b6635650f6`. Rustup installs the historical toolchain selected by
+that checkout. Python 3.11+ and a C compiler/linker are also required.
+
+```sh
+set -eu
+proof=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-published-upgrade.XXXXXX")
+git clone https://github.com/kapsel-cloud/kapsel.git "$proof/source"
+cd "$proof/source"
+git checkout --detach 5fe0407cd5ebd78f386905e33f79e0f712a57835
+test "$(git rev-parse 'v0.1.1^{}')" = ad799b39112ccd6ef06e1ec954c615b6635650f6
+test "$(git rev-parse 'v0.2.0^{}')" = 5fe0407cd5ebd78f386905e33f79e0f712a57835
+python3 scripts/test-v011-upgrade-fixtures.py
+```
+
+For the separate binary proof, continue in that checkout. Download the exact published archives and
+v0.2.0 sidecars, not a newly assembled candidate. The pinned digests below establish the byte pair
+used by this regression, not publisher authentication. Follow
+[Release](RELEASE.md#publisher-authentication-and-provenance) before trusting an artifact for
+operational use.
+
+```sh
+mkdir "$proof/archives"
+base=https://github.com/kapsel-cloud/kapsel/releases/download
+old=kapsel-0.1.1-x86_64-unknown-linux-gnu.tar.gz
+new=kapsel-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+curl -fLsS "$base/v0.1.1/$old" -o "$proof/archives/$old"
+for suffix in '' .sha256 .spdx.json .SHA256SUMS; do
+  curl -fLsS "$base/v0.2.0/$new$suffix" -o "$proof/archives/$new$suffix"
+done
+(
+  cd "$proof/archives"
+  printf '%s  %s\n' \
+    d1a5bfec47012e126a9c8b351fbe2331aa52e12c2df0fd41dd2a91c03b7c7fb4 "$old" \
+    82db38b05772b1b6a4ef9a9312baf9633f0ce652ddfe8052ed7df86d1fd1d969 "$new" \
+    | shasum -a 256 --check
+)
+docker run --rm --platform linux/amd64 \
+  --volume "$proof/archives:/archives:ro" \
+  --volume "$PWD/scripts:/scripts:ro" \
+  python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 \
+  python3 /scripts/smoke-release-upgrade.py \
+    --candidate-archive "/archives/$new" \
+    --v011-archive "/archives/$old"
+```
+
+On 2026-09-11, a fresh clone from that public URL retrieved both pinned commits. The source fixture
+generator passed with nonzero matching tests and all nine fixtures. Both public archives and all
+four v0.2.0 files were downloaded, their archive metadata named the corresponding source commits
+above, and the pinned-container binary upgrade/rollback/downgrade smoke passed. This is verified
+historical retrievability and reproduction, not HEAD compatibility or a new release act.
 
 ## Supported path
 
@@ -350,13 +410,3 @@ filesystem that violates SQLite, atomic-rename, `fsync`, or directory-sync guara
 hardware that acknowledges but loses synchronized writes; torn sectors; controller caches without
 power-loss protection; a live copy; a moved receipt directory; a downloaded artifact; another
 release pair; or restoration after lifecycle advancement.
-
-## Unpublished snapshot journal
-
-HEAD upgrades recognized format 2 journals transactionally to format 3, adding nullable approval and
-preflight observation facts. Legacy rows and frozen receipts retain their original meanings and
-bytes. Older binaries reject format 3. Format 0 still follows the backup prerequisite above. This is
-not a new published v0.2.x upgrade promise. The
-[effect-gateway owner](EFFECT_GATEWAY.md#exact-snapshot-approval-in-unpublished-head) defines exact
-authority binding, legacy entry paths and receipt compatibility. The resident service requires a
-snapshot grant and will not resume a legacy handle by replacing its authority.
