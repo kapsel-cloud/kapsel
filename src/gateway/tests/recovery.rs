@@ -225,6 +225,70 @@
     }
 
     #[tokio::test]
+    async fn receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observation() {
+        let path = database_path("receiver-read-fault");
+        let request = request();
+        let mut fresh = failed_adapter(&path, &request);
+        {
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
+            gateway
+                .submit_exact_for_test(&request, &authorization(&request))
+                .unwrap();
+            assert!(matches!(
+                gateway
+                    .run_operation_once_with_adapter_and_fault(
+                        &request.operation_id,
+                        &mut fresh,
+                        Some(FaultPoint::ReceiverRead),
+                    )
+                    .await,
+                Err(GatewayError::InjectedFault)
+            ));
+            assert_eq!(
+                gateway.get(&request.operation_id).unwrap(),
+                Some(OperationState::ApplyStarted)
+            );
+            assert_eq!(gateway.result(&request.operation_id).unwrap(), None);
+            assert!(gateway
+                .journal
+                .receipt_statement(&request.operation_id)
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!((fresh.identify_calls, fresh.apply_calls, fresh.observe_calls), (1, 1, 1));
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        let mut recovery = failed_adapter(&path, &request);
+        recovery.observation = ReceiverObservation::unknown();
+        assert_eq!(
+            gateway
+                .run_operation_once_with_adapter_and_fault(
+                    &request.operation_id,
+                    &mut recovery,
+                    Some(FaultPoint::ReceiverRead),
+                )
+                .await
+                .unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert_eq!(gateway.result(&request.operation_id).unwrap(), Some(OperationResult::Unknown));
+        recovery.observation = fresh.observation;
+        assert_eq!(
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(gateway.result(&request.operation_id).unwrap(), Some(OperationResult::Unknown));
+        assert_eq!(
+            (recovery.identify_calls, recovery.apply_calls, recovery.observe_calls),
+            (0, 0, 1)
+        );
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
     async fn every_apply_window_recovers_without_a_second_mutation() {
         let cases = [
             (FaultPoint::TargetObserved, 1, OperationResult::Failed),

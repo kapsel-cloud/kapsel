@@ -649,7 +649,7 @@ impl Gateway {
         let Some(operation) = self.journal.operation(operation_id)? else {
             return Ok(None);
         };
-        match operation {
+        let (attempted, fault) = match operation {
             journal::LoadedOperation::Authorized(operation) => {
                 let adapter_request = operation.request().to_adapter_request();
                 let target = match adapter.identify(&adapter_request).await {
@@ -701,40 +701,36 @@ impl Gateway {
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
-                let outcome = started.classification_outcome();
-                let observation = adapter
-                    .observe(&adapter_request, &outcome)
-                    .await
-                    .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
-                if fault == Some(FaultPoint::ReceiverRead) {
-                    return Err(GatewayError::InjectedFault);
-                }
-                self.journal.freeze_observation(&started, &observation)?;
-                if fault == Some(FaultPoint::ReceiverObservedCommitted) {
-                    return Err(GatewayError::InjectedFault);
-                }
-                Ok(Some(OperationState::ReceiverObserved))
+                (started, fault)
             },
             // Observation-only recovery determines what can be concluded without resending.
             // The durable attempt records that dispatch may have happened, not permission to send.
             journal::LoadedOperation::ApplyStarted(operation) => {
-                let adapter_request = operation.request().to_adapter_request();
-                let outcome = operation.classification_outcome();
-                let observation = adapter
-                    .observe(&adapter_request, &outcome)
-                    .await
-                    .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
-                self.journal.freeze_observation(&operation, &observation)?;
-                if fault == Some(FaultPoint::ReceiverObservedCommitted) {
-                    return Err(GatewayError::InjectedFault);
-                }
-                Ok(Some(OperationState::ReceiverObserved))
+                // ReceiverRead has always interrupted only fresh dispatch, not recovery.
+                let fault = fault.filter(|point| *point != FaultPoint::ReceiverRead);
+                (operation, fault)
             },
             journal::LoadedOperation::Requested(_)
             | journal::LoadedOperation::NotAttempted(_)
             | journal::LoadedOperation::ReceiverObserved(_)
-            | journal::LoadedOperation::Finalized(_) => Ok(None),
+            | journal::LoadedOperation::Finalized(_) => return Ok(None),
+        };
+        // Only attempted history reaches this continuation. Fresh dispatch permission has
+        // already been consumed, and the worker lock remains held through observation and freeze.
+        let request = attempted.request().to_adapter_request();
+        let outcome = attempted.classification_outcome();
+        let observation = adapter
+            .observe(&request, &outcome)
+            .await
+            .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
+        if fault == Some(FaultPoint::ReceiverRead) {
+            return Err(GatewayError::InjectedFault);
         }
+        self.journal.freeze_observation(&attempted, &observation)?;
+        if fault == Some(FaultPoint::ReceiverObservedCommitted) {
+            return Err(GatewayError::InjectedFault);
+        }
+        Ok(Some(OperationState::ReceiverObserved))
     }
 }
 
