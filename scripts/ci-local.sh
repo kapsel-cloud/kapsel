@@ -17,8 +17,11 @@ run_static_checks() {
   printf '%s\n' "==> Rust line width"
   ./scripts/check-rust-width.sh
 
-  printf '%s\n' "==> Beta qualification regressions"
-  ./scripts/test-beta-qualification.py
+  printf '%s\n' "==> Source privacy and security regressions"
+  python3 scripts/test-source-checks.py
+
+  printf '%s\n' "==> Source privacy"
+  python3 scripts/check-source-privacy.py
 
   printf '%s\n' "==> Markdown link checker regressions"
   ./scripts/test-check-markdown-links.py

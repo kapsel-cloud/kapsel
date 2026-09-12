@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the closed beta qualification dependency and clean-tree security scans."""
+"""Scan committed source with RustSec and Trivy, retaining scanner database identity."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def trivy_result(root: Path, commit: str) -> tuple[dict[str, object], dict[str, 
     version_document = json.loads(run(["trivy", "version", "--format", "json"], root).stdout)
     database = trivy_database()
     database_sha256 = sha256(database)
-    with tempfile.TemporaryDirectory(prefix="beta-qualification-trivy-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="kapsel-source-trivy-") as temporary:
         temporary_root = Path(temporary)
         archive = temporary_root / "source.tar"
         run(["git", "archive", "--format=tar", "--output", str(archive), commit], root)

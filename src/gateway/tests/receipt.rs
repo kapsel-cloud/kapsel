@@ -1,4 +1,66 @@
     #[tokio::test]
+    async fn maximal_request_fields_complete_a_bounded_durable_receipt() {
+        let path = database_path("maximal-request-receipt");
+        let request = SetDeploymentImageRequest {
+            operation_id: "o".repeat(128),
+            namespace: "n".repeat(63),
+            deployment: format!(
+                "{}.{}.{}.{}",
+                "a".repeat(63),
+                "b".repeat(63),
+                "c".repeat(63),
+                "d".repeat(61)
+            ),
+            container: "c".repeat(63),
+            immutable_image_digest: format!("{}@sha256:{}", "i".repeat(440), "0".repeat(64)),
+        };
+        let mut authorization = authorization(&request);
+        authorization.authorization_id = "a".repeat(128);
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        gateway
+            .submit_exact_for_test(&request, &authorization)
+            .unwrap();
+        let mut adapter = failed_adapter(&path, &request);
+        assert_eq!(
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await
+                .unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert_eq!(
+            gateway
+                .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
+                    signing_seed: &[13_u8; 32],
+                    key_id: "maximal-request-receipt-key",
+                })
+                .unwrap(),
+            Some(OperationState::Finalized)
+        );
+        let receipt = Gateway::read_loaded_receipt(
+            gateway.journal.operation(&request.operation_id).unwrap().unwrap(),
+        )
+        .unwrap()
+        .0;
+        assert!(receipt.len() <= receipt::RECEIPT_BYTES_MAX);
+        drop(gateway);
+        let reopened = Gateway::open_for_test(&path).unwrap();
+        assert_eq!(
+            Gateway::read_loaded_receipt(
+                reopened.journal.operation(&request.operation_id).unwrap().unwrap(),
+            )
+            .unwrap()
+            .0,
+            receipt
+        );
+        drop(reopened);
+        for suffix in ["-journal", "-wal", "-shm"] {
+            assert!(!PathBuf::from(format!("{}{suffix}", path.display())).exists());
+        }
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
     async fn receipt_statement_retains_exact_available_condition_reason() {
         let path = database_path("receipt-available-reason");
         let request = request();

@@ -224,18 +224,29 @@ checkout by default, so use a dedicated checkout or disable updates explicitly:
 KAPSEL_SOAK_AUTO_UPDATE=0 ./scripts/run-nightly-soak.sh
 ```
 
-## Candidate qualification
+## Source privacy and security
 
-This combines the default, live, fuzz, measurement, and security lanes against one committed clean
-candidate. It additionally requires cargo-audit 0.22.2, Trivy 0.72.0 with current databases, Docker
-access to the pinned builder image, and the host Cargo registry. It is not a first-run check.
+The default static gate runs the source privacy check and offline scanner regressions. Run the
+privacy check directly with:
 
 ```sh
-python3 scripts/run-beta-qualification.py --output /tmp/beta-qualification-baseline.json
-python3 scripts/validate-beta-qualification-baseline.py /tmp/beta-qualification-baseline.json
+python3 scripts/check-source-privacy.py
+python3 scripts/test-source-checks.py
 ```
 
-Qualification is finite candidate evidence, not a production or support claim.
+[Privacy](PRIVACY.md#source-check) owns its scope and limitations. The separate source security scan
+requires cargo-audit 0.22.2 and Trivy 0.72.0, network access to refresh their databases, and a clean
+committed checkout:
+
+```sh
+python3 scripts/scan-source-security.py --output /tmp/kapsel-source-security.json
+```
+
+It rejects RustSec vulnerabilities or warnings, Trivy HIGH/CRITICAL vulnerabilities and secrets, and
+stale or changing Trivy databases. Lower-severity Trivy findings remain in the output for review.
+RustSec database identity is captured after a successful refresh and checked again after the scan.
+Trivy scans the complete Git archive of HEAD, not ignored build output or uncommitted files. This
+source scan does not replace the exact-artifact SBOM scan in the candidate workflow.
 
 ## MCP adapter
 

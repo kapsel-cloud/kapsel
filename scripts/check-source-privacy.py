@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the closed beta qualification root privacy and overclaim review."""
+"""Check repository source for private material and unsupported public claims."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 
 ROOT_FILES = {
+    "AGENTS.md",
+    "CONTRIBUTING.md",
     "Cargo.lock",
     "Cargo.toml",
     "README.md",
@@ -18,7 +20,10 @@ ROOT_FILES = {
     "rust-toolchain.toml",
 }
 ROOT_PREFIXES = (
-    "crates/kapsel-authority/",
+    ".github/",
+    ".githooks/",
+    "crates/",
+    "fuzz/",
     "docs/",
     "scripts/",
     "src/",
@@ -43,9 +48,8 @@ AFFIRMATIVE_OVERCLAIMS = (
 )
 PRIVATE_ARTIFACT_SUFFIXES = (".key", ".kubeconfig", ".pem", ".receipt", ".seed", ".sqlite3")
 PATTERN_FIXTURE_FILES = {
-    "scripts/check-beta-qualification-privacy.py",
-    "scripts/test-beta-qualification.py",
-    "scripts/validate-beta-qualification-baseline.py",
+    "scripts/check-source-privacy.py",
+    "scripts/test-source-checks.py",
 }
 
 
@@ -97,7 +101,7 @@ def validate(root: Path, paths: list[str]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     paths = tracked_paths(root)
@@ -114,7 +118,12 @@ def main() -> None:
         ],
         "status": "passed",
     }
-    arguments.output.write_text(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
+    if arguments.output is not None:
+        arguments.output.write_text(
+            json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+    else:
+        print(f"source privacy checks passed: {len(paths)} files")
 
 
 if __name__ == "__main__":

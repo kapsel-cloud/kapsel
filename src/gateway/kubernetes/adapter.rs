@@ -831,6 +831,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_deployment_exhausts_observation_reads_without_a_patch() {
+        let (mut adapter, mut handle) = test_adapter_with_attempts(OBSERVATION_ATTEMPTS_MAX);
+        let responder = tokio::spawn(async move {
+            for _ in 0..OBSERVATION_ATTEMPTS_MAX {
+                let (request, send) = handle.next_request().await.unwrap();
+                assert_eq!(request.method(), Method::GET);
+                send.send_response(
+                    Response::builder()
+                        .status(404)
+                        .body(Body::from(
+                            concat!(
+                                r#"{"kind":"Status","status":"Failure","#,
+                                r#""reason":"NotFound","code":404}"#,
+                            )
+                            .as_bytes()
+                            .to_vec(),
+                        ))
+                        .unwrap(),
+                );
+            }
+        });
+
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
+
+        assert_eq!(observation, ReceiverObservation::unknown());
+        responder.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn stalled_deployment_read_is_stopped_by_the_observation_deadline() {
         let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
         let client = Client::new(mock_service, "default");
