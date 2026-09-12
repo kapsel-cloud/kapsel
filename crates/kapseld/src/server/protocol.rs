@@ -254,10 +254,6 @@ mod tests {
             assert!(decode(valid.as_bytes()).is_some());
         }
         for invalid in [
-            concat!(
-                r#"{"request":"get_set_deployment_image_status","operation_id":"a","#,
-                r#""operation_id":"b"}"#
-            ),
             r#"{"request":"get_set_deployment_image_status","operation_id":"a","unknown":1}"#,
             r#"{"request":"get_set_deployment_image_status","operation_id":null}"#,
             r#"{"request":"get_set_deployment_image_status","operation_id":1}"#,
@@ -270,6 +266,72 @@ mod tests {
             assert!(decode(invalid.as_bytes()).is_none());
         }
         assert!(decode(&[0xff]).is_none());
+    }
+
+    #[test]
+    fn duplicate_members_and_escaped_aliases_fail_for_every_request_variant() {
+        let image = format!("image@sha256:{}", "0".repeat(64));
+        let other_image = format!("image@sha256:{}", "1".repeat(64));
+        for request in [
+            "get_set_deployment_image_status",
+            "get_set_deployment_image_receipt",
+            "submit_set_deployment_image",
+        ] {
+            let mut members = vec![
+                ("request", r"\u0072equest", request),
+                ("operation_id", r"\u006fperation_id", "op-1"),
+            ];
+            if request == "submit_set_deployment_image" {
+                members.extend([
+                    ("namespace", r"\u006eamespace", "demo"),
+                    ("deployment", r"\u0064eployment", "agent-api"),
+                    ("container", r"\u0063ontainer", "api"),
+                    (
+                        "immutable_image_digest",
+                        r"\u0069mmutable_image_digest",
+                        &image,
+                    ),
+                ]);
+            }
+            let body = members
+                .iter()
+                .map(|(name, _, value)| format!(r#""{name}":"{value}""#))
+                .collect::<Vec<_>>()
+                .join(",");
+            assert!(
+                decode(format!("{{{body}}}").as_bytes()).is_some(),
+                "{request}"
+            );
+            for (name, escaped, value) in &members {
+                let member = format!(r#""{name}":"{value}""#);
+                let alias = format!(r#""{escaped}":"{value}""#);
+                let unique_alias = body.replace(&member, &alias);
+                assert!(
+                    decode(format!("{{{unique_alias}}}").as_bytes()).is_some(),
+                    "unique alias: {request} {escaped}"
+                );
+                let other_value = match *name {
+                    "request" if request == "get_set_deployment_image_status" => {
+                        "get_set_deployment_image_receipt"
+                    },
+                    "request" => "get_set_deployment_image_status",
+                    "immutable_image_digest" => &other_image,
+                    _ => "other",
+                };
+                for duplicate_value in [*value, other_value] {
+                    for duplicate_name in [*name, *escaped] {
+                        let duplicate = format!(r#""{duplicate_name}":"{duplicate_value}""#);
+                        // Keep raw members: a JSON object map would erase the duplicates.
+                        for invalid in [
+                            format!("{{{body},{duplicate}}}"),
+                            format!("{{{duplicate},{body}}}"),
+                        ] {
+                            assert!(decode(invalid.as_bytes()).is_none(), "{invalid}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

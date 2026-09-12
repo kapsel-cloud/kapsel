@@ -284,7 +284,7 @@ mod tests {
     use super::{super::protocol::REQUEST_BYTES_MAX, *};
 
     #[test]
-    fn shared_grammar_rejects_each_field_before_application_access() {
+    fn invalid_requests_are_rejected_before_application_access() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct ApplicationAccess(Arc<AtomicUsize>);
@@ -353,8 +353,23 @@ mod tests {
                     dispatch_with_state(invalid.to_string().as_bytes(), &state).await;
                 assert_eq!(response, invalid_request());
             }
+            let valid_body = valid.to_string();
+            for duplicate in [
+                r#""request":"submit_set_deployment_image""#,
+                r#""\u006fperation_id":"op-1""#,
+            ] {
+                let invalid = format!("{{{duplicate},{}", &valid_body[1..]);
+                let (response, class) = dispatch_with_state(invalid.as_bytes(), &state).await;
+                assert_eq!(
+                    response,
+                    br#"{"status":"ERROR","error_class":"invalid_request"}"#
+                );
+                assert!(matches!(class, ResponseClass::Ordinary));
+                assert_eq!(state.submission.available_permits(), 1);
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+            }
             assert_eq!(calls.load(Ordering::SeqCst), 0);
-            let (response, _) = dispatch_with_state(valid.to_string().as_bytes(), &state).await;
+            let (response, _) = dispatch_with_state(valid_body.as_bytes(), &state).await;
             assert_eq!(response, operation_failure());
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         });
