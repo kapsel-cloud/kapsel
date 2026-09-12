@@ -21,22 +21,15 @@ Kapsel separates permission from execution evidence. Choosing a useful action an
 application quality belong to the caller's surrounding system. Neither model confidence nor an
 application evaluator can replace the exact grant or redefine a receiver result.
 
-The accepted current shape is a bounded action broker, including the unpublished resident service.
-It is not being replaced by a failure kit or reduced to a reference implementation. The retained
-core is exact authority, stable action identity, worker exclusion, durable attempt ordering,
-observation-only recovery, bounded classification, and immutable evidence.
+Kapsel is a bounded action broker, including the unpublished resident service. Its core is exact
+authority, stable action identity, worker exclusion, durable attempt ordering, observation-only
+recovery, bounded classification, and immutable evidence.
 
-Current source retains SQLite-owned receipt completion and a private one-use dispatch permission.
-The larger event-machine kernel was rejected. Strategic merge and no-replay remain selected after
-the guarded JSON Patch comparison. A useful later-observation prototype remains test-only, not a
-status side effect or a supported continuation command. The
-[testing evidence](TESTING.md#action-boundary-evidence) distinguishes adopted changes from findings.
-
-Signed grants, signed receipts, offline inspection, CLI/MCP adapters, and service retrieval remain.
-The protected-tool comparison motivates questioning their cost, but does not qualify private
-approval rows or unsigned evidence as replacements. Retaining the service does not select a future
-hosting or installation model. The unpublished partial installer has been retired without a
-replacement installation commitment.
+Current source uses signed grants, a private one-use dispatch permission, and one conditional
+strategic merge patch opportunity. Signed receipt completion belongs to SQLite; offline inspection,
+CLI/MCP adapters, and service retrieval consume that evidence. Status and receipt reads do not
+acquire later observations. The test-only later-observation prototype is not a supported
+continuation command.
 
 The current local journal and conditional Kubernetes patch do not coordinate independent agents
 across journals or hosts. They provide no fleet ordering, distributed transaction, or system-wide
@@ -100,11 +93,11 @@ Only the named v0.2.x CLI, MCP, grant, receipt, archive, and journal-upgrade sur
 bounded compatibility described by their direct contracts. Public Rust APIs, another platform, and
 production support do not.
 
-Repository HEAD also contains an unpublished customer-resident [Kapsel service](KAPSEL_SERVICE.md).
-Its source provisioning remains explicit operator work. The partial installer, its exclusive tests
-and build wiring have been removed. [Installer retirement](KAPSEL_SERVICE.md#installer-retirement)
-records the historical revision, retrieval instructions and technical lessons. This creates no
-upgrade, migration, replacement installer or cleanup promise.
+Repository HEAD also contains an unpublished operator-resident [Kapsel service](KAPSEL_SERVICE.md).
+Its source provisioning is explicit operator work, with no supported hosting or installation model.
+For hosts that ran experimental installer builds, follow the
+[host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) before changing identities or
+state. There is no installer upgrade, migration or cleanup promise.
 
 HEAD's exact-snapshot grants, sequential dispatch permission and SQLite-owned receipt completion are
 not v0.2.0 promises. Current journal format 4 rejects older journals without migration. The

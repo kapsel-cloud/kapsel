@@ -154,11 +154,11 @@ short-lived credentials, namespaced RBAC, direct-source provisioning, revocation
 cleanup. That historical run predates format-4 completion. It does not establish fresh-native
 acceptance of current HEAD, production safety or support for another environment.
 
-Service code in repository HEAD is unpublished and absent from v0.2.0. The partial installer has
-been removed without removing identities or state on experimental hosts.
-[Installer retirement](KAPSEL_SERVICE.md#installer-retirement) records the operational handoff. The
-exact service authority, filesystem, recovery, qualification, and unsupported boundaries are owned
-by [Kapsel service](KAPSEL_SERVICE.md).
+Service code in repository HEAD is unpublished and absent from v0.2.0.
+[Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover identities and
+state that staged installer builds may have left behind. The exact service authority, filesystem,
+recovery, qualification, and unsupported boundaries are owned by
+[Kapsel service](KAPSEL_SERVICE.md).
 
 ## Non-claims
 

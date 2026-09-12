@@ -27,8 +27,8 @@ Two approaches were compared before implementation:
 
 The prototype is confined to `tests/later_observation.rs`. It is not callable by service, CLI, or
 MCP consumers. The disposable runner acts as both the operator composition and scripted caller. It
-introduces no production exports, wire formats, configuration, or dependencies. The only Cargo
-change enables Tokio's test clock in development dependencies.
+introduces no production exports, wire formats, configuration, or dependencies. Deterministic tests
+use Tokio's virtual clock.
 
 ## Smallest semantics
 
@@ -69,10 +69,9 @@ python3 scripts/test-kind-later-observation.py
 ./scripts/ci-local.sh
 ```
 
-No commit or publication is performed by these commands. The live launcher prints the baseline and
-SHA-256 of each executable experiment input, including untracked source, without staging files. The
-recorded commit supersedes the original uncommitted handoff. The historical live-input hashes below
-still distinguish the measured run from subsequent self-test consolidation.
+The live launcher records the baseline and SHA-256 of each executable experiment input, including
+untracked source. Compare those hashes with the recorded results before attributing live evidence to
+a different checkout.
 
 The deterministic matrix executes the real application and adapter through a mock HTTP service. The
 pending fixture remains pending for the actual 30-attempt observation loop, with virtual time rather
@@ -114,7 +113,7 @@ The deterministic matrix passed all seven projections. Each preserved the origin
 hash `da90021fec406fd6e5738005ac2f976df66fb830378f0c2a882a6d79cb8a94f1` across follow-up and
 application reopen. The original result remained `UNKNOWN`. The loss child exited with code 73, and
 reconnect produced no GET or PATCH. Failed reads and deadlines consumed the slot rather than
-allowing another attempt. The full deterministic gate passed with the live test separately ignored.
+allowing another attempt.
 
 The live slow rollout also reproduced `UNKNOWN` followed by current availability at the same UID and
 generation 2. The API-server audit counted 31 execution GETs and one execution PATCH, then one
@@ -122,12 +121,10 @@ follow-up GET and no follow-up mutation. Restart and repeated retrieval did not 
 counts. The next-action branch selected application-behavior inspection without another image
 change. No signature, original receipt byte, or historical receiver result was rewritten.
 
-The live-tested executable inputs are SHA-256 pinned below. These hashes identify the uncommitted
-experiment on the baseline above, not a published artifact. The Python launcher passed the live
-experiment with the same request counts. Its regression tests were subsequently folded into
-`--self-test`, without changing the live experiment functions. The hash below predates that
-mechanical consolidation; self-tests and static checks passed afterwards. Each live run records its
-current input hashes in `source.sha256`:
+The live-tested executable inputs are SHA-256 pinned below against the source baseline above, not a
+published artifact. The recorded Python launcher differs from the evidence commit's self-test
+layout. Current source is not byte-identical to this live-tested snapshot. Each live run records its
+input hashes in `source.sha256`:
 
 ```text
 Cargo.toml
@@ -172,18 +169,3 @@ install a second unmanaged store. SQLite/process fixtures do not prove hardware 
 filesystem safety, HA, credentials with revoked read permission, or unbounded schedules. Current
 availability is only Deployment availability, not application health or a trustworthy Kubernetes
 state claim.
-
-## Complexity delta
-
-- Contract owner: unchanged effect-gateway and service contracts. This document owns only evidence.
-- Knowledge hidden: the test-only slot combines original receipt binding, consumption, and result
-  retention. It cannot dispatch a mutation.
-- New surface: one test module, one disposable launcher, one private experimental row, development
-  test-clock support. No production command or configuration.
-- Existing rule duplicated: no historical receiver classifier. The current-availability projection
-  checks ordinary Deployment fields and is explicitly not an action result.
-- Rejected alternative: output-only follow-up loses useful reconnect evidence while still needing
-  durable consumption to enforce the issue's acquisition bound.
-- Removed code: none. No production path is superseded or silently adopted.
-- Proof boundary: real application retrieval and offline inspection, independently asserted HTTP
-  methods, process exit/reopen, and live API-server request audit.

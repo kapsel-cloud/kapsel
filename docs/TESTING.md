@@ -30,80 +30,16 @@ authority separation, durable outcomes, composition, observable output, and non-
 table-driven cases with shared setup, and use separate precise assertions when distinct contract
 facts matter.
 
-## Action-boundary evidence
+## Receipt-consumer evidence
 
-The [accepted scope](SCOPE.md#direction-and-current-boundary) retains the bounded broker. This map
-separates improvements adopted into unreleased source from evidence that did not change production
-behavior. None changes the published v0.2.0 artifact.
+Receipt tests cross the application/service retrieval path, not just SQL. `gateway::tests::receipt`
+covers signing failure, commit-acknowledgement loss, process exit before and after commitment and
+frozen observation/signer bytes. `e2e_demo_recovery` covers real executable restart and export under
+changed settings. The Linux service process lane retrieves and inspects original bytes while the
+export destination is unavailable. The application client retry and snapshot regressions retain
+independent request counts. Process exits do not prove power loss.
 
-| Evidence                          | Exact retained revision                                                                                | Result and limit                                                                                                                                                                                                                                                    |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Recovery policies                 | `93552ccf220d605c02671f0e66259191d730efec`                                                             | [ADR 0011](decisions/0011-retain-observation-only-recovery.md) retains no-replay after live stale strategic PATCH repeated admission effects. Temporal is a projection, not an executed workflow.                                                                   |
-| Snapshot approval and proof       | `39c66c929a0df2a9a484a40358d88cdc179b706d`, `9df5fad32723d2da3a988c66aea44c7e25ba63ed`                 | Adopted exact UID/version approval and zero-PATCH stale rejection. Live race proof complements deterministic restart/receipt cases.                                                                                                                                 |
-| Real-agent reconnect              | `30567790892164d6e3eb4353f5667cc93fa90bd6`                                                             | [Workflow report](RECONNECTABLE_AGENT_ACTION.md) establishes reconnect and slow-rollout friction, not relative operator effort or a representative stale-rejection rate.                                                                                            |
-| Independent kubectl               | `b73d30753347faa8523aceb02b572fcb7caab2e0`                                                             | [Corpus](INDEPENDENT_TOOL_CORPUS.md) found ordinary adapter risks, no added standalone failure-kit value in seven fixed cases. No project demotion adopted.                                                                                                         |
-| SQLite receipt completion         | `b27d8e0a6c3dea91d2d4333ea111d32629a04f26`                                                             | Adopted format 4. Signed bytes and terminal state commit together. Removed publication-dependent completion, durable output paths and receipt-root startup coupling. Older journals rejected.                                                                       |
-| Event kernel and retry correction | `21f0a2534e9555130025a4082e935194886a6cb2`                                                             | Kernel rejected before integration and later removed from HEAD. Historical bounded explorer and scratch SQLite runner shared test-only decisions. Separately fixed hidden HTTP retries remain adopted.                                                              |
-| Sequential dispatch               | `0b79ff646b1bc38cfa59fbe1b9477fe8bcb8b6dc`, consolidated as `59b4f04f513f1dfd4131f722b6c44b210d73b453` | Adopted private consumed permission at the real adapter boundary. [ADR 0011](decisions/0011-retain-observation-only-recovery.md#sequential-boundary-comparison) records removed apply arguments, request counts and I/O obligations. No shared pure kernel claimed. |
-| Guarded JSON Patch                | `430e7f20aed71ef8daec81b681625a641d98ee18`                                                             | [Live comparison](#frozen-json-patch-receiver-comparison) reduced some stale admissions but retained pending/unpersisted ambiguity. Keep strategic merge/no-replay.                                                                                                 |
-| Later observation                 | `426c17f0152f9cdb5036895c25cdcbed11b20e43`                                                             | [Prototype](LATER_OBSERVATION_EXPERIMENT.md) supplies useful later evidence without changing UNKNOWN or mutating again. Test-only, not a supported lifecycle.                                                                                                       |
-| Protected typed tool              | `cad49d7881c19abe666215d7fd8fd76c2f1a5019`                                                             | [Historical comparison](PROTECTED_TOOL_COMPARISON.md) executed thirteen fixed cases per arm with identical receiver evidence. Typed arm retired from HEAD. No ongoing equivalence coverage or signature-removal decision.                                           |
-
-These revisions were verified locally. Another checkout must obtain them from a repository
-containing them, for example `git fetch /path/to/owning/kapsel master`; local availability does not
-imply a remote push. The two original kernel/dispatch branch commits can be fetched from a
-containing local branch or tag. Their consolidated executable evidence is historical at
-`59b4f04f513f1dfd4131f722b6c44b210d73b453`.
-
-### Retired approval-kernel prototype
-
-The event machine was rejected because it added a second policy representation without replacing
-production orchestration. Its former report is historical at
-`21f0a2534e9555130025a4082e935194886a6cb2:docs/APPROVAL_KERNEL_EXPERIMENT.md`. Consolidation removed
-that report to avoid parallel rationale. Retirement removes the test-only machine, its exclusive
-tests and module registration from HEAD. `Journal::mark_apply_started` is now journal-private.
-Production still uses the conditional `begin_attempt` transition and fresh one-use
-`DispatchPermission`.
-
-Removed coverage includes rejected-machine bounded exploration (1,714 states through depth 7 and 252
-healthy interleavings), acknowledgement correlation, and duplicate-acknowledgement and
-recovery-resend mutant counterexamples. The retained sequential dispatch, process-loss,
-worker-exclusion and HTTP request-count tests do not replace that historical coverage. The
-prototype's fresh acknowledgement and driver/I/O correspondence were assumptions, not durability
-proof. Its removal does not remove the separately adopted hidden-HTTP-retry correction.
-
-For historical reproduction, first select a detached checkout of the exact consolidated revision.
-Run this from a checkout containing that commit, using a new scratch directory outside the tree:
-
-```sh
-source_repo=$(git rev-parse --show-toplevel)
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-kernel-history.XXXXXX")
-git init "$scratch/history"
-git -C "$scratch/history" fetch --no-tags "$source_repo" master
-git -C "$scratch/history" checkout --detach 59b4f04f513f1dfd4131f722b6c44b210d73b453
-cd "$scratch/history"
-git rev-parse HEAD
-git ls-tree -r HEAD -- src/gateway/approval_kernel_prototype.rs \
-  src/gateway/approval_kernel_prototype/tests.rs \
-  src/gateway/approval_kernel_prototype/tests/disk.rs
-cargo test --locked -p kapsel --lib approval_kernel_prototype -- --nocapture
-```
-
-Retirement validation fetched `master` from the owning local repository into an empty repository,
-selected that detached revision, verified all three files, and passed all six prototype tests.
-Separately, fetching the exact revision from `https://github.com/kapsel-cloud/kapsel.git` into
-another empty repository succeeded and returned the same three file blobs. Both local and remote
-retrieval were checked, not inferred from local history. This records availability at validation
-time, not a release or a guarantee of future remote retention. No archive is copied into HEAD.
-
-Receipt consumers were checked through the application/service retrieval path, not just SQL.
-`gateway::tests::receipt` covers signing failure, commit-acknowledgement loss, process exit before
-and after commitment and frozen observation/signer bytes. `e2e_demo_recovery` covers real executable
-restart and export under changed settings. The Linux service process lane retrieves and inspects
-original bytes while the export destination is unavailable. The application client retry and
-snapshot regressions retain independent request counts. Process exits do not prove power loss.
-
-### Receiver-recovery evidence
+## Receiver-recovery evidence
 
 `gateway::receiver_recovery_tests` crosses the real Kubernetes adapter, journal and receipt path
 against an independent HTTP service fixture. Eight scenarios retain evidence that isolated
@@ -123,44 +59,24 @@ Expected results, GET/PATCH and persistence counts are independent of the gatewa
 process and proves byte-identical evidence and zero receiver I/O. This is a service fixture, not
 live admission or power-loss evidence.
 
-The original thirteen-case grouping and repeated general checks were consolidated rather than kept
-as an ongoing experiment. Existing tests own the removed repetition:
+Related behavior is proved at its owning interface rather than repeated in every receiver scenario:
 
-| Removed repetition                                      | Retained owner and proof                                                                                                                                                                                                                                                                                                           |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Healthy and identical reconnect scenarios               | `application_retry::healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt` checks the actual application, one PATCH/two GETs and original receipt on reopen. Adapter `omitted_zero_replica_counts_can_still_report_success` owns the missing-zero field case.                                                |
-| Status/annotation version churn and stale UID scenarios | `gateway::tests::snapshot_approval::stale_snapshot_is_durable_status_only_without_patch_or_receipt` asserts version/UID rejection, no apply/observe, preserved targets and no receipt across reopen. Adapter identification tests own extraction of UID/version. The two churn causes exercise the same opaque-version comparison. |
-| Five request mismatches on every child invocation       | `gateway::tests::validation::exact_authorization_is_required_before_persistence` checks every field, both fresh and already requested.                                                                                                                                                                                             |
-| Replacement snapshot approvals on every invocation      | `gateway::tests::snapshot_approval` checks original authority across crash seams and rejects changed UID/version before and after receipt completion, preserving original bytes.                                                                                                                                                   |
-| Worker-lock contention on every invocation              | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity` checks zero identify/apply/observe calls; `application_retry` also checks a contender while a real HTTP PATCH is pending.                                                                                                                           |
-| Scripted next-action text                               | Removed. It was a test-local result mapping, not an application caller or a tested product rule.                                                                                                                                                                                                                                   |
+| Behavior                                  | Owner and proof                                                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Healthy execution and identical reconnect | `application_retry::healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt` checks the actual application, one PATCH/two GETs and original receipt on reopen. Adapter `omitted_zero_replica_counts_can_still_report_success` owns the missing-zero field case.                                                |
+| Stale snapshot version or UID             | `gateway::tests::snapshot_approval::stale_snapshot_is_durable_status_only_without_patch_or_receipt` asserts version/UID rejection, no apply/observe, preserved targets and no receipt across reopen. Adapter identification tests own extraction of UID/version. The two churn causes exercise the same opaque-version comparison. |
+| Exact request authorization               | `gateway::tests::validation::exact_authorization_is_required_before_persistence` checks every field, both fresh and already requested.                                                                                                                                                                                             |
+| Immutable snapshot approval               | `gateway::tests::snapshot_approval` checks original authority across crash seams and rejects changed UID/version before and after receipt completion, preserving original bytes.                                                                                                                                                   |
+| Worker exclusion                          | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity` checks zero identify/apply/observe calls; `application_retry` also checks a contender while a real HTTP PATCH is pending.                                                                                                                           |
 
-This removes redundant full traces for routine success and stale approval. It does not claim that
-owner-level checks reproduce every historical trace. Fixture-only request/approval structs and their
-JSON handoff are removed as well.
+Current Kapsel regressions do not prove ongoing unsigned-tool equivalence or reproduce every
+historical comparison trace. Use the
+[detached-checkout reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) for that comparison.
+Neither it nor these regressions establish equal multi-user isolation or hostile-input hardening.
 
-The typed tool's separate lifecycle and classifier, typed child execution and cross-arm equality
-checks are removed. Current Kapsel regressions do not prove ongoing unsigned-tool equivalence.
-[Detached-checkout reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) preserves the historical
-comparison and distinguishes verified local retrieval from public remote availability. Neither that
-comparison nor these regressions establish equal multi-user isolation or hostile-input hardening.
-
-### Current deterministic evidence
-
-Reproduce the retained deterministic evidence on the current checkout, not the historical scratch
-checkout above:
-
-```sh
-unset KAPSEL_RECEIVER_ONLY
-cargo test --locked -p kapsel --lib gateway::tests
-cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests
-cargo test --locked -p kapsel --test application_retry
-cargo test --locked -p kapsel --test later_observation
-./scripts/ci-local.sh
-```
-
-The reports and [build guide](BUILD.md) own separate live/platform commands and historical input
-manifests. This map does not claim those lanes were rerun during documentation reconciliation.
+Use [Build and test](BUILD.md#receiver-recovery-regressions) for the current commands. The
+[experiment reports](INDEX.md#unpublished-work) own their separate reproduction and input manifests.
+The deterministic gate does not qualify live or platform-specific lanes.
 
 ## Core effect-gateway proof matrix
 
@@ -193,17 +109,16 @@ coordination deadline; result meaning must not depend on polling order or timing
 
 Fault tests, simulations, process recovery, and compile-time demonstration controls cross the same
 private operation-selected provider and receipt-completion implementations used by `Application`.
-Tests explicitly select an operation identity, with no replacement scheduler. Queue fairness and
-queue-only ordering checks have been deliberately removed. Process-kill proof crosses the ambiguous
-mutation and receipt-commit seams, establishes no second mutation request, and preserves committed
-bytes without re-signing. Export may use a new destination without changing the durable action or
-signing identity.
+Tests explicitly select an operation identity and do not claim queue fairness. Process-kill proof
+crosses the ambiguous mutation and receipt-commit seams, establishes no second mutation request, and
+preserves committed bytes without re-signing. Export may use a new destination without changing the
+durable action or signing identity.
 
 The transient-target gateway regression checks no journal update, no PATCH, safe GET repetition on
-reopen, and preservation of an existing inert `target_read_failures` value. Required format-4 schema
-validation remains unchanged. `application_contract` tests actual `Application` selection with
-another authorized or receiver-observed operation in the same journal, preserving every value in
-that other row while the configured operation completes. The receiver-observed fixture removes
+reopen, and preservation of an existing inert `target_read_failures` value. Format-4 schema
+validation still requires that column. `application_contract` tests actual `Application` selection
+with another authorized or receiver-observed operation in the same journal, preserving every value
+in that other row while the configured operation completes. The receiver-observed fixture removes
 completion from real application-produced facts to expose a signing candidate. That setup tests
 selection isolation, not a crash window. Gateway fault tests retain targeted finalization and
 `target_read_crash_stays_authorized_and_repeats_only_the_safe_get` evidence.
@@ -408,7 +323,6 @@ before persistence or application access rather than repeating that grammar matr
 turn the authority package into a public SDK. The [Kapsel service contract](KAPSEL_SERVICE.md) owns
 the complete unpublished boundary.
 
-The service is absent from v0.2.0 and remains unpublished. Installer-only tests and launchers were
-removed with their implementation. [Installer retirement](KAPSEL_SERVICE.md#installer-retirement)
-records the deletion boundary and historical retrieval instructions. Service asset, process,
-authority and core safety coverage above remains active.
+The service is absent from v0.2.0 and remains unpublished. Its active coverage does not qualify an
+installer. [Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover
+hosts that ran staged installer builds.

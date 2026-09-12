@@ -152,10 +152,10 @@ KAPSEL_RECEIVER_ONLY=pre-send cargo test --locked -p kapsel --lib \
 ```
 
 Kapsel runs against an independent HTTP service fixture with exact PATCH assertions, real process
-exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. The
-second implementation and ongoing unsigned-tool equivalence checks have been retired. Use the
-[historical comparison reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) to run both arms at
-their exact evidence commit, not HEAD.
+exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. To
+compare Kapsel with the unsigned typed tool, use the
+[historical comparison reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) at its exact
+evidence commit, not HEAD. Current tests do not establish ongoing cross-arm equivalence.
 
 ## Kapsel service candidate
 

@@ -182,15 +182,6 @@ duplicate export rules, sequence lifecycle states, add another store, or create 
 [Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
 boundary.
 
-## Retained maintenance boundary
-
-Maintenance retains the application/gateway, single request grammar, service protocol/runtime,
-SQLite receipt completion, signed codecs and adapter/export paths. The test-only event kernel, JSON
-Patch, later observation and protected-tool comparison are evidence, not additional production
-owners. The partial installer and its exclusive wiring have been removed.
-[Installer retirement](KAPSEL_SERVICE.md#installer-retirement) owns retrieval and lessons, not a
-replacement installation design.
-
 ## Dependency rule
 
 Transport and service adapters depend inward on `Application`; `Application` depends inward on the

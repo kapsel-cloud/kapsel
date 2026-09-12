@@ -136,7 +136,7 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
         drop(gateway);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         let mut adapter = failed_adapter(&path, &request);
-        // No receiver mutation happened. Do not use the old fixture's independent failed rollout.
+        // This unsent action has no receiver evidence establishing a rollout result.
         adapter.observation = ReceiverObservation::unknown();
         gateway
             .run_operation_once_with_adapter(&request.operation_id, &mut adapter)

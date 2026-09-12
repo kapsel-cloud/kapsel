@@ -1,33 +1,21 @@
 # Kapsel and an equally protected typed tool
 
-Kind: historical test-only comparison. The second implementation has been retired from HEAD. No
-production adoption, new command, or supported alternative.
+Kind: historical test-only comparison. Available at the evidence commit, not HEAD. Not a supported
+alternative.
 
 Evidence commit: `cad49d7881c19abe666215d7fd8fd76c2f1a5019`. The [accepted scope](SCOPE.md) retains
-the broker and existing signed interfaces. Private approval rows and unsigned evidence remain
-unadopted simplification ideas.
+the broker and existing signed interfaces. Private approval rows and unsigned evidence are not
+supported substitutes.
 
-## What remains at HEAD
+## Current test coverage
 
-The comparison answered a bounded research question. Maintaining its separate approval store, SQLite
-lifecycle, worker lock, PATCH builder, observation loop and classifier would leave a second policy
-implementation to maintain without an adopted consumer. Those mechanisms and the typed child
-execution have been removed, not replaced with another model.
+The typed tool is not maintained because it duplicates lifecycle policy without an adopted consumer.
+[Testing](TESTING.md#receiver-recovery-evidence) maps current Kapsel receiver-recovery coverage and
+its direct proof owners.
 
-The remaining Kapsel evidence has been consolidated into eight receiver-recovery scenarios. Each has
-an independently specified result, GET/PATCH counts and persisted-patch count. The receiver still
-owns exact payload assertions and state, without importing the gateway. Actual process exits,
-retained-fact assertions and immutable offline reconnect remain. Routine success/reconnect and
-stale-approval cases now rely on their existing owning tests rather than repeating them here.
-Request/snapshot mismatch and worker-exclusion checks also live at their direct owners, not inside
-every scenario. The fixture-only request/approval records and scripted caller projection are gone.
-[Testing](TESTING.md#receiver-recovery-evidence) records the retained and removed boundaries.
-
-Ongoing unsigned-tool equivalence coverage is removed, including cross-arm equality of complete
-receiver logs and state. Historical equivalence says nothing about future HEAD. It never established
-equal multi-user isolation or hostile-input hardening. The retained Kapsel checks do not replace
-that historical comparison, and neither signature removal nor a supported alternative is adopted.
-Application retry, later-observation and live admission evidence remain separate.
+Current tests do not prove ongoing unsigned-tool equivalence. The historical comparison never
+established equal multi-user isolation or hostile-input hardening, and neither signature removal nor
+a supported alternative is adopted.
 
 Use [the current build commands](BUILD.md#receiver-recovery-regressions) for HEAD. The active suite
 is `gateway::receiver_recovery_tests`, with reduced selection through `KAPSEL_RECEIVER_ONLY`. The
@@ -57,9 +45,9 @@ offline.
 
 These are equivalent authority and evidence requirements, not a requirement to reuse Kapsel's grant
 wire, classifier implementation, signed receipt, or runtime. The alternative uses operator-private
-SQLite approval and outcome records. It has no Kapsel imports. Both are maintained in this
-repository for the experiment, so this is not independent implementation authorship or commercial
-validation.
+SQLite approval and outcome records. It has no Kapsel imports. Both were implemented in this
+repository for the experiment, so this is not independent implementation authorship or a study of
+external users.
 
 ## Baseline
 
@@ -67,24 +55,8 @@ The Kapsel implementation is `426c17f0152f9cdb5036895c25cdcbed11b20e43`. Its can
 [Effect gateway](EFFECT_GATEWAY.md). SQLite-owned receipt completion and sequential dispatch
 permission are adopted in this unreleased source, not the published beta. The alternative's
 experiment-only requirements are the section above. Executable files are identified by that base
-revision plus a SHA-256 manifest before each run. No commit or staging is needed to run the test.
-
-Consumed committed evidence is available in this checkout:
-
-- Independent kubectl: `b73d30753347faa8523aceb02b572fcb7caab2e0`.
-- Guarded patch comparison: `430e7f20aed71ef8daec81b681625a641d98ee18`.
-- Later observation: `426c17f0152f9cdb5036895c25cdcbed11b20e43`.
-
-Another checkout must obtain those commits from a repository containing them, for example with
-`git fetch /path/to/owning/kapsel master`. No remote availability is implied. The patch experiment
-recommended retaining strategic merge and no replay. The later-observation prototype is not adopted.
-Neither arm here uses JSON Patch or supplementary observations. The historical
-[reconnect experiment](RECONNECTABLE_AGENT_ACTION.md#results) reports two resourceVersion changes,
-`500` to `591` and `494` to `586`, but no per-attempt ledger. Its completion summary attributes the
-rejections to status churn, while the narrative also names recreation and the script exposes
-annotation edits separately. Version pairs cannot resolve those causes. The report now preserves
-that uncertainty and withdraws its unexecuted relative-operator-effort claim. Two of five is not a
-representative failure rate.
+revision plus a SHA-256 manifest before each run. Neither arm uses JSON Patch or supplementary
+observations.
 
 ## Reproduction
 
@@ -106,19 +78,15 @@ unset KAPSEL_COMPARISON_ONLY
 cargo test --locked -p kapsel --lib gateway::protected_tool_tests -- --nocapture
 ```
 
-Retirement validation ran that local fetch and detached checkout, verified all three comparison
-files, and passed all thirteen cases in both arms. A separate empty repository also successfully
-fetched the exact commit from the public source and returned the same three file blobs. To use that
-source instead of the local fetch above:
+To request the evidence commit from the public source instead of the local fetch above:
 
 ```sh
 git -C "$scratch/history" fetch --no-tags https://github.com/kapsel-cloud/kapsel.git \
   cad49d7881c19abe666215d7fd8fd76c2f1a5019
 ```
 
-Continue with the same detached checkout and test commands. Local history and remote retrieval were
-checked separately. This records availability at validation time, not a release or a guarantee of
-future remote retention. No historical implementation is copied into HEAD.
+Continue with the same detached checkout and test commands. Availability in a local checkout does
+not guarantee future remote retention or identify a published release.
 
 The HTTP service fixture supplies the same controlled receiver states to each implementation and
 retains requests and state independently of either classifier. It uses kube's service seam, not a
@@ -191,8 +159,7 @@ After insertion and on reopen, both also reject replacement UID and resourceVers
 that same handle. Original authority and retained evidence remain unchanged. Independent assertions
 compare retained approval, observations and requested generation with fixture-owned facts, not just
 result labels or byte stability. The healthy fixture omits `unavailableReplicas`, exercising the
-ordinary zero default rather than requiring an explicit zero field. Review caught that omission in
-the alternative's first implementation, and the corrected case now passes in both arms.
+ordinary zero default rather than requiring an explicit zero field.
 
 Both also reject execution while another independently opened worker-lock handle is held. The loss
 cases exit with code 73 after real SQLite commitment, without running destructors. Recovery starts a
@@ -207,10 +174,10 @@ caller selects the same next step in both: application-behavior inspection after
 failure investigation after FAILED, human handoff with no retry after UNKNOWN, and an operator
 decision about a new approval after STALE_APPROVAL. No new approval is generated by the test.
 
-## Work and complexity, including what moved
+## Implementation and operator work
 
 This was a preparation exercise, not a timed developer usability study. Engineering preparation time
-was not measured. The retained code makes the work inspectable:
+was not measured. The source at the evidence commit separates three responsibilities:
 
 - `src/gateway/protected_tool_tests.rs` composes the operator-owned inputs, real Kapsel gateway and
   concrete adapter, fault wrapper, subprocess caller, offline inspection and assertions.
@@ -268,10 +235,6 @@ clients use a supplied HTTP service without automatic retry layers. This does no
 TCP-loss, HTTP/2 or operator-document client behavior. Existing application retry tests own those
 separate finite client-construction checks.
 
-Validation passed: the focused matrix, reduced pre-send replay, formatter, full deterministic gate
-and `git diff --check`. The root library gate reported 117 passed and 10 ignored. Ignored live,
-platform-specific and extended cases are not counted as new evidence.
-
 ## Recommendation
 
 **Simplify, while keeping the durable action mechanism.** Neither recovery outcomes nor scripted
@@ -286,24 +249,5 @@ retrieval when the consumer already trusts the resident component. A signature c
 consumer action here. A separately trusted or portable consumer may need signed evidence, but that
 requires its own demonstrated decision rather than being imposed on every protected operation. Keep
 adapters, signed grant/receipt formats and export outside the minimum conceptual core. This is a
-recommendation for the subsequent contract reconciliation, not permission to delete existing
-compatibility, safety checks or production code. Do not replace Kapsel with this unqualified test
-module or infer that all broker deployments lack value.
-
-## Complexity delta
-
-- Contract owner: unchanged [Effect gateway](EFFECT_GATEWAY.md). This page owns only common
-  experiment requirements and findings.
-- Knowledge hidden: each arm owns authority-to-durable-attempt-to-frozen-evidence behavior. Caller
-  code does not interpret journal phases or patch again.
-- New interfaces, dependencies and configuration: test-only Rust modules and private fixture
-  environment variables. No production interfaces or added dependencies.
-- Existing rule duplicated: the alternative independently implements the agreed observation and
-  dispatch rules to test equivalence. It is not a second production policy owner.
-- Alternative considered: using the existing Kapsel classifier or kernel inside the typed tool would
-  be smaller apparatus but would predetermine the comparison. A live cluster would add receiver
-  fidelity but not answer a different authority/recovery question for this bounded comparison.
-- Removed code: none. The earlier reconnect report's unsupported comparison and rejection-cause
-  claims were corrected. No production path is silently superseded.
-- Proof boundary: independently checked HTTP requests and receiver state, actual subprocess
-  exit/reopen, wrong-request rejection, lock exclusion and byte-identical offline continuation.
+design hypothesis, not a change to existing compatibility or safety requirements. It does not
+qualify this test module as a production replacement or generalize beyond the tested compositions.

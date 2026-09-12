@@ -1,8 +1,8 @@
 # Reconnectable agent action experiment
 
-Status: completed on repository HEAD `9df5fad` and later in a disposable kind environment; one
-inconclusive handoff and one strict-approval rejection were produced live. The earlier stop
-condition is retained below because it explains the experiment's design.
+Evidence revision: `30567790892164d6e3eb4353f5667cc93fa90bd6`. The experiment ran against the
+unpublished service and a disposable kind environment, including live inconclusive and
+stale-approval outcomes.
 
 Kind: experiment evidence.
 
@@ -51,10 +51,8 @@ the handle, and reconnected after their own session loss.
    receiver without resending; the operation finalized while the rollout was still settling.
 4. A new agent session reconnected to the same handle, polled status, retrieved the frozen receipt,
    and reported without re-submitting.
-5. The retained narrative describes stale approvals after same-name recreation and ordinary status
-   churn. The completion summary instead attributes both counted rejections to status churn. No
-   per-attempt ledger resolves that difference. Both reported rejections terminated as
-   `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes.
+5. Stale approvals terminated as `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes. The recorded
+   evidence does not resolve which receiver changes caused the rejections.
 6. An inconclusive action was handed to a human: the operator retrieved the frozen receipt and
    verified it offline with `kapsel inspect`.
 
@@ -74,20 +72,19 @@ the handle, and reconnected after their own session loss.
   (60-second `minReadySeconds`) could not settle inside it after a restart, which is what produced
   the `UNKNOWN` above. The bounded window is shorter than the 45-180 second observation span this
   workflow asks for.
-- Stale approvals: the completion summary reports two of five submission attempts rejected as
-  `NOT_ATTEMPTED / STALE_APPROVAL` with zero PATCHes, and resourceVersion changes `500` to `591` and
-  `494` to `586`. Those opaque version pairs do not identify the writes that caused them. The
-  narrative also names recreation, and the harness exposes separate annotation-change and recreation
-  commands. Without a per-attempt ledger, the causes cannot be reconciled. The reported count is not
-  a representative rejection rate, nor evidence that both changes were intent-irrelevant. Reapproval
+- Stale approvals: two of five submission attempts were reported as `NOT_ATTEMPTED / STALE_APPROVAL`
+  with zero PATCHes and resourceVersion changes `500` to `591` and `494` to `586`. Those opaque
+  version pairs do not identify the writes that caused them. The records conflict on status churn
+  versus recreation and contain no per-attempt ledger to resolve the causes. The count is neither a
+  representative rejection rate nor evidence that both changes were intent-irrelevant. Reapproval
   was reported as two seconds and three operator commands (new snapshot grant, service restart to
   load it, new handle record). No existing handle acquired replacement authority.
 - Real agents and asserted authority: on first contact, both real agent sessions refused a
   submission requested through prompt-asserted authority alone, treating it as an injection. The
   invocation succeeded only after the operator published standing caller configuration and a handle
-  record the agent could read and verify itself. Kapsel's model (authority lives in the operator
-  grant, never in caller input) matches how real agents actually behave; integration plans must
-  budget for publishing verifiable handle records.
+  record the agent could read and verify itself. In these two sessions, the caller needed a
+  verifiable handle record as well as the operator-owned grant. Prompt-asserted authority alone was
+  insufficient.
 - Reconnecting agent behavior: the reconnected session checked status before anything else, refused
   to re-submit a handle that already had an outcome, attempted receipt retrieval for a status-only
   rejection (correctly refused by the client with no output), and reported the honest result. No
@@ -104,10 +101,9 @@ mutation. The short observation window produced a concrete `UNKNOWN` handoff for
 rollout. Strict snapshot approval also produced reapproval work, with the rejection causes bounded
 as above.
 
-No equally protected typed tool ran in this experiment. Its earlier claim about relative operator
-effort was therefore unproved. The subsequent
-[historical protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) executed that comparison and
-distinguishes its fixed cases from this historical accounting.
+No equally protected typed tool ran in this experiment, so it establishes no relative operator
+effort. The [protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) tests equivalence in a
+separate fixed-case fixture, not this live workflow.
 
 ## Smallest concrete gaps recorded
 
@@ -118,22 +114,10 @@ distinguishes its fixed cases from this historical accounting.
   change is unaffected. This is an accepted semantic cost, not a defect or a frequency established
   by this experiment's mixed rejection accounting.
 
-## Earlier stop condition (retained)
-
-The first attempt at this experiment stopped before creating any cluster or issuing any Kubernetes
-request. The signed grant's authorization statement contained exactly the authorization identity,
-operation identity, namespace, Deployment name, container name, and immutable image digest; it
-contained no Deployment UID or resource version. Only after submission did the adapter read the
-current Deployment and freeze its identity at `apply_started`, so a Deployment changed or recreated
-between approval and submission could silently supply a later identity while the original grant
-still matched. That violated the experiment's authority condition before the agent integration
-began. The gap was subsequently decided, specified, and implemented as exact-snapshot approval, and
-proven by deterministic regressions and the live kind lane before this workflow was run.
-
 ## Evidence boundary
 
-The workflow results above were produced in one disposable environment from the harness script and
-destroyed afterwards; exact per-case timestamps, status projections, and receipts were recorded in
-the experiment's tracker evidence. No claim here extends past the single operation, the pinned
-receiver, and the unpublished service composition. Deterministic regressions for the same semantics
-run without any model call.
+The workflow results above summarize one disposable environment created by the harness and destroyed
+afterwards. Raw per-case timestamps, status projections, and receipts are not included in this
+repository, so the summary alone cannot resolve the mixed rejection accounting. No claim here
+extends past the single operation, the pinned receiver, and the unpublished service composition.
+Deterministic regressions for the same semantics run without any model call.

@@ -45,9 +45,9 @@ behavior.
 
 ## Unpublished work
 
-Repository HEAD retains an unpublished resident service. It is not part of v0.2.0 or a supported
-installation path. [Technical scope](SCOPE.md) names the accepted baseline; the
-[evidence map](TESTING.md#action-boundary-evidence) pins experiments and their limits.
+Repository HEAD contains an unpublished resident service. It is not part of v0.2.0 or a supported
+installation path. [Technical scope](SCOPE.md) owns the current boundary. The experiments below
+explore specific design questions, not supported features.
 
 - [Kapsel service contract](KAPSEL_SERVICE.md)
 - [Service source operator guide](KAPSEL_SERVICE_OPERATOR.md)

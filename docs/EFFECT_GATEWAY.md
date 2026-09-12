@@ -223,11 +223,10 @@ from request success or a timeout.
 | `receiver_observed` | Target and receiver UID, observed image and operation marker, current/requested/observed generations, resource versions, replica counts, rollout condition, result. | Prepare the receipt from frozen facts only. Do not call Kubernetes to improve the result.           |
 | `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                    |
 
-Execution and receipt completion select only the configured operation identity. Queue selection and
-its fairness guarantee have been deliberately removed. Format 4 retains the inert
-`target_read_failures` column and its required schema validation, without incrementing or using it.
-Existing values remain untouched. The former counter ordered a queue, not timed backoff. This change
-introduces no format version, migration, or reinterpretation of persisted rows.
+Execution and receipt completion select only the configured operation identity, with no queue or
+fairness guarantee. Journal format 4 requires schema validation of the inert `target_read_failures`
+column. Execution neither increments nor uses it, including for retry timing. Existing values remain
+untouched, with no migration or reinterpretation of persisted rows.
 
 The implementation explicitly uses SQLite's rollback journal with `synchronous=FULL` and verifies
 both settings whenever it opens the journal. The main journal is at most 64 MiB; a rollback-journal

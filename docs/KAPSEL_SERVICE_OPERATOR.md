@@ -2,10 +2,9 @@
 
 Status: unreleased source workflow. No supported installer or published service artifact.
 
-The resident service is retained, but the former one-command install, refresh and uninstall journey
-is withdrawn. The partial installer has been removed. This guide describes caller use only after
-explicit operator provisioning in a disposable environment. The
-[service contract](KAPSEL_SERVICE.md) owns fixed paths, identities, authority and process lifecycle.
+This guide describes caller use after explicit operator provisioning in a disposable environment. It
+supplies no install, refresh or uninstall command. The [service contract](KAPSEL_SERVICE.md) owns
+fixed paths, identities, authority and process lifecycle.
 
 ## Reproduce before provisioning
 

@@ -1,6 +1,6 @@
 # Independent kubectl failure corpus
 
-Status: bounded client experiment, run with kubectl v1.33.9. Not a product-direction decision.
+Status: bounded client-contract experiment, run with kubectl v1.33.9.
 
 ## Question and result
 
@@ -13,15 +13,10 @@ establish rollout completion, a new status process observes the current named De
 the original action, and a successful non-watching status command can describe a pending rollout.
 None is claimed as an upstream kubectl bug. They are ordinary client-contract tests.
 
-**The failure-kit thesis is rejected for this experiment.** The cases travel without Kapsel, but do
-not establish practical value beyond ordinary adapter tests. The original compact-reference
-recommendation was not adopted. Its reliance on the earlier
-[workflow experiment](RECONNECTABLE_AGENT_ACTION.md) overstated that experiment: no equally
-protected alternative ran there, so relative operator effort was unproved. The later
-[protected-tool comparison](PROTECTED_TOOL_COMPARISON.md) supplies a bounded executed comparison.
-The [accepted scope](SCOPE.md) retains the broker, not a standalone failure kit or a
-compact-reference pivot. These seven client cases establish neither a general product verdict nor
-production replacement evidence.
+The cases are useful as ordinary adapter tests. They do not qualify a replacement for Kapsel's
+authorization, durable lifecycle, or recovery behavior.
+
+Evidence revision: `b73d30753347faa8523aceb02b572fcb7caab2e0`.
 
 ## Reproduce
 
@@ -66,7 +61,7 @@ classifier, parse a receipt, or reproduce its journal. It accepts only one exact
 and serves the small discovery, GET, LIST, and WATCH responses the commands need. Status updates are
 explicit fixture inputs, not simulated controllers. Its effect log establishes only fixture
 persistence and request behavior. It establishes no real Kubernetes admission ordering, storage
-conflicts, ReplicaSet creation, or application health. The earlier
+conflicts, ReplicaSet creation, or application health. The
 [live recovery comparison](decisions/0011-retain-observation-only-recovery.md#evidence) owns those
 separate Kubernetes observations.
 
@@ -92,7 +87,7 @@ those checks solve atomic authorization, ambiguous mutation, or causation.
 
 ## Upstream contract
 
-The version-pinned primary sources were read before implementing the fixture:
+The fixture follows these version-pinned primary sources:
 
 - [`set_image.go`](https://github.com/kubernetes/kubectl/blob/v0.33.9/pkg/cmd/set/set_image.go)
   calculates a strategic merge diff and prints the returned object after PATCH. It does not wait for
@@ -119,8 +114,8 @@ coordinated state changes, not exact request order or elapsed time.
 
 The maintenance cost is version-specific discovery/list/watch fixtures and patch/output assertions.
 An upgrade requires reviewing upstream behavior and rerunning controls. It does not require
-maintaining a Kubernetes simulator, corpus interchange format, or general tool adapter. That low
-integration cost still buys ordinary adapter knowledge, not evidence for a new maintained product.
+maintaining a Kubernetes simulator, corpus interchange format, or general tool adapter. The results
+remain specific to the tested client and fixture.
 
 Two concrete approaches were considered. Extending the live kind lane would establish actual
 receiver behavior but add cluster, image, credential, and controller setup to a client-reporting

@@ -73,6 +73,11 @@ functions for the fact they establish.
 
 ### Documentation and dependencies
 
+Keep planning and private evidence in a private workspace, and current priorities, assignments, and
+sequencing in the issue tracker. Public documentation must stand alone as technical scope contracts,
+rationale, reproducible evidence, or contributor guidance. Do not name or link private coordination
+resources or copy their contents here.
+
 Public Rust documentation states caller-visible input, bounds, authority, side effects, failures,
 and important non-claims. Every externally reachable public item needs rustdoc. Public `Result`
 functions need `# Errors`; document caller-reachable panics with `# Panics`, though removing the

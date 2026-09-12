@@ -3,7 +3,7 @@
 Status: accepted implementation in unreleased source. Not a published or supported installation.
 
 This page owns the `kapseld -> kapsel` composition, authenticated local protocol, fixed filesystem
-roots, process lifecycle, static assets, and installer retirement. The
+roots, process lifecycle, static assets, and experimental-host precautions. The
 [effect-gateway contract](EFFECT_GATEWAY.md) owns authorization, action lifecycle, recovery,
 receiver results and receipts. [Technical scope](SCOPE.md) owns the accepted product boundary.
 
@@ -209,18 +209,14 @@ one Role for `apps/deployments` `get`/`patch` with `resourceNames: ["agent-api"]
 RoleBinding. It creates no credential, token Secret, Namespace, Deployment, workload or ClusterRole.
 Static files are source assets, not an authenticated installer or accepted current release.
 
-## Installer retirement
+## Experimental installer hosts
 
-The partial, unpublished installer was removed rather than maintained around an undecided
-installation model. Future installation work must start from a concrete maintainer or user workflow
-and a sufficiently settled product shape. This retirement selects no replacement, migration or
-upgrade path and changes no published v0.2.0 artifact or contract.
+Kapsel has no supported service installer, upgrade or migration path. Experimental installer builds
+could create host identities without completing installation. Source deletion is not uninstall.
 
-The final pre-deletion revision is `244687740d535bc4ee97e9fe51021745e8b8e30d`. At that revision,
-`linux.rs::run` ends at `ImplementationIncomplete` after creating the two groups and two locked
-users. `ensure_host_file` has only test callers. No working installation was delivered.
-
-From a checkout containing that revision, inspect the removed source without restoring active code:
+To inspect what a staged build could do, use revision `244687740d535bc4ee97e9fe51021745e8b8e30d`.
+Its `linux.rs::run` stops at `ImplementationIncomplete` after creating two groups and two locked
+users. From a checkout containing that revision:
 
 ```sh
 git show 244687740d535bc4ee97e9fe51021745e8b8e30d:crates/kapsel-installer/src/linux.rs
@@ -230,21 +226,9 @@ git show 244687740d535bc4ee97e9fe51021745e8b8e30d:docs/KAPSEL_SERVICE.md
 
 If needed, first fetch from a repository containing the revision, for example
 `git fetch /path/to/owning/kapsel master`. Availability in one local checkout does not imply a
-published release or remote availability. Git is the archive, not a second maintained source tree.
+published release or remote availability.
 
-Removed: `crates/kapsel-installer`, its embedded-bundle build script and generated test fixtures,
-the bundle and Debian identity launchers, workspace membership, installer-only CI and hook checks,
-and its exclusive direct dependencies. Identity, transaction, host-file publication and recovery
-tests inside that crate covered only the retired mechanism, so they were deleted, not ported.
-
-Retained: `kapsel-authority` owns grant/trust codecs, request grammar and the combined authority
-check exposed through `Application`. Its vectors and application-contract tests remain. `kapseld`,
-its client, static systemd/sysusers/RBAC assets and `install_assets` tests still own the service
-composition. Linux process and root-substitution tests still establish service admission, private
-paths, restart and receipt retrieval. Core approval, dispatch, recovery and receipt tests remain
-unchanged. The published archive assembly, authentication and smoke consumers remain separate.
-
-Reusable lessons from the removed implementation:
+Host provisioning and recovery require explicit ownership evidence:
 
 - A command exit or timeout does not establish ownership. Recovery needs independent, exact
   observations and must stop on conflict or partial evidence.
@@ -253,12 +237,12 @@ Reusable lessons from the removed implementation:
 - Matching names or bytes do not justify adoption or deletion. Publication and recovery need exact
   inode/parent identity and explicit ownership evidence.
 
-Source deletion is not uninstall. On any disposable host that ran a staged build, an operator must
-inventory the `kapsel` and `kapsel-service-callers` groups, `kapsel` and `kapsel-service-caller`
-users, `/var/lib/kapsel-installer` transaction evidence, `/run/lock/kapsel-installer.lock`, and any
+On any disposable host that ran a staged build, an operator must inventory the `kapsel` and
+`kapsel-service-callers` groups, `kapsel` and `kapsel-service-caller` users,
+`/var/lib/kapsel-installer` transaction evidence, `/run/lock/kapsel-installer.lock`, and any
 separately provisioned service files or Kubernetes objects before deciding what to retain. Do not
-infer installer ownership from a matching name. Preserve ambiguous evidence. No identities, host
-files or Kubernetes objects are removed by this retirement, and no fleet-wide cleanup is claimed.
+infer installer ownership from a matching name. Preserve ambiguous evidence. There is no automated
+cleanup of these identities, files or Kubernetes objects.
 
 ## Qualification envelope and residual risk
 
@@ -271,13 +255,12 @@ receipts and is not fresh-native acceptance of current HEAD.
 Current deterministic and Linux process tests cover the maintained application/service paths,
 receipt commitment/retrieval, unavailable export, roots and socket identity. The reconnect and
 later-observation reports distinguish live Kubernetes evidence from mock HTTP, process-exit and
-model evidence. [Testing](TESTING.md) owns proof placement and
-[action-boundary evidence](TESTING.md#action-boundary-evidence) pins source revisions.
+model evidence and identify their source inputs. [Testing](TESTING.md) owns proof placement.
 
 Container evidence may use host emulation and is not fresh-VM installation proof. Process-exit tests
 do not prove power-loss durability. None of this establishes production safety, HA, host/disk-loss
 continuity, backup automation, another platform, broad upgrade/rollback, online identity rotation,
 remote callers or protection from compromised host root, kernel or service UID.
 
-No queue, periodic controller, HTTP/TCP/MCP server, SDK, generic protocol, second store, policy
-engine, dashboard, hosted authority, second capability or new installation promise is added.
+The service provides no queue, periodic controller, HTTP/TCP/MCP server, SDK, generic protocol,
+second store, policy engine, dashboard, hosted authority or second capability.

@@ -8,10 +8,10 @@ Two approved actions do not require two concurrent mutations. They first require
 both intentions, select one, and handle the other while authority or execution is uncertain.
 
 **Recommendation: keep selection and waiting with the surrounding caller/operator workflow.** Keep
-Kapsel's existing sequential, configured-operation execution. Defer a Kapsel-owned pending queue and
-parallel execution until a concrete workflow cannot tolerate caller-owned waiting. The current
-service cannot transparently serve two approved identities. That usability gap remains explicit, not
-solved by relabeling `BUSY` as acceptance.
+Kapsel's existing sequential, configured-operation execution. This exercise establishes no need for
+a Kapsel-owned pending queue or parallel execution. The current service cannot transparently serve
+two approved identities. That usability gap remains explicit, not solved by relabeling `BUSY` as
+acceptance.
 
 The [gateway contract](EFFECT_GATEWAY.md) owns authority, lifecycle and recovery. The
 [service contract](KAPSEL_SERVICE.md) owns admission and reconnect behavior. This report applies
@@ -185,21 +185,19 @@ conflict holds and recovery selection. Even FIFO would need an explicit choice b
 behind A and skipping A. Failure-count ordering adds policy without answering those questions. No
 Kapsel queue or fairness rule is recommended here, so none is adopted implicitly.
 
-Revisit when a maintainer workflow requires two approved identities to remain independently
-retrievable through one resident endpoint across caller loss, or requires B to progress while A
-waits without an operator configuration switch. Measure whether the actual missing behavior is
-multi-identity access, durable acceptance, or overlapping execution before selecting a solution.
-Hosting should consume this distinction rather than assuming Kubernetes implies a controller/queue.
+The recommendation does not cover a workflow that requires two approved identities to remain
+independently retrievable through one resident endpoint across caller loss, or requires B to
+progress while A waits without an operator configuration switch. Multi-identity access, durable
+acceptance, and overlapping execution are distinct requirements. A Kubernetes deployment alone
+implies none of them.
 
-Unresolved user decisions are whether Kapsel should own durable waiting at all, whether automatic
-skip-over is desirable, and who may resolve a conflicting action after ambiguity. This exercise
-recommends no production change and does not require those decisions to be made now.
+This exercise leaves durable-waiting ownership, automatic skip-over, and authority to resolve a
+conflicting action after ambiguity undefined. It recommends no production change.
 
-Any later production proposal needs a separately approved implementation issue. It must name changes
-to `EFFECT_GATEWAY.md`, `KAPSEL_SERVICE.md`, application/configuration APIs and journal storage (or
-explicitly no storage change), handle legacy single-operation behavior and frozen identities, bound
-pending work and retry timing, and require independent authority/recovery review. Parallel execution
-would require its own justification, not ride along with pending acceptance.
+A production design must preserve frozen identities and single-operation compatibility, bound
+pending work and retry timing, and define authority across application configuration, service
+admission and journal storage. Parallel execution needs its own justification; pending acceptance
+does not require it.
 
 ## Evidence and limits
 
@@ -225,5 +223,4 @@ requests. Application tests use a mock HTTP service, not a Kubernetes control pl
 tests require Linux. Existing legacy-grant isolation fixtures do not by themselves prove the full
 two-snapshot workflow. The same-target and process-loss traces above compose existing contracts, not
 a new end-to-end experiment. No live Kubernetes, throughput, fairness, distributed coordination or
-power-loss result is claimed. Validation performed for this documentation change is recorded in the
-owning review, separately from the source traces.
+power-loss result is claimed.
