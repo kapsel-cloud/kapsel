@@ -49,6 +49,7 @@ Repository HEAD contains an unpublished resident service. It is not part of v0.2
 installation path. [Technical scope](SCOPE.md) owns the current boundary. The experiments below
 explore specific design questions, not supported features.
 
+- [Delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) — proposed, not implemented
 - [Kapsel service contract](KAPSEL_SERVICE.md)
 - [Service source operator guide](KAPSEL_SERVICE_OPERATOR.md)
 - [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)

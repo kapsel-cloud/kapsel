@@ -31,6 +31,10 @@ versions cannot be opened by current source.
 [Exact-snapshot approval](EFFECT_GATEWAY.md#exact-snapshot-approval-in-unpublished-head) owns those
 distinctions. The service composes `Application`, never gateway internals.
 
+The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) considers durable admission,
+multi-identity visibility and active versus blocked status. Those are proposed changes, not the
+protocol or lifecycle implemented below.
+
 ## Runtime inventory
 
 | Item                   | Current source boundary                                                                                                  |

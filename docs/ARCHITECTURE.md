@@ -182,6 +182,11 @@ duplicate export rules, sequence lifecycle states, add another store, or create 
 [Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
 boundary.
 
+The
+[delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md#compare-two-implementation-owners)
+compares two owner decompositions for durable admission and retained authority. Neither is adopted
+by this current-composition map; gateway reconciliation and journal commitment remain the owners.
+
 ## Dependency rule
 
 Transport and service adapters depend inward on `Application`; `Application` depends inward on the

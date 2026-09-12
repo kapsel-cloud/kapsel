@@ -104,6 +104,13 @@ not v0.2.0 promises. Current journal format 4 rejects older journals without mig
 published beta's bounded upgrade path applies only to that release, not HEAD. Neither the service
 nor its source provisioning is a supported installation path.
 
+## Proposed workflow, not current behavior
+
+The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) explores selectable exact
+approvals, one durable unfinished selection and reconnectable history. It changes no current
+contract and adopts no runtime, hosting or release decision. Its workflow experiment and subsequent
+placement/authority/persistence decision must both be resolved before production implementation.
+
 ## Maturity
 
 Kapsel is a developer beta, not production software. It has finite proof for one operation, one
