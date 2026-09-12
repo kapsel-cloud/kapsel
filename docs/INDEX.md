@@ -52,6 +52,7 @@ installation path. [Technical scope](SCOPE.md) names the accepted baseline; the
 - [Kapsel service contract](KAPSEL_SERVICE.md)
 - [Service source operator guide](KAPSEL_SERVICE_OPERATOR.md)
 - [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)
+- [Two pending operations and scheduling ownership](MULTIPLE_PENDING_OPERATIONS.md)
 - [Later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md)
 - [Independent kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md)
 - [Protected typed-tool comparison](PROTECTED_TOOL_COMPARISON.md)
