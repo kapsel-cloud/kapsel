@@ -29,11 +29,11 @@ CLI's fixed forms and operator-owned inputs. For an end-to-end source demonstrat
 ## Deterministic gate and formatting
 
 For contributor checks, also install [Python](https://www.python.org/downloads/) 3.11+ with `venv`
-and [Node.js](https://nodejs.org/en/download) 24 with npm. Then install the pinned formatters:
+and [Node.js](https://nodejs.org/en/download) 24 with npm. Then install the formatters:
 
 ```sh
 rustup toolchain install nightly-2026-07-03 --profile minimal --component rustfmt
-npm install --global prettier@3.6.2
+npm install --global prettier@3.9.6
 python3 -m venv "$HOME/.local/share/kapsel/dev-tools"
 . "$HOME/.local/share/kapsel/dev-tools/bin/activate"
 python -m pip install ruff==0.16.6

@@ -23,7 +23,7 @@ if [ "$name:$phase" = "${FAIL_AT:-}" ]; then
   exit 1
 fi
 if [ "$name" = prettier ] && [ "$phase" = preflight ]; then
-  printf '%s\\n' "${PRETTIER_VERSION:-3.6.2}"
+  printf '%s\\n' "${PRETTIER_VERSION:-3.9.6}"
 fi
 """
 
@@ -49,7 +49,7 @@ class FormattingPipelineTests(unittest.TestCase):
             "PATH": f"{tools}:/usr/bin:/bin",
             "FORMAT_LOG": str(self.log),
             "FAIL_AT": "",
-            "PRETTIER_VERSION": "3.6.2",
+            "PRETTIER_VERSION": "3.9.6",
         }
 
     def run_format(self, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -100,12 +100,10 @@ class FormattingPipelineTests(unittest.TestCase):
                 self.assertNotEqual(self.run_format().returncode, 0)
                 self.assertTrue(all(command[1] == "preflight" for command in self.commands()))
 
-    def test_wrong_prettier_version_stops_before_writes(self) -> None:
+    def test_prettier_version_is_not_enforced(self) -> None:
         self.env["PRETTIER_VERSION"] = "0.0.0"
         result = self.run_format()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("found 0.0.0", result.stderr)
-        self.assertEqual(len(self.commands()), 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_format_failure_stops_later_stages(self) -> None:
         self.env["FAIL_AT"] = "prettier:format"

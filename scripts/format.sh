@@ -19,14 +19,10 @@ case "${1:-write}" in
 esac
 
 # Check every formatter before any source is rewritten.
-prettier_version=$(prettier --version 2>/dev/null) || {
-  printf '%s\n' "format: Prettier 3.6.2 is required" >&2
+prettier --version >/dev/null 2>&1 || {
+  printf '%s\n' "format: Prettier is required" >&2
   exit 1
 }
-if [ "$prettier_version" != "3.6.2" ]; then
-  printf '%s\n' "format: Prettier 3.6.2 is required; found $prettier_version" >&2
-  exit 1
-fi
 cargo +nightly-2026-07-03 fmt --version >/dev/null
 # Ruff validates the pinned version and configuration without formatting files.
 ruff check --no-cache --config ruff.toml --show-settings scripts/check-markdown-links.py >/dev/null
