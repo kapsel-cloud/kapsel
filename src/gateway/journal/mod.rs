@@ -718,7 +718,8 @@ impl Journal {
         &self,
         authorized: &AuthorizedRequest,
     ) -> Result<Option<OperationState>, GatewayError> {
-        existing_submission_on(&self.connection, authorized)
+        Ok(authorized_operation_on(&self.connection, authorized)?
+            .map(|operation| operation.state()))
     }
 
     pub(in crate::gateway) fn authorized_operation(
@@ -736,11 +737,11 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
-        if existing_submission_on(&transaction, authorized)?.is_none() {
-            return Ok(None);
+        let operation = authorized_operation_on(&transaction, authorized)?;
+        if operation.is_some() {
+            after_ownership_read();
         }
-        after_ownership_read();
-        loaded_operation_on(&transaction, authorized.request().operation_id())
+        Ok(operation)
     }
 
     pub(in crate::gateway) fn insert_requested(
@@ -795,8 +796,7 @@ impl Journal {
         authorized: &AuthorizedRequest,
     ) -> Result<(), GatewayError> {
         if operation.request() != authorized.request()
-            || existing_submission_on(&self.connection, authorized)?
-                != Some(OperationState::Requested)
+            || self.existing_submission(authorized)? != Some(OperationState::Requested)
         {
             return Err(GatewayError::InvalidTransition);
         }
@@ -1146,10 +1146,10 @@ impl Journal {
     }
 }
 
-fn existing_submission_on(
+fn authorized_operation_on(
     connection: &Connection,
     authorized: &AuthorizedRequest,
-) -> Result<Option<OperationState>, GatewayError> {
+) -> Result<Option<LoadedOperation>, GatewayError> {
     let request = authorized.request();
     let authorization = authorized.authorization();
     let existing = connection
@@ -1218,7 +1218,7 @@ fn existing_submission_on(
     if loaded.state() != state {
         return Err(GatewayError::InvalidPersistedState);
     }
-    Ok(Some(state))
+    Ok(Some(loaded))
 }
 
 fn snapshot_row_on(
@@ -2185,7 +2185,13 @@ mod tests {
         let authorized =
             AuthorizedRequest::bind(ValidatedRequest::try_from(&request).unwrap(), verified)
                 .unwrap();
+        assert_eq!(journal.authorized_operation(&authorized).unwrap(), None);
+        assert_eq!(journal.existing_submission(&authorized).unwrap(), None);
         journal.insert_requested(&authorized).unwrap();
+        assert_eq!(
+            journal.existing_submission(&authorized).unwrap(),
+            Some(OperationState::Requested)
+        );
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
 
         let snapshot = journal
@@ -2283,8 +2289,14 @@ mod tests {
             })
             .unwrap()
             .unwrap();
+        assert_eq!(snapshot.state(), OperationState::Finalized);
+        assert_eq!(
+            journal.existing_submission(&authorized).unwrap(),
+            Some(snapshot.state())
+        );
         let receipt = snapshot.frozen_receipt().unwrap();
-        assert_ne!(receipt.bytes, b"replacement");
+        assert_eq!(receipt.bytes, receipt_bytes);
+        assert_eq!(receipt.digest, receipt_digest);
         assert_eq!(
             publication::receipt_digest_hex(&receipt.bytes),
             receipt.digest
