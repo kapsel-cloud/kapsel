@@ -106,10 +106,12 @@ nor its source provisioning is a supported installation path.
 
 ## Proposed workflow, not current behavior
 
-The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) explores selectable exact
-approvals, one durable unfinished selection and reconnectable history. It changes no current
-contract and adopts no runtime, hosting or release decision. Its workflow experiment and subsequent
-placement/authority/persistence decision must both be resolved before production implementation.
+The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) selects the resident-service
+direction with selectable exact approvals, durable admission, one active worker, multiple bounded
+unfinished identities and read-first explicit resumption. This is approved design direction, not
+implemented behavior, production adoption or a supported hosting/release promise. Exact
+compatibility, capacity, conflict-provisioning and observation decisions remain explicit blockers
+before their owning implementation.
 
 ## Maturity
 
