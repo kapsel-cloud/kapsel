@@ -1,7 +1,7 @@
 {
-  "source_revision": "261fe95ba328e4af2d7541aae74a6703419e4aa7",
+  "source_revision": "b22634d6eb289ab64ad7d32a145fed22b0c2c92f",
   "prototype_sha256": {
-    "tests/two_action_endpoint_prototype.rs": "7e5cf9f882cc8c381f80de826329a712769dcb999b8c6f551ad8e3812d623a22",
+    "tests/two_action_endpoint_prototype.rs": "c1b3a6a178876dfa853082d877a141903fde408372e91db07e2cc4aedda32889",
     "scripts/prototype-two-actions.py": "a4794339c8b632547e95a9047eee29cbe5c28cdf197a5cb19cfca8e26f5d7359"
   },
   "environment": {
@@ -168,12 +168,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 568.415
+          "elapsed_ms": 553.843
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 612.346
+          "elapsed_ms": 564.062
         },
         {
           "kind": "operator",
@@ -209,7 +209,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 98.918
+          "approval_to_selection_ms": 34.874
         },
         {
           "kind": "caller",
@@ -249,7 +249,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 89.842
+          "approval_to_selection_ms": 57.469
         },
         {
           "kind": "caller",
@@ -327,7 +327,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 175.619
+          "approval_to_selection_ms": 107.364
         },
         {
           "kind": "caller",
@@ -382,7 +382,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 204.763
+          "approval_to_selection_ms": 132.438
         },
         {
           "kind": "caller",
@@ -571,7 +571,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 321.291
+          "approval_to_selection_ms": 214.2
         },
         {
           "kind": "caller",
@@ -743,12 +743,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 37.258
+          "elapsed_ms": 23.113
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 58.919
+          "elapsed_ms": 34.03
         },
         {
           "kind": "operator",
@@ -784,7 +784,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 55.301
+          "approval_to_selection_ms": 41.061
         },
         {
           "kind": "caller",
@@ -824,7 +824,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 66.189
+          "approval_to_selection_ms": 62.155
         },
         {
           "kind": "caller",
@@ -912,7 +912,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 127.804
+          "approval_to_selection_ms": 111.704
         },
         {
           "kind": "caller",
@@ -967,7 +967,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 155.529
+          "approval_to_selection_ms": 137.047
         },
         {
           "kind": "caller",
@@ -1266,12 +1266,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 51.84
+          "elapsed_ms": 11.314
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 74.212
+          "elapsed_ms": 21.803
         },
         {
           "kind": "operator",
@@ -1307,7 +1307,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 61.791
+          "approval_to_selection_ms": 40.068
         },
         {
           "kind": "caller",
@@ -1366,7 +1366,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 66.219
+          "approval_to_selection_ms": 54.643
         },
         {
           "kind": "caller",
@@ -1453,7 +1453,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 127.569
+          "approval_to_selection_ms": 98.204
         },
         {
           "kind": "caller",
@@ -1531,7 +1531,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 174.237
+          "approval_to_selection_ms": 138.729
         },
         {
           "kind": "caller",
@@ -1586,7 +1586,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 203.65
+          "approval_to_selection_ms": 163.397
         },
         {
           "kind": "caller",
@@ -1885,12 +1885,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 25.259
+          "elapsed_ms": 11.136
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 46.812
+          "elapsed_ms": 21.759
         },
         {
           "kind": "operator",
@@ -1926,7 +1926,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 53.592
+          "approval_to_selection_ms": 39.55
         },
         {
           "kind": "journal",
@@ -1941,7 +1941,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 39.08
+          "approval_to_selection_ms": 35.873
         },
         {
           "kind": "caller",
@@ -1952,7 +1952,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 64.111
+          "approval_to_selection_ms": 49.916
         },
         {
           "kind": "caller",
@@ -2002,7 +2002,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 100.362
+          "approval_to_selection_ms": 80.615
         },
         {
           "kind": "caller",
@@ -2042,7 +2042,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 112.437
+          "approval_to_selection_ms": 102.037
         },
         {
           "kind": "caller",
@@ -2120,7 +2120,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 175.293
+          "approval_to_selection_ms": 153.653
         },
         {
           "kind": "caller",
@@ -2175,7 +2175,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 203.704
+          "approval_to_selection_ms": 179.175
         },
         {
           "kind": "caller",
@@ -2474,12 +2474,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 27.51
+          "elapsed_ms": 10.36
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 38.787
+          "elapsed_ms": 21.134
         },
         {
           "kind": "operator",
@@ -2515,7 +2515,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 41.848
+          "approval_to_selection_ms": 35.471
         },
         {
           "kind": "journal",
@@ -2545,7 +2545,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 39.875
+          "approval_to_selection_ms": 33.705
         },
         {
           "kind": "caller",
@@ -2556,7 +2556,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 54.653
+          "approval_to_selection_ms": 47.636
         },
         {
           "kind": "caller",
@@ -2606,7 +2606,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 90.698
+          "approval_to_selection_ms": 77.694
         },
         {
           "kind": "caller",
@@ -2646,7 +2646,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 113.029
+          "approval_to_selection_ms": 98.784
         },
         {
           "kind": "caller",
@@ -2724,7 +2724,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 167.193
+          "approval_to_selection_ms": 151.028
         },
         {
           "kind": "caller",
@@ -2779,7 +2779,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 193.241
+          "approval_to_selection_ms": 178.942
         },
         {
           "kind": "caller",
@@ -3334,12 +3334,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 26.226
+          "elapsed_ms": 11.229
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 50.317
+          "elapsed_ms": 21.734
         },
         {
           "kind": "operator",
@@ -3375,7 +3375,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 62.703
+          "approval_to_selection_ms": 35.346
         },
         {
           "kind": "journal",
@@ -3405,7 +3405,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 45.131
+          "approval_to_selection_ms": 33.624
         },
         {
           "kind": "caller",
@@ -3416,7 +3416,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 71.541
+          "approval_to_selection_ms": 46.41
         },
         {
           "kind": "caller",
@@ -3466,7 +3466,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 107.89
+          "approval_to_selection_ms": 77.102
         },
         {
           "kind": "caller",
@@ -3506,7 +3506,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 29245.169
+          "approval_to_selection_ms": 29169.667
         },
         {
           "kind": "caller",
@@ -3584,7 +3584,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 29319.057
+          "approval_to_selection_ms": 29221.761
         },
         {
           "kind": "caller",
@@ -3639,7 +3639,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 29346.642
+          "approval_to_selection_ms": 29247.542
         },
         {
           "kind": "caller",
@@ -3938,12 +3938,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 21.583
+          "elapsed_ms": 21.445
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 33.283
+          "elapsed_ms": 32.193
         },
         {
           "kind": "operator",
@@ -3979,7 +3979,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 41.939
+          "approval_to_selection_ms": 38.518
         },
         {
           "kind": "journal",
@@ -4009,7 +4009,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 40.329
+          "approval_to_selection_ms": 34.386
         },
         {
           "kind": "caller",
@@ -4020,7 +4020,7 @@
           "response": {
             "status": "BUSY"
           },
-          "approval_to_selection_ms": 55.44
+          "approval_to_selection_ms": 48.558
         },
         {
           "kind": "caller",
@@ -4070,7 +4070,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 89.743
+          "approval_to_selection_ms": 78.814
         },
         {
           "kind": "caller",
@@ -4110,7 +4110,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 104.766
+          "approval_to_selection_ms": 94.633
         },
         {
           "kind": "caller",
@@ -4188,7 +4188,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 154.516
+          "approval_to_selection_ms": 146.127
         },
         {
           "kind": "caller",
@@ -4243,7 +4243,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 180.127
+          "approval_to_selection_ms": 173.801
         },
         {
           "kind": "caller",
@@ -4488,12 +4488,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 23.04
+          "elapsed_ms": 23.638
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 43.436
+          "elapsed_ms": 34.903
         },
         {
           "kind": "operator",
@@ -4529,7 +4529,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 52.441
+          "approval_to_selection_ms": 42.326
         },
         {
           "kind": "caller",
@@ -4795,12 +4795,12 @@
         {
           "kind": "operator",
           "mode": "approve-a",
-          "elapsed_ms": 49.977
+          "elapsed_ms": 23.301
         },
         {
           "kind": "operator",
           "mode": "approve-b",
-          "elapsed_ms": 74.477
+          "elapsed_ms": 43.729
         },
         {
           "kind": "operator",
@@ -4836,7 +4836,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 66.407
+          "approval_to_selection_ms": 49.261
         },
         {
           "kind": "caller",
@@ -4876,7 +4876,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 85.962
+          "approval_to_selection_ms": 61.914
         },
         {
           "kind": "caller",
@@ -4954,7 +4954,7 @@
           "response": {
             "status": "ACCEPTED"
           },
-          "approval_to_selection_ms": 152.212
+          "approval_to_selection_ms": 122.479
         },
         {
           "kind": "caller",
@@ -5009,7 +5009,7 @@
           "response": {
             "error": "invalid_request"
           },
-          "approval_to_selection_ms": 179.731
+          "approval_to_selection_ms": 151.076
         },
         {
           "kind": "caller",

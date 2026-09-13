@@ -236,6 +236,8 @@ fn receipt(application: &Application, identity: &str) -> Value {
 }
 
 fn read_frame(stream: &mut std::os::unix::net::UnixStream) -> Option<Command> {
+    // macOS accept inherits the listener's nonblocking mode; timeouts do not clear it.
+    stream.set_nonblocking(false).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream
         .set_write_timeout(Some(Duration::from_secs(2)))
@@ -357,6 +359,107 @@ async fn serve(root: PathBuf) {
         let _ = stream.write_all(&bytes);
     }
     panic!("prototype endpoint exceeded its bounded run");
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use std::{net::Shutdown, os::unix::net::UnixStream, thread};
+
+    use rustix::fs::{fcntl_getfl, OFlags};
+
+    use super::*;
+
+    fn frame(body: &[u8]) -> Vec<u8> {
+        [
+            u32::try_from(body.len()).unwrap().to_be_bytes().as_slice(),
+            body,
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn read_frame_accepts_nonblocking_socket_with_delayed_prefix_body_or_eof() {
+        let bytes = frame(br#"{"request":"receipt","operation_id":"action-a"}"#);
+        for split in [0, 2, 6, bytes.len()] {
+            let path = PathBuf::from(format!("/tmp/two-action-frame-{}.sock", std::process::id()));
+            let listener = UnixListener::bind(&path).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut client = UnixStream::connect(&path).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            fs::remove_file(&path).unwrap();
+            // Force the macOS inheritance condition even on hosts whose accept clears O_NONBLOCK.
+            server.set_nonblocking(true).unwrap();
+            let mode = server.try_clone().unwrap();
+            client.write_all(&bytes[..split]).unwrap();
+            let reader = thread::spawn(move || {
+                let command = read_frame(&mut server);
+                (command, server)
+            });
+            // Withhold the remaining bytes/EOF until the reader establishes blocking I/O or
+            // returns. Old code deterministically returns None: no sleep or delivery race needed.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while fcntl_getfl(&mode).unwrap().contains(OFlags::NONBLOCK) && !reader.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "frame reader did not establish blocking I/O"
+                );
+                thread::yield_now();
+            }
+            client.write_all(&bytes[split..]).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+            let (command, server) = reader.join().unwrap();
+            let Some(Command::Receipt { operation_id }) = command else {
+                panic!("valid frame rejected at split {split}");
+            };
+            assert_eq!(operation_id, "action-a");
+            assert!(!fcntl_getfl(&server).unwrap().contains(OFlags::NONBLOCK));
+            assert_eq!(server.read_timeout().unwrap(), Some(Duration::from_secs(2)));
+            assert_eq!(
+                server.write_timeout().unwrap(),
+                Some(Duration::from_secs(2))
+            );
+        }
+    }
+
+    #[test]
+    fn read_frame_preserves_length_json_and_trailing_rejections() {
+        let body = br#"{"request":"status","operation_id":"action-a"}"#;
+        let mut maximum = body.to_vec();
+        maximum.resize(4096, b' ');
+        for (bytes, accepted) in [
+            (frame(body), true),
+            (frame(&maximum), true),
+            (vec![0, 0], false),
+            (frame(&[]), false),
+            (4097_u32.to_be_bytes().to_vec(), false),
+            (u32::MAX.to_be_bytes().to_vec(), false),
+            (frame(b"not json"), false),
+            (
+                frame(br#"{"request":"status","operation_id":"action-a","container":"other"}"#),
+                false,
+            ),
+            (frame(body)[..body.len() + 3].to_vec(), false),
+            ([frame(body), vec![b'x']].concat(), false),
+        ] {
+            let (mut client, mut server) = UnixStream::pair().unwrap();
+            client.write_all(&bytes).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
+            assert_eq!(read_frame(&mut server).is_some(), accepted);
+        }
+    }
+
+    #[test]
+    fn read_frame_still_times_out_without_half_close() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        client
+            .write_all(&frame(br#"{"request":"status","operation_id":"action-a"}"#))
+            .unwrap();
+        let start = Instant::now();
+        assert!(read_frame(&mut server).is_none());
+        assert!(start.elapsed() >= Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
 }
 
 #[test]

@@ -70,7 +70,7 @@ Kubernetes, power-loss or distributed coordination result follows.
 ## Recorded run
 
 [Raw outcomes](../tests/fixtures/two-action-endpoint-prototype.json) record base revision
-`261fe95ba328e4af2d7541aae74a6703419e4aa7`, SHA-256 identities for both executable source files,
+`b22634d6eb289ab64ad7d32a145fed22b0c2c92f`, SHA-256 identities for both executable source files,
 commands, caller frames, selected read-only journal columns, exact original receipt bytes, and
 receiver HTTP requests. These are uncommitted prototype content identities, not invented commit
 revisions. The run used macOS arm64, Rust 1.98.0 and Python 3.14.7. No cluster, credentials or
@@ -101,8 +101,8 @@ existing A makes A's status/receipt fail closed and its accepted execution task 
 remains retrievable. Restoring A's exact original grant restores its unchanged receipt and journal
 facts. This is a negative authority probe, not a permitted reapproval workflow.
 
-For initial successful admission, A's approval-to-selection interval was about 42–99 ms. B's was
-about 66–113 ms in the immediate/ordinary cases, and 29,245 ms while A's pre-send ambiguity
+For initial successful admission, A's approval-to-selection interval was about 35–49 ms. B's was
+about 55–102 ms in the immediate/ordinary cases, and 29,170 ms while A's pre-send ambiguity
 exhausted observation. The raw trace distinguishes `BUSY` attempts from `ACCEPTED` selections. The
 same-target case deliberately invalidated B's snapshot through A's PATCH; independent targets had no
 induced background churn. These are script timings from one fixture run, not human approval effort,
@@ -168,11 +168,52 @@ Python command is the owning executable workflow check. Linux-only process tests
 macOS. No live lane was run. Independent review is a separate acceptance step, not a property
 inferred from these passing checks.
 
-An earlier simplification-validation run failed a post-restart status equality assertion; its actual
-response was not retained. Bounded independent-case diagnosis then passed 9/10 runs of the
-pre-simplification prototype and 10/10 of the simplified code. The failing original run returned
-`invalid_request` for a valid receipt request after restart with restored authority; journal rows
-were unchanged. Nonblocking socket inheritance on macOS is a possible transport explanation, not an
-established cause or proof that the earlier status failure was identical. No transport, timeout,
-retry or assertion changes were made. The subsequent full nine-case run is the recorded evidence
-above; it does not resolve this nondeterminism.
+### Corrected macOS frame-read race
+
+Diagnosis retained an `invalid_request` response to a valid receipt request after restart with
+restored authority and unchanged finalized journal rows. The prototype's nonblocking listener passed
+an accepted socket directly to synchronous `read_exact` and an EOF check. On macOS the accepted
+socket inherits nonblocking mode; setting read/write timeouts does not clear it. A read before the
+prefix, remaining body or write-half-close arrives can therefore return `WouldBlock`, which the
+prototype maps to `invalid_request` without accessing the application.
+
+This mechanism was reproduced outside Kapsel with a standalone standard-library Rust Unix socket
+probe on macOS arm64 / Rust 1.98.0, not inferred from pass rates. Despite two-second timeouts, the
+accepted socket returned `WouldBlock` for an empty prefix in 2.5 microseconds and for the EOF check
+after a complete valid receipt frame in 0.5 microseconds. Explicit blocking mode made a missing
+half-close wait for the configured 100 ms probe timeout (observed 102 ms); half-close then yielded
+EOF. A separate C host probe read `F_GETFL`: listener, accepted socket and accepted socket after
+both timeout setters all had flags `0x6`, including `O_NONBLOCK` (`0x4`). Explicitly clearing the
+flag removed it. The host `accept(2)` manual describes the new socket as having the listener's
+properties. The installed Rust 1.98.0 standard-library source confirms that `UnixListener::accept`
+delegates to the socket implementation, whose macOS branch calls `libc::accept` and sets only
+close-on-exec; `set_timeout` only sets a socket option, while `set_nonblocking` separately uses
+`FIONBIO`. See the
+[standard-library socket source](https://doc.rust-lang.org/1.98.0/src/std/sys/net/connection/socket/unix.rs.html).
+
+The fix explicitly establishes blocking mode at the prototype-owned `read_frame` boundary before
+setting the unchanged two-second read/write timeouts. No caller retry, delivery sleep, authority,
+execution-slot or recovery change was added. These remain per-I/O socket timeouts, not an aggregate
+frame deadline; a slow caller can still occupy this test-only synchronous endpoint. The production
+service instead binds a Tokio listener and uses awaited stream I/O under an aggregate deadline in
+`crates/kapseld/src/server/runtime.rs`; it does not use this reader and was not changed.
+
+```sh
+cargo test --locked --test two_action_endpoint_prototype frame_tests -- --nocapture
+```
+
+The regression forces an accepted socket nonblocking on every Unix host and withholds bytes or EOF
+until the reader changes mode or returns. This synchronizes the failure without a timing guess: old
+code rejects the valid request; corrected code accepts all four prefix/body/EOF split points.
+Additional tests retain malformed, short, zero-length, oversized and trailing-input rejection,
+accept the 4096-byte maximum, and verify that missing half-close still times out. Before the fix,
+two tests failed and the rejection matrix passed; after it, all three passed. Ten fresh independent
+workflows and the regenerated nine-case run also passed after executable formatting. Raw fixture
+bytes are the driver's actual stdout, with both executable hashes and every returned receipt digest
+verified; passing repetitions are bounded supporting evidence, not a nondeterminism proof.
+
+The original failed read did not retain its syscall error, so its exact failing read stage is not
+known. An earlier status-equality failure had no retained response; this correction does not prove
+that historical failure had the same cause. Linux-only process tests and live Kubernetes remain
+unrun on this host; forcing socket mode in the regression does not establish Linux execution
+coverage.
