@@ -1,12 +1,13 @@
 # Upgrade, backup, rollback, and downgrade
 
-## Format 4 compatibility
+## Current journal compatibility
 
-The current source uses journal format 4 and explicitly rejects all older journal versions before
-processing actions. There is no migration or reinterpretation of older terminal rows. Use the
-pre-format-4 binary and its backup procedure for existing older journals. Never change a journal
-version marker manually or treat a restored older database as permission to replay an action. The
-format-4 source is unreleased.
+Current source uses journal format 5 and rejects format 4 and all older journal versions unchanged
+before processing actions. There is no migration or reinterpretation of older terminal rows. Keep
+old journals, sidecars and access materials under their matching binary. Never change a version
+marker, delete or rotate no-resend history, or treat an older backup or a fresh journal as
+permission to recreate an old action. Format 5 is unreleased; executable replacement does not
+establish continuity for a populated older journal.
 
 Status: published v0.2.0 operator contract, not a HEAD upgrade path.
 

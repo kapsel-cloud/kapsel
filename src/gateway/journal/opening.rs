@@ -11,10 +11,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use rusqlite::{limits::Limit, Connection, TransactionBehavior};
+use rusqlite::{limits::Limit, Connection, OpenFlags, TransactionBehavior};
 use rustix::fs::{open, Mode, OFlags};
 
-use super::{schema, GatewayError};
+use super::{capacity, schema, GatewayError};
 
 const SQLITE_HEADER_BYTES: usize = 100;
 const SQLITE_USER_VERSION_OFFSET: usize = 60;
@@ -61,6 +61,7 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
         .map_err(GatewayError::Database)?;
     require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
+    capacity::configure(&connection, fresh)?;
     configure_durable_connection(&connection)?;
     let opened_version = connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
@@ -70,8 +71,12 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     }
     if fresh {
         initialize_journal(&mut connection)?;
-    } else if !schema::recognized_supported_schema(&connection)? {
-        return Err(GatewayError::InvalidPersistedState);
+    }
+    {
+        let snapshot = connection
+            .unchecked_transaction()
+            .map_err(GatewayError::Database)?;
+        require_valid_snapshot(&snapshot)?;
     }
 
     let worker_lock_path = worker_lock_path(path);
@@ -83,6 +88,73 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
         connection,
         worker_lock,
     })
+}
+
+/// Returns a connection with one active read snapshot, or genuinely absent history.
+/// No writable connection, worker-lock creation, sidecar recovery or immutable bypass is used.
+pub(super) fn open_validation_snapshot(path: &Path) -> Result<Option<Connection>, GatewayError> {
+    require_private_parent(path).map_err(GatewayError::JournalFile)?;
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        require_absent(Path::new(&name))?;
+    }
+    let mut file = match open_existing_private_file(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A dangling leaf or surviving worker lock is lost history, not a fresh install.
+            require_absent(path)?;
+            require_absent(&worker_lock_path(path))?;
+            return Ok(None);
+        },
+        Err(error) => return Err(GatewayError::JournalFile(error)),
+    };
+    let identity = file.metadata().map_err(GatewayError::JournalFile)?;
+    if identity.len() > JOURNAL_BYTES_MAX || identity.len() == 0 {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    if read_header_version(&mut file)? != schema::JOURNAL_FORMAT_VERSION {
+        return Err(GatewayError::UnsupportedJournalVersion);
+    }
+    require_named_identity(path, &identity).map_err(GatewayError::JournalFile)?;
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(GatewayError::Database)?;
+    connection
+        .set_limit(Limit::SQLITE_LIMIT_LENGTH, schema::PERSISTED_ROW_BYTES_MAX)
+        .map_err(GatewayError::Database)?;
+    connection
+        .execute_batch("BEGIN DEFERRED")
+        .map_err(GatewayError::Database)?;
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(GatewayError::Database)?;
+    if version != schema::JOURNAL_FORMAT_VERSION {
+        return Err(GatewayError::UnsupportedJournalVersion);
+    }
+    require_named_identity(path, &identity).map_err(GatewayError::JournalFile)?;
+    require_private_parent(path).map_err(GatewayError::JournalFile)?;
+    require_valid_snapshot(&connection)?;
+    Ok(Some(connection))
+}
+
+fn require_absent(path: &Path) -> Result<(), GatewayError> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(GatewayError::JournalFile(error)),
+        Ok(_) => Err(GatewayError::InvalidPersistedState),
+    }
+}
+
+fn require_valid_snapshot(connection: &Connection) -> Result<(), GatewayError> {
+    capacity::require_layout(connection)?;
+    if !schema::recognized_supported_schema(connection)? {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    schema::require_integrity(connection)?;
+    capacity::require_retained_bounds(connection)
 }
 
 fn initialize_journal(connection: &mut Connection) -> Result<(), GatewayError> {
@@ -112,12 +184,18 @@ fn read_header_version(file: &mut File) -> Result<u32, GatewayError> {
     if &header[..16] != b"SQLite format 3\0" || header[18] != 1 || header[19] != 1 {
         return Err(GatewayError::InvalidPersistedState);
     }
-    Ok(u32::from_be_bytes([
+    let version = u32::from_be_bytes([
         header[SQLITE_USER_VERSION_OFFSET],
         header[SQLITE_USER_VERSION_OFFSET + 1],
         header[SQLITE_USER_VERSION_OFFSET + 2],
         header[SQLITE_USER_VERSION_OFFSET + 3],
-    ]))
+    ]);
+    if version == schema::JOURNAL_FORMAT_VERSION
+        && (u16::from_be_bytes([header[16], header[17]]) != 4096 || header[20] != 0)
+    {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    Ok(version)
 }
 
 fn recover_private_rollback_journal(
@@ -335,6 +413,32 @@ mod tests {
 
     use super::*;
     use crate::gateway::journal::Journal;
+
+    #[test]
+    fn replacement_validation_holds_one_read_only_snapshot_without_creating_a_worker() {
+        let directory =
+            std::env::temp_dir().join(format!("kapsel-validation-snapshot-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("journal.sqlite3");
+        drop(Journal::open(&path).unwrap());
+        fs::remove_file(worker_lock_path(&path)).unwrap();
+        let before = fs::read(&path).unwrap();
+        let snapshot = open_validation_snapshot(&path).unwrap().unwrap();
+        assert!(!snapshot.is_autocommit());
+        assert!(snapshot.execute_batch("PRAGMA user_version = 9").is_err());
+        let writer = Connection::open(&path).unwrap();
+        writer.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(writer.execute_batch("PRAGMA user_version = 9").is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        drop(snapshot);
+        writer.execute_batch("PRAGMA user_version = 9").unwrap();
+        drop(writer);
+        assert!(!worker_lock_path(&path).exists());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn named_identity_rejects_a_simple_path_replacement() {

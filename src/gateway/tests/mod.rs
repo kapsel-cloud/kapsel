@@ -34,6 +34,9 @@ mod receipt_behavior {
     include!("receipt.rs");
 }
 
+mod capacity_layout;
+pub(super) mod storage;
+
 mod migration {
     use super::*;
 

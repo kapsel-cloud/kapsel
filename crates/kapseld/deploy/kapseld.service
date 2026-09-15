@@ -13,6 +13,7 @@ StateDirectoryMode=0700
 UMask=0077
 ExecStart=/usr/libexec/kapsel/kapseld --operator-config /etc/kapsel/operator.json --socket /run/kapsel/kapseld.sock
 Restart=no
+TimeoutStopSec=infinity
 StandardOutput=null
 StandardError=null
 

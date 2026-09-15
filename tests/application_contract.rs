@@ -161,6 +161,109 @@ async fn respond_with_terminal_result(
 }
 
 #[tokio::test]
+async fn service_reads_but_cannot_advance_retained_legacy_authority() {
+    let root = std::env::temp_dir().join(format!("kapsel-service-v1-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    private_directory(&root);
+    let (config, mut handle) = configuration_and_handle(&root);
+    let client = config.kubernetes_client.clone();
+    let trust = config.authorization_trust.clone();
+    let mut legacy = Application::open(config).unwrap();
+    let operation = request();
+    let (result, ()) = tokio::join!(legacy.execute(&operation), async {
+        let (request, response) = handle.next_request().await.unwrap();
+        assert_eq!(request.method(), http::Method::GET);
+        response.send_response(
+            http::Response::builder()
+                .status(503)
+                .body(kube::client::Body::empty())
+                .unwrap(),
+        );
+    });
+    assert!(result.is_err());
+    let before = legacy
+        .read_set_deployment_image_status(&operation.operation_id)
+        .unwrap();
+    assert_eq!(before, SetDeploymentImageStatus::InProgress);
+    let mut service = kapsel::ServiceApplication::open(kapsel::ServiceConfiguration {
+        journal_path: fs::canonicalize(&root).unwrap().join("journal.sqlite3"),
+        authorization_trust: vec![trust],
+        approvals: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(service.status(&operation.operation_id).unwrap().0, before);
+    assert_eq!(
+        service.receipt(&operation.operation_id).unwrap(),
+        SetDeploymentImageReceipt::NotReady
+    );
+    let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
+    let read_row = || {
+        let mut statement = connection
+            .prepare("SELECT * FROM kubernetes_image_operations")
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_row([], |row| {
+                (0..columns)
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+    };
+    let before_row = read_row();
+    let callbacks = std::sync::atomic::AtomicUsize::new(0);
+    {
+        let result = service.select(
+            &operation.operation_id,
+            kapsel::ServiceExecution {
+                kubernetes_client: Some(client),
+                receipt_signing: None,
+            },
+            |_| {
+                callbacks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        // Detect unexpected receiver work without hanging a failing regression.
+        tokio::pin!(result);
+        tokio::select! {
+            result = &mut result => assert_eq!(result, Err(kapsel::ServiceError::InvalidRequest)),
+            request = handle.next_request() => {
+                assert!(request.is_none(), "service issued receiver HTTP");
+            },
+        }
+    }
+    assert_eq!(callbacks.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(read_row(), before_row);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), handle.next_request())
+            .await
+            .is_err()
+    );
+    let (completed, _) = tokio::join!(
+        legacy.execute(&operation),
+        respond_with_terminal_result(
+            operation.clone(),
+            handle,
+            SetDeploymentImageStatus::Succeeded
+        )
+    );
+    assert!(completed.is_ok());
+    let original = legacy
+        .read_set_deployment_image_receipt(&operation.operation_id)
+        .unwrap();
+    assert!(matches!(original, SetDeploymentImageReceipt::Ready { .. }));
+    drop(legacy);
+    assert_eq!(service.receipt(&operation.operation_id).unwrap(), original);
+    assert_eq!(
+        service.status(&operation.operation_id).unwrap().0,
+        SetDeploymentImageStatus::Succeeded
+    );
+    drop(service);
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn status_reports_only_the_configured_absent_operation_without_kubernetes() {
     let root =
         std::env::temp_dir().join(format!("kapsel-application-status-{}", std::process::id()));

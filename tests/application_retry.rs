@@ -6,6 +6,9 @@
     reason = "bounded, maintainer-owned loopback fixtures fail the test on invalid evidence"
 )]
 
+#[path = "application_retry/service_selection.rs"]
+mod service_selection;
+
 use std::{
     fs,
     io::{Read, Write},
@@ -30,8 +33,10 @@ const IMAGE: &str = concat!(
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 );
 
+#[derive(Clone, Debug, PartialEq)]
 struct WireRequest {
     method: String,
+    path: String,
     body: Vec<u8>,
 }
 
@@ -292,6 +297,7 @@ fn read_request(stream: &mut TcpStream) -> WireRequest {
             assert_eq!(bytes.len(), end + length);
             return WireRequest {
                 method: headers.split_ascii_whitespace().next().unwrap().into(),
+                path: headers.split_ascii_whitespace().nth(1).unwrap().into(),
                 body: bytes[end..].to_vec(),
             };
         }

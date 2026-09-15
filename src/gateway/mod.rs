@@ -312,7 +312,19 @@ impl ReceiptToPrepare {
 /// SQLite-backed entry point for the one operation.
 pub(crate) struct Gateway {
     journal: Journal,
-    authorization_trust: AuthorizationTrust,
+    authorization_trust: Vec<AuthorizationTrust>,
+}
+
+pub(crate) enum AdmissionDecision {
+    Admitted(OperationState),
+    Busy,
+    Full,
+}
+
+pub(crate) struct RetainedOperation {
+    pub(crate) request: SetDeploymentImageRequest,
+    pub(crate) signed_grant: Vec<u8>,
+    pub(crate) operation: LoadedOperation,
 }
 
 impl Gateway {
@@ -321,10 +333,96 @@ impl Gateway {
         path: impl AsRef<Path>,
         authorization_trust: AuthorizationTrust,
     ) -> Result<Self, GatewayError> {
-        validate_authorization_trust(&authorization_trust)?;
+        Self::open_with_authorities(path, vec![authorization_trust])
+    }
+
+    pub(crate) fn open_with_authorities(
+        path: impl AsRef<Path>,
+        authorities: Vec<AuthorizationTrust>,
+    ) -> Result<Self, GatewayError> {
+        if authorities.len() > 128 {
+            return Err(GatewayError::UntrustedAuthorizationGrant);
+        }
+        for (index, trust) in authorities.iter().enumerate() {
+            validate_authorization_trust(trust)?;
+            if authorities[..index]
+                .iter()
+                .any(|other| other.key_id == trust.key_id)
+            {
+                return Err(GatewayError::UntrustedAuthorizationGrant);
+            }
+        }
         Ok(Self {
             journal: Journal::open(path)?,
-            authorization_trust,
+            authorization_trust: authorities,
+        })
+    }
+
+    pub(crate) fn validate_replacement<'a>(
+        path: &Path,
+        authorities: &[AuthorizationTrust],
+        approvals: impl Iterator<Item = (&'a SetDeploymentImageRequest, &'a [u8])>,
+    ) -> Result<(), GatewayError> {
+        let authorized = approvals
+            .map(|(request, bytes)| {
+                AuthorizedRequest::bind(
+                    ValidatedRequest::try_from(request)?,
+                    Self::verify_grant_with(authorities, bytes)?,
+                )
+            })
+            .collect::<Result<Vec<_>, GatewayError>>()?;
+        Journal::validate_replacement(path, &authorized)
+    }
+
+    pub(crate) fn verify_grant(&self, bytes: &[u8]) -> Result<VerifiedAuthorization, GatewayError> {
+        Self::verify_grant_with(&self.authorization_trust, bytes)
+    }
+
+    fn verify_grant_with(
+        authorities: &[AuthorizationTrust],
+        bytes: &[u8],
+    ) -> Result<VerifiedAuthorization, GatewayError> {
+        for trust in authorities {
+            match verify_authorization_grant(bytes, trust) {
+                Ok(verified) => return Ok(verified),
+                Err(GatewayError::UntrustedAuthorizationGrant) => {},
+                Err(error) => return Err(error),
+            }
+        }
+        Err(GatewayError::UntrustedAuthorizationGrant)
+    }
+
+    pub(crate) fn history_ids(&self, after: Option<&str>) -> Result<Vec<String>, GatewayError> {
+        if let Some(after) = after {
+            validate_identity(InputField::OperationId, after)?;
+        }
+        let ids = self.journal.history_ids(after)?;
+        for id in &ids {
+            validate_identity(InputField::OperationId, id)
+                .map_err(|_| GatewayError::InvalidPersistedState)?;
+        }
+        Ok(ids)
+    }
+
+    pub(crate) fn retained_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<RetainedOperation>, GatewayError> {
+        validate_identity(InputField::OperationId, operation_id)?;
+        self.journal.retained_operation(operation_id, |bytes| {
+            let verified = self.verify_grant(bytes)?;
+            let facts = &verified.authorization;
+            let request = SetDeploymentImageRequest {
+                operation_id: facts.operation_id.clone(),
+                namespace: facts.namespace.clone(),
+                deployment: facts.deployment.clone(),
+                container: facts.container.clone(),
+                immutable_image_digest: facts.immutable_image_digest.clone(),
+            };
+            if request.operation_id != operation_id {
+                return Err(GatewayError::OperationIdentityConflict);
+            }
+            AuthorizedRequest::bind(ValidatedRequest::try_from(&request)?, verified)
         })
     }
 
@@ -344,7 +442,7 @@ impl Gateway {
         fault: Option<FaultPoint>,
     ) -> Result<SubmissionResult, GatewayError> {
         let request = ValidatedRequest::try_from(request)?;
-        let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
+        let verified = self.verify_grant(signed_grant)?;
         let authorized = AuthorizedRequest::bind(request, verified)?;
         if let Some(existing) = self.journal.existing_submission(&authorized)? {
             if existing == OperationState::Requested {
@@ -438,10 +536,81 @@ impl Gateway {
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
     ) -> Result<Option<journal::LoadedOperation>, GatewayError> {
-        let verified = verify_authorization_grant(signed_grant, &self.authorization_trust)?;
-        let request = ValidatedRequest::try_from(request)?;
-        let authorized = AuthorizedRequest::bind(request, verified)?;
-        self.journal.authorized_operation(&authorized)
+        self.journal
+            .authorized_operation(&self.bind_authorization(request, signed_grant)?)
+    }
+
+    fn bind_authorization(
+        &self,
+        request: &SetDeploymentImageRequest,
+        signed_grant: &[u8],
+    ) -> Result<AuthorizedRequest, GatewayError> {
+        let verified = self.verify_grant(signed_grant)?;
+        AuthorizedRequest::bind(ValidatedRequest::try_from(request)?, verified)
+    }
+
+    pub(crate) async fn admit_and_reconcile(
+        &mut self,
+        request: &SetDeploymentImageRequest,
+        signed_grant: &[u8],
+        client: Option<kube::Client>,
+        receipt_settings: Option<&ReceiptSettings<'_>>,
+        acknowledged: impl FnOnce(AdmissionDecision) + Send,
+    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
+        let verified = self
+            .verify_grant(signed_grant)
+            .map_err(ReconciliationError::Submission)?;
+        let validated =
+            ValidatedRequest::try_from(request).map_err(ReconciliationError::Submission)?;
+        let authorized = AuthorizedRequest::bind(validated, verified)
+            .map_err(ReconciliationError::Submission)?;
+        let existing = self
+            .journal
+            .authorized_operation(&authorized)
+            .map_err(ReconciliationError::Submission)?;
+        if let Some(operation) = existing.as_ref() {
+            if matches!(
+                operation.state(),
+                OperationState::Finalized | OperationState::NotAttempted
+            ) {
+                acknowledged(AdmissionDecision::Admitted(operation.state()));
+                return Ok(existing);
+            }
+        }
+        let Some(worker) = self
+            .journal
+            .try_lock_worker()
+            .map_err(ReconciliationError::Submission)?
+        else {
+            acknowledged(
+                existing
+                    .as_ref()
+                    .map_or(AdmissionDecision::Busy, |operation| {
+                        AdmissionDecision::Admitted(operation.state())
+                    }),
+            );
+            return Ok(existing);
+        };
+        let state = if let Some(state) = self
+            .journal
+            .existing_submission(&authorized)
+            .map_err(ReconciliationError::Submission)?
+        {
+            state
+        } else {
+            match self.journal.insert_requested(&authorized) {
+                Ok(()) => {},
+                Err(GatewayError::JournalFull) => {
+                    acknowledged(AdmissionDecision::Full);
+                    return Ok(None);
+                },
+                Err(error) => return Err(ReconciliationError::Submission(error)),
+            }
+            OperationState::Requested
+        };
+        acknowledged(AdmissionDecision::Admitted(state));
+        self.reconcile_locked(request, signed_grant, client, receipt_settings, &worker)
+            .await
     }
 
     /// Advances an existing exact-authorized operation to a blocked or terminal snapshot.
@@ -460,9 +629,55 @@ impl Gateway {
         client: kube::Client,
         receipt_settings: &ReceiptSettings<'_>,
     ) -> Result<Option<LoadedOperation>, ReconciliationError> {
+        let Some(existing) = self
+            .authorized_operation(request, signed_grant)
+            .map_err(ReconciliationError::Advancement)?
+        else {
+            return Ok(None);
+        };
+        if existing.state() == OperationState::Requested {
+            self.submit_authorized(request, signed_grant)
+                .map_err(ReconciliationError::Submission)?;
+        }
+        let Some(worker) = self
+            .journal
+            .try_lock_worker()
+            .map_err(ReconciliationError::Advancement)?
+        else {
+            return self
+                .authorized_operation(request, signed_grant)
+                .map_err(ReconciliationError::Advancement);
+        };
+        self.reconcile_locked(
+            request,
+            signed_grant,
+            Some(client),
+            Some(receipt_settings),
+            &worker,
+        )
+        .await
+    }
+
+    async fn reconcile_locked(
+        &mut self,
+        request: &SetDeploymentImageRequest,
+        signed_grant: &[u8],
+        client: Option<kube::Client>,
+        receipt_settings: Option<&ReceiptSettings<'_>>,
+        worker: &journal::WorkerLock,
+    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
+        if !self.journal.owns_worker(worker) {
+            return Err(ReconciliationError::Advancement(
+                GatewayError::InvalidTransition,
+            ));
+        }
+        let authorized = self
+            .bind_authorization(request, signed_grant)
+            .map_err(ReconciliationError::Advancement)?;
         loop {
             let Some(operation) = self
-                .authorized_operation(request, signed_grant)
+                .journal
+                .authorized_operation(&authorized)
                 .map_err(ReconciliationError::Advancement)?
             else {
                 return Ok(None);
@@ -473,15 +688,28 @@ impl Gateway {
                         .map_err(ReconciliationError::Submission)?;
                     true
                 },
-                OperationState::Authorized | OperationState::ApplyStarted => self
-                    .run_operation_once(&request.operation_id, client.clone())
-                    .await
+                OperationState::Authorized | OperationState::ApplyStarted => {
+                    let Some(client) = client.clone() else {
+                        return Ok(Some(operation));
+                    };
+                    let mut adapter = KubernetesDeploymentImageAdapter::new(client);
+                    self.run_locked_operation_once(&authorized, &mut adapter, None, worker)
+                        .await
+                        .map_err(ReconciliationError::Advancement)?
+                        .is_some()
+                },
+                OperationState::ReceiverObserved => {
+                    let Some(settings) = receipt_settings else {
+                        return Ok(Some(operation));
+                    };
+                    self.finalize_locked_operation_receipt_once(
+                        Some(operation.clone()),
+                        settings,
+                        None,
+                    )
                     .map_err(ReconciliationError::Advancement)?
-                    .is_some(),
-                OperationState::ReceiverObserved => self
-                    .finalize_operation_receipt_once(&request.operation_id, receipt_settings)
-                    .map_err(ReconciliationError::Advancement)?
-                    .is_some(),
+                    .is_some()
+                },
                 OperationState::NotAttempted | OperationState::Finalized => {
                     return Ok(Some(operation));
                 },
@@ -512,6 +740,7 @@ impl Gateway {
         self.journal.target_rejection(operation_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn finalize_operation_receipt_once(
         &self,
         operation_id: &str,
@@ -520,7 +749,11 @@ impl Gateway {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        self.finalize_locked_operation_receipt_once(operation_id, settings, None)
+        self.finalize_locked_operation_receipt_once(
+            self.journal.operation(operation_id)?,
+            settings,
+            None,
+        )
     }
 
     #[cfg(test)]
@@ -533,20 +766,22 @@ impl Gateway {
         let Some(_worker_lock) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        self.finalize_locked_operation_receipt_once(operation_id, settings, fault)
+        self.finalize_locked_operation_receipt_once(
+            self.journal.operation(operation_id)?,
+            settings,
+            fault,
+        )
     }
 
     fn finalize_locked_operation_receipt_once(
         &self,
-        operation_id: &str,
+        operation: Option<LoadedOperation>,
         settings: &ReceiptSettings<'_>,
         fault: Option<FaultPoint>,
     ) -> Result<Option<OperationState>, GatewayError> {
         #[cfg(not(test))]
         let _ = fault;
-        let Some(journal::LoadedOperation::ReceiverObserved(operation)) =
-            self.journal.operation(operation_id)?
-        else {
+        let Some(journal::LoadedOperation::ReceiverObserved(operation)) = operation else {
             return Ok(None);
         };
         let receipt = Self::build_receipt(&operation, settings)?;
@@ -612,6 +847,7 @@ impl Gateway {
         self.journal.receipt_reference(operation_id)
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_operation_once(
         &mut self,
         operation_id: &str,
@@ -632,8 +868,8 @@ impl Gateway {
             .await
     }
 
-    // The exclusive mutable caller borrow and worker lock prevent overlapping journal transitions
-    // while provider I/O is pending.
+    // Test drivers acquire the same lease as complete reconciliation.
+    #[cfg(test)]
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) async fn run_operation_once_with_adapter_and_fault<
         A: DeploymentImageAdapter + Send,
@@ -643,10 +879,30 @@ impl Gateway {
         adapter: &mut A,
         fault: Option<FaultPoint>,
     ) -> Result<Option<OperationState>, GatewayError> {
-        let Some(_worker_lock) = self.journal.try_lock_worker()? else {
+        let Some(worker) = self.journal.try_lock_worker()? else {
             return Ok(None);
         };
-        let Some(operation) = self.journal.operation(operation_id)? else {
+        let Some(retained) = self.retained_operation(operation_id)? else {
+            return Ok(None);
+        };
+        let authorized = self.bind_authorization(&retained.request, &retained.signed_grant)?;
+        self.run_locked_operation_once(&authorized, adapter, fault, &worker)
+            .await
+    }
+
+    // The unique caller borrow is held across I/O as part of worker ownership.
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    async fn run_locked_operation_once<A: DeploymentImageAdapter + Send>(
+        &mut self,
+        authorized: &AuthorizedRequest,
+        adapter: &mut A,
+        fault: Option<FaultPoint>,
+        worker: &journal::WorkerLock,
+    ) -> Result<Option<OperationState>, GatewayError> {
+        if !self.journal.owns_worker(worker) {
+            return Err(GatewayError::InvalidTransition);
+        }
+        let Some(operation) = self.journal.authorized_operation(authorized)? else {
             return Ok(None);
         };
         let (attempted, fault) = match operation {
@@ -678,7 +934,7 @@ impl Gateway {
                     return Err(GatewayError::InjectedFault);
                 }
                 let Some(journal::LoadedOperation::ApplyStarted(started)) =
-                    self.journal.operation(operation_id)?
+                    self.journal.authorized_operation(authorized)?
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
@@ -692,12 +948,15 @@ impl Gateway {
                 if fault == Some(FaultPoint::ApplyReturned) {
                     return Err(GatewayError::InjectedFault);
                 }
+                self.journal
+                    .authorized_operation(authorized)?
+                    .ok_or(GatewayError::InvalidPersistedState)?;
                 self.journal.record_apply_outcome(&started, &outcome)?;
                 if fault == Some(FaultPoint::ApplyOutcomeCommitted) {
                     return Err(GatewayError::InjectedFault);
                 }
                 let Some(journal::LoadedOperation::ApplyStarted(started)) =
-                    self.journal.operation(operation_id)?
+                    self.journal.authorized_operation(authorized)?
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
@@ -726,6 +985,9 @@ impl Gateway {
         if fault == Some(FaultPoint::ReceiverRead) {
             return Err(GatewayError::InjectedFault);
         }
+        self.journal
+            .authorized_operation(authorized)?
+            .ok_or(GatewayError::InvalidPersistedState)?;
         self.journal.freeze_observation(&attempted, &observation)?;
         if fault == Some(FaultPoint::ReceiverObservedCommitted) {
             return Err(GatewayError::InjectedFault);

@@ -1,5 +1,6 @@
-//! Fixed-root ordinary startup inputs for the Kapsel service.
+//! Fixed-root startup, lifecycle exclusion and cold publication for the Kapsel service.
 
+mod publication;
 use std::{
     fs::File,
     io::Read as _,
@@ -10,70 +11,141 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use kapsel::{open_application_from_fixed_operator_document, Application, ApplicationError};
-use rustix::fs::{chmodat, open, openat, statat, unlinkat, AtFlags, FileType, Mode, OFlags, Stat};
+use kapsel::{parse_service_operator_document, ServiceApplication, ServiceError};
+pub(crate) use publication::replace_operator_config;
+use rustix::fs::{
+    chmodat, flock, open, openat, statat, unlinkat, AtFlags, FileType, FlockOperation, Mode,
+    OFlags, Stat,
+};
 use tokio::net::UnixListener;
 
-const OPERATOR_DOCUMENT_BYTES_MAX: usize = 16 * 1024;
-const GRANT_BYTES_MAX: usize = 4 * 1024;
+const OPERATOR_DOCUMENT_BYTES_MAX: usize = 160 * 1024;
 const KEY_BYTES: usize = 32;
 const KUBECONFIG_BYTES_MAX: usize = 16 * 1024;
 const JOURNAL_BYTES_MAX: u64 = 64 * 1024 * 1024;
 
 pub(crate) struct InstallationInputs {
-    _configuration_root: File,
-    _state_root: File,
     runtime_root: File,
-    configuration_path: PathBuf,
     document: Vec<u8>,
-    grant: Vec<u8>,
-    authorization_key: Vec<u8>,
-    kubeconfig: Vec<u8>,
-    receipt_seed: Vec<u8>,
-    journal_path: PathBuf,
+    kubeconfig: Option<Vec<u8>>,
+    receipt_seed: Option<Vec<u8>>,
     journal_access_path: PathBuf,
     socket_access_path: PathBuf,
+    // Field drop order retires authority and roots before releasing the lifecycle lock.
+    _roots: InstallationRoots,
 }
 
-impl InstallationInputs {
-    pub(crate) fn open_at(root: &Path) -> std::io::Result<Self> {
-        let installation_root = root.to_path_buf();
+struct InstallationRoots {
+    configuration: File,
+    state: File,
+    _lease: File,
+}
+
+impl InstallationRoots {
+    fn open_at(root: &Path) -> std::io::Result<Self> {
         let root = File::from(open(root, directory_flags(), Mode::empty())?);
-        let etc = open_directory(&root, "etc")?;
-        let configuration = open_directory(&etc, "kapsel")?;
-        require_owned_directory(&configuration, 0o700)?;
         let var = open_directory(&root, "var")?;
         let lib = open_directory(&var, "lib")?;
         let state = open_directory(&lib, "kapsel")?;
         require_owned_directory(&state, 0o700)?;
+        let lease = acquire_lifecycle(&state)?;
+        let etc = open_directory(&root, "etc")?;
+        let configuration = open_directory(&etc, "kapsel")?;
+        require_owned_directory(&configuration, 0o700)?;
+        Ok(Self {
+            configuration,
+            state,
+            _lease: lease,
+        })
+    }
+}
+
+const LIFECYCLE_LOCK: &str = "kapseld.lifecycle.lock";
+
+fn acquire_lifecycle(state: &File) -> std::io::Result<File> {
+    let flags = OFlags::RDWR | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let lease = match openat(
+        state,
+        LIFECYCLE_LOCK,
+        flags | OFlags::CREATE | OFlags::EXCL,
+        Mode::RUSR | Mode::WUSR,
+    ) {
+        Ok(file) => File::from(file),
+        Err(rustix::io::Errno::EXIST) => {
+            File::from(openat(state, LIFECYCLE_LOCK, flags, Mode::empty())?)
+        },
+        Err(error) => return Err(error.into()),
+    };
+    require_private_identity(state, LIFECYCLE_LOCK, &lease, 0)?;
+    flock(&lease, FlockOperation::NonBlockingLockExclusive)?;
+    require_private_identity(state, LIFECYCLE_LOCK, &lease, 0)?;
+    Ok(lease)
+}
+
+fn require_private_identity(
+    parent: &File,
+    name: &str,
+    file: &File,
+    maximum: u64,
+) -> std::io::Result<()> {
+    let metadata = file.metadata()?;
+    let named = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
+    if !metadata.is_file()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.gid() != rustix::process::getegid().as_raw()
+        || metadata.nlink() != 1
+        || metadata.mode() & 0o7777 != 0o600
+        || metadata.len() > maximum
+        || named.st_dev != metadata.dev()
+        || named.st_ino != metadata.ino()
+        || named.st_mode != metadata.mode()
+        || named.st_uid != metadata.uid()
+        || named.st_gid != metadata.gid()
+        || named.st_nlink != 1
+        || u64::try_from(named.st_size).ok() != Some(metadata.len())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "invalid private file identity",
+        ));
+    }
+    Ok(())
+}
+
+impl InstallationInputs {
+    pub(crate) fn open_at(root: &Path) -> std::io::Result<Self> {
+        let roots = InstallationRoots::open_at(root)?;
+        #[cfg(feature = "test-harness")]
+        if std::env::var_os("KAPSELD_TEST_PAUSE_STARTUP").is_some() {
+            std::fs::write(root.join("control/startup.ready"), b"")?;
+            while !root.join("control/startup.release").exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+        let configuration = &roots.configuration;
+        let state = &roots.state;
+        let root = File::from(open(root, directory_flags(), Mode::empty())?);
         let run = open_directory(&root, "run")?;
         let runtime = open_directory(&run, "kapsel")?;
         require_owned_directory(&runtime, 0o750)?;
-        validate_optional_private_file(&state, "journal.sqlite3", JOURNAL_BYTES_MAX)?;
-        validate_optional_private_file(&state, "journal.sqlite3.kap0038-worker.lock", 0)?;
+        validate_optional_private_file(state, "journal.sqlite3", JOURNAL_BYTES_MAX)?;
+        validate_optional_private_file(state, "journal.sqlite3.kap0038-worker.lock", 0)?;
         let document =
-            read_private_file(&configuration, "operator.json", OPERATOR_DOCUMENT_BYTES_MAX)?;
-        let grant = read_private_file(&configuration, "grant.bin", GRANT_BYTES_MAX)?;
-        let authorization_key = read_private_file(&configuration, "authorization.pub", KEY_BYTES)?;
+            read_private_file(configuration, "operator.json", OPERATOR_DOCUMENT_BYTES_MAX)?;
+        // Execution-only failures must not hide authenticated history. Unsafe bytes are never used.
         let kubeconfig =
-            read_private_file(&configuration, "kubeconfig.yaml", KUBECONFIG_BYTES_MAX)?;
-        let receipt_seed = read_private_file(&configuration, "receipt.seed", KEY_BYTES)?;
-        let configuration_path = installation_root.join("etc/kapsel");
-        let state_access_path = descriptor_directory_path(&state)?;
+            read_private_file(configuration, "kubeconfig.yaml", KUBECONFIG_BYTES_MAX).ok();
+        let receipt_seed = read_private_file(configuration, "receipt.seed", KEY_BYTES).ok();
+        let state_access_path = descriptor_directory_path(state)?;
         let runtime_access_path = descriptor_directory_path(&runtime)?;
         Ok(Self {
-            _configuration_root: configuration,
-            _state_root: state,
             runtime_root: runtime,
-            configuration_path,
             document,
-            grant,
-            authorization_key,
             kubeconfig,
             receipt_seed,
-            journal_path: installation_root.join("var/lib/kapsel/journal.sqlite3"),
             journal_access_path: state_access_path.join("journal.sqlite3"),
             socket_access_path: runtime_access_path.join("kapseld.sock"),
+            _roots: roots,
         })
     }
 
@@ -96,30 +168,23 @@ impl InstallationInputs {
         Ok(listener)
     }
 
-    pub(crate) async fn open_application(&self) -> Result<Application, ApplicationError> {
-        open_application_from_fixed_operator_document(
-            &self.document,
-            &self.journal_path,
-            &self.journal_access_path,
-            |path, maximum| {
-                let bytes = if path == self.configuration_path.join("grant.bin") {
-                    &self.grant
-                } else if path == self.configuration_path.join("authorization.pub") {
-                    &self.authorization_key
-                } else if path == self.configuration_path.join("kubeconfig.yaml") {
-                    &self.kubeconfig
-                } else if path == self.configuration_path.join("receipt.seed") {
-                    &self.receipt_seed
-                } else {
-                    return Err(ApplicationError::InvalidOperatorConfiguration);
-                };
-                if bytes.len() > maximum {
-                    return Err(ApplicationError::InvalidOperatorConfiguration);
-                }
-                Ok(bytes.clone())
-            },
-        )
-        .await
+    pub(crate) fn open_application(&self) -> Result<ServiceApplication, ServiceError> {
+        let document =
+            parse_service_operator_document(&self.document, self.journal_access_path.clone())?;
+        ServiceApplication::open(document.configuration)
+    }
+
+    pub(crate) fn open_execution(
+        &self,
+    ) -> Result<crate::server::ExecutionApplication, ServiceError> {
+        let document =
+            parse_service_operator_document(&self.document, self.journal_access_path.clone())?;
+        Ok(crate::server::ExecutionApplication {
+            application: ServiceApplication::open(document.configuration)?,
+            kubeconfig: self.kubeconfig.clone(),
+            receipt_seed: self.receipt_seed.clone(),
+            receipt_signing_key_id: document.receipt_signing_key_id,
+        })
     }
 }
 
@@ -225,20 +290,7 @@ fn validate_optional_private_file(parent: &File, name: &str, maximum: u64) -> st
         Err(rustix::io::Errno::NOENT) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.gid() != rustix::process::getegid().as_raw()
-        || metadata.nlink() != 1
-        || metadata.mode() & 0o7777 != 0o600
-        || metadata.len() > maximum
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid installation state file",
-        ));
-    }
-    Ok(())
+    require_private_identity(parent, name, &file, maximum)
 }
 
 fn read_private_file(parent: &File, name: &str, maximum: usize) -> std::io::Result<Vec<u8>> {
@@ -277,11 +329,15 @@ fn read_flags() -> OFlags {
 }
 
 #[cfg(test)]
+#[path = "startup/lifecycle_tests.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
 #[allow(
     clippy::unwrap_used,
     reason = "controlled fixed-root fixtures must fail the startup test immediately"
 )]
-mod tests {
+pub(crate) mod tests {
     use std::{
         fs,
         io::{Read as _, Write as _},
@@ -296,11 +352,18 @@ mod tests {
     };
 
     use ed25519_dalek::SigningKey;
-    use kapsel::{
-        provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning, OperationResult,
-    };
+    use kapsel::{provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning};
 
-    use super::{InstallationInputs, GRANT_BYTES_MAX};
+    use super::{InstallationInputs, OPERATOR_DOCUMENT_BYTES_MAX};
+    use crate::server::ApplicationExecution;
+
+    pub(crate) fn hex(bytes: &[u8]) -> String {
+        bytes.iter().fold(String::new(), |mut output, byte| {
+            use std::fmt::Write as _;
+            write!(output, "{byte:02x}").unwrap();
+            output
+        })
+    }
 
     fn directory(path: &Path, mode: u32) {
         fs::create_dir(path).unwrap();
@@ -328,7 +391,7 @@ mod tests {
         fs::canonicalize(root).unwrap()
     }
 
-    fn valid_root(name: &str) -> PathBuf {
+    pub(crate) fn valid_root(name: &str) -> PathBuf {
         valid_root_with_server(name, "http://127.0.0.1:1234")
     }
 
@@ -382,13 +445,12 @@ mod tests {
         private_file(
             &root.join("etc/kapsel/operator.json"),
             &serde_json::to_vec(&serde_json::json!({
-                "signed_authorization_grant": root.join("etc/kapsel/grant.bin"),
-                "authorization_key_id": "service-owner-key",
-                "authorization_public_key": root.join("etc/kapsel/authorization.pub"),
-                "kubeconfig": root.join("etc/kapsel/kubeconfig.yaml"),
-                "journal": root.join("var/lib/kapsel/journal.sqlite3"),
-                "receipt_directory": root.join("var/lib/kapsel/receipts"),
-                "receipt_signing_seed": root.join("etc/kapsel/receipt.seed"),
+                "service_configuration_version": 1,
+                "authorization_keys": [{
+                    "key_id":"service-owner-key",
+                    "public_key_hex":hex(&authorization_key.verifying_key().to_bytes()),
+                }],
+                "approvals": [{"label":"service action", "signed_grant_hex":hex(&grant)}],
                 "receipt_signing_key_id": "service-receipt-key"
             }))
             .unwrap(),
@@ -528,7 +590,7 @@ mod tests {
         let root = valid_root("stable-inputs");
         let inputs = InstallationInputs::open_at(&root).unwrap();
         for (name, replacement) in [
-            ("grant.bin", b"different".as_slice()),
+            ("operator.json", b"different".as_slice()),
             ("authorization.pub", &[99_u8; 32]),
             ("kubeconfig.yaml", b"different".as_slice()),
             ("receipt.seed", &[98_u8; 32]),
@@ -537,15 +599,11 @@ mod tests {
             fs::rename(&path, path.with_extension("replaced")).unwrap();
             private_file(&path, replacement);
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let application = runtime.block_on(inputs.open_application()).unwrap();
+        let application = inputs.open_application().unwrap();
         assert!(application
-            .read_set_deployment_image_status("service-op")
+            .status("service-op")
             .unwrap()
+            .0
             .eq(&kapsel::SetDeploymentImageStatus::NotFound));
         drop(application);
         fs::remove_dir_all(root).unwrap();
@@ -567,12 +625,7 @@ mod tests {
                 directory(&state, 0o700);
                 directory(&state.join("receipts"), 0o700);
             }
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-
-            let application = runtime.block_on(inputs.open_application()).unwrap();
+            let application = inputs.open_application().unwrap();
 
             assert!(retained.join("journal.sqlite3").is_file());
             assert!(retained
@@ -627,15 +680,18 @@ mod tests {
                 .build()
                 .unwrap();
 
-            let mut application = runtime.block_on(inputs.open_application()).unwrap();
-            let report = runtime.block_on(application.execute(&request())).unwrap();
+            let mut execution = inputs.open_execution().unwrap();
+            runtime
+                .block_on(execution.execute(request().operation_id, |_| {}))
+                .unwrap();
+            let application = inputs.open_application().unwrap();
 
-            assert_eq!(report.result, Some(OperationResult::Succeeded));
-            assert!(report.receipt.is_some());
+            assert_eq!(
+                application.status(&request().operation_id).unwrap().0,
+                kapsel::SetDeploymentImageStatus::Succeeded
+            );
             assert!(matches!(
-                application
-                    .read_set_deployment_image_receipt(&request().operation_id)
-                    .unwrap(),
+                application.receipt(&request().operation_id).unwrap(),
                 kapsel::SetDeploymentImageReceipt::Ready { .. }
             ));
             assert_eq!(fs::read_dir(&retained).unwrap().count(), 0);
@@ -746,7 +802,7 @@ mod tests {
             "oversized",
         ] {
             let root = valid_root(mutation);
-            let path = root.join("etc/kapsel/grant.bin");
+            let path = root.join("etc/kapsel/operator.json");
             let mut socket = None;
             match mutation {
                 "restrictive-mode" => {
@@ -756,10 +812,10 @@ mod tests {
                     fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
                 },
                 "hard-link" => {
-                    fs::hard_link(&path, root.join("etc/kapsel/grant.link")).unwrap();
+                    fs::hard_link(&path, root.join("etc/kapsel/operator.link")).unwrap();
                 },
                 "symlink" => {
-                    let target = root.join("etc/kapsel/grant.target");
+                    let target = root.join("etc/kapsel/operator.target");
                     fs::rename(&path, &target).unwrap();
                     std::os::unix::fs::symlink(target, &path).unwrap();
                 },
@@ -771,7 +827,7 @@ mod tests {
                     fs::remove_file(&path).unwrap();
                     fs::create_dir(&path).unwrap();
                 },
-                "oversized" => private_file(&path, &vec![0_u8; GRANT_BYTES_MAX + 1]),
+                "oversized" => private_file(&path, &vec![0_u8; OPERATOR_DOCUMENT_BYTES_MAX + 1]),
                 _ => unreachable!(),
             }
             assert!(InstallationInputs::open_at(&root).is_err());
@@ -786,6 +842,65 @@ mod tests {
         std::os::unix::fs::symlink(target, configuration).unwrap();
         assert!(InstallationInputs::open_at(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reads_start_without_missing_invalid_or_unsafe_execution_material() {
+        for mutation in ["missing", "malformed", "symlink", "wrong-mode", "oversized"] {
+            let root = valid_root(&format!("read-first-{mutation}"));
+            fs::remove_dir(root.join("var/lib/kapsel/receipts")).unwrap();
+            for name in ["kubeconfig.yaml", "receipt.seed"] {
+                let path = root.join("etc/kapsel").join(name);
+                match mutation {
+                    "missing" => fs::remove_file(path).unwrap(),
+                    "malformed" => private_file(&path, b"invalid"),
+                    "symlink" => {
+                        fs::remove_file(&path).unwrap();
+                        std::os::unix::fs::symlink("/unavailable/execution-material", path)
+                            .unwrap();
+                    },
+                    "wrong-mode" => {
+                        fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+                    },
+                    "oversized" => private_file(&path, &vec![0; 16 * 1024 + 1]),
+                    _ => unreachable!(),
+                }
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let inputs = InstallationInputs::open_at(&root).unwrap();
+            runtime.block_on(async {
+                let reads = inputs.open_application().unwrap();
+                let listener = inputs.bind_listener().unwrap();
+                assert_eq!(
+                    reads.status("service-op").unwrap().0,
+                    kapsel::SetDeploymentImageStatus::NotFound
+                );
+                let mut execution = inputs.open_execution().unwrap();
+                let mut admitted = false;
+                let _ = execution
+                    .execute("service-op".into(), |decision| {
+                        assert!(matches!(decision, kapsel::ServiceAdmission::Admitted(_)));
+                        admitted = true;
+                    })
+                    .await;
+                assert!(admitted);
+                drop(execution);
+                drop(listener);
+                assert_eq!(
+                    reads.status("service-op").unwrap().0,
+                    kapsel::SetDeploymentImageStatus::InProgress
+                );
+                assert!(matches!(
+                    reads.receipt("service-op").unwrap(),
+                    kapsel::SetDeploymentImageReceipt::NotReady
+                ));
+            });
+            drop(inputs);
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

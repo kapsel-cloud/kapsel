@@ -61,6 +61,11 @@
     }
 
     #[tokio::test]
+    async fn full_identity_capacity_completes_all_remaining_receipts() {
+        super::storage::qualify_full_capacity().await;
+    }
+
+    #[tokio::test]
     async fn receipt_statement_retains_exact_available_condition_reason() {
         let path = database_path("receipt-available-reason");
         let request = request();

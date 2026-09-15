@@ -93,7 +93,7 @@ The deterministic gate does not qualify live or platform-specific lanes.
 | Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.     |
 | Receipt completion   | Frozen observation precedes signing; bytes, digest, signer and finalized state commit together.           |
 | Export               | Collision-safe export uses committed bytes. Failure cannot reopen completion or block later retrieval.    |
-| Compatibility        | Format 4 rejects older journals before action processing; grant/receipt wire meanings remain explicit.    |
+| Compatibility        | Format 5 refuses older journals, including format 4, without migration; wire meanings remain explicit.    |
 | Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                    |
 | Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.            |
 
@@ -115,7 +115,7 @@ preserves committed bytes without re-signing. Export may use a new destination w
 durable action or signing identity.
 
 The transient-target gateway regression checks no journal update, no PATCH, safe GET repetition on
-reopen, and preservation of an existing inert `target_read_failures` value. Format-4 schema
+reopen, and preservation of an existing inert `target_read_failures` value. Format-5 schema
 validation still requires that column. `application_contract` tests actual `Application` selection
 with another authorized or receiver-observed operation in the same journal, preserving every value
 in that other row while the configured operation completes. The receiver-observed fixture removes
@@ -140,9 +140,10 @@ configuration outside caller input, typed `SUCCEEDED`, `FAILED`, `UNKNOWN`, and 
 vocabulary, restart, protocol-only standard output, bounded hostile input, and secret-free failures.
 Cancellation, EOF, or transport completion never determines receiver outcome.
 
-The current version-rejection test proves older journals remain untouched. Historical v0.1.1
-migration/restore fixtures describe the published pre-format-4 baseline, not a current migration
-path. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
+The current format-5 version-rejection test proves older journals, including format 4, remain
+untouched without migration. [Build and test](BUILD.md#journal-version-rejection) owns the current
+command. Historical v0.1.1 migration/restore fixtures describe the published pre-format-4 baseline,
+not a current migration path. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
 
 ### Robustness
 
@@ -301,28 +302,45 @@ authentication, provenance, and evidence limits belong to [Release artifacts](RE
 
 ### Kapsel service
 
-The unpublished service evidence remains layered around `Application`:
+The unpublished service evidence is layered around `ServiceApplication`, one bounded catalog over
+one journal:
 
-- projection reads status and frozen receipts without Kubernetes access or lifecycle advancement;
-- Unix-socket tests cover effective-group peer credentials, framing, allocation, hostile fields,
-  disclosure, one in-flight submission, and no queue;
-- process tests cover `ACCEPTED` as process ownership only, immediate `BUSY`, caller disconnect,
-  concurrent status, one provider attempt, and one journal;
-- process-loss tests require startup reconciliation before bind and preserve frozen receipt bytes;
-- startup and asset tests freeze fixed roots, no-follow file rules, exact argv, stale-socket
-  handling, systemd, sysusers, and namespaced RBAC bytes; and
-- deterministic root-substitution tests rename and replace state and runtime names after validation,
-  then prove journal creation and socket bind stay with the retained directory identities. Receipt
-  retrieval uses the journal, with no receipt-root dependency.
+- `service_application_contract` proves durable `ADMITTED` before acknowledgement, worker ownership,
+  original authority, bounded history and reads without execution material. This replaces the old
+  process-only `ACCEPTED` meaning; admission is not receiver success or worker liveness.
+- `application_retry::service_selection` exercises independent-target and same-target A/B selection
+  through a real loopback HTTP receiver. While A holds a PATCH response and the worker, B is `BUSY`
+  with no insertion or receiver I/O. Missing signing material then leaves A `receiver_observed`,
+  unfinished rather than terminal `UNKNOWN`. Explicit B selection advances without changing A's
+  retained row: an independent target succeeds; the same target's unchanged approval becomes
+  `NOT_ATTEMPTED / STALE_APPROVAL` after a real GET. Independent HTTP counts are one PATCH per
+  operation for separate targets, and A's one PATCH/B's zero for the shared target. Explicit A
+  resumption signs frozen facts without more HTTP; later selection and reopen preserve original
+  receipt bytes. This is not conflict safety, refreshed approval or live admission evidence.
+- `kapseld` protocol/runtime tests cover version-1 framing, hostile fields, disclosure, durable
+  admission decisions, one physical execution worker, bounded blocking jobs and no queue.
+- Linux `linux_process` tests cover effective-group credentials, caller disconnect, concurrent reads
+  and one journal. `ordinary_restart_reads_before_explicit_reselection_without_second_patch` and
+  `restart_reads_before_explicit_reselection_without_a_second_patch` prove read-first startup and
+  explicit same-ID resumption, not automatic reconciliation before bind. Frozen-receipt restart
+  tests preserve original bytes under changed settings.
+- Startup, publication and asset tests cover fixed roots, no-follow rules, lifecycle exclusion,
+  graceful retirement, exact argv, stale sockets, systemd, sysusers and namespaced RBAC.
+  Root-substitution tests prove journal creation and socket bind stay with retained directory
+  identities; receipt retrieval has no receipt-root dependency.
 
-Service-client tests freeze its three-command grammar, bounded framing, receipt digest verification,
-exclusive mode-`0600` output, and refusal to replace an existing file. `kapsel-authority` tests
-freeze shared grant/trust vectors and consistency. Its `grammar_tests` own the table-driven request
-bounds and spelling cases. Gateway and service tests prove field-error projection and rejection
-before persistence or application access rather than repeating that grammar matrix. This does not
-turn the authority package into a public SDK. The [Kapsel service contract](KAPSEL_SERVICE.md) owns
-the complete unpublished boundary.
+Service-client tests freeze five versioned commands (`list`, `history`, `submit`, `status`,
+`receipt`), bounded framing, receipt digest verification, exclusive mode-`0600` output and refusal
+to replace an existing file. `kapsel-authority` tests freeze shared grant/trust vectors and
+consistency. Its `grammar_tests` own request bounds and spelling; gateway and service tests own
+rejection before persistence or application access rather than repeating that matrix. This does not
+make the authority package a public SDK.
 
-The service is absent from v0.2.0 and remains unpublished. Its active coverage does not qualify an
-installer. [Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover
-hosts that ran staged installer builds.
+The [service contract](KAPSEL_SERVICE.md) owns composition and protocol; the
+[effect-gateway contract](EFFECT_GATEWAY.md) owns admission, recovery and receipt semantics.
+[Build and test](BUILD.md#kapsel-service-candidate) owns source and separate Linux commands. These
+checks do not establish installed-native equivalence, disk-backed or power-loss durability, or live
+Kubernetes qualification. The service is absent from v0.2.0 and remains unpublished; coverage does
+not qualify an installer.
+[Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover hosts that ran
+staged installer builds.

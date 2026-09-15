@@ -13,7 +13,7 @@ receiver results and receipts. [Technical scope](SCOPE.md) owns the accepted pro
 bounded local caller
   -> /run/kapsel/kapseld.sock
        -> kapseld under a separate OS identity
-            -> kapsel::Application
+            -> kapsel::ServiceApplication
                  -> sole SQLite effect journal
                  -> concrete Kubernetes adapter
 ```
@@ -23,17 +23,128 @@ read the same action's status and original receipt without gaining credentials o
 to send a mutation again. It is retained as the current bounded broker composition, not a permanent
 hosting or installation commitment.
 
-The sole capability is `kubernetes.set_deployment_image`. The service requires an exact-snapshot v2
-grant at startup and restart, binding the operation tuple and independently acquired Deployment UID
-and resourceVersion. Legacy grants fail before journal opening or recovery. Existing handles cannot
-acquire replacement authority. Legacy CLI/MCP grants keep their original meaning, but old journal
-versions cannot be opened by current source.
+The sole capability is `kubernetes.set_deployment_image`. Service execution requires an
+exact-snapshot v2 grant, binding the operation tuple and independently acquired Deployment UID and
+resourceVersion. The multi-action application may authenticate retained v1 history for status and
+original receipt reads, but rejects v1 selection before acknowledgement or advancement. CLI/MCP
+retain v1 execution. Existing handles cannot acquire replacement authority. Legacy CLI/MCP grants
+keep their original meaning, but old journal versions cannot be opened by current source.
 [Exact-snapshot approval](EFFECT_GATEWAY.md#exact-snapshot-approval-in-unpublished-head) owns those
-distinctions. The service composes `Application`, never gateway internals.
+distinctions. The service composes `ServiceApplication`, never gateway internals.
 
-The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) considers durable admission,
-multi-identity visibility and active versus blocked status. Those are proposed changes, not the
-protocol or lifecycle implemented below.
+The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) selects durable admission,
+multi-identity visibility and read-first resumption. Unreleased source now adopts the version-1
+socket, fixed client, read-first startup and cold operator-document replacement together.
+Physical-capacity/live qualification remains outstanding acceptance work; this slice does not
+establish the full proposed workflow or released support.
+
+## Multi-action application boundary
+
+`kapsel::ServiceApplication` owns one bounded catalog over one gateway journal. It is not a map of
+single-action `Application` instances. The operator supplies at most 32 signed snapshot approvals,
+at most 4 KiB each, with printable ASCII labels of at most 128 bytes. Decoded grant/label data and
+the eventual encoded operator document each have a 160-KiB ceiling. Labels are display-only. Up to
+128 unique, separately appointed historical grant keys are accepted. Malformed global appointments
+or duplicate selectable IDs fail before journal opening. Operator provisioning, not target-name
+comparison or caller cooperation, determines action independence.
+
+Catalog listing returns at most eight handles after an exact optional identity cursor. It neither
+inserts nor observes. Selection supplies only an ID. Retained history resolves under its original
+grant even after catalog removal. Current catalog membership cannot replace retained authority.
+Stored status and exact receipt reads require neither Kubernetes configuration, receipt seeds nor
+export access. Missing historical trust is an authority error, not absence.
+
+History pages contain at most eight retained IDs in bytewise ascending order, after an optional
+bounded identity cursor. A continuation cursor is returned only when another ID was found. Each ID
+has either an authenticated status/target projection or a bounded access error with no action facts.
+Missing one key does not suppress other entries. Listing IDs is not authentication, admission or
+proof of non-admission. Pages and per-ID reads are separate snapshots. Concurrent admissions can
+require restarting pagination to see new IDs ordered before an already-consumed cursor.
+
+The gateway owns [durable admission](EFFECT_GATEWAY.md#service-admission-and-historical-authority)
+and holds its single worker lease through commitment, acknowledgement and advancement. The
+application passes typed admission decisions to the runtime. It does not create background tasks.
+Receiver configuration and receipt signing material are optional execution inputs, never caller
+input. Their absence can block advancement but cannot hide authenticated stored history.
+
+The runtime below supplies deadline/disconnect task retention and the versioned socket grammar. Cold
+publication uses the lifecycle exclusion below; fresh native qualification remains separate.
+
+## Versioned operator document
+
+The multi-action application parser accepts one UTF-8 JSON document of at most 160 KiB. Its required
+fields are `service_configuration_version` (integer `1`), `authorization_keys`, `approvals`, and
+`receipt_signing_key_id`. Unknown, duplicate, missing or wrong-typed fields fail closed. This
+grammar is separate from the legacy CLI/MCP operator document and is the fixed startup input.
+
+`authorization_keys` contains at most 128 objects with exactly `key_id` and `public_key_hex`. Public
+keys are exactly 64 lowercase hexadecimal characters. `approvals` contains at most 32 objects with
+exactly `label` and `signed_grant_hex`. Grant hex is nonempty, lowercase, even-length and decodes to
+at most 4 KiB. Labels retain the printable ASCII/128-byte limit. Count overflow is rejected before
+deserializing the extra element. The whole-document byte limit precedes JSON parsing.
+
+There are no configurable private paths in this service document. The host retains the fixed
+journal, Kubernetes configuration and receipt-seed paths. `receipt_signing_key_id` is a bounded
+public identity, not signing material. Parsing establishes structure and bounds. Application opening
+verifies grants, external appointments and retained-identity consistency before use. Missing,
+unreadable, unsafe or malformed execution material does not invalidate the read composition. Startup
+snapshots only safely bounded fixed-file bytes; invalid execution inputs are unavailable, never a
+reason for ambient fallback. The tracked selection job constructs the explicit receiver client
+lazily from that snapshot. Construction failure leaves the receiver unavailable; receipt signing is
+independently optional. Admission may remain unfinished without a receiver outcome. There is no hot
+reload, generated replacement key or automatic retry. Invalid authority, operator documents,
+retained roots and journals still fail closed normally. Cold replacement must validate the complete
+document before publication under lifecycle exclusion.
+
+## Cold publication and graceful retirement
+
+The operator-only invocation is exactly `/usr/libexec/kapsel/kapseld --replace-operator-config`,
+under the existing service UID and effective GID. Ordinary daemon argv is unchanged. No
+socket/client maintenance request, alternate path, privilege transition or staged startup document
+exists. Stdin must contain one complete candidate; reading is bounded to 160 KiB plus one
+overflow-detection byte and requires EOF within that bound.
+
+Both entrypoints acquire an exclusive nonwaiting `flock` on the fixed
+`/var/lib/kapsel/kapseld.lifecycle.lock` before consuming authority (including candidate stdin). The
+lock is a zero-length regular file, mode `0600`, service UID/effective GID, one link, opened without
+following symlinks and close-on-exec. Creation is exclusive; the acquired descriptor must still
+identify the named inode. Never unlink or replace this lock. Retained private directory descriptors
+anchor subsequent access. Exclusion ends only after physical jobs, application handles and retained
+roots retire. Stable roots and cooperative launches are host assumptions: replacement of the state
+root or old binaries ignoring the lock defeats exclusion.
+
+Publication validates all appointments and approvals, then retained identity, schema, integrity and
+capacity through the shared application/gateway verification in one read-only, no-create journal
+snapshot. It refuses recovery requiring writes, never uses SQLite immutable mode, and never admits,
+reconciles, signs or contacts Kubernetes. A genuinely absent journal permits pure configuration
+validation only; leftover journal sidecars or worker-lock artifacts are not fresh history. Missing
+trust still blocks only the affected historical ID, not removal of unrelated catalog appointments.
+Validation handles close before publication. The publisher creates an exclusive private temporary
+file in the retained configuration directory, writes the exact validated bytes, syncs the file,
+rechecks destination custody, renames over fixed `operator.json`, then syncs the directory. It
+cleans only a temporary inode demonstrably owned by this invocation; stale temporary files are not
+adopted.
+
+Stdout is exactly one ASCII status line, at most 14 bytes including LF; stderr is empty. If stdout
+cannot be written, the publisher exits `5`; absence or truncation of a line is not an outcome proof.
+
+| Status line     | Exit | Meaning                                                              |
+| --------------- | ---- | -------------------------------------------------------------------- |
+| `PUBLISHED`     | 0    | Rename and directory synchronization completed.                      |
+| `NOT_PUBLISHED` | 4    | Refusal before rename; non-publication is proven.                    |
+| `INDETERMINATE` | 5    | Publication was attempted but its result or durability is uncertain. |
+
+A rename syscall error is conservatively `INDETERMINATE`, not proof that the destination is
+unchanged. No automatic rollback follows a rename attempt. Lost responses and process crashes
+require operator inspection; they never imply non-publication.
+
+The daemon registers SIGTERM before blocking startup or authority loading. A stop during startup is
+retained: started blocking work finishes without cancellation, then no listener is bound. Serving
+gives a ready stop priority over accept, closes its listener, drains admitted handlers and physical
+jobs while driving the current-thread reactor, then retires applications and roots before the lease.
+`TimeoutStopSec=infinity` deliberately means hung storage leaves stop incomplete and publication
+excluded indefinitely. Manual SIGKILL is crash recovery, not graceful retirement or proof that an
+attempted publication did not occur. Startup never automatically reconciles.
 
 ## Runtime inventory
 
@@ -44,7 +155,7 @@ protocol or lifecycle implemented below.
 | Caller interface       | One length-prefixed JSON request and response per Unix-socket connection                                                 |
 | Authentication         | Parent `0750`, socket `0660`, service UID and `kapsel-service-callers` GID; exact effective caller-group peer credential |
 | Connection resources   | At most eight admitted connections; two-second read/write deadlines; no queue                                            |
-| Durable store          | Existing format-4 SQLite effect journal only                                                                             |
+| Durable store          | Format-5 SQLite effect journal only                                                                                      |
 | Configuration          | Fixed `/etc/kapsel/operator.json`; private authority beneath `/etc/kapsel`                                               |
 | OS ownership           | Locked service identity, `0700` private roots and `0600` private files                                                   |
 | Caller identity        | Locked `kapsel-service-caller`, primary/effective group `kapsel-service-callers`                                         |
@@ -54,13 +165,12 @@ protocol or lifecycle implemented below.
 
 ## Authority and filesystem
 
-The operator provisions the existing operator-document grammar at these exact paths. There is no
-installer in the active source tree:
+The operator provisions the versioned service document at the fixed configuration path. Its
+approvals and external public-key appointments replace the former separate grant/key files. There is
+no installer in the active source tree:
 
 ```text
 /etc/kapsel/operator.json
-/etc/kapsel/grant.bin
-/etc/kapsel/authorization.pub
 /etc/kapsel/kubeconfig.yaml
 /etc/kapsel/receipt.seed
 /var/lib/kapsel/journal.sqlite3
@@ -73,8 +183,8 @@ present. Credentials and signing material never enter caller input or service re
 
 Startup opens `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` descriptor-relatively and
 validates owners, modes, types, link counts, path components and stable consumed bytes. It retains
-those roots. `/var/lib/kapsel/receipts` is not opened or required. The optional operator-document
-`receipt_directory` is only a CLI/MCP export destination.
+those roots. `/var/lib/kapsel/receipts` is not opened or required. The separate legacy CLI/MCP
+operator document may still configure `receipt_directory`; the service document has no such field.
 
 Journal/SQLite sidecar access and socket preparation/bind resolve through Linux `/proc/self/fd/<fd>`
 paths for retained handles. Each procfs path must resolve to the same device, inode, owner, group,
@@ -89,14 +199,68 @@ Host root, procfs, kernel and service identity remain trusted.
 
 `receiver_observed` freezes the historical statement before signing. Exact signed bytes, digest,
 signer identity and terminal `finalized` state commit together. There is no durable receipt path or
-filesystem-publication phase. Journal versions older than format 4 are rejected before
-reconciliation and binding, without migration.
+filesystem-publication phase. Journal versions older than format 5, including format 4, are rejected
+before reconciliation and binding, without migration.
 
-Receipt requests read committed bytes through `Application`; callers receive no journal access.
-Retrieval never re-signs or contacts Kubernetes. The service-client receipt command exports a copy
-separately. Export failure cannot change terminal status or block later retrieval. Database
+Receipt requests read committed bytes through `ServiceApplication`; callers receive no journal
+access. Retrieval never re-signs or contacts Kubernetes. The service-client receipt command exports
+a copy separately. Export failure cannot change terminal status or block later retrieval. Database
 availability is required for retrieval. Consistent backups must preserve action history and receipt
 bytes together. There is no automatic backup or host-loss continuity promise.
+
+## Version-1 socket adoption contract
+
+This contract is implemented together with the fixed client and startup composition in unreleased
+HEAD. Unversioned task-only acceptance is not supported. Task creation is never durable admission.
+
+Every request is a named JSON object with integer `version: 1`. Version is mandatory on every
+variant. Unversioned input, other versions, positional arrays, duplicate/unknown fields and trailing
+values fail before application access. Read and framing limits stay unchanged.
+
+```json
+{"version":1,"request":"list_approved_actions","after":null}
+{"version":1,"request":"list_operation_history","after":null}
+{"version":1,"request":"get_set_deployment_image_status","operation_id":"operation-id"}
+{"version":1,"request":"get_set_deployment_image_receipt","operation_id":"operation-id"}
+{"version":1,"request":"submit_set_deployment_image","operation_id":"operation-id"}
+```
+
+List requests require `after`, either null or a bounded identity. Catalog cursors must name a
+current selectable entry. History cursors are bytewise lower bounds. Submission has no tuple, grant,
+key, path, budget or lifecycle fields. The application resolves original authority.
+
+Every response includes `version: 1`. Selection returns one of:
+
+- `status: "ADMITTED"` and the confirmed durable `phase`, using the gateway's lowercase state names.
+  This includes an identical existing identity. It does not claim a live worker or receiver success.
+- `status: "NOT_ADMITTED"` and `reason: "BUSY"` or `"CAPACITY"` for a definite refusal of new work.
+- `status: "INDETERMINATE"` when commitment has not settled before the decision deadline.
+- `status: "ERROR"` with `error_class: "invalid_request"`, `"authority_unavailable"` or
+  `"operation_failure"`. An operation error or lost response is not proof of non-admission.
+
+The admission decision deadline is two seconds after complete frame read. Runtime retains the
+selected ID, task and permits through unsettled commitment. A contention probe pins the original
+selection ownership before reading and retains it through the decision, then checks current
+ownership again. Ownership must be published before work starts. Sampling only after the read can
+miss a selection that committed and finished during the probe. An absence read for that in-flight ID
+must not be turned into definite non-admission. Final physical retirement can race failed permit
+acquisition and the attempted ownership pin, including after supervisor cancellation. If no original
+generation can be pinned, an absence result stays `INDETERMINATE` regardless of the later ownership
+sample: a matching successor may already have admitted and retired. Authenticated positive admission
+and access errors retain their meanings. Existing admitted identities resolve before busy refusal
+without creating another execution task. The application provides a read-only admission lookup with
+the same selection authorization checks. It cannot settle another task's pending commit.
+
+Read responses keep their existing status/receipt meanings with the required version field.
+Catalog/history responses contain `status: "READY"`, at most eight `entries` and `next_cursor` as
+null or the last returned identity when more entries exist. Catalog entries contain `operation_id`,
+`namespace`, `deployment`, `container`, `immutable_image_digest`, `approved_target` and `label`.
+History entries contain `operation_id` and an authenticated status/target projection, or only
+`operation_id`, `status: "ERROR"` and a bounded access error. No error entry contains action facts.
+
+The fixed client's replacement grammar is `list [after-id]`, `history [after-id]`, `submit <id>`,
+`status <id>` and `receipt <id> <new-output-file>`. It must reject responses without version 1 and
+retain existing bounds and exclusive receipt-export behavior. CLI/MCP commands remain separate.
 
 ## Protocol
 
@@ -105,36 +269,24 @@ write-half-close, one framed response, and close. Request length is 1–16 KiB. 
 at most 16 KiB and receipt responses at most 40 KiB. Aggregate frame-read and response-write
 deadlines are two seconds. Saturation closes immediately without reading a body or creating work.
 
-The socket accepts exactly:
-
-```json
-{"request":"get_set_deployment_image_status","operation_id":"operation-id"}
-{"request":"get_set_deployment_image_receipt","operation_id":"operation-id"}
-{"request":"submit_set_deployment_image","operation_id":"operation-id","namespace":"demo","deployment":"agent-api","container":"api","immutable_image_digest":"registry.example/agent-api@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
-```
-
-Input key order is insignificant. Duplicate, unknown, missing, null, wrong-typed, trailing,
-cross-request, malformed UTF-8, oversized, timed-out and out-of-grammar fields fail closed without
-lifecycle effect.
+The five version-1 commands above are the entire socket grammar. Input key order is insignificant.
+Duplicate, unknown, missing, null, wrong-typed, trailing, cross-request, malformed UTF-8, oversized,
+timed-out and out-of-grammar fields fail closed without lifecycle effect.
 
 Status returns `NOT_FOUND`, `IN_PROGRESS`, `NOT_ATTEMPTED` with its required `target_rejection`,
 `SUCCEEDED`, `FAILED`, or `UNKNOWN`, without Kubernetes access. It projects `approved_target`,
 `observed_target` and `attempt_target` as null or bounded objects with `uid` and `resource_version`.
 Missing observed members are null. `NOT_FOUND` carries no target facts.
 
-Receipt responses are `{"status":"NOT_FOUND"}`, `{"status":"NOT_READY"}`, or a ready record
-containing only `status:"READY"`, `receipt_hex` and `receipt_sha256`. Hex and digest are lowercase
-and identify the exact journal-frozen bytes. A pre-attempt rejection has no effect receipt.
+Receipt responses are `{"version":1,"status":"NOT_FOUND"}`, `{"version":1,"status":"NOT_READY"}`, or
+a ready record containing only `version:1`, `status:"READY"`, `receipt_hex` and `receipt_sha256`.
+Hex and digest are lowercase and identify the exact journal-frozen bytes. A pre-attempt rejection
+has no effect receipt.
 
-A submission that acquires the sole execution slot, matches the configured grant and installs the
-background task returns `{"status":"ACCEPTED"}`. This means only process ownership of execution and
-the slot. It may precede durable visibility and is not receiver success. Disconnect or response
-failure does not cancel execution. Completion is observed through status and receipt reads.
-
-A submission that cannot acquire the slot immediately returns `{"status":"BUSY"}`. It waits for
-nothing, creates no queue, calls no `Application` method and changes no lifecycle fact. Invalid
-requests return `invalid_request`; application or exact-grant failures return the non-disclosing
-`operation_failure`. Peer denial, framing failure, timeout, saturation and over-limit responses
+Selection returns only the durable admission decisions defined above. Disconnect or response failure
+does not cancel surviving execution. Completion is observed through status and receipt reads. A
+contended selection authenticates retained admission before deciding whether new work was refused.
+No queue is created. Peer denial, framing failure, read timeout, saturation and over-limit responses
 close without a response.
 
 ## Fixed service client
@@ -142,17 +294,20 @@ close without a response.
 The source client's exact grammar is:
 
 ```text
-kapsel-service-client submit <operation-id> <namespace> <deployment> <container> <immutable-image-digest>
+kapsel-service-client list [after-id]
+kapsel-service-client history [after-id]
+kapsel-service-client submit <operation-id>
 kapsel-service-client status <operation-id>
 kapsel-service-client receipt <operation-id> <new-output-file>
 ```
 
 It has no socket, authority, retry, lifecycle or protocol configuration. It connects only to
 `/run/kapsel/kapseld.sock`, sends one frame, write-half-closes, reads one bounded response and
-exits. `submit` and `status` print the exact one-line JSON response. `receipt` accepts only `READY`,
-validates lowercase hex and SHA-256, and creates a new regular mode-`0600` file without following or
-replacing a path. It prints bounded JSON with status, digest and the caller-selected output
-pathname, not receipt bytes. Other daemon statuses fail without creating output.
+exits. It rejects responses without integer version 1. `list`, `history`, `submit` and `status`
+print the exact one-line JSON response. `receipt` accepts only `READY`, validates lowercase hex and
+SHA-256, and creates a new regular mode-`0600` file without following or replacing a path. It prints
+bounded JSON with status, digest and the caller-selected output pathname, not receipt bytes. Other
+daemon statuses fail without creating output.
 
 The caller-selected export path is local to the client, never daemon authority. There is no SDK or
 reusable protocol package. The [source operator guide](KAPSEL_SERVICE_OPERATOR.md) shows the fixed
@@ -160,8 +315,22 @@ caller identity and primary/effective group. No supplementary membership is requ
 
 ## Execution and process lifecycle
 
-Execution and projection `Application` handles may open the same configured operation and journal.
-They are two handles to one store. Projection does not advance lifecycle state or call Kubernetes.
+Execution and projection `ServiceApplication` handles open the same bounded catalog and journal.
+They are two handles to one store, not separate lifecycle owners. Projection does not advance
+lifecycle state or call Kubernetes.
+
+Source now runs synchronous storage in a bounded blocking-job registry rather than on the
+current-thread reactor. Each job is registered before it starts. Its supervisor and blocking closure
+share connection ownership, and execution also retains its one execution permit. A response deadline
+or supervisor cancellation cannot free resources while the blocking closure survives. At most eight
+jobs are tracked, and completed records are reaped rather than accumulated.
+
+On SIGTERM, finite serving completion or a recoverable accept error, stop accepting and drain
+handlers, then supervisors and final blocking-job ownership while still inside the outer runtime
+`block_on`. Only afterward may applications/SQLite, retained roots and lifecycle exclusion be
+released. A stuck fsync can block retirement indefinitely. Runtime destruction is not a graceful
+drain, because `Handle::block_on` cannot drive a current-thread runtime's I/O and timers itself.
+Cold publication waits for this retirement through the shared nonwaiting lifecycle lock.
 
 The exact ordinary argv is:
 
@@ -169,17 +338,20 @@ The exact ordinary argv is:
 /usr/libexec/kapsel/kapseld --operator-config /etc/kapsel/operator.json --socket /run/kapsel/kapseld.sock
 ```
 
-Startup accepts no environment configuration or finite-connection input. It opens and reconciles the
-execution application before binding, opens the projection application, secures the socket and
-serves indefinitely. There is no periodic retry or automatic same-boot restart loop.
+Startup accepts no environment configuration or finite-connection input. It opens authenticated read
+and execution applications without reconciliation, secures the socket and serves indefinitely.
+Kubernetes configuration, receipt seed and export availability are not prerequisites for reads. Only
+explicit ID selection can request a bounded advancement pass. There is no periodic retry or
+automatic same-boot restart loop.
 
 Before bind, it removes an existing socket leaf only when no listener answers and metadata shows an
 exact single-link socket owned by the service UID and caller-group GID with mode `0660`. Every other
 leaf remains unchanged and startup fails. Systemd may then remove the service-owned runtime
 directory and leaf. After bind, exact socket type, owner, group and mode are verified again.
 
-SIGTERM or process loss may interrupt a durable window. The next explicit activation uses gateway
-recovery. After `apply_started`, it observes and never resends. Ordinary status/receipt reads cannot
+SIGTERM drains surviving work; process loss or manual SIGKILL may interrupt a durable window. After
+activation, callers read first and explicitly reselect the same identity when appropriate. After
+`apply_started`, gateway recovery observes and never resends. Ordinary status/receipt reads cannot
 invoke the test-only later-observation prototype or change a terminal `UNKNOWN`.
 
 The unit uses `Type=exec`, `User=kapsel`, `Group=kapsel-service-callers`, `RuntimeDirectory=kapsel`,
@@ -193,10 +365,10 @@ exposes no administrative or health request.
 ## Kubernetes authority and installed assets
 
 RBAC permits namespaced `get` and `patch` on the named Deployment. It is not a field policy. The
-concrete adapter enforces the exact approved image operation. Credentials are loaded at startup;
-issuance and renewal are operator responsibilities. Credential expiry cannot become a receiver
-result. Local reads remain available while the process is running, but startup reconciliation may
-need receiver access for an unfinished action.
+concrete adapter enforces the exact approved image operation. Safe credential bytes are snapshotted
+at startup and the receiver client is constructed only on selection; issuance and renewal remain
+operator responsibilities. Credential expiry cannot become a receiver result. Local reads do not
+need receiver access; there is no startup reconciliation.
 
 | Repository input                          | Direct-source destination                          |
 | ----------------------------------------- | -------------------------------------------------- |

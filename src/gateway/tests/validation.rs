@@ -1,4 +1,111 @@
     #[test]
+    fn first_commit_retains_exact_grant_and_rejects_changed_custody() {
+        let path = database_path("retained-grant");
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        let request = request();
+        let signed = sign_authorization_grant(
+            &authorization(&request),
+            &[7_u8; 32],
+            "effect-gateway-authorization-test-key",
+        )
+        .unwrap();
+        assert!(matches!(
+            gateway.submit_authorized_with_fault(
+                &request,
+                &signed,
+                Some(FaultPoint::RequestedCommitted),
+            ),
+            Err(GatewayError::InjectedFault)
+        ));
+        let stored: Vec<u8> = gateway.journal.connection.query_row(
+            "SELECT signed_authorization_grant FROM kubernetes_image_operations
+             WHERE operation_id = ?1",
+            [&request.operation_id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(stored, signed);
+        assert_eq!(gateway.get(&request.operation_id).unwrap(), Some(OperationState::Requested));
+        gateway.journal.connection.execute(
+            "UPDATE kubernetes_image_operations SET signed_authorization_grant = ?1
+             WHERE operation_id = ?2",
+            params![b"changed".as_slice(), request.operation_id],
+        ).unwrap();
+        assert!(matches!(
+            gateway.submit_authorized(&request, &signed),
+            Err(GatewayError::OperationIdentityConflict)
+        ));
+        assert_eq!(gateway.get(&request.operation_id).unwrap(), Some(OperationState::Requested));
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn history_bounds_bytes_before_copying_corrupted_text_ids() {
+        let path = database_path("history-nul-id");
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        let request = request();
+        gateway.submit_exact_for_test(&request, &authorization(&request)).unwrap();
+        let corrupt_id = format!("a\0{}", "x".repeat(4096));
+        Connection::open(&path).unwrap().execute(
+            "UPDATE kubernetes_image_operations SET operation_id = ?1",
+            [&corrupt_id],
+        ).unwrap();
+        // Test the SQL projection, before gateway grammar validation could hide an oversized copy.
+        assert!(matches!(
+            gateway.journal.history_ids(None),
+            Err(GatewayError::Database(rusqlite::Error::InvalidColumnType(
+                0, _, rusqlite::types::Type::Null,
+            ))),
+        ));
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn retained_history_uses_external_trust_and_isolates_missing_keys() {
+        let path = database_path("retained-trust-isolation");
+        let key = |id: &str, seed: u8| AuthorizationTrust {
+            key_id: id.into(),
+            public_key: ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+                .verifying_key().to_bytes(),
+        };
+        let gateway = Gateway::open_with_authorities(
+            &path, vec![key("a", 7), key("b", 8)],
+        ).unwrap();
+        for (id, seed) in [("a", 7), ("b", 8)] {
+            let mut operation = request();
+            operation.operation_id = id.into();
+            let signed = sign_authorization_grant(
+                &authorization(&operation), &[seed; 32], id,
+            ).unwrap();
+            gateway.submit_authorized(&operation, &signed).unwrap();
+            let retained = gateway.retained_operation(id).unwrap().unwrap();
+            assert_eq!(retained.request, operation);
+            assert_eq!(retained.signed_grant, signed);
+            assert_eq!(retained.operation.state(), OperationState::Authorized);
+        }
+        drop(gateway);
+        let gateway = Gateway::open_with_authorities(&path, vec![key("b", 8)]).unwrap();
+        assert!(matches!(
+            gateway.retained_operation("a"), Err(GatewayError::UntrustedAuthorizationGrant),
+        ));
+        assert_eq!(gateway.retained_operation("b").unwrap().unwrap().request.operation_id, "b");
+        assert!(gateway.retained_operation("absent").unwrap().is_none());
+        drop(gateway);
+        let gateway = Gateway::open_with_authorities(&path, Vec::new()).unwrap();
+        assert!(matches!(
+            gateway.retained_operation("b"), Err(GatewayError::UntrustedAuthorizationGrant),
+        ));
+        drop(gateway);
+        let gateway = Gateway::open_with_authorities(
+            &path, vec![key("a", 7), key("b", 8)],
+        ).unwrap();
+        assert!(gateway.retained_operation("a").unwrap().is_some());
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn mutable_image_is_rejected_before_persistence() {
         let path = database_path("mutable-image");
         let gateway = Gateway::open_for_test(&path).unwrap();
@@ -111,7 +218,9 @@
             "effect-gateway-authorization-test-key",
         )
         .unwrap();
-        let verified = verify_authorization_grant(&signed, &gateway.authorization_trust).unwrap();
+        let verified = verify_authorization_grant(
+            &signed, &gateway.authorization_trust[0],
+        ).unwrap();
         let authorized = AuthorizedRequest::bind(
             ValidatedRequest::try_from(&other).unwrap(),
             verified,
@@ -295,12 +404,13 @@
                         "INSERT INTO kubernetes_image_operations (
                             operation_id, namespace, deployment, container,
                             immutable_image_digest, authorization_id,
-                            authorization_signer_key_id, authorization_grant_digest, state
+                            authorization_signer_key_id, authorization_grant_digest, state,
+                            signed_authorization_grant, target_rejection
                          ) VALUES (?1, 'demo', 'agent-api', 'api', ?2, ?3, ?4, ?5,
-                                   'authorized')",
+                                   'not_attempted', ?6, 'deployment_not_found')",
                     )
                     .unwrap();
-                for index in 0..journal::OPERATION_COUNT_MAX {
+                for index in 0..journal::capacity::IDENTITY_CAPACITY {
                     insert
                         .execute(params![
                             format!("op-{index}"),
@@ -312,6 +422,7 @@
                             } else {
                                 "0000000000000000000000000000000000000000000000000000000000000000"
                             },
+                            signed,
                         ])
                         .unwrap();
                 }
@@ -326,7 +437,7 @@
             gateway
                 .submit_exact_for_test(&existing, &existing_authorization)
                 .unwrap(),
-            SubmissionResult::Existing(OperationState::Authorized)
+            SubmissionResult::Existing(OperationState::NotAttempted)
         );
 
         let mut overflow = request();
@@ -336,6 +447,84 @@
             Err(GatewayError::JournalFull)
         ));
         drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn unfinished_capacity_preserves_duplicates_and_releases_only_terminal_slots() {
+        let path = database_path("unfinished-capacity");
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        for index in 0..journal::capacity::UNFINISHED_CAPACITY {
+            let mut operation = request();
+            operation.operation_id = format!("unfinished-{index}");
+            gateway.submit_exact_for_test(&operation, &authorization(&operation)).unwrap();
+        }
+        let mut existing = request();
+        existing.operation_id = "unfinished-0".into();
+        assert_eq!(
+            gateway.submit_exact_for_test(&existing, &authorization(&existing)).unwrap(),
+            SubmissionResult::Existing(OperationState::Authorized),
+        );
+        let mut next = request();
+        next.operation_id = "next".into();
+        assert!(matches!(
+            gateway.submit_exact_for_test(&next, &authorization(&next)),
+            Err(GatewayError::JournalFull)
+        ));
+        let loaded = gateway.journal.operation(&existing.operation_id).unwrap().unwrap();
+        assert_eq!(loaded.state(), OperationState::Authorized);
+        if let LoadedOperation::Authorized(operation) = loaded {
+            gateway.journal.mark_not_attempted(
+                &operation, TargetRejection::DeploymentNotFound,
+            ).unwrap();
+        }
+        gateway.submit_exact_for_test(&next, &authorization(&next)).unwrap();
+        drop(gateway);
+        let reopened = Gateway::open_for_test(&path).unwrap();
+        assert_eq!(reopened.get("next").unwrap(), Some(OperationState::Authorized));
+        assert_eq!(reopened.get("unfinished-0").unwrap(), Some(OperationState::NotAttempted));
+        drop(reopened);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn concurrent_submissions_at_31_unfinished_preserve_original_authority() {
+        use std::sync::Barrier;
+
+        let path = database_path("unfinished-concurrent-last-slot");
+        let setup = Gateway::open_for_test(&path).unwrap();
+        for index in 0..31 {
+            let mut operation = request();
+            operation.operation_id = format!("unfinished-{index}");
+            setup.submit_exact_for_test(&operation, &authorization(&operation)).unwrap();
+        }
+        let original = super::storage::stored_rows(&setup.journal.connection);
+        drop(setup);
+        let barrier = Barrier::new(2);
+        let results = std::thread::scope(|scope| {
+            let threads = ["last-a", "last-b"].map(|id| {
+                let gateway = Gateway::open_for_test(&path).unwrap();
+                gateway.journal.connection.busy_timeout(Duration::from_secs(5)).unwrap();
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut operation = request();
+                    operation.operation_id = id.into();
+                    barrier.wait();
+                    gateway.submit_exact_for_test(&operation, &authorization(&operation))
+                })
+            });
+            threads.map(|thread| thread.join().unwrap())
+        });
+        assert_eq!(results.iter().filter(|result| matches!(result,
+            Ok(SubmissionResult::Created))).count(), 1);
+        assert_eq!(results.iter().filter(|result| matches!(result,
+            Err(GatewayError::JournalFull))).count(), 1);
+        let reopened = Gateway::open_for_test(&path).unwrap();
+        let rows = super::storage::stored_rows(&reopened.journal.connection);
+        assert_eq!(rows.len(), 32);
+        for (id, row) in original { assert_eq!(rows.get(&id), Some(&row)); }
+        drop(reopened);
+        journal::Journal::validate_replacement(&path, &[]).unwrap();
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -352,11 +541,12 @@
                     .prepare(
                         "INSERT INTO kubernetes_image_operations (
                             operation_id, namespace, deployment, container,
-                            immutable_image_digest, state
-                         ) VALUES (?1, 'demo', 'agent-api', 'api', ?2, 'requested')",
+                            immutable_image_digest, state, target_rejection
+                         ) VALUES (?1, 'demo', 'agent-api', 'api', ?2,
+                                   'not_attempted', 'deployment_not_found')",
                     )
                     .unwrap();
-                for index in 0..journal::OPERATION_COUNT_MAX - 1 {
+                for index in 0..journal::capacity::IDENTITY_CAPACITY - 1 {
                     insert
                         .execute(params![
                             format!("existing-{index}"),
@@ -416,7 +606,7 @@
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            journal::OPERATION_COUNT_MAX
+            journal::capacity::IDENTITY_CAPACITY
         );
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

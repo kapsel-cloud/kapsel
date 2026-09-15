@@ -747,7 +747,7 @@ fn clean_eof_opens_and_reopens_the_journal_without_lifecycle_work() {
         connection
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .unwrap(),
-        4
+        5
     );
     assert_eq!(
         connection

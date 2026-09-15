@@ -1,9 +1,13 @@
 # Delegated-action workflow proposal
 
-Status: selected v0.3 design direction, not implemented or approved for production adoption. The
-maintainer approved the placement and workflow choices below on 2026-09-13. Exact compatibility,
-resource accounting and qualification blockers remain explicit. No release, supported installation,
-protocol version or storage migration is adopted here.
+Status: selected v0.3 direction, with admission, retained authority, completion accounting and cold
+replacement implemented in unreleased source. The maintainer approved placement and workflow choices
+on 2026-09-13 and the compatibility, trust, capacity and cold-replacement directions on 2026-09-14.
+The [service contract](KAPSEL_SERVICE.md#version-1-socket-adoption-contract) owns current behavior.
+Independent review, deterministic tests, Linux process checks, bounded storage-failure tests and the
+live receiver lane provide implementation evidence. They do not establish installed-service or
+combined-artifact qualification. Observation policy and actionable status remain separate work. No
+release, supported installation or storage migration is adopted here.
 
 An operator prepares exact image actions. A caller selects one by a stable handle, then reconnects
 for status and original evidence. Kapsel retains admitted responsibility, but runs only one action
@@ -12,9 +16,10 @@ unselected intent and explicitly selects unfinished work after restart. There is
 
 The [scope](SCOPE.md), [effect gateway](EFFECT_GATEWAY.md), [service](KAPSEL_SERVICE.md),
 [architecture](ARCHITECTURE.md) and [release](RELEASE.md) remain current-behavior owners. This
-proposal owns the selected changes and unresolved adoption questions. New behavior and illustrative
-labels below are not callable interfaces. Canonical runtime contracts must change before their
-implementation, without presenting the design as shipped behavior.
+proposal owns the selected changes and unresolved adoption questions. Illustrative labels below are
+not an additional callable interface; use the canonical service contract for actual HEAD behavior.
+Remaining runtime contracts must change before implementation, without presenting the full design as
+shipped behavior.
 
 ## Decision and evidence
 
@@ -144,9 +149,12 @@ intent. Listing it creates no row, target read, scheduling obligation or freshne
 shows the stable ID, exact tuple, approved UID/version and an operator-written printable ASCII label
 of at most 128 bytes. The full digest remains inspectable; labels are not matching keys.
 
-Selection supplies the operation ID, or an exact tuple plus ID if the final compatibility decision
-requires it. The application resolves authority, never a caller grant, path or trust lookup. Any
-supplied tuple must match. The protocol spelling remains an explicit blocker, not a new command.
+Selection supplies only the operation ID. The application resolves exact operator authority, never a
+caller grant, path or trust lookup. Use the existing fixed socket with mandatory explicit service
+protocol versioning; refuse the old unversioned grammar before application access. Keep legacy
+CLI/MCP separate. Exact wire fields and vectors must be defined in the service contract before
+implementation. A separate versioned socket was rejected because it adds another endpoint and
+confinement surface without removing the need to reject old submission semantics.
 
 Selected custody direction:
 
@@ -157,9 +165,17 @@ Selected custody direction:
   historical access and unfinished recovery, receiver credentials and receipt signing material where
   completion requires it. A journal backup alone is still not a full recovery bundle.
 - Historical reads use the authenticated cohort and original retained authority, not current catalog
-  membership. Missing or withdrawn required trust fails closed with a bounded access error, not
-  `NOT_FOUND` or replacement authority. Exact trust-withdrawal and safe read-composition rules
-  remain an adoption blocker. No new expiry, revocation or rotation semantics are inferred.
+  membership. Maintain bounded, separately appointed external grant-key custody. Missing or
+  withdrawn required trust blocks access and advancement for that identity with a bounded authority
+  error, not `NOT_FOUND` or replacement authority. Unrelated valid identities remain available.
+  History exposes inaccessible IDs without unverified tuple or receipt details. An operation ID is
+  not authentication.
+- Safe stored reads do not depend on receiver credentials, receipt signing availability or export
+  access. Malformed global trust configuration or unsafe storage may still prevent startup. This
+  per-identity isolation is preferred over making one missing historical key hide all history.
+  Withdrawal does not change durable disposition or cancel responsibility. No new expiry, approval
+  refresh or receipt-verification purpose is introduced. Exact key-table bounds and same-snapshot
+  authority validation remain implementation obligations.
 - Catalog removal makes an unaccepted approval unselectable. It cannot revoke an admitted action,
   erase its responsibility, replace its approval or hide its receipt. Emergency stop is operator
   lifecycle control. A changed grant, tuple or snapshot under an existing ID fails closed.
@@ -172,9 +188,10 @@ Selected custody direction:
 
 The maintainer selected durable admission with one active worker, not one unfinished action. A
 blocked unfinished A releases execution ownership; an independently assessed B can then be selected.
-Admitted work is bounded by an explicit unfinished-identity cap as well as history/physical caps.
-The exact unfinished cap and accounting proof remain an adoption blocker. It cannot be an unbounded
-collection of detached tasks.
+Admitted work is bounded by 32 unfinished identities as well as history/physical caps. Count
+`requested`, `authorized`, `apply_started` and `receiver_observed` as unfinished. Terminal `UNKNOWN`
+still consumes history/physical capacity; freeing its unfinished slot is not conflict clearance.
+There is no detached task per retained identity. Completion-accounting proof remains required.
 
 Kapsel retains admitted responsibility and makes unfinished history available. The caller or
 operator owns when to explicitly reselect it. No fairness, FIFO, automatic waiting-work selection,
@@ -183,8 +200,10 @@ liveness promise, and the caller must retain unselected intent outside Kapsel.
 
 ### Admission and acknowledgement
 
-The new admission boundary must use a distinct, explicitly chosen protocol compatibility rule. It
-must not silently strengthen HEAD's `ACCEPTED` envelope.
+The new versioned admission boundary must distinguish confirmed retained admission, definite
+non-admission and indeterminate commitment. It must not silently strengthen HEAD's unversioned
+`ACCEPTED` envelope. A response describing retained admission is separate from execution activity
+and receiver result. The service contract must own exact envelopes and old/new refusal vectors.
 
 1. Authenticate, parse bounded input, resolve retained identity or selectable operator authority and
    validate original provenance inside the application/gateway boundary.
@@ -271,34 +290,55 @@ procedure prevents a stale selection from winning. Withdrawal after B was alread
 undo that responsibility. If this boundary cannot be enforced, adoption stays blocked pending a
 separately approved hold design. Do not implement an inferred conflict policy.
 
-The smallest candidate procedure to prove is stop admission, stop/join all old execution and storage
-tasks, preserve the journal and original authorities, install one validated private catalog, then
-restart read-first. No hot reload is required. A partially replaced configuration must fail closed;
-an old process or stale configuration must not remain able to accept withdrawn B. Exact atomic
-publication, operator acknowledgement and startup validation remain unresolved. Merely documenting
-stop/start is not the race proof. Removing A from the catalog never clears its unresolved history.
+Use enforced cold-only replacement. Stop admission and stop/join all old execution and storage
+tasks. Preserve the journal and original authorities. Publish one validated complete private catalog
+atomically, then restart read-first. Lifecycle exclusion must precede loading or caching authority,
+not merely socket binding or the next worker pass. The replacement acknowledgement must not precede
+old-task retirement and confirmed publication. No hot reload is introduced.
+
+A partially replaced configuration must fail closed. An old process or stale cached configuration
+must not remain able to accept withdrawn B. A cooperative lock cannot fence an old binary that does
+not acquire it, so qualified host launch confinement and retirement of old processes are required.
+Arbitrary trusted-operator rollback of configuration or executable is outside this guarantee.
+Journal-backed catalog freshness was considered but is not selected; it adds another publication
+commit boundary and still cannot constrain binaries that ignore it. Exact lock/publication/startup
+mechanics are now implemented and covered by Linux lifecycle/publication tests. The
+[service testing owner](TESTING.md#kapsel-service) distinguishes that evidence from installed-host
+qualification. Removing A from the catalog never clears its unresolved history.
 
 ## Finite resource proposal
 
-These limits are candidates retained for implementation proof, not measured guarantees. Current
-[journal bounds](EFFECT_GATEWAY.md#durable-facts-and-recovery) and
-[frame bounds](KAPSEL_SERVICE.md#protocol) remain unchanged until their owners are amended.
+The selected limits are now implemented. Current
+[journal bounds and completion accounting](EFFECT_GATEWAY.md#durable-facts-and-recovery) and
+[service resource bounds](KAPSEL_SERVICE.md#protocol) are canonical. The initial 10,000-identity
+candidate was superseded by **504 retained identities**, at most **32 unfinished**, with no pruning.
+This is an operating limit of the bounded preview, not a future automatic rotation policy.
 
-| Resource              | Candidate bound and required behavior                                                                                                                                                                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Catalog               | 32 approvals, 4 KiB per grant and 160 KiB aggregate encoded configuration including labels. Reject count/byte overflow before allocation or traversal. No dynamic caller path lookup.                                                                   |
-| Accepted work         | One active reconciliation and one admission transaction under exclusion. Multiple unfinished identities with an explicitly selected finite cap; cap and completion accounting are adoption blockers. No pending task per stored row.                    |
-| History               | 10,000 identities, 64 MiB main database, 65 MiB rollback artifact and existing per-value/row caps. First cap wins. Reserve room for frozen facts/receipt completion at admission, or refuse new work. Do not promise 10,000 maximum-sized receipts fit. |
-| Caller frames         | Retain 16 KiB requests/ordinary responses, 40 KiB receipt responses. Candidate catalog pages contain at most eight handles with bounded cursor and byte ceiling. No whole-history load per read.                                                        |
-| Tasks and connections | Eight admitted connections, immediate saturation close, no detached accumulation. A storage task keeps its permit until it actually stops, even after a response deadline.                                                                              |
-| Admission             | Candidate two-second decision deadline after frame read, with existing two-second read/write deadlines. Immediate lock refusal. Unsettled commit is indeterminate. No hard deadline on stalled fsync is claimed.                                        |
-| Advancement           | One bounded pass per explicit same-ID selection. Restart and reads do not advance work. No retry loop or caller-supplied budget.                                                                                                                        |
+Completion accounting depends on the pinned SQLite layout and owned write paths. Schema, statement
+or dependency changes must preserve those premises or revise the promise. The main rollback bound is
+not a bound on all temporary storage and does not reserve external filesystem space.
+
+Use conservative whole-identity completion reservation rather than a state-dependent remaining-byte
+ledger. Charge each new identity for its maximum retained authority, lifecycle facts, original
+receipt and SQLite overhead before acknowledgement. Do not reclaim the charge as the row grows. This
+trades history utilization for simpler crash accounting. The implemented 504-identity ceiling
+replaces the original 10,000-identity candidate; no pruning is provided to recover its charges.
+
+Do not choose a byte charge from payload sizes alone. SQLite stores table/index pages, overflow
+pages and rollback records with their own overhead. Its
+[maximum page count](https://sqlite.org/pragma.html#pragma_max_page_count) can constrain database
+growth, but does not reserve future completion. Its
+[journal size limit](https://sqlite.org/pragma.html#pragma_journal_size_limit) limits files left
+after transactions, not peak rollback growth. The
+[file format](https://sqlite.org/fileformat.html#the_rollback_journal) permits sector-padded headers
+between rollback segments. These primary references were read on 2026-09-14; they are design input,
+not a proof for this schema or platform.
 
 Prove configured completion reservation separately from physical disk-full/commit failure. Freeze
-schema only after row/decoder/index bounds, unfinished capacity and any observation fields agree. A
-reservation is not a guarantee against external filesystem exhaustion. Completion failure leaves
-frozen facts and admitted responsibility intact. Stable task/memory counts under delayed storage,
-repeated timeouts, connection churn and oversized output are required.
+schema only after row/decoder/index bounds, maximum transient allocation and any observation fields
+agree. A reservation is not a guarantee against external filesystem exhaustion. Completion failure
+leaves frozen facts and admitted responsibility intact. Stable task/memory counts under delayed
+storage, repeated timeouts, connection churn and oversized output are required.
 
 ## Observation budget and restart clocks
 
@@ -325,10 +365,11 @@ relaxed approval remain separate decisions, not prerequisites.
 
 ## Compare two implementation owners
 
-Prefer application-owned bounded catalog resolution with gateway-owned admission. `Application`
-resolves selectable or retained original authority. The gateway hides admission, reconciliation and
-blocked outcomes; the sole journal owns conditional rows, capacity and receipt commitment. Runtime
-owns peer/framing limits and task lifetime. This keeps lifecycle out of the transport.
+Prefer application-owned bounded catalog resolution with gateway-owned admission. `Application` was
+the original single-action owner; `ServiceApplication` now resolves selectable or retained original
+authority. The gateway hides admission, reconciliation and blocked outcomes; the sole journal owns
+conditional rows, capacity and receipt commitment. Runtime owns peer/framing limits and task
+lifetime. This keeps lifecycle out of the transport.
 
 The alternative is a service-owned collection of configured `Application` handles, as in the
 prototype. It reuses more existing construction but spreads custody, history and startup knowledge
@@ -340,26 +381,39 @@ Direct proof seams remain `src/application/mod.rs`, `src/gateway/mod.rs`,
 [application contract tests](../tests/application_contract.rs),
 [gateway lifecycle tests](../src/gateway/tests/lifecycle.rs),
 [dispatch tests](../src/gateway/tests/dispatch.rs), [receipt tests](../src/gateway/tests/receipt.rs)
-and [Linux service tests](../crates/kapseld/src/server/linux_tests.rs). Tests must independently
-count receiver HTTP, not just shim calls or result labels. Existing tests are not evidence for the
-new admission, retained-grant or provisioning rules.
+and [Linux service tests](../crates/kapseld/src/server/linux_tests.rs). The implemented
+[service application tests](../tests/service_application_contract.rs),
+[HTTP-backed A/B tests](../tests/application_retry/service_selection.rs) and
+[cold-publication process tests](../crates/kapseld/tests/linux_process/cold_publication.rs) now
+exercise the new admission, retained-authority and provisioning rules. Receiver HTTP counts remain
+independent of shim calls or result labels. See [testing](TESTING.md#kapsel-service) for the
+evidence boundary.
 
 ## Compatibility decisions before implementation
 
 The published v0.2.0 beta keeps its named CLI/MCP, grant v1, receipt/trust v2 and bounded historical
-continuity. Unpublished HEAD uses journal format 4, snapshot grant v2 and receipt v3. Keeping the
-resident service does not make those surfaces published or silently change old clients.
+continuity. The proposal baseline used journal format 4, snapshot grant v2 and receipt v3. Current
+source implements format-5 retained grants and the version-1 service admission workflow. Actionable
+status, observation policy and the installed operator journey still require their own work. Keeping
+the resident service does not make those surfaces published or silently change old clients.
 
-| Surface               | Selected direction or named adoption blocker                                                                                                    | Smallest decision/evidence needed                                                                                                                                                                      |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Protocol              | Durable acknowledgement, duplicate precedence, handle/history access and separate activity are selected; exact version/envelopes remain blocked | Choose explicit new-version/endpoint or old-client refusal policy, then bounded protocol vectors covering duplicates, BUSY and admission ambiguity. Keep legacy CLI/MCP separate.                      |
-| Storage               | Journal-retained signed grants and completion accounting are selected; new schema/opening policy remains blocked                                | Specify decoder/index/capacity changes and choose tested migration or unchanged refusal of format 4. Preserve multiple unfinished identities, original bytes and history. Never delete state to retry. |
-| Grant/trust           | Keep signed snapshot v2 authority and externally appointed trust; historical trust retention/withdrawal details remain blocked                  | Define bounded original-key resolution, missing-trust read/recovery behavior and operator custody tests. No signature removal, expiry or approval refresh.                                             |
-| Receipt               | Preserve exact v2/v3 bytes and purposes; no new receipt claim selected                                                                          | Retained vectors and original-byte retrieval across restart/catalog/key changes. A new observation claim must get a separate explicit version decision.                                                |
-| Completion capacity   | New admission must account for later completion; exact reservation and unfinished cap remain blocked                                            | Prove logical/physical accounting and full-capacity duplicates, external disk-full, interrupted commit and acknowledgement loss separately.                                                            |
-| Conflict provisioning | Operator-only independent catalog selected; replacement/race mechanism remains blocked                                                          | Hostile B selection through stop/update/restart and stale-process/configuration cases under actual Linux confinement.                                                                                  |
-| Observation           | Policy unresolved, no speculative schema fields                                                                                                 | Measured stopping/read/time comparison and explicit approval at the observation owner before implementation.                                                                                           |
-| Hosting/release       | Linux resident service selected, no supported artifact yet                                                                                      | Native service, artifact-only journey and exact combined-candidate qualification. Separate publication approval remains mandatory.                                                                     |
+The implemented journal format refuses format 4 unchanged, without migration or reinterpretation.
+Preserve old journals, their sidecars and original access materials under the matching binary. Do
+not delete or rotate history, or recreate old operations in a fresh journal. A fresh-format
+installation is not continuity for a populated experimental host. Format 4 retains grant digests,
+not the original signed bytes. Offline migration would require every original grant plus all-phase
+preservation and interruption proof; that additional compatibility path is not selected.
+
+| Surface               | Selected direction or named adoption blocker                                                  | Smallest decision/evidence needed                                                                                                                                                             |
+| --------------------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol              | Version-1 ID-only selection and durable admission/refusal/indeterminate outcomes implemented  | Reviewed protocol, contention and acknowledgement tests; legacy CLI/MCP remain separate.                                                                                                      |
+| Storage               | Format 5 retains signed grants and refuses format 4 unchanged                                 | Reviewed physical-layout and opening checks; no migration, history deletion or stale restoration as retry.                                                                                    |
+| Grant/trust           | Snapshot v2 service execution and externally appointed historical trust implemented           | Original-key validation and per-identity read isolation tested; historical v1 reads do not permit service execution.                                                                          |
+| Receipt               | Original v2/v3 bytes and purposes preserved                                                   | Retrieval tested across restart/catalog/key changes. New observation claims still require an explicit version decision.                                                                       |
+| Completion capacity   | 504 retained, 32 unfinished; whole-identity accounting implemented and independently reviewed | Full-capacity completion, bounded tmpfs ENOSPC and commit/acknowledgement failures tested. Process kills bracket commit, not death inside commit; no disk-backed or power-loss qualification. |
+| Conflict provisioning | Cold replacement, lifecycle exclusion and physical retirement implemented and reviewed        | Linux race/process checks passed. Installed-host confinement remains a qualification requirement, not established deployment support.                                                         |
+| Observation           | Policy unresolved, no speculative schema fields                                               | Measured stopping/read/time comparison and explicit approval at the observation owner before implementation.                                                                                  |
+| Hosting/release       | Linux resident service selected, no supported artifact yet                                    | Native service, artifact-only journey and exact combined-candidate qualification. Separate publication approval remains mandatory.                                                            |
 
 ## Adoption gate
 

@@ -17,14 +17,66 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use kapsel::{
-    provision_exact_grant, AgentRequest, Application, AuthorizationTrust, ExactAuthorization,
-    GrantProvisioning, OperatorConfiguration, SetDeploymentImageReceipt, SetDeploymentImageStatus,
-    TargetRejection,
+    provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
+    ServiceApplication as Application, ServiceApproval, ServiceConfiguration,
+    ServiceError as ApplicationError, ServiceExecution, SetDeploymentImageReceipt,
+    SetDeploymentImageStatus, TargetRejection,
 };
 use tokio::{net::UnixStream, runtime::Builder};
 use tower_test::mock;
 
 use super::{super::protocol::REQUEST_BYTES_MAX, *};
+
+trait FixtureReads: Send {
+    fn status(&self, id: &str) -> Result<SetDeploymentImageStatus, ApplicationError>;
+    fn receipt(&self, id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError>;
+}
+
+impl<T: FixtureReads> ApplicationReads for T {
+    fn read(&self, request: super::super::protocol::ReadRequest) -> (Vec<u8>, ResponseClass) {
+        use super::super::protocol::ReadRequest;
+        match request {
+            ReadRequest::Status(id) => (
+                protocol::render_status_with_targets(
+                    self.status(&id)
+                        .map(|status| (status, kapsel::OperationTargets::default())),
+                ),
+                ResponseClass::Ordinary,
+            ),
+            ReadRequest::Receipt(id) => (
+                protocol::render_receipt(self.receipt(&id)),
+                ResponseClass::Receipt,
+            ),
+            _ => (protocol::invalid_request(), ResponseClass::Ordinary),
+        }
+    }
+    fn admitted_state(&self, _: &str) -> Result<Option<kapsel::OperationState>, ServiceError> {
+        Ok(None)
+    }
+}
+
+struct FixtureExecution {
+    application: Application,
+    client: kube::Client,
+}
+impl ApplicationExecution for FixtureExecution {
+    async fn execute(
+        &mut self,
+        id: String,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+    ) -> Result<(), ServiceError> {
+        self.application
+            .select(
+                &id,
+                ServiceExecution {
+                    kubernetes_client: Some(self.client.clone()),
+                    receipt_signing: Some(([42; 32], "socket-receipt-key".into())),
+                },
+                acknowledged,
+            )
+            .await
+    }
+}
 
 #[derive(Default)]
 struct TestReads {
@@ -32,7 +84,7 @@ struct TestReads {
     receipt_calls: Arc<AtomicUsize>,
 }
 
-impl ApplicationReads for TestReads {
+impl FixtureReads for TestReads {
     fn status(&self, operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
         self.status_calls.fetch_add(1, Ordering::Relaxed);
         match operation_id {
@@ -75,7 +127,7 @@ struct ReadyReads {
     sha256: String,
 }
 
-impl ApplicationReads for ReadyReads {
+impl FixtureReads for ReadyReads {
     fn status(&self, _operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
         Ok(SetDeploymentImageStatus::NotFound)
     }
@@ -99,7 +151,7 @@ struct BlockingReads {
     status_calls: Arc<AtomicUsize>,
 }
 
-impl ApplicationReads for BlockingReads {
+impl FixtureReads for BlockingReads {
     fn status(&self, _operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
         self.status_calls.fetch_add(1, Ordering::Relaxed);
         let (lock, condition) = &*self.gate;
@@ -124,11 +176,14 @@ struct BlockingExecution {
 }
 
 impl ApplicationExecution for BlockingExecution {
-    fn matches(&self, _request: &AgentRequest) -> bool {
-        true
-    }
-
-    async fn execute(&mut self, _request: AgentRequest) -> Result<(), ApplicationError> {
+    async fn execute(
+        &mut self,
+        _request: String,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+    ) -> Result<(), ApplicationError> {
+        acknowledged(ServiceAdmission::Admitted(
+            kapsel::OperationState::Requested,
+        ));
         self.started.add_permits(1);
         self.release
             .acquire()
@@ -141,24 +196,26 @@ impl ApplicationExecution for BlockingExecution {
 
 struct CountingExecution<E> {
     inner: E,
-    matches_calls: Arc<AtomicUsize>,
     execute_calls: Arc<AtomicUsize>,
 }
 
 impl<E: ApplicationExecution> ApplicationExecution for CountingExecution<E> {
-    fn matches(&self, request: &AgentRequest) -> bool {
-        self.matches_calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.matches(request)
-    }
-
-    async fn execute(&mut self, request: AgentRequest) -> Result<(), ApplicationError> {
+    async fn execute(
+        &mut self,
+        request: String,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+    ) -> Result<(), ApplicationError> {
         self.execute_calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute(request).await
+        self.inner.execute(request, acknowledged).await
     }
 }
 
 #[test]
-fn finite_server_waits_for_the_final_accepted_execution() {
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "state is moved into the server until physical execution retires"
+)]
+fn finite_server_waits_for_the_final_admitted_execution() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let root =
@@ -186,7 +243,10 @@ fn finite_server_waits_for_the_final_accepted_execution() {
         ));
 
         write_frame_and_close(&mut client, submit_request().as_bytes()).await;
-        assert_eq!(read_frame(&mut client).await, br#"{"status":"ACCEPTED"}"#);
+        assert_eq!(
+            read_frame(&mut client).await,
+            br#"{"status":"ADMITTED","phase":"requested"}"#
+        );
         started.acquire().await.unwrap().forget();
         assert!(timeout(Duration::from_millis(20), &mut server)
             .await
@@ -325,7 +385,7 @@ fn socket_status_and_receipt_compose_real_application_reads_without_kubernetes()
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (application, mut kubernetes) = application(&root);
+        let (application, _execution, mut kubernetes) = applications(&root);
         let reads = Arc::new(Mutex::new(application));
         for (request, expected) in [
             (
@@ -363,7 +423,60 @@ fn socket_status_and_receipt_compose_real_application_reads_without_kubernetes()
 }
 
 #[test]
-fn authenticated_submit_accepts_one_real_application_execution() {
+fn id_only_catalog_history_status_and_receipt_use_the_real_read_bridge() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let root = std::env::temp_dir().join(format!("kapseld-pages-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        private_directory(&root);
+        let (reads, execution, mut receiver) = applications(&root);
+        let state = ServerState::new(reads, execution);
+        for (request, expected_status) in [
+            (
+                r#"{"request":"list_approved_actions","after":null}"#,
+                "READY",
+            ),
+            (
+                r#"{"request":"list_operation_history","after":null}"#,
+                "READY",
+            ),
+            (
+                r#"{"request":"get_set_deployment_image_status","operation_id":"socket-op-1"}"#,
+                "NOT_FOUND",
+            ),
+            (
+                r#"{"request":"get_set_deployment_image_receipt","operation_id":"socket-op-1"}"#,
+                "NOT_FOUND",
+            ),
+        ] {
+            let (mut client, server) = socket_pair();
+            let gid = server.peer_cred().unwrap().gid();
+            let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
+            write_frame_and_close(&mut client, request.as_bytes()).await;
+            let response: serde_json::Value =
+                serde_json::from_slice(&read_frame(&mut client).await).unwrap();
+            assert_eq!(response["status"], expected_status);
+            if request.contains("list_approved_actions") {
+                assert_eq!(response["entries"].as_array().unwrap().len(), 1);
+                assert_eq!(response["entries"][0]["operation_id"], "socket-op-1");
+                assert_eq!(response["entries"][0]["approved_target"]["uid"], "uid-1");
+                assert!(response["next_cursor"].is_null());
+            } else if request.contains("list_operation_history") {
+                assert_eq!(response["entries"], serde_json::json!([]));
+            }
+            handler.await.unwrap();
+        }
+        assert!(timeout(Duration::from_millis(20), receiver.next_request())
+            .await
+            .is_err());
+        state.jobs.drain().await;
+        drop(state);
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
+fn authenticated_submit_confirms_one_durable_application_admission() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let root =
@@ -378,7 +491,10 @@ fn authenticated_submit_accepts_one_real_application_execution() {
         let gid = server.peer_cred().unwrap().gid();
         let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
         write_frame_and_close(&mut client, submit_request().as_bytes()).await;
-        assert_eq!(read_frame(&mut client).await, br#"{"status":"ACCEPTED"}"#);
+        assert_eq!(
+            read_frame(&mut client).await,
+            br#"{"status":"ADMITTED","phase":"requested"}"#
+        );
         handler.await.unwrap();
 
         let (_, response) = timeout(Duration::from_secs(1), kubernetes.next_request())
@@ -400,7 +516,7 @@ fn authenticated_submit_accepts_one_real_application_execution() {
 }
 
 #[test]
-fn overlapping_submit_is_busy_without_a_second_application_attempt() {
+fn overlapping_same_id_is_admitted_without_a_second_application_attempt() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let root = std::env::temp_dir().join(format!("kapseld-busy-{}", std::process::id()));
@@ -408,13 +524,11 @@ fn overlapping_submit_is_busy_without_a_second_application_attempt() {
         private_directory(&root);
         private_directory(&root.join("receipts"));
         let (projection, execution, mut kubernetes) = applications(&root);
-        let matches_calls = Arc::new(AtomicUsize::new(0));
         let execute_calls = Arc::new(AtomicUsize::new(0));
         let state = ServerState::new(
             projection,
             CountingExecution {
                 inner: execution,
-                matches_calls: matches_calls.clone(),
                 execute_calls: execute_calls.clone(),
             },
         );
@@ -429,14 +543,13 @@ fn overlapping_submit_is_busy_without_a_second_application_attempt() {
         write_frame_and_close(&mut first_client, submit_request().as_bytes()).await;
         assert_eq!(
             read_frame(&mut first_client).await,
-            br#"{"status":"ACCEPTED"}"#
+            br#"{"status":"ADMITTED","phase":"requested"}"#
         );
         first_handler.await.unwrap();
         let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(matches_calls.load(Ordering::SeqCst), 1);
         assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
 
         let (mut second_client, second_server) = socket_pair();
@@ -448,10 +561,9 @@ fn overlapping_submit_is_busy_without_a_second_application_attempt() {
         write_frame_and_close(&mut second_client, submit_request().as_bytes()).await;
         assert_eq!(
             read_frame(&mut second_client).await,
-            br#"{"status":"BUSY"}"#
+            br#"{"status":"ADMITTED","phase":"authorized"}"#
         );
         second_handler.await.unwrap();
-        assert_eq!(matches_calls.load(Ordering::SeqCst), 1);
         assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
         assert!(
             timeout(Duration::from_millis(10), kubernetes.next_request())
@@ -488,7 +600,7 @@ fn reconnect_status_remains_available_while_execution_waits_on_provider() {
         write_frame_and_close(&mut submit_client, submit_request().as_bytes()).await;
         assert_eq!(
             read_frame(&mut submit_client).await,
-            br#"{"status":"ACCEPTED"}"#
+            br#"{"status":"ADMITTED","phase":"requested"}"#
         );
         submit_handler.await.unwrap();
         let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
@@ -507,12 +619,12 @@ fn reconnect_status_remains_available_while_execution_waits_on_provider() {
             br#"{"request":"get_set_deployment_image_status","operation_id":"socket-op-1"}"#,
         )
         .await;
-        assert_eq!(
-            timeout(Duration::from_secs(1), read_frame(&mut status_client))
-                .await
-                .unwrap(),
-            br#"{"status":"IN_PROGRESS"}"#
-        );
+        let status = timeout(Duration::from_secs(1), read_frame(&mut status_client))
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        assert_eq!(status["status"], "IN_PROGRESS");
+        assert_eq!(status["approved_target"]["uid"], "uid-1");
         status_handler.await.unwrap();
 
         send_not_found(provider_response);
@@ -591,7 +703,10 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
                 .unwrap();
         assert_eq!(observation_request.method(), http::Method::GET);
         let (_, competing_response) = submit_and_read(&state).await;
-        assert_eq!(competing_response, br#"{"status":"BUSY"}"#);
+        assert_eq!(
+            competing_response,
+            br#"{"status":"ADMITTED","phase":"apply_started"}"#
+        );
         assert!(
             timeout(Duration::from_millis(10), kubernetes.next_request())
                 .await
@@ -601,15 +716,11 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
         wait_for_status(&state, gid, br#"{"status":"SUCCEEDED"}"#).await;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-        loop {
-            let (_, replay_response) = submit_and_read(&state).await;
-            if replay_response == br#"{"status":"ACCEPTED"}"# {
-                break;
-            }
-            assert_eq!(replay_response, br#"{"status":"BUSY"}"#);
-            assert!(tokio::time::Instant::now() < deadline);
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let (_, replay_response) = submit_and_read(&state).await;
+        assert_eq!(
+            replay_response,
+            br#"{"status":"ADMITTED","phase":"finalized"}"#
+        );
         while state.submission.available_permits() == 0 {
             assert!(tokio::time::Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -639,12 +750,11 @@ fn grant_mismatched_submit_is_bounded_without_execution() {
         let (mut client, server) = socket_pair();
         let gid = server.peer_cred().unwrap().gid();
         let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
-        let mismatched =
-            submit_request().replace("\"container\":\"api\"", "\"container\":\"other\"");
+        let mismatched = submit_request().replace("socket-op-1", "unapproved-id");
         write_frame_and_close(&mut client, mismatched.as_bytes()).await;
         assert_eq!(
             read_frame(&mut client).await,
-            br#"{"status":"ERROR","error_class":"operation_failure"}"#
+            br#"{"status":"ERROR","error_class":"invalid_request"}"#
         );
         handler.await.unwrap();
         assert!(
@@ -794,9 +904,14 @@ fn blocked_application_read_does_not_prevent_another_frame_deadline() {
             status_calls: calls.clone(),
         }));
 
+        let server_state = ServerState::read_only(reads);
         let (mut blocked_client, blocked_server) = socket_pair();
         let gid = blocked_server.peer_cred().unwrap().gid();
-        let blocked_handler = tokio::spawn(serve_connection(blocked_server, gid, reads.clone()));
+        let blocked_handler = tokio::spawn(serve_connection_with_state(
+            blocked_server,
+            gid,
+            server_state.clone(),
+        ));
         write_frame_and_close(
             &mut blocked_client,
             br#"{"request":"get_set_deployment_image_status","operation_id":"blocked"}"#,
@@ -812,7 +927,11 @@ fn blocked_application_read_does_not_prevent_another_frame_deadline() {
         }
 
         let (mut idle_client, idle_server) = socket_pair();
-        let idle_handler = tokio::spawn(serve_connection(idle_server, gid, reads));
+        let idle_handler = tokio::spawn(serve_connection_with_state(
+            idle_server,
+            gid,
+            server_state.clone(),
+        ));
         idle_client.write_all(&[0_u8]).await.unwrap();
         let mut idle_response = Vec::new();
         let idle_result = timeout(
@@ -829,17 +948,34 @@ fn blocked_application_read_does_not_prevent_another_frame_deadline() {
         assert!(idle_response.is_empty());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
 
+        // Its response deadline also expired, but storage still owns the connection permit.
+        let mut blocked_response = Vec::new();
+        timeout(
+            IO_DEADLINE,
+            blocked_client.read_to_end(&mut blocked_response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(blocked_response.is_empty());
+        blocked_handler.await.unwrap();
+        assert_eq!(
+            server_state.connections.available_permits(),
+            CONNECTIONS_MAX - 1
+        );
         {
             let mut state = gate.0.lock().unwrap();
             state.release = true;
             drop(state);
             gate.1.notify_all();
         }
+        timeout(Duration::from_secs(1), server_state.jobs.drain())
+            .await
+            .unwrap();
         assert_eq!(
-            read_frame(&mut blocked_client).await,
-            br#"{"status":"NOT_FOUND"}"#
+            server_state.connections.available_permits(),
+            CONNECTIONS_MAX
         );
-        blocked_handler.await.unwrap();
     });
 }
 
@@ -957,7 +1093,7 @@ fn authenticated_hostile_json_and_submit_matrix_has_no_application_effect() {
         assert_socket_response(
             reads,
             submit.as_bytes(),
-            br#"{"status":"ERROR","error_class":"operation_failure"}"#,
+            br#"{"status":"ERROR","error_class":"invalid_request"}"#,
         )
         .await;
         assert_eq!(status_calls.load(Ordering::Relaxed), 0);
@@ -1021,27 +1157,20 @@ async fn assert_socket_response(reads: Arc<Mutex<TestReads>>, request: &[u8], ex
     handler.await.unwrap();
 }
 
-fn application(
-    root: &Path,
-) -> (
-    Application,
-    mock::Handle<http::Request<kube::client::Body>, http::Response<kube::client::Body>>,
-) {
-    let (projection, _execution, handle) = applications(root);
-    (projection, handle)
-}
-
 fn applications(
     root: &Path,
 ) -> (
     Application,
-    Application,
+    FixtureExecution,
     mock::Handle<http::Request<kube::client::Body>, http::Response<kube::client::Body>>,
 ) {
     let seed = [41_u8; 32];
     let key = SigningKey::from_bytes(&seed);
     let authorization = ExactAuthorization {
-        approved_target: None,
+        approved_target: Some(kapsel::ApprovedTarget {
+            uid: "uid-1".into(),
+            resource_version: "1".into(),
+        }),
         authorization_id: "socket-auth-1".into(),
         operation_id: "socket-op-1".into(),
         namespace: "demo".into(),
@@ -1062,21 +1191,23 @@ fn applications(
     let (service, handle) =
         mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
     let client = kube::Client::new(service, "demo");
-    let configuration = |client| OperatorConfiguration {
+    let configuration = || ServiceConfiguration {
         journal_path: fs::canonicalize(root).unwrap().join("journal.sqlite3"),
-        receipt_output_directory: Some(fs::canonicalize(root.join("receipts")).unwrap()),
-        authorization_trust: AuthorizationTrust {
+        authorization_trust: vec![AuthorizationTrust {
             key_id: "socket-authorization-key".into(),
             public_key: key.verifying_key().to_bytes(),
-        },
-        signed_authorization_grant: grant.clone(),
-        kubernetes_client: client,
-        receipt_signing_seed: [42_u8; 32],
-        receipt_signing_key_id: "socket-receipt-key".into(),
+        }],
+        approvals: vec![ServiceApproval {
+            signed_grant: grant.clone(),
+            label: "socket action".into(),
+        }],
     };
     (
-        Application::open(configuration(client.clone())).unwrap(),
-        Application::open(configuration(client)).unwrap(),
+        Application::open(configuration()).unwrap(),
+        FixtureExecution {
+            application: Application::open(configuration()).unwrap(),
+            client,
+        },
         handle,
     )
 }
@@ -1219,34 +1350,7 @@ fn deployment(resource_version: &str, generation: i64, observed: bool) -> serde_
 }
 
 fn submit_request() -> String {
-    let request = submit_agent_request();
-    format!(
-        concat!(
-            "{{\"request\":\"submit_set_deployment_image\",",
-            "\"operation_id\":\"{}\",\"namespace\":\"{}\",",
-            "\"deployment\":\"{}\",\"container\":\"{}\",",
-            "\"immutable_image_digest\":\"{}\"}}"
-        ),
-        request.operation_id,
-        request.namespace,
-        request.deployment,
-        request.container,
-        request.immutable_image_digest
-    )
-}
-
-fn submit_agent_request() -> AgentRequest {
-    AgentRequest {
-        operation_id: "socket-op-1".into(),
-        namespace: "demo".into(),
-        deployment: "agent-api".into(),
-        container: "api".into(),
-        immutable_image_digest: concat!(
-            "registry.example/agent-api@sha256:",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        )
-        .into(),
-    }
+    r#"{"request":"submit_set_deployment_image","operation_id":"socket-op-1"}"#.into()
 }
 
 fn private_directory(path: &Path) {
@@ -1265,6 +1369,13 @@ fn socket_pair() -> (UnixStream, UnixStream) {
 }
 
 async fn write_frame_and_close(stream: &mut UnixStream, body: &[u8]) {
+    // These framing fixtures share a version prefix; raw hostile members remain unparsed.
+    let versioned = if body.first() == Some(&b'{') {
+        [b"{\"version\":1,".as_slice(), &body[1..]].concat()
+    } else {
+        body.to_vec()
+    };
+    let body = versioned.as_slice();
     stream
         .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
         .await
@@ -1278,5 +1389,12 @@ async fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
     stream.read_exact(&mut prefix).await.unwrap();
     let mut body = vec![0_u8; u32::from_be_bytes(prefix) as usize];
     stream.read_exact(&mut body).await.unwrap();
-    body
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["version"], 1);
+    // The shared matrix below compares the payload separately from the mandatory envelope.
+    String::from_utf8(body)
+        .unwrap()
+        .replace("\"version\":1,", "")
+        .replace(",\"version\":1", "")
+        .into_bytes()
 }

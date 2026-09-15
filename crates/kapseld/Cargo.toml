@@ -21,7 +21,7 @@ rustix = { workspace = true, features = ["fs", "process", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["io-util", "net", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled", "limits"] }

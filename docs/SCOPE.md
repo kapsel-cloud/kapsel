@@ -100,18 +100,23 @@ For hosts that ran experimental installer builds, follow the
 state. There is no installer upgrade, migration or cleanup promise.
 
 HEAD's exact-snapshot grants, sequential dispatch permission and SQLite-owned receipt completion are
-not v0.2.0 promises. Current journal format 4 rejects older journals without migration. The
-published beta's bounded upgrade path applies only to that release, not HEAD. Neither the service
-nor its source provisioning is a supported installation path.
+not v0.2.0 promises. Current journal format 5 retains original signed grants and rejects older
+journals without migration. The published beta's bounded upgrade path applies only to that release,
+not HEAD. Neither the service nor its source provisioning is a supported installation path.
 
-## Proposed workflow, not current behavior
+## Proposed workflow and current adoption
 
 The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) selects the resident-service
 direction with selectable exact approvals, durable admission, one active worker, multiple bounded
-unfinished identities and read-first explicit resumption. This is approved design direction, not
-implemented behavior, production adoption or a supported hosting/release promise. Exact
-compatibility, capacity, conflict-provisioning and observation decisions remain explicit blockers
-before their owning implementation.
+unfinished identities and read-first explicit resumption. Unreleased source now adopts the bounded
+service application, durable gateway admission, version-1 socket/client and read-first startup.
+Format-4 journals remain refused; retained history authenticates per identity. Cold
+operator-document replacement now shares lifecycle exclusion with startup and graceful SIGTERM
+retirement; its [service contract](KAPSEL_SERVICE.md#cold-publication-and-graceful-retirement) owns
+read-only validation and honest publication outcomes. Physical completion-capacity and fresh live
+qualification remain outstanding. The full proposed workflow is not completed acceptance, production
+adoption or a supported hosting/release promise. Observation-policy and richer-projection work
+remain separate.
 
 ## Maturity
 

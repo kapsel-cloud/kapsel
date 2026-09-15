@@ -31,6 +31,9 @@ use ed25519_dalek::SigningKey;
 use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
 use sha2::Digest as _;
 
+#[path = "linux_process/cold_publication.rs"]
+mod cold_publication;
+
 const IMAGE: &str = concat!(
     "registry.example/agent-api@sha256:",
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -253,6 +256,13 @@ fn group_gid(group: &str) -> u32 {
 }
 
 fn write_frame(stream: &mut UnixStream, body: &[u8]) {
+    // Keep hostile raw members intact while supplying the common versioned envelope.
+    let versioned = if body.first() == Some(&b'{') {
+        [b"{\"version\":1,".as_slice(), &body[1..]].concat()
+    } else {
+        body.to_vec()
+    };
+    let body = versioned.as_slice();
     stream.set_write_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
     stream
         .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
@@ -267,7 +277,52 @@ fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
     stream.read_exact(&mut prefix).unwrap();
     let mut response = vec![0_u8; u32::from_be_bytes(prefix) as usize];
     stream.read_exact(&mut response).unwrap();
-    response
+    let value: serde_json::Value = serde_json::from_slice(&response).unwrap();
+    assert_eq!(value["version"], 1);
+    // Every process frame checks its envelope; the existing payload matrix stays separate.
+    String::from_utf8(response)
+        .unwrap()
+        .replace("\"version\":1,", "")
+        .replace(",\"version\":1", "")
+        .into_bytes()
+}
+
+fn assert_admitted(stream: &mut UnixStream, phase: &str) {
+    let response: serde_json::Value = serde_json::from_slice(&read_frame(stream)).unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({"status":"ADMITTED","phase":phase})
+    );
+}
+
+fn resume_after_read(socket: &Path) {
+    let mut status = connect(socket);
+    write_frame(
+        &mut status,
+        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
+    );
+    let status: serde_json::Value = serde_json::from_slice(&read_frame(&mut status)).unwrap();
+    assert_eq!(status["status"], "IN_PROGRESS");
+    let mut selection = connect(socket);
+    write_frame(&mut selection, submit_request().as_bytes());
+    assert_admitted(&mut selection, "apply_started");
+}
+
+fn wait_for_finalized(journal: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(40);
+    loop {
+        let connection = rusqlite::Connection::open(journal).unwrap();
+        let phase: String = connection
+            .query_row("SELECT state FROM kubernetes_image_operations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        if phase == "finalized" {
+            return;
+        }
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn assert_terminal_status(stream: &mut UnixStream, status: &str, snapshot: bool) {
@@ -292,15 +347,7 @@ fn lowercase_hex(bytes: &[u8]) -> String {
 }
 
 fn submit_request() -> String {
-    format!(
-        concat!(
-            "{{\"request\":\"submit_set_deployment_image\",",
-            "\"operation_id\":\"process-op\",\"namespace\":\"demo\",",
-            "\"deployment\":\"agent-api\",\"container\":\"api\",",
-            "\"immutable_image_digest\":\"{}\"}}"
-        ),
-        IMAGE
-    )
+    r#"{"request":"submit_set_deployment_image","operation_id":"process-op"}"#.into()
 }
 
 fn private_file(path: &Path, bytes: &[u8]) {
@@ -374,13 +421,12 @@ fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
     private_file(
         &root.join("etc/kapsel/operator.json"),
         &serde_json::to_vec(&serde_json::json!({
-            "signed_authorization_grant": root.join("etc/kapsel/grant.bin"),
-            "authorization_key_id": "service-owner-key",
-            "authorization_public_key": root.join("etc/kapsel/authorization.pub"),
-            "kubeconfig": root.join("etc/kapsel/kubeconfig.yaml"),
-            "journal": root.join("var/lib/kapsel/journal.sqlite3"),
-            "receipt_directory": root.join("var/lib/kapsel/receipts"),
-            "receipt_signing_seed": root.join("etc/kapsel/receipt.seed"),
+            "service_configuration_version": 1,
+            "authorization_keys": [{
+                "key_id":"service-owner-key",
+                "public_key_hex":lowercase_hex(&authorization_key.verifying_key().to_bytes()),
+            }],
+            "approvals": [{"label":"process action","signed_grant_hex":lowercase_hex(&grant)}],
             "receipt_signing_key_id": "service-receipt-key"
         }))
         .unwrap(),
@@ -758,26 +804,26 @@ fn wait_for_marker(child: &mut Child, marker: &Path) {
 }
 
 #[test]
-fn ordinary_restart_reconciles_before_replacing_stale_socket_without_second_patch() {
+fn ordinary_restart_reads_before_explicit_reselection_without_second_patch() {
     let server = success_server();
     let root = installation_root_with_url("ordinary-recovery", &server.url);
     let socket = root.join("run/kapsel/kapseld.sock");
     let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
     let mut submit = connect(&socket);
     write_frame(&mut submit, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    assert_admitted(&mut submit, "requested");
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     assert!(socket.exists());
 
-    let child = spawn_installed(&root, 1);
+    let child = spawn_installed(&root, 3);
+    resume_after_read(&socket);
     server
         .observation_started
         .recv_timeout(FIXTURE_TIMEOUT)
         .unwrap();
-    let error = UnixStream::connect(&socket).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     server.release_observation.send(()).unwrap();
+    wait_for_finalized(&root.join("var/lib/kapsel/journal.sqlite3"));
 
     let mut status = connect(&socket);
     write_frame(
@@ -930,7 +976,7 @@ fn ordinary_startup_uses_fixed_inputs_and_serves_until_systemd_termination() {
 }
 
 #[test]
-fn restart_reconciles_before_bind_without_a_second_patch() {
+fn restart_reads_before_explicit_reselection_without_a_second_patch() {
     let root = application_root("startup-reconcile");
     let socket = root.join("kapseld.sock");
     let server = success_server();
@@ -938,25 +984,26 @@ fn restart_reconciles_before_bind_without_a_second_patch() {
     let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
     let mut submit = connect(&socket);
     write_frame(&mut submit, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    assert_admitted(&mut submit, "requested");
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     fs::remove_file(&socket).unwrap();
 
-    let child = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 1);
+    let child = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 3);
+    resume_after_read(&socket);
     server
         .observation_started
         .recv_timeout(Duration::from_secs(10))
         .unwrap();
-    assert!(!socket.exists());
     server.release_observation.send(()).unwrap();
+    wait_for_finalized(&root.join("journal.sqlite3"));
 
     let mut status = connect(&socket);
     write_frame(
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_terminal_status(&mut status, "SUCCEEDED", false);
+    assert_terminal_status(&mut status, "SUCCEEDED", true);
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
@@ -994,29 +1041,23 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
     let mut submit = connect(&socket);
     write_frame(&mut submit, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    assert_admitted(&mut submit, "requested");
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     assert!(socket.exists());
 
     let mut publication = spawn_installed_with_seam(&root, 10, "after_receipt_commit");
+    resume_after_read(&socket);
     server
         .observation_started
         .recv_timeout(Duration::from_secs(10))
         .unwrap();
-    assert_eq!(
-        UnixStream::connect(&socket).unwrap_err().kind(),
-        std::io::ErrorKind::ConnectionRefused
-    );
     server.release_observation.send(()).unwrap();
     wait_for_marker(
         &mut publication,
         &root.join("control/after-receipt-commit.ready"),
     );
-    assert_eq!(
-        UnixStream::connect(&socket).unwrap_err().kind(),
-        std::io::ErrorKind::ConnectionRefused
-    );
+    assert!(socket.exists());
     let connection = rusqlite::Connection::open(&journal).unwrap();
     let (state, frozen, signer): (String, Vec<u8>, String) = connection
         .query_row(
@@ -1032,7 +1073,6 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
 
     private_file(&root.join("etc/kapsel/receipt.seed"), &[113_u8; 32]);
     document["receipt_signing_key_id"] = "rotated-receipt-key".into();
-    document["receipt_directory"] = serde_json::json!(root.join("missing-rotated-receipts"));
     private_file(&document_path, &serde_json::to_vec(&document).unwrap());
     let child = spawn_installed(&root, 9);
     let mut status = connect(&socket);
@@ -1087,7 +1127,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     );
     let mut replay = connect(&socket);
     write_frame(&mut replay, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut replay), br#"{"status":"ACCEPTED"}"#);
+    assert_admitted(&mut replay, "finalized");
     let mut status = connect(&socket);
     write_frame(
         &mut status,
@@ -1123,7 +1163,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
 }
 
 #[test]
-fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
+fn corrupted_retained_receipt_fails_startup_without_reconciliation() {
     let root = application_root("reconciliation-failure");
     let socket = root.join("kapseld.sock");
     let server = success_server();
@@ -1131,7 +1171,7 @@ fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
     let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
     let mut submit = connect(&socket);
     write_frame(&mut submit, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    assert_admitted(&mut submit, "requested");
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     fs::remove_file(&socket).unwrap();
@@ -1144,17 +1184,18 @@ fn startup_reconciliation_failure_is_silent_and_leaves_no_socket() {
         Some("after_receipt_commit"),
         10,
     );
+    resume_after_read(&socket);
     server
         .observation_started
         .recv_timeout(FIXTURE_TIMEOUT)
         .unwrap();
-    assert!(!socket.exists());
     server.release_observation.send(()).unwrap();
     wait_for_marker(
         &mut publication,
         &root.join("control/after-receipt-commit.ready"),
     );
     kill(&mut publication);
+    fs::remove_file(&socket).unwrap();
     let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
     connection
         .execute(
@@ -1183,18 +1224,20 @@ fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() 
     let mut first = spawn_application(&socket, &root, &url, "A", Some("after_apply"), 10);
     let mut submit = connect(&socket);
     write_frame(&mut submit, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut submit), br#"{"status":"ACCEPTED"}"#);
+    assert_admitted(&mut submit, "requested");
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     fs::remove_file(&socket).unwrap();
 
-    let child = spawn_application(&socket, &root, &url, "A", None, 2);
+    let child = spawn_application(&socket, &root, &url, "A", None, 4);
+    resume_after_read(&socket);
+    wait_for_finalized(&root.join("journal.sqlite3"));
     let mut status = connect_with_timeout(&socket, Duration::from_secs(40));
     write_frame(
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_terminal_status(&mut status, "UNKNOWN", false);
+    assert_terminal_status(&mut status, "UNKNOWN", true);
     let mut receipt = UnixStream::connect(&socket).unwrap();
     write_frame(
         &mut receipt,
@@ -1239,10 +1282,10 @@ fn matching_effective_gid_crosses_the_real_kapseld_process() {
     assert_eq!(
         response,
         [
-            &(u32::try_from(br#"{"status":"NOT_FOUND"}"#.len())
+            &(u32::try_from(br#"{"version":1,"status":"NOT_FOUND"}"#.len())
                 .unwrap()
                 .to_be_bytes())[..],
-            br#"{"status":"NOT_FOUND"}"#,
+            br#"{"version":1,"status":"NOT_FOUND"}"#,
         ]
         .concat()
     );
@@ -1255,7 +1298,7 @@ fn matching_effective_gid_crosses_the_real_kapseld_process() {
 }
 
 #[test]
-fn disconnect_busy_and_reconnect_status_cross_the_real_process() {
+fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() {
     let root = root("execution");
     let socket = root.join("kapseld.sock");
     let child = spawn(&socket, effective_gid(), 4);
@@ -1273,7 +1316,7 @@ fn disconnect_busy_and_reconnect_status_cross_the_real_process() {
 
     let mut competing = UnixStream::connect(&socket).unwrap();
     write_frame(&mut competing, submit_request().as_bytes());
-    assert_eq!(read_frame(&mut competing), br#"{"status":"BUSY"}"#);
+    assert_admitted(&mut competing, "requested");
 
     let mut completed = UnixStream::connect(&socket).unwrap();
     write_frame(
@@ -1329,7 +1372,7 @@ fn saturated_ninth_is_closed_and_new_tenth_succeeds_after_recovery() {
     tenth.read_exact(&mut prefix).unwrap();
     let mut response = vec![0_u8; u32::from_be_bytes(prefix) as usize];
     tenth.read_exact(&mut response).unwrap();
-    assert_eq!(response, br#"{"status":"NOT_FOUND"}"#);
+    assert_eq!(response, br#"{"version":1,"status":"NOT_FOUND"}"#);
     drop(admitted);
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());

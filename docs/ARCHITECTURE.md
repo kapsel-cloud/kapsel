@@ -44,9 +44,9 @@ observation-only recovery, receiver classification, and frozen receipt construct
 signed receipt and terminal state together in SQLite. Filesystem export is a separate adapter
 operation. The crate-level offline inspector consumes receipt bytes directly without opening
 `Application`, the journal, or a Kubernetes client. The journal provides one interface for rows,
-snapshots, worker locking, capacity, and guarded transitions. Private `schema` and `opening`
-children own exact format-4 layout/version rejection, and safe SQLite entry and private pathname
-identity, respectively.
+snapshots, worker locking, capacity, and guarded transitions. Private `schema`, `opening` and
+`capacity` children own exact format-5 layout/version rejection, safe SQLite entry and private
+pathname identity, and fixed completion accounting, respectively.
 
 ### Complete reconciliation
 
@@ -151,19 +151,19 @@ Repository HEAD also composes an unpublished resident service:
 bounded local service client
   -> authenticated Linux Unix socket
        -> kapseld
-            -> Application
+            -> ServiceApplication
                  -> sole SQLite effect journal
 ```
 
-`kapseld` provides caller-independent process lifetime, startup reconciliation, read-only status,
-and exact frozen-receipt retrieval across a separate OS identity. It accepts fixed operator and
-socket arguments, validates fixed roots descriptor-relatively, then keeps journal and socket I/O
-beneath the retained directory handles through verified Linux `/proc/self/fd` paths. It reconciles
-before binding and removes only an exact inactive service-owned stale socket. Unavailable or
-inconsistent procfs fails startup before durable or socket effects; SQLite's moved-database refusal
-fails later journal writes rather than reopening a replaced state root. Systemd owns process
-lifecycle, runtime-directory cleanup, health, and diagnostics. Static inputs define one service
-identity and namespaced Kubernetes RBAC.
+`kapseld` provides caller-independent process lifetime, read-first startup, authenticated catalog,
+history/status and exact frozen-receipt retrieval across a separate OS identity. It accepts fixed
+operator and socket arguments, validates fixed roots descriptor-relatively, then keeps journal and
+socket I/O beneath the retained directory handles through verified Linux `/proc/self/fd` paths. It
+does not reconcile at startup and removes only an exact inactive service-owned stale socket.
+Unavailable or inconsistent procfs fails startup before durable or socket effects; SQLite's
+moved-database refusal fails later journal writes rather than reopening a replaced state root.
+Systemd owns process lifecycle, runtime-directory cleanup, health, and diagnostics. Static inputs
+define one service identity and namespaced Kubernetes RBAC.
 
 Three private modules in `crates/kapseld/src` separate the service mechanisms:
 
@@ -172,12 +172,12 @@ Three private modules in `crates/kapseld/src` separate the service mechanisms:
 - `server/runtime.rs` owns peer checks, socket framing, deadlines, connection and submission
   admission, locks, background task lifetime and shutdown. It delegates validated reads and
   submissions without interpreting durable states or receiver results.
-- `server.rs` composes fixed startup and bridges `Application` reads and execution. The
+- `server.rs` composes fixed startup and bridges `ServiceApplication` reads and selection. The
   feature-gated `server/harness.rs` and private socket tests use the same runtime without exposing a
   public harness interface.
 
-The service adapter composes `Application::execute`, `Application::reconcile`, non-mutating
-exact-grant matching, projected status, and frozen-receipt reads. It does not query SQLite directly,
+The service adapter composes `ServiceApplication::select`, authenticated admission lookup,
+catalog/history, projected status and frozen-receipt reads. It does not query SQLite directly,
 duplicate export rules, sequence lifecycle states, add another store, or create a queue. The
 [Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
 boundary.

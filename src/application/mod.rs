@@ -4,6 +4,7 @@
 //! authority, receipt signing material, and durable paths. It owns the one shared operator-document
 //! grammar but is not a command adapter.
 
+mod service;
 use std::{
     error::Error,
     fmt, fs, io,
@@ -15,6 +16,11 @@ use ed25519_dalek::SigningKey;
 use http_body_util::Limited;
 use kube::{config::KubeConfigOptions, Config};
 use serde::Deserialize;
+pub use service::{
+    parse_service_operator_document, ApprovedAction, HistoryEntry, HistoryPage, ServiceAdmission,
+    ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
+    ServiceOperatorDocument,
+};
 use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::gateway::{
@@ -534,23 +540,30 @@ impl Application {
                 crate::OperationTargets::default(),
             ));
         };
-        let status = match report.state {
+        let status = Self::status_of(report.state, report.target_rejection, report.result)?;
+        Ok((status, report.targets))
+    }
+
+    fn status_of(
+        state: OperationState,
+        target_rejection: Option<TargetRejection>,
+        result: Option<OperationResult>,
+    ) -> Result<SetDeploymentImageStatus, ApplicationError> {
+        match state {
             OperationState::Requested
             | OperationState::Authorized
             | OperationState::ApplyStarted
             | OperationState::ReceiverObserved => Ok(SetDeploymentImageStatus::InProgress),
-            OperationState::NotAttempted => report
-                .target_rejection
+            OperationState::NotAttempted => target_rejection
                 .map(SetDeploymentImageStatus::NotAttempted)
                 .ok_or(ApplicationError::OperationFailure),
-            OperationState::Finalized => match report.result {
+            OperationState::Finalized => match result {
                 Some(OperationResult::Succeeded) => Ok(SetDeploymentImageStatus::Succeeded),
                 Some(OperationResult::Failed) => Ok(SetDeploymentImageStatus::Failed),
                 Some(OperationResult::Unknown) => Ok(SetDeploymentImageStatus::Unknown),
                 None => Err(ApplicationError::OperationFailure),
             },
-        }?;
-        Ok((status, report.targets))
+        }
     }
 
     /// Reads the exact finalized receipt for the configured Deployment image operation.

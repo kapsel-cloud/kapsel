@@ -4,12 +4,14 @@
 //! transitions. Private children concentrate exact schema/migration and owner-private opening,
 //! backup, and rollback-file behavior without creating a selectable storage interface.
 
+pub(in crate::gateway) mod capacity;
 mod opening;
 mod schema;
 
 use std::{
     fs::{File, TryLockError},
     path::Path,
+    sync::{Arc, Mutex},
 };
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -26,11 +28,12 @@ pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
 
 pub(crate) struct Journal {
     pub(crate) connection: Connection,
-    worker_lock: File,
+    worker_lock: Arc<Mutex<Option<File>>>,
 }
 
-pub(crate) struct WorkerLock<'a> {
-    file: &'a File,
+pub(crate) struct WorkerLock {
+    file: Option<File>,
+    slot: Arc<Mutex<Option<File>>>,
 }
 
 // Dispatch permission is private and one-use, issued after a successful fresh attempt commit.
@@ -610,9 +613,16 @@ fn validate_snapshot_attempt_facts(
     Ok(Some(AttemptFacts { target, response }))
 }
 
-impl Drop for WorkerLock<'_> {
+impl Drop for WorkerLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        if let Some(file) = self.file.take() {
+            if file.unlock().is_err() {
+                return;
+            }
+            if let Ok(mut slot) = self.slot.lock() {
+                *slot = Some(file);
+            }
+        }
     }
 }
 
@@ -682,6 +692,21 @@ impl OperationResult {
 }
 
 impl Journal {
+    pub(in crate::gateway) fn validate_replacement(
+        path: &Path,
+        approvals: &[AuthorizedRequest],
+    ) -> Result<(), GatewayError> {
+        let Some(connection) = opening::open_validation_snapshot(path)? else {
+            return Ok(());
+        };
+        for approval in approvals {
+            authorized_operation_on(&connection, approval, || {})?;
+        }
+        connection
+            .close()
+            .map_err(|(_, error)| GatewayError::Database(error))
+    }
+
     pub(in crate::gateway) fn open(path: impl AsRef<Path>) -> Result<Self, GatewayError> {
         let opening::OpenedJournal {
             connection,
@@ -689,27 +714,44 @@ impl Journal {
         } = opening::open_journal(path.as_ref())?;
         Ok(Self {
             connection,
-            worker_lock,
+            worker_lock: Arc::new(Mutex::new(Some(worker_lock))),
         })
     }
 
-    pub(in crate::gateway) fn try_lock_worker(
-        &self,
-    ) -> Result<Option<WorkerLock<'_>>, GatewayError> {
-        match self.worker_lock.try_lock() {
+    pub(in crate::gateway) fn try_lock_worker(&self) -> Result<Option<WorkerLock>, GatewayError> {
+        let mut slot = self
+            .worker_lock
+            .lock()
+            .map_err(|_| GatewayError::InvalidPersistedState)?;
+        let Some(file) = slot.take() else {
+            return Ok(None);
+        };
+        match file.try_lock() {
             Ok(()) => Ok(Some(WorkerLock {
-                file: &self.worker_lock,
+                file: Some(file),
+                slot: self.worker_lock.clone(),
             })),
-            Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(error)) => Err(GatewayError::WorkerLock(error)),
+            Err(error) => {
+                *slot = Some(file);
+                drop(slot);
+                match error {
+                    TryLockError::WouldBlock => Ok(None),
+                    TryLockError::Error(error) => Err(GatewayError::WorkerLock(error)),
+                }
+            },
         }
+    }
+
+    pub(in crate::gateway) fn owns_worker(&self, worker: &WorkerLock) -> bool {
+        Arc::ptr_eq(&self.worker_lock, &worker.slot) && worker.file.is_some()
     }
 
     pub(in crate::gateway) fn existing_submission(
         &self,
         authorized: &AuthorizedRequest,
     ) -> Result<Option<OperationState>, GatewayError> {
-        Ok(authorized_operation_on(&self.connection, authorized)?
+        Ok(self
+            .authorized_operation(authorized)?
             .map(|operation| operation.state()))
     }
 
@@ -728,11 +770,61 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
-        let operation = authorized_operation_on(&transaction, authorized)?;
-        if operation.is_some() {
-            after_ownership_read();
-        }
-        Ok(operation)
+        authorized_operation_on(&transaction, authorized, after_ownership_read)
+    }
+
+    pub(in crate::gateway) fn history_ids(
+        &self,
+        after: Option<&str>,
+    ) -> Result<Vec<String>, GatewayError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT CASE WHEN length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128
+                         THEN operation_id END
+             FROM kubernetes_image_operations
+             WHERE (?1 IS NULL OR operation_id > ?1 COLLATE BINARY)
+             ORDER BY operation_id COLLATE BINARY LIMIT 9",
+            )
+            .map_err(GatewayError::Database)?;
+        let rows = statement
+            .query_map([after], |row| row.get::<_, String>(0))
+            .map_err(GatewayError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(GatewayError::Database)
+    }
+
+    pub(in crate::gateway) fn retained_operation(
+        &self,
+        operation_id: &str,
+        authorize: impl FnOnce(&[u8]) -> Result<AuthorizedRequest, GatewayError>,
+    ) -> Result<Option<super::RetainedOperation>, GatewayError> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(GatewayError::Database)?;
+        let bytes: Option<Option<Vec<u8>>> = transaction
+            .query_row(
+                "SELECT CASE WHEN length(signed_authorization_grant) BETWEEN 1 AND 4096
+                         THEN signed_authorization_grant END
+             FROM kubernetes_image_operations WHERE operation_id = ?1",
+                [operation_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(GatewayError::Database)?;
+        let Some(bytes) = bytes else {
+            return Ok(None);
+        };
+        let bytes = bytes.ok_or(GatewayError::InvalidPersistedState)?;
+        let authorized = authorize(&bytes)?;
+        let operation = authorized_operation_on(&transaction, &authorized, || {})?
+            .ok_or(GatewayError::InvalidPersistedState)?;
+        Ok(Some(super::RetainedOperation {
+            request: authorized.request().to_adapter_request(),
+            signed_grant: bytes,
+            operation,
+        }))
     }
 
     pub(in crate::gateway) fn insert_requested(
@@ -755,14 +847,15 @@ impl Journal {
         if operation_count >= OPERATION_COUNT_MAX {
             return Err(GatewayError::JournalFull);
         }
+        capacity::require_admission(&transaction)?;
         transaction
             .execute(
                 "INSERT INTO kubernetes_image_operations (
                     operation_id, namespace, deployment, container,
                     immutable_image_digest, state, authorization_id,
                     authorization_signer_key_id, authorization_grant_digest,
-                    approved_uid, approved_resource_version
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    approved_uid, approved_resource_version, signed_authorization_grant
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     request.operation_id(),
                     request.namespace(),
@@ -775,6 +868,7 @@ impl Journal {
                     authority.grant_digest,
                     approved.map(|target| target.uid.as_str()),
                     approved.map(|target| target.resource_version.as_str()),
+                    authority.signed_grant,
                 ],
             )
             .map_err(GatewayError::Database)?;
@@ -905,6 +999,8 @@ impl Journal {
             )
             .map_err(GatewayError::Database)?;
         changed_one(changed)?;
+        #[cfg(test)]
+        crate::gateway::tests::storage::receipt_precommit_checkpoint(&transaction);
         transaction.commit().map_err(GatewayError::Database)
     }
 
@@ -1140,6 +1236,7 @@ impl Journal {
 fn authorized_operation_on(
     connection: &Connection,
     authorized: &AuthorizedRequest,
+    after_ownership_read: impl FnOnce(),
 ) -> Result<Option<LoadedOperation>, GatewayError> {
     let request = authorized.request();
     let authorization = authorized.authorization();
@@ -1147,7 +1244,7 @@ fn authorized_operation_on(
         .query_row(
             "SELECT namespace, deployment, container, immutable_image_digest,
                     authorization_id, authorization_signer_key_id,
-                    authorization_grant_digest, state
+                    authorization_grant_digest, state, signed_authorization_grant
              FROM kubernetes_image_operations
              WHERE operation_id = ?1",
             [request.operation_id()],
@@ -1161,6 +1258,7 @@ fn authorized_operation_on(
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
                 ))
             },
         )
@@ -1175,11 +1273,14 @@ fn authorized_operation_on(
         authorization_signer_key_id,
         authorization_grant_digest,
         state,
+        signed_grant,
     )) = existing
     else {
         return Ok(None);
     };
-    if namespace != request.namespace()
+    let signed_grant = signed_grant.ok_or(GatewayError::InvalidPersistedState)?;
+    if signed_grant != authorization.signed_grant
+        || namespace != request.namespace()
         || deployment != request.deployment()
         || container != request.container()
         || image != request.immutable_image_digest()
@@ -1201,6 +1302,7 @@ fn authorized_operation_on(
     {
         return Err(GatewayError::OperationIdentityConflict);
     }
+    after_ownership_read();
     let loaded = loaded_operation_on(connection, request.operation_id())?
         .ok_or(GatewayError::InvalidPersistedState)?;
     if loaded.request_facts().approved_target != authorization.authorization.approved_target {
@@ -2189,17 +2291,31 @@ mod tests {
             .authorized_operation_with(&authorized, || {
                 let result = other.connection.execute(
                     "UPDATE kubernetes_image_operations
-                     SET state = 'authorized', authorization_id = 'other-auth',
-                         authorization_signer_key_id = 'other-signer',
-                         authorization_grant_digest = ?1
+                     SET signed_authorization_grant = ?1
                      WHERE operation_id = ?2",
-                    params!["0".repeat(64), "snapshot-op"],
+                    params![b"changed-custody".as_slice(), "snapshot-op"],
                 );
                 assert!(result.is_err());
             })
             .unwrap()
             .unwrap();
         assert_eq!(snapshot.state(), OperationState::Requested);
+        assert_eq!(
+            journal.existing_submission(&authorized).unwrap(),
+            Some(snapshot.state())
+        );
+        other
+            .connection
+            .execute(
+                "UPDATE kubernetes_image_operations SET signed_authorization_grant = ?1
+             WHERE operation_id = ?2",
+                params![b"changed-custody".as_slice(), "snapshot-op"],
+            )
+            .unwrap();
+        assert!(matches!(
+            journal.existing_submission(&authorized),
+            Err(GatewayError::OperationIdentityConflict)
+        ));
 
         drop(other);
         drop(journal);
@@ -2253,13 +2369,14 @@ mod tests {
             .execute(
                 "UPDATE kubernetes_image_operations
                  SET authorization_grant_digest = ?1,
-                     receipt_digest = ?2, receipt_bytes = ?3
+                     receipt_digest = ?2, receipt_bytes = ?3, signed_authorization_grant = ?5
                  WHERE operation_id = ?4",
                 params![
                     verified.grant_digest,
                     receipt_digest,
                     receipt_bytes,
-                    "snapshot-op"
+                    "snapshot-op",
+                    signed
                 ],
             )
             .unwrap();

@@ -9,75 +9,99 @@ mod runtime;
 use std::io;
 use std::{future::Future, process::ExitCode};
 
-use kapsel::{
-    AgentRequest, Application, ApplicationError, SetDeploymentImageReceipt,
-    SetDeploymentImageStatus,
-};
+use kapsel::{ServiceAdmission, ServiceApplication, ServiceError, ServiceExecution};
 use protocol::{ReadRequest, ResponseClass};
+#[cfg(not(target_os = "linux"))]
+use runtime::serve_connections_with_state;
 #[cfg(target_os = "linux")]
-use runtime::{serve_connections_forever, CONNECTIONS_MAX};
-use runtime::{serve_connections_with_state, ServerState};
+use runtime::serve_until_stopped;
+use runtime::ServerState;
+#[cfg(all(target_os = "linux", feature = "test-harness"))]
+use runtime::CONNECTIONS_MAX;
 
 trait ApplicationReads: Send {
+    fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass);
+
+    fn admitted_state(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<kapsel::OperationState>, ServiceError>;
+}
+
+impl ApplicationReads for ServiceApplication {
     fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass) {
+        let ordinary = ResponseClass::Ordinary;
         match request {
-            ReadRequest::Status(operation_id) => (
-                protocol::render_status_with_targets(self.status_with_targets(&operation_id)),
-                ResponseClass::Ordinary,
+            ReadRequest::Status(id) => (
+                protocol::render_status_with_targets(self.status(&id)),
+                ordinary,
             ),
-            ReadRequest::Receipt(operation_id) => (
-                protocol::render_receipt(self.receipt(&operation_id)),
+            ReadRequest::Receipt(id) => (
+                protocol::render_receipt(self.receipt(&id)),
                 ResponseClass::Receipt,
+            ),
+            ReadRequest::List(after) => {
+                let result = self.approved_actions(after.as_deref()).and_then(|entries| {
+                    let next_cursor = match entries.last() {
+                        Some(last)
+                            if !self
+                                .approved_actions(Some(&last.request.operation_id))?
+                                .is_empty() =>
+                        {
+                            Some(last.request.operation_id.clone())
+                        },
+                        _ => None,
+                    };
+                    Ok(protocol::render_catalog(entries, next_cursor.as_deref()))
+                });
+                (result.unwrap_or_else(protocol::service_error), ordinary)
+            },
+            ReadRequest::History(after) => (
+                self.history(after.as_deref())
+                    .map_or_else(protocol::service_error, protocol::render_history),
+                ordinary,
             ),
         }
     }
 
-    fn status_with_targets(
+    fn admitted_state(
         &self,
         operation_id: &str,
-    ) -> Result<(SetDeploymentImageStatus, kapsel::OperationTargets), ApplicationError> {
-        self.status(operation_id)
-            .map(|status| (status, kapsel::OperationTargets::default()))
-    }
-
-    fn status(&self, operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError>;
-
-    fn receipt(&self, operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError>;
-}
-
-impl ApplicationReads for Application {
-    fn status_with_targets(
-        &self,
-        operation_id: &str,
-    ) -> Result<(SetDeploymentImageStatus, kapsel::OperationTargets), ApplicationError> {
-        self.read_set_deployment_image_status_with_targets(operation_id)
-    }
-
-    fn status(&self, operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
-        self.read_set_deployment_image_status(operation_id)
-    }
-
-    fn receipt(&self, operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
-        self.read_set_deployment_image_receipt(operation_id)
+    ) -> Result<Option<kapsel::OperationState>, ServiceError> {
+        Self::admitted_state(self, operation_id)
     }
 }
 
-trait ApplicationExecution: Send {
-    fn matches(&self, request: &AgentRequest) -> bool;
-
+pub(crate) trait ApplicationExecution: Send {
     fn execute(
         &mut self,
-        request: AgentRequest,
-    ) -> impl Future<Output = Result<(), ApplicationError>> + Send;
+        operation_id: String,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+    ) -> impl Future<Output = Result<(), ServiceError>> + Send;
 }
 
-impl ApplicationExecution for Application {
-    fn matches(&self, request: &AgentRequest) -> bool {
-        self.request_matches_authorized_grant(request)
-    }
+pub(crate) struct ExecutionApplication {
+    pub(crate) application: ServiceApplication,
+    pub(crate) kubeconfig: Option<Vec<u8>>,
+    pub(crate) receipt_seed: Option<Vec<u8>>,
+    pub(crate) receipt_signing_key_id: String,
+}
 
-    async fn execute(&mut self, request: AgentRequest) -> Result<(), ApplicationError> {
-        Self::execute(self, &request).await.map(|_| ())
+impl ApplicationExecution for ExecutionApplication {
+    async fn execute(
+        &mut self,
+        operation_id: String,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+    ) -> Result<(), ServiceError> {
+        let material = ServiceExecution::from_operator_snapshots(
+            self.kubeconfig.as_deref(),
+            self.receipt_seed.as_deref(),
+            &self.receipt_signing_key_id,
+        )
+        .await;
+        self.application
+            .select(&operation_id, material, acknowledged)
+            .await
     }
 }
 
@@ -92,17 +116,24 @@ pub(crate) fn run() -> ExitCode {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = serve_connections_with_state::<Application, Application>;
-        let _ = ServerState::<Application, Application>::new;
+        let _ = serve_connections_with_state::<ServiceApplication, ExecutionApplication>;
+        let _ = ServerState::<ServiceApplication, ExecutionApplication>::new;
         ExitCode::from(4)
     }
 }
 
 #[cfg(target_os = "linux")]
 fn run_installed() -> ExitCode {
-    use crate::startup::InstallationInputs;
-
-    let mut arguments = std::env::args_os().skip(1);
+    #[cfg(feature = "test-harness")]
+    let installation_root = std::env::var_os("KAPSELD_TEST_INSTALLATION_ROOT")
+        .map_or_else(|| std::path::PathBuf::from("/"), std::path::PathBuf::from);
+    #[cfg(not(feature = "test-harness"))]
+    let installation_root = std::path::PathBuf::from("/");
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.as_slice() == [std::ffi::OsStr::new("--replace-operator-config")] {
+        return crate::startup::replace_operator_config(&installation_root);
+    }
+    let mut arguments = arguments.into_iter();
     if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--operator-config"))
         || arguments.next().as_deref() != Some(std::ffi::OsStr::new("/etc/kapsel/operator.json"))
         || arguments.next().as_deref() != Some(std::ffi::OsStr::new("--socket"))
@@ -111,11 +142,6 @@ fn run_installed() -> ExitCode {
     {
         return ExitCode::from(4);
     }
-    #[cfg(feature = "test-harness")]
-    let installation_root = std::env::var_os("KAPSELD_TEST_INSTALLATION_ROOT")
-        .map_or_else(|| std::path::PathBuf::from("/"), std::path::PathBuf::from);
-    #[cfg(not(feature = "test-harness"))]
-    let installation_root = std::path::PathBuf::from("/");
     #[cfg(feature = "test-harness")]
     let connections = match std::env::var("KAPSELD_TEST_CONNECTIONS") {
         Ok(value) => match value.parse::<usize>() {
@@ -127,41 +153,88 @@ fn run_installed() -> ExitCode {
     };
     #[cfg(not(feature = "test-harness"))]
     let connections = None;
-    let Ok(inputs) = InstallationInputs::open_at(&installation_root) else {
-        return ExitCode::from(4);
-    };
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
         return ExitCode::from(4);
     };
-    let result = runtime.block_on(async {
-        let mut execution = inputs
-            .open_application()
-            .await
-            .map_err(|_| io::Error::other("application open failed"))?;
-        execution
-            .reconcile()
-            .await
-            .map_err(|_| io::Error::other("startup reconciliation failed"))?;
-        let reads = inputs
-            .open_application()
-            .await
-            .map_err(|_| io::Error::other("application open failed"))?;
-        let listener = inputs.bind_listener()?;
-        let state = ServerState::new(reads, execution);
-        let expected_gid = rustix::process::getegid().as_raw();
-        match connections {
-            Some(connections) => {
-                serve_connections_with_state(listener, expected_gid, state, connections).await
-            },
-            None => serve_connections_forever(listener, expected_gid, state).await,
-        }
-    });
-    if result.is_ok() {
+    if runtime
+        .block_on(serve_installed(installation_root, connections))
+        .is_ok()
+    {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(4)
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn serve_installed(
+    installation_root: std::path::PathBuf,
+    connections: Option<usize>,
+) -> io::Result<()> {
+    use crate::startup::InstallationInputs;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(feature = "test-harness")]
+    let stop_marker = installation_root.join("control/stop.ready");
+    let mut startup = tokio::task::spawn_blocking(move || {
+        let inputs = InstallationInputs::open_at(&installation_root)?;
+        let reads = inputs
+            .open_application()
+            .map_err(|_| io::Error::other("application open failed"))?;
+        let execution = inputs
+            .open_execution()
+            .map_err(|_| io::Error::other("application open failed"))?;
+        Ok::<_, io::Error>((inputs, reads, execution))
+    });
+    let (opened, stopped) = tokio::select! {
+        biased;
+        _ = terminate.recv() => {
+            #[cfg(feature = "test-harness")]
+            let _ = std::fs::write(&stop_marker, b"");
+            (startup.await, true)
+        },
+        opened = &mut startup => (opened, false),
+    };
+    let (inputs, reads, execution) =
+        opened.map_err(|_| io::Error::other("startup task failed"))??;
+    // Give pending reactor notifications a turn before deciding whether startup may serve.
+    tokio::task::yield_now().await;
+    let stopped = stopped
+        || tokio::select! {
+            biased;
+            _ = terminate.recv() => true,
+            () = std::future::ready(()) => false,
+        };
+    let result = if stopped {
+        drop(execution);
+        drop(reads);
+        Ok(())
+    } else {
+        match inputs.bind_listener() {
+            Ok(listener) => {
+                let state = ServerState::new(reads, execution);
+                serve_until_stopped(
+                    listener,
+                    rustix::process::getegid().as_raw(),
+                    state,
+                    connections,
+                    async {
+                        terminate.recv().await;
+                        #[cfg(feature = "test-harness")]
+                        let _ = std::fs::write(&stop_marker, b"");
+                    },
+                )
+                .await
+            },
+            Err(error) => {
+                drop(execution);
+                drop(reads);
+                Err(error)
+            },
+        }
+    };
+    drop(inputs);
+    result
 }

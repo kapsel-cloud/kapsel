@@ -1,6 +1,6 @@
     #[test]
     fn older_journal_versions_are_rejected_without_touching_rows() {
-        for version in [0_u32, 1, 2, 3, 5] {
+        for version in [0_u32, 1, 2, 3, 4, 6] {
             let path = database_path(&format!("old-version-{version}"));
             let operation = request();
             {

@@ -15,6 +15,7 @@ pub(crate) struct VerifiedAuthorization {
     pub(crate) authorization: ExactAuthorization,
     pub(crate) signer_key_id: String,
     pub(crate) grant_digest: String,
+    pub(crate) signed_grant: Vec<u8>,
 }
 
 pub(crate) fn sign_authorization_grant(
@@ -35,16 +36,17 @@ pub(crate) fn verify_authorization_grant(
     trust: &AuthorizationTrust,
 ) -> Result<VerifiedAuthorization, GatewayError> {
     authority::verify_authorization_grant(bytes, trust)
-        .map(into_verified)
+        .map(|verified| into_verified(verified, bytes))
         .map_err(map_authorization_error)
 }
 
-fn into_verified(verified: ValidatedAuthorizationGrant) -> VerifiedAuthorization {
+fn into_verified(verified: ValidatedAuthorizationGrant, bytes: &[u8]) -> VerifiedAuthorization {
     let (authorization, signer_key_id, grant_digest) = verified.into_parts();
     VerifiedAuthorization {
         authorization,
         signer_key_id,
         grant_digest,
+        signed_grant: bytes.to_vec(),
     }
 }
 

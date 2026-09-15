@@ -24,6 +24,7 @@ const IO_DEADLINE: Duration = Duration::from_secs(2);
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadyReceipt {
+    version: u8,
     status: String,
     receipt_hex: String,
     receipt_sha256: String,
@@ -31,6 +32,7 @@ struct ReadyReceipt {
 
 #[derive(Serialize)]
 struct SavedReceipt<'a> {
+    version: u8,
     status: &'static str,
     receipt_sha256: &'a str,
     output: &'a str,
@@ -53,6 +55,7 @@ fn run(arguments: &[String]) -> Result<(), ()> {
     #[cfg(not(feature = "test-harness"))]
     let socket = SOCKET;
     let response = exchange(socket, &request).map_err(|_| ())?;
+    validate_response_version(&response)?;
     match output {
         None => {
             std::io::stdout().write_all(&response).map_err(|_| ())?;
@@ -64,39 +67,77 @@ fn run(arguments: &[String]) -> Result<(), ()> {
 }
 
 fn request(arguments: &[String]) -> Result<(Vec<u8>, Option<&Path>), ()> {
-    match arguments {
-        [command, operation_id] if command == "status" => Ok((
-            serde_json::to_vec(&json!({
-                "request": "get_set_deployment_image_status",
-                "operation_id": operation_id,
-            }))
-            .map_err(|_| ())?,
-            None,
-        )),
-        [command, operation_id, output] if command == "receipt" => Ok((
-            serde_json::to_vec(&json!({
-                "request": "get_set_deployment_image_receipt",
-                "operation_id": operation_id,
-            }))
-            .map_err(|_| ())?,
-            Some(Path::new(output)),
-        )),
-        [command, operation_id, namespace, deployment, container, image] if command == "submit" => {
-            Ok((
-                serde_json::to_vec(&json!({
-                    "request": "submit_set_deployment_image",
-                    "operation_id": operation_id,
-                    "namespace": namespace,
-                    "deployment": deployment,
-                    "container": container,
-                    "immutable_image_digest": image,
-                }))
-                .map_err(|_| ())?,
-                None,
-            ))
+    let (request, output) = match arguments {
+        [command] | [command, _] if command == "list" || command == "history" => {
+            let after = arguments.get(1);
+            if after.is_some_and(|id| !kapsel_authority::identity_is_valid(id)) {
+                return Err(());
+            }
+            let name = if command == "list" {
+                "list_approved_actions"
+            } else {
+                "list_operation_history"
+            };
+            (json!({"version":1,"request":name,"after":after}), None)
         },
-        _ => Err(()),
+        [command, id] if command == "status" || command == "submit" => {
+            if !kapsel_authority::identity_is_valid(id) {
+                return Err(());
+            }
+            let name = if command == "status" {
+                "get_set_deployment_image_status"
+            } else {
+                "submit_set_deployment_image"
+            };
+            (json!({"version":1,"request":name,"operation_id":id}), None)
+        },
+        [command, id, output] if command == "receipt" => {
+            if !kapsel_authority::identity_is_valid(id) {
+                return Err(());
+            }
+            (
+                json!({"version":1,"request":"get_set_deployment_image_receipt","operation_id":id}),
+                Some(Path::new(output)),
+            )
+        },
+        _ => return Err(()),
+    };
+    Ok((serde_json::to_vec(&request).map_err(|_| ())?, output))
+}
+
+fn validate_response_version(bytes: &[u8]) -> Result<(), ()> {
+    #[derive(Deserialize)]
+    struct ResponseHeader {
+        version: u8,
+        status: String,
     }
+    if bytes.is_empty()
+        || bytes.len() > RESPONSE_BYTES_MAX
+        || bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{')
+    {
+        return Err(());
+    }
+    let header: ResponseHeader = serde_json::from_slice(bytes).map_err(|_| ())?;
+    if header.version != 1
+        || !matches!(
+            header.status.as_str(),
+            "READY"
+                | "NOT_FOUND"
+                | "NOT_READY"
+                | "IN_PROGRESS"
+                | "NOT_ATTEMPTED"
+                | "SUCCEEDED"
+                | "FAILED"
+                | "UNKNOWN"
+                | "ADMITTED"
+                | "NOT_ADMITTED"
+                | "INDETERMINATE"
+                | "ERROR"
+        )
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn exchange(socket: &str, request: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -130,7 +171,8 @@ fn save_receipt(response: &[u8], path: &Path) -> Result<(), ()> {
         return Err(());
     }
     let ready: ReadyReceipt = serde_json::from_slice(response).map_err(|_| ())?;
-    if ready.status != "READY" || !lowercase_sha256(&ready.receipt_sha256) {
+    validate_response_version(response)?;
+    if ready.version != 1 || ready.status != "READY" || !lowercase_sha256(&ready.receipt_sha256) {
         return Err(());
     }
     let bytes = decode_lowercase_hex(&ready.receipt_hex)?;
@@ -154,6 +196,7 @@ fn save_receipt(response: &[u8], path: &Path) -> Result<(), ()> {
     output.sync_all().map_err(|_| ())?;
     let path = path.to_str().ok_or(())?;
     let report = serde_json::to_vec(&SavedReceipt {
+        version: 1,
         status: "READY",
         receipt_sha256: &ready.receipt_sha256,
         output: path,
@@ -209,7 +252,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixed_grammar_has_only_three_capability_commands() {
+    fn fixed_grammar_has_only_five_id_only_commands() {
         let status = vec!["status".into(), "op-1".into()];
         let receipt = vec!["receipt".into(), "op-1".into(), "/tmp/receipt".into()];
         let submit = vec![
@@ -226,10 +269,40 @@ mod tests {
         ];
         assert!(request(&status).is_ok());
         assert!(request(&receipt).is_ok());
-        assert!(request(&submit).is_ok());
+        assert!(request(&submit).is_err());
+        for args in [
+            vec!["submit", "op-1"],
+            vec!["list"],
+            vec!["list", "op-1"],
+            vec!["history"],
+            vec!["history", "op-1"],
+        ] {
+            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+            let (bytes, _) = request(&args).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
+                1
+            );
+        }
         assert!(request(&[]).is_err());
         assert!(request(&["receipt".into(), "op-1".into()]).is_err());
         assert!(request(&["unknown".into(), "op-1".into()]).is_err());
+    }
+
+    #[test]
+    fn response_requires_integer_version_one_and_an_object() {
+        assert!(validate_response_version(br#"{"version":1,"status":"INDETERMINATE"}"#).is_ok());
+        for invalid in [
+            r#"{"status":"ADMITTED"}"#,
+            r#"{"version":2,"status":"ADMITTED"}"#,
+            r#"{"version":1.0,"status":"ADMITTED"}"#,
+            r#"{"version":"1","status":"ADMITTED"}"#,
+            r#"{"version":1,"version":1,"status":"ADMITTED"}"#,
+            r#"[1,"ADMITTED"]"#,
+            r#"{"version":1,"status":"ACCEPTED"}"#,
+        ] {
+            assert!(validate_response_version(invalid.as_bytes()).is_err());
+        }
     }
 
     #[test]

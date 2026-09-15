@@ -26,8 +26,11 @@
         }
         assert!(matches!(
             scenario.as_str(),
-            "receipt" | "before_receipt_commit"
+            "receipt" | "before_receipt_commit" | "receipt_sql_executed"
         ));
+        if scenario == "receipt_sql_executed" {
+            super::storage::park_receipt_after_sql(ready.clone());
+        }
         let gateway = Gateway::open_for_test(&database).unwrap();
         assert!(matches!(
             gateway.finalize_operation_receipt_once_with_fault(
@@ -36,11 +39,11 @@
                     signing_seed: &[31_u8; 32],
                     key_id: "process-receipt-key",
                 },
-                Some(if scenario == "receipt" {
-                    FaultPoint::FinalizedCommitted
-                } else {
-                    FaultPoint::BeforeReceiptCommit
-                }),
+                match scenario.as_str() {
+                    "receipt" => Some(FaultPoint::FinalizedCommitted),
+                    "before_receipt_commit" => Some(FaultPoint::BeforeReceiptCommit),
+                    _ => None,
+                },
             ),
             Err(GatewayError::InjectedFault)
         ));

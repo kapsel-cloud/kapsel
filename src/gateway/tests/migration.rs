@@ -23,14 +23,14 @@
             Err(GatewayError::InvalidPersistedState)
         ));
         assert_eq!(fs::read(path).unwrap(), before);
-        assert_eq!(journal_version(path), 4);
+        assert_eq!(journal_version(path), 5);
     }
 
     #[test]
     fn fresh_journal_initializes_directly_and_reopens_without_another_write() {
         let path = database_path("fresh-version-marker");
         drop(Gateway::open_for_test(&path).unwrap());
-        assert_eq!(journal_version(&path), 4);
+        assert_eq!(journal_version(&path), 5);
         assert!(!PathBuf::from(format!("{}.kapsel-v011.backup", path.display())).exists());
 
         let before = fs::read(&path).unwrap();
@@ -108,11 +108,11 @@
             .execute(
                 concat!(
                     "WITH RECURSIVE numbers(value) AS (",
-                    "SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 10000",
+                    "SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 504",
                     ") INSERT INTO kubernetes_image_operations (",
                     "operation_id, namespace, deployment, container, immutable_image_digest, state",
                     ") SELECT 'op-' || value, 'demo', 'agent-api', 'api', ?1, ",
-                    "'authorized' FROM numbers"
+                    "'not_attempted' FROM numbers"
                 ),
                 [&request().immutable_image_digest],
             )
@@ -137,8 +137,24 @@
     }
 
     #[test]
+    fn orphan_pages_cannot_consume_reserved_completion_space_on_reopen() {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+
+        let path = database_path("orphan-completion-pages");
+        create_current_journal(&path);
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(64 * 1024 * 1024).unwrap();
+        file.seek(SeekFrom::Start(28)).unwrap();
+        file.write_all(&16_384_u32.to_be_bytes()).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        assert_refusal_preserves_bytes(&path);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn unknown_or_newer_marker_refuses_without_touching_the_store() {
-        for version in [1, 5] {
+        for version in [1, 4, 6] {
             let path = database_path(&format!("unsupported-version-marker-{version}"));
             drop(Gateway::open_for_test(&path).unwrap());
             set_journal_version(&path, version);

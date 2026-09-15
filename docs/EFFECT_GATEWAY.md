@@ -10,10 +10,12 @@ an installed filesystem copy. Recovery before that commit signs only frozen fact
 leaves the observation unchanged, and commit acknowledgement loss is resolved by reading durable
 state rather than dispatching or observing again.
 
-Journal format 4 is the current format. Fresh journals and existing format 4 journals are accepted.
-Older versions are explicitly rejected before action processing. There is no migration or
-reinterpretation of older terminal rows. Receipt v2/v3, grant v1/v2, trust, exact approval, and
-observation-only recovery semantics remain unchanged.
+Journal format 5 retains the original signed authorization grant at first insertion. Fresh journals
+and existing format 5 journals are accepted. Format 4 and older versions are rejected unchanged
+before action processing, without migration. Preserve their journal, sidecars and access materials
+under the matching binary. A fresh journal is not continuity or permission to recreate old actions.
+Receipt v2/v3, grant v1/v2, trust, exact approval, and observation-only recovery semantics remain
+unchanged.
 
 Filesystem export is separate from execution. CLI and MCP adapters export committed bytes to their
 configured directory for their existing filename response. Export failure cannot reopen the
@@ -84,14 +86,17 @@ implementation uses this deliberately narrow input grammar:
   them.
 
 No wildcard namespace, deployment, container, tag, shell command, manifest, arbitrary patch, or
-second Kubernetes operation is in scope. The journal accepts at most 10,000 distinct operation
-identities; an existing identical identity remains readable and idempotent at the limit. The
+second Kubernetes operation is in scope. The logical ceiling is 10,000 distinct identities, but
+format-5 completion accounting limits admission to 504 retained identities and 32 unfinished
+identities. An existing identical identity remains readable and idempotent at either limit. The
 owner-signed grant carries one bounded authorization identity and an exact copy of the operation
 identity, namespace, deployment, container, and image. It has no wildcards, policy rules, ambient
-lookup, or expiry semantics. The application-configured grant trust contains one exact signing-key
-identity and Ed25519 verifying key. The gateway accepts only the fixed effect-gateway grant purpose,
-persists the signer identity and SHA-256 digest of the exact signed grant bytes, and does not accept
-trust from the request or grant.
+lookup, or expiry semantics. Each application-configured grant trust appointment contains one exact
+signing-key identity and Ed25519 verifying key. CLI/MCP retain one appointment. The service
+application accepts at most 128 appointments with unique key IDs. An empty set permits opening safe
+storage but cannot authenticate retained actions. The gateway accepts only the fixed effect-gateway
+grant purpose, persists the signer identity and SHA-256 digest of the exact signed grant bytes, and
+does not accept trust from the request or grant.
 
 The release-owned demonstration uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
@@ -114,10 +119,11 @@ construction are unchanged. The 2 KiB statement, 4 KiB grant, 512-byte individua
 record ordering, and existing identity/trust bounds remain. Mixed envelope/statement versions fail
 closed.
 
-The resident service requires v2, including startup and restart. Legacy CLI/MCP paths still accept
-v1 with its original late-bound meaning. Every path accepting v2 enforces the snapshot. Neither
-existing grant bytes nor existing operation handles can acquire snapshot authority. Reapproval needs
-an operator-created grant and a new handle. It is not an automatic retry after `UNKNOWN`.
+Resident service execution requires v2. Read-first startup may authenticate retained v1 history
+without allowing v1 selection or advancement. Legacy CLI/MCP paths still accept v1 with its original
+late-bound meaning. Every path accepting v2 enforces the snapshot. Neither existing grant bytes nor
+existing operation handles can acquire snapshot authority. Reapproval needs an operator-created
+grant and a new handle. It is not an automatic retry after `UNKNOWN`.
 
 `kapsel provision-snapshot-grant` uses the existing operator authorization JSON (no UID or version
 fields), signing seed, key ID and output arguments, plus an explicit private `--kubeconfig`. It
@@ -136,11 +142,13 @@ approved UID and resourceVersion. An intervening conflict after the marker is st
 path, never `NOT_ATTEMPTED`. The marker does not establish network transmission. Recovery after it
 only observes and never resends.
 
-Journal format 4 retains nullable approved UID/version and preflight observed UID/version columns.
+Journal format 5 retains nullable approved UID/version and preflight observed UID/version columns.
 Legacy-grant actions have null approval and retain their original meaning. Older journal versions,
 including the former format-3 snapshot layout, are rejected without migration before processing. New
-requests bind original grant identity, signer and digest at their first durable insertion, including
-the requested window. Snapshot authority never replaces authority on an existing row.
+requests atomically retain the exact signed grant bytes with original grant identity, signer, digest
+and snapshot at their first durable insertion, including the requested window. Stored bytes never
+appoint trust. Authorized reads and identical submission compare original bytes and provenance in
+the same SQLite snapshot. Snapshot authority never replaces authority on an existing row.
 
 `approved_target` is the signed approval or null for legacy authority. `attempt_target` is the
 frozen PATCH precondition pair or null before the marker. `observed_target` is the successful
@@ -158,6 +166,34 @@ v3 purpose for snapshot receipts. Old receipt v2 remains inspectable under its o
 with null approval, never invented snapshot evidence. Legacy actions still emit v2. Frozen bytes are
 never re-signed or upgraded. The sections below describe the unchanged legacy v1 grant/v2 receipt
 wire where not explicitly extended here. This source revision is unreleased.
+
+## Service admission and historical authority
+
+The service application resolves a caller-selected ID against retained original authority first,
+then the bounded operator catalog only if no record exists. Retained bytes do not appoint a key. The
+gateway loads retained bytes, authenticates under external appointments and compares provenance and
+lifecycle facts within one SQLite read snapshot. Advancement carries the original authorization
+binding through continuation reloads and rechecks custody after receiver I/O before recording
+returned facts. The worker lease does not authorize direct SQLite edits. Missing required trust
+fails for that ID, without returning its tuple or receipt. It does not hide unrelated
+authenticatable history.
+
+Admission is not a receiver operation. A new identity requires a nonwaiting journal worker lease, a
+repeated identity check and a capacity-checked first commit containing the original grant. The
+acknowledgement callback runs only after confirmed commit or definite busy/capacity refusal. It
+reports durable phase, not worker liveness or receiver result. A storage error before that callback
+is not definite non-admission. The lease remains owned through acknowledgement and the bounded
+advancement pass. It cannot be reacquired through the same journal handle while outstanding.
+
+Identical existing identities resolve before slot/capacity refusal. Terminal selection is read-only.
+An unfinished identical selection with a busy worker acknowledges its existing responsibility and
+starts no new work. Missing execution material leaves admitted work unfinished. Receipt completion
+needs signing material, but stored reads and original receipt retrieval do not. Legacy CLI/MCP
+submission and requested-phase authorization behavior remain separate and unchanged.
+
+The socket runtime must preserve task and resource ownership until blocking storage actually stops,
+even if a response deadline or disconnect occurs. The application callback alone does not prove that
+runtime obligation. No queue, startup selection or new observation policy follows from it.
 
 ## Operation lifecycle
 
@@ -224,19 +260,114 @@ from request success or a timeout.
 | `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                    |
 
 Execution and receipt completion select only the configured operation identity, with no queue or
-fairness guarantee. Journal format 4 requires schema validation of the inert `target_read_failures`
+fairness guarantee. Journal format 5 requires schema validation of the inert `target_read_failures`
 column. Execution neither increments nor uses it, including for retry timing. Existing values remain
 untouched, with no migration or reinterpretation of persisted rows.
 
 The implementation explicitly uses SQLite's rollback journal with `synchronous=FULL` and verifies
 both settings whenever it opens the journal. The main journal is at most 64 MiB; a rollback-journal
 artifact is at most 65 MiB to allow bounded SQLite framing around the owned database pages. Every
-persisted text or blob value is additionally at most 16 KiB, SQLite's per-value-or-row allocation
-limit is 64 KiB, and every reopen checks those bounds and the 10,000-row ceiling before operation
-loading. Files are exact mode 0600 and their parent is exact mode 0700. Larger, permissive, linked,
-or replaced artifacts fail before SQLite reads or recovery. These physical and logical caps bound
-integrity checking and persisted allocation even when an owner-controlled journal is malformed; they
-are not a storage-capacity or retention promise beyond the finite operation ceiling.
+persisted text or blob value is additionally at most 16 KiB. SQLite's per-value-or-row write
+allocation limit is 64 KiB; that setting alone does not bound existing records on read. Every reopen
+separately checks encoded cell payloads, including record headers, through bundled SQLite's `dbstat`
+metadata, plus retained/unfinished capacity before operation loading. Original signed grants have
+their narrower 4 KiB bound. Files are exact mode 0600 and their parent is exact mode 0700. Larger,
+permissive, linked, or replaced artifacts fail before SQLite reads or recovery. These physical and
+logical caps bound integrity checking and persisted allocation even when an owner-controlled journal
+is malformed; they do not reserve filesystem space or promise retention after storage loss.
+
+### Completion accounting
+
+Format 5 uses 4 KiB pages, no reserved page bytes, no auto-vacuum and the single existing primary
+index. The connection enforces 16,384 pages (64 MiB) with `max_page_count`. Each admitted identity
+is charged 32 pages (128 KiB), regardless of phase or actual payload. A further 256 pages (1 MiB)
+are held as shared transient-completion headroom. Thus at most 504 identities fit. The charge never
+shrinks when an action terminates; there is no pruning or reservation ledger. The same transaction
+checks counts and inserts original authority. Existing identity lookup precedes new-work refusal. At
+most 32 rows may be `requested`, `authorized`, `apply_started` or `receiver_observed`.
+
+The accepted-layout bound uses pinned SQLite 3.53.2 and its
+[file format](https://sqlite.org/fileformat.html#b_tree_pages). In one read snapshot, exact schema
+recognition and full integrity checking precede [dbstat](https://sqlite.org/dbstat.html) inspection
+of every owned b-tree and overflow page. Table and `sqlite_schema` cell payloads, including encoded
+record headers, must be at most 65,536 bytes. Primary-index cell payloads must be at most 16,397
+bytes: a retained 16-KiB key, an eight-byte rowid and a five-byte canonical record header fit. The
+check measures actual payload, not an assumption that stored encodings are canonical. Ordinary
+admitted operation IDs remain at most 128 bytes; unrelated retained IDs may still use the existing
+16-KiB value allowance. Equivalent whitespace-expanded schema SQL remains allowed within these
+physical limits. Oversized physical records fail without repair or migration.
+
+Every non-root b-tree page must be nonempty. Empty leaf roots are allowed for empty operation trees;
+page 1 alone may be an empty internal root of `sqlite_schema`. Tree depth is at most 20 pages.
+Metadata must account for exactly the retained table rows, the same number of index cells (including
+interior index cells), two schema rows, and all live pages. With 4,092 usable bytes per overflow
+page and at least 489 local bytes for overflowing records:
+
+- Each table record needs at most `ceil((65536 - 489) / 4092) = 16` overflow pages. Nonempty leaves
+  and at least two children per internal node give at most `2*N - 1` table b-tree pages for `N > 0`.
+- Each index record needs at most `ceil((16397 - 489) / 4092) = 4` overflow pages. Every nonempty
+  index page holds at least one of the `N` distinct index cells, so there are at most `N` such
+  pages.
+- The two schema rows need at most 32 overflow pages and four b-tree pages, including page 1's
+  possible empty internal root. Two additional empty operation roots cover `N = 0`.
+
+Thus live pages, excluding the integrity-validated freelist, must fit the conservative
+`23 * identities + 38` bound. This is at most 11,630 pages at 504 identities, below the unchanged
+16,128-page retained charge. Unlike the former `21*N+3` check, these premises bound every accepted
+layout after growth, not only its initial size. Owned inserts and updates retain the 64-KiB encoded
+write limit using fresh-prepared, single-row statements and dedicated record registers; this does
+not generalize to arbitrary SQLite statements or reusable record buffers. Insertion creates one
+bounded canonical index record, and updates do not change the indexed identity or rowid. Neither
+changes schema. SQLite balancing preserves nonempty trees; physical checks apply again on both
+writable and read-only reopening. Orphan pages cannot masquerade as reserved completion space.
+
+**Transient allocation.** The pinned owned SQL consists of one table/index insertion or one
+single-row table replacement. Exact schema excludes triggers, foreign keys, additional indexes and
+autoincrement tables; updates change neither the indexed identity nor rowid. Their generated plans
+have no real deletion, index rewrite or auxiliary mutation pass. SQLite's replacement path creates
+at most one new record chain before freeing the old chain, then balances once. The old chain is
+already included in starting live pages, not charged again as a new allocation.
+
+For each of the two trees, conservatively allow five destination pages per balancing group. This
+covers non-root balancing (which reuses old siblings before allocating) and quick balancing (one new
+sibling). At most 19 original non-root levels plus one child group after root deepening are visited;
+root deepening adds one copied page. That child group's at-most-five destinations require at most
+four root separators, which fit a 4-KiB root, so it does not cause another deepening pass. Root
+collapse and discarded siblings free pages; balancing transfers existing overflow pointers rather
+than creating another payload chain. Allowing 17 new overflow pages for each tree is looser than the
+physical 16/4 maxima above. Thus `2 * (20 * 5 + 1) + 2 * 17 = 236` additional pages fits the
+unchanged 256-page headroom. This counts all allocations conservatively, even when freed pages can
+be reused within the statement. The accepted live bound plus this transient allowance stays below
+`max_page_count`. The allocator uses freelist leaves and trunks before extending, without a
+contiguous-space requirement. There is no vacuum, schema change or additional tree allocation in
+these operation paths. A new SQL shape, schema, index or observation field must revalidate both
+arguments.
+
+**Main rollback file.** Cache spilling is disabled on every owned write connection. In pinned SQLite
+this suppresses the dirty-page stress path that could sync and start another rollback segment.
+Ordinary commit calls `syncJournal(..., 0)`, not the new-header path. A transaction's original-page
+bitset admits at most one original image per page, with eight framing bytes; new pages beyond the
+original database size do not need original images. Sector size is capped at 65,536 bytes. Including
+two whole sectors for framing/alignment gives `16384 * (4096 + 8) + 2 * 65536 = 67,371,008` bytes,
+below 65 MiB.
+
+This main-file argument assumes the owned single-database transactions: no `ATTACH`/super-journal,
+no explicit or repeated savepoint rollback, no continued writes after a failed owned statement, and
+DELETE/FULL with cache spilling off. SQLite may use an implicit statement sub-journal; that is a
+separate object, does not reset the main original-page bitset or add a main header, and is **not**
+covered by the 65-MiB main rollback ceiling. The ceiling is not a bound on total temporary-file,
+process-memory or filesystem footprint. `journal_size_limit` is not used as a peak-space guarantee.
+
+The [storage qualification lane](BUILD.md#bounded-storage-failure-qualification) complements these
+source-backed bounds with all nine insertion-order/pending-phase combinations at 504 retained
+identities, fragmented 16,384-page files, exact history preservation and real bounded tmpfs ENOSPC.
+Process kills cover before SQL, SQL-executed/precommit and after commit; they are not kills observed
+inside SQLite commit. Tmpfs ENOSPC is not disk-backed, power-loss, installed-host or live Kubernetes
+proof. These finite tests do not by themselves establish a universal allocation bound.
+
+Configured capacity does not prevent external filesystem exhaustion, failed sync, storage loss or an
+indeterminate commit. Such failure must preserve admitted responsibility and already frozen facts.
+It cannot manufacture a receiver result or authorize another mutation.
 
 The implementation holds one crash-released exclusive worker lock around provider and receiver I/O
 so two processes cannot advance the same journal concurrently. A contender performs no provider or

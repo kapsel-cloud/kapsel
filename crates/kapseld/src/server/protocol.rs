@@ -1,12 +1,10 @@
 //! Pure fixed service grammar, validation projection, response bytes and frame limits.
 
 use kapsel::{
-    AgentRequest, ApplicationError, SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    ServiceAdmission, ServiceError, SetDeploymentImageReceipt, SetDeploymentImageStatus,
     TargetRejection,
 };
-use kapsel_authority::{
-    dns_label_is_valid, dns_subdomain_is_valid, identity_is_valid, immutable_image_is_valid,
-};
+use kapsel_authority::identity_is_valid;
 use serde::Deserialize;
 
 pub(super) const REQUEST_BYTES_MAX: usize = 16 * 1024;
@@ -15,26 +13,30 @@ const RECEIPT_RESPONSE_BYTES_MAX: usize = 40 * 1024;
 
 #[derive(Clone, Copy)]
 pub(super) enum SubmissionAdmission {
-    Accepted,
-    Busy,
-    OperationFailure,
+    Decided(ServiceAdmission),
+    Indeterminate,
+    Error(ServiceError),
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "request", deny_unknown_fields)]
 enum Request {
-    #[serde(rename = "get_set_deployment_image_status")]
-    Status { operation_id: String },
-    #[serde(rename = "get_set_deployment_image_receipt")]
-    Receipt { operation_id: String },
-    #[serde(rename = "submit_set_deployment_image")]
-    Submit {
-        operation_id: String,
-        namespace: String,
-        deployment: String,
-        container: String,
-        immutable_image_digest: String,
+    #[serde(rename = "list_approved_actions")]
+    List {
+        version: u8,
+        after: serde_json::Value,
     },
+    #[serde(rename = "list_operation_history")]
+    History {
+        version: u8,
+        after: serde_json::Value,
+    },
+    #[serde(rename = "get_set_deployment_image_status")]
+    Status { version: u8, operation_id: String },
+    #[serde(rename = "get_set_deployment_image_receipt")]
+    Receipt { version: u8, operation_id: String },
+    #[serde(rename = "submit_set_deployment_image")]
+    Submit { version: u8, operation_id: String },
 }
 
 #[derive(Clone, Copy)]
@@ -45,10 +47,12 @@ pub(super) enum ResponseClass {
 
 pub(super) enum Command {
     Read(ReadRequest),
-    Submit(AgentRequest),
+    Submit(String),
 }
 
 pub(super) enum ReadRequest {
+    List(Option<String>),
+    History(Option<String>),
     Status(String),
     Receipt(String),
 }
@@ -59,37 +63,41 @@ pub(super) fn request_length(prefix: [u8; 4]) -> Option<usize> {
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Option<Command> {
-    if bytes.is_empty() || bytes.len() > REQUEST_BYTES_MAX {
+    if bytes.is_empty()
+        || bytes.len() > REQUEST_BYTES_MAX
+        || bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{')
+    {
         return None;
     }
+    let cursor = |after: serde_json::Value| match after {
+        serde_json::Value::Null => Some(None),
+        serde_json::Value::String(id) if identity_is_valid(&id) => Some(Some(id)),
+        _ => None,
+    };
     match serde_json::from_slice::<Request>(bytes).ok()? {
-        Request::Status { operation_id } if identity_is_valid(&operation_id) => {
+        Request::List { version: 1, after } => {
+            Some(Command::Read(ReadRequest::List(cursor(after)?)))
+        },
+        Request::History { version: 1, after } => {
+            Some(Command::Read(ReadRequest::History(cursor(after)?)))
+        },
+        Request::Status {
+            version: 1,
+            operation_id,
+        } if identity_is_valid(&operation_id) => {
             Some(Command::Read(ReadRequest::Status(operation_id)))
         },
-        Request::Receipt { operation_id } if identity_is_valid(&operation_id) => {
+        Request::Receipt {
+            version: 1,
+            operation_id,
+        } if identity_is_valid(&operation_id) => {
             Some(Command::Read(ReadRequest::Receipt(operation_id)))
         },
         Request::Submit {
+            version: 1,
             operation_id,
-            namespace,
-            deployment,
-            container,
-            immutable_image_digest,
-        } if identity_is_valid(&operation_id)
-            && dns_label_is_valid(&namespace)
-            && dns_subdomain_is_valid(&deployment)
-            && dns_label_is_valid(&container)
-            && immutable_image_is_valid(&immutable_image_digest) =>
-        {
-            Some(Command::Submit(AgentRequest {
-                operation_id,
-                namespace,
-                deployment,
-                container,
-                immutable_image_digest,
-            }))
-        },
-        Request::Status { .. } | Request::Receipt { .. } | Request::Submit { .. } => None,
+        } if identity_is_valid(&operation_id) => Some(Command::Submit(operation_id)),
+        _ => None,
     }
 }
 
@@ -103,43 +111,79 @@ pub(super) fn response_length_allowed(length: usize, class: ResponseClass) -> bo
 
 pub(super) fn render_submission(admission: SubmissionAdmission) -> Vec<u8> {
     match admission {
-        SubmissionAdmission::Accepted => br#"{"status":"ACCEPTED"}"#.to_vec(),
-        SubmissionAdmission::Busy => br#"{"status":"BUSY"}"#.to_vec(),
-        SubmissionAdmission::OperationFailure => operation_failure(),
+        SubmissionAdmission::Decided(ServiceAdmission::Admitted(phase)) => format!(
+            "{{\"version\":1,\"status\":\"ADMITTED\",\"phase\":\"{}\"}}",
+            phase_name(phase)
+        )
+        .into_bytes(),
+        SubmissionAdmission::Decided(ServiceAdmission::Busy) => {
+            br#"{"version":1,"status":"NOT_ADMITTED","reason":"BUSY"}"#.to_vec()
+        },
+        SubmissionAdmission::Decided(ServiceAdmission::Full) => {
+            br#"{"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}"#.to_vec()
+        },
+        SubmissionAdmission::Indeterminate => br#"{"version":1,"status":"INDETERMINATE"}"#.to_vec(),
+        SubmissionAdmission::Error(error) => service_error(error),
     }
 }
 
 pub(super) fn invalid_request() -> Vec<u8> {
-    br#"{"status":"ERROR","error_class":"invalid_request"}"#.to_vec()
+    service_error(ServiceError::InvalidRequest)
 }
 
 pub(super) fn operation_failure() -> Vec<u8> {
-    br#"{"status":"ERROR","error_class":"operation_failure"}"#.to_vec()
+    service_error(ServiceError::OperationFailure)
 }
 
-fn render_status(result: &Result<SetDeploymentImageStatus, ApplicationError>) -> Vec<u8> {
+pub(super) fn service_error(error: ServiceError) -> Vec<u8> {
+    let class = match error {
+        ServiceError::InvalidRequest => "invalid_request",
+        ServiceError::AuthorityUnavailable => "authority_unavailable",
+        ServiceError::Configuration | ServiceError::OperationFailure => "operation_failure",
+    };
+    format!("{{\"version\":1,\"status\":\"ERROR\",\"error_class\":\"{class}\"}}").into_bytes()
+}
+
+const fn phase_name(phase: kapsel::OperationState) -> &'static str {
+    use kapsel::OperationState;
+    match phase {
+        OperationState::Requested => "requested",
+        OperationState::Authorized => "authorized",
+        OperationState::NotAttempted => "not_attempted",
+        OperationState::ApplyStarted => "apply_started",
+        OperationState::ReceiverObserved => "receiver_observed",
+        OperationState::Finalized => "finalized",
+    }
+}
+
+fn render_status(result: Result<SetDeploymentImageStatus, ServiceError>) -> Vec<u8> {
     match result {
-        Ok(SetDeploymentImageStatus::NotFound) => br#"{"status":"NOT_FOUND"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::InProgress) => br#"{"status":"IN_PROGRESS"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::Succeeded) => br#"{"status":"SUCCEEDED"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::Failed) => br#"{"status":"FAILED"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::Unknown) => br#"{"status":"UNKNOWN"}"#.to_vec(),
+        Ok(SetDeploymentImageStatus::NotFound) => br#"{"version":1,"status":"NOT_FOUND"}"#.to_vec(),
+        Ok(SetDeploymentImageStatus::InProgress) => {
+            br#"{"version":1,"status":"IN_PROGRESS"}"#.to_vec()
+        },
+        Ok(SetDeploymentImageStatus::Succeeded) => {
+            br#"{"version":1,"status":"SUCCEEDED"}"#.to_vec()
+        },
+        Ok(SetDeploymentImageStatus::Failed) => br#"{"version":1,"status":"FAILED"}"#.to_vec(),
+        Ok(SetDeploymentImageStatus::Unknown) => br#"{"version":1,"status":"UNKNOWN"}"#.to_vec(),
         Ok(SetDeploymentImageStatus::NotAttempted(rejection)) => format!(
-            "{{\"status\":\"NOT_ATTEMPTED\",\"target_rejection\":\"{}\"}}",
-            target_rejection(*rejection)
+            "{{\"version\":1,\"status\":\"NOT_ATTEMPTED\",\"target_rejection\":\"{}\"}}",
+            target_rejection(rejection)
         )
         .into_bytes(),
-        Err(_) => operation_failure(),
+        Err(error) => service_error(error),
     }
 }
 
 pub(super) fn render_status_with_targets(
-    result: Result<(SetDeploymentImageStatus, kapsel::OperationTargets), ApplicationError>,
+    result: Result<(SetDeploymentImageStatus, kapsel::OperationTargets), ServiceError>,
 ) -> Vec<u8> {
-    let Ok((status, targets)) = result else {
-        return operation_failure();
+    let (status, targets) = match result {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
     };
-    let mut output = render_status(&Ok(status));
+    let mut output = render_status(Ok(status));
     if status == SetDeploymentImageStatus::NotFound
         || targets == kapsel::OperationTargets::default()
     {
@@ -165,16 +209,19 @@ pub(super) fn render_status_with_targets(
     output
 }
 
-pub(super) fn render_receipt(
-    result: Result<SetDeploymentImageReceipt, ApplicationError>,
-) -> Vec<u8> {
+pub(super) fn render_receipt(result: Result<SetDeploymentImageReceipt, ServiceError>) -> Vec<u8> {
     match result {
-        Ok(SetDeploymentImageReceipt::NotFound) => br#"{"status":"NOT_FOUND"}"#.to_vec(),
-        Ok(SetDeploymentImageReceipt::NotReady) => br#"{"status":"NOT_READY"}"#.to_vec(),
+        Ok(SetDeploymentImageReceipt::NotFound) => {
+            br#"{"version":1,"status":"NOT_FOUND"}"#.to_vec()
+        },
+        Ok(SetDeploymentImageReceipt::NotReady) => {
+            br#"{"version":1,"status":"NOT_READY"}"#.to_vec()
+        },
         Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 }) => {
             // The fixed wrapper includes the 64-byte digest, but not the doubled receipt bytes.
             const WRAPPER_BYTES: usize =
-                br#"{"status":"READY","receipt_hex":"","receipt_sha256":""}"#.len() + 64;
+                br#"{"version":1,"status":"READY","receipt_hex":"","receipt_sha256":""}"#.len()
+                    + 64;
             if !valid_sha256(&sha256) {
                 return operation_failure();
             }
@@ -191,15 +238,59 @@ pub(super) fn render_receipt(
             let receipt_hex = lowercase_hex(&bytes);
             format!(
                 concat!(
-                    "{{\"status\":\"READY\",\"receipt_hex\":\"{}\",",
+                    "{{\"version\":1,\"status\":\"READY\",\"receipt_hex\":\"{}\",",
                     "\"receipt_sha256\":\"{}\"}}"
                 ),
                 receipt_hex, sha256
             )
             .into_bytes()
         },
-        Err(_) => operation_failure(),
+        Err(error) => service_error(error),
     }
+}
+
+pub(super) fn render_catalog(
+    entries: Vec<kapsel::ApprovedAction>,
+    next_cursor: Option<&str>,
+) -> Vec<u8> {
+    let entries: Vec<_> = entries
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "operation_id": entry.request.operation_id,
+                "namespace": entry.request.namespace,
+                "deployment": entry.request.deployment,
+                "container": entry.request.container,
+                "immutable_image_digest": entry.request.immutable_image_digest,
+                "approved_target": {
+                    "uid": entry.approved_target.uid,
+                    "resource_version": entry.approved_target.resource_version,
+                },
+                "label": entry.label,
+            })
+        })
+        .collect();
+    serde_json::json!({"version":1,"status":"READY","entries":entries,"next_cursor":next_cursor})
+        .to_string()
+        .into_bytes()
+}
+
+pub(super) fn render_history(page: kapsel::HistoryPage) -> Vec<u8> {
+    let mut entries = Vec::with_capacity(page.entries.len());
+    for entry in page.entries {
+        let bytes = render_status_with_targets(entry.status);
+        let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_slice(&bytes) else {
+            return operation_failure();
+        };
+        fields.remove("version");
+        fields.insert("operation_id".into(), entry.operation_id.into());
+        entries.push(fields);
+    }
+    serde_json::json!({
+        "version":1,"status":"READY","entries":entries,"next_cursor":page.next_cursor,
+    })
+    .to_string()
+    .into_bytes()
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -234,22 +325,12 @@ mod tests {
 
     #[test]
     fn exact_request_grammars_parse_and_hostile_shapes_fail() {
-        let image = concat!(
-            "registry.example/agent-api@sha256:",
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        );
         for valid in [
-            String::from(r#"{"request":"get_set_deployment_image_status","operation_id":"op-1"}"#),
-            String::from(r#"{"request":"get_set_deployment_image_receipt","operation_id":"op-1"}"#),
-            format!(
-                concat!(
-                    "{{\"request\":\"submit_set_deployment_image\",",
-                    "\"operation_id\":\"op-1\",\"namespace\":\"demo\",",
-                    "\"deployment\":\"agent-api\",\"container\":\"api\",",
-                    "\"immutable_image_digest\":\"{image}\"}}"
-                ),
-                image = image
-            ),
+            r#"{"version":1,"request":"get_set_deployment_image_status","operation_id":"op-1"}"#,
+            r#"{"version":1,"request":"get_set_deployment_image_receipt","operation_id":"op-1"}"#,
+            r#"{"version":1,"request":"submit_set_deployment_image","operation_id":"op-1"}"#,
+            r#"{"version":1,"request":"list_approved_actions","after":null}"#,
+            r#"{"version":1,"request":"list_operation_history","after":"op-1"}"#,
         ] {
             assert!(decode(valid.as_bytes()).is_some());
         }
@@ -270,34 +351,23 @@ mod tests {
 
     #[test]
     fn duplicate_members_and_escaped_aliases_fail_for_every_request_variant() {
-        let image = format!("image@sha256:{}", "0".repeat(64));
-        let other_image = format!("image@sha256:{}", "1".repeat(64));
         for request in [
             "get_set_deployment_image_status",
             "get_set_deployment_image_receipt",
             "submit_set_deployment_image",
         ] {
-            let mut members = vec![
+            let members = vec![
                 ("request", r"\u0072equest", request),
                 ("operation_id", r"\u006fperation_id", "op-1"),
             ];
-            if request == "submit_set_deployment_image" {
-                members.extend([
-                    ("namespace", r"\u006eamespace", "demo"),
-                    ("deployment", r"\u0064eployment", "agent-api"),
-                    ("container", r"\u0063ontainer", "api"),
-                    (
-                        "immutable_image_digest",
-                        r"\u0069mmutable_image_digest",
-                        &image,
-                    ),
-                ]);
-            }
-            let body = members
-                .iter()
-                .map(|(name, _, value)| format!(r#""{name}":"{value}""#))
-                .collect::<Vec<_>>()
-                .join(",");
+            let body = format!(
+                "\"version\":1,{}",
+                members
+                    .iter()
+                    .map(|(name, _, value)| format!(r#""{name}":"{value}""#))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             assert!(
                 decode(format!("{{{body}}}").as_bytes()).is_some(),
                 "{request}"
@@ -315,7 +385,6 @@ mod tests {
                         "get_set_deployment_image_receipt"
                     },
                     "request" => "get_set_deployment_image_status",
-                    "immutable_image_digest" => &other_image,
                     _ => "other",
                 };
                 for duplicate_value in [*value, other_value] {
@@ -368,15 +437,18 @@ mod tests {
                 r#"{"status":"NOT_ATTEMPTED","target_rejection":"STALE_APPROVAL"}"#,
             ),
         ] {
-            assert_eq!(render_status(&Ok(status)), expected.as_bytes());
+            assert_eq!(
+                render_status(Ok(status)),
+                expected.replacen('{', "{\"version\":1,", 1).as_bytes()
+            );
         }
         assert_eq!(
             render_receipt(Ok(SetDeploymentImageReceipt::NotFound)),
-            br#"{"status":"NOT_FOUND"}"#
+            br#"{"version":1,"status":"NOT_FOUND"}"#
         );
         assert_eq!(
             render_receipt(Ok(SetDeploymentImageReceipt::NotReady)),
-            br#"{"status":"NOT_READY"}"#
+            br#"{"version":1,"status":"NOT_READY"}"#
         );
         let ready = render_receipt(Ok(SetDeploymentImageReceipt::Ready {
             bytes: vec![0x00, 0xab, 0xff],
@@ -389,24 +461,122 @@ mod tests {
         assert_eq!(
             ready,
             concat!(
-                "{\"status\":\"READY\",\"receipt_hex\":\"00abff\",\"receipt_sha256\":\"",
+                "{\"version\":1,\"status\":\"READY\",\"receipt_hex\":\"00abff\",",
+                "\"receipt_sha256\":\"",
                 r#"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
             )
             .as_bytes()
         );
         assert_eq!(lowercase_hex(&[0x00, 0xab, 0xff]), "00abff");
         assert_eq!(
-            render_submission(SubmissionAdmission::Accepted),
-            br#"{"status":"ACCEPTED"}"#
+            render_submission(SubmissionAdmission::Decided(ServiceAdmission::Busy)),
+            br#"{"version":1,"status":"NOT_ADMITTED","reason":"BUSY"}"#
         );
         assert_eq!(
-            render_submission(SubmissionAdmission::Busy),
-            br#"{"status":"BUSY"}"#
+            render_submission(SubmissionAdmission::Decided(ServiceAdmission::Full)),
+            br#"{"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}"#
         );
         assert_eq!(
-            render_submission(SubmissionAdmission::OperationFailure),
-            br#"{"status":"ERROR","error_class":"operation_failure"}"#
+            render_submission(SubmissionAdmission::Error(ServiceError::OperationFailure)),
+            br#"{"version":1,"status":"ERROR","error_class":"operation_failure"}"#
         );
+    }
+
+    #[test]
+    fn version_and_named_fields_are_mandatory_on_all_five_commands() {
+        for (name, fields) in [
+            ("list_approved_actions", r#""after":null"#),
+            ("list_operation_history", r#""after":"op-1""#),
+            (
+                "get_set_deployment_image_status",
+                r#""operation_id":"op-1""#,
+            ),
+            (
+                "get_set_deployment_image_receipt",
+                r#""operation_id":"op-1""#,
+            ),
+            ("submit_set_deployment_image", r#""operation_id":"op-1""#),
+        ] {
+            let body = format!(r#"{{"version":1,"request":"{name}",{fields}}}"#);
+            assert!(decode(body.as_bytes()).is_some());
+            for version in ["0", "2", "1.0", "\"1\"", "null", "true", "-1"] {
+                assert!(decode(
+                    body.replace("\"version\":1", &format!("\"version\":{version}"))
+                        .as_bytes()
+                )
+                .is_none());
+            }
+            for invalid in [
+                body.replace("\"version\":1,", ""),
+                body.replace("\"version\":1", "\"version\":1,\"version\":1"),
+                body.replace("\"version\":1", "\"version\":1,\"\\u0076ersion\":1"),
+                body.replace("\"version\":1", "\"version\":1,\"unknown\":null"),
+                format!("{body}{{}}"),
+                format!("[{body}]"),
+                format!("{{\"version\":1,\"request\":\"{name}\"}}"),
+                format!("{{\"version\":1,\"request\":\"{name}\",{fields},{fields}}}"),
+            ] {
+                assert!(decode(invalid.as_bytes()).is_none(), "{invalid}");
+            }
+        }
+        for value in ["[]", "{}", "true", "1", "\"\""] {
+            let body = format!(
+                "{{\"version\":1,\"request\":\"list_approved_actions\",\"after\":{value}}}"
+            );
+            assert!(decode(body.as_bytes()).is_none());
+        }
+        assert!(decode(
+            concat!(
+                r#"{"version":1,"request":"submit_set_deployment_image","operation_id":"op-1","#,
+                r#""namespace":"demo","deployment":"agent-api","container":"api","#,
+                r#""immutable_image_digest":"image"}"#,
+            )
+            .as_bytes()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn history_projection_keeps_authority_errors_per_id_and_without_action_facts() {
+        let bytes = render_history(kapsel::HistoryPage {
+            entries: vec![
+                kapsel::HistoryEntry {
+                    operation_id: "inaccessible".into(),
+                    status: Err(ServiceError::AuthorityUnavailable),
+                },
+                kapsel::HistoryEntry {
+                    operation_id: "readable".into(),
+                    status: Ok((
+                        SetDeploymentImageStatus::InProgress,
+                        kapsel::OperationTargets {
+                            approved_target: Some(kapsel::ApprovedTarget {
+                                uid: "original-uid".into(),
+                                resource_version: "7".into(),
+                            }),
+                            ..kapsel::OperationTargets::default()
+                        },
+                    )),
+                },
+            ],
+            next_cursor: Some("readable".into()),
+        });
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["status"], "READY");
+        assert_eq!(value["next_cursor"], "readable");
+        assert_eq!(
+            value["entries"][0],
+            serde_json::json!({
+                "operation_id":"inaccessible", "status":"ERROR",
+                "error_class":"authority_unavailable",
+            })
+        );
+        assert_eq!(value["entries"][1]["operation_id"], "readable");
+        assert_eq!(
+            value["entries"][1]["approved_target"]["uid"],
+            "original-uid"
+        );
+        assert!(value["entries"][1]["attempt_target"].is_null());
     }
 
     #[test]
@@ -416,7 +586,8 @@ mod tests {
         }
         assert_eq!(request_length(1_u32.to_be_bytes()), Some(1));
         let mut body =
-            br#"{"request":"get_set_deployment_image_status","operation_id":"op-1"}"#.to_vec();
+            br#"{"version":1,"request":"get_set_deployment_image_status","operation_id":"op-1"}"#
+                .to_vec();
         body.resize(REQUEST_BYTES_MAX, b' ');
         assert_eq!(
             request_length(u32::try_from(body.len()).unwrap().to_be_bytes()),

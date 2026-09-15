@@ -166,20 +166,96 @@ Linux, run the process tests:
 cargo test --locked -p kapseld --features test-harness --test linux_process
 ```
 
-With `sg` installed, include the ignored distinct-effective-group case:
+With `sg`, Python 3 and an existing `docker` group that the test user may activate through `sg`,
+include the ignored distinct-effective-group case. The group must differ from the server's effective
+GID. In a disposable root-owned test container, provision that fixture group inside the container,
+not on the development host. The test uses only the group identity, not Docker daemon access:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
+Cold publication validation also runs at the shared application owner:
+
+```sh
+cargo test --locked -p kapsel --test service_application_contract cold_validation
+cargo test --locked -p kapseld --features test-harness
+```
+
+Linux startup/publication tests cover private lock custody, owned temporary cleanup and publication
+fault outcomes. Per-instance barriers cover startup termination, blocked storage retirement,
+receiver waiting and lifecycle contention; process tests preserve original history/receipt bytes
+through catalog and key removal. These are deterministic source/process checks, not disk-full,
+power-loss, native-host or live-Kubernetes qualification. Never mutate source during a
+read-only-mounted container gate, and archive untracked source files alongside its diff.
+
 See [Kapsel service](KAPSEL_SERVICE.md) for the current boundary and
 [service testing](TESTING.md#kapsel-service) for evidence coverage.
 
+## Accepted journal layouts
+
+Run the shared writable/read-only physical-layout regressions and retained-charge arithmetic:
+
+```sh
+cargo test --locked -p kapsel --lib gateway::tests::capacity_layout
+cargo test --locked -p kapsel --lib gateway::journal::capacity
+```
+
+These use bundled SQLite records, long retained keys, padded schema SQL and bounded sparse-tree
+fixtures to check [completion accounting](EFFECT_GATEWAY.md#completion-accounting). They prove
+encoded-payload rejection and legitimate completion/reopen, not transient-allocation peaks,
+filesystem reservation, ENOSPC, power-loss or native/live qualification. The owning broader gate is
+`cargo test --locked -p kapsel`.
+
+## Bounded storage failure qualification
+
+The normal package gate includes source-named SQLite write-plan checks, rollback-record accounting,
+concurrent admission at 31 unfinished identities, and the existing full-capacity receipt test
+expanded to nine insertion-order/pending-phase combinations. It uses maximal legal fields and valid
+fragmented freelists at 16,384 pages, and compares all retained rows without repeatedly verifying
+unchanged signatures. Focused commands:
+
+```sh
+cargo test --locked -p kapsel --lib gateway::tests::storage -- --nocapture
+cargo test --locked -p kapsel --lib full_identity_capacity_completes_all_remaining_receipts
+cargo test --locked -p kapsel --lib concurrent_submissions_at_31_unfinished
+```
+
+The separate genuine-ENOSPC lane requires Docker and Python 3.11 or later:
+
+```sh
+python3 scripts/test-storage-enospc.py
+```
+
+The runner creates a disposable pinned Linux container with a read-only source bind, no additional
+capabilities, a 2-GiB memory ceiling, a 96-MiB tmpfs and an 1,800-second command timeout. Build
+output and controls stay outside the full mount, inside the container; logs and a complete
+dirty-source snapshot are saved in the printed host temporary directory. It changes no host
+configuration and fills no host filesystem. The fixture verifies the exact tmpfs mount/type/size and
+caps actual filler writes at 128 MiB even if its mount precondition is wrong. It explicitly runs the
+otherwise ignored test and requires evidence that both cases executed, rather than accepting an
+empty test selection.
+
+At 504 retained identities/32 observed pending operations, the first case exhausts space before
+receipt SQL can complete. The second fills only after receipt SQL executes, with `dbstat` locating
+new destination pages and Linux `SEEK_HOLE` confirming they still require filesystem allocation.
+Page 1 is already in the rollback journal at that checkpoint. Commit then reports SQLite disk-full
+under actual OS ENOSPC, not the configured page ceiling. Both cases remove only their owned filler,
+recover original rows/grants/frozen facts/earlier receipts, and complete without another mutation or
+observation. The main journal length observed before commit is finite evidence, not a sampled
+universal peak measurement.
+
+Default deterministic gates never start this container. Process-kill tests cover before receipt SQL,
+SQL-executed/precommit and after commit; none is an observed kill inside SQLite commit. This lane
+uses real tmpfs exhaustion, not disk-backed durability, power loss, a native installation or live
+Kubernetes. See [completion accounting](EFFECT_GATEWAY.md#completion-accounting) for the separate
+source-backed page and main-rollback arguments.
+
 ## Journal version rejection
 
-Repository HEAD uses journal format 4 and rejects older versions without migration. Run the
-rejection proof:
+Repository HEAD uses journal format 5 and rejects older versions, including format 4, without
+migration. Run the rejection proof:
 
 ```sh
 cargo test --locked -p kapsel --lib \

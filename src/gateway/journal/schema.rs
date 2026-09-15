@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use super::{GatewayError, OPERATION_COUNT_MAX};
 use crate::gateway::receipt::RECEIPT_BYTES_MAX;
 
-pub(super) const JOURNAL_FORMAT_VERSION: u32 = 4;
+pub(super) const JOURNAL_FORMAT_VERSION: u32 = 5;
 
 pub(super) const PERSISTED_VALUE_BYTES_MAX: usize = 16 * 1024;
 pub(super) const PERSISTED_ROW_BYTES_MAX: i32 = 64 * 1024;
@@ -25,6 +25,7 @@ const CURRENT_COLUMNS: &[&str] = &[
     "authorization_id",
     "authorization_signer_key_id",
     "authorization_grant_digest",
+    "signed_authorization_grant",
     "state",
     "write_strategy",
     "target_rejection",
@@ -65,6 +66,7 @@ const CREATE_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
     authorization_id TEXT,
     authorization_signer_key_id TEXT,
     authorization_grant_digest TEXT,
+    signed_authorization_grant BLOB,
     state TEXT NOT NULL,
     write_strategy TEXT,
     target_rejection TEXT,
@@ -111,16 +113,11 @@ pub(super) fn initialize_schema(
     require_persisted_bounds(transaction)
 }
 
-pub(super) fn require_integrity(transaction: &Transaction<'_>) -> Result<(), GatewayError> {
-    let mut statement = transaction
-        .prepare("PRAGMA integrity_check")
+pub(super) fn require_integrity(connection: &Connection) -> Result<(), GatewayError> {
+    let result: String = connection
+        .query_row("PRAGMA integrity_check(1)", [], |row| row.get(0))
         .map_err(GatewayError::Database)?;
-    let results = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(GatewayError::Database)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(GatewayError::Database)?;
-    if results == ["ok"] {
+    if result == "ok" {
         Ok(())
     } else {
         Err(GatewayError::InvalidPersistedState)
@@ -172,6 +169,7 @@ fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError>
             AND NOT EXISTS (
                 SELECT 1 FROM kubernetes_image_operations
                 WHERE {value_predicates}
+                    OR length(signed_authorization_grant) > 4096
                 LIMIT 1
             )"
     );
@@ -350,7 +348,7 @@ fn normalize_schema_sql(sql: &str) -> String {
 
 fn expected_column_type(name: &str) -> &'static str {
     match name {
-        "receipt_bytes" => "BLOB",
+        "receipt_bytes" | "signed_authorization_grant" => "BLOB",
         "target_read_failures"
         | "apply_attempted"
         | "apply_accepted"

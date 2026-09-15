@@ -21,6 +21,7 @@ fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
             "ExecStart=/usr/libexec/kapsel/kapseld --operator-config ",
             "/etc/kapsel/operator.json --socket /run/kapsel/kapseld.sock\n",
             "Restart=no\n",
+            "TimeoutStopSec=infinity\n",
             "StandardOutput=null\n",
             "StandardError=null\n",
             "\n",
