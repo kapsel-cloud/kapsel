@@ -251,12 +251,12 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
     .unwrap()
     .unwrap();
     let proof = tokio::time::timeout(
-        std::time::Duration::from_mins(1),
+        std::time::Duration::from_mins(4),
         run_unknown_rollout_proof(client.clone()),
     )
     .await
     .map_or_else(
-        |_| Err("kind unknown proof exceeded 60 seconds".into()),
+        |_| Err("kind unknown proof exceeded 240 seconds".into()),
         |result| result.map_err(|error| error.to_string()),
     );
     let cleanup = tokio::time::timeout(
@@ -1181,6 +1181,249 @@ fn private_test_directory_for(scenario: &str) -> PathBuf {
     fs::create_dir(&path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     fs::canonicalize(path).unwrap()
+}
+
+mod observation_experiment {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use super::*;
+    use crate::{
+        provision_exact_grant, AuthorizationTrust, GrantProvisioning, ServiceAdmission,
+        ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceExecution,
+        SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    };
+
+    const NAMESPACE: &str = "kapsel-observation-experiment";
+
+    fn configuration(directory: &std::path::Path, target: &Deployment) -> ServiceConfiguration {
+        let name = target.metadata.name.as_deref().unwrap();
+        ServiceConfiguration {
+            journal_path: directory.join("journal.sqlite3"),
+            authorization_trust: vec![AuthorizationTrust {
+                key_id: "observation-owner".into(),
+                public_key: SigningKey::from_bytes(&[41; 32]).verifying_key().to_bytes(),
+            }],
+            approvals: ["a", "b"]
+                .into_iter()
+                .map(|id| ServiceApproval {
+                    label: id.into(),
+                    signed_grant: provision_exact_grant(&GrantProvisioning {
+                        authorization: &ExactAuthorization {
+                            authorization_id: format!("approval-{id}"),
+                            operation_id: id.into(),
+                            namespace: NAMESPACE.into(),
+                            deployment: name.into(),
+                            container: "target".into(),
+                            immutable_image_digest: TARGET_IMAGE.into(),
+                            approved_target: Some(ApprovedTarget {
+                                uid: target.metadata.uid.clone().unwrap(),
+                                resource_version: target.metadata.resource_version.clone().unwrap(),
+                            }),
+                        },
+                        signing_seed: &[41; 32],
+                        signing_key_id: "observation-owner",
+                    })
+                    .unwrap(),
+                })
+                .collect(),
+        }
+    }
+
+    fn execution(client: &Client) -> ServiceExecution {
+        ServiceExecution {
+            kubernetes_client: Some(client.clone()),
+            receipt_signing: Some(([42; 32], "observation-receipt".into())),
+        }
+    }
+
+    fn unix_ms() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        clippy::print_stdout,
+        reason = "ordered live selection, interruption, read and receipt evidence"
+    )]
+    async fn prove_pass(client: &Client, ready_seconds: u64) {
+        let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
+        let name = format!("ready-{ready_seconds}");
+        let target = deployments.get(&name).await.unwrap();
+        let directory = private_test_directory_for(&name);
+        let mut worker = ServiceApplication::open(configuration(&directory, &target)).unwrap();
+        let mut connected = ServiceApplication::open(configuration(&directory, &target)).unwrap();
+        assert_eq!(connected.approved_actions(None).unwrap().len(), 2);
+        let started_unix_ms = unix_ms();
+        let started = Instant::now();
+        let mut interrupted_unix_ms = None;
+        if ready_seconds == 60 {
+            // Interrupt during observation, retaining the durable mutation marker.
+            assert!(tokio::time::timeout(
+                Duration::from_secs(5),
+                worker.select("a", execution(client), |_| {}),
+            )
+            .await
+            .is_err());
+            assert_eq!(
+                connected.admitted_state("a").unwrap(),
+                Some(OperationState::ApplyStarted)
+            );
+            drop(worker);
+            interrupted_unix_ms = Some(unix_ms());
+            worker = ServiceApplication::open(configuration(&directory, &target)).unwrap();
+            assert_eq!(
+                worker.status("a").unwrap().0,
+                SetDeploymentImageStatus::InProgress
+            );
+        }
+        let worker_started = Instant::now();
+        let mut pass = Box::pin(worker.select("a", execution(client), |admission| {
+            assert!(matches!(admission, ServiceAdmission::Admitted(_)));
+        }));
+        tokio::select! {
+            result = &mut pass => panic!("rollout stopped before readiness: {result:?}"),
+            () = tokio::time::sleep(Duration::from_secs(35)) => {},
+        }
+        drop(connected);
+        connected = ServiceApplication::open(configuration(&directory, &target)).unwrap();
+        let read_started = Instant::now();
+        assert_eq!(
+            connected.status("a").unwrap().0,
+            SetDeploymentImageStatus::InProgress
+        );
+        assert_eq!(
+            connected.receipt("a").unwrap(),
+            SetDeploymentImageReceipt::NotReady
+        );
+        let stored_read_ms = read_started.elapsed().as_millis();
+        connected
+            .select("b", execution(client), |admission| {
+                assert_eq!(admission, ServiceAdmission::Busy);
+            })
+            .await
+            .unwrap();
+        assert_eq!(connected.admitted_state("b").unwrap(), None);
+        pass.await.unwrap();
+        let worker_ms = worker_started.elapsed().as_millis();
+        let finished_unix_ms = unix_ms();
+        let expected = if ready_seconds == 60 {
+            SetDeploymentImageStatus::Succeeded
+        } else {
+            SetDeploymentImageStatus::Unknown
+        };
+        assert_eq!(connected.status("a").unwrap().0, expected);
+        let frozen = connected.receipt("a").unwrap();
+        assert!(matches!(frozen, SetDeploymentImageReceipt::Ready { .. }));
+        connected
+            .select("a", execution(client), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(connected.receipt("a").unwrap(), frozen);
+        assert!(started.elapsed() > Duration::from_secs(30));
+        if ready_seconds > 180 {
+            loop {
+                let observed = deployments.get(&name).await.unwrap();
+                if observed.status.as_ref().is_some_and(|status| {
+                    status.available_replicas == Some(1)
+                        && status.updated_replicas == Some(1)
+                        && status.replicas == Some(1)
+                        && status.unavailable_replicas.unwrap_or(0) == 0
+                        && status.observed_generation == observed.metadata.generation
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            assert!(started.elapsed() > Duration::from_secs(180));
+            assert_eq!(
+                connected.status("a").unwrap().0,
+                SetDeploymentImageStatus::Unknown
+            );
+            assert_eq!(connected.receipt("a").unwrap(), frozen);
+        }
+        println!(
+            "[observation evidence] {}",
+            json!({
+                "deployment":name, "ready_seconds":ready_seconds,
+                "started_unix_ms":started_unix_ms, "finished_unix_ms":finished_unix_ms,
+                "elapsed_ms":started.elapsed().as_millis(), "worker_ms":worker_ms,
+                "stored_read_ms":stored_read_ms, "result":format!("{expected:?}"),
+                "explicit_resume":ready_seconds == 60, "interrupted_unix_ms":interrupted_unix_ms,
+            })
+        );
+        drop(connected);
+        drop(worker);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+    async fn kind_service_observation_policy() {
+        assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
+        let mut config = kube::Config::infer().await.unwrap();
+        config.default_retry = false;
+        config.headers.push((
+            http::header::USER_AGENT,
+            http::HeaderValue::from_static("kapsel-observation-experiment"),
+        ));
+        let client = Client::try_from(config).unwrap();
+        let namespaces: Api<Namespace> = Api::all(client.clone());
+        namespaces
+            .create(
+                &PostParams::default(),
+                &Namespace {
+                    metadata: ObjectMeta {
+                        name: Some(NAMESPACE.into()),
+                        ..ObjectMeta::default()
+                    },
+                    ..Namespace::default()
+                },
+            )
+            .await
+            .unwrap();
+        let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
+        let proof = tokio::time::timeout(Duration::from_secs(600), async {
+            for seconds in [60, 210] {
+                let name = format!("ready-{seconds}");
+                let mut fixture = fixture_deployment_for(NAMESPACE, &name);
+                let spec = fixture.spec.as_mut().unwrap();
+                spec.min_ready_seconds = Some(seconds);
+                spec.progress_deadline_seconds = Some(600);
+                deployments
+                    .create(&PostParams::default(), &fixture)
+                    .await
+                    .unwrap();
+            }
+            // Establish healthy original objects before taking exact-snapshot approvals.
+            for seconds in [60, 210] {
+                let name = format!("ready-{seconds}");
+                loop {
+                    let deployment = deployments.get(&name).await.unwrap();
+                    if deployment.status.as_ref().is_some_and(|status| {
+                        status.available_replicas == Some(1)
+                            && status.updated_replicas == Some(1)
+                            && status.replicas == Some(1)
+                            && status.observed_generation == deployment.metadata.generation
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+            for seconds in [60, 210] {
+                prove_pass(&client, seconds).await;
+            }
+        })
+        .await;
+        namespaces
+            .delete(NAMESPACE, &DeleteParams::default())
+            .await
+            .unwrap();
+        proof.unwrap();
+    }
 }
 
 // Deliberately bypasses dispatch permission only in this receiver experiment. No

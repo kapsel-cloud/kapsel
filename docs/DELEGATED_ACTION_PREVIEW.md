@@ -342,11 +342,12 @@ storage, repeated timeouts, connection churn and oversized output are required.
 
 ## Observation budget and restart clocks
 
-No observation policy change is approved by this placement decision. The existing 30-second/30-read
-per-invocation behavior and early stopping predicate remain current behavior. The reconnect report's
-longer workflow is motivation to measure, not permission to lengthen a timeout optimistically.
+This placement decision did not approve an observation policy change. The separately approved
+[observation policy](EFFECT_GATEWAY.md#result-meaning) now selects bounded per-pass observation and
+classifier-aligned stopping. It owns the exact limits and restart semantics; the historical
+reconnect report remains evidence for its original revision, not current behavior.
 
-The observation owner must compare two bounded candidates before implementation:
+The candidate comparison was:
 
 - Per-pass time/read bounds, including early-stop versus sufficient-classifier evidence. Explicit
   reselection of an unfinished attempt can grant another bounded pass after process loss. This has

@@ -107,7 +107,7 @@ pub(super) fn client(
             let mut evidence = read(&root);
             let requests = evidence["requests"].as_array_mut().unwrap();
             requests.push(json!({"method":method,"body":patch}));
-            assert!(requests.len() <= 64);
+            assert!(requests.len() <= 182);
             let mut status = 200;
             if method == "PATCH" {
                 assert_eq!(

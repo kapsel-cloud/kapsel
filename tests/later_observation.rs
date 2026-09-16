@@ -339,7 +339,7 @@ async fn original_fixture(root: &Path) -> Original {
         respond(&mut handle, "PATCH", &fixture(false), 200).await;
         // Keep the rollout pending through the actual bounded observation loop. Paused test time
         // advances its clock, not the receiver facts or the historical classifier.
-        for _ in 0..30 {
+        for _ in 0..180 {
             respond(&mut handle, "GET", &fixture(false), 200).await;
         }
         handle

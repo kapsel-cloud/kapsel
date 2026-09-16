@@ -125,6 +125,13 @@ apiVersion: audit.k8s.io/v1
 kind: Policy
 rules:
   - level: Metadata
+    verbs: ["get", "patch"]
+    namespaces: ["kapsel-observation-experiment"]
+    resources:
+      - group: apps
+        resources: ["deployments"]
+    omitStages: ["ResponseStarted", "ResponseComplete"]
+  - level: Metadata
     verbs: ["patch"]
     namespaces: ["kapsel-patch-experiment"]
     resources:
@@ -345,8 +352,12 @@ KAPSEL_KIND_TEST=1 cargo test --locked -p kapsel \
 scenario_finished=$(monotonic_ns)
 printf '[kind timing] patch_comparison_ms=%s\n' \
   "$(elapsed_ms "$scenario_started" "$scenario_finished")"
-# Independent API-server receipt counts, not inferred from webhook invocations or
-# expected matrix values. The policy records only experiment Deployment PATCHes.
+phase 10 "measuring per-pass observation through the service application"
+KAPSEL_KIND_TEST=1 cargo test --locked -p kapsel \
+  kind_tests::observation_experiment::kind_service_observation_policy \
+  -- --ignored --exact --nocapture | tee "$workspace/observation.log"
+# Independent API-server receipt counts, not inferred from adapter calls.
+# The policy records only the named experiments' Deployment requests.
 docker exec "${cluster_name}-control-plane" \
   cat /var/log/kubernetes/kapsel-audit.log >"$workspace/audit.jsonl"
 python3 - "$workspace/audit.jsonl" "$workspace/patch-comparison.log" <<'PY'
@@ -370,4 +381,46 @@ for line in open(sys.argv[2]):
 assert sent and dict(received) == sent, (received, sent)
 for name, count in sorted(received.items()):
     print(f"[patch comparison audit] {name} received_patch_requests={count}")
+PY
+python3 - "$workspace/audit.jsonl" "$workspace/observation.log" <<'PY'
+import datetime
+import json
+import sys
+
+cases = {}
+for line in open(sys.argv[2]):
+    prefix = "[observation evidence] "
+    if line.startswith(prefix):
+        case = json.loads(line[len(prefix):])
+        cases[case["deployment"]] = case
+assert set(cases) == {"ready-60", "ready-210"}, cases
+requests = []
+for line in open(sys.argv[1]):
+    event = json.loads(line)
+    if (event["stage"] == "RequestReceived"
+            and event.get("userAgent") == "kapsel-observation-experiment"):
+        requests.append(event)
+for name, case in sorted(cases.items()):
+    events = [event for event in requests if event["objectRef"]["name"] == name]
+    patches = sum(event["verb"] == "patch" for event in events)
+    reads = 0
+    timed = []
+    for event in events:
+        timestamp = datetime.datetime.fromisoformat(
+            event["requestReceivedTimestamp"].replace("Z", "+00:00")
+        ).timestamp() * 1000
+        timed.append((event["verb"], timestamp))
+        if (event["verb"] == "get"
+                and case["started_unix_ms"] <= timestamp <= case["finished_unix_ms"]):
+            reads += 1
+    assert patches == 1, (name, patches)
+    if case["explicit_resume"]:
+        patch_time = next(timestamp for verb, timestamp in timed if verb == "patch")
+        assert any(verb == "get" and patch_time < timestamp < case["interrupted_unix_ms"]
+                   for verb, timestamp in timed), ("no observation before interruption", case)
+    # One preflight plus one bounded pass, or two passes for explicit interruption/resumption.
+    assert 1 < reads <= (361 if case["explicit_resume"] else 181), (name, reads)
+    assert case["result"] == ("Succeeded" if name == "ready-60" else "Unknown"), case
+    print("[observation audit] " + json.dumps({**case, "patches": patches,
+          "execution_gets": reads}, sort_keys=True))
 PY

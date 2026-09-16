@@ -354,6 +354,15 @@ activation, callers read first and explicitly reselect the same identity when ap
 `apply_started`, gateway recovery observes and never resends. Ordinary status/receipt reads cannot
 invoke the test-only later-observation prototype or change a terminal `UNKNOWN`.
 
+The gateway's [initial observation policy](EFFECT_GATEWAY.md#result-meaning) owns the fixed per-pass
+time and read bounds. Explicit resumption after interruption starts a new pass, not a durable
+operation-wide countdown. Reconnect and stored reads never extend the surviving pass. During
+observation the single worker remains occupied, so selection of B returns `BUSY` without admission;
+status and receipt reads use the separate stored-read path. The observation bound does not bound
+storage stalls or graceful retirement. No operator or caller configuration changes the budget, and
+format 5 retains no timing facts. The 504 retained / 32 unfinished limits and no-pruning policy are
+unchanged.
+
 The unit uses `Type=exec`, `User=kapsel`, `Group=kapsel-service-callers`, `RuntimeDirectory=kapsel`,
 `RuntimeDirectoryMode=0750`, `StateDirectory=kapsel`, `StateDirectoryMode=0700`, `UMask=0077`,
 `Restart=no`, null standard streams, disabled start-rate limiting, the fixed argv above and

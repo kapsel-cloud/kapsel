@@ -9,6 +9,197 @@ use kapsel::{
 
 use super::*;
 
+#[tokio::test(start_paused = true)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "ordered observation, reconnect and frozen-history proof"
+)]
+async fn observation_pass_holds_worker_but_not_stored_reads() {
+    use http::{Method, Request, Response};
+    use kube::{client::Body, Client};
+    use tower_test::mock;
+
+    for settle_after in [60, 181, 361] {
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-service-observation-{}-{settle_after}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let mut worker = ServiceApplication::open(configuration(&root, false)).unwrap();
+        let mut connected = ServiceApplication::open(configuration(&root, false)).unwrap();
+        let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let client = Client::new(mock_service, "default");
+        let evidence = Arc::new(Mutex::new(Vec::new()));
+        let recorded = evidence.clone();
+        let start = tokio::time::Instant::now();
+        let responder = tokio::spawn(async move {
+            while let Some((request, send)) = handle.next_request().await {
+                let method = request.method().clone();
+                let mut observed = recorded.lock().unwrap();
+                observed.push(method.clone());
+                let initial = observed.len() == 1;
+                drop(observed);
+                let mut object = deployment(false);
+                if !initial {
+                    object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(IMAGE);
+                    object["metadata"]["generation"] = json!(2);
+                    object["metadata"]["resourceVersion"] = json!("2");
+                    object["metadata"]["annotations"] =
+                        json!({"kapsel.dev/kap0038-operation-id":"a"});
+                    object["status"]["observedGeneration"] = json!(2);
+                    if start.elapsed() < Duration::from_secs(settle_after) {
+                        object["status"]["unavailableReplicas"] = json!(1);
+                    }
+                }
+                send.send_response(Response::new(Body::from(
+                    serde_json::to_vec(&object).unwrap(),
+                )));
+            }
+        });
+        if settle_after == 361 {
+            drop(worker);
+            for _ in 0..2 {
+                interrupt_service_observation(&root, &client, &evidence).await;
+            }
+            worker = ServiceApplication::open(configuration(&root, false)).unwrap();
+        }
+        let previous_requests = evidence.lock().unwrap().len();
+        let pass_started = tokio::time::Instant::now();
+        let mut pass = Box::pin(worker.select(
+            "a",
+            ServiceExecution {
+                kubernetes_client: Some(client.clone()),
+                receipt_signing: Some(([42; 32], "receipt-key".into())),
+            },
+            |admission| {
+                assert_eq!(
+                    admission,
+                    ServiceAdmission::Admitted(if settle_after == 361 {
+                        OperationState::ApplyStarted
+                    } else {
+                        OperationState::Requested
+                    })
+                );
+            },
+        ));
+        tokio::select! {
+            result = &mut pass => panic!("provisional availability stopped early: {result:?}"),
+            () = tokio::time::sleep(Duration::from_secs(35)) => {},
+        }
+        // Disconnect/reconnect only replaces the read application, never the surviving worker.
+        drop(connected);
+        connected = ServiceApplication::open(configuration(&root, false)).unwrap();
+        let before_reads = evidence.lock().unwrap().len();
+        for _ in 0..3 {
+            assert_eq!(
+                connected.status("a").unwrap().0,
+                SetDeploymentImageStatus::InProgress
+            );
+            assert_eq!(
+                connected.receipt("a").unwrap(),
+                SetDeploymentImageReceipt::NotReady
+            );
+        }
+        connected
+            .select(
+                "b",
+                ServiceExecution {
+                    kubernetes_client: Some(client.clone()),
+                    receipt_signing: None,
+                },
+                |admission| assert_eq!(admission, ServiceAdmission::Busy),
+            )
+            .await
+            .unwrap();
+        assert_eq!(connected.admitted_state("b").unwrap(), None);
+        assert_eq!(evidence.lock().unwrap().len(), before_reads);
+        pass.await.unwrap();
+        assert_eq!(pass_started.elapsed().as_secs(), settle_after.min(179));
+        if settle_after == 361 {
+            assert!(start.elapsed() > Duration::from_secs(180));
+        }
+        let expected = if settle_after == 60 {
+            SetDeploymentImageStatus::Succeeded
+        } else {
+            SetDeploymentImageStatus::Unknown
+        };
+        assert_eq!(connected.status("a").unwrap().0, expected);
+        let frozen = connected.receipt("a").unwrap();
+        let before_reselect = evidence.lock().unwrap().len();
+        connected
+            .select(
+                "a",
+                ServiceExecution {
+                    kubernetes_client: Some(client.clone()),
+                    receipt_signing: None,
+                },
+                |admission| {
+                    assert_eq!(
+                        admission,
+                        ServiceAdmission::Admitted(OperationState::Finalized)
+                    );
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(connected.receipt("a").unwrap(), frozen);
+        assert_eq!(evidence.lock().unwrap().len(), before_reselect);
+        let requests = evidence.lock().unwrap().clone();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|method| **method == Method::PATCH)
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests.len() - previous_requests,
+            (settle_after + 1).min(180) as usize + usize::from(previous_requests == 0) * 2
+        );
+        drop(client);
+        responder.await.unwrap();
+        drop(connected);
+        drop(worker);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+async fn interrupt_service_observation(
+    root: &Path,
+    client: &kube::Client,
+    evidence: &Mutex<Vec<http::Method>>,
+) {
+    let mut worker = ServiceApplication::open(configuration(root, false)).unwrap();
+    assert!(tokio::time::timeout(
+        Duration::from_secs(60),
+        worker.select(
+            "a",
+            ServiceExecution {
+                kubernetes_client: Some(client.clone()),
+                receipt_signing: Some(([42; 32], "receipt-key".into())),
+            },
+            |_| {},
+        ),
+    )
+    .await
+    .is_err());
+    drop(worker);
+    let read_first = ServiceApplication::open(configuration(root, false)).unwrap();
+    assert_eq!(
+        read_first.admitted_state("a").unwrap(),
+        Some(OperationState::ApplyStarted)
+    );
+    assert_eq!(
+        read_first.status("a").unwrap().0,
+        SetDeploymentImageStatus::InProgress
+    );
+    let before = evidence.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    assert_eq!(evidence.lock().unwrap().len(), before);
+}
+
 struct Receiver {
     fixture: Fixture,
     requests: Arc<Mutex<Vec<WireRequest>>>,

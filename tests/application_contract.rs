@@ -133,9 +133,10 @@ async fn respond_with_terminal_result(
     })));
     let failed = result == SetDeploymentImageStatus::Failed;
     let unknown = result == SetDeploymentImageStatus::Unknown;
-    let (wire_request, send) = handle.next_request().await.unwrap();
-    assert_eq!(wire_request.method(), "GET");
-    send.send_response(deployment_response(&serde_json::json!({
+    for _ in 0..if unknown { 180 } else { 1 } {
+        let (wire_request, send) = handle.next_request().await.unwrap();
+        assert_eq!(wire_request.method(), "GET");
+        send.send_response(deployment_response(&serde_json::json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
         "metadata": {"name": "agent-api", "namespace": "demo",
@@ -156,7 +157,8 @@ async fn respond_with_terminal_result(
                 serde_json::json!({"type": "Available", "status": "True",
                     "reason": "MinimumReplicasAvailable"})
             }]}
-    })));
+        })));
+    }
     handle
 }
 
@@ -514,7 +516,7 @@ async fn execute_owns_target_rejection_lifecycle() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn terminal_status_and_exact_receipt_reads_preserve_frozen_receiver_facts() {
     for (name, expected) in [
         ("succeeded", SetDeploymentImageStatus::Succeeded),

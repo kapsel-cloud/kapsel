@@ -316,13 +316,13 @@ fn receiver_recovery_scenarios() {
     let mut executed = 0;
     for (case, expected, patches, gets, cut) in [
         ("failed", "FAILED", 1, 2, "none"),
-        ("pre-send", "UNKNOWN", 0, 31, "pre-send"),
+        ("pre-send", "UNKNOWN", 0, 181, "pre-send"),
         ("lost-response", "SUCCEEDED", 1, 2, "lost-response"),
-        ("target-replacement", "UNKNOWN", 1, 2, "lost-response"),
-        ("intervening-writer", "UNKNOWN", 1, 31, "lost-response"),
+        ("target-replacement", "UNKNOWN", 1, 181, "lost-response"),
+        ("intervening-writer", "UNKNOWN", 1, 181, "lost-response"),
         ("retained-marker", "SUCCEEDED", 1, 2, "lost-response"),
-        ("preflight-race", "UNKNOWN", 1, 31, "none"),
-        ("slow-rollout", "UNKNOWN", 1, 31, "none"),
+        ("preflight-race", "UNKNOWN", 1, 181, "none"),
+        ("slow-rollout", "UNKNOWN", 1, 181, "none"),
     ] {
         if only.as_deref().is_some_and(|selected| selected != case) {
             continue;

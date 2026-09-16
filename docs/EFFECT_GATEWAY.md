@@ -431,11 +431,35 @@ An oversized patch response may leave the already marked provider attempt ambigu
 observes without another patch. An oversized receiver response contributes no facts and therefore
 cannot strengthen `UNKNOWN` into another result.
 
-Receiver observation has a 30-second overall deadline and performs at most 30 Deployment reads: one
-immediately, then at most 29 more at one-second intervals. It stops only when the current generation
-has been observed with the defined available or progress-deadline signal. Exhausting this budget,
-object deletion, API unavailability, identity mismatch, an oversized response, or incomplete facts
-classifies `UNKNOWN`; timeout never classifies `FAILED`.
+Receiver observation uses a fixed **per-pass** policy: a 180-second monotonic deadline, at most 180
+Deployment reads, and a ten-second deadline for each read within the remaining pass time. The first
+read starts immediately; subsequent reads wait one second after the preceding read completes or
+times out. Reads and sleeps consume the same pass budget. No new read starts at or after the pass
+deadline, and a response completing at or after it contributes no facts. This is an observation
+bound, not a total execution or storage-latency guarantee.
+
+Observation stops early only when the unchanged receiver classifier can establish `SUCCEEDED` or
+`FAILED`, including target UID, requested image, operation marker, generation and rollout facts. An
+available condition alone, incomplete replica counts or a terminal signal from another generation is
+provisional, not sufficient evidence. Exhausting the read budget returns the last observation;
+exhausting elapsed time returns no receiver facts. Neither can strengthen incomplete evidence beyond
+`UNKNOWN`. Read failure, deletion, identity mismatch and oversized responses never establish
+failure.
+
+A pass starts when initial observation or explicit observation-only recovery starts. Startup remains
+read-first. Explicit resumption after an interrupted, unfinished pass starts a fresh budget;
+repeated interruptions therefore have no cumulative operation-wide time or read bound. Reconnect,
+status, receipt retrieval and selection while the worker is busy do not reset a surviving pass.
+Frozen results and receipts never reopen. Wall-clock corrections do not change a pass's monotonic
+budget. Suspend accounting follows the host monotonic clock, not a durable wall-clock deadline.
+Timer expiry requires runtime scheduling and is not a hard real-time guarantee.
+
+The recorded [reconnectable workflow](RECONNECTABLE_AGENT_ACTION.md) needs a 60-second readiness
+period and describes a 45–180-second observation span. This policy accommodates that requirement
+without promising all rollouts complete within it. A durable operation-wide deadline would instead
+need persisted timing facts and a clock-discontinuity and compatibility policy. The per-pass choice
+adds no timing columns, journal version, migration, caller configuration or later-observation path.
+Format 5 and all finalized history remain unchanged.
 
 ## Authorization and secrets
 

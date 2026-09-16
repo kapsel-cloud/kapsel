@@ -152,12 +152,11 @@ impl ReceiverObservation {
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
     ) -> bool {
-        self.observation_decision(
+        self.observation_result(
             &request.operation_id,
             &request.immutable_image_digest,
             outcome,
-        )
-        .complete
+        ) != OperationResult::Unknown
     }
 
     pub(in crate::gateway) fn requested_generation(
@@ -177,34 +176,27 @@ impl ReceiverObservation {
         request: &ValidatedRequest,
         outcome: &ApplyOutcome,
     ) -> OperationResult {
-        self.observation_decision(
+        self.observation_result(
             request.operation_id(),
             request.immutable_image_digest(),
             outcome,
         )
-        .result
     }
 
-    fn observation_decision(
+    fn observation_result(
         &self,
         operation_id: &str,
         immutable_image_digest: &str,
         outcome: &ApplyOutcome,
-    ) -> ObservationDecision {
+    ) -> OperationResult {
         let operation_matches = self.operation_marker.as_deref() == Some(operation_id)
             && self.image.as_deref() == Some(immutable_image_digest);
-        let generation_observed = self.current_generation.is_some_and(|generation| {
-            self.observed_generation
-                .is_some_and(|observed| observed >= generation)
-        });
         let desired_replicas_available = self.desired_replicas.is_some()
             && self.updated_replicas == self.desired_replicas
             && self.available_replicas == self.desired_replicas
             && self.unavailable_replicas == Some(0);
         let available = desired_replicas_available && self.available_condition();
         let progress_deadline_exceeded = self.progress_deadline_exceeded();
-        let complete =
-            operation_matches && generation_observed && (available || progress_deadline_exceeded);
         let requested_generation =
             self.requested_generation_for(operation_id, immutable_image_digest, outcome);
         let receiver_establishes_requested_generation = requested_generation.is_some_and(|value| {
@@ -216,14 +208,13 @@ impl ReceiverObservation {
                     .observed_generation
                     .is_some_and(|observed| observed >= value)
         });
-        let result = if receiver_establishes_requested_generation && progress_deadline_exceeded {
+        if receiver_establishes_requested_generation && progress_deadline_exceeded {
             OperationResult::Failed
         } else if receiver_establishes_requested_generation && available {
             OperationResult::Succeeded
         } else {
             OperationResult::Unknown
-        };
-        ObservationDecision { complete, result }
+        }
     }
 
     fn requested_generation_for(
@@ -255,12 +246,6 @@ impl ReceiverObservation {
             && self.rollout_condition_status.as_deref() == Some("False")
             && self.rollout_condition_reason.as_deref() == Some("ProgressDeadlineExceeded")
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ObservationDecision {
-    complete: bool,
-    result: OperationResult,
 }
 
 fn validate_required_fact(value: &str) -> Result<(), GatewayError> {
@@ -462,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn a_terminal_signal_from_a_later_generation_completes_with_unknown() {
+    fn a_terminal_signal_from_a_later_generation_is_not_complete() {
         let request = request();
         let outcome = apply_outcome();
         let mut observation = unknown_observation(&request);
@@ -478,6 +463,6 @@ mod tests {
             observation.classify(&validated(&request), &outcome),
             OperationResult::Unknown
         );
-        assert!(observation.observation_is_complete(&request, &outcome));
+        assert!(!observation.observation_is_complete(&request, &outcome));
     }
 }

@@ -4,7 +4,10 @@ Evidence revision: `30567790892164d6e3eb4353f5667cc93fa90bd6`. The experiment ra
 unpublished service and a disposable kind environment, including live inconclusive and
 stale-approval outcomes.
 
-Kind: experiment evidence.
+Kind: experiment evidence. The 30-second budget and startup reconciliation described below belong to
+the evidence revision. Current source uses read-first startup with explicit resumption and the
+[initial observation policy](EFFECT_GATEWAY.md#result-meaning). This historical experiment does not
+qualify that newer behavior.
 
 Owns: The recorded outcome of the reconnectable agent action workflow: setup, invocation, caller and
 service loss, reconnect, receiver observation, stale approvals, human handoff, and the measured
@@ -121,3 +124,42 @@ afterwards. Raw per-case timestamps, status projections, and receipts are not in
 repository, so the summary alone cannot resolve the mixed rejection accounting. No claim here
 extends past the single operation, the pinned receiver, and the unpublished service composition.
 Deterministic regressions for the same semantics run without any model call.
+
+## Initial-observation policy follow-up
+
+A separate source run exercised the approved [per-pass policy](EFFECT_GATEWAY.md#result-meaning)
+through `ServiceApplication`, not the historical agent harness above. The tested source was base
+`efb4b96ec7488172fb544035977edf42efd46ace` plus binary worktree diff SHA-256
+`93f40082a2e88ca25766f66a4a9d414dff5f63c101ed7506dcda0225a274c813`. Both `./scripts/ci-local.sh` and
+`./scripts/test-kind-effect-gateway.sh` passed on that snapshot. Reproduction and evidence
+boundaries are described in [Build and test](BUILD.md#initial-observation-policy).
+
+The host was Darwin 25.5 arm64 with Rust/Cargo 1.98.0, Docker 29.4.0, kind 0.33.0 and kubectl
+1.33.9. The disposable receiver used
+`kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4`. The
+fixture created healthy original Deployments with 60- and 210-second minimum readiness periods
+before acquiring exact approvals. It then changed the image through the service application.
+
+| Readiness   | Frozen result | Worker duration                     | Audited PATCHes | Execution-window GETs |
+| ----------- | ------------- | ----------------------------------- | --------------- | --------------------- |
+| 60 seconds  | `SUCCEEDED`   | 57,646 ms after explicit resumption | 1               | 64                    |
+| 210 seconds | `UNKNOWN`     | 180,041 ms                          | 1               | 180                   |
+
+The first action was interrupted during observation and explicitly resumed after reopening the
+application. API-server audit established a GET after PATCH and before cancellation. Total elapsed
+time was 62,675 ms. The second action became available at 211,368 ms without changing its frozen
+`UNKNOWN` or receipt. GET counts include preflight and are independent API-server counts within the
+recorded execution window, not adapter-call counters.
+
+Both cases reconnected stored reads while the worker survived and rejected B as `BUSY` without
+admitting it. The stored status/receipt pair measured below one millisecond at the harness's
+millisecond resolution. That is finite fixture evidence, not a read-latency guarantee. Worker timing
+includes selection and completion around observation; it is not a direct measurement of timer
+overshoot. The observation bound is not a hard real-time promise. Repeated interruptions have no
+cumulative deadline under this policy.
+
+This establishes the concrete longer-rollout benefit and honest cutoff in one disposable receiver.
+It does not establish a success rate, installed-socket workflow, native-host qualification or
+release support. The live run's application cancellation is not an OS process crash. Separate Linux
+process tests own the socket/process boundary. Raw logs are not included here; the launcher emits
+timings and independent audit totals and removes its owned cluster.

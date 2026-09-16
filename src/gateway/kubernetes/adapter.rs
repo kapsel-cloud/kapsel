@@ -21,9 +21,9 @@ use super::{
 };
 
 const OPERATION_ANNOTATION: &str = "kapsel.dev/kap0038-operation-id";
-const OBSERVATION_ATTEMPTS_MAX: usize = 30;
+const OBSERVATION_ATTEMPTS_MAX: usize = 180;
 const OBSERVATION_INTERVAL: Duration = Duration::from_secs(1);
-const OBSERVATION_DEADLINE: Duration = Duration::from_secs(30);
+const OBSERVATION_DEADLINE: Duration = Duration::from_secs(180);
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const _: () = assert!(OBSERVATION_ATTEMPTS_MAX > 0);
@@ -92,17 +92,26 @@ impl KubernetesDeploymentImageAdapter {
         &self,
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
+        deadline: tokio::time::Instant,
     ) -> ReceiverObservation {
         let mut latest_observation = ReceiverObservation::unknown();
         for attempt in 0..self.observation_attempts {
-            latest_observation = self
-                .deployments(&request.namespace)
-                .get(&request.deployment)
-                .await
-                .map_or_else(
-                    |_| ReceiverObservation::unknown(),
-                    |deployment| receiver_observation(request, &deployment),
-                );
+            if tokio::time::Instant::now() >= deadline {
+                return ReceiverObservation::unknown();
+            }
+            let response = tokio::time::timeout_at(
+                deadline.min(tokio::time::Instant::now() + self.provider_request_timeout),
+                self.deployments(&request.namespace)
+                    .get(&request.deployment),
+            )
+            .await;
+            if tokio::time::Instant::now() >= deadline {
+                return ReceiverObservation::unknown();
+            }
+            latest_observation = match response {
+                Ok(Ok(deployment)) => receiver_observation(request, &deployment),
+                Ok(Err(_)) | Err(_) => ReceiverObservation::unknown(),
+            };
             if latest_observation.observation_is_complete(request, outcome)
                 || attempt + 1 == self.observation_attempts
             {
@@ -195,9 +204,10 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
     ) -> Result<ReceiverObservation, ()> {
-        Ok(tokio::time::timeout(
-            self.observation_deadline,
-            self.observe_until_terminal(request, outcome),
+        let deadline = tokio::time::Instant::now() + self.observation_deadline;
+        Ok(tokio::time::timeout_at(
+            deadline,
+            self.observe_until_terminal(request, outcome, deadline),
         )
         .await
         .unwrap_or_else(|_| ReceiverObservation::unknown()))
@@ -878,6 +888,178 @@ mod tests {
 
         assert_eq!(observation, ReceiverObservation::unknown());
         responder.abort();
+    }
+
+    #[tokio::test]
+    async fn provisional_signals_do_not_preempt_sufficient_classifier_evidence() {
+        for case in ["replicas", "uid", "generation", "marker", "image"] {
+            let (mut adapter, mut handle) = test_adapter_with_attempts(2);
+            let mut provisional = deployment_response(false);
+            match case {
+                "replicas" => provisional["status"]["unavailableReplicas"] = json!(1),
+                "uid" => provisional["metadata"]["uid"] = json!("replacement"),
+                "generation" => {
+                    provisional["metadata"]["generation"] = json!(3);
+                    provisional["status"]["observedGeneration"] = json!(3);
+                },
+                "marker" => {
+                    provisional["metadata"]["annotations"][OPERATION_ANNOTATION] = json!("other");
+                },
+                "image" => {
+                    provisional["spec"]["template"]["spec"]["containers"][0]["image"] =
+                        json!(format!("registry.example/api@sha256:{}", "a".repeat(64)));
+                },
+                _ => unreachable!(),
+            }
+            let responder = tokio::spawn(async move {
+                for response in [provisional, deployment_response(false)] {
+                    let (request, send) = handle.next_request().await.unwrap();
+                    assert_eq!(request.method(), Method::GET);
+                    send.send_response(Response::new(Body::from(
+                        serde_json::to_vec(&response).unwrap(),
+                    )));
+                }
+            });
+            let request = request();
+            let outcome = apply_outcome();
+            let observation = adapter.observe(&request, &outcome).await.unwrap();
+            assert_eq!(
+                observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
+                crate::OperationResult::Succeeded,
+                "{case}"
+            );
+            responder.await.unwrap();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn production_policy_observes_beyond_thirty_seconds_and_bounds_read_count() {
+        for ready_after in [60, 181] {
+            let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+            let mut adapter =
+                KubernetesDeploymentImageAdapter::new(Client::new(mock_service, "default"));
+            let start = tokio::time::Instant::now();
+            let responder = tokio::spawn(async move {
+                let mut reads = 0;
+                while let Some((request, send)) = handle.next_request().await {
+                    assert_eq!(request.method(), Method::GET);
+                    reads += 1;
+                    let settled = start.elapsed() >= Duration::from_secs(ready_after);
+                    let response = if settled {
+                        deployment_response(false)
+                    } else {
+                        progressing_response()
+                    };
+                    send.send_response(Response::new(Body::from(
+                        serde_json::to_vec(&response).unwrap(),
+                    )));
+                }
+                reads
+            });
+            let request = request();
+            let outcome = apply_outcome();
+            let observation = adapter.observe(&request, &outcome).await.unwrap();
+            let expected = if ready_after == 60 {
+                crate::OperationResult::Succeeded
+            } else {
+                crate::OperationResult::Unknown
+            };
+            assert_eq!(
+                observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
+                expected
+            );
+            assert_eq!(start.elapsed().as_secs(), ready_after.min(179));
+            drop(adapter);
+            assert_eq!(responder.await.unwrap(), (ready_after + 1).min(180));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn interrupted_passes_only_resume_on_invocation_with_fresh_budgets() {
+        let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let mut adapter =
+            KubernetesDeploymentImageAdapter::new(Client::new(mock_service, "default"));
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let responder = tokio::spawn(async move {
+            while let Some((request, send)) = handle.next_request().await {
+                assert_eq!(request.method(), Method::GET);
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                send.send_response(Response::new(Body::from(
+                    serde_json::to_vec(&progressing_response()).unwrap(),
+                )));
+            }
+        });
+        let start = tokio::time::Instant::now();
+        for _ in 0..3 {
+            assert!(tokio::time::timeout(
+                Duration::from_secs(60),
+                adapter.observe(&request(), &apply_outcome()),
+            )
+            .await
+            .is_err());
+            let before = reads.load(std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), before);
+        }
+        assert!(start.elapsed() > OBSERVATION_DEADLINE);
+        let resumed = tokio::time::Instant::now();
+        let before = reads.load(std::sync::atomic::Ordering::Relaxed);
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
+        assert!(!observation.observation_is_complete(&request(), &apply_outcome()));
+        assert_eq!(resumed.elapsed(), Duration::from_secs(179));
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed) - before,
+            180
+        );
+        drop(adapter);
+        responder.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_rejects_evidence_at_the_elapsed_boundary() {
+        for response_after in [9, 10, 11] {
+            let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+            let mut adapter =
+                KubernetesDeploymentImageAdapter::new(Client::new(mock_service, "default"));
+            adapter.observation_deadline = Duration::from_secs(10);
+            let responder = tokio::spawn(async move {
+                let (_, send) = handle.next_request().await.unwrap();
+                tokio::time::sleep(Duration::from_secs(response_after)).await;
+                send.send_response(Response::new(Body::from(
+                    serde_json::to_vec(&deployment_response(false)).unwrap(),
+                )));
+            });
+            let start = tokio::time::Instant::now();
+            let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
+            assert_eq!(
+                observation.observation_is_complete(&request(), &apply_outcome()),
+                response_after < 10
+            );
+            assert!(start.elapsed() <= Duration::from_secs(10));
+            responder.abort();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_reads_have_individual_deadlines_and_a_shared_pass_deadline() {
+        let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let mut adapter =
+            KubernetesDeploymentImageAdapter::new(Client::new(mock_service, "default"));
+        let responder = tokio::spawn(async move {
+            let mut pending_responses = Vec::new();
+            while let Some((request, send)) = handle.next_request().await {
+                assert_eq!(request.method(), Method::GET);
+                pending_responses.push(send);
+            }
+            pending_responses.len()
+        });
+        let start = tokio::time::Instant::now();
+        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
+        assert_eq!(observation, ReceiverObservation::unknown());
+        assert_eq!(start.elapsed(), Duration::from_secs(180));
+        drop(adapter);
+        assert_eq!(responder.await.unwrap(), 17);
     }
 
     #[tokio::test]

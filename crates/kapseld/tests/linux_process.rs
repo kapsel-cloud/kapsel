@@ -309,7 +309,7 @@ fn resume_after_read(socket: &Path) {
 }
 
 fn wait_for_finalized(journal: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + Duration::from_secs(210);
     loop {
         let connection = rusqlite::Connection::open(journal).unwrap();
         let phase: String = connection
@@ -327,15 +327,24 @@ fn wait_for_finalized(journal: &Path) {
 
 fn assert_terminal_status(stream: &mut UnixStream, status: &str, snapshot: bool) {
     let target = serde_json::json!({"uid": "uid-1", "resource_version": "1"});
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&read_frame(stream)).unwrap(),
-        serde_json::json!({
-            "status": status,
-            "approved_target": snapshot.then_some(&target),
-            "attempt_target": target,
-            "observed_target": {"uid": "uid-1", "resource_version": "3"}
-        })
-    );
+    let actual = serde_json::from_slice::<serde_json::Value>(&read_frame(stream)).unwrap();
+    let expected = serde_json::json!({
+        "status": status,
+        "approved_target": snapshot.then_some(&target),
+        "attempt_target": target,
+        "observed_target": {"uid": "uid-1", "resource_version": "3"}
+    });
+    if status == "UNKNOWN" {
+        // Read exhaustion retains the last snapshot; elapsed exhaustion retains no facts.
+        let mut elapsed = expected.clone();
+        elapsed["observed_target"] = serde_json::json!({"uid": null, "resource_version": null});
+        assert!(
+            actual == expected || actual == elapsed,
+            "unexpected status: {actual}"
+        );
+    } else {
+        assert_eq!(actual, expected);
+    }
 }
 
 fn lowercase_hex(bytes: &[u8]) -> String {
@@ -732,14 +741,36 @@ fn success_server() -> SuccessServer {
     }
 }
 
-fn unknown_server() -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
+fn unknown_server() -> (
+    String,
+    Arc<AtomicUsize>,
+    mpsc::Sender<()>,
+    thread::JoinHandle<()>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let patch_count = Arc::new(AtomicUsize::new(0));
     let server_patch_count = patch_count.clone();
+    let (stop, stopped) = mpsc::channel();
     let thread = thread::spawn(move || {
-        for index in 0..32 {
+        let deadline = Instant::now() + Duration::from_secs(210);
+        let mut index = 0;
+        loop {
+            let stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stopped.try_recv().is_ok() {
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "observation fixture deadline");
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                },
+                Err(error) => panic!("provider fixture accept failed: {error}"),
+            };
+            assert!(index < 182, "more than 180 observation reads");
             let expected_method = if index == 1 { "PATCH" } else { "GET" };
             let expected_path = if index == 1 {
                 PATCH_DEPLOYMENT_PATH
@@ -751,7 +782,7 @@ fn unknown_server() -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
                 1 => deployment("2", 2, false),
                 _ => progressing_deployment(),
             };
-            let (mut stream, method, path, request_body) = read_http_request(&listener);
+            let (mut stream, method, path, request_body) = read_http_stream(stream);
             assert_provider_request(
                 &method,
                 &path,
@@ -763,23 +794,12 @@ fn unknown_server() -> (String, Arc<AtomicUsize>, thread::JoinHandle<()>) {
                 server_patch_count.fetch_add(1, Ordering::Relaxed);
             }
             write_http_response(&mut stream, &response_body);
+            index += 1;
         }
-        let deadline = Instant::now() + Duration::from_millis(1_500);
-        loop {
-            match listener.accept() {
-                Ok(_) => panic!("provider fixture received more than 30 recovery reads"),
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {},
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                },
-                Err(error) => panic!("provider fixture extra-read check failed: {error}"),
-            }
-        }
+        // Real HTTP overhead may exhaust elapsed time before the maximum read count.
+        assert!((3..=182).contains(&index));
     });
-    (url, patch_count, thread)
+    (url, patch_count, stop, thread)
 }
 
 fn kill(child: &mut ChildGuard) {
@@ -1219,7 +1239,7 @@ fn corrupted_retained_receipt_fails_startup_without_reconciliation() {
 fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() {
     let root = application_root("unknown-recovery");
     let socket = root.join("kapseld.sock");
-    let (url, patch_count, server) = unknown_server();
+    let (url, patch_count, stop, server) = unknown_server();
 
     let mut first = spawn_application(&socket, &root, &url, "A", Some("after_apply"), 10);
     let mut submit = connect(&socket);
@@ -1249,6 +1269,7 @@ fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() 
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
+    stop.send(()).unwrap();
     server.join().unwrap();
     assert_eq!(patch_count.load(Ordering::Relaxed), 1);
     fs::remove_dir_all(root).unwrap();

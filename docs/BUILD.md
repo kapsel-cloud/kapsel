@@ -157,6 +157,31 @@ compare Kapsel with the unsigned typed tool, use the
 [historical comparison reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) at its exact
 evidence commit, not HEAD. Current tests do not establish ongoing cross-arm equivalence.
 
+### Initial observation policy
+
+The live gate also runs `kind_tests::observation_experiment::kind_service_observation_policy`. It
+creates two healthy original Deployments with 60- and 210-second minimum readiness periods, then
+selects exact approvals through `ServiceApplication`. It exercises an interrupted observation and
+explicit same-ID resumption, reconnects stored reads while the worker survives, verifies B is
+`BUSY`, and preserves the frozen `UNKNOWN` after the slower rollout eventually becomes available.
+API-server audit independently counts PATCHes and execution-window GETs. The log records readiness,
+elapsed time, worker occupancy and stored-read latency. This is the actual service application with
+a live receiver, not installed-socket or native-host qualification. Linux process tests separately
+own socket and process-loss evidence.
+
+Focused deterministic observation checks:
+
+```sh
+cargo test --locked -p kapsel gateway::kubernetes
+cargo test --locked -p kapsel --test application_retry observation_pass
+cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests::receiver_recovery_scenarios
+```
+
+Paused-clock tests distinguish the read ceiling (180 instantaneous reads over 179 one-second waits)
+from the elapsed ceiling (180 seconds including stalled reads). Real I/O can exhaust elapsed time
+before all reads occur. Per-pass bounds do not promise a cumulative ceiling across interrupted
+explicit resumptions. The [gateway contract](EFFECT_GATEWAY.md#result-meaning) owns that policy.
+
 ## Kapsel service candidate
 
 The service remains unpublished. The focused package command above includes its private harness. On
