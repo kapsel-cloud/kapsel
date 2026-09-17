@@ -22,6 +22,16 @@ use runtime::CONNECTIONS_MAX;
 trait ApplicationReads: Send {
     fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass);
 
+    fn read_observed(
+        &self,
+        request: ReadRequest,
+        observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+        report: &dyn Fn(ServiceError),
+    ) -> (Vec<u8>, ResponseClass) {
+        let _ = (observation, report);
+        self.read(request)
+    }
+
     fn admitted_state(
         &self,
         operation_id: &str,
@@ -29,15 +39,23 @@ trait ApplicationReads: Send {
 }
 
 impl ApplicationReads for ServiceApplication {
-    fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass) {
+    fn read_observed(
+        &self,
+        request: ReadRequest,
+        observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+        report: &dyn Fn(ServiceError),
+    ) -> (Vec<u8>, ResponseClass) {
         let ordinary = ResponseClass::Ordinary;
         match request {
             ReadRequest::Status(id) => (
-                protocol::render_status_with_targets(self.status(&id)),
+                protocol::render_execution_status(
+                    self.execution_status(&id, observation(&id))
+                        .inspect_err(|error| report(*error)),
+                ),
                 ordinary,
             ),
             ReadRequest::Receipt(id) => (
-                protocol::render_receipt(self.receipt(&id)),
+                protocol::render_receipt(self.receipt(&id).inspect_err(|error| report(*error))),
                 ResponseClass::Receipt,
             ),
             ReadRequest::List(after) => {
@@ -54,14 +72,31 @@ impl ApplicationReads for ServiceApplication {
                     };
                     Ok(protocol::render_catalog(entries, next_cursor.as_deref()))
                 });
-                (result.unwrap_or_else(protocol::service_error), ordinary)
+                (
+                    result
+                        .inspect_err(|error| report(*error))
+                        .unwrap_or_else(protocol::service_error),
+                    ordinary,
+                )
             },
             ReadRequest::History(after) => (
                 self.history(after.as_deref())
-                    .map_or_else(protocol::service_error, protocol::render_history),
+                    .inspect_err(|error| report(*error))
+                    .map_or_else(protocol::service_error, |page| {
+                        for entry in &page.entries {
+                            if let Err(error) = &entry.status {
+                                report(*error);
+                            }
+                        }
+                        protocol::render_execution_history(page, observation)
+                    }),
                 ordinary,
             ),
         }
+    }
+
+    fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass) {
+        self.read_observed(request, &|_| kapsel::ExecutionObservation::Unknown, &|_| {})
     }
 
     fn admitted_state(
@@ -77,7 +112,7 @@ pub(crate) trait ApplicationExecution: Send {
         &mut self,
         operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> impl Future<Output = Result<(), ServiceError>> + Send;
+    ) -> impl Future<Output = Result<kapsel::ServiceStop, ServiceError>> + Send;
 }
 
 pub(crate) struct ExecutionApplication {
@@ -92,7 +127,7 @@ impl ApplicationExecution for ExecutionApplication {
         &mut self,
         operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<kapsel::ServiceStop, ServiceError> {
         let material = ServiceExecution::from_operator_snapshots(
             self.kubeconfig.as_deref(),
             self.receipt_seed.as_deref(),
@@ -170,6 +205,12 @@ fn run_installed() -> ExitCode {
 }
 
 #[cfg(target_os = "linux")]
+fn open_failure(error: ServiceError) -> io::Error {
+    crate::diagnostic(error.operator_diagnostic());
+    io::Error::other("application open failed")
+}
+
+#[cfg(target_os = "linux")]
 async fn serve_installed(
     installation_root: std::path::PathBuf,
     connections: Option<usize>,
@@ -179,13 +220,11 @@ async fn serve_installed(
     #[cfg(feature = "test-harness")]
     let stop_marker = installation_root.join("control/stop.ready");
     let mut startup = tokio::task::spawn_blocking(move || {
-        let inputs = InstallationInputs::open_at(&installation_root)?;
-        let reads = inputs
-            .open_application()
-            .map_err(|_| io::Error::other("application open failed"))?;
-        let execution = inputs
-            .open_execution()
-            .map_err(|_| io::Error::other("application open failed"))?;
+        let inputs = InstallationInputs::open_at(&installation_root).inspect_err(|_| {
+            crate::diagnostic("provisioning_unavailable");
+        })?;
+        let reads = inputs.open_application().map_err(open_failure)?;
+        let execution = inputs.open_execution().map_err(open_failure)?;
         Ok::<_, io::Error>((inputs, reads, execution))
     });
     let (opened, stopped) = tokio::select! {

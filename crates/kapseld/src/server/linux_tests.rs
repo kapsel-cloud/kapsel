@@ -64,7 +64,7 @@ impl ApplicationExecution for FixtureExecution {
         &mut self,
         id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<kapsel::ServiceStop, ServiceError> {
         self.application
             .select(
                 &id,
@@ -180,7 +180,7 @@ impl ApplicationExecution for BlockingExecution {
         &mut self,
         _request: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ApplicationError> {
+    ) -> Result<kapsel::ServiceStop, ApplicationError> {
         acknowledged(ServiceAdmission::Admitted(
             kapsel::OperationState::Requested,
         ));
@@ -190,7 +190,7 @@ impl ApplicationExecution for BlockingExecution {
             .await
             .map_err(|_| ApplicationError::OperationFailure)?
             .forget();
-        Ok(())
+        Ok(kapsel::ServiceStop::Finished)
     }
 }
 
@@ -204,7 +204,7 @@ impl<E: ApplicationExecution> ApplicationExecution for CountingExecution<E> {
         &mut self,
         request: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ApplicationError> {
+    ) -> Result<kapsel::ServiceStop, ApplicationError> {
         self.execute_calls.fetch_add(1, Ordering::SeqCst);
         self.inner.execute(request, acknowledged).await
     }
@@ -394,7 +394,12 @@ fn socket_status_and_receipt_compose_real_application_reads_without_kubernetes()
                     r#""operation_id":"socket-op-1"}"#
                 )
                 .as_bytes(),
-                br#"{"status":"NOT_FOUND"}"#.as_slice(),
+                concat!(
+                    r#"{"status":"NOT_FOUND","execution":{"action_owner":"caller","#,
+                    r#""condition":null,"disposition":"admission_unconfirmed","#,
+                    r#""next_action":"read_same_id"}}"#
+                )
+                .as_bytes(),
             ),
             (
                 concat!(
@@ -624,6 +629,8 @@ fn reconnect_status_remains_available_while_execution_waits_on_provider() {
             .unwrap();
         let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
         assert_eq!(status["status"], "IN_PROGRESS");
+        assert_eq!(status["execution"]["disposition"], "active");
+        assert_eq!(status["execution"]["next_action"], "wait");
         assert_eq!(status["approved_target"]["uid"], "uid-1");
         status_handler.await.unwrap();
 

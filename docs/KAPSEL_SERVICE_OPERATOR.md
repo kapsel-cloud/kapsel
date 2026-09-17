@@ -26,7 +26,8 @@ The fixed `/etc/kapsel/operator.json` uses the
 document. It supplies bounded snapshot approvals and external historical public-key appointments.
 Each approved ID and tuple is immutable. Reapproval requires an operator decision, a new grant and a
 new handle. Restart must not refresh authority on an existing action. Credential provisioning and
-renewal remain explicit operator work. Physical-capacity/live qualification remains outstanding.
+renewal remain explicit operator work. Source completion-capacity qualification does not establish
+installed-service or native-host acceptance.
 
 ### Replace the cold operator document
 
@@ -82,7 +83,7 @@ not invent a replacement action. `list` and `history` accept an optional `after-
 | Status          | Next interpretation                                                                                                                               |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `NOT_FOUND`     | No durable action is visible. This is not proof that an accepted background task cannot still start.                                              |
-| `IN_PROGRESS`   | Read the same handle again. Do not invent a replacement action.                                                                                   |
+| `IN_PROGRESS`   | Follow `execution.next_action`. Durable unfinished history does not prove a worker is running.                                                    |
 | `NOT_ATTEMPTED` | Inspect `target_rejection`. `STALE_APPROVAL` requires an operator decision about new approval, not automatic refresh. There is no effect receipt. |
 | `SUCCEEDED`     | Inspect application behavior. Deployment availability is not application correctness.                                                             |
 | `FAILED`        | Investigate the defined receiver failure. No automatic rollback is authorized.                                                                    |
@@ -106,6 +107,54 @@ The trust file and evaluation time are operator-selected. Inspection reports `IN
 `VERIFIED`. The service reads canonical bytes from SQLite. An unavailable output destination or
 existing file fails export without changing the action. Use a new writable destination for a later
 export. The service needs no receipt directory and the caller never opens its private journal.
+
+## Diagnose and resume
+
+An absent row is `NOT_FOUND` with `execution.disposition: "admission_unconfirmed"`. This read cannot
+prove non-admission while a commit may still finish. Only a submission response of `NOT_ADMITTED`
+establishes definite refusal. Continue reading the same ID after uncertainty.
+
+For unfinished history, use `execution`, not internal phase names:
+
+- `active`: wait. The physical job may be blocked, so this is not a progress guarantee.
+- `waiting_for_worker`: wait, then explicitly submit the same ID. There is no queue.
+- `resume_required`: explicitly submit the same ID. A null condition means the process does not know
+  why it stopped. Do not infer a crash. A repeated `preflight_unavailable` warrants operator
+  inspection.
+- `operator_required`: obtain remediation below, then explicitly submit the same ID.
+
+Any authenticated service caller may resume an original retained snapshot-approved ID. The gateway
+still checks original authority and controls continuation. Reselecting after attempt cannot resend
+the PATCH. Signing completion cannot acquire new observations. Do not create a replacement ID just
+because execution stopped or a response was lost.
+
+Operators can inspect the existing process fields with `systemctl show kapseld.service` and fixed
+codes with `journalctl -u kapseld.service`. Keep journal access operator-only. Read failures emit at
+most once per class per service lifetime, not once per poll or identity. Diagnostics may be lost
+under backpressure or process loss. Missing or repeated codes are not progress evidence. The daemon
+uses nonblocking pipe/socket stderr only, as supplied by the unit. Do not redirect it to a regular
+file or clear its nonblocking flag. Status and process exit remain usable when diagnostics are lost.
+Do not paste private configuration, grant bytes, credentials or signing seeds into diagnostics or
+caller responses.
+
+| Code                                                | Operator action                                                                                                                                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `provisioning_unavailable`                          | Inspect fixed roots, file ownership/modes, lifecycle exclusion and operator document bounds. Preserve unknown artifacts.                                                 |
+| `configuration_invalid`                             | Validate the version-1 operator document and separately appointed original grant keys. Use cold replacement, never caller input.                                         |
+| `original_authority_unavailable`                    | Restore the original externally appointed trust key for the retained grant. Do not replace authority under the same ID.                                                  |
+| `storage_or_operation_blocked`, `operation_blocked` | Inspect journal version, custody, filesystem availability and retained history using the owning binary. Do not delete, rotate or restore stale history as a retry.       |
+| `preflight_unavailable`                             | Check receiver connectivity, narrow RBAC and credential validity. The code does not distinguish these from bounded/malformed response failure.                           |
+| `receiver_unavailable`                              | Repair the fixed kubeconfig or receiver access. Execution snapshots are loaded at startup, so changed material needs graceful stop/start. Read before same-ID selection. |
+| `signing_unavailable`                               | Restore the intended private receipt seed and valid configured signer ID. Restart to reload material, then select the same ID to complete frozen facts.                  |
+| `completion_blocked`                                | Check storage capacity/custody and signing configuration. Preserve frozen observations and original receipts. Resume the same ID only after remediation.                 |
+| `worker_contention`                                 | Let the current owner retire. Then select the same ID explicitly. Never remove a lock to bypass exclusion.                                                               |
+| `internal_failure`                                  | Preserve history and inspect the binary/host before restart. No exception payload or secret-bearing detail is logged.                                                    |
+
+Codes describe observations in the current process, not a durable audit trail or proof of root
+cause. Status is still readable when execution material is unavailable. Unsafe or unreadable
+authority and storage may prevent startup. The journal retains at most **504 identities and 32
+unfinished actions**. There is no pruning. Clearing history to make room or resume would destroy the
+no-resend boundary.
 
 ## Disconnect, restart and uncertainty
 

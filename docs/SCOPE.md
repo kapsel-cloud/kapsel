@@ -113,10 +113,11 @@ service application, durable gateway admission, version-1 socket/client and read
 Format-4 journals remain refused; retained history authenticates per identity. Cold
 operator-document replacement now shares lifecycle exclusion with startup and graceful SIGTERM
 retirement; its [service contract](KAPSEL_SERVICE.md#cold-publication-and-graceful-retirement) owns
-read-only validation and honest publication outcomes. Physical completion-capacity and fresh live
-qualification remain outstanding. The full proposed workflow is not completed acceptance, production
-adoption or a supported hosting/release promise. Observation-policy and richer-projection work
-remain separate.
+read-only validation and honest publication outcomes. Completion-capacity accounting and bounded
+failure qualification are implemented, as is the fixed per-pass initial observation policy. Service
+execution guidance distinguishes physical job ownership, explicit resumption and operator
+remediation without persisting liveness. The full proposed workflow is not completed
+installed-service acceptance, production adoption or a supported hosting/release promise.
 
 ## Maturity
 

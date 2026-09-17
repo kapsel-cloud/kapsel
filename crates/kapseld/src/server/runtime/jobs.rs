@@ -125,6 +125,7 @@ mod tests {
                 Arc::new(connections.clone().try_acquire_owned().unwrap()),
                 Some(Arc::new(Selection {
                     operation_id: "job-op".into(),
+                    running: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     _permit: execution.clone().try_acquire_owned().unwrap(),
                 })),
                 move || {

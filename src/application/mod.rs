@@ -17,9 +17,10 @@ use http_body_util::Limited;
 use kube::{config::KubeConfigOptions, Config};
 use serde::Deserialize;
 pub use service::{
-    parse_service_operator_document, ApprovedAction, HistoryEntry, HistoryPage, ServiceAdmission,
-    ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
-    ServiceOperatorDocument,
+    parse_service_operator_document, ApprovedAction, ExecutionCondition, ExecutionDisposition,
+    ExecutionObservation, HistoryEntry, HistoryPage, ServiceAdmission, ServiceApplication,
+    ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution, ServiceOperatorDocument,
+    ServiceStop,
 };
 use tower_http::map_response_body::MapResponseBodyLayer;
 
@@ -662,10 +663,9 @@ impl Application {
             .map(|operation| operation.map(|snapshot| self.project_report(&snapshot)))
             .map_err(|error| match error {
                 ReconciliationError::Submission(error) => map_operation_error(&error),
-                ReconciliationError::Advancement(error) => {
-                    let _ = error;
-                    ApplicationError::OperationFailure
-                },
+                ReconciliationError::Advancement(_)
+                | ReconciliationError::Completion
+                | ReconciliationError::Blocked(_) => ApplicationError::OperationFailure,
             })
     }
 

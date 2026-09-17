@@ -33,6 +33,8 @@ use sha2::Digest as _;
 
 #[path = "linux_process/cold_publication.rs"]
 mod cold_publication;
+#[path = "linux_process/disposition.rs"]
+mod disposition;
 
 const IMAGE: &str = concat!(
     "registry.example/agent-api@sha256:",
@@ -287,6 +289,18 @@ fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
         .into_bytes()
 }
 
+fn assert_admission_unconfirmed(stream: &mut UnixStream) {
+    let response: serde_json::Value = serde_json::from_slice(&read_frame(stream)).unwrap();
+    assert_eq!(
+        response,
+        serde_json::json!({
+            "status":"NOT_FOUND", "execution": {
+                "disposition":"admission_unconfirmed", "condition":null,
+                "next_action":"read_same_id", "action_owner":"caller"},
+        })
+    );
+}
+
 fn assert_admitted(stream: &mut UnixStream, phase: &str) {
     let response: serde_json::Value = serde_json::from_slice(&read_frame(stream)).unwrap();
     assert_eq!(
@@ -303,6 +317,8 @@ fn resume_after_read(socket: &Path) {
     );
     let status: serde_json::Value = serde_json::from_slice(&read_frame(&mut status)).unwrap();
     assert_eq!(status["status"], "IN_PROGRESS");
+    assert_eq!(status["execution"]["disposition"], "resume_required");
+    assert!(status["execution"]["condition"].is_null());
     let mut selection = connect(socket);
     write_frame(&mut selection, submit_request().as_bytes());
     assert_admitted(&mut selection, "apply_started");
@@ -332,7 +348,9 @@ fn assert_terminal_status(stream: &mut UnixStream, status: &str, snapshot: bool)
         "status": status,
         "approved_target": snapshot.then_some(&target),
         "attempt_target": target,
-        "observed_target": {"uid": "uid-1", "resource_version": "3"}
+        "observed_target": {"uid": "uid-1", "resource_version": "3"},
+        "execution": {"disposition":"complete", "condition":null,
+            "next_action":"inspect_result", "action_owner":"caller"}
     });
     if status == "UNKNOWN" {
         // Read exhaustion retains the last snapshot; elapsed exhaustion retains no facts.
@@ -962,7 +980,7 @@ fn ordinary_startup_removes_only_an_exact_inactive_stale_socket() {
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"NOT_FOUND"}"#);
+    assert_admission_unconfirmed(&mut status);
     assert!(child.wait_with_output().unwrap().status.success());
     fs::remove_dir_all(root).unwrap();
 }
@@ -977,7 +995,7 @@ fn ordinary_startup_uses_fixed_inputs_and_serves_until_systemd_termination() {
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"NOT_FOUND"}"#);
+    assert_admission_unconfirmed(&mut status);
 
     // A response proves startup completed chmod and identity checks, not just bind.
     let metadata = fs::symlink_metadata(&socket).unwrap();

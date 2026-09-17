@@ -99,7 +99,7 @@ impl ApplicationExecution for HarnessApplication {
         &mut self,
         id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<kapsel::ServiceStop, ServiceError> {
         self.application
             .select(
                 &id,
@@ -257,7 +257,7 @@ impl ApplicationExecution for HarnessExecution {
         &mut self,
         id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<kapsel::ServiceStop, ServiceError> {
         if id != "process-op" {
             return Err(ServiceError::InvalidRequest);
         }
@@ -273,6 +273,6 @@ impl ApplicationExecution for HarnessExecution {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         self.status.store(2, Ordering::Release);
-        Ok(())
+        Ok(kapsel::ServiceStop::Finished)
     }
 }

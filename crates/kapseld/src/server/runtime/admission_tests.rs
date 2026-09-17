@@ -13,6 +13,30 @@ struct Reads {
     )>,
 }
 impl ApplicationReads for Reads {
+    fn read_observed(
+        &self,
+        request: ReadRequest,
+        observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+        _: &dyn Fn(ServiceError),
+    ) -> (Vec<u8>, ResponseClass) {
+        let ReadRequest::Status(id) = request else {
+            return (invalid_request(), ResponseClass::Ordinary);
+        };
+        let status = if self.committed.load(Ordering::SeqCst) {
+            kapsel::SetDeploymentImageStatus::InProgress
+        } else {
+            kapsel::SetDeploymentImageStatus::NotFound
+        };
+        let entry = kapsel::HistoryEntry {
+            operation_id: id.clone(),
+            status: Ok((status, kapsel::OperationTargets::default())),
+        };
+        (
+            protocol::render_execution_status(entry.execution_status(observation(&id))),
+            ResponseClass::Ordinary,
+        )
+    }
+
     fn read(&self, _: ReadRequest) -> (Vec<u8>, ResponseClass) {
         (operation_failure(), ResponseClass::Ordinary)
     }
@@ -33,20 +57,21 @@ struct Execution {
     entered: Arc<Semaphore>,
     release: Arc<Semaphore>,
     decision: ServiceAdmission,
+    stop: kapsel::ServiceStop,
 }
 impl ApplicationExecution for Execution {
     async fn execute(
         &mut self,
         _: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<kapsel::ServiceStop, ServiceError> {
         self.entered.add_permits(1);
         self.release.acquire().await.unwrap().forget();
         if matches!(self.decision, ServiceAdmission::Admitted(_)) {
             self.committed.store(true, Ordering::SeqCst);
         }
         acknowledged(self.decision);
-        Ok(())
+        Ok(self.stop)
     }
 }
 fn request(id: &str) -> Vec<u8> {
@@ -80,8 +105,52 @@ fn state(decision: ServiceAdmission) -> ServerState<Reads, Execution> {
             entered: Arc::new(Semaphore::new(0)),
             release: Arc::new(Semaphore::new(0)),
             decision,
+            stop: kapsel::ServiceStop::Finished,
         },
     )
+}
+
+#[test]
+fn bounded_diagnostics_evict_to_unknown_and_reselection_replaces_old_causes() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let state = state(ServiceAdmission::Admitted(OperationState::Authorized));
+        let release = {
+            let mut execution = state.execution.lock().await;
+            execution.stop =
+                kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::SigningUnavailable);
+            execution.release.clone()
+        };
+        for index in 0..33 {
+            release.add_permits(1);
+            assert_eq!(
+                decision(&state, &format!("op-{index}"), Duration::from_secs(2)).await["status"],
+                "ADMITTED"
+            );
+            state.jobs.drain().await;
+        }
+        assert_eq!(state.stopped.lock().unwrap().len(), 32);
+        assert_eq!(
+            state.observation("op-0"),
+            kapsel::ExecutionObservation::Unknown
+        );
+        assert_eq!(
+            state.observation("op-1"),
+            kapsel::ExecutionObservation::Stopped(kapsel::ExecutionCondition::SigningUnavailable)
+        );
+        state.execution.lock().await.stop = kapsel::ServiceStop::Finished;
+        release.add_permits(1);
+        decision(&state, "op-1", Duration::from_secs(2)).await;
+        state.jobs.drain().await;
+        assert_eq!(
+            state.observation("op-1"),
+            kapsel::ExecutionObservation::Unknown
+        );
+        assert_eq!(state.stopped.lock().unwrap().len(), 32);
+    });
 }
 
 #[test]
@@ -93,10 +162,34 @@ fn deadline_abandons_only_response_and_contention_distinguishes_identity() {
     runtime.block_on(async {
         let state = state(ServiceAdmission::Admitted(OperationState::Requested));
         let release = state.execution.lock().await.release.clone();
+        state.stopped.lock().unwrap().push_back((
+            "one".into(),
+            kapsel::ExecutionObservation::Stopped(kapsel::ExecutionCondition::SigningUnavailable),
+        ));
         let result = decision(&state, "one", Duration::from_millis(30)).await;
+        assert!(state.stopped.lock().unwrap().is_empty());
+        assert_eq!(
+            state.observation("one"),
+            kapsel::ExecutionObservation::Active
+        );
+        assert_eq!(
+            state.observation("two"),
+            kapsel::ExecutionObservation::OtherWorker
+        );
         assert_eq!(result["status"], "INDETERMINATE");
-        assert_eq!(state.submission.available_permits(), 0);
         assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX - 1);
+        let status_request = concat!(
+            r#"{"version":1,"request":"get_set_deployment_image_status","#,
+            r#""operation_id":"one"}"#,
+        )
+        .as_bytes();
+        let (bytes, _) = dispatch_with_state(status_request, &state).await;
+        let absent: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(absent["status"], "NOT_FOUND");
+        assert_eq!(absent["execution"]["disposition"], "admission_unconfirmed");
+        assert_eq!(absent["execution"]["next_action"], "read_same_id");
+        assert!(!state.reads.lock().unwrap().committed.load(Ordering::SeqCst));
+        assert_eq!(state.submission.available_permits(), 0);
         let same = decision(&state, "one", Duration::from_secs(1)).await;
         assert_eq!(same["status"], "INDETERMINATE");
         let other = decision(&state, "two", Duration::from_secs(1)).await;
@@ -107,6 +200,10 @@ fn deadline_abandons_only_response_and_contention_distinguishes_identity() {
         assert!(state.reads.lock().unwrap().committed.load(Ordering::SeqCst));
         assert_eq!(state.submission.available_permits(), 1);
         assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX);
+        assert_eq!(
+            state.observation("one"),
+            kapsel::ExecutionObservation::Unknown
+        );
     });
 }
 
@@ -184,6 +281,10 @@ fn pinless_absence_probe_cannot_refuse_a_completed_matching_successor() {
             assert!(Instant::now() < deadline);
             tokio::task::yield_now().await;
         }
+        assert_eq!(
+            state.observation("other"),
+            kapsel::ExecutionObservation::Active
+        );
         assert_eq!(predecessor_owner.strong_count(), 1);
         assert_eq!(state.submission.available_permits(), 0);
 

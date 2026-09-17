@@ -23,7 +23,7 @@ fn unit_sysusers_and_rbac_records_are_exact_and_finite() {
             "Restart=no\n",
             "TimeoutStopSec=infinity\n",
             "StandardOutput=null\n",
-            "StandardError=null\n",
+            "StandardError=journal\n",
             "\n",
             "[Install]\n",
             "WantedBy=multi-user.target\n",

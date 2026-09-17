@@ -35,8 +35,8 @@ distinctions. The service composes `ServiceApplication`, never gateway internals
 The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) selects durable admission,
 multi-identity visibility and read-first resumption. Unreleased source now adopts the version-1
 socket, fixed client, read-first startup and cold operator-document replacement together.
-Physical-capacity/live qualification remains outstanding acceptance work; this slice does not
-establish the full proposed workflow or released support.
+Completion-capacity accounting and bounded failure qualification are implemented. This does not
+establish the full proposed workflow, installed-service qualification or released support.
 
 ## Multi-action application boundary
 
@@ -289,6 +289,81 @@ contended selection authenticates retained admission before deciding whether new
 No queue is created. Peer denial, framing failure, read timeout, saturation and over-limit responses
 close without a response.
 
+## Actionable execution status
+
+Version-1 status and authenticated history entries add an `execution` object. Existing `status`,
+target facts and receipt bytes retain their meaning. The new object has exactly `disposition`,
+`condition` (a fixed token or null), `next_action` and `action_owner`. This is an additive amendment
+to the unpublished version-1 service protocol, not a published compatibility promise. Receipt and
+admission responses are unchanged. Access errors contain no execution or action facts.
+
+| Disposition             | Condition                                                                                   | Next action                | Owner    |
+| ----------------------- | ------------------------------------------------------------------------------------------- | -------------------------- | -------- |
+| `active`                | null                                                                                        | `wait`                     | caller   |
+| `waiting_for_worker`    | null                                                                                        | `wait_then_select_same_id` | caller   |
+| `resume_required`       | null, `preflight_unavailable`, or `worker_contention`                                       | `select_same_id`           | caller   |
+| `operator_required`     | `receiver_unavailable`, `signing_unavailable`, `completion_blocked`, or `operation_blocked` | `contact_operator`         | operator |
+| `complete`              | null                                                                                        | `inspect_result`           | caller   |
+| `admission_unconfirmed` | null                                                                                        | `read_same_id`             | caller   |
+
+`NOT_FOUND` with `admission_unconfirmed` means this read snapshot cannot confirm admission. A
+selected job may still commit after that read. Only the submission decision `NOT_ADMITTED`
+establishes a definite refusal of new work. Keep reading the same ID after uncertainty, rather than
+creating another identity.
+
+`IN_PROGRESS` means unfinished durable history, never activity by itself. `active` means the runtime
+owns the scheduled or physically executing selection job, even if storage is stalled. A contention
+probe retaining exclusion after that job finishes must not report active execution. Disconnect,
+response timeout and supervisor cancellation do not end a surviving physical job's ownership.
+
+The runtime remembers at most 32 most-recent selection outcomes in memory, evicting the oldest.
+Starting a new selection clears that identity's old explanation before publishing task ownership.
+New outcomes are recorded before physical retirement. Restart loses all explanations. Lost knowledge
+is null, not `crashed`, `cancelled` or another fabricated cause. Terminal history overrides stale
+diagnostics. History and ownership are separate snapshots and can change immediately after a read.
+No flags or diagnostic facts are written to SQLite. External worker contention is an observed stop
+condition, not continuing knowledge that the external worker is alive. Explicit selection may find
+contention again, but never queues work or resets a surviving pass.
+
+`preflight_unavailable` cannot distinguish transport, credentials, malformed response or timeout
+from the adapter's bounded read failure. It establishes no permanent receiver rejection. Retry is
+explicit and same-ID only. `receiver_unavailable` covers unavailable local execution material or a
+typed receiver execution failure. `signing_unavailable` needs operator-supplied signing material.
+`completion_blocked` means frozen evidence could not be completed, not that the receiver failed.
+These conditions are process observations, not new signed evidence.
+
+### Operator diagnostics
+
+The daemon emits only fixed ASCII codes prefixed `kapseld: ` on stderr, routed by the unit to the
+systemd journal. Stdout remains null. This deliberately extends the former health-fields-only
+surface. No raw error, operation ID, grant, credential, signing seed, response body or private path
+is logged. The panic hook also emits only `internal_failure`. Rendering has no diagnostic side
+effects. Read-access failures are reported at the application bridge or retained-admission probe, at
+most once per failure class per service lifetime across all IDs and status/history/receipt reads.
+Success does not reset suppression. Explicit selection failure is reported once by its execution
+owner, never again by response rendering. Startup retains its own failure boundary.
+
+Emission is best-effort, not durable evidence. Before startup, the daemon retains a close-on-exec
+stderr descriptor only when it identifies a pipe or socket, and sets its shared open-file
+description to nonblocking. The host must not clear that flag or reuse this description for blocking
+output. Regular files, terminals and unsupported sinks are skipped because nonblocking flags do not
+bound their I/O. Each fixed line is at most 64 bytes and uses one nonblocking syscall without a
+userspace stderr lock. There is no retry, buffering thread, queue, flush or shutdown drain.
+Saturation, short writes, sink errors and process loss may drop or truncate diagnostics. The stop
+condition is recorded before the write attempt. A stalled sink cannot hold physical execution or
+service retirement.
+
+There is no telemetry store, socket administration request or per-action diagnostic history. Journal
+access remains host/operator-owned.
+
+Startup custody/provisioning refusal emits `provisioning_unavailable`; application opening emits
+`configuration_invalid` or `storage_or_operation_blocked`. Failed original-authority access emits
+`original_authority_unavailable`. Execution emits the bounded condition tokens above, or the
+application failure code. Systemd's existing state/exit fields still describe process availability,
+not receiver success. The [operator guide](KAPSEL_SERVICE_OPERATOR.md#diagnose-and-resume) owns
+concrete remediation steps. Publication's separate bounded stdout/empty-stderr contract is
+unchanged.
+
 ## Fixed service client
 
 The source client's exact grammar is:
@@ -365,11 +440,12 @@ unchanged.
 
 The unit uses `Type=exec`, `User=kapsel`, `Group=kapsel-service-callers`, `RuntimeDirectory=kapsel`,
 `RuntimeDirectoryMode=0750`, `StateDirectory=kapsel`, `StateDirectoryMode=0700`, `UMask=0077`,
-`Restart=no`, null standard streams, disabled start-rate limiting, the fixed argv above and
+`Restart=no`, null stdout, journal stderr, disabled start-rate limiting, the fixed argv above and
 `WantedBy=multi-user.target`. Boot, explicit start and explicit restart each attempt startup once.
-Systemd state plus authenticated socket use is the health boundary. Diagnostics are limited to
-`ActiveState`, `SubState`, `Result`, `ExecMainCode`, `ExecMainStatus` and `NRestarts`. The socket
-exposes no administrative or health request.
+Systemd state plus authenticated socket use is the health boundary. Process fields are
+`ActiveState`, `SubState`, `Result`, `ExecMainCode`, `ExecMainStatus` and `NRestarts`, supplemented
+by the fixed operator diagnostic codes above. The socket exposes no administrative or health
+request.
 
 ## Kubernetes authority and installed assets
 

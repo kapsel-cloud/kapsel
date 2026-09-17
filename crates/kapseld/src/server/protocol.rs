@@ -209,6 +209,36 @@ pub(super) fn render_status_with_targets(
     output
 }
 
+pub(super) fn render_execution_status(
+    result: Result<
+        (
+            SetDeploymentImageStatus,
+            kapsel::OperationTargets,
+            kapsel::ExecutionDisposition,
+        ),
+        ServiceError,
+    >,
+) -> Vec<u8> {
+    let (status, targets, execution) = match result {
+        Ok(value) => value,
+        Err(error) => return service_error(error),
+    };
+    let mut output = render_status_with_targets(Ok((status, targets)));
+    let fields = serde_json::json!({
+        "execution": {
+            "disposition": execution.as_str(),
+            "condition": execution.condition().map(kapsel::ExecutionCondition::as_str),
+            "next_action": execution.next_action(),
+            "action_owner": execution.action_owner(),
+        },
+    })
+    .to_string();
+    output.pop();
+    output.push(b',');
+    output.extend_from_slice(&fields.as_bytes()[1..]);
+    output
+}
+
 pub(super) fn render_receipt(result: Result<SetDeploymentImageReceipt, ServiceError>) -> Vec<u8> {
     match result {
         Ok(SetDeploymentImageReceipt::NotFound) => {
@@ -275,15 +305,25 @@ pub(super) fn render_catalog(
         .into_bytes()
 }
 
-pub(super) fn render_history(page: kapsel::HistoryPage) -> Vec<u8> {
+#[cfg(test)]
+fn render_history(page: kapsel::HistoryPage) -> Vec<u8> {
+    render_execution_history(page, &|_| kapsel::ExecutionObservation::Unknown)
+}
+
+pub(super) fn render_execution_history(
+    page: kapsel::HistoryPage,
+    observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+) -> Vec<u8> {
     let mut entries = Vec::with_capacity(page.entries.len());
     for entry in page.entries {
-        let bytes = render_status_with_targets(entry.status);
+        let id = entry.operation_id.clone();
+        let observed = observation(&id);
+        let bytes = render_execution_status(entry.execution_status(observed));
         let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_slice(&bytes) else {
             return operation_failure();
         };
         fields.remove("version");
-        fields.insert("operation_id".into(), entry.operation_id.into());
+        fields.insert("operation_id".into(), id.into());
         entries.push(fields);
     }
     serde_json::json!({
@@ -537,6 +577,46 @@ mod tests {
     }
 
     #[test]
+    fn execution_projection_is_bounded_and_contains_only_fixed_guidance() {
+        use kapsel::{ExecutionCondition as Condition, ExecutionDisposition as Disposition};
+        for disposition in [
+            Disposition::Active,
+            Disposition::WaitingForWorker,
+            Disposition::ResumeRequired(None),
+            Disposition::ResumeRequired(Some(Condition::PreflightUnavailable)),
+            Disposition::OperatorRequired(Condition::ReceiverUnavailable),
+            Disposition::OperatorRequired(Condition::SigningUnavailable),
+            Disposition::OperatorRequired(Condition::CompletionBlocked),
+        ] {
+            let bytes = render_execution_status(Ok((
+                SetDeploymentImageStatus::InProgress,
+                kapsel::OperationTargets::default(),
+                disposition,
+            )));
+            assert!(response_length_allowed(
+                bytes.len(),
+                ResponseClass::Ordinary
+            ));
+            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"version":1, "status":"IN_PROGRESS",
+                    "execution": {"disposition":disposition.as_str(),
+                        "condition":disposition.condition().map(Condition::as_str),
+                        "next_action":disposition.next_action(),
+                        "action_owner":disposition.action_owner()},
+                })
+            );
+        }
+        let bytes = render_execution_status(Err(ServiceError::AuthorityUnavailable));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"version":1,"status":"ERROR",
+                "error_class":"authority_unavailable"})
+        );
+    }
+
+    #[test]
     fn history_projection_keeps_authority_errors_per_id_and_without_action_facts() {
         let bytes = render_history(kapsel::HistoryPage {
             entries: vec![
@@ -577,6 +657,13 @@ mod tests {
             "original-uid"
         );
         assert!(value["entries"][1]["attempt_target"].is_null());
+        assert_eq!(
+            value["entries"][1]["execution"],
+            serde_json::json!({
+                "disposition":"resume_required", "condition":null,
+                "next_action":"select_same_id", "action_owner":"caller",
+            })
+        );
     }
 
     #[test]

@@ -22,9 +22,10 @@ pub use application::{
     open_application_from_fixed_operator_document, open_application_from_operator_document,
     parse_service_operator_document, provision_exact_grant, provision_snapshot_grant,
     validate_service_operator_inputs, AgentRequest, Application, ApplicationError, ApprovedAction,
-    GrantProvisioning, HistoryEntry, HistoryPage, OperationReport, OperatorConfiguration,
-    ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError,
-    ServiceExecution, ServiceOperatorDocument, SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    ExecutionCondition, ExecutionDisposition, ExecutionObservation, GrantProvisioning,
+    HistoryEntry, HistoryPage, OperationReport, OperatorConfiguration, ServiceAdmission,
+    ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
+    ServiceOperatorDocument, ServiceStop, SetDeploymentImageReceipt, SetDeploymentImageStatus,
     ValidatedServiceOperatorInputs,
 };
 pub use gateway::{

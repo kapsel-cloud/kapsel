@@ -2,14 +2,20 @@
 
 #[cfg(test)]
 mod admission_tests;
+#[cfg(test)]
+mod disposition_tests;
 mod jobs;
 #[cfg(all(test, target_os = "linux"))]
 mod retirement_tests;
 
 use std::{
+    collections::VecDeque,
     future::Future,
     io,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
     time::Duration,
 };
 
@@ -39,17 +45,56 @@ pub(super) struct ServerState<R, E> {
     submission: Arc<Semaphore>,
     connections: Arc<Semaphore>,
     jobs: Arc<jobs::Jobs>,
+    read_failures: Arc<crate::diagnostics::ReadFailures>,
     selected: Arc<Mutex<Weak<Selection>>>,
+    stopped: Arc<Mutex<VecDeque<(String, kapsel::ExecutionObservation)>>>,
     #[cfg(test)]
     after_failed_acquisition: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 struct Selection {
     operation_id: String,
+    running: Arc<AtomicBool>,
     _permit: OwnedSemaphorePermit,
 }
 
+// Unlike contention probes, only the scheduled/physical execution closure owns this marker.
+struct ExecutionLifetime(Arc<AtomicBool>);
+
+impl Drop for ExecutionLifetime {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 impl<R, E> ServerState<R, E> {
+    fn observation(&self, operation_id: &str) -> kapsel::ExecutionObservation {
+        use kapsel::ExecutionObservation;
+        // Selection publication and stale-diagnostic invalidation share this exclusion.
+        let Ok(selected) = self.selected.lock() else {
+            return ExecutionObservation::Unknown;
+        };
+        if let Some(selection) = selected.upgrade() {
+            return if selection.operation_id == operation_id
+                && selection.running.load(Ordering::Acquire)
+            {
+                ExecutionObservation::Active
+            } else {
+                ExecutionObservation::OtherWorker
+            };
+        }
+        self.stopped
+            .lock()
+            .map_or(ExecutionObservation::Unknown, |stopped| {
+                stopped
+                    .iter()
+                    .find(|(id, _)| id == operation_id)
+                    .map_or(ExecutionObservation::Unknown, |(_, observation)| {
+                        *observation
+                    })
+            })
+    }
+
     pub(super) fn new(reads: R, execution: E) -> Self {
         Self {
             reads: Arc::new(Mutex::new(reads)),
@@ -57,7 +102,9 @@ impl<R, E> ServerState<R, E> {
             submission: Arc::new(Semaphore::new(1)),
             connections: Arc::new(Semaphore::new(CONNECTIONS_MAX)),
             jobs: Arc::new(jobs::Jobs::new()),
+            read_failures: Arc::default(),
             selected: Arc::new(Mutex::new(Weak::new())),
+            stopped: Arc::new(Mutex::new(VecDeque::new())),
             #[cfg(test)]
             after_failed_acquisition: None,
         }
@@ -73,7 +120,9 @@ impl<R> ServerState<R, UnavailableExecution> {
             submission: Arc::new(Semaphore::new(1)),
             connections: Arc::new(Semaphore::new(CONNECTIONS_MAX)),
             jobs: Arc::new(jobs::Jobs::new()),
+            read_failures: Arc::default(),
             selected: Arc::new(Mutex::new(Weak::new())),
+            stopped: Arc::new(Mutex::new(VecDeque::new())),
             after_failed_acquisition: None,
         }
     }
@@ -87,7 +136,9 @@ impl<R, E> Clone for ServerState<R, E> {
             submission: self.submission.clone(),
             connections: self.connections.clone(),
             jobs: self.jobs.clone(),
+            read_failures: self.read_failures.clone(),
             selected: self.selected.clone(),
+            stopped: self.stopped.clone(),
             #[cfg(test)]
             after_failed_acquisition: self.after_failed_acquisition.clone(),
         }
@@ -103,7 +154,7 @@ impl ApplicationExecution for UnavailableExecution {
         &mut self,
         _operation_id: String,
         _acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> impl Future<Output = Result<(), ServiceError>> + Send {
+    ) -> impl Future<Output = Result<kapsel::ServiceStop, ServiceError>> + Send {
         std::future::ready(Err(ServiceError::OperationFailure))
     }
 }
@@ -320,13 +371,23 @@ async fn dispatch_admitted<R: ApplicationReads + 'static, E: ApplicationExecutio
     match command {
         Command::Read(request) => {
             let reads = state.reads.clone();
+            let observed = state.clone();
             let (response, received) = oneshot::channel();
             if state
                 .jobs
                 .spawn(connection, None, move || {
                     let result = reads.lock().map_or_else(
-                        |_| (operation_failure(), ResponseClass::Ordinary),
-                        |reads| reads.read(request),
+                        |_| {
+                            observed
+                                .read_failures
+                                .report(ServiceError::OperationFailure);
+                            (operation_failure(), ResponseClass::Ordinary)
+                        },
+                        |reads| {
+                            reads.read_observed(request, &|id| observed.observation(id), &|error| {
+                                observed.read_failures.report(error);
+                            })
+                        },
                     );
                     let _ = response.send(result);
                 })
@@ -344,6 +405,26 @@ async fn dispatch_admitted<R: ApplicationReads + 'static, E: ApplicationExecutio
             render_submission(admit_submission(state, request, connection, deadline).await),
             ResponseClass::Ordinary,
         ),
+    }
+}
+
+fn record_stop(
+    stopped: &Mutex<VecDeque<(String, kapsel::ExecutionObservation)>>,
+    operation_id: String,
+    result: Result<kapsel::ServiceStop, ServiceError>,
+) {
+    if let Ok(mut stopped) = stopped.lock() {
+        stopped.retain(|(id, _)| id != &operation_id);
+        if stopped.len() == 32 {
+            stopped.pop_front();
+        }
+        stopped.push_back((operation_id, kapsel::ServiceStop::observation(result)));
+    }
+    // State is recorded first. Diagnostic loss must never defer state or physical retirement.
+    match result {
+        Ok(kapsel::ServiceStop::Blocked(condition)) => crate::diagnostic(condition.as_str()),
+        Err(ServiceError::InvalidRequest) | Ok(kapsel::ServiceStop::Finished) => {},
+        Err(error) => crate::diagnostic(error.operator_diagnostic()),
     }
 }
 
@@ -367,8 +448,12 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
         if let Ok(permit) = state.submission.clone().try_acquire_owned() {
             let selection = Arc::new(Selection {
                 operation_id: operation_id.clone(),
+                running: Arc::new(AtomicBool::new(true)),
                 _permit: permit,
             });
+            if let Ok(mut stopped) = state.stopped.lock() {
+                stopped.retain(|(id, _)| id != &operation_id);
+            }
             *selected = Arc::downgrade(&selection);
             Ok(selection)
         } else {
@@ -382,19 +467,23 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
     let spawned = match selection {
         Ok(selection) => {
             let execution = state.execution.clone();
+            let stopped = state.stopped.clone();
             let runtime = tokio::runtime::Handle::current();
+            let lifetime = ExecutionLifetime(selection.running.clone());
             state.jobs.spawn(connection, Some(selection), move || {
+                let _lifetime = lifetime;
                 let mut response = Some(response);
                 let result = runtime.block_on(async {
                     let mut execution = execution.lock().await;
                     execution
-                        .execute(operation_id, |decision| {
+                        .execute(operation_id.clone(), |decision| {
                             if let Some(response) = response.take() {
                                 let _ = response.send(SubmissionAdmission::Decided(decision));
                             }
                         })
                         .await
                 });
+                record_stop(&stopped, operation_id, result);
                 if let Some(response) = response {
                     let _ = response.send(SubmissionAdmission::Error(
                         result.err().unwrap_or(ServiceError::OperationFailure),
@@ -405,12 +494,14 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
         Err(pinned) => {
             let reads = state.reads.clone();
             let selected = state.selected.clone();
+            let read_failures = state.read_failures.clone();
             // The supervisor and physical closure both retain the probed generation.
             state.jobs.spawn(connection, pinned.clone(), move || {
                 let result = reads
                     .lock()
                     .map_err(|_| ServiceError::OperationFailure)
-                    .and_then(|reads| reads.admitted_state(&operation_id));
+                    .and_then(|reads| reads.admitted_state(&operation_id))
+                    .inspect_err(|error| read_failures.report(*error));
                 let current = selected.lock().map(|selected| selected.upgrade());
                 let decision = match (result, current) {
                     (Ok(Some(phase)), _) => {
@@ -483,7 +574,8 @@ mod tests {
                 &mut self,
                 _: String,
                 _: impl FnOnce(ServiceAdmission) + Send,
-            ) -> impl Future<Output = Result<(), ServiceError>> + Send {
+            ) -> impl Future<Output = Result<kapsel::ServiceStop, ServiceError>> + Send
+            {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Err(ServiceError::OperationFailure))
             }

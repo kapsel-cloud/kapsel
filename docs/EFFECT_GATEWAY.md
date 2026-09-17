@@ -195,6 +195,36 @@ The socket runtime must preserve task and resource ownership until blocking stor
 even if a response deadline or disconnect occurs. The application callback alone does not prove that
 runtime obligation. No queue, startup selection or new observation policy follows from it.
 
+## Execution guidance, not historical evidence
+
+An admitted action can be unfinished without a running worker. Service status therefore keeps
+execution disposition separate from the existing receiver result and immutable target/receipt facts.
+The application owns the typed projection. Runtime supplies current-process physical job ownership
+and bounded stop conditions. Protocol code only renders that projection.
+
+A current physical job means `active`, including time blocked on storage. It does not promise
+progress or receiver availability. Another locally owned job means `waiting_for_worker`. Without
+current ownership or a surviving stop explanation, unfinished history means `resume_required` with
+an unknown cause. Restart, cancellation and diagnostic eviction never invent a historical cause.
+Terminal history always supersedes process diagnostics. Status and process observations are separate
+snapshots, not an atomic global liveness oracle. A contending external journal worker can only be
+reported from a failed acquisition, not inferred live from durable state.
+
+Safe preflight read failure supports explicit same-ID selection. Missing receiver material, missing
+signing material and failed receipt completion require operator remediation before selection.
+Receiver errors do not hide authenticated history or force a terminal disposition. Receipt
+completion failure preserves frozen facts. The application classifies typed failures without
+retaining raw errors. The [service contract](KAPSEL_SERVICE.md#actionable-execution-status) owns
+wire tokens, process-local retention and operator diagnostics.
+
+Any authenticated service caller may explicitly select a retained v2 identity through the existing
+ID-only submit command, even after catalog removal, provided original external authority remains
+available. This grants no new lifecycle authority: the gateway alone decides the safe continuation.
+Before attempt, resumption repeats safe reads before a fresh conditional attempt. After attempt it
+only observes, or completes frozen facts. Reads never resume, reset an observation budget or change
+receipt bytes. No automatic retry, reapproval, new durable diagnostic field, schema change or
+reinterpretation of format 5 is introduced. The inert `target_read_failures` column stays inert.
+
 ## Operation lifecycle
 
 The journal has explicit local states:

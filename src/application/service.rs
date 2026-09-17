@@ -2,9 +2,13 @@
 //!
 //! This is one application over the sole gateway journal, not one application per approval.
 
+mod disposition;
 mod document;
 use std::{error::Error, fmt, path::PathBuf};
 
+pub use disposition::{
+    ExecutionCondition, ExecutionDisposition, ExecutionObservation, ServiceStop,
+};
 pub use document::{parse_service_operator_document, ServiceOperatorDocument};
 
 use super::{AgentRequest, Application, SetDeploymentImageReceipt, SetDeploymentImageStatus};
@@ -53,6 +57,33 @@ pub struct HistoryEntry {
     pub operation_id: String,
     /// Authenticated stored status and targets, or no action facts when access fails.
     pub status: Result<(SetDeploymentImageStatus, OperationTargets), ServiceError>,
+}
+
+impl HistoryEntry {
+    /// Adds process-local guidance to this already authenticated history snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Preserves the original entry's access failure without disclosing action facts.
+    pub fn execution_status(
+        self,
+        observation: ExecutionObservation,
+    ) -> Result<
+        (
+            SetDeploymentImageStatus,
+            OperationTargets,
+            ExecutionDisposition,
+        ),
+        ServiceError,
+    > {
+        self.status.map(|(status, targets)| {
+            (
+                status,
+                targets,
+                ExecutionDisposition::project(status, observation),
+            )
+        })
+    }
 }
 
 /// A bounded history page. Concurrent admissions can require restarting pagination.
@@ -252,8 +283,9 @@ impl ServiceApplication {
     ///
     /// The acknowledgement runs only after definite admission or refusal. The journal worker lease
     /// spans the commit, callback and advancement. Terminal reselection only reads.
-    /// Missing execution material leaves admitted work unfinished,
-    /// with no fabricated receiver result.
+    /// Known execution blockages return [`ServiceStop::Blocked`], not a receiver result.
+    /// Missing execution material leaves admitted work unfinished. A successful return is not
+    /// proof of completion; read authenticated status for durable evidence.
     ///
     /// # Errors
     ///
@@ -269,7 +301,7 @@ impl ServiceApplication {
         operation_id: &str,
         execution: ServiceExecution,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<ServiceStop, ServiceError> {
         let retained = self.retained_for_selection(operation_id)?;
         let (request, signed_grant) = if let Some(retained) = retained {
             (retained.request, retained.signed_grant)
@@ -310,13 +342,8 @@ impl ServiceApplication {
                 },
             )
             .await
-            .map(|_| ())
-            .map_err(|error| match error {
-                crate::gateway::ReconciliationError::Submission(error)
-                | crate::gateway::ReconciliationError::Advancement(error) => {
-                    map_gateway_error(error)
-                },
-            })
+            .map(|_| ServiceStop::Finished)
+            .or_else(classify_stop)
     }
 
     /// Reads confirmed admission for a selectable or retained snapshot identity
@@ -447,6 +474,34 @@ impl ServiceApplication {
         Ok((status, retained.operation.targets()))
     }
 
+    /// Projects execution guidance only after authenticating stored history.
+    ///
+    /// Process ownership is supplied by the runtime and is not a durable liveness claim.
+    /// Terminal history always supersedes stale process diagnostics. Reads perform no receiver I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same bounded history access failures as [`Self::status`].
+    pub fn execution_status(
+        &self,
+        operation_id: &str,
+        observation: ExecutionObservation,
+    ) -> Result<
+        (
+            SetDeploymentImageStatus,
+            OperationTargets,
+            ExecutionDisposition,
+        ),
+        ServiceError,
+    > {
+        let (status, targets) = self.status(operation_id)?;
+        Ok((
+            status,
+            targets,
+            ExecutionDisposition::project(status, observation),
+        ))
+    }
+
     /// Retrieves the original committed receipt without receiver or signing availability.
     ///
     /// # Errors
@@ -483,6 +538,18 @@ pub enum ServiceError {
     OperationFailure,
 }
 
+impl ServiceError {
+    /// Fixed operator diagnostic code. Details remain in operator guidance, never raw errors.
+    pub const fn operator_diagnostic(self) -> &'static str {
+        match self {
+            Self::Configuration => "configuration_invalid",
+            Self::InvalidRequest => "request_invalid",
+            Self::AuthorityUnavailable => "original_authority_unavailable",
+            Self::OperationFailure => "storage_or_operation_blocked",
+        }
+    }
+}
+
 impl fmt::Display for ServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -495,6 +562,26 @@ impl fmt::Display for ServiceError {
 }
 
 impl Error for ServiceError {}
+
+fn classify_stop(error: crate::gateway::ReconciliationError) -> Result<ServiceStop, ServiceError> {
+    use crate::gateway::{ReconciliationBlockage as Blockage, ReconciliationError as Error};
+    let condition = match error {
+        Error::Blocked(Blockage::SigningUnavailable) => ExecutionCondition::SigningUnavailable,
+        Error::Blocked(Blockage::WorkerContention) => ExecutionCondition::WorkerContention,
+        Error::Completion => ExecutionCondition::CompletionBlocked,
+        Error::Advancement(GatewayError::KubernetesTargetObservation) => {
+            ExecutionCondition::PreflightUnavailable
+        },
+        Error::Blocked(Blockage::ReceiverUnavailable)
+        | Error::Advancement(
+            GatewayError::KubernetesApply | GatewayError::KubernetesReceiverObservation,
+        ) => ExecutionCondition::ReceiverUnavailable,
+        Error::Submission(error) | Error::Advancement(error) => {
+            return Err(map_gateway_error(error));
+        },
+    };
+    Ok(ServiceStop::Blocked(condition))
+}
 
 #[allow(
     clippy::needless_pass_by_value,

@@ -40,7 +40,7 @@ fn assert_excluded(root: &Path) {
     let output = finish(spawn_installed(root, 1));
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, b"kapseld: provisioning_unavailable\n");
 }
 
 #[test]

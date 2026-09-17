@@ -1,6 +1,9 @@
 //! Multi-action application tests without the socket adapter or execution credentials.
 #![allow(clippy::unwrap_used, reason = "fixture failures must fail the test")]
 
+#[path = "service_application_contract/disposition.rs"]
+mod disposition;
+
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

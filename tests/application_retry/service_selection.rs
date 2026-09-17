@@ -454,10 +454,14 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     assert_eq!(b.history(None).unwrap().entries.len(), 1);
     assert_eq!(receiver.requests(), before_busy);
     receiver.fixture.resume.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), &mut selection)
+    let stopped = tokio::time::timeout(Duration::from_secs(5), &mut selection)
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        stopped,
+        kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::SigningUnavailable)
+    );
     drop(selection);
     lock.try_lock().unwrap();
     lock.unlock().unwrap();
@@ -474,6 +478,15 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     assert!(frozen_a.contains(&rusqlite::types::Value::Blob(original_grant)));
     let before_b = receiver.requests();
     assert_eq!(before_b.len(), 3);
+    assert_eq!(
+        a.execution_status("a", kapsel::ServiceStop::observation(Ok(stopped)))
+            .unwrap()
+            .2,
+        kapsel::ExecutionDisposition::OperatorRequired(
+            kapsel::ExecutionCondition::SigningUnavailable
+        )
+    );
+    assert_eq!(receiver.requests(), before_b);
     b.select("b", receiver.execution(true).await, |decision| {
         assert_eq!(
             decision,
@@ -530,6 +543,12 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     let mut history = configuration(root, same_target);
     history.approvals.clear();
     let mut a = ServiceApplication::open(history).unwrap();
+    assert_eq!(
+        a.execution_status("a", kapsel::ExecutionObservation::Unknown)
+            .unwrap()
+            .2,
+        kapsel::ExecutionDisposition::ResumeRequired(None)
+    );
     assert_eq!(retained_row(root, "a"), frozen_a);
     a.select("a", receiver.execution(true).await, |decision| {
         assert_eq!(
@@ -542,6 +561,12 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     assert_eq!(
         a.status("a").unwrap().0,
         SetDeploymentImageStatus::Succeeded
+    );
+    assert_eq!(
+        a.execution_status("a", kapsel::ServiceStop::observation(Ok(stopped)))
+            .unwrap()
+            .2,
+        kapsel::ExecutionDisposition::Complete
     );
     let original_receipt = a.receipt("a").unwrap();
     assert!(matches!(

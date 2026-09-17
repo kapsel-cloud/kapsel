@@ -15,7 +15,7 @@ ExecStart=/usr/libexec/kapsel/kapseld --operator-config /etc/kapsel/operator.jso
 Restart=no
 TimeoutStopSec=infinity
 StandardOutput=null
-StandardError=null
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

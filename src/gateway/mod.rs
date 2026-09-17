@@ -589,7 +589,9 @@ impl Gateway {
                         AdmissionDecision::Admitted(operation.state())
                     }),
             );
-            return Ok(existing);
+            return Err(ReconciliationError::Blocked(
+                ReconciliationBlockage::WorkerContention,
+            ));
         };
         let state = if let Some(state) = self
             .journal
@@ -690,7 +692,9 @@ impl Gateway {
                 },
                 OperationState::Authorized | OperationState::ApplyStarted => {
                     let Some(client) = client.clone() else {
-                        return Ok(Some(operation));
+                        return Err(ReconciliationError::Blocked(
+                            ReconciliationBlockage::ReceiverUnavailable,
+                        ));
                     };
                     let mut adapter = KubernetesDeploymentImageAdapter::new(client);
                     self.run_locked_operation_once(&authorized, &mut adapter, None, worker)
@@ -700,14 +704,16 @@ impl Gateway {
                 },
                 OperationState::ReceiverObserved => {
                     let Some(settings) = receipt_settings else {
-                        return Ok(Some(operation));
+                        return Err(ReconciliationError::Blocked(
+                            ReconciliationBlockage::SigningUnavailable,
+                        ));
                     };
                     self.finalize_locked_operation_receipt_once(
                         Some(operation.clone()),
                         settings,
                         None,
                     )
-                    .map_err(ReconciliationError::Advancement)?
+                    .map_err(|_| ReconciliationError::Completion)?
                     .is_some()
                 },
                 OperationState::NotAttempted | OperationState::Finalized => {
@@ -1001,6 +1007,15 @@ impl Gateway {
 pub(crate) enum ReconciliationError {
     Submission(GatewayError),
     Advancement(GatewayError),
+    Completion,
+    Blocked(ReconciliationBlockage),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ReconciliationBlockage {
+    ReceiverUnavailable,
+    SigningUnavailable,
+    WorkerContention,
 }
 
 /// Name of an input field rejected by the bounded request grammar.
