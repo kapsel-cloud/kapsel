@@ -2,6 +2,19 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
+## 0.3.0-preview.1 - unreleased
+
+- Selects the resident-service archive with feature-free `kapsel`, `kapseld` and
+  `kapsel-service-client`, systemd/sysusers assets, narrow example RBAC and operator guidance.
+- Uses release metadata schema v3 and a dependency inventory covering both CLI and daemon roots. The
+  preview does not bundle the published-beta demonstration executable or fixture trust.
+- Consumes exact-snapshot approvals, format-5 retained authority, read-first startup, explicit
+  same-ID resumption and honest execution guidance. Older journals are refused unchanged.
+
+This is a source version, not publication or completed installed-service qualification. There is no
+migration, downgrade, pruning, host-loss continuity or production-support promise. The published
+v0.2.0 artifact and its historical evidence remain unchanged.
+
 ## 0.2.0
 
 - Adopts the finite developer-beta CLI, MCP, grant, receipt, archive, and private-journal

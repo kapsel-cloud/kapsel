@@ -449,7 +449,7 @@ fn initialization_lists_exactly_the_fixed_request_only_tool() {
             "result": {
                 "protocolVersion": "2025-11-25",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "kapsel", "version": "0.2.0"}
+                "serverInfo": {"name": "kapsel", "version": env!("CARGO_PKG_VERSION")}
             }
         })
     );

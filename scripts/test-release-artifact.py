@@ -12,6 +12,7 @@ import io
 import json
 import os
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -50,6 +51,11 @@ if SMOKE_SPEC is None or SMOKE_SPEC.loader is None:
     raise RuntimeError("could not load the release verifier")
 SMOKE = importlib.util.module_from_spec(SMOKE_SPEC)
 SMOKE_SPEC.loader.exec_module(SMOKE)
+ASSEMBLY_SPEC = importlib.util.spec_from_file_location("assemble_release_artifact", ASSEMBLER)
+if ASSEMBLY_SPEC is None or ASSEMBLY_SPEC.loader is None:
+    raise RuntimeError("could not load the release assembler")
+ASSEMBLY = importlib.util.module_from_spec(ASSEMBLY_SPEC)
+ASSEMBLY_SPEC.loader.exec_module(ASSEMBLY)
 
 
 class ZeroReader(io.RawIOBase):
@@ -75,9 +81,10 @@ def synthetic_archive(
 ) -> bytes:
     basename = archive.name.removesuffix(".tar.gz")
     ordinary = b"ordinary"
-    demonstration = b"demonstration"
+    service = b"service"
+    client = b"client"
     metadata = {
-        "artifact_schema": "kapsel.release-artifact.v2",
+        "artifact_schema": "kapsel.release-artifact.v3",
         "package_version": "0.2.0",
         "rust_target": TARGET,
         "source_revision": "1" * 40,
@@ -93,18 +100,22 @@ def synthetic_archive(
         "smoke_image": SMOKE_IMAGE,
         "ordinary_binary_bytes": len(ordinary),
         "ordinary_binary_sha256": hashlib.sha256(ordinary).hexdigest(),
-        "demo_binary_bytes": len(demonstration),
-        "demo_binary_sha256": hashlib.sha256(demonstration).hexdigest(),
-        "non_claims": "developer-beta;not-production;no-public-rust-api;no-other-targets",
+        "service_binary_bytes": len(service),
+        "service_binary_sha256": hashlib.sha256(service).hexdigest(),
+        "client_binary_bytes": len(client),
+        "client_binary_sha256": hashlib.sha256(client).hexdigest(),
+        "non_claims": "service-preview;not-production;no-public-rust-api;no-other-targets",
     }
     files: dict[str, bytes | int] = {
         f"{basename}/bin/kapsel": ordinary,
-        f"{basename}/libexec/kapsel-demo-harness": demonstration,
-        f"{basename}/share/kapsel/demo-kind-crash-recovery.sh": b"demo\n",
-        f"{basename}/share/kapsel/kap0038-trust.hex": b"00\n",
+        f"{basename}/libexec/kapsel/kapseld": service,
+        f"{basename}/bin/kapsel-service-client": client,
+        f"{basename}/share/kapsel/kapseld.service": b"unit\n",
+        f"{basename}/share/kapsel/kapseld.conf": b"sysusers\n",
+        f"{basename}/share/kapsel/kapseld-rbac.yaml": b"rbac\n",
         f"{basename}/share/doc/kapsel/COMMANDS.md": b"commands\n",
-        f"{basename}/share/doc/kapsel/EVALUATOR.md": b"evaluator\n",
-        f"{basename}/share/doc/kapsel/MCP.md": b"mcp\n",
+        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md": b"operator\n",
+        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE.md": b"service\n",
         f"{basename}/share/doc/kapsel/PRIVACY.md": b"privacy\n",
         f"{basename}/share/doc/kapsel/RELEASE.md": b"release\n",
         f"{basename}/share/doc/kapsel/SECURITY.md": b"security\n",
@@ -115,15 +126,23 @@ def synthetic_archive(
             json.dumps(metadata, indent=2, separators=(",", ": ")) + "\n"
         ).encode(),
     }
+    if mutate == "service-digest":
+        files[f"{basename}/libexec/kapsel/kapseld"] = b"changed"
+    if mutate == "client-digest":
+        files[f"{basename}/bin/kapsel-service-client"] = b"changed"
+    if mutate == "old-schema":
+        metadata["artifact_schema"] = "kapsel.release-artifact.v2"
+        files[f"{basename}/RELEASE-METADATA.json"] = (json.dumps(metadata) + "\n").encode()
     if mutate == "oversized-file":
         files[f"{basename}/CHANGELOG.md"] = 32 * 1024 * 1024 + 1
     if mutate == "oversized-expanded":
-        for name in ["COMMANDS.md", "EVALUATOR.md", "MCP.md"]:
+        for name in ["COMMANDS.md", "KAPSEL_SERVICE_OPERATOR.md", "KAPSEL_SERVICE.md"]:
             files[f"{basename}/share/doc/kapsel/{name}"] = 22 * 1024 * 1024
     directories = {
         f"{basename}/",
         f"{basename}/bin/",
         f"{basename}/libexec/",
+        f"{basename}/libexec/kapsel/",
         f"{basename}/share/",
         f"{basename}/share/kapsel/",
         f"{basename}/share/doc/",
@@ -156,11 +175,14 @@ def synthetic_archive(
                 information.mtime = 0
                 information.mode = (
                     0o755
-                    if is_directory or name.endswith(("/kapsel", "/kapsel-demo-harness", ".sh"))
+                    if is_directory
+                    or name.endswith(("/kapsel", "/kapseld", "/kapsel-service-client"))
                     else 0o644
                 )
                 if mutate == "unsafe-mode" and name.endswith("/CHANGELOG.md"):
                     information.mode = 0o666
+                if mutate == "executable-unit" and name.endswith("/kapseld.service"):
+                    information.mode = 0o755
                 if mutate == "pax" and name.endswith("/CHANGELOG.md"):
                     information.pax_headers = {"comment": "hidden extension"}
                 if is_directory:
@@ -188,6 +210,38 @@ def synthetic_archive(
 
 
 class ReleaseVerifierTests(unittest.TestCase):
+    def test_graph_includes_service_only_dependencies_but_not_dev_dependencies(self) -> None:
+        packages = [
+            {
+                "id": name,
+                "name": name,
+                "version": "1.0.0",
+                "source": None,
+                "license": "MIT",
+                "manifest_path": manifest,
+            }
+            for name, manifest in [
+                ("kapsel", "/workspace/Cargo.toml"),
+                ("kapseld", "/workspace/crates/kapseld/Cargo.toml"),
+                ("service-only", "/registry/service-only/Cargo.toml"),
+                ("test-only", "/registry/test-only/Cargo.toml"),
+            ]
+        ]
+        nodes = [{"id": package["id"], "deps": []} for package in packages]
+        nodes[1]["deps"] = [
+            {"pkg": "kapsel", "dep_kinds": [{"kind": None}]},
+            {"pkg": "service-only", "dep_kinds": [{"kind": "build"}]},
+            {"pkg": "test-only", "dep_kinds": [{"kind": "dev"}]},
+        ]
+        graph, edges, root = ASSEMBLY.cargo_graph(
+            {"packages": packages, "resolve": {"nodes": nodes}}
+        )
+        self.assertEqual(
+            {package["name"] for package in graph}, {"kapsel", "kapseld", "service-only"}
+        )
+        self.assertEqual(len(edges), 2)
+        self.assertEqual(root, "SPDXRef-Package-kapsel-source")
+
     def test_canonical_synthetic_archive_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory(prefix="kapsel-release-canonical-") as temporary:
             archive = pathlib.Path(temporary) / "kapsel-0.2.0-x86_64-unknown-linux-gnu.tar.gz"
@@ -198,6 +252,10 @@ class ReleaseVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="kapsel-release-negative-") as temporary:
             archive = pathlib.Path(temporary) / "kapsel-0.2.0-x86_64-unknown-linux-gnu.tar.gz"
             for mutation in [
+                "service-digest",
+                "client-digest",
+                "old-schema",
+                "executable-unit",
                 "extra",
                 "traversal",
                 "absolute",
@@ -296,16 +354,19 @@ class ReleaseArtifactTests(unittest.TestCase):
                 f"{basename}/bin/",
                 f"{basename}/bin/kapsel",
                 f"{basename}/libexec/",
-                f"{basename}/libexec/kapsel-demo-harness",
+                f"{basename}/libexec/kapsel/",
+                f"{basename}/libexec/kapsel/kapseld",
+                f"{basename}/bin/kapsel-service-client",
                 f"{basename}/share/",
                 f"{basename}/share/kapsel/",
-                f"{basename}/share/kapsel/demo-kind-crash-recovery.sh",
-                f"{basename}/share/kapsel/kap0038-trust.hex",
+                f"{basename}/share/kapsel/kapseld.service",
+                f"{basename}/share/kapsel/kapseld.conf",
+                f"{basename}/share/kapsel/kapseld-rbac.yaml",
                 f"{basename}/share/doc/",
                 f"{basename}/share/doc/kapsel/",
                 f"{basename}/share/doc/kapsel/COMMANDS.md",
-                f"{basename}/share/doc/kapsel/EVALUATOR.md",
-                f"{basename}/share/doc/kapsel/MCP.md",
+                f"{basename}/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md",
+                f"{basename}/share/doc/kapsel/KAPSEL_SERVICE.md",
                 f"{basename}/share/doc/kapsel/PRIVACY.md",
                 f"{basename}/share/doc/kapsel/RELEASE.md",
                 f"{basename}/share/doc/kapsel/SECURITY.md",
@@ -330,15 +391,23 @@ class ReleaseArtifactTests(unittest.TestCase):
                     )
                     self.assertEqual(identity, (0, 0, "", "", 0))
                     executable = member.isdir() or member.name.endswith(
-                        ("/kapsel", "/kapsel-demo-harness", ".sh")
+                        ("/kapsel", "/kapseld", "/kapsel-service-client")
                     )
                     expected_mode = 0o755 if executable else 0o644
                     self.assertEqual(member.mode, expected_mode, member.name)
 
+                for asset in ("kapseld.service", "kapseld.conf", "kapseld-rbac.yaml"):
+                    asset_file = release.extractfile(f"{basename}/share/kapsel/{asset}")
+                    self.assertIsNotNone(asset_file)
+                    self.assertEqual(
+                        asset_file.read(),
+                        ROOT.joinpath("crates/kapseld/deploy", asset).read_bytes(),
+                    )
+
                 for document_name in [
                     "COMMANDS.md",
-                    "EVALUATOR.md",
-                    "MCP.md",
+                    "KAPSEL_SERVICE_OPERATOR.md",
+                    "KAPSEL_SERVICE.md",
                     "PRIVACY.md",
                     "RELEASE.md",
                     "SECURITY.md",
@@ -349,17 +418,19 @@ class ReleaseArtifactTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(document_file)
                     document = document_file.read().decode()
-                    self.assertIsNone(
-                        re.search(r"]\((?!https?://|#|mailto:)[^)\s]+[.]md(?:#[^)]+)?\)", document),
-                        document_name,
-                    )
+                    for link in re.findall(
+                        r"]\((?!https?://|#|mailto:)([^)\s]+[.]md)(?:#[^)]+)?\)", document
+                    ):
+                        target = posixpath.normpath(f"{basename}/share/doc/kapsel/{link}")
+                        self.assertTrue(target.startswith(f"{basename}/"))
+                        self.assertIn(target, names, document_name)
 
                 metadata_file = release.extractfile(f"{basename}/RELEASE-METADATA.json")
                 self.assertIsNotNone(metadata_file)
                 metadata_bytes = metadata_file.read()
                 self.assertTrue(metadata_bytes.endswith(b"\n"))
                 metadata = json.loads(metadata_bytes)
-                self.assertEqual(metadata["artifact_schema"], "kapsel.release-artifact.v2")
+                self.assertEqual(metadata["artifact_schema"], "kapsel.release-artifact.v3")
                 self.assertEqual(metadata["package_version"], version)
                 self.assertEqual(metadata["rust_target"], TARGET)
                 revision = subprocess.run(
@@ -395,7 +466,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                 self.assertEqual(metadata["smoke_image"], SMOKE_IMAGE)
                 self.assertEqual(
                     metadata["non_claims"],
-                    "developer-beta;not-production;no-public-rust-api;no-other-targets",
+                    "service-preview;not-production;no-public-rust-api;no-other-targets",
                 )
                 self.assertEqual(
                     list(metadata),
@@ -416,29 +487,26 @@ class ReleaseArtifactTests(unittest.TestCase):
                         "smoke_image",
                         "ordinary_binary_bytes",
                         "ordinary_binary_sha256",
-                        "demo_binary_bytes",
-                        "demo_binary_sha256",
+                        "service_binary_bytes",
+                        "service_binary_sha256",
+                        "client_binary_bytes",
+                        "client_binary_sha256",
                         "non_claims",
                     ],
                 )
 
-                ordinary = release.extractfile(f"{basename}/bin/kapsel")
-                demonstration = release.extractfile(f"{basename}/libexec/kapsel-demo-harness")
-                self.assertIsNotNone(ordinary)
-                self.assertIsNotNone(demonstration)
-                ordinary_bytes = ordinary.read()
-                demonstration_bytes = demonstration.read()
-                self.assertEqual(len(ordinary_bytes), metadata["ordinary_binary_bytes"])
-                self.assertEqual(
-                    hashlib.sha256(ordinary_bytes).hexdigest(),
-                    metadata["ordinary_binary_sha256"],
-                )
-                self.assertEqual(len(demonstration_bytes), metadata["demo_binary_bytes"])
-                self.assertEqual(
-                    hashlib.sha256(demonstration_bytes).hexdigest(),
-                    metadata["demo_binary_sha256"],
-                )
-                for binary in [ordinary_bytes, demonstration_bytes]:
+                for name, path in {
+                    "ordinary": "bin/kapsel",
+                    "service": "libexec/kapsel/kapseld",
+                    "client": "bin/kapsel-service-client",
+                }.items():
+                    binary_file = release.extractfile(f"{basename}/{path}")
+                    self.assertIsNotNone(binary_file)
+                    binary = binary_file.read()
+                    self.assertEqual(len(binary), metadata[f"{name}_binary_bytes"])
+                    self.assertEqual(
+                        hashlib.sha256(binary).hexdigest(), metadata[f"{name}_binary_sha256"]
+                    )
                     self.assertEqual(binary[:4], b"\x7fELF")
                     self.assertEqual(binary[4:6], b"\x02\x01")
                     self.assertEqual(int.from_bytes(binary[18:20], "little"), 62)
@@ -480,6 +548,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     f"/input/{archive.name}",
                     "--expected-revision",
                     revision,
+                    "--service-container",
                 ],
                 cwd=ROOT,
                 check=True,

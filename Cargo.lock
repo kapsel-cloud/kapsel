@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel"
-version = "0.2.0"
+version = "0.3.0-preview.1"
 dependencies = [
  "ed25519-dalek",
  "http",
@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel-authority"
-version = "0.2.0"
+version = "0.3.0-preview.1"
 dependencies = [
  "ed25519-dalek",
  "sha2",
@@ -750,7 +750,7 @@ dependencies = [
 
 [[package]]
 name = "kapseld"
-version = "0.2.0"
+version = "0.3.0-preview.1"
 dependencies = [
  "ed25519-dalek",
  "http",

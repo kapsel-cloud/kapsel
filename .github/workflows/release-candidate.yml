@@ -289,25 +289,7 @@ jobs:
             python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 \
             python3 /smoke.py \
               --archive "/input/$(basename "$archive")" \
-              --expected-revision "$GITHUB_SHA"
-      - name: Run downloaded disposable-kind demonstration
-        run: |
-          set -eu
-          tools=$(mktemp -d)
-          curl -fsSLo "$tools/kind-linux-amd64" \
-            https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64
-          curl -fsSLo "$tools/kind.sha256sum" \
-            https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64.sha256sum
-          (cd "$tools" && sha256sum --check --strict kind.sha256sum)
-          mv "$tools/kind-linux-amd64" "$tools/kind"
-          curl -fsSLo "$tools/kubectl" \
-            https://dl.k8s.io/release/v1.33.9/bin/linux/amd64/kubectl
-          curl -fsSLo "$tools/kubectl.sha256" \
-            https://dl.k8s.io/release/v1.33.9/bin/linux/amd64/kubectl.sha256
-          printf '%s  kubectl\n' "$(cat "$tools/kubectl.sha256")" >"$tools/kubectl.sha256sum"
-          (cd "$tools" && sha256sum --check --strict kubectl.sha256sum)
-          chmod 0755 "$tools/kind" "$tools/kubectl"
-          archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
-          PATH="$tools:$PATH" python3 scripts/smoke-release-artifact.py \
-            --archive "$archive" \
-            --live-demo
+              --expected-revision "$GITHUB_SHA" \
+              --service-container
+      # This container proof is not native installed-systemd or live receiver qualification.
+      # The v0.2 demo remains reproducible from its tag, not this preview archive.

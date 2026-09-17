@@ -22,7 +22,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
-NON_CLAIMS = "developer-beta;not-production;no-public-rust-api;no-other-targets"
+NON_CLAIMS = "service-preview;not-production;no-public-rust-api;no-other-targets"
+BINARIES = {
+    "ordinary": "bin/kapsel",
+    "service": "libexec/kapsel/kapseld",
+    "client": "bin/kapsel-service-client",
+}
 SBOM_GENERATOR = "kapsel-release-sbom/1"
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
 EXPANDED_BYTES_MAX = 64 * 1024 * 1024
@@ -75,7 +80,7 @@ def git_provenance(allow_dirty: bool) -> tuple[str, str, str, bool]:
 
 def build_binaries(
     target_directory: pathlib.Path,
-) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+) -> tuple[dict[str, pathlib.Path], pathlib.Path]:
     # Linux bind mounts retain container ownership. Restore the host owner before temporary cleanup.
     build_script = f"""
         set -eu
@@ -84,10 +89,7 @@ def build_binaries(
         }}
         trap restore_target_ownership EXIT
         cargo metadata --locked --format-version 1 > /target/cargo-metadata.json
-        cargo build --release --locked --target {TARGET} --bin kapsel
-        cp /target/{TARGET}/release/kapsel /target/ordinary-kapsel
-        cargo build --release --locked --target {TARGET} --bin kapsel --features demo-harness
-        cp /target/{TARGET}/release/kapsel /target/demo-kapsel
+        cargo build --release --locked --target {TARGET} -p kapsel -p kapseld --bins
     """
     command = [
         "docker",
@@ -116,12 +118,14 @@ def build_binaries(
         build_script,
     ]
     subprocess.run(command, cwd=ROOT, check=True)
-    ordinary = target_directory / "ordinary-kapsel"
-    demonstration = target_directory / "demo-kapsel"
+    binaries = {
+        name: target_directory / TARGET / "release" / pathlib.PurePosixPath(path).name
+        for name, path in BINARIES.items()
+    }
     metadata = target_directory / "cargo-metadata.json"
-    if not ordinary.is_file() or not demonstration.is_file() or not metadata.is_file():
+    if not all(path.is_file() for path in [*binaries.values(), metadata]):
         raise RuntimeError("Cargo did not produce the expected release build outputs")
-    return ordinary, demonstration, metadata
+    return binaries, metadata
 
 
 def copy_file(source: pathlib.Path, destination: pathlib.Path, mode: int) -> None:
@@ -140,7 +144,12 @@ def write_exclusive(path: pathlib.Path, value: bytes, mode: int = 0o644) -> None
         output.write(value)
 
 
-def copy_document(source: pathlib.Path, destination: pathlib.Path, revision: str) -> None:
+def copy_document(
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    revision: str,
+    bundled: dict[pathlib.Path, pathlib.Path],
+) -> None:
     def absolute_link(match: re.Match[str]) -> str:
         target = match.group(1)
         if target.startswith(("#", "http://", "https://", "mailto:")):
@@ -154,6 +163,11 @@ def copy_document(source: pathlib.Path, destination: pathlib.Path, revision: str
         if not resolved.is_file():
             raise RuntimeError(f"bundled document link target is missing: {target}")
         suffix = f"#{fragment}" if separator else ""
+        if resolved in bundled:
+            relative = pathlib.Path(
+                os.path.relpath(bundled[resolved], destination.parent)
+            ).as_posix()
+            return f"]({relative}{suffix})"
         url = (
             "https://github.com/kapsel-cloud/kapsel/blob/"
             f"{revision}/{repository_path.as_posix()}{suffix}"
@@ -173,30 +187,34 @@ def stage_release(
     dirty: bool,
 ) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="kapsel-release-target-") as temporary:
-        ordinary, demonstration, cargo_metadata_path = build_binaries(pathlib.Path(temporary))
+        binaries, cargo_metadata_path = build_binaries(pathlib.Path(temporary))
         cargo_metadata = json.loads(cargo_metadata_path.read_text())
-        copy_file(ordinary, staging / "bin" / "kapsel", 0o755)
-        copy_file(demonstration, staging / "libexec" / "kapsel-demo-harness", 0o755)
+        for name, source in binaries.items():
+            copy_file(source, staging / BINARIES[name], 0o755)
 
     assets = {
-        ROOT / "scripts" / "demo-kind-crash-recovery.sh": (
-            staging / "share" / "kapsel" / "demo-kind-crash-recovery.sh",
-            0o755,
+        ROOT / "crates" / "kapseld" / "deploy" / "kapseld.service": (
+            staging / "share" / "kapsel" / "kapseld.service",
+            0o644,
         ),
-        ROOT / "vectors" / "effect-gateway-trust.hex": (
-            staging / "share" / "kapsel" / "kap0038-trust.hex",
+        ROOT / "crates" / "kapseld" / "deploy" / "kapseld.conf": (
+            staging / "share" / "kapsel" / "kapseld.conf",
+            0o644,
+        ),
+        ROOT / "crates" / "kapseld" / "deploy" / "kapseld-rbac.yaml": (
+            staging / "share" / "kapsel" / "kapseld-rbac.yaml",
             0o644,
         ),
         ROOT / "docs" / "COMMANDS.md": (
             staging / "share" / "doc" / "kapsel" / "COMMANDS.md",
             0o644,
         ),
-        ROOT / "docs" / "EVALUATOR.md": (
-            staging / "share" / "doc" / "kapsel" / "EVALUATOR.md",
+        ROOT / "docs" / "KAPSEL_SERVICE_OPERATOR.md": (
+            staging / "share" / "doc" / "kapsel" / "KAPSEL_SERVICE_OPERATOR.md",
             0o644,
         ),
-        ROOT / "docs" / "MCP.md": (
-            staging / "share" / "doc" / "kapsel" / "MCP.md",
+        ROOT / "docs" / "KAPSEL_SERVICE.md": (
+            staging / "share" / "doc" / "kapsel" / "KAPSEL_SERVICE.md",
             0o644,
         ),
         ROOT / "docs" / "PRIVACY.md": (
@@ -218,16 +236,19 @@ def stage_release(
         ROOT / "CHANGELOG.md": (staging / "CHANGELOG.md", 0o644),
         ROOT / "LICENSE": (staging / "LICENSE", 0o644),
     }
+    bundled = {
+        source.resolve(): destination
+        for source, (destination, _) in assets.items()
+        if source.suffix == ".md"
+    }
     for source, (destination, mode) in assets.items():
         if not source.is_file():
             raise RuntimeError(f"required release input is missing: {source.relative_to(ROOT)}")
         if source.suffix == ".md":
-            copy_document(source, destination, revision)
+            copy_document(source, destination, revision, bundled)
         else:
             copy_file(source, destination, mode)
 
-    ordinary = staging / "bin" / "kapsel"
-    demonstration = staging / "libexec" / "kapsel-demo-harness"
     cargo_packages, cargo_relationships, root_package_id = cargo_graph(cargo_metadata)
     graph = {
         "packages": cargo_packages,
@@ -238,7 +259,7 @@ def stage_release(
         json.dumps(graph, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     metadata = {
-        "artifact_schema": "kapsel.release-artifact.v2",
+        "artifact_schema": "kapsel.release-artifact.v3",
         "package_version": package_version(),
         "rust_target": TARGET,
         "source_revision": revision,
@@ -252,10 +273,14 @@ def stage_release(
         "license_sha256": file_sha256(staging / "LICENSE"),
         "builder_image": BUILDER_IMAGE,
         "smoke_image": SMOKE_IMAGE,
-        "ordinary_binary_bytes": ordinary.stat().st_size,
-        "ordinary_binary_sha256": file_sha256(ordinary),
-        "demo_binary_bytes": demonstration.stat().st_size,
-        "demo_binary_sha256": file_sha256(demonstration),
+        **{
+            field: value
+            for name, relative in BINARIES.items()
+            for field, value in (
+                (f"{name}_binary_bytes", (staging / relative).stat().st_size),
+                (f"{name}_binary_sha256", file_sha256(staging / relative)),
+            )
+        },
         "non_claims": NON_CLAIMS,
     }
     staging.joinpath("RELEASE-METADATA.json").write_text(
@@ -319,8 +344,16 @@ def cargo_graph(
         raise RuntimeError("Cargo metadata did not identify the root package")
     root_id = root_packages[0]["id"]
     nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
-    reachable = {root_id}
-    pending = [root_id]
+    service_packages = [
+        package
+        for package in metadata["packages"]
+        if package["name"] == "kapseld"
+        and package["manifest_path"] == "/workspace/crates/kapseld/Cargo.toml"
+    ]
+    if len(service_packages) != 1:
+        raise RuntimeError("Cargo metadata did not identify the service package")
+    reachable = {root_id, service_packages[0]["id"]}
+    pending = sorted(reachable)
     edges: list[tuple[str, str]] = []
     while pending:
         source = pending.pop()
@@ -403,8 +436,7 @@ def create_sbom(
         metadata = json.load(metadata_file)
     cargo_packages, cargo_relationships, root_package_id = cargo_graph(cargo_metadata)
     archive_id = "SPDXRef-Package-kapsel-archive"
-    ordinary_file_id = "SPDXRef-File-bin-kapsel"
-    demo_file_id = "SPDXRef-File-libexec-kapsel-demo-harness"
+    binary_ids = {name: "SPDXRef-File-" + path.replace("/", "-") for name, path in BINARIES.items()}
     archive_digest = file_sha256(archive)
     packages: list[dict[str, object]] = [
         {
@@ -432,16 +464,14 @@ def create_sbom(
             "relationshipType": "GENERATED_FROM",
             "relatedSpdxElement": root_package_id,
         },
-        {
-            "spdxElementId": archive_id,
-            "relationshipType": "CONTAINS",
-            "relatedSpdxElement": ordinary_file_id,
-        },
-        {
-            "spdxElementId": archive_id,
-            "relationshipType": "CONTAINS",
-            "relatedSpdxElement": demo_file_id,
-        },
+        *[
+            {
+                "spdxElementId": archive_id,
+                "relationshipType": "CONTAINS",
+                "relatedSpdxElement": identifier,
+            }
+            for identifier in binary_ids.values()
+        ],
         *cargo_relationships,
     ]
     sbom = {
@@ -465,23 +495,15 @@ def create_sbom(
         "packages": packages,
         "files": [
             {
-                "SPDXID": ordinary_file_id,
-                "fileName": "./bin/kapsel",
+                "SPDXID": binary_ids[name],
+                "fileName": f"./{path}",
                 "checksums": [
-                    {"algorithm": "SHA256", "checksumValue": metadata["ordinary_binary_sha256"]}
+                    {"algorithm": "SHA256", "checksumValue": metadata[f"{name}_binary_sha256"]}
                 ],
                 "licenseConcluded": "NOASSERTION",
                 "copyrightText": "NOASSERTION",
-            },
-            {
-                "SPDXID": demo_file_id,
-                "fileName": "./libexec/kapsel-demo-harness",
-                "checksums": [
-                    {"algorithm": "SHA256", "checksumValue": metadata["demo_binary_sha256"]}
-                ],
-                "licenseConcluded": "NOASSERTION",
-                "copyrightText": "NOASSERTION",
-            },
+            }
+            for name, path in BINARIES.items()
         ],
         "relationships": relationships,
     }

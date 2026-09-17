@@ -94,7 +94,9 @@ bounded compatibility described by their direct contracts. Public Rust APIs, ano
 production support do not.
 
 Repository HEAD also contains an unpublished operator-resident [Kapsel service](KAPSEL_SERVICE.md).
-Its source provisioning is explicit operator work, with no supported hosting or installation model.
+The HEAD preview archive selects its three feature-free executables and existing operating assets
+for explicit operator preparation. This is not published availability or completed native
+installed-service qualification. The [operator path](KAPSEL_SERVICE_OPERATOR.md) owns preparation.
 For hosts that ran experimental installer builds, follow the
 [host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) before changing identities or
 state. There is no installer upgrade, migration or cleanup promise.

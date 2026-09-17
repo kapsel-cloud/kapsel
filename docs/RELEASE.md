@@ -1,19 +1,20 @@
 # Release artifacts
 
-Status: v0.2 developer-beta artifact contract. Acceptance and publication status are external
-evidence.
+Status: unreleased resident-service preview artifact contract. Native installed-artifact
+qualification and publication remain separate, required evidence. The published v0.2.0 archive is
+unchanged and remains reproducible from its tagged source, not this assembler.
 
 Kind: contract. Authority: supported release target, archive layout, assembly, SBOM,
 publisher-authentication, installation, and artifact-only behavior.
 
-Owns: The bounded v0.2 distribution format and verification route.
+Owns: The bounded HEAD preview distribution format and verification route.
 
 Does not own: Capability behavior, command or MCP semantics, receipt bytes, Kubernetes behavior,
 GitHub publication approval, production support, or another target.
 
 ## Supported target and inputs
 
-The sole v0.2 target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in pinned x86-64
+The sole preview target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in pinned x86-64
 Debian 12 environments. There is no support claim for macOS, ARM, musl, Windows, another Linux
 target, or older glibc environments. Adding a target requires a separately accepted native clean
 artifact lane and owner update.
@@ -25,7 +26,7 @@ Debian 12. The clean smoke container is
 Debian 12. Both run with `--platform linux/amd64`. Their digests are build and smoke inputs, not
 claims that the builder or image contents are trustworthy.
 
-The root `kapsel` archive is the only distributed package. v0.2 publishes no crates.io, docs.rs,
+The root `kapsel` archive is the only selected package. The preview selects no crates.io, docs.rs,
 `cargo install`, source-package, sandbox, image, or second-target artifact.
 
 ## Deterministic assembly
@@ -37,10 +38,10 @@ python3 scripts/assemble-release-artifact.py --output-directory dist
 ```
 
 Assembly refuses a dirty worktree, a non-`x86_64-unknown-linux-gnu` target, missing Docker, or
-source metadata it cannot validate. It builds exactly once without features for the ordinary
-executable and once with `demo-harness` for the separately named demonstration executable. Both
-builds use `--release`, `--locked`, the explicit target, fixed container path `/workspace`, and
-source-prefix remapping. Packaging copies those bytes and never rebuilds them.
+source metadata it cannot validate. It builds the `kapsel` and `kapseld` packages together without
+test/demo features. The three executables use `--release`, `--locked`, the explicit target, fixed
+container path `/workspace`, and source-prefix remapping. Packaging copies those bytes and never
+rebuilds them.
 
 `--allow-dirty` exists only for local script tests. Such metadata records `source_dirty: true`; its
 outputs are not publishable and cannot satisfy candidate evidence.
@@ -81,12 +82,14 @@ The archive has one top-level directory and exactly this layout:
 ```text
 kapsel-<version>-x86_64-unknown-linux-gnu/
   bin/kapsel
-  libexec/kapsel-demo-harness
-  share/kapsel/demo-kind-crash-recovery.sh
-  share/kapsel/kap0038-trust.hex
+  bin/kapsel-service-client
+  libexec/kapsel/kapseld
+  share/kapsel/kapseld.service
+  share/kapsel/kapseld.conf
+  share/kapsel/kapseld-rbac.yaml
   share/doc/kapsel/COMMANDS.md
-  share/doc/kapsel/EVALUATOR.md
-  share/doc/kapsel/MCP.md
+  share/doc/kapsel/KAPSEL_SERVICE.md
+  share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md
   share/doc/kapsel/PRIVACY.md
   share/doc/kapsel/RELEASE.md
   share/doc/kapsel/SECURITY.md
@@ -97,29 +100,30 @@ kapsel-<version>-x86_64-unknown-linux-gnu/
 ```
 
 Directories and executables use mode `0755`; other files use `0644`. Bundled Markdown retains the
-source prose while rewriting repository-local `.md` links to absolute URLs at the exact source
-revision, so extracted compatibility and security documents do not contain checkout-relative broken
-links. The compressed archive is at most 32 MiB, expanded regular files total at most 64 MiB, and
-each regular file is at most 32 MiB. Verification rejects extra or missing entries, non-lexical
-ordering, absolute paths, traversal, links, special files, unsafe modes, non-normalized
-ownership/timestamps, and size excess before extraction. Extraction creates each regular file
-exclusively rather than delegating path handling to `tar`.
+source prose. Links to other bundled Markdown remain local. Other repository-local `.md` links
+become absolute URLs at the exact source revision, so extracted documents do not contain broken
+checkout-relative links. The operator path and service contract are available without a checkout.
+The compressed archive is at most 32 MiB, expanded regular files total at most 64 MiB, and each
+regular file is at most 32 MiB. Verification rejects extra or missing entries, non-lexical ordering,
+absolute paths, traversal, links, special files, unsafe modes, non-normalized ownership/timestamps,
+and size excess before extraction. Extraction creates each regular file exclusively rather than
+delegating path handling to `tar`.
 
 The archive contains no credential, provider authority, grant, private trust decision, signing seed,
 kubeconfig, journal, receipt, report, evaluator output, private path, sandbox asset, or customer
-data. The bundled trust vector is a public deterministic demonstration fixture, not ambient trust.
+data. No demonstration executable, test pause surface or public fixture trust is bundled.
 
 ## Release metadata
 
 `RELEASE-METADATA.json` is canonical UTF-8 JSON with fixed field order and a trailing newline.
-Schema `kapsel.release-artifact.v2` binds:
+Schema `kapsel.release-artifact.v3` binds:
 
 - package version, target, source revision, Git tree, and clean/dirty state;
 - Cargo lockfile SHA-256 plus canonical reachable-package/relationship graph digest and counts;
 - license identifier and digest;
 - exact build and smoke image identities;
-- ordinary and demonstration binary byte lengths and SHA-256 digests; and
-- fixed developer-beta non-claims.
+- CLI, service and client binary byte lengths and SHA-256 digests; and
+- fixed service-preview non-claims.
 
 Metadata is an input to the authenticated digest manifest through the archive. It does not
 self-authenticate, witness a build, prove review, or establish trusted existence time.
@@ -129,13 +133,13 @@ self-authenticate, witness a build, prove review, or establish trusted existence
 The adjacent SBOM is deterministic SPDX 2.3 JSON generated by `scripts/assemble-release-artifact.py`
 under generator identity `kapsel-release-sbom/1`. It is at most 2 MiB and binds the exact archive
 digest, bundled binary paths and digests, package version, source revision and tree, target, builder
-image, Cargo lockfile digest, and the complete locked Rust package graph reachable from the root
-package, including build and target-conditioned dependencies. Presence in that conservative graph is
-dependency identity evidence, not a runtime-reachability claim. The archive package sets SPDX
-`filesAnalyzed` to false and relates only the two digest-bound binary records explicitly; it does
-not claim that every bundled document or asset received file analysis. Metadata independently binds
-the canonical reachable package/relationship graph digest and counts, and artifact smoke rejects a
-deleted or changed graph.
+image, Cargo lockfile digest, and the complete locked Rust package graph reachable from the root and
+service packages, including build and target-conditioned dependencies. Presence in that conservative
+graph is dependency identity evidence, not a runtime-reachability claim. The archive package sets
+SPDX `filesAnalyzed` to false and relates only the three digest-bound binary records explicitly; it
+does not claim that every bundled document or asset received file analysis. Metadata independently
+binds the canonical reachable package/relationship graph digest and counts, and artifact smoke
+rejects a deleted or changed graph.
 
 The SPDX document namespace includes the exact source revision and archive digest. Its `created`
 field is normalized to the source commit time so isolated assemblies serialize identically. The
@@ -150,7 +154,7 @@ can be incomplete or later change.
 
 ## Publisher authentication and provenance
 
-The appointed v0.2 candidate publisher is exactly the GitHub Actions workflow identity:
+The appointed candidate publisher is exactly the GitHub Actions workflow identity:
 
 ```text
 issuer: https://token.actions.githubusercontent.com
@@ -221,12 +225,10 @@ archive and may install `bin/kapsel` to `$HOME/.local/bin/kapsel`. Installation 
 authority, trust, journal, or receipt. `kapsel --version`, MCP `serverInfo.version`, archive
 identity, metadata, and SBOM must all report the same package version.
 
-The separately named demo executable and assets remain outside the ordinary installed binary. From
-the extracted top-level directory, the owned live path is:
-
-```sh
-./share/kapsel/demo-kind-crash-recovery.sh
-```
+The preview's operator path is [service preparation and operation](KAPSEL_SERVICE_OPERATOR.md). The
+CLI prepares snapshot grants and inspects receipts. The daemon owns private execution and history.
+The client supplies the caller's fixed ID-only interface. The systemd unit owns process lifecycle.
+No custom installer is supplied.
 
 From the repository, deterministic artifact-only smoke is:
 
@@ -239,21 +241,26 @@ python3 scripts/smoke-release-artifact.py \
 `scripts/test-release-artifact.py --archive <A>` validates one already assembled A and then runs
 only extracted files in the pinned clean container. It proves safe extraction, installed identity,
 grant provisioning, ordinary operation/restart, offline inspection, MCP
-initialization/list/call/EOF, bounded output, cleanup, demo-binary separation, and uninstall. Its
-synthetic hostile-archive matrix remains independent of the producer.
+initialization/list/call/EOF, bounded output and ordinary-binary removal. Its explicit
+`--service-container` lane uses fresh fixed paths and separate numeric service/caller identities
+inside a disposable root Docker container. It exercises exact-snapshot provisioning, cold
+publication, ID selection, caller disconnect, read-first restart and identical receipt retrieval,
+with independent receiver mutation counts. It retains private state until container destruction.
+This is not a systemd or native-host qualification lane. Its synthetic hostile-archive matrix
+remains independent of the producer.
 `scripts/test-release-reproducibility.py --reference-archive <A>` performs the one independent
 strict assembly B and compares all four deterministic outputs byte-for-byte. Neither verifier hides
 another A assembly.
 
 HEAD qualification and candidate acceptance do not require historical migration, rollback, or
-downgrade. Current format 4 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
+downgrade. Current format 5 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
 artifact and source proofs remain separate
 [historical evidence](UPGRADE.md#reproduce-the-published-release-evidence), not compatibility
 obligations for a newly assembled HEAD candidate.
 
-The live artifact demo uses only the extracted script, feature-gated executable, and public vector
-against its uniquely owned disposable `kind` cluster. The ordinary binary contains no demonstration
-pause behavior.
+The published-beta live demo remains at the v0.2.0 tag. It is not the preview service journey.
+Native installed-systemd and live receiver exercises must consume the extracted preview bytes. An
+emulated container smoke test does not establish either qualification.
 
 ## Result and security limits
 

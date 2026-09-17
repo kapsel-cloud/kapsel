@@ -1,25 +1,146 @@
-# Kapsel service source operator guide
+# Kapsel service operator guide
 
-Status: unreleased source workflow. No supported installer or published service artifact.
+Status: unreleased preview preparation path. Native installed-artifact and live-journey
+qualification remain required. No published service artifact or production support is implied.
 
-This guide describes caller use after explicit operator provisioning in a disposable environment. It
-supplies no install, refresh or uninstall command. The [service contract](KAPSEL_SERVICE.md) owns
-fixed paths, identities, authority and process lifecycle.
+The operator prepares exact approvals and private execution material. A separate caller can select
+an approved ID and retrieve its evidence, but cannot change authority or control the service. The
+[service contract](KAPSEL_SERVICE.md) owns fixed paths, identities and process lifecycle.
 
-## Reproduce before provisioning
+## Prepare the extracted artifact
 
-The [reconnect experiment](RECONNECTABLE_AGENT_ACTION.md) describes a disposable Linux service and
-pinned Kubernetes receiver, including the operator-owned setup script. It is a research harness, not
-an installation product. The [build guide](BUILD.md#kapsel-service-candidate) lists source and Linux
-process checks. The [published-beta evaluation guide](EVALUATOR.md) is the separate route for the
-released local CLI/MCP demonstration.
+Use one fresh, disposable native x86-64 Debian 12 host with systemd, Python 3.11, OpenSSL, sudo and
+standard account tools. First authenticate the artifact and safely extract it following
+[Release artifacts](RELEASE.md#publisher-authentication-and-provenance). An unsigned local test
+archive is not authenticated publication. No Rust toolchain or repository checkout is needed on the
+operating host.
 
-Before exposing the source service, the operator must supply its static binaries/assets, separate
-service and caller identities, fixed private roots, narrow Kubernetes authority and operator
-configuration. Approval must be a v2 exact-snapshot grant acquired through
-`kapsel provision-snapshot-grant`, not caller-supplied UID/version facts. The service rejects legacy
-grants and journal versions older than format 5, including format 4. Keep credentials, grants,
-trust, signing seeds, private storage and process controls outside the caller boundary.
+Do not use these fresh-host commands on a machine with experimental service identities, private
+roots, installer records, an existing unit or installed Kapsel binaries. Inventory those first under
+[experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts). A matching name is
+not permission to adopt, overwrite, chown or remove an object.
+
+In a trusted root operator shell, set `artifact` to the absolute extracted directory. Confirm the
+identities and destinations below are absent, including dangling symlinks, before proceeding:
+
+```sh
+artifact=/absolute/path/to/kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu
+# Inspect first. Unexpected existing entries mean stop, not automatic reuse.
+getent passwd kapsel kapsel-service-caller
+getent group kapsel kapsel-service-callers
+ls -ld /etc/kapsel /var/lib/kapsel /run/kapsel /usr/libexec/kapsel \
+  /usr/bin/kapsel /usr/bin/kapsel-service-client \
+  /usr/share/kapsel /usr/share/doc/kapsel \
+  /usr/lib/systemd/system/kapseld.service /usr/lib/sysusers.d/kapseld.conf
+```
+
+After confirming this is a fresh host, install the exact extracted assets:
+
+```sh
+install -d -m 0755 /usr/libexec/kapsel /usr/share/kapsel /usr/share/doc/kapsel
+install -m 0755 "$artifact/bin/kapsel" /usr/bin/kapsel
+install -m 0755 "$artifact/bin/kapsel-service-client" /usr/bin/kapsel-service-client
+install -m 0755 "$artifact/libexec/kapsel/kapseld" /usr/libexec/kapsel/kapseld
+install -m 0644 "$artifact/share/kapsel/kapseld.service" /usr/lib/systemd/system/kapseld.service
+install -m 0644 "$artifact/share/kapsel/kapseld.conf" /usr/lib/sysusers.d/kapseld.conf
+install -m 0644 "$artifact/share/kapsel/kapseld-rbac.yaml" /usr/share/kapsel/kapseld-rbac.yaml
+install -m 0644 "$artifact/share/doc/kapsel/"*.md /usr/share/doc/kapsel/
+systemd-sysusers /usr/lib/sysusers.d/kapseld.conf
+useradd --system --no-create-home --gid kapsel-service-callers \
+  --shell /usr/sbin/nologin kapsel-service-caller
+install -d -o kapsel -g kapsel-service-callers -m 0700 /etc/kapsel /var/lib/kapsel
+systemctl daemon-reload
+```
+
+The service identity and caller identity must be different. Do not grant the caller sudo, Docker,
+private-file access, Kubernetes credentials, the service UID, or a way to become the operator. The
+unit uses the caller group for socket access, but mode `0700` keeps private roots inaccessible.
+Systemd creates `/run/kapsel` with mode `0750` on start and removes it on stop. It retains the state
+directory. Do not run `systemctl clean`, delete locks or use private-state deletion as uninstall.
+
+## Provision authority and an exact approval
+
+The supplied RBAC asset is a concrete example for the existing `demo/agent-api` Deployment only. It
+creates a token-automount-disabled ServiceAccount and namespaced `get`/`patch` authority for that
+Deployment. The cluster operator must approve and apply it using their own tools. It does not create
+a namespace, workload or credential. If the target differs, explicitly review the equivalent narrow
+RBAC. Do not use cluster-admin credentials. Resolve desired-state ownership with any existing
+reconciler before approving direct mutation. This is not a GitOps integration.
+
+In a private operator workspace, provision these inputs using your cluster and key-management tools:
+
+- `kubeconfig.yaml`: explicit context, endpoint and embedded CA/credential data. No exec plugin,
+  credential-file reference or ambient fallback. Issue bounded credentials and record their expiry.
+- `approval.seed` and `approval.pub`: the existing operator's 32-byte raw Ed25519 signing seed and
+  matching 32-byte public key. Appoint the public key independently. Never derive trust from a
+  grant.
+- `receipt.seed`: a separate intended 32-byte raw Ed25519 receipt seed. Retain its public key and
+  separately appointed receipt trust for later inspection.
+- `authorization.json`: the exact intent below. Replace the example image with your approved digest
+  and use a new operation ID for each genuinely new approval.
+
+Keep this workspace mode `0700` and private inputs mode `0600`. Do not give the approval seed to the
+service. The service only needs its public appointment and signed grants.
+
+```json
+{
+  "authorization_id": "approval-1",
+  "operation_id": "service-op-1",
+  "namespace": "demo",
+  "deployment": "agent-api",
+  "container": "api",
+  "immutable_image_digest": "registry.example/agent-api@sha256:<64-lowercase-hex>"
+}
+```
+
+From that private workspace in the root operator shell:
+
+```sh
+umask 077
+/usr/bin/kapsel provision-snapshot-grant \
+  --authorization authorization.json --kubeconfig kubeconfig.yaml \
+  --signing-seed approval.seed --signing-key-id approval-key-1 --output approval.grant
+python3 - <<'PY'
+import json
+from pathlib import Path
+public = Path("approval.pub").read_bytes()
+assert len(public) == 32
+candidate = {
+    "service_configuration_version": 1,
+    "authorization_keys": [{"key_id": "approval-key-1", "public_key_hex": public.hex()}],
+    "approvals": [{"label": "Approved image for agent-api", "signed_grant_hex": Path("approval.grant").read_bytes().hex()}],
+    "receipt_signing_key_id": "receipt-key-1",
+}
+with Path("operator.candidate.json").open("x") as output:
+    json.dump(candidate, output)
+    output.write("\n")
+PY
+install -o kapsel -g kapsel-service-callers -m 0600 kubeconfig.yaml /etc/kapsel/kubeconfig.yaml
+install -o kapsel -g kapsel-service-callers -m 0600 receipt.seed /etc/kapsel/receipt.seed
+runuser -u kapsel -g kapsel-service-callers -- \
+  /usr/libexec/kapsel/kapseld --replace-operator-config < operator.candidate.json
+```
+
+Proceed only after `PUBLISHED` and exit `0`. Any missing or uncertain response requires inspection,
+not automatic replay. The command obtains UID/resourceVersion from the receiver before signing the
+snapshot grant. Caller-supplied versions cannot substitute for this read. No token or key is bundled
+in the archive. The service rejects legacy grants and journals older than format 5 unchanged.
+
+Start explicitly, then read before selecting anything:
+
+```sh
+systemctl start kapseld.service
+systemctl show kapseld.service -p ActiveState -p SubState -p ExecMainStatus
+sudo -u kapsel-service-caller -g kapsel-service-callers -- /usr/bin/kapsel-service-client history
+```
+
+`Type=exec` start success means execution began, not that history is ready or an action succeeded.
+If the client is unavailable, inspect the unit and diagnostics below. No action is selected at
+startup. The unit does not automatically restart or enable itself at boot.
+
+Credential renewal is explicit operator work. Stop gracefully, replace only the intended credential
+material under the same custody, and start to reload it. Read the original ID before explicit
+resumption. Expired credentials do not justify reapproval, a new ID or a receiver outcome.
 
 The fixed `/etc/kapsel/operator.json` uses the
 [versioned service document](KAPSEL_SERVICE.md#versioned-operator-document), not the legacy CLI/MCP
@@ -28,6 +149,27 @@ Each approved ID and tuple is immutable. Reapproval requires an operator decisio
 new handle. Restart must not refresh authority on an existing action. Credential provisioning and
 renewal remain explicit operator work. Source completion-capacity qualification does not establish
 installed-service or native-host acceptance.
+
+## Stop, replace or remove executables
+
+Run `systemctl stop kapseld.service` and wait for it to finish before replacing configuration,
+credentials or executables. Confirm `ActiveState=inactive` and `MainPID=0` with `systemctl show`. A
+timeout, lost shell or forced kill is not successful retirement. Preserve the history and follow the
+uncertainty guidance below.
+
+For a separately accepted compatible executable replacement, authenticate and verify the new archive
+first. While stopped, replace only the installed binaries/unit/docs with their exact new bytes,
+retaining the service UID/GID, roots, journal, sidecars, lifecycle lock, original grants and
+historical trust. Reload the unit, start, and read history first. This is not authorization to use
+an older binary or migrate a refused journal. Format 4 is refused unchanged. A fresh installation
+cannot recover continuity for an old or lost journal.
+
+For removal, stop and disable the unit. An operator may remove only the installed executables and
+static assets whose provenance they have verified, then run `systemctl daemon-reload`. Retain
+`/etc/kapsel`, `/var/lib/kapsel`, identities, original authority and any exported receipts under
+private custody. Do not run `systemctl clean`, recursively delete roots, or recycle identities.
+There is no automated cleanup, state migration or backup recovery promise. Never restore stale state
+to revive execution: the host may already have sent a mutation absent from that snapshot.
 
 ### Replace the cold operator document
 

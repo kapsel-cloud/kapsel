@@ -363,7 +363,9 @@ See [MCP](MCP.md) for protocol details. The focused-gate table lists its black-b
 ## Release artifact
 
 Requires a clean checkout, Python 3.11+, and Docker with `linux/amd64` support. The sole release
-target is `x86_64-unknown-linux-gnu`. Assemble the archive and sidecars under `dist/`:
+target is `x86_64-unknown-linux-gnu`. HEAD assembles an unpublished service preview containing
+`kapsel`, `kapseld`, the fixed service client and existing operating assets. It is not the published
+v0.2 demo archive. Assemble the archive and sidecars under `dist/`:
 
 ```sh
 python3 scripts/assemble-release-artifact.py --output-directory dist
@@ -376,6 +378,20 @@ a_dir=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-release-a.XXXXXX")
 archive_a=$(python3 scripts/assemble-release-artifact.py --output-directory "$a_dir")
 python3 scripts/test-release-artifact.py --archive "$archive_a"
 python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
+```
+
+The artifact test includes a fresh disposable-container service exercise with fixed installed paths,
+separate numeric identities, cold publication, selection and read-first restart. It is deliberately
+not a systemd test. On an ARM host, `linux/amd64` is emulated and cannot qualify the native target.
+The [extracted operator path](KAPSEL_SERVICE_OPERATOR.md) must separately run on native x86-64
+Linux/systemd without repository source. Live receiver and combined-candidate qualification remain
+separate requirements. Do not dispatch the signing/publication-effect workflow merely to obtain
+missing test evidence.
+
+For a quick hostile-layout and dependency-graph regression without building:
+
+```sh
+python3 scripts/test-release-artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
 ```
 
 Remove `"$a_dir"` when its evidence is no longer needed. [Release artifacts](RELEASE.md) owns

@@ -6,15 +6,16 @@
 preserves filename output by exporting the committed bytes after execution. Export errors fail the
 command without reopening the terminal action. Repeating the command exports the same bytes under
 current output configuration, without dispatch or re-signing. The export directory need not exist
-during application startup or execution. Journal formats older than format 4 are rejected, not
+during application startup or execution. Journal formats older than format 5 are rejected, not
 upgraded.
 
-Status: v0.2 beta command contract implemented by package version `0.2.0`.
+Status: HEAD preview command contract. Published v0.2.0 behavior remains owned by its tagged source.
+HEAD adds exact-snapshot provisioning without changing the published archive.
 
 Kind: contract. Authority: local evaluator command grammar, operator files, output, bounds,
 diagnostics, and exit classes.
 
-Owns: The exact `kapsel` command surface supported across v0.2.x.
+Owns: The exact local `kapsel` command surface in HEAD.
 
 Does not own: Gateway lifecycle/result semantics, receipt bytes, Kubernetes semantics, MCP,
 packaging, or the release demonstration crash demonstration.
@@ -39,11 +40,18 @@ The Unix executable accepts exactly these local evaluator forms:
 ```text
 kapsel --version
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
+kapsel provision-snapshot-grant --authorization <file> --kubeconfig <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel operate --request <file> --operator-config <file>
 kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
                [--receipt-bytes-max <usize>] [--statement-bytes-max <usize>]
                [--trust-bytes-max <usize>] [--text-bytes-max <usize>]
 ```
+
+`provision-snapshot-grant` uses the same authorization JSON and output-file custody as
+`provision-grant`, but reads the target UID/resourceVersion through the explicit kubeconfig before
+signing grant v2. It never mutates the receiver. Service approval requires this form. A changed
+target requires a new operator decision and identity, not hidden refresh. See the
+[service operator path](KAPSEL_SERVICE_OPERATOR.md#provision-authority-and-an-exact-approval).
 
 The same executable also has one separately owned MCP process form,
 `kapsel mcp --operator-config <file>`. [MCP adapter](MCP.md) owns its protocol, lifecycle, tool,

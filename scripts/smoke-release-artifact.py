@@ -12,7 +12,6 @@ import json
 import os
 import pathlib
 import shutil
-import sqlite3
 import stat
 import subprocess
 import tarfile
@@ -32,7 +31,12 @@ OPERATION = "artifact-op-1"
 TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
-NON_CLAIMS = "developer-beta;not-production;no-public-rust-api;no-other-targets"
+NON_CLAIMS = "service-preview;not-production;no-public-rust-api;no-other-targets"
+BINARIES = {
+    "ordinary": "bin/kapsel",
+    "service": "libexec/kapsel/kapseld",
+    "client": "bin/kapsel-service-client",
+}
 SBOM_GENERATOR = "kapsel-release-sbom/1"
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
 EXPANDED_BYTES_MAX = 64 * 1024 * 1024
@@ -189,10 +193,15 @@ def validate_sbom(
         raise RuntimeError("release SBOM archive package disagrees")
     if root_packages[0].get("versionInfo") != metadata["package_version"]:
         raise RuntimeError("release SBOM root package version disagrees")
+    service_packages = [package for package in cargo_packages if package.get("name") == "kapseld"]
+    if (
+        len(service_packages) != 1
+        or service_packages[0].get("versionInfo") != metadata["package_version"]
+    ):
+        raise RuntimeError("release SBOM service package identity disagrees")
     files = sbom.get("files")
     expected_files = {
-        "./bin/kapsel": metadata["ordinary_binary_sha256"],
-        "./libexec/kapsel-demo-harness": metadata["demo_binary_sha256"],
+        f"./{path}": metadata[f"{name}_binary_sha256"] for name, path in BINARIES.items()
     }
     actual_files = {}
     if isinstance(files, list):
@@ -201,7 +210,11 @@ def validate_sbom(
                 checksums = entry.get("checksums")
                 if isinstance(checksums, list) and len(checksums) == 1:
                     actual_files[entry.get("fileName")] = checksums[0].get("checksumValue")
-    if actual_files != expected_files:
+    if (
+        not isinstance(files, list)
+        or len(files) != len(expected_files)
+        or actual_files != expected_files
+    ):
         raise RuntimeError("release SBOM binary inventory disagrees")
     contains = {
         relationship.get("relatedSpdxElement")
@@ -210,7 +223,7 @@ def validate_sbom(
         and relationship.get("spdxElementId") == "SPDXRef-Package-kapsel-archive"
         and relationship.get("relationshipType") == "CONTAINS"
     }
-    if contains != {"SPDXRef-File-bin-kapsel", "SPDXRef-File-libexec-kapsel-demo-harness"}:
+    if contains != {"SPDXRef-File-" + path.replace("/", "-") for path in BINARIES.values()}:
         raise RuntimeError("release SBOM binary containment relationships changed")
     if not any(
         relationship.get("spdxElementId") == "SPDXRef-DOCUMENT"
@@ -272,16 +285,19 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         f"{basename}/bin/",
         f"{basename}/bin/kapsel",
         f"{basename}/libexec/",
-        f"{basename}/libexec/kapsel-demo-harness",
+        f"{basename}/libexec/kapsel/",
+        f"{basename}/libexec/kapsel/kapseld",
+        f"{basename}/bin/kapsel-service-client",
         f"{basename}/share/",
         f"{basename}/share/kapsel/",
-        f"{basename}/share/kapsel/demo-kind-crash-recovery.sh",
-        f"{basename}/share/kapsel/kap0038-trust.hex",
+        f"{basename}/share/kapsel/kapseld.service",
+        f"{basename}/share/kapsel/kapseld.conf",
+        f"{basename}/share/kapsel/kapseld-rbac.yaml",
         f"{basename}/share/doc/",
         f"{basename}/share/doc/kapsel/",
         f"{basename}/share/doc/kapsel/COMMANDS.md",
-        f"{basename}/share/doc/kapsel/EVALUATOR.md",
-        f"{basename}/share/doc/kapsel/MCP.md",
+        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md",
+        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE.md",
         f"{basename}/share/doc/kapsel/PRIVACY.md",
         f"{basename}/share/doc/kapsel/RELEASE.md",
         f"{basename}/share/doc/kapsel/SECURITY.md",
@@ -295,8 +311,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
     evidence_names = {
         f"{basename}/RELEASE-METADATA.json": "metadata",
         f"{basename}/LICENSE": "license",
-        f"{basename}/bin/kapsel": "ordinary",
-        f"{basename}/libexec/kapsel-demo-harness": "demonstration",
+        **{f"{basename}/{path}": name for name, path in BINARIES.items()},
     }
     evidence: dict[str, bytes] = {}
     expanded_size = 0
@@ -323,9 +338,9 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
             identity = (member.uid, member.gid, member.uname, member.gname, member.mtime)
             if identity != (0, 0, "", "", 0):
                 raise RuntimeError("release archive metadata is not normalized")
-            executable = member.isdir() or member.name.endswith(
-                ("/kapsel", "/kapsel-demo-harness", ".sh")
-            )
+            executable = member.isdir() or member.name in {
+                f"{basename}/{path}" for path in BINARIES.values()
+            }
             expected_mode = 0o755 if executable else 0o644
             if member.mode != expected_mode:
                 raise RuntimeError("release archive mode is not canonical")
@@ -342,8 +357,6 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         raise RuntimeError("release archive layout or evidence is incomplete")
     metadata_bytes = evidence["metadata"]
     license_bytes = evidence["license"]
-    ordinary_bytes = evidence["ordinary"]
-    demonstration_bytes = evidence["demonstration"]
     if not metadata_bytes.endswith(b"\n"):
         raise RuntimeError("release metadata has no trailing newline")
     metadata = json.loads(metadata_bytes)
@@ -364,13 +377,15 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         "smoke_image",
         "ordinary_binary_bytes",
         "ordinary_binary_sha256",
-        "demo_binary_bytes",
-        "demo_binary_sha256",
+        "service_binary_bytes",
+        "service_binary_sha256",
+        "client_binary_bytes",
+        "client_binary_sha256",
         "non_claims",
     ]
     if list(metadata) != expected_keys:
         raise RuntimeError("release metadata fields or order changed")
-    if metadata["artifact_schema"] != "kapsel.release-artifact.v2":
+    if metadata["artifact_schema"] != "kapsel.release-artifact.v3":
         raise RuntimeError("release metadata schema changed")
     if metadata["package_version"] != version or metadata["rust_target"] != TARGET:
         raise RuntimeError("release metadata disagrees with archive identity")
@@ -419,14 +434,13 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         raise RuntimeError("release container provenance disagrees")
     if metadata["non_claims"] != NON_CLAIMS:
         raise RuntimeError("release non-claims changed")
-    if metadata["ordinary_binary_bytes"] != len(ordinary_bytes):
-        raise RuntimeError("release ordinary binary size disagrees")
-    if metadata["ordinary_binary_sha256"] != hashlib.sha256(ordinary_bytes).hexdigest():
-        raise RuntimeError("release ordinary binary digest disagrees")
-    if metadata["demo_binary_bytes"] != len(demonstration_bytes):
-        raise RuntimeError("release demo binary size disagrees")
-    if metadata["demo_binary_sha256"] != hashlib.sha256(demonstration_bytes).hexdigest():
-        raise RuntimeError("release demo binary digest disagrees")
+    for name in BINARIES:
+        if type(metadata[f"{name}_binary_bytes"]) is not int or metadata[
+            f"{name}_binary_bytes"
+        ] != len(evidence[name]):
+            raise RuntimeError("release binary size disagrees")
+        if metadata[f"{name}_binary_sha256"] != hashlib.sha256(evidence[name]).hexdigest():
+            raise RuntimeError("release binary digest disagrees")
     return metadata
 
 
@@ -511,6 +525,7 @@ def deployment(resource_version: str, generation: int, observed: bool) -> bytes:
 class KubernetesFixture(http.server.BaseHTTPRequestHandler):
     responses: list[bytes] = []
     requests = 0
+    mutations = 0
 
     def log_message(self, format: str, *arguments: object) -> None:
         del format, arguments
@@ -528,7 +543,11 @@ class KubernetesFixture(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     do_GET = respond
-    do_PATCH = respond
+
+    def do_PATCH(self) -> None:
+        type(self).mutations += 1
+        self.rfile.read(int(self.headers.get("content-length", "0")))
+        self.respond()
 
 
 def reset_kubernetes_fixture() -> None:
@@ -538,6 +557,7 @@ def reset_kubernetes_fixture() -> None:
         deployment("3", 2, True),
     ]
     KubernetesFixture.requests = 0
+    KubernetesFixture.mutations = 0
 
 
 def write_private(path: pathlib.Path, data: bytes) -> None:
@@ -699,150 +719,6 @@ def execute_and_restart(binary: pathlib.Path, paths: dict[str, pathlib.Path]) ->
     return receipts[0]
 
 
-def wait_for_marker(process: subprocess.Popen[bytes], marker: pathlib.Path) -> None:
-    deadline = time.monotonic() + 15
-    while not marker.exists():
-        if process.poll() is not None:
-            raise RuntimeError("installed demo process exited before its marker")
-        if time.monotonic() >= deadline:
-            raise RuntimeError("installed demo marker timed out")
-        time.sleep(0.02)
-
-
-def kill_demo_at_seam(
-    binary: pathlib.Path,
-    paths: dict[str, pathlib.Path],
-    control: pathlib.Path,
-    seam: str,
-    marker: pathlib.Path,
-    log: pathlib.Path,
-) -> None:
-    environment = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "KAPSEL_DEMO_CONTROL_DIRECTORY": str(control),
-        "KAPSEL_DEMO_PAUSE": seam,
-    }
-    with log.open("wb") as output:
-        process = subprocess.Popen(
-            [
-                str(binary),
-                "operate",
-                "--request",
-                str(paths["request"]),
-                "--operator-config",
-                str(paths["operator"]),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            env=environment,
-        )
-        try:
-            wait_for_marker(process, marker)
-            process.kill()
-            process.wait(timeout=5)
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
-    if process.returncode == 0 or log.stat().st_size > 64 * 1024:
-        raise RuntimeError("installed demo seam did not fail within bounds")
-
-
-def exercise_demo_binary(
-    binary: pathlib.Path,
-    artifact_root: pathlib.Path,
-    temporary_root: pathlib.Path,
-) -> None:
-    reset_kubernetes_fixture()
-    fixture = http.server.ThreadingHTTPServer(("127.0.0.1", 0), KubernetesFixture)
-    thread = threading.Thread(target=fixture.serve_forever, daemon=True)
-    thread.start()
-    evaluation = temporary_root / "demo-evaluation"
-    evaluation.mkdir(mode=0o700)
-    control = evaluation / "control"
-    control.mkdir(mode=0o700)
-    try:
-        paths = prepare_inputs(evaluation, fixture.server_address)
-        provision_and_write_operator(binary, evaluation, paths)
-        kill_demo_at_seam(
-            binary,
-            paths,
-            control,
-            "after_apply",
-            control / "after-apply.ready",
-            evaluation / "after-apply.log",
-        )
-        if control.joinpath("provider-apply-count").read_text() != "1":
-            raise RuntimeError("installed demo repeated its provider mutation")
-        kill_demo_at_seam(
-            binary,
-            paths,
-            control,
-            "after_receipt_commit",
-            control / "after-receipt-commit.ready",
-            evaluation / "after-commit.log",
-        )
-        if KubernetesFixture.requests != 3:
-            raise RuntimeError("installed demo recovery repeated provider activity")
-        if any(paths["receipts"].iterdir()):
-            raise RuntimeError("installed demo exported a receipt before restart")
-        with sqlite3.connect(evaluation / "journal.sqlite3") as connection:
-            rows = connection.execute(
-                "SELECT receipt_bytes FROM kubernetes_image_operations WHERE state = 'finalized'"
-            ).fetchall()
-        if len(rows) != 1 or not isinstance(rows[0][0], bytes):
-            raise RuntimeError("installed demo did not commit one frozen receipt")
-        frozen = rows[0][0]
-
-        rotated_receipts = evaluation / "rotated-receipts"
-        rotated_receipts.mkdir(mode=0o700)
-        rotated_seed = evaluation / "rotated.seed"
-        write_private(rotated_seed, bytes([8]) * 32)
-        rotated_operator = evaluation / "rotated-operator.json"
-        write_operator(
-            evaluation,
-            evaluation / "grant.bin",
-            rotated_receipts,
-            rotated_seed,
-            "rotated-receipt-key",
-            rotated_operator,
-        )
-        finalized = run_binary(
-            binary,
-            [
-                "operate",
-                "--request",
-                str(paths["request"]),
-                "--operator-config",
-                str(rotated_operator),
-            ],
-        )
-        final_report = json.loads(finalized.stdout) if finalized.returncode == 0 else {}
-        if final_report.get("state") != "FINALIZED" or final_report.get("result") != "SUCCEEDED":
-            raise RuntimeError("installed demo did not finalize the receiver outcome after restart")
-        if control.joinpath("provider-apply-count").read_text() != "1":
-            raise RuntimeError("installed demo changed its provider apply count")
-        receipts = list(rotated_receipts.glob("*.receipt"))
-        if (
-            len(receipts) != 1
-            or receipts[0].read_bytes() != frozen
-            or any(paths["receipts"].iterdir())
-        ):
-            raise RuntimeError("installed demo changed the committed receipt during export")
-        trust = evaluation / "receipt.trust"
-        trust_hex = (
-            artifact_root.joinpath("share", "kapsel", "kap0038-trust.hex").read_text().strip()
-        )
-        write_private(trust, bytes.fromhex(trust_hex))
-        inspect_receipt(binary, receipts[0], trust)
-    finally:
-        fixture.shutdown()
-        fixture.server_close()
-        thread.join(timeout=5)
-        shutil.rmtree(evaluation)
-
-
 def inspect_receipt(binary: pathlib.Path, receipt: pathlib.Path, trust: pathlib.Path) -> None:
     inspection = run_binary(
         binary,
@@ -948,6 +824,7 @@ def smoke(
     archive: pathlib.Path,
     checksum: pathlib.Path,
     expected_revision: str | None = None,
+    service_container: bool = False,
 ) -> None:
     archive_bytes, checksum_bytes = verify_checksum(archive, checksum)
     sbom = archive.with_name(archive.name + ".spdx.json")
@@ -969,8 +846,9 @@ def smoke(
         binary.chmod(0o755)
         if sha256(binary) != metadata["ordinary_binary_sha256"]:
             raise RuntimeError("installed ordinary binary digest mismatch")
-        if sha256(root / "libexec" / "kapsel-demo-harness") != metadata["demo_binary_sha256"]:
-            raise RuntimeError("installed demo binary digest mismatch")
+        for name, relative in BINARIES.items():
+            if sha256(root / relative) != metadata[f"{name}_binary_sha256"]:
+                raise RuntimeError("extracted binary digest mismatch")
         exercise_version(binary, metadata["package_version"])
 
         reset_kubernetes_fixture()
@@ -986,8 +864,7 @@ def smoke(
             if KubernetesFixture.requests != 3:
                 raise RuntimeError("installed ordinary restart repeated provider activity")
             trust = evaluation / "receipt.trust"
-            trust_hex = root.joinpath("share", "kapsel", "kap0038-trust.hex").read_text().strip()
-            write_private(trust, bytes.fromhex(trust_hex))
+            write_private(trust, fixture_receipt_trust())
             inspect_receipt(binary, receipt, trust)
             exercise_mcp(binary, paths["operator"], metadata["package_version"])
         finally:
@@ -997,49 +874,223 @@ def smoke(
         shutil.rmtree(evaluation)
         if evaluation.exists():
             raise RuntimeError("artifact smoke did not clean its evaluation directory")
-        exercise_demo_binary(
-            root / "libexec" / "kapsel-demo-harness",
-            root,
-            pathlib.Path(temporary),
-        )
+
+        if service_container:
+            exercise_service_container(root, pathlib.Path(temporary))
         binary.unlink()
         installation.rmdir()
         if installation.exists():
             raise RuntimeError("artifact smoke did not uninstall the ordinary binary")
 
 
-def run_live_demo(archive: pathlib.Path, checksum: pathlib.Path) -> None:
-    archive_bytes, checksum_bytes = verify_checksum(archive, checksum)
-    sbom = archive.with_name(archive.name + ".spdx.json")
-    manifest = archive.with_name(archive.name + ".SHA256SUMS")
-    sbom_bytes = verify_digest_manifest(
-        archive, checksum, sbom, manifest, archive_bytes, checksum_bytes
-    )
-    metadata = validate_archive(archive, archive_bytes)
-    validate_sbom(archive, archive_bytes, sbom_bytes, metadata)
-    with tempfile.TemporaryDirectory(prefix="kapsel-live-artifact-") as temporary:
-        root = extract_exact_archive(archive, archive_bytes, pathlib.Path(temporary))
-        subprocess.run(
-            [str(root / "share" / "kapsel" / "demo-kind-crash-recovery.sh")],
-            cwd=root,
-            check=True,
+def exercise_service_container(root: pathlib.Path, temporary: pathlib.Path) -> None:
+    """Use real fixed paths only in an explicitly selected fresh disposable container."""
+    if os.geteuid() != 0 or not pathlib.Path("/.dockerenv").is_file():
+        raise RuntimeError("service smoke requires a fresh root Docker container")
+    private_roots = [
+        pathlib.Path(path) for path in ("/etc/kapsel", "/var/lib/kapsel", "/run/kapsel")
+    ]
+    destinations = {
+        "ordinary": pathlib.Path("/usr/bin/kapsel"),
+        "service": pathlib.Path("/usr/libexec/kapsel/kapseld"),
+        "client": pathlib.Path("/usr/bin/kapsel-service-client"),
+    }
+    if any(os.path.lexists(path) for path in [*private_roots, *destinations.values()]):
+        raise RuntimeError("service smoke refuses existing installation or state")
+    service_uid, caller_uid, caller_gid = 61000, 61001, 61000
+    for name, destination in destinations.items():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as output:
+            output.write((root / BINARIES[name]).read_bytes())
+        destination.chmod(0o755)
+    for directory in private_roots:
+        directory.mkdir(mode=0o750 if directory == private_roots[2] else 0o700)
+        os.chown(directory, service_uid, caller_gid)
+    # The temporary fixture remains operator-only. Neither service nor caller traverses it.
+    evaluation = temporary / "service-evaluation"
+    evaluation.mkdir(mode=0o700)
+    reset_kubernetes_fixture()
+    KubernetesFixture.responses.insert(0, deployment("1", 1, False))
+    fixture = http.server.ThreadingHTTPServer(("127.0.0.1", 0), KubernetesFixture)
+    thread = threading.Thread(target=fixture.serve_forever, daemon=True)
+    thread.start()
+    process = None
+    try:
+        paths = prepare_inputs(evaluation, fixture.server_address)
+        grant = evaluation / "snapshot.grant"
+        provision = run_binary(
+            destinations["ordinary"],
+            [
+                "provision-snapshot-grant",
+                "--authorization",
+                str(paths["authorization"]),
+                "--kubeconfig",
+                str(evaluation / "kubeconfig.yaml"),
+                "--signing-seed",
+                str(evaluation / "authorization.seed"),
+                "--signing-key-id",
+                "artifact-authorization-key",
+                "--output",
+                str(grant),
+            ],
         )
+        if provision.returncode != 0 or KubernetesFixture.requests != 1:
+            raise RuntimeError("artifact snapshot provisioning failed")
+        document = json.dumps(
+            {
+                "service_configuration_version": 1,
+                "authorization_keys": [
+                    {
+                        "key_id": "artifact-authorization-key",
+                        "public_key_hex": AUTHORIZATION_PUBLIC_KEY.hex(),
+                    }
+                ],
+                "approvals": [
+                    {"label": "Artifact smoke", "signed_grant_hex": grant.read_bytes().hex()}
+                ],
+                "receipt_signing_key_id": "kap0038-test-key",
+            }
+        ).encode()
+        for name in ("kubeconfig.yaml", "receipt.seed"):
+            destination = private_roots[0] / name
+            write_private(destination, (evaluation / name).read_bytes())
+            os.chown(destination, service_uid, caller_gid)
+        publication = subprocess.run(
+            [str(destinations["service"]), "--replace-operator-config"],
+            input=document,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            user=service_uid,
+            group=caller_gid,
+            extra_groups=[],
+            timeout=30,
+            check=False,
+        )
+        if (
+            publication.returncode != 0
+            or publication.stdout != b"PUBLISHED\n"
+            or publication.stderr
+        ):
+            raise RuntimeError("artifact initial cold publication failed")
+        for restart in range(2):
+            before = KubernetesFixture.requests
+            process = subprocess.Popen(
+                [
+                    str(destinations["service"]),
+                    "--operator-config",
+                    "/etc/kapsel/operator.json",
+                    "--socket",
+                    "/run/kapsel/kapseld.sock",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                user=service_uid,
+                group=caller_gid,
+                extra_groups=[],
+                umask=0o077,
+            )
+            deadline = time.monotonic() + 20
+            # A stale socket pathname is not readiness. Retry only the offline read.
+            while True:
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("artifact service startup failed")
+                try:
+                    service_client(destinations["client"], ["list"], caller_uid, caller_gid)
+                    break
+                except RuntimeError:
+                    time.sleep(0.02)
+            # Read first after every start. Startup and reads must not contact the receiver.
+            service_client(destinations["client"], ["history"], caller_uid, caller_gid)
+            if KubernetesFixture.requests != before:
+                raise RuntimeError("artifact startup or reads contacted the receiver")
+            if restart == 0:
+                admitted = service_client(
+                    destinations["client"], ["submit", OPERATION], caller_uid, caller_gid
+                )
+                if admitted.get("status") != "ADMITTED":
+                    raise RuntimeError("artifact did not admit the selected approval")
+            while True:
+                status = service_client(
+                    destinations["client"], ["status", OPERATION], caller_uid, caller_gid
+                )
+                if status.get("status") == "SUCCEEDED":
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("artifact selection failed to complete")
+                time.sleep(0.02)
+            receipt = pathlib.Path(f"/tmp/kapsel-artifact-receipt-{restart}")
+            service_client(
+                destinations["client"], ["receipt", OPERATION, str(receipt)], caller_uid, caller_gid
+            )
+            if restart == 0:
+                frozen = receipt.read_bytes()
+            elif receipt.read_bytes() != frozen:
+                raise RuntimeError("artifact restart changed receipt bytes")
+            process.terminate()
+            _, diagnostic = process.communicate(timeout=30)
+            if process.returncode != 0 or len(diagnostic) > 4096:
+                raise RuntimeError("artifact graceful retirement failed")
+            process = None
+            if KubernetesFixture.mutations != 1 or KubernetesFixture.requests != 4:
+                raise RuntimeError("artifact repeated receiver work")
+        # Leave retained state intact. The disposable container owns its destruction, not uninstall.
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        fixture.shutdown()
+        fixture.server_close()
+        thread.join(timeout=5)
+
+
+def service_client(binary: pathlib.Path, arguments: list[str], uid: int, gid: int) -> dict:
+    result = subprocess.run(
+        [str(binary), *arguments],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        user=uid,
+        group=gid,
+        extra_groups=[],
+        timeout=10,
+        check=False,
+    )
+    if result.returncode != 0 or result.stderr or len(result.stdout) > 64 * 1024:
+        raise RuntimeError("artifact service client failed")
+    if any(canary in result.stdout for canary in FORBIDDEN):
+        raise RuntimeError("artifact service client disclosed private material")
+    response = json.loads(result.stdout)
+    if response.get("version") != 1:
+        raise RuntimeError("artifact service protocol identity changed")
+    return response
+
+
+def fixture_receipt_trust() -> bytes:
+    """Public smoke fixture only. Never included as operator trust in the archive."""
+    fields = [
+        b"kap0038-test-key",
+        AUTHORIZATION_PUBLIC_KEY,
+        b"kapsel.kap0038.kubernetes-effect-receipt.v2",
+        (100).to_bytes(8, "big"),
+        (200).to_bytes(8, "big"),
+    ]
+    return b"KAPSEL-KAP0038-K8S-TRUST-V2\0" + b"".join(
+        bytes([index]) + len(value).to_bytes(4, "big") + value
+        for index, value in enumerate(fields, 1)
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=pathlib.Path)
     parser.add_argument("--expected-revision")
-    parser.add_argument("--live-demo", action="store_true")
+    parser.add_argument("--service-container", action="store_true")
     arguments = parser.parse_args()
     archive = pathlib.Path(os.path.abspath(arguments.archive))
     checksum = archive.with_name(archive.name + ".sha256")
-    if arguments.live_demo:
-        run_live_demo(archive, checksum)
-        print("Kapsel release artifact live demo: ok")
-    else:
-        smoke(archive, checksum, arguments.expected_revision)
-        print("Kapsel release artifact smoke: ok")
+    smoke(archive, checksum, arguments.expected_revision, arguments.service_container)
+    print("Kapsel release artifact smoke: ok")
     return 0
 
 
