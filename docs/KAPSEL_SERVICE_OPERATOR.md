@@ -10,10 +10,11 @@ an approved ID and retrieve its evidence, but cannot change authority or control
 ## Prepare the extracted artifact
 
 Use one fresh, disposable native x86-64 Debian 12 host with systemd, Python 3.11, OpenSSL, sudo and
-standard account tools. First authenticate the artifact and safely extract it following
-[Release artifacts](RELEASE.md#publisher-authentication-and-provenance). An unsigned local test
-archive is not authenticated publication. No Rust toolchain or repository checkout is needed on the
-operating host.
+standard account tools. Artifact preparation additionally requires Cosign 3.1.2 and GNU `sha256sum`.
+Follow [Authenticate and extract the preview](RELEASE.md#authenticate-and-extract-the-preview) using
+its checksum-bound verifier companion and Python 3.11 or newer. An unsigned local test archive is
+not authenticated publication. No Rust toolchain or repository checkout is needed on the operating
+host.
 
 Do not use these fresh-host commands on a machine with experimental service identities, private
 roots, installer records, an existing unit or installed Kapsel binaries. Inventory those first under

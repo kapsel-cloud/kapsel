@@ -53,12 +53,13 @@ dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz
 dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.sha256
 dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.spdx.json
 dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.SHA256SUMS
+dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.verify.py
 ```
 
 The adjacent checksum is one lowercase SHA-256 digest, two spaces, the archive basename, and a
 newline. `SHA256SUMS` contains lexically ordered, basename-only SHA-256 lines for the archive,
-adjacent checksum, and SBOM. A checksum proves byte identity only; publisher authentication starts
-with the separately signed `SHA256SUMS` manifest.
+adjacent checksum, SBOM, and extraction verifier. A checksum proves byte identity only; publisher
+authentication starts with the separately signed `SHA256SUMS` manifest.
 
 The gzip header has timestamp zero and no source filename. The USTAR stream has stable lexical
 ordering, owner/group `0`, empty names, timestamp zero, and fixed modes.
@@ -66,11 +67,11 @@ ordering, owner/group `0`, empty names, timestamp zero, and fixed modes.
 The release proof uses exactly two strict isolated assemblies of the same clean revision and pinned
 inputs. Assembly A remains outside the worktree, passes exact layout and hostile-archive
 verification, and is smoke-tested only through extracted files. Independent assembly B uses a
-separate target and output directory. The archive, checksum, SBOM, and digest manifest from A and B
-must be byte-identical. Only after smoke and comparison pass are the exact four A files copied
-byte-for-byte to `dist/` for upload; B is never uploaded. Neither target directory nor compiled
-output is shared between A and B. An immutable Cargo registry/download cache may be shared because
-it supplies inputs rather than compiled output.
+separate target and output directory. The archive, checksum, SBOM, digest manifest and verifier from
+A and B must be byte-identical. Only after smoke and comparison pass are the exact five A files
+copied byte-for-byte to `dist/` for upload; B is never uploaded. Neither target directory nor
+compiled output is shared between A and B. An immutable Cargo registry/download cache may be shared
+because it supplies inputs rather than compiled output.
 
 This is a bounded reproducibility claim for those files, not a general Rust reproducible build,
 reviewed-source, or builder-integrity guarantee.
@@ -218,6 +219,52 @@ Publisher authentication proves that the appointed workflow signed exact manifes
 prove source review, workflow safety, builder integrity, dependency safety, reproducibility,
 operational fitness, production support, or universal existence time.
 
+## Authenticate and extract the preview
+
+Use Python 3.11 or newer, Cosign 3.1.2, and GNU `sha256sum` on the selected Linux host. Obtain the
+exact archive and all five sidecars, including the Sigstore bundle, from the appointed publisher. No
+preview has been published yet. For a local candidate, transfer the locally recorded exact bytes
+through your trusted operator channel. An unsigned local candidate has no publisher authentication.
+
+The `.verify.py` companion is a byte-for-byte copy of the existing
+`scripts/smoke-release-artifact.py` verification owner, at most 64 KiB. It is covered by the signed
+digest manifest. Authenticate the manifest using the exact issuer, identity and source revision
+[above](#publisher-authentication-and-provenance), then check its files **before executing this
+Python file**. Do not fetch a script from a moving branch or use the published-beta evaluator's
+old-layout extractor.
+
+In a private, caller-owned download directory containing only those files:
+
+```sh
+archive=kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu.tar.gz
+revision='<exact accepted 40-lowercase-hex source revision>'
+cosign verify-blob \
+  --bundle "$archive.SHA256SUMS.sigstore.json" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity \
+    https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master \
+  --certificate-github-workflow-repository kapsel-cloud/kapsel \
+  --certificate-github-workflow-ref refs/heads/master \
+  --certificate-github-workflow-sha "$revision" \
+  --certificate-github-workflow-trigger workflow_dispatch \
+  "$archive.SHA256SUMS" &&
+sha256sum --check --strict "$archive.SHA256SUMS" &&
+python3 "$archive.verify.py" --archive "$archive" \
+  --expected-revision "$revision" --extract-to ./extracted
+```
+
+The command validates the exact bounded archive, checksum, SBOM, manifest and revision before
+creating `./extracted` mode `0700`. That destination must not already exist, even as a symlink. Use
+a parent directory controlled only by the operator. Extraction does not run a bundled binary,
+contact Kubernetes, create system identities or touch private service state. It creates only the
+verified archive tree and prints its path. On an I/O failure, a partial new destination may remain;
+inspect it and use a new empty destination, never merge with or overwrite an existing tree.
+
+The result is `./extracted/kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu/`. Use that absolute path
+as `artifact` in the [operator guide](KAPSEL_SERVICE_OPERATOR.md#prepare-the-extracted-artifact).
+Keep the archive, sidecars, source revision and digests as the artifact identity. Installation is a
+separate, explicit operator step.
+
 ## Install, upgrade, and artifact-only proof
 
 After publisher verification and digest-manifest verification, an evaluator safely extracts the one
@@ -246,10 +293,14 @@ initialization/list/call/EOF, bounded output and ordinary-binary removal. Its ex
 inside a disposable root Docker container. It exercises exact-snapshot provisioning, cold
 publication, ID selection, caller disconnect, read-first restart and identical receipt retrieval,
 with independent receiver mutation counts. It retains private state until container destruction.
-This is not a systemd or native-host qualification lane. Its synthetic hostile-archive matrix
-remains independent of the producer.
+This is not a systemd or native-host qualification lane. It proves successful completion followed by
+graceful restart, not interrupted execution, crash ambiguity or recovery from an unfinished attempt.
+The complete operator/agent journey must exercise those failures against the packaged service and
+independently count mutations. Final combined-candidate qualification consumes that journey and its
+exact rebuilt bytes. Removing the old demo from this archive does not discharge those recovery
+requirements. Its synthetic hostile-archive matrix remains independent of the producer.
 `scripts/test-release-reproducibility.py --reference-archive <A>` performs the one independent
-strict assembly B and compares all four deterministic outputs byte-for-byte. Neither verifier hides
+strict assembly B and compares all five deterministic outputs byte-for-byte. Neither verifier hides
 another A assembly.
 
 HEAD qualification and candidate acceptance do not require historical migration, rollback, or
@@ -261,6 +312,52 @@ obligations for a newly assembled HEAD candidate.
 The published-beta live demo remains at the v0.2.0 tag. It is not the preview service journey.
 Native installed-systemd and live receiver exercises must consume the extracted preview bytes. An
 emulated container smoke test does not establish either qualification.
+
+## Native installed-systemd qualification
+
+On an explicitly authorized fresh native x86-64 Debian host with systemd as PID 1, the same
+checksum-bound verifier companion can exercise the shipped unit. This is a **privileged test**, not
+an installer or production setup command. It uses only a loopback HTTP receiver and deterministic
+disposable test keys. It never consumes real cluster credentials or applies the example RBAC to a
+cluster. The build baseline remains Debian 12; record the actual native host's OS and systemd
+version separately, including when qualifying on a newer Debian host.
+
+Prerequisites are Python 3.11+, root operator access, systemd/systemd-sysusers, systemd-analyze,
+journalctl, useradd, GNU coreutils, and a fresh host with no Kapsel accounts, groups, unit,
+overrides, enablement references, static destinations or private state. Existing dangling enablement
+links are refused unchanged. First follow the
+[authenticated preparation route](#authenticate-and-extract-the-preview). For an unsigned local
+candidate, use separately recorded exact digests and a trusted transfer; this does not establish
+publisher authentication. Dirty-source artifacts are refused for this mode.
+
+From the private directory holding the already authenticated and checksum-verified artifact files:
+
+```sh
+archive=kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu.tar.gz
+revision='<exact accepted 40-lowercase-hex source revision>'
+sha256sum --check --strict "$archive.SHA256SUMS" &&
+sudo python3 "$archive.verify.py" --archive "$archive" \
+  --expected-revision "$revision" --service-systemd
+```
+
+The test checks fail-closed startup and the fixed journald provisioning diagnostic before approval,
+then uses the installed binaries for snapshot provisioning and cold publication. The shipped unit
+starts the daemon under its service identity. The separate caller is denied private configuration
+access. The test checks socket custody, selects the ID, retrieves a receipt, stops through systemd,
+replaces the cold catalog, starts again, reads retained history and retrieves identical receipt
+bytes. The receiver count must remain one PATCH. No forced kill is used to claim retirement.
+
+Success leaves the unit **stopped**, not enabled, and retains the installed test binaries, unit,
+sysusers/RBAC assets, documentation, service/caller accounts, `/etc/kapsel`, `/var/lib/kapsel`,
+lifecycle lock, fixture authority and two caller-owned `/tmp/kapsel-artifact-receipt-*` exports. Do
+not restart this test installation as a production service. Failure may leave a partial installation
+or an incomplete stop. Preserve and inspect it, do not rerun by deleting history or assume matching
+names are safe to adopt. There is no automatic host cleanup or rollback.
+
+Capture the command, exact artifact/source digests, OS release, systemd version, exit and output.
+This gate still does not establish live Kubernetes behavior, interrupted execution or ambiguity
+recovery. The complete operator/agent journey and final combined-candidate qualification own those
+packaged-service exercises.
 
 ## Result and security limits
 

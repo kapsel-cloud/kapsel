@@ -14,12 +14,15 @@ import os
 import pathlib
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ASSEMBLER = ROOT / "scripts" / "assemble-release-artifact.py"
@@ -210,6 +213,103 @@ def synthetic_archive(
 
 
 class ReleaseVerifierTests(unittest.TestCase):
+    def test_native_qualification_preserves_and_refuses_dangling_enablement(self) -> None:
+        for kind in ("wants", "requires", "alias", "linked-directory"):
+            with (
+                self.subTest(kind=kind),
+                tempfile.TemporaryDirectory(prefix="kapsel-unit-reference-") as temporary,
+            ):
+                private = pathlib.Path(temporary)
+                units = private / "units"
+                units.mkdir()
+                target = private / "vendor/kapseld.service"
+                if kind == "alias":
+                    link = units / "alias.service"
+                else:
+                    directory = units / (
+                        "multi-user.target.requires"
+                        if kind == "requires"
+                        else "multi-user.target.wants"
+                    )
+                    if kind == "linked-directory":
+                        external = private / "dependencies"
+                        external.mkdir()
+                        directory.symlink_to(external, target_is_directory=True)
+                    else:
+                        directory.mkdir()
+                    link = directory / "kapseld.service"
+                link.symlink_to(target)
+                with self.assertRaisesRegex(RuntimeError, "existing service references"):
+                    SMOKE.refuse_systemd_references(units)
+                self.assertTrue(link.is_symlink())
+                self.assertFalse(target.exists())
+
+    def test_native_qualification_rejects_dirty_artifact_before_host_commands(self) -> None:
+        with (
+            mock.patch.object(
+                SMOKE, "verified_release", return_value=(b"", {"source_dirty": True})
+            ),
+            mock.patch.object(SMOKE.subprocess, "run") as command,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "clean committed-source"):
+                SMOKE.smoke(
+                    pathlib.Path("/unused"), pathlib.Path("/unused"), "0" * 40, service_systemd=True
+                )
+            command.assert_not_called()
+
+    def test_native_qualification_refuses_wrong_platform_before_host_commands(self) -> None:
+        with (
+            mock.patch.object(SMOKE.os, "uname", return_value=SimpleNamespace(machine="aarch64")),
+            mock.patch.object(SMOKE.subprocess, "run") as command,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "x86-64 Linux"):
+                SMOKE.install_systemd_assets(pathlib.Path("/unused"))
+            command.assert_not_called()
+
+    def test_service_qualification_refuses_unprivileged_invocation(self) -> None:
+        with (
+            mock.patch.object(SMOKE.os, "geteuid", return_value=1000),
+            mock.patch.object(SMOKE.subprocess, "run") as command,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "requires root"):
+                SMOKE.exercise_service(pathlib.Path("/unused"), pathlib.Path("/unused"), True)
+            command.assert_not_called()
+
+    def test_documented_bootstrap_never_executes_after_authentication_failure(self) -> None:
+        document = ROOT.joinpath("docs/RELEASE.md").read_text()
+        marker = "archive=kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu.tar.gz"
+        block = marker + document.split(marker, 1)[1].split("```", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="kapsel-bootstrap-") as temporary:
+            private = pathlib.Path(temporary)
+            for name, code in {
+                "cosign": 'exit "$AUTH_EXIT"',
+                "sha256sum": 'exit "$CHECKSUM_EXIT"',
+                "python3": ': > "$EXECUTED"',
+            }.items():
+                program = private / name
+                program.write_text("#!/bin/sh\n" + code + "\n")
+                program.chmod(0o755)
+            for auth_exit, checksum_exit in [(1, 0), (0, 1), (0, 0)]:
+                with self.subTest(auth=auth_exit, checksum=checksum_exit):
+                    executed = private / "executed"
+                    executed.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["/bin/sh", "-c", block],
+                        cwd=private,
+                        capture_output=True,
+                        env={
+                            "PATH": str(private),
+                            "AUTH_EXIT": str(auth_exit),
+                            "CHECKSUM_EXIT": str(checksum_exit),
+                            "EXECUTED": str(executed),
+                        },
+                        timeout=5,
+                        check=False,
+                    )
+                    successful = auth_exit == checksum_exit == 0
+                    self.assertEqual(result.returncode == 0, successful)
+                    self.assertEqual(executed.exists(), successful)
+
     def test_graph_includes_service_only_dependencies_but_not_dev_dependencies(self) -> None:
         packages = [
             {
@@ -319,6 +419,70 @@ class ReleaseArtifactTests(unittest.TestCase):
         finally:
             sentinel.unlink(missing_ok=True)
 
+    def test_extraction_companion_needs_no_checkout_or_executable_invocation(self) -> None:
+        archive = release_archive()
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        with tempfile.TemporaryDirectory(prefix="kapsel-extraction-only-") as temporary:
+            private = pathlib.Path(temporary)
+            destination = private / "extracted"
+            command = [
+                "python3",
+                str(archive) + ".verify.py",
+                "--archive",
+                str(archive),
+                "--expected-revision",
+                revision,
+                "--extract-to",
+                str(destination),
+            ]
+            result = subprocess.run(
+                command, cwd=private, capture_output=True, text=True, timeout=30, check=True
+            )
+            extracted = destination / archive.name.removesuffix(".tar.gz")
+            self.assertEqual(result.stdout.strip(), str(extracted))
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+            self.assertTrue((extracted / "share/kapsel/kapseld.service").is_file())
+            before = (extracted / "RELEASE-METADATA.json").read_bytes()
+            refused = subprocess.run(
+                command, cwd=private, capture_output=True, timeout=30, check=False
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertEqual((extracted / "RELEASE-METADATA.json").read_bytes(), before)
+            # A bad revision must fail before creating any destination.
+            wrong = private / "wrong"
+            command[-1] = str(wrong)
+            command[command.index("--expected-revision") + 1] = "0" * 40
+            refused = subprocess.run(
+                command, cwd=private, capture_output=True, timeout=30, check=False
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertFalse(wrong.exists())
+            # Even a dangling destination symlink is not an empty extraction root.
+            link = private / "link"
+            link.symlink_to(private / "absent")
+            with self.assertRaises(FileExistsError):
+                SMOKE.extract_release(
+                    archive, archive.with_name(archive.name + ".sha256"), revision, link
+                )
+            self.assertFalse((private / "absent").exists())
+
+    def test_verifier_companion_is_digest_bound(self) -> None:
+        archive = release_archive()
+        with tempfile.TemporaryDirectory(prefix="kapsel-verifier-tamper-") as temporary:
+            copied = pathlib.Path(temporary) / archive.name
+            for suffix in ("", ".sha256", ".spdx.json", ".SHA256SUMS", ".verify.py"):
+                shutil.copyfile(str(archive) + suffix, str(copied) + suffix)
+            with pathlib.Path(str(copied) + ".verify.py").open("ab") as verifier:
+                verifier.write(b"\n# altered\n")
+            destination = pathlib.Path(temporary) / "extracted"
+            with self.assertRaisesRegex(RuntimeError, "digest manifest mismatch"):
+                SMOKE.extract_release(
+                    copied, pathlib.Path(str(copied) + ".sha256"), "0" * 40, destination
+                )
+            self.assertFalse(destination.exists())
+
     def test_reference_archive_has_verified_exact_layout_and_smoke(self) -> None:
         expected_dirty = bool(
             subprocess.run(
@@ -339,13 +503,18 @@ class ReleaseArtifactTests(unittest.TestCase):
             checksum = output / f"{archive.name}.sha256"
             sbom = output / f"{archive.name}.spdx.json"
             manifest = output / f"{archive.name}.SHA256SUMS"
+            verifier = output / f"{archive.name}.verify.py"
+            self.assertEqual(
+                SMOKE.read_bounded_regular(verifier, 64 * 1024),
+                ROOT.joinpath("scripts/smoke-release-artifact.py").read_bytes(),
+            )
             checksum_bytes = SMOKE.read_bounded_regular(checksum, 1024)
             sbom_bytes = SMOKE.read_bounded_regular(sbom, 2 * 1024 * 1024)
             manifest_bytes = SMOKE.read_bounded_regular(manifest, 1024)
             self.assertEqual(checksum_bytes.decode(), f"{sha256(archive)}  {archive.name}\n")
             expected_manifest = "".join(
                 f"{sha256(path)}  {path.name}\n"
-                for path in sorted([archive, checksum, sbom], key=lambda path: path.name)
+                for path in sorted([archive, checksum, sbom, verifier], key=lambda path: path.name)
             )
             self.assertEqual(manifest_bytes.decode(), expected_manifest)
 

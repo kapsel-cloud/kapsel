@@ -42,7 +42,7 @@ jobs:
         run: |
           set -eu
           mkdir dist
-          for suffix in '' .sha256 .spdx.json .SHA256SUMS; do
+          for suffix in '' .sha256 .spdx.json .SHA256SUMS .verify.py; do
             source="$ARCHIVE_A$suffix"
             destination="dist/$(basename "$source")"
             cp -- "$source" "$destination"
@@ -234,6 +234,7 @@ jobs:
             dist/*.tar.gz.sha256
             dist/*.tar.gz.spdx.json
             dist/*.tar.gz.SHA256SUMS
+            dist/*.tar.gz.verify.py
             dist/*.tar.gz.SHA256SUMS.sigstore.json
             dist/sigstore-trusted-root.json
             dist/sigstore-trusted-root.json.sha256

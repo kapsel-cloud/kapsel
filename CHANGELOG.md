@@ -6,6 +6,9 @@ All notable public Kapsel experiment releases are recorded here.
 
 - Selects the resident-service archive with feature-free `kapsel`, `kapseld` and
   `kapsel-service-client`, systemd/sysusers assets, narrow example RBAC and operator guidance.
+- Supplies a digest-bound copy of the existing verifier with an extraction-only mode, without a
+  checkout, installer or bundled-binary execution.
+- Updates the locked rustls dependency to 0.23.45 for RUSTSEC-2026-0285.
 - Uses release metadata schema v3 and a dependency inventory covering both CLI and daemon roots. The
   preview does not bundle the published-beta demonstration executable or fixture trust.
 - Consumes exact-snapshot approvals, format-5 retained authority, read-first startup, explicit

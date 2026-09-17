@@ -365,7 +365,9 @@ See [MCP](MCP.md) for protocol details. The focused-gate table lists its black-b
 Requires a clean checkout, Python 3.11+, and Docker with `linux/amd64` support. The sole release
 target is `x86_64-unknown-linux-gnu`. HEAD assembles an unpublished service preview containing
 `kapsel`, `kapseld`, the fixed service client and existing operating assets. It is not the published
-v0.2 demo archive. Assemble the archive and sidecars under `dist/`:
+v0.2 demo archive. The checksum-bound verifier companion supplies the
+[extraction-only route](RELEASE.md#authenticate-and-extract-the-preview) without repository source.
+Assemble the archive and sidecars under `dist/`:
 
 ```sh
 python3 scripts/assemble-release-artifact.py --output-directory dist
@@ -380,13 +382,17 @@ python3 scripts/test-release-artifact.py --archive "$archive_a"
 python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
 ```
 
-The artifact test includes a fresh disposable-container service exercise with fixed installed paths,
-separate numeric identities, cold publication, selection and read-first restart. It is deliberately
-not a systemd test. On an ARM host, `linux/amd64` is emulated and cannot qualify the native target.
-The [extracted operator path](KAPSEL_SERVICE_OPERATOR.md) must separately run on native x86-64
-Linux/systemd without repository source. Live receiver and combined-candidate qualification remain
-separate requirements. Do not dispatch the signing/publication-effect workflow merely to obtain
-missing test evidence.
+The artifact test first exercises the companion's extraction-only command outside the checkout,
+including refusal of an existing/symlink destination and wrong revision. It then includes a fresh
+disposable-container service exercise with fixed installed paths, separate numeric identities, cold
+publication, selection and read-first restart. It is deliberately not a systemd test. On an ARM
+host, `linux/amd64` is emulated and cannot qualify the native target. The
+[extracted operator path](KAPSEL_SERVICE_OPERATOR.md) must separately run on native x86-64
+Linux/systemd without repository source. Interrupted execution, ambiguity and recovery against the
+packaged service belong to the full operator/agent journey and final combined-candidate
+qualification. Successful completion followed by graceful restart is not a replacement for those
+tests. Live receiver qualification remains separate. Do not dispatch the signing/publication-effect
+workflow merely to obtain missing test evidence.
 
 For a quick hostile-layout and dependency-graph regression without building:
 
@@ -397,6 +403,15 @@ python3 scripts/test-release-artifact.py --archive /tmp/unused.tar.gz ReleaseVer
 Remove `"$a_dir"` when its evidence is no longer needed. [Release artifacts](RELEASE.md) owns
 layout, authentication, publication, and reproducibility requirements. The
 [evaluation guide](EVALUATOR.md) owns downloading, authenticating, and running the published beta.
+
+### Native installed-systemd qualification
+
+The checksum-bound verifier also owns the explicit fresh-host `--service-systemd` qualification
+mode. Its
+[command, prerequisites and retained-host footprint](RELEASE.md#native-installed-systemd-qualification)
+ship inside the archive's release guide. It uses the actual unit, identities, socket custody,
+journald and cold replacement, but only a loopback receiver fixture. It requires a clean-source
+artifact and separate operator authorization. It is not an installer or live/crash qualification.
 
 ## Coverage
 

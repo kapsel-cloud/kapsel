@@ -17,6 +17,7 @@ SIDECARS = [
     (".sha256", "checksum", 1024),
     (".spdx.json", "SBOM", 2 * 1024 * 1024),
     (".SHA256SUMS", "digest manifest", 1024),
+    (".verify.py", "extraction verifier", 64 * 1024),
 ]
 
 

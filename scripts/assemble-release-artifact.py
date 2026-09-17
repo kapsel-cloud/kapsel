@@ -33,6 +33,7 @@ ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
 EXPANDED_BYTES_MAX = 64 * 1024 * 1024
 SBOM_BYTES_MAX = 2 * 1024 * 1024
 MANIFEST_BYTES_MAX = 1024
+VERIFIER_BYTES_MAX = 64 * 1024
 
 
 def run(*arguments: str, cwd: pathlib.Path = ROOT) -> str:
@@ -517,10 +518,10 @@ def create_sbom(
 
 
 def create_digest_manifest(
-    archive: pathlib.Path, checksum: pathlib.Path, sbom: pathlib.Path
+    archive: pathlib.Path, checksum: pathlib.Path, sbom: pathlib.Path, verifier: pathlib.Path
 ) -> pathlib.Path:
     manifest = archive.with_name(archive.name + ".SHA256SUMS")
-    entries = sorted([archive, checksum, sbom], key=lambda path: path.name)
+    entries = sorted([archive, checksum, sbom, verifier], key=lambda path: path.name)
     value = "".join(f"{file_sha256(path)}  {path.name}\n" for path in entries).encode()
     write_exclusive(manifest, value)
     if manifest.stat().st_size > MANIFEST_BYTES_MAX:
@@ -541,7 +542,8 @@ def assemble(output_directory: pathlib.Path, allow_dirty: bool) -> pathlib.Path:
     checksum = output_directory / f"{archive.name}.sha256"
     sbom = output_directory / f"{archive.name}.spdx.json"
     manifest = output_directory / f"{archive.name}.SHA256SUMS"
-    if any(os.path.lexists(path) for path in (archive, checksum, sbom, manifest)):
+    verifier = output_directory / f"{archive.name}.verify.py"
+    if any(os.path.lexists(path) for path in (archive, checksum, sbom, manifest, verifier)):
         raise RuntimeError("release output already exists")
 
     with tempfile.TemporaryDirectory(prefix="kapsel-release-stage-") as temporary:
@@ -559,7 +561,11 @@ def assemble(output_directory: pathlib.Path, allow_dirty: bool) -> pathlib.Path:
     checksum_value = f"{file_sha256(archive)}  {archive.name}\n".encode()
     write_exclusive(checksum, checksum_value)
     created_sbom = create_sbom(archive, revision, tree, source_date, cargo_metadata)
-    create_digest_manifest(archive, checksum, created_sbom)
+    verifier_bytes = ROOT.joinpath("scripts/smoke-release-artifact.py").read_bytes()
+    if len(verifier_bytes) > VERIFIER_BYTES_MAX:
+        raise RuntimeError("release verifier exceeded its byte bound")
+    write_exclusive(verifier, verifier_bytes)
+    create_digest_manifest(archive, checksum, created_sbom, verifier)
     return archive
 
 
