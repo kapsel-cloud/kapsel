@@ -166,6 +166,8 @@ impl ServiceApplication {
     /// storage. Missing trust for an unselected historical identity does not prevent construction.
     pub fn open(configuration: ServiceConfiguration) -> Result<Self, ServiceError> {
         let approvals = Self::validate_configuration(&configuration)?;
+        super::validate_journal_path(&configuration.journal_path)
+            .map_err(|_| ServiceError::Configuration)?;
         let gateway = Gateway::open_with_authorities(
             &configuration.journal_path,
             configuration.authorization_trust,
@@ -190,6 +192,8 @@ impl ServiceApplication {
     /// requiring recovery. Missing trust for an unselected historical identity remains allowed.
     pub fn validate_replacement(configuration: &ServiceConfiguration) -> Result<(), ServiceError> {
         let approvals = Self::validate_configuration(configuration)?;
+        super::validate_journal_path(&configuration.journal_path)
+            .map_err(|_| ServiceError::Configuration)?;
         Gateway::validate_replacement(
             &configuration.journal_path,
             &configuration.authorization_trust,
@@ -198,6 +202,20 @@ impl ServiceApplication {
                 .map(|approval| (&approval.handle.request, approval.signed_grant.as_slice())),
         )
         .map_err(map_gateway_error)
+    }
+
+    /// Authenticates bounded approvals and independent trust without filesystem or receiver I/O.
+    ///
+    /// This does not validate journal custody, retained identities or execution readiness.
+    /// Publication and opening must still perform their full environment checks.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed appointments, invalid snapshot grants and duplicate selectable identities.
+    pub fn validate_static_configuration(
+        configuration: &ServiceConfiguration,
+    ) -> Result<(), ServiceError> {
+        Self::validate_configuration(configuration).map(|_| ())
     }
 
     fn validate_configuration(
@@ -274,8 +292,6 @@ impl ServiceApplication {
                 signed_grant: approval.signed_grant.clone(),
             });
         }
-        super::validate_journal_path(&configuration.journal_path)
-            .map_err(|_| ServiceError::Configuration)?;
         Ok(approvals)
     }
 

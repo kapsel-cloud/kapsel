@@ -101,26 +101,21 @@ umask 077
 /usr/bin/kapsel provision-snapshot-grant \
   --authorization authorization.json --kubeconfig kubeconfig.yaml \
   --signing-seed approval.seed --signing-key-id approval-key-1 --output approval.grant
-python3 - <<'PY'
-import json
-from pathlib import Path
-public = Path("approval.pub").read_bytes()
-assert len(public) == 32
-candidate = {
-    "service_configuration_version": 1,
-    "authorization_keys": [{"key_id": "approval-key-1", "public_key_hex": public.hex()}],
-    "approvals": [{"label": "Approved image for agent-api", "signed_grant_hex": Path("approval.grant").read_bytes().hex()}],
-    "receipt_signing_key_id": "receipt-key-1",
-}
-with Path("operator.candidate.json").open("x") as output:
-    json.dump(candidate, output)
-    output.write("\n")
-PY
+/usr/bin/kapsel prepare-service-config \
+  --authorization-key approval-key-1 approval.pub \
+  --approval 'Approved image for agent-api' approval.grant \
+  --receipt-signing-key-id receipt-key-1 --output operator.candidate.json
+/usr/bin/kapsel validate-service-config --operator-config operator.candidate.json
 install -o kapsel -g kapsel-service-callers -m 0600 kubeconfig.yaml /etc/kapsel/kubeconfig.yaml
 install -o kapsel -g kapsel-service-callers -m 0600 receipt.seed /etc/kapsel/receipt.seed
 runuser -u kapsel -g kapsel-service-callers -- \
   /usr/libexec/kapsel/kapseld --replace-operator-config < operator.candidate.json
 ```
+
+Preparation creates only a new private candidate. `VALIDATED_STATIC` confirms document structure,
+separate trust appointments and snapshot grant authentication. It does not open history, contact
+Kubernetes, check credentials or prove host readiness. Cold replacement separately checks custody
+and compatibility with retained history before publication.
 
 Proceed only after `PUBLISHED` and exit `0`. Any missing or uncertain response requires inspection,
 not automatic replay. The command obtains UID/resourceVersion from the receiver before signing the
@@ -270,6 +265,14 @@ Any authenticated service caller may resume an original retained snapshot-approv
 still checks original authority and controls continuation. Reselecting after attempt cannot resend
 the PATCH. Signing completion cannot acquire new observations. Do not create a replacement ID just
 because execution stopped or a response was lost.
+
+Client failures print fixed local codes on stderr. `connection_unavailable` means the operator
+should check service state and caller access. `exchange_incomplete` or `response_invalid` after
+submission requires reading the same ID, not automatic resubmission with a new ID.
+`receipt_unavailable` means read status first. `export_failed` means inspect the caller-owned output
+destination and choose a new writable path. `output_unavailable` means restore stdout and read the
+original ID after uncertainty. These are not receiver outcomes. `--help` lists the grammar and
+`--version` identifies each binary without requiring a running service.
 
 Operators can inspect the existing process fields with `systemctl show kapseld.service` and fixed
 codes with `journalctl -u kapseld.service`. Keep journal access operator-only. Read failures emit at

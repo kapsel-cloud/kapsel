@@ -140,17 +140,19 @@ impl ApplicationExecution for ExecutionApplication {
     }
 }
 
-pub(crate) fn run() -> ExitCode {
+pub(crate) fn run(replace: bool) -> ExitCode {
     #[cfg(target_os = "linux")]
     {
         #[cfg(feature = "test-harness")]
         if std::env::var_os("KAPSELD_TEST_SOCKET").is_some() {
             return harness::run();
         }
-        run_installed()
+        run_installed(replace)
     }
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = replace;
+        crate::diagnostic("platform_unavailable");
         let _ = serve_connections_with_state::<ServiceApplication, ExecutionApplication>;
         let _ = ServerState::<ServiceApplication, ExecutionApplication>::new;
         ExitCode::from(4)
@@ -158,24 +160,14 @@ pub(crate) fn run() -> ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-fn run_installed() -> ExitCode {
+fn run_installed(replace: bool) -> ExitCode {
     #[cfg(feature = "test-harness")]
     let installation_root = std::env::var_os("KAPSELD_TEST_INSTALLATION_ROOT")
         .map_or_else(|| std::path::PathBuf::from("/"), std::path::PathBuf::from);
     #[cfg(not(feature = "test-harness"))]
     let installation_root = std::path::PathBuf::from("/");
-    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    if arguments.as_slice() == [std::ffi::OsStr::new("--replace-operator-config")] {
+    if replace {
         return crate::startup::replace_operator_config(&installation_root);
-    }
-    let mut arguments = arguments.into_iter();
-    if arguments.next().as_deref() != Some(std::ffi::OsStr::new("--operator-config"))
-        || arguments.next().as_deref() != Some(std::ffi::OsStr::new("/etc/kapsel/operator.json"))
-        || arguments.next().as_deref() != Some(std::ffi::OsStr::new("--socket"))
-        || arguments.next().as_deref() != Some(std::ffi::OsStr::new("/run/kapsel/kapseld.sock"))
-        || arguments.next().is_some()
-    {
-        return ExitCode::from(4);
     }
     #[cfg(feature = "test-harness")]
     let connections = match std::env::var("KAPSELD_TEST_CONNECTIONS") {

@@ -958,9 +958,12 @@ fn ordinary_startup_accepts_only_the_exact_ordered_arguments() {
         let output = spawn_installed_with_arguments(&root, 1, arguments)
             .wait_with_output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(4));
+        assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(
+            output.stderr,
+            b"kapseld: invalid_usage: use kapseld --help\n"
+        );
         assert!(!root.join("run/kapsel/kapseld.sock").exists());
         fs::remove_dir_all(root).unwrap();
     }

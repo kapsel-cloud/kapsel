@@ -1,15 +1,18 @@
 #!/usr/bin/env sh
 set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+. ./scripts/dev-tools.sh
 
 run_static_checks() {
   echo "==> Markdown, Rust, and Python format"
   ./scripts/format.sh --check
 
   printf '%s\n' "==> Python lint"
-  ruff check --no-cache --config ruff.toml .
+  "$RUFF" check --no-cache --config ruff.toml .
 
   printf '%s\n' "==> Formatting pipeline regressions"
   python3 scripts/test-format.py
+  python3 scripts/test-dev-tools.py
 
   printf '%s\n' "==> Storage ENOSPC runner regressions"
   python3 scripts/test-storage-enospc-runner.py

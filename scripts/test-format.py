@@ -23,7 +23,10 @@ if [ "$name:$phase" = "${FAIL_AT:-}" ]; then
   exit 1
 fi
 if [ "$name" = prettier ] && [ "$phase" = preflight ]; then
-  printf '%s\\n' "${PRETTIER_VERSION:-3.9.6}"
+  printf '%s\\n' "${TEST_PRETTIER_VERSION}"
+fi
+if [ "$name" = ruff ] && [ "$*" = --version ]; then
+  printf 'ruff %s\\n' "${TEST_RUFF_VERSION}"
 fi
 """
 
@@ -34,7 +37,8 @@ class FormattingPipelineTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         (self.root / "scripts").mkdir()
-        shutil.copyfile(ROOT / "scripts/format.sh", self.root / "scripts/format.sh")
+        for name in ("format.sh", "dev-tools.sh"):
+            shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
         (self.root / "fuzz").mkdir()
         (self.root / "fuzz/Cargo.toml").touch()
         tools = self.root / "tools"
@@ -43,13 +47,34 @@ class FormattingPipelineTests(unittest.TestCase):
             path = tools / name
             path.write_text(TOOL)
             path.chmod(0o755)
+        pins = subprocess.run(
+            [
+                "sh",
+                "-c",
+                '. ./scripts/dev-tools.sh; printf "%s\\n%s\\n%s\\n%s\\n%s" '
+                '"$PRETTIER" "$RUFF" "$PRETTIER_VERSION" "$RUFF_VERSION" "$FORMAT_TOOLCHAIN"',
+            ],
+            cwd=self.root,
+            env={**os.environ, "HOME": str(self.root)},
+            text=True,
+            capture_output=True,
+            check=True,
+            timeout=10,
+        ).stdout.splitlines()
+        for name, destination in zip(("prettier", "ruff"), pins[:2], strict=True):
+            path = Path(destination)
+            path.parent.mkdir(parents=True)
+            path.symlink_to(tools / name)
+        self.format_toolchain = pins[4]
         self.log = self.root / "commands.log"
         self.env = {
             **os.environ,
             "PATH": f"{tools}:/usr/bin:/bin",
             "FORMAT_LOG": str(self.log),
             "FAIL_AT": "",
-            "PRETTIER_VERSION": "3.9.6",
+            "HOME": str(self.root),
+            "TEST_PRETTIER_VERSION": pins[2],
+            "TEST_RUFF_VERSION": pins[3],
         }
 
     def run_format(self, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -77,6 +102,7 @@ class FormattingPipelineTests(unittest.TestCase):
                     [(name, phase) for name, phase, _, _ in commands],
                     [
                         ("prettier", "preflight"),
+                        ("ruff", "preflight"),
                         ("cargo", "preflight"),
                         ("ruff", "preflight"),
                         ("prettier", "format"),
@@ -91,6 +117,11 @@ class FormattingPipelineTests(unittest.TestCase):
                     if phase == "format":
                         self.assertEqual("--check" in argv.split(), checking)
                 self.assertIn("--manifest-path fuzz/Cargo.toml", commands[-2][3])
+                for name, phase, _, argv in commands:
+                    if name == "cargo":
+                        self.assertIn(f"+{self.format_toolchain}", argv.split())
+                        if phase == "format":
+                            self.assertIn("--config-path rustfmt-nightly.toml", argv)
 
     def test_missing_formatter_stops_before_writes(self) -> None:
         for name in ("prettier", "cargo", "ruff"):
@@ -100,16 +131,20 @@ class FormattingPipelineTests(unittest.TestCase):
                 self.assertNotEqual(self.run_format().returncode, 0)
                 self.assertTrue(all(command[1] == "preflight" for command in self.commands()))
 
-    def test_prettier_version_is_not_enforced(self) -> None:
-        self.env["PRETTIER_VERSION"] = "0.0.0"
-        result = self.run_format()
-        self.assertEqual(result.returncode, 0, result.stderr)
+    def test_wrong_version_stops_before_writes(self) -> None:
+        for variable in ("TEST_PRETTIER_VERSION", "TEST_RUFF_VERSION"):
+            with self.subTest(variable=variable):
+                original = self.env[variable]
+                self.env[variable] = "0.0.0"
+                self.assertNotEqual(self.run_format().returncode, 0)
+                self.assertTrue(all(command[1] == "preflight" for command in self.commands()))
+                self.env[variable] = original
 
     def test_format_failure_stops_later_stages(self) -> None:
         self.env["FAIL_AT"] = "prettier:format"
         self.assertNotEqual(self.run_format().returncode, 0)
         self.assertEqual(self.commands()[-1][:2], ["prettier", "format"])
-        self.assertEqual(len(self.commands()), 4)
+        self.assertEqual(len(self.commands()), 5)
 
     def test_invalid_mode_runs_no_tools(self) -> None:
         self.assertEqual(self.run_format("invalid").returncode, 2)

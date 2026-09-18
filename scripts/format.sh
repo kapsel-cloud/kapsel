@@ -19,19 +19,16 @@ case "${1:-write}" in
 esac
 
 # Check every formatter before any source is rewritten.
-prettier --version >/dev/null 2>&1 || {
-  printf '%s\n' "format: Prettier is required" >&2
-  exit 1
-}
-cargo +nightly-2026-07-03 fmt --version >/dev/null
-# Ruff validates the pinned version and configuration without formatting files.
-ruff check --no-cache --config ruff.toml --show-settings scripts/check-markdown-links.py >/dev/null
+. ./scripts/dev-tools.sh
+check_formatters
+cargo +"$FORMAT_TOOLCHAIN" fmt --version >/dev/null
+"$RUFF" check --no-cache --config ruff.toml --show-settings scripts/check-markdown-links.py >/dev/null
 
-prettier "$prettier_mode" --no-config --ignore-path .gitignore --print-width 100 \
+"$PRETTIER" "$prettier_mode" --no-config --ignore-path .gitignore --print-width 100 \
   --prose-wrap always --tab-width 2 '**/*.md'
-cargo +nightly-2026-07-03 fmt --all -- --config-path rustfmt-nightly.toml ${check_mode:+"$check_mode"}
+cargo +"$FORMAT_TOOLCHAIN" fmt --all -- --config-path rustfmt-nightly.toml ${check_mode:+"$check_mode"}
 if [ -f fuzz/Cargo.toml ]; then
-  cargo +nightly-2026-07-03 fmt --manifest-path fuzz/Cargo.toml -- \
+  cargo +"$FORMAT_TOOLCHAIN" fmt --manifest-path fuzz/Cargo.toml -- \
     --config-path rustfmt-nightly.toml ${check_mode:+"$check_mode"}
 fi
-ruff format --no-cache --config ruff.toml ${check_mode:+"$check_mode"} .
+"$RUFF" format --no-cache --config ruff.toml ${check_mode:+"$check_mode"} .

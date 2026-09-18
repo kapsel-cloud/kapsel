@@ -4,6 +4,24 @@ For source development, start below. To install and try the published beta inste
 [evaluation guide](EVALUATOR.md). The service in repository HEAD remains unpublished.
 [Testing](TESTING.md) explains what each test proves; this page owns setup and commands.
 
+## Everyday commands
+
+Run these from the checkout. Ordinary Cargo builds need only Rust and a C compiler/linker.
+
+| Task                                      | Command                                                                             |
+| ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| Prepare contributor tools                 | `./scripts/setup.sh`                                                                |
+| Diagnose prerequisites without installing | `./scripts/setup.sh --check`                                                        |
+| Build debug executables                   | `cargo build --locked --workspace`                                                  |
+| Fast compile check                        | `cargo check --locked --workspace`                                                  |
+| Focused test                              | `cargo test --locked -p kapsel --test service_application_contract cold_validation` |
+| Format                                    | `./scripts/format.sh`                                                               |
+| Full deterministic gate                   | `./scripts/ci-local.sh`                                                             |
+
+The [service operator guide](KAPSEL_SERVICE_OPERATOR.md) owns the unpublished extracted-artifact
+path. The older kind crash demo below is not the resident service. Live, native and artifact gates
+are separate from the everyday loop.
+
 ## Prerequisites
 
 Use a macOS or Linux development host with Git and a C compiler/linker. Install
@@ -29,18 +47,23 @@ CLI's fixed forms and operator-owned inputs. For an end-to-end source demonstrat
 ## Deterministic gate and formatting
 
 For contributor checks, also install [Python](https://www.python.org/downloads/) 3.11+ with `venv`
-and [Node.js](https://nodejs.org/en/download) 24 with npm. Then install the formatters:
+and `ensurepip`, and [Node.js](https://nodejs.org/en/download) 24+ with npm. Then run:
 
 ```sh
-rustup toolchain install nightly-2026-07-03 --profile minimal --component rustfmt
-npm install --global prettier@3.9.6
-python3 -m venv "$HOME/.local/share/kapsel/dev-tools"
-. "$HOME/.local/share/kapsel/dev-tools/bin/activate"
-python -m pip install ruff==0.16.6
+./scripts/setup.sh
 ```
 
-The virtual environment keeps Ruff out of system Python and the worktree. Activate it again in each
-new shell. An existing tool manager is equally fine if the same versions are on `PATH`.
+Setup installs the Rust toolchain selected by `rust-toolchain.toml`, a pinned nightly rustfmt, and
+pinned Prettier/Ruff in versioned directories beneath `$HOME/.local/share/kapsel/dev-tools`. The
+scripts invoke those isolated executables directly. Nothing is installed globally, no shell profile
+changes, and no virtualenv activation is needed in a new shell. Rerunning setup reuses matching
+tools. Network access is needed for missing installations. `./scripts/setup.sh --check` checks
+prerequisites and installed tools without installing or rewriting source. Hooks remain a separate
+opt-in.
+
+[`scripts/dev-tools.sh`](../scripts/dev-tools.sh) owns formatter versions for local setup and CI.
+Nightly rustfmt enforces `StdExternalCrate` import grouping and `Crate` import granularity through
+`rustfmt-nightly.toml`. Ordinary compilation still uses the stable toolchain.
 
 The everyday loop is:
 
@@ -72,11 +95,11 @@ git config --get core.hooksPath
 git config core.hooksPath .githooks
 ```
 
-Pre-commit checks formatting, Python lint, Rust width, and workspace Clippy. It requires no unstaged
-or untracked files and works offline after tools and Cargo dependencies are installed. Pre-push
-requires a clean checkout matching the pushed tree and runs the complete local gate, reusing a
-previous passing result for the same tree. Neither hook starts Docker. See
-[the hooks](../.githooks/) for exact refusal and caching behavior.
+Pre-commit runs only `git diff --cached --check`. It checks staged whitespace errors, not
+formatting, lint or tests, and permits partial commits and unrelated unstaged/untracked files.
+Pre-push requires a clean checkout matching the pushed tree and runs the complete local gate,
+reusing a previous passing result for the same tree. CI independently runs that gate. Neither hook
+starts Docker. See [the hooks](../.githooks/) for exact refusal and caching behavior.
 
 ## Focused gates
 
@@ -85,7 +108,7 @@ when practical. Additional environment requirements are listed in the sections b
 
 | Change                             | Command                                                  |
 | ---------------------------------- | -------------------------------------------------------- |
-| Python scripts                     | `ruff check --no-cache --config ruff.toml .`             |
+| Python scripts                     | `./scripts/ci-local.sh static`                           |
 | Formatting pipeline                | `python3 scripts/test-format.py`                         |
 | Effect gateway                     | `cargo test --locked -p kapsel`                          |
 | Service and private harness        | `cargo test --locked -p kapseld --features test-harness` |
@@ -293,8 +316,9 @@ that separate evidence. Rejection coverage does not replace historical migration
 
 ## Robustness lanes
 
-Fuzzing requires cargo-fuzz 0.13+ and the pinned nightly toolchain. Check the target or run a
-bounded smoke test:
+Fuzzing additionally requires cargo-fuzz 0.13+ and uses nightly for sanitizer instrumentation. The
+pinned nightly is already installed by contributor setup. Cargo-fuzz is not needed for formatting or
+the deterministic gate. Check the target or run a bounded smoke test:
 
 ```sh
 rustup run nightly-2026-07-03 cargo fuzz check --manifest-path fuzz/Cargo.toml inspect_receipt
@@ -428,5 +452,5 @@ Coverage is informational and non-blocking, not correctness evidence.
 Cargo manifests and `Cargo.lock` own Rust dependencies. `rust-toolchain.toml` selects the compiler;
 `rustfmt.toml`, `rustfmt-nightly.toml`, `clippy.toml`, and `ruff.toml` own style settings.
 [`scripts/format.sh`](../scripts/format.sh), [`scripts/ci-local.sh`](../scripts/ci-local.sh), and
-[CI](../.github/workflows/ci.yml) own tool invocation. Keep this guide's setup pins aligned with
-those files when upgrading tools.
+[CI](../.github/workflows/ci.yml) own tool invocation. CI consumes the same setup command and pins
+as local development. Optional qualification tools keep their pins in their owning lanes.

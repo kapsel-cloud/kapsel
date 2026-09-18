@@ -1,5 +1,7 @@
 //! Fixed parser and composition for the evaluator command evaluator commands.
 
+mod service;
+
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -37,7 +39,12 @@ pub(crate) fn run(arguments: impl Iterator<Item = OsString>) -> CommandResult {
         .into_string()
         .map_err(|_| CommandError::input("kapsel"))?;
     match subcommand.as_str() {
+        "--help" => help(arguments),
         "--version" => version(arguments),
+        "prepare-service-config" => service::prepare(arguments),
+        "validate-service-config" => {
+            service::validate(parse_options("validate-service-config", arguments)?)
+        },
         "provision-grant" => provision(parse_options("provision-grant", arguments)?, false),
         "provision-snapshot-grant" => {
             provision(parse_options("provision-snapshot-grant", arguments)?, true)
@@ -46,6 +53,33 @@ pub(crate) fn run(arguments: impl Iterator<Item = OsString>) -> CommandResult {
         "inspect" => inspect(parse_options("inspect", arguments)?),
         _ => Err(CommandError::input("kapsel")),
     }
+}
+
+fn help(mut arguments: impl Iterator<Item = OsString>) -> CommandResult {
+    if arguments.next().is_some() {
+        return Err(CommandError::input("kapsel"));
+    }
+    Ok(concat!(
+        "kapsel: controlled Deployment-image execution and offline receipt inspection\n",
+        "Usage:\n",
+        "  kapsel --help | --version\n",
+        "  kapsel provision-grant --authorization <file> --signing-seed <file>\n",
+        "    --signing-key-id <id> --output <new-file>\n",
+        "  kapsel provision-snapshot-grant <same options> --kubeconfig <file>\n",
+        "  kapsel prepare-service-config [--authorization-key <id> <raw-public-key-file>]...\n",
+        "    [--approval <label> <signed-grant-file>]...\n",
+        "    --receipt-signing-key-id <id> --output <new-file>\n",
+        "  kapsel validate-service-config --operator-config <file>\n",
+        "  kapsel operate --request <file> --operator-config <file>\n",
+        "  kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>\n",
+        "    [--receipt-bytes-max <usize>] [--statement-bytes-max <usize>]\n",
+        "    [--trust-bytes-max <usize>] [--text-bytes-max <usize>]\n",
+        "  kapsel mcp --operator-config <file>\n",
+        "Service configuration validation is static, not execution readiness or publication.\n",
+        "Exit 2: input, 3: configuration, 4: operation/output failure.\n",
+        "Exit 0 alone does not establish a receiver outcome. Inspect the response."
+    )
+    .into())
 }
 
 fn version(mut arguments: impl Iterator<Item = OsString>) -> CommandResult {

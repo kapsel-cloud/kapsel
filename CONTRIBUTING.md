@@ -99,6 +99,12 @@ authority separation, durable outcomes, observable output, and non-disclosure in
 the same parser or classifier matrix. The [testing strategy](docs/TESTING.md) owns proof placement
 and evidence classes; [Build and test](docs/BUILD.md) owns commands and prerequisites.
 
+Prepare contributor tools once with `./scripts/setup.sh`. It installs isolated pinned formatters
+without global installs or shell activation. Use `./scripts/setup.sh --check` for read-only
+prerequisite diagnosis. Ordinary `cargo build --locked --workspace` and
+`cargo check --locked --workspace` remain the fast local entry points. The optional pre-commit hook
+checks staged whitespace only, not test acceptance. Full checks belong to pre-push and CI.
+
 Authored Rust has a 100-byte physical-line limit. Reshape expressions rather than shortening precise
 names or adding an abstraction solely to satisfy the limit. Keep embedded SQL readable and
 multiline. Markdown prose wraps at 100 columns; tables, URLs, and code blocks are exempt where

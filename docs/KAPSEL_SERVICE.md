@@ -364,6 +364,13 @@ not receiver success. The [operator guide](KAPSEL_SERVICE_OPERATOR.md#diagnose-a
 concrete remediation steps. Publication's separate bounded stdout/empty-stderr contract is
 unchanged.
 
+## Command discovery
+
+All three executables accept `--help` and `--version` alone, without opening configuration, history
+or sockets. Help prints fixed text, version prints the executable name and Cargo package version,
+and both exit zero. Extra or invalid arguments exit 2 with bounded usage diagnostics. Runtime and
+publication failures retain their separate meanings. `kapseld` is still Linux-only for execution.
+
 ## Fixed service client
 
 The source client's exact grammar is:
@@ -385,8 +392,19 @@ bounded JSON with status, digest and the caller-selected output pathname, not re
 daemon statuses fail without creating output.
 
 The caller-selected export path is local to the client, never daemon authority. There is no SDK or
-reusable protocol package. The [source operator guide](KAPSEL_SERVICE_OPERATOR.md) shows the fixed
-caller identity and primary/effective group. No supplementary membership is required.
+reusable protocol package.
+
+Local failures write one fixed diagnostic line to stderr, with no argument, path, action data or raw
+error. Exit 2 means invalid usage. Exit 4 means a local connection, exchange, response, receipt
+availability, export or stdout failure, identified by `connection_unavailable`,
+`exchange_incomplete`, `response_invalid`, `receipt_unavailable`, `export_failed`, or
+`output_unavailable`. Read the original ID after any uncertain submission. Transport completion is
+not admission or receiver success. Exit 0 means a response was delivered, not that an action
+succeeded. Service JSON (including ERROR or NOT_ADMITTED) remains on stdout unchanged. A failed
+export may leave a partial newly created file and never changes the action.
+
+The [source operator guide](KAPSEL_SERVICE_OPERATOR.md) shows the fixed caller identity and
+primary/effective group. No supplementary membership is required.
 
 ## Execution and process lifecycle
 

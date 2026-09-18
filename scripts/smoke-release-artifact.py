@@ -1131,21 +1131,37 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         )
         if provision.returncode != 0 or KubernetesFixture.requests != 1:
             raise RuntimeError("artifact snapshot provisioning failed")
-        document = json.dumps(
-            {
-                "service_configuration_version": 1,
-                "authorization_keys": [
-                    {
-                        "key_id": "artifact-authorization-key",
-                        "public_key_hex": AUTHORIZATION_PUBLIC_KEY.hex(),
-                    }
-                ],
-                "approvals": [
-                    {"label": "Artifact smoke", "signed_grant_hex": grant.read_bytes().hex()}
-                ],
-                "receipt_signing_key_id": "kap0038-test-key",
-            }
-        ).encode()
+        candidate = evaluation / "operator.candidate.json"
+        prepared = run_binary(
+            destinations["ordinary"],
+            [
+                "prepare-service-config",
+                "--authorization-key",
+                "artifact-authorization-key",
+                str(evaluation / "authorization.pub"),
+                "--approval",
+                "Artifact smoke",
+                str(grant),
+                "--receipt-signing-key-id",
+                "kap0038-test-key",
+                "--output",
+                str(candidate),
+            ],
+        )
+        if prepared.returncode != 0:
+            raise RuntimeError("artifact configuration preparation failed")
+        document = read_bounded_regular(candidate, 160 * 1024)
+        validated = run_binary(
+            destinations["ordinary"],
+            ["validate-service-config", "--operator-config", str(candidate)],
+        )
+        if (
+            validated.returncode != 0
+            or json.loads(validated.stdout).get("status") != "VALIDATED_STATIC"
+            or candidate.read_bytes() != document
+            or KubernetesFixture.requests != 1
+        ):
+            raise RuntimeError("artifact static configuration validation failed")
         for name in ("kubeconfig.yaml", "receipt.seed"):
             destination = private_roots[0] / name
             write_private(destination, (evaluation / name).read_bytes())

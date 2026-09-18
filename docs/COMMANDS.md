@@ -38,6 +38,7 @@ without defining another vector format.
 The Unix executable accepts exactly these local evaluator forms:
 
 ```text
+kapsel --help
 kapsel --version
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel provision-snapshot-grant --authorization <file> --kubeconfig <file> --signing-seed <file> --signing-key-id <id> --output <file>
@@ -57,6 +58,9 @@ The same executable also has one separately owned MCP process form,
 `kapsel mcp --operator-config <file>`. [MCP adapter](MCP.md) owns its protocol, lifecycle, tool,
 responses, and bounds; this document continues to own the shared operator-file grammar.
 
+`kapsel --help` accepts no additional argument and prints the fixed command map without opening
+configuration or contacting a service. Invalid usage retains the bounded command-input failure.
+
 `kapsel --version` accepts no additional argument, reads no configuration or environment, writes
 `kapsel <Cargo package version>` plus one newline to standard output, writes no diagnostic, and
 exits zero. The value identifies the running binary; it does not imply another workspace package,
@@ -67,10 +71,36 @@ values, missing values, and additional arguments are command-input failures. The
 environment or ambient defaults.
 
 All named files must be regular, non-symlink files. Every command rejects a file larger than its
-owned limit before reading it: JSON inputs are at most 16 KiB, signing seeds and public keys are
-exactly 32 raw bytes, signed grants are at most 4 KiB, receipts are at most 16 KiB, and receipt
-trust is at most 1 KiB. Output grant files are created owner-only and never replace an existing
-path.
+owned limit before reading it: legacy command JSON inputs are at most 16 KiB (service configuration
+validation accepts at most 160 KiB), signing seeds and public keys are exactly 32 raw bytes, signed
+grants are at most 4 KiB, receipts are at most 16 KiB, and receipt trust is at most 1 KiB. Output
+grant files are created owner-only and never replace an existing path.
+
+## Prepare and validate service configuration
+
+These unpublished operator-only commands write the existing version-1 service document. They do not
+appoint trust from a grant, provision credentials, publish configuration or access the journal.
+
+```text
+kapsel prepare-service-config --authorization-key <id> <raw-public-key-file>
+    --approval <label> <signed-grant-file> --receipt-signing-key-id <id> --output <new-file>
+kapsel validate-service-config --operator-config <file>
+```
+
+Repeat `--authorization-key` for up to 128 separately appointed keys and `--approval` for up to 32
+snapshot grants. Both may be omitted for an empty catalog. The receipt signer and output options are
+required exactly once. Public keys are exactly 32 raw bytes and grants at most 4 KiB. Input files
+use the same bounded regular/non-symlink reads as other operator commands. Output is a new private
+file, never a replacement. Labels follow the existing printable ASCII/128-byte grammar.
+
+Preparation authenticates the complete document before writing it. Validation reads at most 160 KiB
+and uses the same parser and approval/trust checks, without creating or opening history. Success is
+JSON with `command` and `status: "PREPARED"` or `"VALIDATED_STATIC"`. Static validation does not
+establish filesystem custody, retained-identity compatibility, credentials, receiver availability or
+execution readiness. Explicit cold publication still performs its existing read-only history and
+custody checks under lifecycle exclusion. The [service contract](KAPSEL_SERVICE.md) owns those
+checks. Failed preparation can leave an incomplete new output file after an I/O failure. Inspect and
+choose a new destination, never assume publication or automatically replace a path.
 
 ## Fixed JSON inputs
 
