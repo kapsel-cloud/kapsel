@@ -308,6 +308,92 @@ is malformed; they do not reserve filesystem space or promise retention after st
 
 ### Completion accounting
 
+#### v0.3 disposition
+
+Retain the configured completion-capacity guarantee for v0.3. Admission should not consume the
+SQLite capacity needed to finish already admitted work. This is a bounded storage-progress promise,
+not a promise that execution succeeds or that storage cannot fail. The existing physical checks, 504
+retained-identity limit and 32 unfinished-identity limit remain authoritative. No journal format,
+opening compatibility, authority, recovery rule or receipt meaning changes with this decision.
+
+The implementation reviewed is `72bae952ad3f9195ae798440a03170a269f8e801`, including durable
+multi-action admission, cold replacement validation and the fixed initial observation policy. The
+decision retains the [physical bound](#physical-bound) below rather than replacing it with a
+row-count heuristic. Three obligations remain distinct:
+
+- Logical limits bound retained identities and unfinished responsibility. Terminal work releases an
+  unfinished slot, never its retained identity or original evidence.
+- Physical layout validation and owned-write bounds establish that completion fits the configured
+  SQLite page ceiling, including transient allocation and the main rollback-file ceiling.
+- External ENOSPC, I/O or sync failure, storage loss and indeterminate commits remain operating
+  failures. Page accounting reserves no filesystem space and cannot resolve commit ambiguity.
+
+**At capacity.** Start with 503 retained identities and 31 unfinished actions. Existing-identity
+lookup still precedes refusal. For a new exact authorization, the worker-excluded admission path
+rechecks identity and uses an immediate SQLite transaction to check capacity and insert the bounded
+request with its original signed grant. Confirmed admission leaves 504 retained identities and 32
+unfinished actions. Another new identity is refused without acquiring responsibility. The last
+admitted action can still commit authorization, the attempt marker, receiver facts and its signed
+receipt through the owned single-row writes. The physical argument applies even to a 16,384-page
+file with a fragmented, integrity-validated freelist. Completion needs reusable pages, not
+contiguous space or a shorter file. Finalization releases one unfinished slot but not a retained
+charge, so a 505th identity remains refused. Attempt recovery never dispatches again; receipt
+completion uses frozen observations and preserves any already committed original receipt.
+
+**Smallest credible alternative.** Keep SQLite, exact authority, durable admission/attempt
+exclusion, frozen evidence, logical 504/32 limits and safe opening refusal, but withdraw the
+configured completion-progress promise. Completion would then be allowed to report storage blockage
+even when only Kapsel's own page ceiling, rather than the filesystem, prevents progress. That could
+remove the transient balancing proof and its opcode qualification. It would not automatically
+justify removing physical record checks: accepted pre-existing records also need bounded reading,
+and rollback files still need a justified opening ceiling. The alternative is therefore smaller, but
+not equivalent.
+
+Under that weaker promise, an acknowledged action could remain unfinished until the operator repairs
+storage or a separately designed capacity change becomes available. Freeing disk space does not
+repair a configured SQLite ceiling. There is no current supported pruning, journal reset,
+stale-state restore or limit-raising recovery command. An attempted action must remain
+observation-only, and frozen facts cannot be replaced to make completion easier. Moving this
+avoidable failure onto the operator costs more than retaining the bounded proof for one fixed schema
+and eight owned write statements. This alternative is not adopted. A smaller equivalent bound would
+first have to establish its premises for every accepted layout, including long retained keys, padded
+schema records, noncanonical record headers and sparse trees. Successful stress tests or a row limit
+alone cannot do that.
+
+**Maintenance obligation.** The journal module keeps this SQLite-specific knowledge private.
+Retention adds no interface, dependency, configuration or reservation ledger, and removes no
+existing checks. Revalidate the source argument and owning evidence when changing any of these
+premises:
+
+- Bundled SQLite version/build, generated write opcodes or statement preparation/register reuse.
+  `OP_MakeRecord`'s size check and `sqlite3BtreeInsert`'s replacement/balancing path are part of the
+  proof, not a generic guarantee for arbitrary SQL.
+- Schema, indexes, triggers, rowid/identity updates, persisted field bounds or observation/receipt
+  shape. Encoded record headers and overflow allocation matter, not only logical value lengths.
+- Accepted layouts or opening paths, including page size/reserved bytes, auto-vacuum, physical
+  payload checks, tree occupancy/depth, schema padding and integrity-validated freelist accounting.
+- Transaction shape, savepoints, failure continuation, cache spilling, journal mode or sync
+  settings. The pager's original-page bitset, commit framing and sector cap own the main rollback
+  bound, not a total temporary-storage or memory bound.
+- Logical identity limits, per-identity charge, shared headroom or database/rollback file ceilings.
+  Spare space in the present conservative bound is not permission to raise the 504/32 limits.
+
+Fresh creation still performs four snapshot-column ALTERs in `schema.rs`; existing journals are not
+migrated. Folding those columns into CREATE could simplify initialization, but would not remove the
+completion proof. Such a change must preserve recognized schema/column order and recheck schema
+payload fixtures. It is not selected or implemented here.
+
+Owned evidence is in `journal/capacity.rs`, `journal/schema.rs`, `journal/opening.rs` and the eight
+write statements in `journal/mod.rs`, under `src/gateway/`. The locked `libsqlite3-sys` 0.38.2
+amalgamation supplies SQLite 3.53.2. The [accepted-layout tests](BUILD.md#accepted-journal-layouts)
+and [storage qualification](BUILD.md#bounded-storage-failure-qualification) cover physical
+rejection, write plans, rollback accounting, last-slot concurrency, full-capacity completion and
+bounded failure recovery. They complement source inspection, not a universal peak-allocation
+measurement. Disk-backed power loss, native installed-host behavior and live Kubernetes remain
+separate evidence, not claims established by this retention decision.
+
+#### Physical bound
+
 Format 5 uses 4 KiB pages, no reserved page bytes, no auto-vacuum and the single existing primary
 index. The connection enforces 16,384 pages (64 MiB) with `max_page_count`. Each admitted identity
 is charged 32 pages (128 KiB), regardless of phase or actual payload. A further 256 pages (1 MiB)
