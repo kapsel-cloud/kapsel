@@ -316,7 +316,10 @@ one journal:
   `NOT_ATTEMPTED / STALE_APPROVAL` after a real GET. Independent HTTP counts are one PATCH per
   operation for separate targets, and A's one PATCH/B's zero for the shared target. Explicit A
   resumption signs frozen facts without more HTTP; later selection and reopen preserve original
-  receipt bytes. This is not conflict safety, refreshed approval or live admission evidence.
+  receipt bytes. A separate paused-clock HTTP mock in that suite retains the retired endpoint's
+  transient-preflight and terminal-`UNKNOWN` cases: B completes without changing A's row or receipt;
+  only explicit reselection retries A's safe preflight, while terminal A produces no further I/O.
+  These are not conflict safety, refreshed approval or live admission evidence.
 - `kapseld` protocol/runtime tests cover version-1 framing, hostile fields, disclosure, durable
   admission decisions, one physical execution worker, bounded blocking jobs and no queue.
 - Linux `linux_process` tests cover effective-group credentials, caller disconnect, concurrent reads
@@ -328,6 +331,14 @@ one journal:
   graceful retirement, exact argv, stale sockets, systemd, sysusers and namespaced RBAC.
   Root-substitution tests prove journal creation and socket bind stay with retained directory
   identities; receipt retrieval has no receipt-root dependency.
+
+The [two-action endpoint](TWO_ACTION_ENDPOINT_PROTOTYPE.md) and
+[later-observation](LATER_OBSERVATION_EXPERIMENT.md) prototypes are historical reproductions, not
+HEAD test targets. The former's volatile admission and synchronous frame reader are not product
+contracts. The latter's one-slot supplementary acquisition is unadopted and is not transferred to
+ordinary observation-only recovery. Current tests continue to own authorization, HTTP retry
+counterexamples, attempt-loss recovery and original receipt immutability. Historical prototype
+results do not establish the complete operator/agent journey or installed-artifact qualification.
 
 Service-client tests freeze five versioned commands (`list`, `history`, `submit`, `status`,
 `receipt`), bounded framing, receipt digest verification, exclusive mode-`0600` output and refusal

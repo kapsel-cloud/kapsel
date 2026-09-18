@@ -386,8 +386,9 @@ original send. A stored receipt remains byte-identical through restart and retri
 
 Ordinary status and receipt reads are offline projections. A rollout settling after terminal
 `UNKNOWN` does not update the historical result. The
-[later-observation prototype](LATER_OBSERVATION_EXPERIMENT.md) is useful evidence for a separately
-scoped implementation decision, not a command available here.
+[historical later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) preserves evidence for a
+separately scoped contract decision. Its implementation is retired from HEAD, not a command
+available here.
 
 Systemd and operator configuration own lifecycle and credentials. A stopped daemon makes the socket
 unavailable. Already exported receipts remain inspectable offline. Database loss can prevent

@@ -445,7 +445,8 @@ directory and leaf. After bind, exact socket type, owner, group and mode are ver
 SIGTERM drains surviving work; process loss or manual SIGKILL may interrupt a durable window. After
 activation, callers read first and explicitly reselect the same identity when appropriate. After
 `apply_started`, gateway recovery observes and never resends. Ordinary status/receipt reads cannot
-invoke the test-only later-observation prototype or change a terminal `UNKNOWN`.
+acquire later observations or change a terminal `UNKNOWN`. The
+[later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) is historical, not a service path.
 
 The gateway's [initial observation policy](EFFECT_GATEWAY.md#result-meaning) owns the fixed per-pass
 time and read bounds. Explicit resumption after interruption starts a new pass, not a durable

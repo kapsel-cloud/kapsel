@@ -28,8 +28,8 @@ recovery, bounded classification, and immutable evidence.
 Current source uses signed grants, a private one-use dispatch permission, and one conditional
 strategic merge patch opportunity. Signed receipt completion belongs to SQLite; offline inspection,
 CLI/MCP adapters, and service retrieval consume that evidence. Status and receipt reads do not
-acquire later observations. The test-only later-observation prototype is not a supported
-continuation command.
+acquire later observations. The [later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) is
+preserved historically, not maintained at HEAD or exposed as a continuation command.
 
 The current local journal and conditional Kubernetes patch do not coordinate independent agents
 across journals or hosts. They provide no fleet ordering, distributed transaction, or system-wide

@@ -17,9 +17,6 @@ run_static_checks() {
   printf '%s\n' "==> Storage ENOSPC runner regressions"
   python3 scripts/test-storage-enospc-runner.py
 
-  printf '%s\n' "==> Later-observation launcher regressions"
-  python3 scripts/test-kind-later-observation.py --self-test
-
   printf '%s\n' "==> Rust line width"
   ./scripts/check-rust-width.sh
 

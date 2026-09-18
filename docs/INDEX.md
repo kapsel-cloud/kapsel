@@ -54,8 +54,8 @@ explore specific design questions, not supported features.
 - [Service source operator guide](KAPSEL_SERVICE_OPERATOR.md)
 - [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)
 - [Two pending operations and scheduling ownership](MULTIPLE_PENDING_OPERATIONS.md)
-- [Two-action endpoint prototype](TWO_ACTION_ENDPOINT_PROTOTYPE.md)
-- [Later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md)
+- [Two-action endpoint experiment](TWO_ACTION_ENDPOINT_PROTOTYPE.md) — historical reproduction only
+- [Later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) — historical reproduction only
 - [Independent kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md)
 - [Protected typed-tool comparison](PROTECTED_TOOL_COMPARISON.md)
 

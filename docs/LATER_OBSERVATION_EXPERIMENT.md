@@ -1,6 +1,15 @@
 # Later evidence without another mutation
 
-Kind: experiment evidence. Not a supported command, new receipt, or production lifecycle.
+Kind: historical experiment evidence. Retired from HEAD maintenance before v0.3 qualification. Not a
+supported command, new receipt, or production lifecycle.
+
+Disposition: preserve the implementation and unique evidence at public revision
+[`426c17f0152f9cdb5036895c25cdcbed11b20e43`](https://github.com/kapsel-cloud/kapsel/tree/426c17f0152f9cdb5036895c25cdcbed11b20e43).
+No current service, CLI or MCP consumer uses this continuation. The research established the
+one-shot acquisition tradeoff; keeping its separate store and live launcher compatible with HEAD
+would maintain an unadopted feature. This report retains the conclusions without that obligation.
+Ordinary recovery does not inherit the consumed-slot or supplementary-evidence semantics below. Any
+adoption needs a separately scoped contract decision.
 
 The question is whether a later observation can help after `UNKNOWN` without turning that old result
 into success or creating another mutation opportunity. The smallest useful answer is a separate
@@ -25,10 +34,10 @@ Two approaches were compared before implementation:
 - One separately retained observation needs that same slot plus one optional result. Reconnect can
   read the result without acquiring another observation. This is the chosen prototype.
 
-The prototype is confined to `tests/later_observation.rs`. It is not callable by service, CLI, or
-MCP consumers. The disposable runner acts as both the operator composition and scripted caller. It
-introduces no production exports, wire formats, configuration, or dependencies. Deterministic tests
-use Tokio's virtual clock.
+At the historical revision, the prototype is confined to `tests/later_observation.rs`. It is not
+callable by service, CLI, or MCP consumers. The disposable runner acts as both the operator
+composition and scripted caller. It introduces no production exports, wire formats, configuration,
+or dependencies. Deterministic tests use Tokio's virtual clock.
 
 ## Smallest semantics
 
@@ -57,17 +66,24 @@ application status and receipt reads remain offline and do not invoke the protot
 
 ## Reproduction and proof placement
 
-The experiment is committed at `426c17f0152f9cdb5036895c25cdcbed11b20e43`. Obtain it from a
-repository containing that revision, for example `git fetch /path/to/owning/kapsel master`. Local
-preservation does not imply remote availability or adoption. From that checkout or current HEAD:
+Use a separate checkout of the public revision, not current HEAD:
 
 ```sh
+git clone https://github.com/kapsel-cloud/kapsel.git kapsel-later-history
+cd kapsel-later-history
+git checkout --detach 426c17f0152f9cdb5036895c25cdcbed11b20e43
 cargo test --locked --test later_observation -- --nocapture
 python3 scripts/test-kind-later-observation.py --self-test
+# Separate live experiment, requires Docker, kind and kubectl:
 python3 scripts/test-kind-later-observation.py
-./scripts/format.sh
-./scripts/ci-local.sh
 ```
+
+Public availability of the revision and its implementation/report was verified when retiring the
+prototype. Use its pinned Rust toolchain and locked dependencies with Python 3.11 or later. The
+implementation and recorded conclusions are preserved, but the commit is not byte-identical to all
+live-tested inputs listed below. Neither the historical deterministic nor live lane was rerun for
+retirement. The historical 30-read policy matters: HEAD's longer initial observation budget must not
+be substituted into the 60-second slow-rollout experiment.
 
 The live launcher records the baseline and SHA-256 of each executable experiment input, including
 untracked source. Compare those hashes with the recorded results before attributing live evidence to
@@ -122,9 +138,10 @@ counts. The next-action branch selected application-behavior inspection without 
 change. No signature, original receipt byte, or historical receiver result was rewritten.
 
 The live-tested executable inputs are SHA-256 pinned below against the source baseline above, not a
-published artifact. The recorded Python launcher differs from the evidence commit's self-test
-layout. Current source is not byte-identical to this live-tested snapshot. Each live run records its
-input hashes in `source.sha256`:
+published artifact. The recorded Rust source and Python launcher hashes differ from the preserved
+commit; the launcher's self-tests were consolidated after the live run. Do not attribute the
+live-tested input hashes to the historical commit or HEAD. Each live run records its input hashes in
+`source.sha256`:
 
 ```text
 Cargo.toml
@@ -156,10 +173,11 @@ proves the original request caused current health.
 
 ## Recommendation and residual risk
 
-Retain this as evidence for a separate contract decision, not production adoption. One later
-snapshot can answer a useful current-state question. It does not repair the historical result or
-solve attribution. Choosing the acquisition time is operator work, and a one-shot budget can be
-spent too early or lost with the process.
+Retain this report and historical reproduction as evidence for a separate contract decision, not
+production adoption or continued HEAD maintenance. One later snapshot can answer a useful
+current-state question. It does not repair the historical result or solve attribution. Choosing the
+acquisition time is operator work, and a one-shot budget can be spent too early or lost with the
+process.
 
 The extra private database is deliberate experiment apparatus, not a proposed general store. Its
 small consumed/result protocol still adds retention, backup, ownership, and crash-window

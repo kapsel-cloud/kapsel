@@ -1,9 +1,21 @@
 # Two approved actions through one endpoint
 
-Status: isolated, maintainer-owned prototype; not adopted service behavior. This experiment asks
-whether explicit selection and reconnectable retrieval need a durable pending queue. It keeps the
-sole Deployment image capability, exactly two approved identities per run and one execution slot.
-The [current-service baseline](MULTIPLE_PENDING_OPERATIONS.md) remains unchanged.
+Status: historical experiment, retired from HEAD maintenance before v0.3 qualification. The
+implementation and raw outcomes remain at public revision
+[`2efcfec83f6d35d71b6a3d79b57b1db9606ae737`](https://github.com/kapsel-cloud/kapsel/tree/2efcfec83f6d35d71b6a3d79b57b1db9606ae737).
+This report describes that revision, not current service behavior.
+
+The experiment asked whether explicit selection and reconnectable retrieval need a durable pending
+queue. It kept the sole Deployment image capability, exactly two approved identities per run and one
+execution slot. The [historical service baseline](MULTIPLE_PENDING_OPERATIONS.md) describes its
+comparison point. The adopted [service](KAPSEL_SERVICE.md) now owns multi-identity access, durable
+admission and read-first restart. Its [maintained evidence](TESTING.md#kapsel-service) replaces the
+prototype endpoint, driver and framing checks, not the historical results.
+
+No current consumer needs this test-only protocol or its volatile `ACCEPTED` meaning. Retiring it
+removes a second endpoint and HTTP-forwarding shim from ordinary builds. The cooperative
+conflicting-B hold and macOS-specific synchronous-reader diagnosis remain research evidence, not
+claims that the production service enforces application independence or uses that reader.
 
 ## Before implementation: two bounded candidates
 
@@ -47,11 +59,21 @@ selected local journal, not other journals, hosts or external writers.
 
 ## Reproduce
 
-Run from the repository root:
+Use a separate historical checkout, not HEAD:
 
 ```sh
+git clone https://github.com/kapsel-cloud/kapsel.git kapsel-two-action-history
+cd kapsel-two-action-history
+git checkout --detach 2efcfec83f6d35d71b6a3d79b57b1db9606ae737
 python3 scripts/prototype-two-actions.py
+cargo test --locked --test two_action_endpoint_prototype frame_tests -- --nocapture
 ```
+
+The revision is available from the public repository and contains both executable files, this report
+and the raw trace. Its executable SHA-256 values match the recorded trace. Reproduction needs a Unix
+host, the revision's Rust toolchain and locked dependencies, and Python 3.11 or later. The recorded
+host was macOS arm64 / Rust 1.98.0 / Python 3.14.7. Historical execution was not rerun when retiring
+the prototype; no new Linux, live Kubernetes or native-installed evidence is claimed.
 
 The driver creates an exclusive scratch directory, runs independent A/B approvals, starts one
 endpoint, selects actions, disconnects/reconnects, kills/restarts exact child processes at bounded
@@ -69,13 +91,14 @@ Kubernetes, power-loss or distributed coordination result follows.
 
 ## Recorded run
 
-[Raw outcomes](../tests/fixtures/two-action-endpoint-prototype.json) record base revision
-`b22634d6eb289ab64ad7d32a145fed22b0c2c92f`, SHA-256 identities for both executable source files,
-commands, caller frames, selected read-only journal columns, exact original receipt bytes, and
-receiver HTTP requests. These are uncommitted prototype content identities, not invented commit
-revisions. The run used macOS arm64, Rust 1.98.0 and Python 3.14.7. No cluster, credentials or
-private grant bytes are retained. The first two GETs in every case acquire the independent operator
-approvals; `independent` also has a final operator GET for its rejected replacement-approval probe.
+[Raw outcomes](https://github.com/kapsel-cloud/kapsel/blob/2efcfec83f6d35d71b6a3d79b57b1db9606ae737/tests/fixtures/two-action-endpoint-prototype.json)
+record base revision `b22634d6eb289ab64ad7d32a145fed22b0c2c92f`, SHA-256 identities for both
+executable source files, commands, caller frames, selected read-only journal columns, exact original
+receipt bytes, and receiver HTTP requests. Those content identities were recorded before the
+corrected prototype was committed at the reproduction revision above. The run used macOS arm64, Rust
+1.98.0 and Python 3.14.7. No cluster, credentials or private grant bytes are retained. The first two
+GETs in every case acquire the independent operator approvals; `independent` also has a final
+operator GET for its rejected replacement-approval probe.
 
 | Case                                               | Caller/journal result                                                                                           | Actual HTTP PATCH requests |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------- |
@@ -150,14 +173,12 @@ multi-identity access boundary, not evidence for a queue or a production-ready e
 study, authenticated Linux service adaptation, real Kubernetes run, host/disk-loss continuity,
 power-loss durability or distributed conflict management was demonstrated.
 
-Any adoption needs a separately approved, bounded implementation slice: canonical
-[EFFECT_GATEWAY](EFFECT_GATEWAY.md) and [service](KAPSEL_SERVICE.md) contract decisions for identity
-visibility and restart selection; an application/API and operator-configuration owner for exactly
-retained authorities; storage validation and backup requirements preserving original provenance and
-receipt bytes; explicit handling of existing single-identity callers and format-4 journals;
-unchanged one-slot/no-queue bounds; and independent authority/recovery review plus Linux/process and
-owning live-lane evidence before any live claim. This report approves none of those production
-decisions.
+That was the experiment's recommendation, not a pending instruction to maintain its endpoint.
+Subsequent adoption belongs to the canonical [gateway](EFFECT_GATEWAY.md) and
+[service](KAPSEL_SERVICE.md) contracts. In particular, the service's durable `ADMITTED` and retained
+original authority differ from this prototype's process-only `ACCEPTED` and external grant custody.
+Format-4 journals are refused by HEAD. Current source/process coverage is not the full operator and
+agent journey or final installed-artifact qualification, and retirement certifies neither.
 
 ## Validation
 
@@ -198,9 +219,7 @@ frame deadline; a slow caller can still occupy this test-only synchronous endpoi
 service instead binds a Tokio listener and uses awaited stream I/O under an aggregate deadline in
 `crates/kapseld/src/server/runtime.rs`; it does not use this reader and was not changed.
 
-```sh
-cargo test --locked --test two_action_endpoint_prototype frame_tests -- --nocapture
-```
+The historical checkout command above includes the focused framing test.
 
 The regression forces an accepted socket nonblocking on every Unix host and withholds bytes or EOF
 until the reader changes mode or returns. This synchronizes the failure without a timing guess: old

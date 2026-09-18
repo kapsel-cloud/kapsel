@@ -200,6 +200,153 @@ async fn interrupt_service_observation(
     assert_eq!(evidence.lock().unwrap().len(), before);
 }
 
+// Retained from the retired endpoint experiment: selecting B must not repair or rewrite A.
+#[tokio::test(start_paused = true)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two bounded A/B traces with frozen-history assertions"
+)]
+async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
+    use http::{Method, Request, Response};
+    use kube::{client::Body, Client};
+    use tower_test::mock;
+
+    for unknown in [false, true] {
+        let root = std::env::temp_dir().join(format!(
+            "kapsel-service-independent-history-{}-{unknown}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let (service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+        let client = Client::new(service, "demo");
+        let evidence = Arc::new(Mutex::new(Vec::new()));
+        let recorded = evidence.clone();
+        let responder = tokio::spawn(async move {
+            let mut calls = [0; 2];
+            while let Some((request, send)) = handle.next_request().await {
+                let index = match request.uri().path() {
+                    "/apis/apps/v1/namespaces/demo/deployments/api" => 0,
+                    "/apis/apps/v1/namespaces/demo/deployments/other" => 1,
+                    path => panic!("unexpected target: {path}"),
+                };
+                calls[index] += 1;
+                let call = calls[index];
+                let failed_preflight = index == 0 && !unknown && call == 1;
+                let preflight = call == 1 || (index == 0 && !unknown && call == 2);
+                let patch = call == if index == 0 && !unknown { 3 } else { 2 };
+                assert_eq!(
+                    request.method(),
+                    if patch { Method::PATCH } else { Method::GET }
+                );
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((index, request.method().clone()));
+                let mut object = deployment(false);
+                object["metadata"]["name"] = json!(if index == 0 { "api" } else { "other" });
+                object["metadata"]["uid"] = json!(if index == 0 { "uid-1" } else { "uid-other" });
+                if !preflight {
+                    object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(IMAGE);
+                    object["metadata"]["generation"] = json!(2);
+                    object["metadata"]["resourceVersion"] = json!("2");
+                    let identity = if index == 0 { "a" } else { "b" };
+                    object["metadata"]["annotations"] =
+                        json!({"kapsel.dev/kap0038-operation-id": identity});
+                    object["status"]["observedGeneration"] = json!(2);
+                    if unknown && index == 0 && !patch {
+                        object["metadata"]["uid"] = json!("replacement");
+                    }
+                }
+                send.send_response(
+                    Response::builder()
+                        .status(if failed_preflight { 503 } else { 200 })
+                        .body(Body::from(serde_json::to_vec(&object).unwrap()))
+                        .unwrap(),
+                );
+            }
+        });
+        let execution = || ServiceExecution {
+            kubernetes_client: Some(client.clone()),
+            receipt_signing: Some(([42; 32], "receipt-key".into())),
+        };
+        let mut application = ServiceApplication::open(configuration(&root, false)).unwrap();
+        let stopped = application.select("a", execution(), |_| {}).await.unwrap();
+        assert_eq!(
+            stopped,
+            if unknown {
+                kapsel::ServiceStop::Finished
+            } else {
+                kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::PreflightUnavailable)
+            }
+        );
+        let original = retained_row(&root, "a");
+        let receipt = application.receipt("a").unwrap();
+        let status = application.status("a").unwrap();
+        assert_eq!(
+            status.0,
+            if unknown {
+                SetDeploymentImageStatus::Unknown
+            } else {
+                SetDeploymentImageStatus::InProgress
+            }
+        );
+        let before = evidence.lock().unwrap().clone();
+        drop(application);
+        let mut application = ServiceApplication::open(configuration(&root, false)).unwrap();
+        assert_eq!(application.status("a").unwrap(), status);
+        assert_eq!(application.receipt("a").unwrap(), receipt);
+        assert_eq!(application.admitted_state("b").unwrap(), None);
+        assert_eq!(*evidence.lock().unwrap(), before);
+        application.select("b", execution(), |_| {}).await.unwrap();
+        assert_eq!(
+            application.status("b").unwrap().0,
+            SetDeploymentImageStatus::Succeeded
+        );
+        assert_eq!(retained_row(&root, "a"), original);
+        assert_eq!(application.receipt("a").unwrap(), receipt);
+        let b_receipt = application.receipt("b").unwrap();
+        let after_b = evidence.lock().unwrap().clone();
+        application.select("a", execution(), |_| {}).await.unwrap();
+        if unknown {
+            assert_eq!(retained_row(&root, "a"), original);
+            assert_eq!(application.receipt("a").unwrap(), receipt);
+            assert_eq!(*evidence.lock().unwrap(), after_b);
+        } else {
+            assert_eq!(
+                application.status("a").unwrap().0,
+                SetDeploymentImageStatus::Succeeded
+            );
+        }
+        assert_eq!(application.receipt("b").unwrap(), b_receipt);
+        for index in [0, 1] {
+            let requests = evidence.lock().unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|(id, method)| *id == index && *method == Method::PATCH)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                requests.iter().filter(|(id, _)| *id == index).count(),
+                if index == 1 {
+                    3
+                } else if unknown {
+                    182
+                } else {
+                    4
+                }
+            );
+        }
+        drop(application);
+        drop(client);
+        responder.await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 struct Receiver {
     fixture: Fixture,
     requests: Arc<Mutex<Vec<WireRequest>>>,
