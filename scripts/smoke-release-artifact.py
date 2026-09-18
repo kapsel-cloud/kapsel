@@ -1055,6 +1055,9 @@ def exercise_journald_failure() -> None:
     ):
         raise RuntimeError("native journald provisioning diagnostic missing or unsafe")
     systemctl("stop", "kapseld.service")
+    print("Broken setup: startup failed with provisioning_unavailable (operator document absent).")
+    print("Diagnosis: systemctl status kapseld.service; journalctl -u kapseld.service")
+    print("Next: prepare and publish the explicit approval, then start the service.")
 
 
 def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool = False) -> None:
@@ -1100,6 +1103,10 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         directory.chmod(mode)
         os.chown(directory, service_uid, caller_gid)
     if native:
+        print(
+            "Disposable service example: production binaries and systemd; loopback receiver only."
+        )
+        print("Installed the extracted assets with separate service and caller identities.")
         exercise_journald_failure()
     # The temporary fixture remains operator-only. Neither service nor caller traverses it.
     evaluation = temporary / "service-evaluation"
@@ -1131,6 +1138,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         )
         if provision.returncode != 0 or KubernetesFixture.requests != 1:
             raise RuntimeError("artifact snapshot provisioning failed")
+        print("Snapshot approval:", paths["authorization"].read_text())
         candidate = evaluation / "operator.candidate.json"
         prepared = run_binary(
             destinations["ordinary"],
@@ -1183,9 +1191,17 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
             or publication.stderr
         ):
             raise RuntimeError("artifact initial cold publication failed")
+        print("Configuration: PREPARED, then PUBLISHED. Static checks are not execution readiness.")
+        trust = private_roots[0] / "example-receipt.trust"
+        write_private(trust, fixture_receipt_trust(snapshot=True))
+        os.chown(trust, service_uid, caller_gid)
         for restart in range(2):
             before = KubernetesFixture.requests
             if native:
+                print(
+                    "Start:" if restart == 0 else "Read-first restart:",
+                    "systemctl start kapseld.service",
+                )
                 systemctl("start", "kapseld.service")
             else:
                 process = subprocess.Popen(
@@ -1252,6 +1268,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 )
                 if admitted.get("status") != "ADMITTED":
                     raise RuntimeError("artifact did not admit the selected approval")
+                print("Submit:", json.dumps(admitted, sort_keys=True))
             while True:
                 status = service_client(
                     destinations["client"], ["status", OPERATION], caller_uid, caller_gid
@@ -1261,9 +1278,15 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 if time.monotonic() >= deadline:
                     raise RuntimeError("artifact selection failed to complete")
                 time.sleep(0.02)
+            print("Stored status:", json.dumps(status, sort_keys=True))
             receipt = pathlib.Path(f"/tmp/kapsel-artifact-receipt-{restart}")
-            service_client(
+            exported = service_client(
                 destinations["client"], ["receipt", OPERATION, str(receipt)], caller_uid, caller_gid
+            )
+            print("Receipt:", json.dumps(exported, sort_keys=True))
+            inspect_receipt(destinations["ordinary"], receipt, trust)
+            print(
+                "Offline inspection: INSPECTED under separately appointed disposable fixture trust."
             )
             if restart == 0:
                 frozen = receipt.read_bytes()
@@ -1271,6 +1294,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 raise RuntimeError("artifact restart changed receipt bytes")
             if native:
                 systemctl("stop", "kapseld.service")
+                print("Stop: systemctl stop kapseld.service")
                 if (
                     systemctl("show", "kapseld.service", "-p", "MainPID", "--value") != "0"
                     or systemctl("show", "kapseld.service", "-p", "ActiveState", "--value")
@@ -1345,12 +1369,17 @@ def service_client(binary: pathlib.Path, arguments: list[str], uid: int, gid: in
     return response
 
 
-def fixture_receipt_trust() -> bytes:
+def fixture_receipt_trust(*, snapshot: bool = False) -> bytes:
     """Public smoke fixture only. Never included as operator trust in the archive."""
+    purpose = (
+        b"kapsel.kap0038.kubernetes-effect-receipt.v3"
+        if snapshot
+        else b"kapsel.kap0038.kubernetes-effect-receipt.v2"
+    )
     fields = [
         b"kap0038-test-key",
         AUTHORIZATION_PUBLIC_KEY,
-        b"kapsel.kap0038.kubernetes-effect-receipt.v2",
+        purpose,
         (100).to_bytes(8, "big"),
         (200).to_bytes(8, "big"),
     ]

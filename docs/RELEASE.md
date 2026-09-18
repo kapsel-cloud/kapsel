@@ -261,9 +261,10 @@ verified archive tree and prints its path. On an I/O failure, a partial new dest
 inspect it and use a new empty destination, never merge with or overwrite an existing tree.
 
 The result is `./extracted/kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu/`. Use that absolute path
-as `artifact` in the [operator guide](KAPSEL_SERVICE_OPERATOR.md#prepare-the-extracted-artifact).
-Keep the archive, sidecars, source revision and digests as the artifact identity. Installation is a
-separate, explicit operator step.
+as `artifact` in the
+[operator guide](KAPSEL_SERVICE_OPERATOR.md#prepare-your-own-extracted-artifact). Keep the archive,
+sidecars, source revision and digests as the artifact identity. Installation is a separate, explicit
+operator step.
 
 ## Install, upgrade, and artifact-only proof
 
@@ -316,11 +317,13 @@ emulated container smoke test does not establish either qualification.
 ## Native installed-systemd qualification
 
 On an explicitly authorized fresh native x86-64 Debian host with systemd as PID 1, the same
-checksum-bound verifier companion can exercise the shipped unit. This is a **privileged test**, not
-an installer or production setup command. It uses only a loopback HTTP receiver and deterministic
-disposable test keys. It never consumes real cluster credentials or applies the example RBAC to a
-cluster. The build baseline remains Debian 12; record the actual native host's OS and systemd
-version separately, including when qualifying on a newer Debian host.
+checksum-bound verifier companion runs the
+[canonical disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
+and exercises the shipped unit. This is a **privileged test**, not an installer or production setup
+command. It uses only a loopback HTTP receiver and deterministic disposable test keys. It never
+consumes real cluster credentials or applies the example RBAC to a cluster. The build baseline
+remains Debian 12; record the actual native host's OS and systemd version separately, including when
+qualifying on a newer Debian host.
 
 Prerequisites are Python 3.11+, root operator access, systemd/systemd-sysusers, systemd-analyze,
 journalctl, useradd, GNU coreutils, and a fresh host with no Kapsel accounts, groups, unit,
@@ -343,16 +346,18 @@ sudo python3 "$archive.verify.py" --archive "$archive" \
 The test checks fail-closed startup and the fixed journald provisioning diagnostic before approval,
 then uses the installed binaries for snapshot provisioning and cold publication. The shipped unit
 starts the daemon under its service identity. The separate caller is denied private configuration
-access. The test checks socket custody, selects the ID, retrieves a receipt, stops through systemd,
-replaces the cold catalog, starts again, reads retained history and retrieves identical receipt
-bytes. The receiver count must remain one PATCH. No forced kill is used to claim retirement.
+access. The test checks socket custody, selects the ID, retrieves and independently inspects a
+receipt, stops through systemd, replaces the cold catalog, starts again, reads retained history and
+retrieves identical receipt bytes. The receiver count must remain one PATCH. No forced kill is used
+to claim retirement.
 
 Success leaves the unit **stopped**, not enabled, and retains the installed test binaries, unit,
 sysusers/RBAC assets, documentation, service/caller accounts, `/etc/kapsel`, `/var/lib/kapsel`,
-lifecycle lock, fixture authority and two caller-owned `/tmp/kapsel-artifact-receipt-*` exports. Do
-not restart this test installation as a production service. Failure may leave a partial installation
-or an incomplete stop. Preserve and inspect it, do not rerun by deleting history or assume matching
-names are safe to adopt. There is no automatic host cleanup or rollback.
+lifecycle lock, fixture authority, `/etc/kapsel/example-receipt.trust` and two caller-owned
+`/tmp/kapsel-artifact-receipt-*` exports. Do not restart this test installation as a production
+service. Failure may leave a partial installation or an incomplete stop. Preserve and inspect it, do
+not rerun by deleting history or assume matching names are safe to adopt. There is no automatic host
+cleanup or rollback.
 
 Capture the command, exact artifact/source digests, OS release, systemd version, exit and output.
 This gate still does not establish live Kubernetes behavior, interrupted execution or ambiguity

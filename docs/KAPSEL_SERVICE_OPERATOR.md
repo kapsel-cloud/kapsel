@@ -7,7 +7,71 @@ The operator prepares exact approvals and private execution material. A separate
 an approved ID and retrieve its evidence, but cannot change authority or control the service. The
 [service contract](KAPSEL_SERVICE.md) owns fixed paths, identities and process lifecycle.
 
-## Prepare the extracted artifact
+## One-command disposable example
+
+This is the shortest path from an extracted release's production binaries to an inspected receipt.
+It runs the real systemd service with separate operator, service and caller identities. A bounded
+loopback HTTP fixture supplies Kubernetes observations, so no cluster or cloud credentials are
+needed. It demonstrates the mechanism, not a live Deployment rollout or production readiness.
+
+Use a **fresh disposable native x86-64 Debian 12 VM** with systemd as PID 1, Python 3.11+,
+sudo/root, `systemd-sysusers`, `systemd-analyze`, `journalctl`, `useradd` and GNU coreutils. It must
+have no existing Kapsel identities, installation or state. Do not clear existing state to make the
+example run. Docker and ARM emulation do not satisfy this native example's prerequisites.
+
+Obtain the archive and its four companions using the
+[authenticated preparation route](RELEASE.md#authenticate-and-extract-the-preview). Keep all five
+files together. For an unsigned local build, independently record its exact source and archive
+digests and transfer it through a trusted channel. That is not publisher authentication.
+
+Set `archive` to that local archive and `revision` to the independently accepted 40-character source
+revision. Then one command extracts, prepares, starts, submits, inspects and stops the example:
+
+```sh
+sudo python3 "$archive.verify.py" --archive "$archive" --expected-revision "$revision" --service-systemd
+```
+
+This explicitly authorizes installation and activation **inside the disposable VM only**. The
+existing artifact verifier owns the example and its checks. There is no separate demo executable or
+source checkout to install.
+
+The command shows each meaningful action:
+
+1. Install the extracted binaries and shipped unit under distinct service/caller identities.
+2. Deliberately start without an operator document. Confirm the service fails closed and journald
+   reports `provisioning_unavailable`. Show the supported diagnosis commands.
+3. Prepare a real signed snapshot grant from the fixture's target, then prepare and cold-publish the
+   operator document. All keys and approval inputs are disposable fixture authority, never defaults
+   for a real deployment.
+4. Start with systemd, read stored history, and submit `artifact-op-1` through the packaged client.
+   `ADMITTED` confirms durable admission, not receiver success.
+5. Read `SUCCEEDED`, export the receipt and inspect it with the packaged `kapsel inspect` command.
+   `INSPECTED` authenticates the frozen evidence under separately appointed fixture trust.
+6. Stop, replace the cold catalog, restart read-first and retrieve the byte-identical receipt. The
+   fixture must count exactly one PATCH. Finish with the unit stopped and disabled.
+
+After a successful run you can inspect the retained receipt again:
+
+```sh
+sudo /usr/bin/kapsel inspect --receipt /tmp/kapsel-artifact-receipt-0 \
+  --trust /etc/kapsel/example-receipt.trust --evaluation-time-unix-s 150
+```
+
+The time `150` belongs only to the deliberately artificial fixture trust window. It is not a current
+trust evaluation for a real receipt. The fixture is gone when the command returns. Do not restart
+this installation as a real service.
+
+Success retains private state, fixture authority, installed assets, identities and both receipt
+exports for inspection. Failure may leave partial installation or incomplete retirement. Do not
+rerun by deleting history. Preserve the VM until the evidence has been collected, then retire the
+whole disposable VM rather than deleting individual journal files. The
+[native qualification contract](RELEASE.md#native-installed-systemd-qualification) owns the exact
+host footprint and evidence requirements.
+
+## Prepare your own extracted artifact
+
+The following steps are for operator-owned authority and a real receiver, not the disposable example
+above.
 
 Use one fresh, disposable native x86-64 Debian 12 host with systemd, Python 3.11, OpenSSL, sudo and
 standard account tools. Artifact preparation additionally requires Cosign 3.1.2 and GNU `sha256sum`.
@@ -105,17 +169,25 @@ umask 077
   --authorization-key approval-key-1 approval.pub \
   --approval 'Approved image for agent-api' approval.grant \
   --receipt-signing-key-id receipt-key-1 --output operator.candidate.json
-/usr/bin/kapsel validate-service-config --operator-config operator.candidate.json
 install -o kapsel -g kapsel-service-callers -m 0600 kubeconfig.yaml /etc/kapsel/kubeconfig.yaml
 install -o kapsel -g kapsel-service-callers -m 0600 receipt.seed /etc/kapsel/receipt.seed
 runuser -u kapsel -g kapsel-service-callers -- \
   /usr/libexec/kapsel/kapseld --replace-operator-config < operator.candidate.json
 ```
 
-Preparation creates only a new private candidate. `VALIDATED_STATIC` confirms document structure,
-separate trust appointments and snapshot grant authentication. It does not open history, contact
-Kubernetes, check credentials or prove host readiness. Cold replacement separately checks custody
-and compatibility with retained history before publication.
+Preparation validates document structure, separate trust appointments and snapshot grant
+authentication before creating the new private candidate. There is no need to validate that
+unchanged output again. Cold replacement separately checks custody and compatibility with retained
+history before publication.
+
+For a configuration you edited or received from elsewhere, validate it independently:
+
+```sh
+/usr/bin/kapsel validate-service-config --operator-config operator.candidate.json
+```
+
+`VALIDATED_STATIC` confirms those same static checks. It does not open history, contact Kubernetes,
+check credentials or prove host readiness.
 
 Proceed only after `PUBLISHED` and exit `0`. Any missing or uncertain response requires inspection,
 not automatic replay. The command obtains UID/resourceVersion from the receiver before signing the

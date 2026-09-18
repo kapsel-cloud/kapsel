@@ -26,6 +26,8 @@ class ContributorToolsTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Prettier missing:", result.stderr)
+            self.assertIn("Ruff missing:", result.stderr)
             self.assertFalse((home / ".local").exists())
             self.assertFalse((home / ".rustup").exists())
             self.assertFalse((home / ".cargo").exists())

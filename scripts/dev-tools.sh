@@ -9,9 +9,23 @@ PRETTIER="$PRETTIER_HOME/node_modules/.bin/prettier"
 RUFF="$RUFF_HOME/bin/ruff"
 
 check_formatters() {
-  if [ "$("$PRETTIER" --version 2>/dev/null)" != "$PRETTIER_VERSION" ] ||
-      [ "$("$RUFF" --version 2>/dev/null)" != "ruff $RUFF_VERSION" ]; then
-    printf '%s\n' 'Pinned contributor tools unavailable. Run ./scripts/setup.sh.' >&2
-    return 1
+  formatter_status=0
+  if [ ! -x "$PRETTIER" ]; then
+    printf '%s\n' "Prettier missing: $PRETTIER" >&2
+    formatter_status=1
+  elif [ "$("$PRETTIER" --version 2>/dev/null || :)" != "$PRETTIER_VERSION" ]; then
+    printf '%s\n' "Prettier unavailable or mismatched: expected $PRETTIER_VERSION" >&2
+    formatter_status=1
   fi
+  if [ ! -x "$RUFF" ]; then
+    printf '%s\n' "Ruff missing: $RUFF" >&2
+    formatter_status=1
+  elif [ "$("$RUFF" --version 2>/dev/null || :)" != "ruff $RUFF_VERSION" ]; then
+    printf '%s\n' "Ruff unavailable or mismatched: expected $RUFF_VERSION" >&2
+    formatter_status=1
+  fi
+  if [ "$formatter_status" != 0 ]; then
+    printf '%s\n' 'Run ./scripts/setup.sh to prepare the pinned tools.' >&2
+  fi
+  return "$formatter_status"
 }

@@ -18,9 +18,11 @@ Run these from the checkout. Ordinary Cargo builds need only Rust and a C compil
 | Format                                    | `./scripts/format.sh`                                                               |
 | Full deterministic gate                   | `./scripts/ci-local.sh`                                                             |
 
-The [service operator guide](KAPSEL_SERVICE_OPERATOR.md) owns the unpublished extracted-artifact
-path. The older kind crash demo below is not the resident service. Live, native and artifact gates
-are separate from the everyday loop.
+The
+[one-command disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
+uses the unpublished packaged binaries on a fresh native Linux/systemd VM. The older kind crash demo
+below is not the resident service. Live, native and artifact gates are separate from the everyday
+loop.
 
 ## Prerequisites
 

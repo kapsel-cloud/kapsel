@@ -136,7 +136,10 @@ class FormattingPipelineTests(unittest.TestCase):
             with self.subTest(variable=variable):
                 original = self.env[variable]
                 self.env[variable] = "0.0.0"
-                self.assertNotEqual(self.run_format().returncode, 0)
+                result = self.run_format()
+                self.assertNotEqual(result.returncode, 0)
+                name = "Prettier" if variable == "TEST_PRETTIER_VERSION" else "Ruff"
+                self.assertIn(f"{name} unavailable or mismatched: expected", result.stderr)
                 self.assertTrue(all(command[1] == "preflight" for command in self.commands()))
                 self.env[variable] = original
 
