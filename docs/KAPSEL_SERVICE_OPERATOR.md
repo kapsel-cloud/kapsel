@@ -7,6 +7,22 @@ The operator prepares exact approvals and private execution material. A separate
 an approved ID and retrieve its evidence, but cannot change authority or control the service. The
 [service contract](KAPSEL_SERVICE.md) owns fixed paths, identities and process lifecycle.
 
+## Candidate requirements
+
+The commands below describe current source, not every archive named `0.3.0-preview.1`. Identify an
+archive by its exact source revision and SHA-256, not the package version alone.
+
+The executable walkthrough below uses a clean local build from source revision
+`95794b84bd2e21d658c3525f9987873a2ed1a458`, archive SHA-256
+`b2c83a2ab540592531ef7a0fb5b6884c1d3d1305efe2231b8c0aa72fda32f285`. These are unpublished, unsigned
+local bytes, not an authenticated release. This guide adds examples to the documentation bundled at
+that revision without changing its binaries or verifier companion.
+
+Earlier preview archives can lack `prepare-service-config`, `validate-service-config`, narrated
+example output or the retained example trust file. Do not mix an archive with a newer verifier
+companion. Accept the complete matching archive and sidecars at an exact revision. No preview
+download or native qualification of these new bytes is implied.
+
 ## One-command disposable example
 
 This is the shortest path from an extracted release's production binaries to an inspected receipt.
@@ -67,6 +83,97 @@ rerun by deleting history. Preserve the VM until the evidence has been collected
 whole disposable VM rather than deleting individual journal files. The
 [native qualification contract](RELEASE.md#native-installed-systemd-qualification) owns the exact
 host footprint and evidence requirements.
+
+## Captured first action and same-ID recovery
+
+Follow the [canonical input](#canonical-deployment-image-example),
+[key generation](#generate-disposable-keys-and-inspection-trust) and
+[preparation commands](#read-the-snapshot-sign-and-assemble-configuration) below. This captured
+fixture example shows the operator repairing missing receipt-signing material and the caller
+resuming the original ID. It is not a live Kubernetes rollout. Do not withhold material from a
+service that owns real work just to reproduce this failure.
+
+Preparation printed these three JSON lines:
+
+```text
+{"command":"provision-snapshot-grant","status":"PROVISIONED"}
+{"command":"prepare-service-config","status":"PREPARED"}
+{"command":"validate-service-config","status":"VALIDATED_STATIC"}
+```
+
+The prepared document was checked against the freshly generated public key and exact signed grant.
+Its structure is shown with those variable values redacted, **not as a loadable configuration**:
+
+```json
+{
+  "service_configuration_version": 1,
+  "authorization_keys": [
+    { "key_id": "approval-key-1", "public_key_hex": "<generated approval.pub encoded as hex>" }
+  ],
+  "approvals": [
+    {
+      "label": "Approved image for agent-api",
+      "signed_grant_hex": "<generated approval.grant encoded as hex>"
+    }
+  ],
+  "receipt_signing_key_id": "receipt-key-1"
+}
+```
+
+Cold publication returned `PUBLISHED`. `list` returned `artifact-op-1`, its approved image and
+snapshot `artifact-deployment-uid` / resourceVersion `1`. Initial `history` was empty. Neither read
+contacted the receiver. After `submit artifact-op-1`, the exact admission response was:
+
+<!-- example-admitted -->
+
+```json
+{ "version": 1, "status": "ADMITTED", "phase": "requested" }
+```
+
+`status artifact-op-1` then returned `IN_PROGRESS` after one PATCH and frozen rollout observations.
+Its execution field was:
+
+<!-- example-signing -->
+
+```json
+{
+  "action_owner": "operator",
+  "condition": "signing_unavailable",
+  "disposition": "operator_required",
+  "next_action": "contact_operator"
+}
+```
+
+The operator stopped gracefully, restored the intended `receipt.seed` under its original custody and
+restarted. Reading the **same ID before submission** still returned `IN_PROGRESS`, now with:
+
+<!-- example-resume -->
+
+```json
+{
+  "action_owner": "caller",
+  "condition": null,
+  "disposition": "resume_required",
+  "next_action": "select_same_id"
+}
+```
+
+The restart did not contact the receiver. `submit artifact-op-1` then returned:
+
+<!-- example-readmitted -->
+
+```json
+{ "version": 1, "status": "ADMITTED", "phase": "receiver_observed" }
+```
+
+Subsequent status was `SUCCEEDED`, with `execution.next_action: "inspect_result"`. Receipt export
+returned `READY` with a SHA-256 and the new caller-owned path. Inspection under the independently
+appointed `receipt.trust` returned `INSPECTED`, `operation_id: "artifact-op-1"` and
+`result: "SUCCEEDED"`. Random keys make the grant and receipt digests differ between runs.
+
+The fixture counted one PATCH. Restoring the intended signer completed the already frozen evidence,
+so same-ID resumption sent no new receiver requests. See [validation](#validation) for reproduction
+and the limits of this evidence.
 
 ## Prepare your own extracted artifact
 
@@ -136,39 +243,174 @@ In a private operator workspace, provision these inputs using your cluster and k
 
 - `kubeconfig.yaml`: explicit context, endpoint and embedded CA/credential data. No exec plugin,
   credential-file reference or ambient fallback. Issue bounded credentials and record their expiry.
-- `approval.seed` and `approval.pub`: the existing operator's 32-byte raw Ed25519 signing seed and
-  matching 32-byte public key. Appoint the public key independently. Never derive trust from a
-  grant.
-- `receipt.seed`: a separate intended 32-byte raw Ed25519 receipt seed. Retain its public key and
-  separately appointed receipt trust for later inspection.
+- `approval.seed` and `approval.pub`: the operator's 32-byte raw Ed25519 signing seed and matching
+  public key. Appoint the public key independently. Never derive trust from a grant.
+- `receipt.seed`: a separate intended 32-byte raw Ed25519 receipt seed. Retain `receipt.pub` and
+  separately appointed `receipt.trust` for later inspection. The disposable generation example below
+  creates these files without fixed test seeds.
 - `authorization.json`: the exact intent below. Replace the example image with your approved digest
   and use a new operation ID for each genuinely new approval.
 
 Keep this workspace mode `0700` and private inputs mode `0600`. Do not give the approval seed to the
 service. The service only needs its public appointment and signed grants.
 
+### Canonical Deployment-image example
+
+The example throughout this guide is `demo/agent-api`, container `api`, operation `artifact-op-1`.
+The fixture uses this small Deployment with a synthetic starting image. It supplies UID and
+resourceVersion as receiver facts, not fields for the caller to invent:
+
+<!-- example-deployment -->
+
 ```json
 {
-  "authorization_id": "approval-1",
-  "operation_id": "service-op-1",
-  "namespace": "demo",
-  "deployment": "agent-api",
-  "container": "api",
-  "immutable_image_digest": "registry.example/agent-api@sha256:<64-lowercase-hex>"
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": { "namespace": "demo", "name": "agent-api" },
+  "spec": {
+    "replicas": 1,
+    "selector": { "matchLabels": { "app": "agent-api" } },
+    "template": {
+      "metadata": { "labels": { "app": "agent-api" } },
+      "spec": {
+        "containers": [
+          {
+            "name": "api",
+            "image": "registry.example/kapsel/agent-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  }
 }
 ```
 
-From that private workspace in the root operator shell:
+For a real disposable cluster, the cluster operator must create namespace `demo`, replace that image
+with a real approved starting digest, and apply the Deployment using their own cluster tools. Wait
+for the starting rollout to settle before snapshot approval. The synthetic registry and digests in
+this fixture are not downloadable images. Creating the workload is separate from Kapsel's one image
+change. Never apply this fixture manifest unchanged to a real cluster.
+
+Save this readable intent as `authorization.json`. For a real receiver, replace the desired image
+with your approved digest. Use the ID only for this approval:
+
+<!-- example-authorization -->
+
+```json
+{
+  "authorization_id": "approval-1",
+  "operation_id": "artifact-op-1",
+  "namespace": "demo",
+  "deployment": "agent-api",
+  "container": "api",
+  "immutable_image_digest": "registry.example/kapsel/agent-api@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+```
+
+The fields identify the operator's approval, its stable action ID and the one exact image change.
+There are no credentials, private paths or arbitrary patch fields. Service callers subsequently
+select only `artifact-op-1`, not this JSON document.
+
+### Generate disposable keys and inspection trust
+
+Run in a new private workspace, mode `0700`, with Python 3.11+ and OpenSSL 3. These are freshly
+random local keys, not production key-management advice. The approval seed stays with the operator.
+The service receives only its public appointment and signed approval, plus the **separate** receipt
+seed. The public receipt key is appointed here before any receipt exists.
+
+The Python block uses OpenSSL to derive public keys from random Ed25519 seeds. It checks the exact
+RFC 8410 public-key encoding before extracting the raw 32 bytes Kapsel requires. It creates files
+exclusively, so an existing key or trust file stops the example rather than being replaced. On a
+partial failure, inspect and use a new workspace. Do not rerun over existing authority.
+
+<!-- example-keys -->
+
+```sh
+umask 077
+python3 - <<'PY'
+import os
+import pathlib
+import subprocess
+import time
+
+os.umask(0o077)
+for name in ("approval", "receipt"):
+    seed = os.urandom(32)
+    encoded = subprocess.run(
+        ["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"],
+        input=bytes.fromhex("302e020100300506032b657004220420") + seed,
+        capture_output=True, check=True, timeout=10,
+    ).stdout
+    prefix = bytes.fromhex("302a300506032b6570032100")
+    if len(encoded) != len(prefix) + 32 or not encoded.startswith(prefix):
+        raise RuntimeError("unexpected Ed25519 public-key encoding")
+    for suffix, data in (("seed", seed), ("pub", encoded[len(prefix):])):
+        with open(f"{name}.{suffix}", "xb") as output:
+            output.write(data)
+
+# Explicit disposable inspection appointment, valid for this next hour only.
+evaluation_time = int(time.time())
+fields = [
+    b"receipt-key-1", pathlib.Path("receipt.pub").read_bytes(),
+    b"kapsel.kap0038.kubernetes-effect-receipt.v3",
+    evaluation_time.to_bytes(8, "big", signed=True),
+    (evaluation_time + 3600).to_bytes(8, "big", signed=True),
+]
+trust = b"KAPSEL-KAP0038-K8S-TRUST-V2\0" + b"".join(
+    bytes([number]) + len(value).to_bytes(4, "big") + value
+    for number, value in enumerate(fields, 1)
+)
+with open("receipt.trust", "xb") as output:
+    output.write(trust)
+with open("evaluation-time.txt", "x") as output:
+    output.write(str(evaluation_time) + "\n")
+print("Created separate disposable approval and receipt keys plus receipt.trust")
+PY
+```
+
+The recorded time is an explicit trust-evaluation input, not a receipt timestamp or proof of when
+Kubernetes changed. The [receipt contract](EFFECT_GATEWAY.md#receipt-and-inspection) owns trust
+framing and time meaning. The fixture's separate fixed-time trust is not the appointment above.
+
+### Read the snapshot, sign and assemble configuration
+
+From that private workspace in the root operator shell, with `kubeconfig.yaml` already provisioned:
+
+<!-- example-prepare -->
 
 ```sh
 umask 077
 /usr/bin/kapsel provision-snapshot-grant \
   --authorization authorization.json --kubeconfig kubeconfig.yaml \
-  --signing-seed approval.seed --signing-key-id approval-key-1 --output approval.grant
+  --signing-seed approval.seed --signing-key-id approval-key-1 --output approval.grant &&
 /usr/bin/kapsel prepare-service-config \
   --authorization-key approval-key-1 approval.pub \
   --approval 'Approved image for agent-api' approval.grant \
   --receipt-signing-key-id receipt-key-1 --output operator.candidate.json
+```
+
+`provision-snapshot-grant` performs the authenticated receiver read itself. It signs that UID and
+resourceVersion along with the intent. A separate `kubectl get` is not a substitute for this read.
+Neither command changes the Deployment or publishes the service document.
+
+Inspect the actual assembled version-1 document locally:
+
+```sh
+python3 -m json.tool operator.candidate.json
+```
+
+Its `service_configuration_version` is `1`. `authorization_keys` appoints `approval-key-1` with
+`approval.pub` encoded as hex. `approvals` contains the display label and the real signed
+`approval.grant` encoded as hex. `receipt_signing_key_id` is `receipt-key-1`, a public identity, not
+the receipt seed. Hex is transport encoding, not something to edit or copy from this guide. The
+readable intent above explains what the grant authorizes. The document contains no configurable
+paths or cluster credentials. The [exact schema](KAPSEL_SERVICE.md#versioned-operator-document) owns
+its bounds. Keep the actual generated document private instead of publishing reusable approval
+bytes.
+
+After successful preparation, install execution material and cold-publish the candidate:
+
+```sh
 install -o kapsel -g kapsel-service-callers -m 0600 kubeconfig.yaml /etc/kapsel/kubeconfig.yaml
 install -o kapsel -g kapsel-service-callers -m 0600 receipt.seed /etc/kapsel/receipt.seed
 runuser -u kapsel -g kapsel-service-callers -- \
@@ -272,7 +514,7 @@ With the service already provisioned and running, list the approved handles and 
 history before selecting an ID. These example IDs are placeholders, not authority:
 
 ```sh
-operation_id=service-op-1
+operation_id=artifact-op-1
 sudo -u kapsel-service-caller -g kapsel-service-callers -- \
   /usr/bin/kapsel-service-client list
 sudo -u kapsel-service-caller -g kapsel-service-callers -- \
@@ -306,10 +548,11 @@ file and inspect them under separately supplied trust:
 receipt="/tmp/$operation_id.receipt"
 sudo -u kapsel-service-caller -g kapsel-service-callers -- \
   /usr/bin/kapsel-service-client receipt "$operation_id" "$receipt"
-evaluation_time_unix_s='<operator-selected Unix second within receipt trust>'
+# In the operator workspace above, read the explicitly recorded evaluation time.
+read -r evaluation_time_unix_s < evaluation-time.txt
 sudo /usr/bin/kapsel inspect \
   --receipt "$receipt" \
-  --trust /secure/kapsel/receipt.trust \
+  --trust receipt.trust \
   --evaluation-time-unix-s "$evaluation_time_unix_s"
 ```
 
@@ -376,6 +619,35 @@ no-resend boundary.
 
 ## Disconnect, restart and uncertainty
 
+```mermaid
+flowchart TD
+    A[Durable apply_started marker] --> B[One patch opportunity]
+    A --> X[Process lost, dispatch uncertain]
+    B --> X
+    X --> R[Restart and read original ID]
+    R --> S[Explicitly select same unfinished ID]
+    S --> O[Observe only, never resend patch]
+    O --> F[Freeze bounded outcome and signed receipt]
+    F -.-> E[Read original evidence without Kubernetes access]
+```
+
+The diagram follows loss after the attempt marker, not every possible unfinished phase. If status
+requires operator remediation, resolve that first. For a resumable unfinished `artifact-op-1`, the
+caller sequence is explicit:
+
+```sh
+sudo -u kapsel-service-caller -g kapsel-service-callers -- \
+  /usr/bin/kapsel-service-client status artifact-op-1
+# Only when execution guidance calls for same-ID selection:
+sudo -u kapsel-service-caller -g kapsel-service-callers -- \
+  /usr/bin/kapsel-service-client submit artifact-op-1
+sudo -u kapsel-service-caller -g kapsel-service-callers -- \
+  /usr/bin/kapsel-service-client status artifact-op-1
+```
+
+This is a recovery procedure, not captured crash-test output. Do not create a crash by killing a
+service that owns real work merely to follow the example.
+
 Caller disconnect does not cancel surviving selected work. Service startup exposes authenticated
 stored reads without reconciliation, Kubernetes availability, receipt seeds or export access.
 Missing, invalid or unsafe execution files disable that material without disabling reads; they do
@@ -394,3 +666,35 @@ Systemd and operator configuration own lifecycle and credentials. A stopped daem
 unavailable. Already exported receipts remain inspectable offline. Database loss can prevent
 retrieval, and losing or rolling back action history defeats continuity assumptions. No automatic
 backup, HA, credential renewal, installer recovery or destructive cleanup is supplied by this guide.
+
+## Validation
+
+The captured walkthrough used the [exact candidate](#candidate-requirements) and existing artifact
+HTTP fixture in the pinned Debian 12 container, emulated as `linux/amd64` on an ARM host. It needed
+Docker, Python 3.11 and OpenSSL 3, with no Rust toolchain in the operating container.
+
+The test supplies an anonymous loopback kubeconfig and separate numeric service/caller identities.
+Direct process start/stop replaces systemd/sudo. It withholds `receipt.seed` on the first start,
+then restores it after graceful retirement. These are explicit test adaptations, not execution of
+the native installation commands. No other manual intervention was needed.
+
+The first recorded exercise took **1.11 seconds**, excluding assembly, image preparation and
+extraction. There was exactly one PATCH and three GETs: snapshot approval, preflight and
+observation. Signing recovery acquired no new receiver facts. This is finite
+executable-documentation evidence, not representative onboarding timing, a live rollout,
+process-loss recovery, native systemd qualification or production acceptance.
+
+Reproduce from the checkout with the existing artifact test owner:
+
+```sh
+python3 scripts/test-release-artifact.py --archive "$archive" \
+  --example-revision 95794b84bd2e21d658c3525f9987873a2ed1a458 \
+  ReleaseArtifactTests.test_documented_operator_example
+```
+
+The explicit revision binds the accepted artifact, not the documentation checkout's later HEAD. The
+test executes marked guide blocks and checks the recorded admission and recovery fields against
+actual responses. It creates only a disposable container and temporary workspace. The separate
+[native example](#one-command-disposable-example) uses systemd and retains its host footprint.
+Graceful signing recovery does not replace
+[packaged interrupted-execution qualification](RELEASE.md#install-upgrade-and-artifact-only-proof).

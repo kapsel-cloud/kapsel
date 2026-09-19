@@ -4,6 +4,11 @@ This guide authenticates and runs the published v0.2.x `x86_64-unknown-linux-gnu
 is an evaluation path, not production guidance. Use one exact version and every named sidecar from
 the project's GitHub release; release tags and assets are immutable.
 
+For the unpublished resident service, use the separate
+[service example and operator guide](KAPSEL_SERVICE_OPERATOR.md). Its archive uses a checksum-bound
+verifier companion. The beta archive below does not include that companion and has a different
+layout. Do not use this beta extractor for a preview, or apply current service commands to v0.2.
+
 ## What you will see
 
 The disposable-`kind` demonstration follows one bounded Deployment image request through healthy,
@@ -183,10 +188,13 @@ The ordinary binary contains no demonstration pause behavior. The separate
 
 ## Explore the interfaces
 
-The archive bundles the complete [evaluator command contract](COMMANDS.md) and fixed
-[MCP adapter contract](MCP.md). Use those references for exact JSON inputs, out-of-band operator
-configuration, command output, exit classes, MCP lifecycle, and tool schema rather than treating the
-demonstration harness as a general interface.
+The archive bundles the complete
+[v0.2 evaluator command contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/COMMANDS.md)
+and fixed
+[v0.2 MCP adapter contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/MCP.md). Use the
+documents bundled with your exact release, not HEAD's newer contracts, for JSON inputs, out-of-band
+operator configuration, command output, exit classes, MCP lifecycle, and tool schema rather than
+treating the demonstration harness as a general interface.
 
 Both adapters use the same deep application path. The caller supplies only the bounded operation
 identity and target. Grants, trust, Kubernetes credentials, signing material, journal and receipt

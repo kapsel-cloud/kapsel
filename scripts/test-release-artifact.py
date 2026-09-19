@@ -30,6 +30,7 @@ TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 RELEASE_ARCHIVE: pathlib.Path | None = None
+EXAMPLE_REVISION: str | None = None
 
 
 def release_archive() -> pathlib.Path:
@@ -394,6 +395,209 @@ class ReleaseVerifierTests(unittest.TestCase):
 
 
 class ReleaseArtifactTests(unittest.TestCase):
+    def test_documented_operator_example(self) -> None:
+        """Execute guide preparation with extracted binaries and the existing HTTP fixture."""
+        archive = release_archive()
+        revision = (
+            EXAMPLE_REVISION
+            or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        )
+        with tempfile.TemporaryDirectory(prefix="kapsel-doc-example-") as temporary:
+            root = SMOKE.extract_release(
+                archive,
+                pathlib.Path(str(archive) + ".sha256"),
+                revision,
+                pathlib.Path(temporary) / "extracted",
+            )
+            # Only extracted binaries, their checksum-bound fixture and authored documentation
+            # enter this container. No source build or private operator guidance is available.
+            script = r"""
+import importlib.util
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+
+spec = importlib.util.spec_from_file_location("fixture", "/fixture.py")
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+guide = pathlib.Path("/guide.md").read_text()
+
+def block(name, language):
+    matches = re.findall(
+        rf"<!-- example-{name} -->\s*```{language}\n(.*?)\n```", guide, re.S
+    )
+    assert len(matches) == 1, name
+    return matches[0]
+
+started = time.monotonic()
+os.umask(0o077)
+workspace = pathlib.Path(tempfile.mkdtemp(prefix="operator-"))
+os.chdir(workspace)
+binary = pathlib.Path("/usr/bin/kapsel")
+shutil.copyfile("/artifact/bin/kapsel", binary)
+binary.chmod(0o755)
+client = pathlib.Path("/artifact/bin/kapsel-service-client")
+service = pathlib.Path("/artifact/libexec/kapsel/kapseld")
+subprocess.run(["sh", "-eu", "-c", block("keys", "sh")], check=True, timeout=30)
+assert pathlib.Path("approval.seed").read_bytes() != pathlib.Path("receipt.seed").read_bytes()
+for name in ("approval.seed", "receipt.seed", "approval.pub", "receipt.pub", "receipt.trust"):
+    assert pathlib.Path(name).stat().st_mode & 0o777 == 0o600
+target = json.loads(fixture.deployment("1", 1, False))
+for field in ("uid", "resourceVersion", "generation"):
+    del target["metadata"][field]
+assert json.loads(block("deployment", "json")) == target
+intent = json.loads(block("authorization", "json"))
+assert intent["operation_id"] == fixture.OPERATION
+assert intent["immutable_image_digest"] == fixture.IMAGE
+pathlib.Path("authorization.json").write_text(json.dumps(intent))
+fixture.reset_kubernetes_fixture()
+fixture.KubernetesFixture.responses.insert(0, fixture.deployment("1", 1, False))
+server = fixture.http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.KubernetesFixture)
+thread = threading.Thread(target=server.serve_forever, daemon=True)
+thread.start()
+pathlib.Path("kubeconfig.yaml").write_text(json.dumps({
+    "apiVersion": "v1", "kind": "Config", "current-context": "fixture",
+    "clusters": [{"name": "fixture", "cluster": {
+        "server": f"http://127.0.0.1:{server.server_port}"
+    }}],
+    "contexts": [{"name": "fixture", "context": {"cluster": "fixture", "user": "fixture"}}],
+    "users": [{"name": "fixture", "user": {}}],
+}))
+process = None
+
+def start():
+    return subprocess.Popen(
+        [str(service), "--operator-config", "/etc/kapsel/operator.json",
+         "--socket", "/run/kapsel/kapseld.sock"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        user=61000, group=61000, extra_groups=[], umask=0o077,
+    )
+
+def read(command):
+    return fixture.service_client(client, command, 61001, 61000)
+
+def wait_for_read(command, predicate):
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        assert process.poll() is None, "service exited"
+        try:
+            result = read(command)
+        except RuntimeError:
+            time.sleep(0.02)
+            continue
+        if predicate(result):
+            return result
+        time.sleep(0.02)
+    raise AssertionError("documented operation did not reach expected state")
+
+try:
+    subprocess.run(["sh", "-eu", "-c", block("prepare", "sh")], check=True, timeout=30)
+    assert fixture.KubernetesFixture.requests == 1
+    assert fixture.KubernetesFixture.mutations == 0
+    document = pathlib.Path("operator.candidate.json").read_bytes()
+    config = json.loads(document)
+    assert config == {
+        "service_configuration_version": 1,
+        "authorization_keys": [{"key_id": "approval-key-1",
+            "public_key_hex": pathlib.Path("approval.pub").read_bytes().hex()}],
+        "approvals": [{"label": "Approved image for agent-api",
+            "signed_grant_hex": pathlib.Path("approval.grant").read_bytes().hex()}],
+        "receipt_signing_key_id": "receipt-key-1",
+    }
+    subprocess.run([str(binary), "validate-service-config", "--operator-config",
+                    "operator.candidate.json"], check=True, timeout=10)
+    for path, mode in (("/etc/kapsel", 0o700), ("/var/lib/kapsel", 0o700),
+                       ("/run/kapsel", 0o750)):
+        pathlib.Path(path).mkdir(mode=mode)
+        pathlib.Path(path).chmod(mode)
+        os.chown(path, 61000, 61000)
+    fixture.write_private(pathlib.Path("/etc/kapsel/kubeconfig.yaml"),
+                          pathlib.Path("kubeconfig.yaml").read_bytes())
+    os.chown("/etc/kapsel/kubeconfig.yaml", 61000, 61000)
+    published = subprocess.run([str(service), "--replace-operator-config"], input=document,
+        capture_output=True, user=61000, group=61000, extra_groups=[], timeout=30)
+    assert (published.returncode, published.stdout, published.stderr) == (0, b"PUBLISHED\n", b"")
+    print("Cold publication: PUBLISHED", flush=True)
+    process = start()
+    print("List:", json.dumps(wait_for_read(["list"], lambda r: r["status"] == "READY")), flush=True)
+    assert read(["history"])["entries"] == []
+    assert fixture.KubernetesFixture.requests == 1
+    admitted = read(["submit", fixture.OPERATION])
+    assert admitted == json.loads(block("admitted", "json"))
+    print("Submit:", json.dumps(admitted), flush=True)
+    stopped = wait_for_read(["status", fixture.OPERATION],
+        lambda r: r.get("execution", {}).get("condition") == "signing_unavailable")
+    assert stopped["status"] == "IN_PROGRESS"
+    assert stopped["execution"] == json.loads(block("signing", "json"))
+    assert fixture.KubernetesFixture.mutations == 1
+    print("Signing unavailable:", json.dumps(stopped), flush=True)
+    process.terminate()
+    _, diagnostics = process.communicate(timeout=30)
+    assert process.returncode == 0
+    fixture.write_private(pathlib.Path("/etc/kapsel/receipt.seed"), pathlib.Path("receipt.seed").read_bytes())
+    os.chown("/etc/kapsel/receipt.seed", 61000, 61000)
+    before = fixture.KubernetesFixture.requests
+    process = start()
+    resumed = wait_for_read(["status", fixture.OPERATION],
+        lambda r: r.get("execution", {}).get("disposition") == "resume_required")
+    assert fixture.KubernetesFixture.requests == before
+    assert resumed["execution"] == json.loads(block("resume", "json"))
+    print("Read-first restart:", json.dumps(resumed), flush=True)
+    readmitted = read(["submit", fixture.OPERATION])
+    assert readmitted == json.loads(block("readmitted", "json"))
+    print("Same-ID submit:", json.dumps(readmitted), flush=True)
+    complete = wait_for_read(["status", fixture.OPERATION], lambda r: r["status"] == "SUCCEEDED")
+    assert fixture.KubernetesFixture.requests == before, "completion acquired new receiver facts"
+    print("Completed:", json.dumps(complete), flush=True)
+    receipt = pathlib.Path("/tmp/documented-example.receipt")
+    print("Receipt:", json.dumps(read(["receipt", fixture.OPERATION, str(receipt)])), flush=True)
+    inspection = subprocess.run([str(binary), "inspect", "--receipt", str(receipt),
+        "--trust", "receipt.trust", "--evaluation-time-unix-s",
+        pathlib.Path("evaluation-time.txt").read_text().strip()],
+        capture_output=True, check=True, timeout=10)
+    report = json.loads(inspection.stdout)
+    assert report["status"] == "INSPECTED", report
+    print("Inspection:", inspection.stdout.decode().strip(), flush=True)
+    assert fixture.KubernetesFixture.mutations == 1
+    assert fixture.KubernetesFixture.requests == 4
+    print(f"Documented example: one PATCH, same-ID signing recovery; {time.monotonic() - started:.2f}s", flush=True)
+finally:
+    if process is not None and process.poll() is None:
+        process.terminate()
+        process.communicate(timeout=30)
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+"""
+            subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "-i",
+                    "--platform",
+                    "linux/amd64",
+                    "--volume",
+                    f"{root}:/artifact:ro",
+                    "--volume",
+                    f"{archive}.verify.py:/fixture.py:ro",
+                    "--volume",
+                    f"{ROOT / 'docs/KAPSEL_SERVICE_OPERATOR.md'}:/guide.md:ro",
+                    SMOKE_IMAGE,
+                    "python3",
+                    "-",
+                ],
+                input=script.encode(),
+                check=True,
+                timeout=180,
+            )
+
     def test_dirty_source_is_rejected_before_build(self) -> None:
         sentinel = ROOT / ".kapsel-release-dirty-test"
         sentinel.write_text("dirty\n")
@@ -728,6 +932,11 @@ class ReleaseArtifactTests(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=pathlib.Path)
+    parser.add_argument(
+        "--example-revision",
+        help="independently accepted revision for the documented example only; default checkout HEAD",
+    )
     arguments, unittest_arguments = parser.parse_known_args()
     RELEASE_ARCHIVE = pathlib.Path(os.path.abspath(arguments.archive))
+    EXAMPLE_REVISION = arguments.example_revision
     unittest.main(argv=[sys.argv[0], *unittest_arguments])
