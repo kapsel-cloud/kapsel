@@ -136,6 +136,88 @@ in that evidence. This lane is separate from deterministic CI. See
 [Live Kubernetes and demonstration](TESTING.md#live-kubernetes-and-demonstration) for the gateway,
 admission, and frozen JSON Patch comparison cases.
 
+## Packaged-service live workflow
+
+The separate extracted-artifact lane requires Docker, kind 0.32+, kubectl 1.30+ and Python 3.11+.
+Use an exact accepted clean preview archive and its matching sidecars. This is a privileged
+**disposable test environment**, not permission to use an existing cluster:
+
+```sh
+python3 scripts/test-kind-agent-action-workflow.py --archive "$archive" --revision "$revision"
+```
+
+The runner creates one uniquely named, pinned kind cluster and an isolated Linux service container.
+It transfers only extracted production binaries, their public key-generation procedure and scoped
+fixture authority into the operating environment. It never builds a test-feature binary or uses a
+private product pause hook. Distinct operator/service/caller identities own preparation, execution
+and selection. The caller selects approved IDs from one catalog, with no per-action configuration
+switching. The fixture operator owns the disposable Deployments' desired state. No existing
+reconciler is disabled.
+
+The cases cover a healthy action, deliberately stale snapshot, service SIGKILL after the live image
+change followed by explicit same-ID resumption, and caller loss before acknowledgement during a
+rollout that exceeds the observation window. Independent B remains selectable after A's frozen
+`UNKNOWN`. A conflicting follow-on ID was never provisioned and must remain unavailable to a hostile
+caller before and after cold replacement. Original receipts remain retrievable after catalog
+withdrawal. API-server audit independently counts product PATCH requests, excluding explicitly
+identified fixture writes used to prepare the faults.
+
+The runner probes private-file and executable custody under the caller identity before submission.
+Private fixture credentials and evidence are copied into container-owned directories, not exposed
+through host bind mounts whose permission behavior can differ across Docker environments. The
+extracted public artifact is the only host bind. These probes are finite process-level evidence, not
+a general host-security certification.
+
+To additionally exercise the representative agent integration, supply an independently accepted
+Linux x86-64 Codex 0.155.1 executable, its matching `codex-code-mode-host` sibling, and existing
+model authentication. The runner does not install or update Codex:
+
+```sh
+python3 scripts/test-kind-agent-action-workflow.py --archive "$archive" --revision "$revision" \
+  --agent --codex-binary /absolute/path/to/verified/codex
+```
+
+The default lane requires no model account or call. The optional lane copies only the model's
+`~/.codex/auth.json` into a private caller-owned directory inside the disposable container. An
+operator can select another private model-auth file with `--codex-auth`. No host home directory,
+agent configuration, Kubernetes authority or Docker socket is exposed to the model. The source auth
+file must be private, owned, regular and single-link. It is not modified or synchronized back. The
+container copy is removed after the call, and container cleanup removes any remaining local model
+state.
+
+Codex runs as UID 61001, distinct from both root preparation and the Kapsel service identity. It
+lists actual approvals, submits the existing `healthy` ID, reads status and exports its receipt
+through the product client. Before starting Codex, the runner must pass the caller's OS custody
+probes. Codex's inner approval prompts and sandbox are explicitly bypassed **only inside this
+externally isolated disposable caller**. The container's `no-new-privileges`, absent private host
+mounts and OS identities are the boundary, not prompt advice or confirmation dialogs. Never copy
+that bypass flag into a host or operator invocation.
+
+The agent container has a 4 GiB memory ceiling. The driver waits up to 120 seconds for Codex, then
+requires all remaining caller-UID processes to retire before checking evidence or starting scripted
+cases. Killing the host `docker exec` process alone is not sufficient. User configuration and
+exec-policy rules are not loaded, and session persistence is disabled. This tests specific product
+custody boundaries, not comprehensive hostile-code containment. The model can read its own model
+authentication and has network access.
+
+The driver checks product state independently of model prose and refuses success if another fixture
+action was admitted. Status comes from the installed native client with its fixed socket. Python
+supervision and receipt readers use isolated mode to exclude model-writable imports. The driver
+snapshots a bounded, regular, non-symlink model receipt **before** creating a canonical export, then
+compares the bytes. It records CLI identity, both executable digests and token usage, not raw model
+sessions. There is no provider SDK, agent framework or new product command.
+
+This is one model-driven healthy action. The remaining fault and recovery cases are deterministic
+caller programs, not model-driven troubleshooting or evidence of useful action selection. Neither
+mode qualifies native systemd installation, application quality, publication, or a cumulative
+observation deadline across interruptions.
+
+The printed private workspace retains sanitized result summaries, bounded exercise output, and
+fixture inputs for inspection. It also contains a cluster-admin kubeconfig and an expiring scoped
+fixture token. Do not publish that directory. The owned container and cluster are removed after the
+run. A cleanup error requires inspection of those named resources, not broad Docker or kind cleanup.
+The native example separately retains its stopped host state.
+
 ## Public crash-recovery demonstration
 
 Requires Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:

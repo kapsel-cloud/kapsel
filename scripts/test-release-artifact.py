@@ -60,6 +60,13 @@ if ASSEMBLY_SPEC is None or ASSEMBLY_SPEC.loader is None:
     raise RuntimeError("could not load the release assembler")
 ASSEMBLY = importlib.util.module_from_spec(ASSEMBLY_SPEC)
 ASSEMBLY_SPEC.loader.exec_module(ASSEMBLY)
+JOURNEY_SPEC = importlib.util.spec_from_file_location(
+    "kind_agent_action_workflow", ROOT / "scripts/test-kind-agent-action-workflow.py"
+)
+if JOURNEY_SPEC is None or JOURNEY_SPEC.loader is None:
+    raise RuntimeError("could not load the live journey runner")
+JOURNEY = importlib.util.module_from_spec(JOURNEY_SPEC)
+JOURNEY_SPEC.loader.exec_module(JOURNEY)
 
 
 class ZeroReader(io.RawIOBase):
@@ -214,6 +221,108 @@ def synthetic_archive(
 
 
 class ReleaseVerifierTests(unittest.TestCase):
+    def test_agent_execution_is_unprivileged_and_completion_requires_product_evidence(self) -> None:
+        for case in (
+            "valid",
+            "model-failure",
+            "model-prose-only",
+            "unintended-action",
+            "receipt-mismatch",
+            "retirement-incomplete",
+            "runtime-error",
+            "timeout",
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                workspace = pathlib.Path(temporary)
+                binary = workspace / "codex"
+                binary.write_bytes(b"fixture binary")
+                binary.with_name("codex-code-mode-host").write_bytes(b"fixture helper")
+                responses = [
+                    subprocess.CompletedProcess([], 0, b"", b""),
+                    subprocess.CompletedProcess(
+                        [],
+                        int(case == "model-failure"),
+                        b'{"type":"turn.completed","usage":{}}\n',
+                        b"",
+                    ),
+                ]
+
+                if case == "runtime-error":
+                    responses[1].stdout += b'{"type":"item.completed","item":{"type":"error"}}\n'
+                if case == "timeout":
+                    responses[1] = subprocess.TimeoutExpired("docker exec", 120)
+
+                def product(arguments, case=case, **_kwargs):
+                    if JOURNEY.RETIRE_CALLERS in arguments:
+                        return b"" if case == "retirement-incomplete" else b"CALLERS_RETIRED\n"
+                    if JOURNEY.RECEIPT_SNAPSHOT in arguments:
+                        return (
+                            b"wrong"
+                            if case == "receipt-mismatch"
+                            and arguments[-1].endswith("healthy.receipt")
+                            else b"frozen receipt"
+                        )
+                    if arguments[-1] == "--version":
+                        return b"codex fixture\n"
+                    if "/usr/bin/kapsel-service-client" in arguments:
+                        if "receipt" in arguments:
+                            return json.dumps(
+                                {"version": 1, "status": "READY", "receipt_sha256": "1" * 64}
+                            ).encode()
+                        state = "NOT_FOUND"
+                        if arguments[-1] == "healthy" and case != "model-prose-only":
+                            state = "SUCCEEDED"
+                        if arguments[-1] == "stale" and case == "unintended-action":
+                            state = "IN_PROGRESS"
+                        return json.dumps({"version": 1, "status": state}).encode()
+                    return b""
+
+                with (
+                    mock.patch.object(JOURNEY.subprocess, "run", side_effect=responses) as cli,
+                    mock.patch.object(JOURNEY, "run", side_effect=product) as transport,
+                ):
+                    if case == "valid":
+                        evidence = JOURNEY.run_agent(
+                            "owned-container", workspace, binary, workspace / "auth.json"
+                        )
+                        self.assertEqual(evidence["uid"], 61001)
+                        self.assertEqual(evidence["status"], "SUCCEEDED")
+                        self.assertEqual(
+                            json.loads((workspace / "selection.json").read_text()),
+                            {"operation_id": "healthy"},
+                        )
+                    else:
+                        with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)):
+                            JOURNEY.run_agent(
+                                "owned-container", workspace, binary, workspace / "auth.json"
+                            )
+                        self.assertFalse((workspace / "selection.json").exists())
+                    for invocation in transport.call_args_list:
+                        argv = invocation.args[0]
+                        if "/usr/bin/kapsel-service-client" in argv:
+                            self.assertEqual(
+                                argv[argv.index("owned-container") + 1],
+                                "/usr/bin/kapsel-service-client",
+                            )
+                    arguments = cli.call_args_list[1].args[0]
+                    self.assertEqual(
+                        arguments[:5], ["docker", "exec", "--user", "61001:61000", "--workdir"]
+                    )
+                    self.assertIn("--ignore-user-config", arguments)
+                    self.assertIn("--ignore-rules", arguments)
+                    self.assertIn("--ephemeral", arguments)
+                    self.assertEqual(
+                        transport.call_args.args[0],
+                        [
+                            "docker",
+                            "exec",
+                            "owned-container",
+                            "rm",
+                            "-f",
+                            "/home/caller/.codex/auth.json",
+                        ],
+                    )
+
     def test_native_qualification_preserves_and_refuses_dangling_enablement(self) -> None:
         for kind in ("wants", "requires", "alias", "linked-directory"):
             with (
@@ -395,6 +504,125 @@ class ReleaseVerifierTests(unittest.TestCase):
 
 
 class ReleaseArtifactTests(unittest.TestCase):
+    def test_model_process_retirement_and_receipt_custody(self) -> None:
+        """Real Linux probes for timeout descendants and forged model receipt paths."""
+        script = (
+            "retire = "
+            + repr(JOURNEY.RETIRE_CALLERS)
+            + "\nsnapshot = "
+            + repr(JOURNEY.RECEIPT_SNAPSHOT)
+            + "\n"
+            + r'''
+import os
+import pathlib
+import select
+import subprocess
+import sys
+import tempfile
+
+identity = {"user": 61001, "group": 61000, "extra_groups": [], "cwd": "/tmp"}
+assert subprocess.run([sys.executable, "-I", "-c", retire], capture_output=True, timeout=5).returncode != 0
+process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, **identity)
+try:
+    process.wait(timeout=0.05)
+    raise AssertionError("timeout fixture exited early")
+except subprocess.TimeoutExpired:
+    pass
+assert subprocess.check_output([sys.executable, "-I", "-c", retire], timeout=5, **identity) == b"CALLERS_RETIRED\n"
+assert process.wait(timeout=5) == -9
+
+launcher = """
+import os
+import time
+pid = os.fork()
+if pid == 0:
+    os.close(1)
+    os.close(2)
+    time.sleep(60)
+else:
+    print(pid, flush=True)
+    os._exit(0)
+"""
+read_fd, write_fd = os.pipe()
+try:
+    subprocess.run([sys.executable, "-c", launcher], capture_output=True,
+                   pass_fds=(write_fd,), check=True, timeout=5, **identity)
+    os.close(write_fd)
+    write_fd = None
+    assert not select.select([read_fd], [], [], 0)[0], "background fixture already retired"
+    assert subprocess.check_output([sys.executable, "-I", "-c", retire], timeout=5, **identity) == b"CALLERS_RETIRED\n"
+    assert select.select([read_fd], [], [], 1)[0], "background child survived completed parent"
+    assert os.read(read_fd, 1) == b"", "background child retained its descriptor"
+finally:
+    os.close(read_fd)
+    if write_fd is not None:
+        os.close(write_fd)
+
+root = pathlib.Path(tempfile.mkdtemp())
+os.chown(root, 61001, 61000)
+# A writable model HOME/CWD must not poison the independent Python observer.
+(root / "sitecustomize.py").write_text("raise SystemExit(99)\n")
+(root / "pathlib.py").write_text("raise SystemExit(99)\n")
+identity["cwd"] = str(root)
+identity["env"] = dict(os.environ, PYTHONPATH=str(root), HOME=str(root))
+assert subprocess.check_output([sys.executable, "-I", "-c", retire], timeout=5, **identity) == b"CALLERS_RETIRED\n"
+model = root / "model.receipt"
+canonical = root / "checked.receipt"
+model.symlink_to(canonical)
+for exists in (False, True):
+    if exists:
+        canonical.write_bytes(b"frozen")
+        os.chown(canonical, 61001, 61000)
+    result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
+                            capture_output=True, timeout=5, **identity)
+    assert result.returncode != 0 and not result.stdout
+model.unlink()
+os.link(canonical, model)
+result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
+                        capture_output=True, timeout=5, **identity)
+assert result.returncode != 0
+model.unlink()
+for content in (b"x" * 65537, b"frozen"):
+    model.write_bytes(content)
+    os.chown(model, 61001, 61000)
+    result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
+                            capture_output=True, timeout=5, **identity)
+    assert (result.returncode == 0) == (content == b"frozen")
+    if result.returncode == 0:
+        assert result.stdout == content
+model.unlink()
+os.mkfifo(model, 0o600)
+os.chown(model, 61001, 61000)
+result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
+                        capture_output=True, timeout=5, **identity)
+assert result.returncode != 0
+print("Caller timeout/background retirement and receipt custody probes passed")
+'''
+        )
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "-i",
+                "--platform",
+                "linux/amd64",
+                "--network",
+                "none",
+                "--security-opt=no-new-privileges",
+                "--pids-limit=128",
+                "--memory=256m",
+                SMOKE_IMAGE,
+                "python3",
+                "-",
+            ],
+            input=script.encode(),
+            check=True,
+            timeout=40,
+        )
+
     def test_documented_operator_example(self) -> None:
         """Execute guide preparation with extracted binaries and the existing HTTP fixture."""
         archive = release_archive()
@@ -418,6 +646,7 @@ import os
 import pathlib
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -517,9 +746,7 @@ try:
         pathlib.Path(path).mkdir(mode=mode)
         pathlib.Path(path).chmod(mode)
         os.chown(path, 61000, 61000)
-    fixture.write_private(pathlib.Path("/etc/kapsel/kubeconfig.yaml"),
-                          pathlib.Path("kubeconfig.yaml").read_bytes())
-    os.chown("/etc/kapsel/kubeconfig.yaml", 61000, 61000)
+    # Start without receiver material. Read availability and admission are independent of it.
     published = subprocess.run([str(service), "--replace-operator-config"], input=document,
         capture_output=True, user=61000, group=61000, extra_groups=[], timeout=30)
     assert (published.returncode, published.stdout, published.stderr) == (0, b"PUBLISHED\n", b"")
@@ -531,6 +758,40 @@ try:
     admitted = read(["submit", fixture.OPERATION])
     assert admitted == json.loads(block("admitted", "json"))
     print("Submit:", json.dumps(admitted), flush=True)
+    unavailable = wait_for_read(["status", fixture.OPERATION],
+        lambda r: r.get("execution", {}).get("condition") == "receiver_unavailable")
+    assert unavailable["status"] == "IN_PROGRESS"
+    assert unavailable["execution"]["action_owner"] == "operator"
+    assert fixture.KubernetesFixture.requests == 1
+    process.terminate()
+    _, diagnostics = process.communicate(timeout=30)
+    assert process.returncode == 0
+    assert b"receiver_unavailable" in diagnostics
+    fixture.write_private(pathlib.Path("/etc/kapsel/kubeconfig.yaml"),
+                          pathlib.Path("kubeconfig.yaml").read_bytes())
+    os.chown("/etc/kapsel/kubeconfig.yaml", 61000, 61000)
+    # Keep valid execution material but remove the actual receiver listener. This is a transport
+    # outage, distinct from missing credentials, and cannot become a receiver result.
+    port = server.server_port
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+    process = start()
+    wait_for_read(["status", fixture.OPERATION],
+        lambda r: r.get("execution", {}).get("disposition") == "resume_required")
+    assert fixture.KubernetesFixture.requests == 1
+    selected = read(["submit", fixture.OPERATION])
+    assert selected == {"version": 1, "status": "ADMITTED", "phase": "authorized"}, selected
+    offline = wait_for_read(["status", fixture.OPERATION],
+        lambda r: r.get("execution", {}).get("condition") == "preflight_unavailable")
+    assert offline["status"] == "IN_PROGRESS"
+    assert fixture.KubernetesFixture.mutations == 0
+    assert fixture.KubernetesFixture.requests == 1
+    server = fixture.http.server.ThreadingHTTPServer(("127.0.0.1", port), fixture.KubernetesFixture)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    assert read(["submit", fixture.OPERATION]) == selected
+    print("Receiver access restored: explicit same-ID selection, no replacement approval", flush=True)
     stopped = wait_for_read(["status", fixture.OPERATION],
         lambda r: r.get("execution", {}).get("condition") == "signing_unavailable")
     assert stopped["status"] == "IN_PROGRESS"
@@ -567,6 +828,77 @@ try:
     assert fixture.KubernetesFixture.mutations == 1
     assert fixture.KubernetesFixture.requests == 4
     print(f"Documented example: one PATCH, same-ID signing recovery; {time.monotonic() - started:.2f}s", flush=True)
+
+    # Exercise loss of an external trust appointment, not loss/replacement of the retained grant.
+    # Remediation uses only cold publication and the original operator-held document.
+    frozen = receipt.read_bytes()
+    process.terminate()
+    _, diagnostics = process.communicate(timeout=30)
+    assert process.returncode == 0
+    journal = pathlib.Path("/var/lib/kapsel/journal.sqlite3")
+    retained = journal.read_bytes()
+    withdrawn = dict(config, approvals=[], authorization_keys=[])
+    published = subprocess.run([str(service), "--replace-operator-config"],
+        input=json.dumps(withdrawn).encode(), capture_output=True,
+        user=61000, group=61000, extra_groups=[], timeout=30)
+    assert (published.returncode, published.stdout, published.stderr) == (0, b"PUBLISHED\n", b"")
+    assert journal.read_bytes() == retained
+    # Execution material is deliberately unavailable throughout historical read recovery.
+    pathlib.Path("/etc/kapsel/kubeconfig.yaml").unlink()
+    pathlib.Path("/etc/kapsel/receipt.seed").unlink()
+    process = start()
+    inaccessible = {"version": 1, "status": "ERROR", "error_class": "authority_unavailable"}
+    assert wait_for_read(["status", fixture.OPERATION], lambda r: r == inaccessible) == inaccessible
+    history = read(["history"])
+    assert history["entries"] == [{"operation_id": fixture.OPERATION,
+        "status": "ERROR", "error_class": "authority_unavailable"}]
+    assert read(["submit", fixture.OPERATION]) == inaccessible
+    denied_receipt = pathlib.Path("/tmp/unavailable-authority.receipt")
+    denied = subprocess.run([str(client), "receipt", fixture.OPERATION, str(denied_receipt)],
+        capture_output=True, user=61001, group=61000, extra_groups=[], timeout=10)
+    assert denied.returncode != 0 and not denied_receipt.exists()
+    assert fixture.KubernetesFixture.requests == before
+    process.terminate()
+    _, diagnostics = process.communicate(timeout=30)
+    assert process.returncode == 0
+    assert b"original_authority_unavailable" in diagnostics
+    assert journal.read_bytes() == retained
+    for private in (pathlib.Path("approval.seed").read_bytes().hex().encode(),
+                    pathlib.Path("receipt.seed").read_bytes().hex().encode(),
+                    pathlib.Path("approval.grant").read_bytes().hex().encode()):
+        assert private not in diagnostics + denied.stdout + denied.stderr
+    print("Missing original trust: authority_unavailable; history preserved; export refused", flush=True)
+
+    restored = subprocess.run([str(service), "--replace-operator-config"], input=document,
+        capture_output=True, user=61000, group=61000, extra_groups=[], timeout=30)
+    assert (restored.returncode, restored.stdout, restored.stderr) == (0, b"PUBLISHED\n", b"")
+    process = start()
+    recovered = wait_for_read(["status", fixture.OPERATION], lambda r: r["status"] == "SUCCEEDED")
+    assert recovered == complete
+    original = pathlib.Path("/tmp/restored-authority.receipt")
+    assert read(["receipt", fixture.OPERATION, str(original)])["status"] == "READY"
+    assert original.read_bytes() == frozen
+    assert fixture.KubernetesFixture.requests == before
+    assert fixture.KubernetesFixture.mutations == 1
+    process.terminate()
+    process.communicate(timeout=30)
+    assert process.returncode == 0
+    assert journal.read_bytes() == retained
+    print("Original trust restored: identical receipt, no receiver or signing material, zero HTTP", flush=True)
+
+    # Fault preparation only: mark this disposable journal unsupported. The operator procedure
+    # must stop here, not rewrite the version, restore an older database, or create a new ID.
+    with sqlite3.connect(journal) as connection:
+        connection.execute("PRAGMA user_version = 4")
+    refused = journal.read_bytes()
+    process = start()
+    _, diagnostics = process.communicate(timeout=30)
+    assert process.returncode != 0
+    assert b"storage_or_operation_blocked" in diagnostics
+    assert journal.read_bytes() == refused
+    assert fixture.KubernetesFixture.requests == before
+    assert fixture.KubernetesFixture.mutations == 1
+    print("Unsupported-version fixture: startup refused, journal unchanged; stop and inspect", flush=True)
 finally:
     if process is not None and process.poll() is None:
         process.terminate()

@@ -15,8 +15,24 @@ practical cost of exact-snapshot approval.
 
 Does not own: A new grant format, authorization policy, observation lifecycle, agent integration, or
 product decision. Canonical behavior remains owned by [effect-gateway](EFFECT_GATEWAY.md) and the
-[service contract](KAPSEL_SERVICE.md). Reproduction commands live in
-`scripts/test-kind-agent-action-workflow.sh`.
+[service contract](KAPSEL_SERVICE.md). Historical reproduction commands live in
+`scripts/test-kind-agent-action-workflow.sh` at the evidence revision above, not HEAD. The current
+[packaged-service workflow](BUILD.md#packaged-service-live-workflow) uses production artifacts and
+explicit same-ID resumption instead of that experiment's private pause hooks.
+
+## What changes in the packaged path
+
+The [current workflow](BUILD.md#packaged-service-live-workflow) uses the retained artifact's
+existing provisioning and cold-publication commands. One operator-owned catalog holds multiple
+approvals, so callers discover and select A or B without handwritten handle records or per-action
+configuration switching. Reapproval still requires an operator decision and a new identity.
+
+Service restart now exposes read-first state and requires explicit same-ID resumption instead of
+this experiment's startup reconciliation. The live fixture observes the image change before killing
+the service, rather than using a private pause hook. OS identities protect credentials and service
+files. The optional Codex run performs one healthy action through the native client; deterministic
+caller programs exercise the fault matrix. Neither provides comparative operator-step costs,
+representative rejection rates or evidence of useful agent decisions.
 
 ## Intended workflow
 

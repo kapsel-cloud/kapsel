@@ -617,6 +617,25 @@ authority and storage may prevent startup. The journal retains at most **504 ide
 unfinished actions**. There is no pruning. Clearing history to make room or resume would destroy the
 no-resend boundary.
 
+### Recover access to original evidence
+
+`authority_unavailable` is not `NOT_FOUND`. The journal can retain an action while the operator's
+external appointment of its original grant key is missing. `history` keeps that ID visible without
+exposing unauthenticated action facts. Receipt export and submission remain blocked for that ID.
+
+Stop gracefully and inspect the original operator-held public-key appointment. If that exact
+appointment remains available and its restoration is authorized, prepare a complete candidate
+containing it, then use [cold replacement](#replace-the-cold-operator-document). Restart and read
+the original ID. Do not generate a replacement key or grant. A completed action needs only its
+original trust and healthy storage for receipt retrieval, not receiver credentials or
+receipt-signing material. An unfinished action still requires the remediation and explicit same-ID
+selection shown by its execution guidance.
+
+If the original authority cannot be established, stop and preserve the journal. Minting another ID,
+deleting history or restoring a stale database does not recover the missing authority. Similarly,
+`storage_or_operation_blocked` on opening an unsupported journal is a stop-and-inspect condition,
+not permission to edit its version or initialize a replacement.
+
 ## Disconnect, restart and uncertainty
 
 ```mermaid
@@ -698,3 +717,37 @@ actual responses. It creates only a disposable container and temporary workspace
 [native example](#one-command-disposable-example) uses systemd and retains its host footprint.
 Graceful signing recovery does not replace
 [packaged interrupted-execution qualification](RELEASE.md#install-upgrade-and-artifact-only-proof).
+
+The same artifact test also exercises explicit fixture faults through the production binaries:
+
+- Start without receiver material. Admission remains readable with `receiver_unavailable`, with no
+  mutation. Restore the intended kubeconfig and restart read-first.
+- With valid receiver material but the actual HTTP listener stopped, explicit selection leaves
+  `preflight_unavailable`, not a receiver outcome. Restore the listener and explicitly select the
+  same ID, without refreshing approval. Only the subsequent healthy attempt sends a PATCH.
+- After receipt completion, cold-publish a catalog without the original external trust appointment.
+  Check caller `authority_unavailable`, operator `original_authority_unavailable`, refused export
+  and unchanged journal bytes. Restore the original appointment through cold publication. The
+  original receipt is byte-identical even with receiver and signing material absent, with zero new
+  HTTP.
+- Mark the disposable journal's version unsupported as test fault preparation. Startup must refuse
+  it without changing journal bytes or contacting the receiver. The procedure stops there. It never
+  repairs a database version, deletes history or restores an older database.
+
+These are fixture fault checks, not live receiver unavailability, a genuine historical format-4
+journal, storage exhaustion, agent confinement or native installation evidence. The test's private
+version edit prepares only the unsupported-input fixture. No recovery step uses database edits.
+
+### Native artifact baseline
+
+The `--service-systemd` example also passed on a fresh x86-64 Debian 12 guest, with QEMU reporting
+KVM acceleration enabled, systemd `252.39-1~deb12u2` as PID 1 and Python `3.11.2`. It consumed an
+unsigned local artifact from clean source `f6063ba8d9a333b04428001b1072cbe64cb6393d`, archive
+SHA-256 `3b63e6bee2b07a7e8406cf2ba3cac99e52ecf01ef5b7f70a75933f4921d6162f`, transferred through the
+trusted operator channel and checked against its digest manifest before running the companion.
+
+The example observed one PATCH, a read-first restart and byte-identical receipt retrieval. It
+finished with `ActiveState=inactive`, `MainPID=0` and `UnitFileState=disabled`. The guest was then
+powered off with its installation, identities, private state and exports retained. No product source
+was present in the guest. This qualifies that finite native fixture exercise, not publisher
+authentication, live Kubernetes recovery, agent confinement or the final combined candidate.
