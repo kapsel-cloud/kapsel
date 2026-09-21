@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -61,6 +63,22 @@ else:
 
 
 class ReleaseSbomScannerTests(unittest.TestCase):
+    def test_fifo_sbom_is_rejected_without_waiting_for_a_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "fifo"
+            os.mkfifo(path)
+            code = (
+                "import importlib.util,pathlib\n"
+                f"s=importlib.util.spec_from_file_location('scanner', {str(ROOT / 'scripts/scan-release-sbom.py')!r})\n"
+                "m=importlib.util.module_from_spec(s)\ns.loader.exec_module(m)\n"
+                f"m.read_bounded_regular(pathlib.Path({str(path)!r}),256)\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", code], capture_output=True, timeout=5
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"not a bounded regular file", result.stderr)
+
     def fixture(
         self,
     ) -> tuple[tempfile.TemporaryDirectory[str], pathlib.Path, pathlib.Path, dict[str, str]]:

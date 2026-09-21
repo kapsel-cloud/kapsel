@@ -67,7 +67,7 @@ def sha256(path: pathlib.Path) -> str:
 
 
 def read_bounded_regular(path: pathlib.Path, maximum: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as source:
         metadata = os.fstat(source.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:

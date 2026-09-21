@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import selectors
 import stat
 import subprocess
 import tempfile
@@ -235,6 +236,8 @@ def receipt(case, suffix):
         "--trust", "receipt.trust", "--evaluation-time-unix-s",
         pathlib.Path("evaluation-time.txt").read_text().strip()]))
     assert report["status"] == "INSPECTED"
+    assert report["operation_id"] == case, report
+    assert report["result"] == ("UNKNOWN" if case == "caller-loss" else "SUCCEEDED"), report
     return path.read_bytes()
 
 try:
@@ -264,7 +267,7 @@ except PermissionError:
 else:
     raise AssertionError('caller became root')
 """
-    probe_result = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+    probe_result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True,
                                   timeout=10, cwd="/tmp", **identity)
     assert probe_result.returncode == 0, probe_result.stderr[:2048]
     if settings["agent"]:
@@ -283,7 +286,7 @@ else:
             body = json.dumps({"version": 1, "request": "submit_set_deployment_image",
                                "operation_id": case}).encode()
             lost = "import socket,os; s=socket.socket(socket.AF_UNIX); s.connect('/run/kapsel/kapseld.sock'); s.sendall(bytes.fromhex('" + (len(body).to_bytes(4, 'big') + body).hex() + "')); os._exit(0)"
-            command([sys.executable, "-c", lost], cwd="/tmp", **identity)
+            command([sys.executable, "-I", "-c", lost], cwd="/tmp", **identity)
         elif not (settings["agent"] and case == "healthy"):
             assert read("submit", case)["status"] == "ADMITTED"
         if case == "service-loss":
@@ -348,6 +351,46 @@ def run(arguments: list[str], *, data: bytes | None = None, timeout: int = 60) -
     return result.stdout
 
 
+def run_agent_process(arguments: list[str], *, timeout: float = 120) -> subprocess.CompletedProcess:
+    """Bound both model output streams while draining, before retaining their bytes."""
+    maximum = 256 * 1024
+    streams = [bytearray(), bytearray()]
+    deadline = time.monotonic() + timeout
+    with (
+        subprocess.Popen(
+            arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ) as process,
+        selectors.DefaultSelector() as selector,
+    ):
+        try:
+            for index, stream in enumerate((process.stdout, process.stderr)):
+                selector.register(stream, selectors.EVENT_READ, index)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(arguments[0], timeout)
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fileobj.fileno(), 8192)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    output = streams[key.data]
+                    if len(output) + len(chunk) > maximum:
+                        raise RuntimeError("confined Codex output exceeded its byte bound")
+                    output.extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(arguments[0], timeout)
+            process.wait(timeout=remaining)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    return subprocess.CompletedProcess(
+        arguments, process.returncode, bytes(streams[0]), bytes(streams[1])
+    )
+
+
 def run_agent(
     name: str, workspace: pathlib.Path, binary: pathlib.Path, auth: pathlib.Path
 ) -> dict[str, object]:
@@ -401,7 +444,7 @@ def run_agent(
         # is the already-probed non-root Docker identity, no-new-privileges and private OS custody.
         # There is no host shell tool, Docker socket, private bind or product source in this caller.
         try:
-            result = subprocess.run(
+            result = run_agent_process(
                 [
                     *caller,
                     "/usr/local/bin/codex",
@@ -418,9 +461,7 @@ def run_agent(
                     "--json",
                     prompt,
                 ],
-                capture_output=True,
                 timeout=120,
-                check=False,
             )
         finally:
             retired = run(
@@ -428,7 +469,7 @@ def run_agent(
             )
             if retired != b"CALLERS_RETIRED\n":
                 raise RuntimeError("model caller processes did not retire")
-        if result.returncode != 0 or len(result.stdout) > 256 * 1024:
+        if result.returncode != 0:
             raise RuntimeError("confined Codex run failed; inspect original product identity")
         events = [json.loads(line) for line in result.stdout.splitlines()]
         completed = [event for event in events if event.get("type") == "turn.completed"]

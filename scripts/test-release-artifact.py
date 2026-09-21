@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import gzip
 import hashlib
@@ -221,6 +222,102 @@ def synthetic_archive(
 
 
 class ReleaseVerifierTests(unittest.TestCase):
+    def test_agent_output_streams_are_bounded_before_completion(self) -> None:
+        for stream in (1, 2):
+            with self.subTest(stream=stream):
+                with self.assertRaisesRegex(RuntimeError, "byte bound"):
+                    JOURNEY.run_agent_process(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-c",
+                            f"import os; os.write({stream}, b'x' * (256 * 1024 + 1))",
+                        ]
+                    )
+        with self.assertRaises(subprocess.TimeoutExpired):
+            JOURNEY.run_agent_process(
+                [sys.executable, "-I", "-c", "import time; time.sleep(10)"], timeout=0.1
+            )
+        result = JOURNEY.run_agent_process(
+            [sys.executable, "-I", "-c", "import os; os.write(1, b'out'); os.write(2, b'err')"]
+        )
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"out", b"err"))
+
+    def test_journey_python_calls_exclude_caller_writable_imports(self) -> None:
+        tree = ast.parse(JOURNEY.EXERCISE)
+        invocations = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.List)
+            and node.elts
+            and ast.unparse(node.elts[0]) == "sys.executable"
+        ]
+        self.assertEqual(len(invocations), 2)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "socket.py").write_text("raise SystemExit(99)\n")
+            for invocation in invocations:
+                prefix = eval(
+                    compile(
+                        ast.fix_missing_locations(
+                            ast.Expression(ast.List(elts=invocation.elts[:3], ctx=ast.Load()))
+                        ),
+                        "<caller-prefix>",
+                        "eval",
+                    ),
+                    {"sys": sys},
+                )
+                self.assertEqual(prefix, [sys.executable, "-I", "-c"])
+                subprocess.run([*prefix, "import socket"], cwd=root, check=True, timeout=5)
+
+    def test_journey_receipt_binds_action_and_result(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(JOURNEY.EXERCISE).body
+            if isinstance(node, ast.FunctionDef) and node.name == "receipt"
+        )
+        for operation, result in (
+            ("caller-loss", "UNKNOWN"),
+            ("healthy", "UNKNOWN"),
+            ("caller-loss", "SUCCEEDED"),
+        ):
+            with self.subTest(operation=operation, result=result):
+                report = {"status": "INSPECTED", "operation_id": operation, "result": result}
+                path = mock.Mock()
+                path.read_text.return_value = "1"
+                path.read_bytes.return_value = b"frozen"
+                scope = {
+                    "pathlib": SimpleNamespace(Path=lambda _, path=path: path),
+                    "json": json,
+                    "read": lambda *args: {"status": "READY"},
+                    "command": lambda *args, report=report: json.dumps(report),
+                }
+                exec(
+                    compile(ast.Module(body=[function], type_ignores=[]), "<receipt>", "exec"),
+                    scope,
+                )
+                if operation == "caller-loss" and result == "UNKNOWN":
+                    self.assertEqual(scope["receipt"]("caller-loss", "restart"), b"frozen")
+                else:
+                    with self.assertRaises(AssertionError):
+                        scope["receipt"]("caller-loss", "restart")
+
+    def test_fifo_sidecar_is_rejected_without_waiting_for_a_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "fifo"
+            os.mkfifo(path)
+            code = (
+                "import importlib.util,pathlib\n"
+                f"s=importlib.util.spec_from_file_location('smoke', {str(ROOT / 'scripts/smoke-release-artifact.py')!r})\n"
+                "m=importlib.util.module_from_spec(s)\ns.loader.exec_module(m)\n"
+                f"m.read_bounded_regular(pathlib.Path({str(path)!r}),256)\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-I", "-c", code], capture_output=True, timeout=5
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"not a bounded regular file", result.stderr)
+
     def test_agent_execution_is_unprivileged_and_completion_requires_product_evidence(self) -> None:
         for case in (
             "valid",
@@ -231,6 +328,7 @@ class ReleaseVerifierTests(unittest.TestCase):
             "retirement-incomplete",
             "runtime-error",
             "timeout",
+            "output-overflow",
         ):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
                 workspace = pathlib.Path(temporary)
@@ -251,6 +349,8 @@ class ReleaseVerifierTests(unittest.TestCase):
                     responses[1].stdout += b'{"type":"item.completed","item":{"type":"error"}}\n'
                 if case == "timeout":
                     responses[1] = subprocess.TimeoutExpired("docker exec", 120)
+                if case == "output-overflow":
+                    responses[1] = RuntimeError("confined Codex output exceeded its byte bound")
 
                 def product(arguments, case=case, **_kwargs):
                     if JOURNEY.RETIRE_CALLERS in arguments:
@@ -278,7 +378,10 @@ class ReleaseVerifierTests(unittest.TestCase):
                     return b""
 
                 with (
-                    mock.patch.object(JOURNEY.subprocess, "run", side_effect=responses) as cli,
+                    mock.patch.object(JOURNEY.subprocess, "run", return_value=responses[0]),
+                    mock.patch.object(
+                        JOURNEY, "run_agent_process", side_effect=responses[1:]
+                    ) as cli,
                     mock.patch.object(JOURNEY, "run", side_effect=product) as transport,
                 ):
                     if case == "valid":
@@ -304,7 +407,7 @@ class ReleaseVerifierTests(unittest.TestCase):
                                 argv[argv.index("owned-container") + 1],
                                 "/usr/bin/kapsel-service-client",
                             )
-                    arguments = cli.call_args_list[1].args[0]
+                    arguments = cli.call_args.args[0]
                     self.assertEqual(
                         arguments[:5], ["docker", "exec", "--user", "61001:61000", "--workdir"]
                     )
