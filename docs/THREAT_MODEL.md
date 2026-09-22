@@ -4,9 +4,8 @@
 > once, prove that the receiver is truthful, or prove that no action bypassed Kapsel.
 
 This page owns adversaries, surviving claims, assumptions, and non-claims for the active Kubernetes
-effect gateway and the unpublished service boundary. The
-[effect-gateway contract](EFFECT_GATEWAY.md) owns exact semantics; [technical scope](SCOPE.md) owns
-maturity and support posture.
+effect gateway and resident-service boundary. The [effect-gateway contract](EFFECT_GATEWAY.md) owns
+exact semantics; [technical scope](SCOPE.md) owns maturity and support posture.
 
 ## Assets, trust, and seams
 
@@ -81,10 +80,10 @@ was unattempted, failed, rolled back, or safe. Restart uses ordinary application
 
 ### Demonstration control misuse
 
-The bundled harness stops a process at two fixed crash windows without adding lifecycle control to
-caller input. Ordinary builds contain no pause behavior. The separately built executable accepts
-only fixed environment-selected seams and an owner-private control directory; malformed, symlinked,
-partial, or repeated controls fail closed.
+The source-only demonstration harness stops a process at two fixed crash windows without adding
+lifecycle control to caller input. Ordinary builds contain no pause behavior. The separately built
+executable accepts only fixed environment-selected seams and an owner-private control directory;
+malformed, symlinked, partial, or repeated controls fail closed.
 
 The harness is evaluator tooling, not a production binary or authorization boundary. Anyone able to
 replace its executable or process environment already controls that local process. Markers and its
@@ -126,7 +125,7 @@ Checksums alone do not authenticate a publisher. Reproducibility and Sigstore id
 source review, workflow or builder integrity, dependency safety, current non-withdrawal, production
 fitness, or another platform. [Release artifacts](RELEASE.md) owns exact controls and limits.
 
-## Unpublished service boundary
+## Resident-service boundary
 
 The service adds a local admission and lifetime boundary but does not change gateway semantics. The
 locked service identity owns exact mode-`0700` configuration and state roots and mode-`0600`
@@ -136,11 +135,11 @@ GID before any frame is read. The fixed caller uses that group as its primary gr
 supplementary-membership mutation is installed.
 
 Startup opens fixed configuration, state, and runtime roots descriptor-relatively, rejects symlinks,
-consumes validated regular single-link authority files, and reconciles before admission. It leaves
-every unexpected leaf unchanged and removes only an exact inactive service-owned stale socket.
-Systemd owns process lifecycle, failed-start runtime cleanup, health, and diagnostics, with no
-automatic restart. One in-flight submission is a bound, not a queue. `ACCEPTED` means only that the
-process owns execution; it is never `SUCCEEDED`.
+consumes validated regular single-link authority files, and starts read-first. It leaves every
+unexpected leaf unchanged and removes only an exact inactive service-owned stale socket. Systemd
+owns process lifecycle, failed-start runtime cleanup, health, and diagnostics, with no automatic
+restart. One active worker is a bound, not a queue. `ADMITTED` means durable action admission; it is
+never `SUCCEEDED`. Advancing retained work requires explicit same-ID selection.
 
 The exact Role allows namespaced `get` and `patch` on one Deployment. Because RBAC cannot constrain
 patch fields, the concrete adapter remains the field-level authority owner. Host root, kernel,
@@ -149,12 +148,11 @@ changes would not revoke credentials cached by an existing process, so revocatio
 waits for client and connection closure, and removes the socket before any operator-owned resource
 removal. No service uninstall command is supplied.
 
-One disposable Debian 12 qualification lane supplies bounded service evidence for accounts, systemd,
-short-lived credentials, namespaced RBAC, direct-source provisioning, revocation, retained data, and
-cleanup. That historical run predates format-4 completion. It does not establish fresh-native
-acceptance of current HEAD, production safety or support for another environment.
+The [published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+records finite qualification for its exact source and artifact digests. Native systemd evidence uses
+a loopback receiver; live Kubernetes evidence is a separate lane. Neither establishes production
+safety, disk-backed power-loss durability, or support for another environment.
 
-Service code in repository HEAD is unpublished and absent from v0.2.0.
 [Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover identities and
 state that staged installer builds may have left behind. The exact service authority, filesystem,
 recovery, qualification, and unsupported boundaries are owned by
@@ -181,4 +179,4 @@ Kapsel does not establish:
 - Demonstration `kind` clusters are disposable and controlled by the evaluator.
 - The Kubernetes Deployment controller exposes the receiver facts required by the classifier.
 - Inspection trust, time, and limits are reviewed separately from receipt contents.
-- For the unpublished service, host root, kernel, systemd, and the service identity are trusted.
+- For the resident service, host root, kernel, systemd, and the service identity are trusted.

@@ -1,8 +1,9 @@
 # Release artifacts
 
-Status: unreleased resident-service preview artifact contract. Native installed-artifact
-qualification and publication remain separate, required evidence. The published v0.2.0 archive is
-unchanged and remains reproducible from its tagged source, not this assembler.
+Status: current resident-service preview artifact contract. The
+[published v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+identifies exact bytes and finite qualification. New candidates require their own qualification and
+publication. The v0.2.0 archive remains reproducible from its tagged source, not this assembler.
 
 Kind: contract. Authority: supported release target, archive layout, assembly, SBOM,
 publisher-authentication, installation, and artifact-only behavior.
@@ -222,9 +223,11 @@ operational fitness, production support, or universal existence time.
 ## Authenticate and extract the preview
 
 Use Python 3.11 or newer, Cosign 3.1.2, and GNU `sha256sum` on the selected Linux host. Obtain the
-exact archive and all five sidecars, including the Sigstore bundle, from the appointed publisher. No
-preview has been published yet. For a local candidate, transfer the locally recorded exact bytes
-through your trusted operator channel. An unsigned local candidate has no publisher authentication.
+exact archive and all five sidecars, including the Sigstore bundle, from the
+[published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1). Its
+source revision is `cd9893d313d741eb9e8a6149322d67e18e7508d6`. For a local candidate, transfer the
+locally recorded exact bytes through your trusted operator channel. An unsigned local candidate has
+no publisher authentication.
 
 The `.verify.py` companion is a byte-for-byte copy of the existing
 `scripts/smoke-release-artifact.py` verification owner, at most 64 KiB. It is covered by the signed
@@ -307,8 +310,8 @@ another A assembly.
 HEAD qualification and candidate acceptance do not require historical migration, rollback, or
 downgrade. Current format 5 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
 artifact and source proofs remain separate
-[historical evidence](UPGRADE.md#reproduce-the-published-release-evidence), not compatibility
-obligations for a newly assembled HEAD candidate.
+[tagged v0.2.0 evidence](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md), not
+compatibility obligations for a newly assembled HEAD candidate.
 
 The published-beta live demo remains at the v0.2.0 tag. It is not the preview service journey.
 Native installed-systemd and live receiver exercises must consume the extracted preview bytes. An

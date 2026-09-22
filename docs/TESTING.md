@@ -69,14 +69,9 @@ Related behavior is proved at its owning interface rather than repeated in every
 | Immutable snapshot approval               | `gateway::tests::snapshot_approval` checks original authority across crash seams and rejects changed UID/version before and after receipt completion, preserving original bytes.                                                                                                                                                   |
 | Worker exclusion                          | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity` checks zero identify/apply/observe calls; `application_retry` also checks a contender while a real HTTP PATCH is pending.                                                                                                                           |
 
-Current Kapsel regressions do not prove ongoing unsigned-tool equivalence or reproduce every
-historical comparison trace. Use the
-[detached-checkout reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) for that comparison.
-Neither it nor these regressions establish equal multi-user isolation or hostile-input hardening.
-
-Use [Build and test](BUILD.md#receiver-recovery-regressions) for the current commands. The
-[experiment reports](INDEX.md#unpublished-work) own their separate reproduction and input manifests.
-The deterministic gate does not qualify live or platform-specific lanes.
+Current Kapsel regressions do not establish equivalence with an unsigned tool, equal multi-user
+isolation, or hostile-input hardening. Use [Build and test](BUILD.md#receiver-recovery-regressions)
+for current commands. The deterministic gate does not qualify live or platform-specific lanes.
 
 ## Core effect-gateway proof matrix
 
@@ -143,7 +138,9 @@ Cancellation, EOF, or transport completion never determines receiver outcome.
 The current format-5 version-rejection test proves older journals, including format 4, remain
 untouched without migration. [Build and test](BUILD.md#journal-version-rejection) owns the current
 command. Historical v0.1.1 migration/restore fixtures describe the published pre-format-4 baseline,
-not a current migration path. The [upgrade contract](UPGRADE.md) owns compatibility meaning.
+not a current migration path. [Journal retention](UPGRADE.md) owns current operating precautions;
+the [v0.2.0 tagged guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md) owns
+that older release pair.
 
 ### Robustness
 
@@ -179,8 +176,8 @@ evidence, not exhaustive recovery proof.
 
 JSON Patch can reject stale values before mutating admission. It does not make replay safe. This
 comparison retains the production strategic adapter and observation-only recovery. Both arms use the
-same unreleased sequential dispatch and format-4 receipt baseline. Experimental requests bypass
-fresh dispatch permission only inside the test module. No production replay path is added.
+same current sequential dispatch and receipt implementation. Experimental requests bypass fresh
+dispatch permission only inside the test module. No production replay path is added.
 
 The JSON document freezes the original independently read UID, opaque resourceVersion, and container
 index. It tests UID, version, and the name at that index before replacing the image. Both strategies
@@ -302,12 +299,11 @@ authentication, provenance, and evidence limits belong to [Release artifacts](RE
 
 ### Kapsel service
 
-The unpublished service evidence is layered around `ServiceApplication`, one bounded catalog over
-one journal:
+The service evidence is layered around `ServiceApplication`, one bounded catalog over one journal:
 
 - `service_application_contract` proves durable `ADMITTED` before acknowledgement, worker ownership,
-  original authority, bounded history and reads without execution material. This replaces the old
-  process-only `ACCEPTED` meaning; admission is not receiver success or worker liveness.
+  original authority, bounded history and reads without execution material. Admission is not
+  receiver success or worker liveness.
 - `application_retry::service_selection` exercises independent-target and same-target A/B selection
   through a real loopback HTTP receiver. While A holds a PATCH response and the worker, B is `BUSY`
   with no insertion or receiver I/O. Missing signing material then leaves A `receiver_observed`,
@@ -332,13 +328,9 @@ one journal:
   Root-substitution tests prove journal creation and socket bind stay with retained directory
   identities; receipt retrieval has no receipt-root dependency.
 
-The [two-action endpoint](TWO_ACTION_ENDPOINT_PROTOTYPE.md) and
-[later-observation](LATER_OBSERVATION_EXPERIMENT.md) prototypes are historical reproductions, not
-HEAD test targets. The former's volatile admission and synchronous frame reader are not product
-contracts. The latter's one-slot supplementary acquisition is unadopted and is not transferred to
-ordinary observation-only recovery. Current tests continue to own authorization, HTTP retry
-counterexamples, attempt-loss recovery and original receipt immutability. Historical prototype
-results do not establish the complete operator/agent journey or installed-artifact qualification.
+Current tests own authorization, HTTP retry counterexamples, attempt-loss recovery, and original
+receipt immutability. These boundaries do not acquire supplementary observation or volatile
+admission semantics from retired prototypes.
 
 Service-client tests freeze five versioned commands (`list`, `history`, `submit`, `status`,
 `receipt`), bounded framing, receipt digest verification, exclusive mode-`0600` output and refusal
@@ -351,7 +343,9 @@ The [service contract](KAPSEL_SERVICE.md) owns composition and protocol; the
 [effect-gateway contract](EFFECT_GATEWAY.md) owns admission, recovery and receipt semantics.
 [Build and test](BUILD.md#kapsel-service-candidate) owns source and separate Linux commands. These
 checks do not establish installed-native equivalence, disk-backed or power-loss durability, or live
-Kubernetes qualification. The service is absent from v0.2.0 and remains unpublished; coverage does
+Kubernetes qualification. The service is absent from v0.2.0. The published preview's
+[release evidence](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) separately
+records native-systemd and live-receiver qualification for its exact bytes; current coverage does
 not qualify an installer.
 [Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover hosts that ran
 staged installer builds.

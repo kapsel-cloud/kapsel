@@ -6,8 +6,9 @@ Start by checking Git status and preserving unrelated work. Then read
 the surface you will change. Contracts own behavior; decisions explain why; guides own runnable
 commands; tests provide executable evidence.
 
-The published v0.2.0 developer beta and repository HEAD are different promises. The service in HEAD
-remains unpublished. Link its exact owner rather than presenting it as released or supported.
+The published v0.3.0-preview.1 service preview and older v0.2.0 beta are different promises. Link
+the exact release and technical owner. A published preview is not production support, and current
+source changes do not alter previously published bytes.
 
 ## Engineering rules
 
@@ -73,10 +74,19 @@ functions for the fact they establish.
 
 ### Documentation and dependencies
 
-Keep planning and private evidence in a private workspace, and current priorities, assignments, and
-sequencing in the issue tracker. Public documentation must stand alone as technical scope contracts,
-rationale, reproducible evidence, or contributor guidance. Do not name or link private coordination
-resources or copy their contents here.
+Linear is the ground truth for accepted direction, planned work, priorities, assignments, acceptance
+decisions, and progress. Do not maintain competing plans or completion ledgers in Markdown. Public
+documentation describes current technical contracts, active rationale, runnable guidance, and
+reproducible evidence. A planned change is not implemented behavior.
+
+Delete deprecated documents and retired proposals from the current tree. Preserve still-valid
+invariants in the direct owner and repair inbound references in the same change. Git history and
+release tags retain previous material; do not add archives or tombstone replacements.
+
+A change should improve an enforced guarantee or concrete interaction, remove a maintenance
+obligation, or answer a precise technical question with executable evidence. Bounded technical
+exploration does not require customer discovery. Compare concrete implementations before extracting
+shared machinery, and remove unadopted prototypes when the question is settled.
 
 Public Rust documentation states caller-visible input, bounds, authority, side effects, failures,
 and important non-claims. Every externally reachable public item needs rustdoc. Public `Result`

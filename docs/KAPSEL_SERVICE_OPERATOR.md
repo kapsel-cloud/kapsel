@@ -1,27 +1,24 @@
 # Kapsel service operator guide
 
-Status: unreleased preview preparation path. Native installed-artifact and live-journey
-qualification remain required. No published service artifact or production support is implied.
+Status: operating guide for the non-production resident-service preview. Use exact authenticated
+artifacts; current source is not a new published or production-supported release.
 
 The operator prepares exact approvals and private execution material. A separate caller can select
 an approved ID and retrieve its evidence, but cannot change authority or control the service. The
 [service contract](KAPSEL_SERVICE.md) owns fixed paths, identities and process lifecycle.
 
-## Candidate requirements
+## Artifact requirements
 
-The commands below describe current source, not every archive named `0.3.0-preview.1`. Identify an
-archive by its exact source revision and SHA-256, not the package version alone.
+The published
+[v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) uses source
+revision `cd9893d313d741eb9e8a6149322d67e18e7508d6` and archive SHA-256
+`e42048607306455d292814d410df72fdaa2b576751630e52cee8a88590253263`. Its release page identifies
+qualification and publisher evidence. Bundled documentation was frozen before publication; the
+release page establishes availability of those exact bytes.
 
-The executable walkthrough below uses a clean local build from source revision
-`95794b84bd2e21d658c3525f9987873a2ed1a458`, archive SHA-256
-`b2c83a2ab540592531ef7a0fb5b6884c1d3d1305efe2231b8c0aa72fda32f285`. These are unpublished, unsigned
-local bytes, not an authenticated release. This guide adds examples to the documentation bundled at
-that revision without changing its binaries or verifier companion.
-
-Earlier preview archives can lack `prepare-service-config`, `validate-service-config`, narrated
-example output or the retained example trust file. Do not mix an archive with a newer verifier
-companion. Accept the complete matching archive and sidecars at an exact revision. No preview
-download or native qualification of these new bytes is implied.
+Identify every archive by source revision and SHA-256, not the package version alone. Do not mix an
+archive with a newer verifier companion. Accept the complete matching archive and sidecars. A local
+build is a separate candidate and does not inherit qualification from the published preview.
 
 ## One-command disposable example
 
@@ -238,6 +235,12 @@ Deployment. The cluster operator must approve and apply it using their own tools
 a namespace, workload or credential. If the target differs, explicitly review the equivalent narrow
 RBAC. Do not use cluster-admin credentials. Resolve desired-state ownership with any existing
 reconciler before approving direct mutation. This is not a GitOps integration.
+
+Before preparing or publishing approvals, apply the service's
+[action-independence rule](KAPSEL_SERVICE.md#action-independence) against selectable actions and
+unresolved history. Keep conflicting follow-on approvals unavailable; a free worker or terminal
+`UNKNOWN` is not clearance. The service validates authority and lifecycle mechanics but does not
+infer whether two application changes are independent.
 
 In a private operator workspace, provision these inputs using your cluster and key-management tools:
 
@@ -673,13 +676,9 @@ Missing, invalid or unsafe execution files disable that material without disabli
 not trigger ambient configuration or replacement keys. Read status/history first after restart.
 Explicit reselection of the same unfinished ID requests one bounded advancement pass. After a
 durable attempt, recovery observes without another PATCH, even when loss may have preceded the
-original send. A stored receipt remains byte-identical through restart and retrieval.
-
-Ordinary status and receipt reads are offline projections. A rollout settling after terminal
-`UNKNOWN` does not update the historical result. The
-[historical later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) preserves evidence for a
-separately scoped contract decision. Its implementation is retired from HEAD, not a command
-available here.
+original send. A stored receipt remains byte-identical through restart and retrieval. Ordinary
+status and receipt reads remain offline: a rollout settling after terminal `UNKNOWN` does not update
+the historical result.
 
 Systemd and operator configuration own lifecycle and credentials. A stopped daemon makes the socket
 unavailable. Already exported receipts remain inspectable offline. Database loss can prevent
@@ -688,34 +687,20 @@ backup, HA, credential renewal, installer recovery or destructive cleanup is sup
 
 ## Validation
 
-The captured walkthrough used the [exact candidate](#candidate-requirements) and existing artifact
-HTTP fixture in the pinned Debian 12 container, emulated as `linux/amd64` on an ARM host. It needed
-Docker, Python 3.11 and OpenSSL 3, with no Rust toolchain in the operating container.
-
-The test supplies an anonymous loopback kubeconfig and separate numeric service/caller identities.
-Direct process start/stop replaces systemd/sudo. It withholds `receipt.seed` on the first start,
-then restores it after graceful retirement. These are explicit test adaptations, not execution of
-the native installation commands. No other manual intervention was needed.
-
-The first recorded exercise took **1.11 seconds**, excluding assembly, image preparation and
-extraction. There was exactly one PATCH and three GETs: snapshot approval, preflight and
-observation. Signing recovery acquired no new receiver facts. This is finite
-executable-documentation evidence, not representative onboarding timing, a live rollout,
-process-loss recovery, native systemd qualification or production acceptance.
-
-Reproduce from the checkout with the existing artifact test owner:
+The executable guide blocks are checked by the existing artifact test owner. Run against the exact
+accepted artifact and its independently recorded source revision:
 
 ```sh
 python3 scripts/test-release-artifact.py --archive "$archive" \
-  --example-revision 95794b84bd2e21d658c3525f9987873a2ed1a458 \
+  --example-revision "$revision" \
   ReleaseArtifactTests.test_documented_operator_example
 ```
 
-The explicit revision binds the accepted artifact, not the documentation checkout's later HEAD. The
-test executes marked guide blocks and checks the recorded admission and recovery fields against
-actual responses. It creates only a disposable container and temporary workspace. The separate
-[native example](#one-command-disposable-example) uses systemd and retains its host footprint.
-Graceful signing recovery does not replace
+The test uses a disposable container and loopback receiver, with separate numeric service/caller
+identities. Direct process start/stop replaces systemd/sudo. It withholds `receipt.seed` on the
+first start and restores it after graceful retirement, then checks admission, same-ID recovery, and
+exact receipt retention against actual responses. These are test adaptations, not execution of the
+native installation commands. Graceful signing recovery does not replace
 [packaged interrupted-execution qualification](RELEASE.md#install-upgrade-and-artifact-only-proof).
 
 The same artifact test also exercises explicit fixture faults through the production binaries:
@@ -738,16 +723,11 @@ These are fixture fault checks, not live receiver unavailability, a genuine hist
 journal, storage exhaustion, agent confinement or native installation evidence. The test's private
 version edit prepares only the unsupported-input fixture. No recovery step uses database edits.
 
-### Native artifact baseline
+### Native artifact qualification
 
-The `--service-systemd` example also passed on a fresh x86-64 Debian 12 guest, with QEMU reporting
-KVM acceleration enabled, systemd `252.39-1~deb12u2` as PID 1 and Python `3.11.2`. It consumed an
-unsigned local artifact from clean source `f6063ba8d9a333b04428001b1072cbe64cb6393d`, archive
-SHA-256 `3b63e6bee2b07a7e8406cf2ba3cac99e52ecf01ef5b7f70a75933f4921d6162f`, transferred through the
-trusted operator channel and checked against its digest manifest before running the companion.
-
-The example observed one PATCH, a read-first restart and byte-identical receipt retrieval. It
-finished with `ActiveState=inactive`, `MainPID=0` and `UnitFileState=disabled`. The guest was then
-powered off with its installation, identities, private state and exports retained. No product source
-was present in the guest. This qualifies that finite native fixture exercise, not publisher
-authentication, live Kubernetes recovery, agent confinement or the final combined candidate.
+The separate [native example](#one-command-disposable-example) uses systemd and retains its host
+footprint. The
+[published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) records a
+fresh native x86-64 Debian 12 systemd exercise for its exact artifact, with one PATCH, read-first
+restart, identical receipt retrieval, and retained state. This qualifies that finite fixture run,
+not live Kubernetes behavior, disk-backed power-loss durability, or later candidates.

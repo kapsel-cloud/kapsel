@@ -1,8 +1,8 @@
 # Build and test Kapsel
 
-For source development, start below. To install and try the published beta instead, use the
-[evaluation guide](EVALUATOR.md). The service in repository HEAD remains unpublished.
-[Testing](TESTING.md) explains what each test proves; this page owns setup and commands.
+For source development, start below. To try the published resident-service preview, use the
+[service operator guide](KAPSEL_SERVICE_OPERATOR.md). [Testing](TESTING.md) explains what each test
+proves; this page owns setup and commands.
 
 ## Everyday commands
 
@@ -20,7 +20,7 @@ Run these from the checkout. Ordinary Cargo builds need only Rust and a C compil
 
 The
 [one-command disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
-uses the unpublished packaged binaries on a fresh native Linux/systemd VM. The older kind crash demo
+uses authenticated preview binaries on a fresh native Linux/systemd VM. The older kind crash demo
 below is not the resident service. Live, native and artifact gates are separate from the everyday
 loop.
 
@@ -228,7 +228,7 @@ Requires Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 
 The source demo builds its Rust harness, refuses pre-existing kind clusters, and cleans up its owned
 cluster and workspace. To run the published artifact without a Rust toolchain, follow the
-[evaluation guide](EVALUATOR.md#fastest-path).
+[v0.2.0 evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md#fastest-path).
 
 ## Independent client experiment
 
@@ -259,10 +259,8 @@ KAPSEL_RECEIVER_ONLY=pre-send cargo test --locked -p kapsel --lib \
 ```
 
 Kapsel runs against an independent HTTP service fixture with exact PATCH assertions, real process
-exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. To
-compare Kapsel with the unsigned typed tool, use the
-[historical comparison reproduction](PROTECTED_TOOL_COMPARISON.md#reproduction) at its exact
-evidence commit, not HEAD. Current tests do not establish ongoing cross-arm equivalence.
+exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. These
+regressions prove current Kapsel behavior; they do not establish equivalence with another tool.
 
 ### Initial observation policy
 
@@ -291,8 +289,8 @@ explicit resumptions. The [gateway contract](EFFECT_GATEWAY.md#result-meaning) o
 
 ## Kapsel service candidate
 
-The service remains unpublished. The focused package command above includes its private harness. On
-Linux, run the process tests:
+The focused package command above includes the service's private harness. On Linux, run the process
+tests:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process
@@ -395,8 +393,8 @@ cargo test --locked -p kapsel --lib \
 ```
 
 Historical migration and rollback tests are not HEAD qualification or candidate requirements. Use
-[the pinned published-release reproduction](UPGRADE.md#reproduce-the-published-release-evidence) for
-that separate evidence. Rejection coverage does not replace historical migration coverage.
+[the v0.2.0 tagged upgrade guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md)
+for that separate evidence. Rejection coverage does not replace historical migration coverage.
 
 ## Robustness lanes
 
@@ -471,9 +469,9 @@ See [MCP](MCP.md) for protocol details. The focused-gate table lists its black-b
 ## Release artifact
 
 Requires a clean checkout, Python 3.11+, and Docker with `linux/amd64` support. The sole release
-target is `x86_64-unknown-linux-gnu`. HEAD assembles an unpublished service preview containing
-`kapsel`, `kapseld`, the fixed service client and existing operating assets. It is not the published
-v0.2 demo archive. The checksum-bound verifier companion supplies the
+target is `x86_64-unknown-linux-gnu`. HEAD assembles a service-preview artifact containing `kapsel`,
+`kapseld`, the fixed service client and existing operating assets. It is not the published v0.2 demo
+archive. The checksum-bound verifier companion supplies the
 [extraction-only route](RELEASE.md#authenticate-and-extract-the-preview) without repository source.
 Assemble the archive and sidecars under `dist/`:
 
@@ -510,7 +508,8 @@ python3 scripts/test-release-artifact.py --archive /tmp/unused.tar.gz ReleaseVer
 
 Remove `"$a_dir"` when its evidence is no longer needed. [Release artifacts](RELEASE.md) owns
 layout, authentication, publication, and reproducibility requirements. The
-[evaluation guide](EVALUATOR.md) owns downloading, authenticating, and running the published beta.
+[tagged evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md) owns
+downloading, authenticating, and running the older beta.
 
 ### Native installed-systemd qualification
 

@@ -5,27 +5,24 @@
 Execution commits terminal receipt evidence in SQLite before the adapter exports receipt bytes for
 its existing filename response. Export failure is an adapter error, not a change to the action
 result, and cannot reopen execution. The [effect-gateway contract](EFFECT_GATEWAY.md) owns the exact
-behavior. This source revision is unreleased.
+behavior. The older beta remains pinned to its tagged source.
 
-Status: v0.2 beta MCP contract implemented by package version `0.2.0`.
+Status: current preview MCP contract.
 
 Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response
 semantics.
 
-Owns: The exact stdio MCP process grammar and wire behavior supported across v0.2.x for the sole
-effect-gateway operation.
+Owns: The current stdio MCP process grammar and wire behavior for the sole effect-gateway operation.
 
 Does not own: Authorization, durable lifecycle, Kubernetes behavior, receiver classification,
 receipt bytes, the local evaluator command, a generic MCP host, or a stable transport API.
 
 ## Compatibility posture
 
-The protocol, process grammar, lifecycle, tool schema, bounds, responses, diagnostics, and error
-classes below are preserved from `v0.1.1` in package version `0.2.0` and define the supported v0.2
-MCP surface. Across v0.2.x, intentional incompatible changes require an explicit owner update,
-migration or replacement guidance, and release notes. The package version reported in
-`serverInfo.version` identifies the running patch and is the only value below expected to vary
-between v0.2.x releases.
+The older v0.2.x compatibility promise belongs to its
+[tagged MCP contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/MCP.md). Current
+preview behavior is defined here and by the gateway contract. `serverInfo.version` identifies the
+exact running package; it is not a compatibility or production-support claim.
 
 This contract supports one stdio adapter and one tool. It does not support another transport, remote
 endpoint, generic MCP host, SDK, plugin interface, Rust package interface, or production service.
@@ -77,13 +74,13 @@ The first request is `initialize`. Kapsel accepts a numeric non-null request ID 
 request ID of at most 128 UTF-8 bytes and echoes its exact JSON value. Longer strings and other ID
 types receive `Invalid Request` with `id: null`; this bound guarantees the echoed ID cannot exceed
 the response limit. Initialization returns the following shape. The example shows the published
-v0.2.0 package identity; every v0.2.x process reports its own exact package version.
+preview identity; every process reports its own exact package version.
 
 ```json
 {
   "protocolVersion": "2025-11-25",
   "capabilities": { "tools": {} },
-  "serverInfo": { "name": "kapsel", "version": "0.2.0" }
+  "serverInfo": { "name": "kapsel", "version": "0.3.0-preview.1" }
 }
 ```
 
@@ -204,14 +201,13 @@ is available. Tool/input failures do not echo values. Every JSON object at every
 rejects duplicate keys. Extra envelope or method fields are invalid. Responses, diagnostics,
 reports, receipts, and the journal retain the existing effect-gateway disclosure limits.
 
-## Beta support limits
+## Support limits
 
-This is one bounded beta transport adapter, not a generic MCP server, tool registry, SDK, plugin
-host, or remote service. It deliberately implements the fixed official wire surface directly with
-the repository's existing JSON and runtime dependencies; no MCP SDK dependency is required. Only the
-latest v0.2.x patch receives best-effort security and correctness maintenance. There is no
-response-time, remediation, availability, platform, or production-support SLA. Embedded contract
-text does not assert whether a particular artifact has passed release acceptance or been published.
+This is one bounded transport adapter, not a generic MCP server, tool registry, SDK, plugin host, or
+remote service. It implements the fixed official wire surface directly with existing JSON and
+runtime dependencies; no MCP SDK dependency is required. The [security policy](../SECURITY.md) owns
+maintenance and reporting posture. The exact release owns artifact qualification and availability.
+No response-time, remediation, availability, platform, or production-support SLA is provided.
 
 ## Official protocol basis
 

@@ -1,7 +1,10 @@
 # Kapsel contributor guide
 
-This repository owns Kapsel's code, technical contracts, tests, release evidence, and public
-technical claims.
+This repository owns Kapsel's code, current technical contracts, tests, release evidence, and public
+technical claims. Linear is the ground truth for accepted direction, planned work, priorities,
+assignments, acceptance decisions, and progress. Do not create a parallel roadmap or status ledger
+in the repository. A planned change does not describe implemented behavior until code, contracts,
+and evidence agree.
 
 ## Start here
 
@@ -23,9 +26,9 @@ technical claims.
 [`docs/EFFECT_GATEWAY.md`](docs/EFFECT_GATEWAY.md) owns authorization, lifecycle, receiver-result,
 recovery, and receipt semantics. [`docs/INDEX.md`](docs/INDEX.md) routes every other question.
 
-The published `v0.2.0` developer beta and repository HEAD are different promises. Source may contain
-unpublished service work; do not present it as a released or supported path until its release owner
-says so.
+The published `v0.3.0-preview.1` resident-service preview and older `v0.2.0` beta are different
+promises. Their release pages identify exact bytes and qualification. Current source is not a new
+release, and publication does not establish production support.
 
 When code and an owner disagree:
 
@@ -43,14 +46,17 @@ Read [Why Kapsel exists](README.md#why-kapsel-exists) as the public technical mo
 being built as a controlled execution component beneath fallible autonomous systems. Kubernetes is
 the first proving ground, not its permanent identity or a general reliability-service promise.
 
-Preserve the separation between authorization, execution evidence, and decision quality. Improve the
-concrete operation and its usability under failure rather than adding speculative platform
-machinery. The wider direction does not expand the current scope or establish distributed
-guarantees.
+Preserve the separation between authorization, execution evidence, and decision quality. Improve
+enforced guarantees, concrete interactions, or implementation simplicity. Technical exploration may
+answer a precise unresolved question with executable evidence; it needs no customer- discovery gate.
+Follow its bounded Linear scope and do not promote a prototype into the active capability set or
+generic platform without an explicit adoption decision and contract update.
 
 ## Keep the product narrow
 
-- Keep `kubernetes.set_deployment_image` as the only active capability.
+- Keep `kubernetes.set_deployment_image` as the only implemented product capability until an
+  explicit adoption changes its owner. Separately scoped research does not silently extend that
+  promise.
 - Keep credentials, grants, trust, signing material, paths, and lifecycle controls outside caller
   input.
 - Keep authorization, durable ordering, recovery, receiver classification, `UNKNOWN`, and receipts
@@ -73,8 +79,9 @@ Write for a technical reader who is new to this mechanism.
 - Use short sections, concrete examples, diagrams, and plain language. Define unavoidable jargon.
 - Separate tutorials, how-to guides, explanations, and reference when combining them makes the page
   harder to use.
-- Prefer one canonical owner over repeated summaries. Delete stale explanation instead of preserving
-  it as another truth source.
+- Prefer one canonical owner over repeated summaries. Delete deprecated documentation and retired
+  proposals from the current tree. Move still-valid rules into their current owner, repair inbound
+  links, and rely on Git history rather than archives or tombstone pages.
 - Keep the tone calm and interesting. Fun comes from the engineering ideas and examples, not from
   weakening limits or forcing jokes.
 

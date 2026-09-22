@@ -116,11 +116,11 @@ capture.
 ## Release composition
 
 Release assembly packages the same compile-time root product for the sole release target. The
-ordinary `kapsel` executable is feature-free. A separately named `libexec` demonstration executable
-contains compile-time `demo-harness` controls and is used only by the bundled demonstration.
-Checksums, metadata, SBOM, and smoke automation are distribution concerns; they add no runtime
-plugin, provider interface, trust source, or result vocabulary. The [release contract](RELEASE.md)
-owns the exact archive.
+preview's `kapsel`, `kapseld`, and `kapsel-service-client` executables are feature-free. The
+source-only demonstration and the older beta's demonstration executable are separate from this
+archive. Checksums, metadata, SBOM, and smoke automation are distribution concerns; they add no
+runtime plugin, provider interface, trust source, or result vocabulary. The
+[release contract](RELEASE.md) owns the exact archive.
 
 ## Workspace packages
 
@@ -128,7 +128,7 @@ owns the exact archive.
 kapsel (root product)
   -> kapsel-authority
 
-kapseld (unpublished service)
+kapseld (resident service)
   -> kapsel
   -> kapsel-authority
 ```
@@ -143,9 +143,9 @@ validation library, or supported Rust interface.
 
 The excluded `fuzz` package contains hostile-input proof targets.
 
-## Unpublished service
+## Resident service
 
-Repository HEAD also composes an unpublished resident service:
+The resident service composes the same execution boundary:
 
 ```text
 bounded local service client
@@ -179,13 +179,13 @@ Three private modules in `crates/kapseld/src` separate the service mechanisms:
 The service adapter composes `ServiceApplication::select`, authenticated admission lookup,
 catalog/history, projected status and frozen-receipt reads. It does not query SQLite directly,
 duplicate export rules, sequence lifecycle states, add another store, or create a queue. The
-[Kapsel service contract](KAPSEL_SERVICE.md) owns its unpublished external and installation
-boundary.
+[Kapsel service contract](KAPSEL_SERVICE.md) owns its external and installation boundary.
 
-The
-[delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md#compare-two-implementation-owners)
-compares two owner decompositions for durable admission and retained authority. Neither is adopted
-by this current-composition map; gateway reconciliation and journal commitment remain the owners.
+`ServiceApplication` resolves selectable or retained original authority. The gateway hides
+admission, reconciliation, and blocked outcomes; the sole journal owns conditional rows, capacity,
+and receipt commitment. A service-owned collection of single-action application handles would spread
+custody, history, and startup knowledge across layers. The current composition keeps those rules
+below the transport without a generic registry, second store, or scheduler.
 
 ## Dependency rule
 

@@ -1,82 +1,55 @@
 # Documentation
 
-Start with the [README](../README.md) for what Kapsel does and the first-action path. The
-[service operator guide](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example) describes the
-unpublished preview example. The separate [evaluation guide](EVALUATOR.md) runs the published v0.2
-beta. The [technical tour](TOUR.md) explains the mechanism; exact contracts remain the authority for
-behavior.
+Start with the [README](../README.md) for the mechanism and runnable preview, then follow the
+[service operator guide](KAPSEL_SERVICE_OPERATOR.md). The [technical tour](TOUR.md) explains one
+operation; direct contracts specify its behavior.
 
-## Learn
+## Learn and operate
 
-| Goal                              | Read                            |
-| --------------------------------- | ------------------------------- |
-| Understand Kapsel in five minutes | [README](../README.md)          |
-| Follow one operation end to end   | [Technical tour](TOUR.md)       |
-| Understand the product boundary   | [Technical scope](SCOPE.md)     |
-| See how the code is composed      | [Architecture](ARCHITECTURE.md) |
-
-## Use the published beta
-
-| Goal                                  | Read                                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Authenticate and run the artifact     | [Evaluation guide](EVALUATOR.md)                                                            |
-| Use the local CLI                     | [v0.2 commands](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/COMMANDS.md)        |
-| Use the fixed stdio MCP tool          | [v0.2 MCP adapter](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/MCP.md)          |
-| Verify release artifacts              | [v0.2 release contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/RELEASE.md) |
-| Upgrade or roll back a v0.1.1 journal | [Upgrade guide](UPGRADE.md)                                                                 |
+| Goal                                        | Read                                                                         |
+| ------------------------------------------- | ---------------------------------------------------------------------------- |
+| Understand the mechanism                    | [Technical tour](TOUR.md)                                                    |
+| Identify the implemented boundary           | [Technical scope](SCOPE.md)                                                  |
+| See implementation ownership                | [Architecture](ARCHITECTURE.md)                                              |
+| Authenticate and extract the preview        | [Release artifacts](RELEASE.md#authenticate-and-extract-the-preview)         |
+| Run one disposable fixture action           | [Service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example) |
+| Provision, submit, inspect, and recover     | [Operator guide](KAPSEL_SERVICE_OPERATOR.md)                                 |
+| Preserve journals across binary replacement | [Journal retention](UPGRADE.md)                                              |
 
 ## Exact reference
 
 | Question                                                     | Owner                                                     |
 | ------------------------------------------------------------ | --------------------------------------------------------- |
-| What is in scope now?                                        | [Technical scope](SCOPE.md)                               |
 | What do authorization, recovery, results, and receipts mean? | [Effect-gateway contract](EFFECT_GATEWAY.md)              |
-| What does v0.2.0 promise?                                    | [v0.2.0 release contract](V0.2.md)                        |
-| What threats and disclosures remain?                         | [Threat model](THREAT_MODEL.md) and [privacy](PRIVACY.md) |
+| What are the service protocol and process rules?             | [Service contract](KAPSEL_SERVICE.md)                     |
+| What commands and operator files exist?                      | [Commands](COMMANDS.md)                                   |
+| What does the fixed stdio adapter accept?                    | [MCP](MCP.md)                                             |
+| What threats and disclosure limits remain?                   | [Threat model](THREAT_MODEL.md) and [privacy](PRIVACY.md) |
 | How do I report a vulnerability?                             | [Security policy](../SECURITY.md)                         |
 
 ## Contribute
 
-| Goal                           | Read                                      |
-| ------------------------------ | ----------------------------------------- |
-| Contribute code or docs        | [Contributing](../CONTRIBUTING.md)        |
-| Build or choose a focused gate | [Build and test](BUILD.md)                |
-| Understand the proof strategy  | [Testing](TESTING.md)                     |
-| Understand why a design exists | [Accepted decisions](decisions/README.md) |
+| Goal                                      | Read                                                   |
+| ----------------------------------------- | ------------------------------------------------------ |
+| Change code or contracts                  | [Contributing](../CONTRIBUTING.md)                     |
+| Build or choose a focused gate            | [Build and test](BUILD.md)                             |
+| Understand proof placement                | [Testing](TESTING.md)                                  |
+| Understand an active design choice        | [Accepted decisions](decisions/README.md)              |
+| Run the independent kubectl client corpus | [Client-contract evidence](INDEPENDENT_TOOL_CORPUS.md) |
 
-## Unpublished work
+## Authority and history
 
-Repository HEAD contains an implemented resident service and packaging path. It is not part of
-v0.2.0, a published preview or a supported installation. Check the operator guide's candidate
-requirements before running commands. [Technical scope](SCOPE.md) owns the current boundary.
+Linear is the source of truth for accepted direction, planned work, priorities, assignments,
+acceptance, and progress. Repository documents own current technical contracts; implementation and
+tests provide executable evidence. A planned change in Linear is not a claim that behavior already
+exists. Update the direct contract and its implementation together when adopting a change.
 
-| Goal                                    | Read                                                                                   |
-| --------------------------------------- | -------------------------------------------------------------------------------------- |
-| Run one disposable fixture action       | [Service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)           |
-| Authenticate and extract a preview      | [Preview preparation](RELEASE.md#authenticate-and-extract-the-preview)                 |
-| Provision real operator-owned authority | [Operator guide](KAPSEL_SERVICE_OPERATOR.md#provision-authority-and-an-exact-approval) |
-| Select an ID and inspect its evidence   | [Submit and inspect](KAPSEL_SERVICE_OPERATOR.md#submit-and-inspect)                    |
-| Diagnose and resume the same ID         | [Recovery guidance](KAPSEL_SERVICE_OPERATOR.md#diagnose-and-resume)                    |
-| Read exact service fields and lifecycle | [Service contract](KAPSEL_SERVICE.md)                                                  |
+For current technical behavior, consult [scope](SCOPE.md), the
+[effect-gateway contract](EFFECT_GATEWAY.md), and the direct surface contract. Decisions explain
+rationale and do not override those owners. Resolve contradictions at the owning boundary.
 
-## Design and experiments
-
-The proposal records the selected direction and adoption status. Historical experiments are not
-supported features or commands available at HEAD.
-
-- [Delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md)
-- [Reconnectable agent action experiment](RECONNECTABLE_AGENT_ACTION.md)
-- [Two pending operations and scheduling ownership](MULTIPLE_PENDING_OPERATIONS.md)
-- [Two-action endpoint experiment](TWO_ACTION_ENDPOINT_PROTOTYPE.md) — historical reproduction only
-- [Later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) — historical reproduction only
-- [Independent kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md)
-- [Protected typed-tool comparison](PROTECTED_TOOL_COMPARISON.md)
-
-## Authority order
-
-When documents disagree:
-
-1. [Technical scope](SCOPE.md) and the [effect-gateway contract](EFFECT_GATEWAY.md);
-2. the direct contract for that surface;
-3. conforming implementation and tests; then
-4. accepted decisions, which explain why but do not override current contracts.
+Published versions retain their own contracts in Git tags. Use the
+[v0.2.0 documentation](https://github.com/kapsel-cloud/kapsel/tree/v0.2.0/docs) for the older beta.
+The [preview release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+identifies its exact bytes and qualification. Retired proposals and experiment reports are removed
+from the current tree; Git history retains previous revisions.

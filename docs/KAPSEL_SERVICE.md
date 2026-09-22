@@ -1,6 +1,7 @@
 # Kapsel service
 
-Status: accepted implementation in unreleased source. Not a published or supported installation.
+Status: current resident-service contract. v0.3.0-preview.1 is a published non-production preview;
+its exact release evidence does not establish production support.
 
 This page owns the `kapseld -> kapsel` composition, authenticated local protocol, fixed filesystem
 roots, process lifecycle, static assets, and experimental-host precautions. The
@@ -29,14 +30,13 @@ resourceVersion. The multi-action application may authenticate retained v1 histo
 original receipt reads, but rejects v1 selection before acknowledgement or advancement. CLI/MCP
 retain v1 execution. Existing handles cannot acquire replacement authority. Legacy CLI/MCP grants
 keep their original meaning, but old journal versions cannot be opened by current source.
-[Exact-snapshot approval](EFFECT_GATEWAY.md#exact-snapshot-approval-in-unpublished-head) owns those
-distinctions. The service composes `ServiceApplication`, never gateway internals.
+[Exact-snapshot approval](EFFECT_GATEWAY.md#exact-snapshot-approval) owns those distinctions. The
+service composes `ServiceApplication`, never gateway internals.
 
-The [delegated-action preview proposal](DELEGATED_ACTION_PREVIEW.md) selects durable admission,
-multi-identity visibility and read-first resumption. Unreleased source now adopts the version-1
-socket, fixed client, read-first startup and cold operator-document replacement together.
-Completion-capacity accounting and bounded failure qualification are implemented. This does not
-establish the full proposed workflow, installed-service qualification or released support.
+The version-1 socket, fixed client, read-first startup, and cold operator-document replacement
+compose durable admission and multi-identity visibility. Completion-capacity accounting bounds
+retained responsibility. [Release scope](SCOPE.md#what-is-published) separates the exact published
+preview from current source and production support.
 
 ## Multi-action application boundary
 
@@ -69,6 +69,22 @@ input. Their absence can block advancement but cannot hide authenticated stored 
 
 The runtime below supplies deadline/disconnect task retention and the versioned socket grammar. Cold
 publication uses the lifecycle exclusion below; fresh native qualification remains separate.
+
+### Action independence
+
+Before exposing an approval, the operator must assess it against both selectable actions and
+unresolved action history. Different Deployment names do not prove independence; containers in one
+Deployment share a snapshot. Neither a free worker nor terminal `UNKNOWN` clears a conflict or
+authorizes a conflicting follow-on action. Keep that approval unavailable until the operator has
+resolved the conflict. Removing an earlier action from the catalog does not clear its history.
+
+This is an operator-enforced provisioning rule. The service does not infer application dependencies
+or classify conflicts. A cooperative caller withholding an already selectable approval is
+insufficient. Use [cold publication and retirement](#cold-publication-and-graceful-retirement) to
+replace the complete catalog after old tasks retire, so a stale process cannot admit a withdrawn
+action. The service enforces lifecycle exclusion and validated publication; the operator remains
+responsible for the catalog's meaning and host launch confinement. Withdrawal cannot undo an action
+already admitted. There is no dependency engine or automatic conflict-resolution policy.
 
 ## Versioned operator document
 
@@ -150,7 +166,7 @@ attempted publication did not occur. Startup never automatically reconciles.
 
 | Item                   | Current source boundary                                                                                                  |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Packages               | Root `kapsel` and unpublished `kapseld -> kapsel`                                                                        |
+| Packages               | Root `kapsel` and resident `kapseld -> kapsel`                                                                           |
 | Executables            | `/usr/bin/kapsel`, `/usr/libexec/kapsel/kapseld`, `/usr/bin/kapsel-service-client`                                       |
 | Caller interface       | One length-prefixed JSON request and response per Unix-socket connection                                                 |
 | Authentication         | Parent `0750`, socket `0660`, service UID and `kapsel-service-callers` GID; exact effective caller-group peer credential |
@@ -210,8 +226,8 @@ bytes together. There is no automatic backup or host-loss continuity promise.
 
 ## Version-1 socket adoption contract
 
-This contract is implemented together with the fixed client and startup composition in unreleased
-HEAD. Unversioned task-only acceptance is not supported. Task creation is never durable admission.
+This contract is implemented together with the fixed client and startup composition in current HEAD.
+Unversioned task-only acceptance is not supported. Task creation is never durable admission.
 
 Every request is a named JSON object with integer `version: 1`. Version is mandatory on every
 variant. Unversioned input, other versions, positional arrays, duplicate/unknown fields and trailing
@@ -294,8 +310,9 @@ close without a response.
 Version-1 status and authenticated history entries add an `execution` object. Existing `status`,
 target facts and receipt bytes retain their meaning. The new object has exactly `disposition`,
 `condition` (a fixed token or null), `next_action` and `action_owner`. This is an additive amendment
-to the unpublished version-1 service protocol, not a published compatibility promise. Receipt and
-admission responses are unchanged. Access errors contain no execution or action facts.
+to the version-1 service protocol; the preview does not establish a stable-version compatibility
+promise. Receipt and admission responses are unchanged. Access errors contain no execution or action
+facts.
 
 | Disposition             | Condition                                                                                   | Next action                | Owner    |
 | ----------------------- | ------------------------------------------------------------------------------------------- | -------------------------- | -------- |
@@ -445,8 +462,7 @@ directory and leaf. After bind, exact socket type, owner, group and mode are ver
 SIGTERM drains surviving work; process loss or manual SIGKILL may interrupt a durable window. After
 activation, callers read first and explicitly reselect the same identity when appropriate. After
 `apply_started`, gateway recovery observes and never resends. Ordinary status/receipt reads cannot
-acquire later observations or change a terminal `UNKNOWN`. The
-[later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) is historical, not a service path.
+acquire later observations or change a terminal `UNKNOWN`.
 
 The gateway's [initial observation policy](EFFECT_GATEWAY.md#result-meaning) owns the fixed per-pass
 time and read bounds. Explicit resumption after interruption starts a new pass, not a durable
@@ -487,35 +503,16 @@ need receiver access; there is no startup reconciliation.
 The static RBAC manifest contains one token-automount-disabled `ServiceAccount/demo/kapsel-service`,
 one Role for `apps/deployments` `get`/`patch` with `resourceNames: ["agent-api"]`, and one
 RoleBinding. It creates no credential, token Secret, Namespace, Deployment, workload or ClusterRole.
-Static files are source assets, not an authenticated installer or accepted current release.
+Static files alone are not an authenticated installer; use the exact authenticated preview archive.
 
 ## Experimental installer hosts
 
 Kapsel has no supported service installer, upgrade or migration path. Experimental installer builds
 could create host identities without completing installation. Source deletion is not uninstall.
 
-To inspect what a staged build could do, use revision `244687740d535bc4ee97e9fe51021745e8b8e30d`.
-Its `linux.rs::run` stops at `ImplementationIncomplete` after creating two groups and two locked
-users. From a checkout containing that revision:
-
-```sh
-git show 244687740d535bc4ee97e9fe51021745e8b8e30d:crates/kapsel-installer/src/linux.rs
-git ls-tree -r --name-only 244687740d535bc4ee97e9fe51021745e8b8e30d crates/kapsel-installer
-git show 244687740d535bc4ee97e9fe51021745e8b8e30d:docs/KAPSEL_SERVICE.md
-```
-
-If needed, first fetch from a repository containing the revision, for example
-`git fetch /path/to/owning/kapsel master`. Availability in one local checkout does not imply a
-published release or remote availability.
-
-Host provisioning and recovery require explicit ownership evidence:
-
-- A command exit or timeout does not establish ownership. Recovery needs independent, exact
-  observations and must stop on conflict or partial evidence.
-- Durable pending-effect facts must precede host mutation. A lock must cover child processes too,
-  not just the process that spawned them.
-- Matching names or bytes do not justify adoption or deletion. Publication and recovery need exact
-  inode/parent identity and explicit ownership evidence.
+Source removal is not host cleanup. Matching account names, paths, or bytes do not establish
+ownership or authorize deletion. Preserve ambiguous evidence and obtain independent ownership facts
+before changing a host that may contain retained actions.
 
 On any disposable host that ran a staged build, an operator must inventory the `kapsel` and
 `kapsel-service-callers` groups, `kapsel` and `kapsel-service-caller` users,
@@ -526,16 +523,15 @@ cleanup of these identities, files or Kubernetes objects.
 
 ## Qualification envelope and residual risk
 
-The earlier direct-source service qualification ran on one fresh x86-64 Debian 12 KVM VM with
-systemd 252 and Kubernetes v1.33.12. It established separate identities, caller denial from private
-state, exact-effective-GID admission, systemd lifecycle, stale-socket checks, named RBAC, a
-successful image operation, reconnect and ordered revocation. That historical run predates format-4
-receipts and is not fresh-native acceptance of current HEAD.
+The [published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+records qualification for its exact source and artifact digests. It includes deterministic and Linux
+process checks, live Kubernetes workflows, and a fresh native x86-64 Debian 12 systemd run against a
+loopback receiver. The native fixture is not a live Kubernetes test, and later source changes do not
+inherit acceptance of the published bytes.
 
 Current deterministic and Linux process tests cover the maintained application/service paths,
-receipt commitment/retrieval, unavailable export, roots and socket identity. The reconnect and
-later-observation reports distinguish live Kubernetes evidence from mock HTTP, process-exit and
-model evidence and identify their source inputs. [Testing](TESTING.md) owns proof placement.
+receipt commitment/retrieval, unavailable export, roots, and socket identity. [Testing](TESTING.md)
+owns proof placement and [Release artifacts](RELEASE.md) owns candidate checks.
 
 Container evidence may use host emulation and is not fresh-VM installation proof. Process-exit tests
 do not prove power-loss durability. None of this establishes production safety, HA, host/disk-loss

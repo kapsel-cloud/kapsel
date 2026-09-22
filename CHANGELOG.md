@@ -2,7 +2,7 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
-## 0.3.0-preview.1 - unreleased
+## 0.3.0-preview.1 - 2026-09-22
 
 - Selects the resident-service archive with feature-free `kapsel`, `kapseld` and
   `kapsel-service-client`, systemd/sysusers assets, narrow example RBAC and operator guidance.
@@ -14,9 +14,10 @@ All notable public Kapsel experiment releases are recorded here.
 - Consumes exact-snapshot approvals, format-5 retained authority, read-first startup, explicit
   same-ID resumption and honest execution guidance. Older journals are refused unchanged.
 
-This is a source version, not publication or completed installed-service qualification. There is no
-migration, downgrade, pruning, host-loss continuity or production-support promise. The published
-v0.2.0 artifact and its historical evidence remain unchanged.
+The [published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+identifies the exact source, bytes, and finite qualification. There is no migration, downgrade,
+pruning, host-loss continuity, or production-support promise. The published v0.2.0 artifact and its
+historical evidence remain unchanged.
 
 ## 0.2.0
 

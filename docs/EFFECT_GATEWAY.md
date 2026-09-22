@@ -30,7 +30,7 @@ rollback-journal/FULL settings, private storage, and allocation bounds remain. P
 not prove power-loss behavior or the filesystem and hardware assumptions of
 [SQLite atomic commit](https://sqlite.org/atomiccommit.html).
 
-Status: current source contract; unreleased.
+Status: current execution contract. The published preview pins its exact source and artifact bytes.
 
 This contract owns one operation's authorization, durable lifecycle, receiver observation, result
 meaning, receipt bytes, and demonstration. It does not define a generic agent runtime, MCP or
@@ -56,9 +56,8 @@ agent intent
 The receipt preserves the execution account. It is not a compliance product, evidence of complete
 capture, or a claim that a signature proves the Kubernetes state was true. Signatures allow a
 consumer with separately appointed trust to authenticate portable bytes and reject tampering. They
-do not add receiver knowledge. The scripted reconnect and protected-tool experiments found no
-next-action branch changed by signature verification. That bounded finding does not remove the
-current signed grant or receipt contract.
+do not add receiver knowledge or establish decision quality. The signed grant and receipt remain
+part of the current contract.
 
 ## One capability
 
@@ -101,7 +100,7 @@ does not accept trust from the request or grant.
 The release-owned demonstration uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
 
-## Exact-snapshot approval in unpublished HEAD
+## Exact-snapshot approval
 
 An approval for one object version must not become authority over a later object. Grant v2 binds
 `approved_target`, the Deployment UID and opaque resourceVersion independently acquired by the
@@ -165,7 +164,7 @@ statement bounds do not change. Trust v2 remains the trust encoding but must exp
 v3 purpose for snapshot receipts. Old receipt v2 remains inspectable under its original purpose,
 with null approval, never invented snapshot evidence. Legacy actions still emit v2. Frozen bytes are
 never re-signed or upgraded. The sections below describe the unchanged legacy v1 grant/v2 receipt
-wire where not explicitly extended here. This source revision is unreleased.
+wire where not explicitly extended here. The older beta remains pinned to its tagged contract.
 
 ## Service admission and historical authority
 
@@ -378,10 +377,10 @@ premises:
 - Logical identity limits, per-identity charge, shared headroom or database/rollback file ceilings.
   Spare space in the present conservative bound is not permission to raise the 504/32 limits.
 
-Fresh creation still performs four snapshot-column ALTERs in `schema.rs`; existing journals are not
-migrated. Folding those columns into CREATE could simplify initialization, but would not remove the
-completion proof. Such a change must preserve recognized schema/column order and recheck schema
-payload fixtures. It is not selected or implemented here.
+Format 5 requires the complete recognized table layout, including snapshot columns in their existing
+physical order. Existing format-5 journals must remain recognized without rewriting their schema,
+rows, or version. Changes to fresh initialization must preserve completion accounting,
+accepted-layout checks, and schema-payload bounds.
 
 Owned evidence is in `journal/capacity.rs`, `journal/schema.rs`, `journal/opening.rs` and the eight
 write statements in `journal/mod.rs`, under `src/gateway/`. The locked `libsqlite3-sys` 0.38.2
@@ -493,11 +492,11 @@ scheduling fields, but those fields are not public facts and must not change res
 ### Fresh dispatch permission
 
 A durable attempt records that dispatch may have happened. It does not establish that a request was
-sent, and recovery cannot derive permission from it. In current unreleased source, dispatch
-permission is a private, one-use value issued after a successful fresh attempt commit and consumed
-by the adapter. The transaction checks the complete authorized snapshot against its durable row,
-including request, approval, and authorization provenance. A snapshot from another journal cannot
-substitute different facts under the same operation identity.
+sent, and recovery cannot derive permission from it. In current source, dispatch permission is a
+private, one-use value issued after a successful fresh attempt commit and consumed by the adapter.
+The transaction checks the complete authorized snapshot against its durable row, including request,
+approval, and authorization provenance. A snapshot from another journal cannot substitute different
+facts under the same operation identity.
 
 The permission binds the frozen request and attempted target. It is neither `Clone` nor `Copy`, and
 the Kubernetes adapter consumes it instead of accepting separately supplied request and target
@@ -570,12 +569,12 @@ Frozen results and receipts never reopen. Wall-clock corrections do not change a
 budget. Suspend accounting follows the host monotonic clock, not a durable wall-clock deadline.
 Timer expiry requires runtime scheduling and is not a hard real-time guarantee.
 
-The recorded [reconnectable workflow](RECONNECTABLE_AGENT_ACTION.md) needs a 60-second readiness
-period and describes a 45–180-second observation span. This policy accommodates that requirement
-without promising all rollouts complete within it. A durable operation-wide deadline would instead
-need persisted timing facts and a clock-discontinuity and compatibility policy. The per-pass choice
-adds no timing columns, journal version, migration, caller configuration or later-observation path.
-Format 5 and all finalized history remain unchanged.
+The [live observation-policy tests](BUILD.md#initial-observation-policy) exercise 60- and 210-second
+readiness periods. The fixed policy accommodates bounded waiting without promising all rollouts
+complete within it. A durable operation-wide deadline would instead need persisted timing facts and
+a clock-discontinuity and compatibility policy. The per-pass choice adds no timing columns, journal
+version, migration, caller configuration or later-observation path. Format 5 and all finalized
+history remain unchanged.
 
 ## Authorization and secrets
 

@@ -25,9 +25,9 @@ The canary operation is:
 kubernetes.set_deployment_image(namespace, deployment, container, immutable_image_digest)
 ```
 
-The experiment provides exact request matching, durable operation identity, one conditional
+The operation provides exact request matching, durable operation identity, one conditional
 Kubernetes mutation opportunity, bounded receiver observation or `UNKNOWN`, and a signed
-prototype-scoped receipt.
+operation-scoped receipt.
 
 A second capability, generic provider seam, runtime plugin, policy engine, hosted service,
 dashboard, external witness, and stable package format are outside the repository's current

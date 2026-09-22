@@ -1,9 +1,9 @@
 # Security policy
 
-Kapsel v0.2.0 is a published developer beta, not a supported production release. Do not use it for
-consequential production actions. Only the latest v0.2.x patch receives best-effort security and
-correctness maintenance. Kapsel promises no response-time, remediation, availability, platform, or
-production-support SLA.
+Kapsel v0.3.0-preview.1 is a published non-production service preview. The earlier v0.2.0 developer
+beta is a separate release. Do not use either for consequential production actions. Only the latest
+v0.2.x patch has the beta's existing best-effort security and correctness maintenance posture. The
+preview introduces no response-time, remediation, availability, platform, or production-support SLA.
 
 ## Report a vulnerability
 
@@ -24,5 +24,5 @@ These documents own the current security claims and limits:
 - [Threat model](docs/THREAT_MODEL.md) — adversaries, assumptions, surviving claims, and non-claims.
 - [Privacy](docs/PRIVACY.md) — sensitive fields and disclosure rules.
 
-The service present in repository HEAD remains unpublished and unsupported. Its presence does not
-extend the v0.2.0 support posture.
+Report preview vulnerabilities through the same private channel. Preview publication does not extend
+the v0.2.0 support posture or establish production support.

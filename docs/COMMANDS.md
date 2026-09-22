@@ -9,8 +9,8 @@ current output configuration, without dispatch or re-signing. The export directo
 during application startup or execution. Journal formats older than format 5 are rejected, not
 upgraded.
 
-Status: HEAD preview command contract. Published v0.2.0 behavior remains owned by its tagged source.
-HEAD adds exact-snapshot provisioning without changing the published archive.
+Status: current preview command contract. Published v0.2.0 behavior remains owned by its tagged
+source. The preview provides exact-snapshot provisioning without changing the older archive.
 
 Kind: contract. Authority: local evaluator command grammar, operator files, output, bounds,
 diagnostics, and exit classes.
@@ -22,12 +22,11 @@ packaging, or the release demonstration crash demonstration.
 
 ## Compatibility posture
 
-The operation grammar, files, bounds, machine output, diagnostics, and exit classes below are
-preserved from `v0.1.1` in package version `0.2.0` and define the supported v0.2 command surface.
-v0.2 additionally adopts one read-only package identity form. Across v0.2.x, intentional
-incompatible changes require an explicit owner update, migration or replacement guidance, and
-release notes. This support does not extend to the Rust package, source layout, crates.io, docs.rs,
-`cargo install`, another platform, or production use.
+This page describes the current preview command surface. The older v0.2.x compatibility promise
+belongs to its
+[tagged command contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/COMMANDS.md).
+Current preview commands do not imply a public Rust package, source-layout, crates.io, docs.rs,
+`cargo install`, additional-platform, or production-support promise.
 
 Canonical grant v1 and receipt/trust v2 continuity are owned only by
 [effect-gateway](EFFECT_GATEWAY.md). This command contract adopts their bytes and result vocabulary
@@ -78,8 +77,8 @@ grant files are created owner-only and never replace an existing path.
 
 ## Prepare and validate service configuration
 
-These unpublished operator-only commands write the existing version-1 service document. They do not
-appoint trust from a grant, provision credentials, publish configuration or access the journal.
+These operator-only commands write the existing version-1 service document. They do not appoint
+trust from a grant, provision credentials, publish configuration or access the journal.
 
 ```text
 kapsel prepare-service-config --authorization-key <id> <raw-public-key-file>
@@ -261,7 +260,6 @@ The `command` value is the parsed subcommand, or `kapsel` when parsing did not i
 | 3    | `operator_configuration` | Unsafe/missing operator file, authority, kubeconfig, signing, or path.    |
 | 4    | `operation_failure`      | Durable, Kubernetes, reconciliation, or publication failure.              |
 
-Every file and output shape above is a supported v0.2.x beta surface. Only the latest v0.2.x patch
-receives best-effort security and correctness maintenance. There is no response-time, remediation,
-availability, platform, or production-support SLA. Embedded contract text does not assert whether a
-particular artifact has passed release acceptance or been published.
+These fields describe the current preview. The [security policy](../SECURITY.md) owns maintenance
+and reporting posture; the exact release owns artifact availability and qualification. This command
+contract supplies no response-time, remediation, availability, platform, or production-support SLA.

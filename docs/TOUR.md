@@ -6,8 +6,8 @@ without knowing whether the receiver reached the intended state.
 This tour follows one Kubernetes image change across that gap. It is the first concrete example of
 [controlled execution beneath autonomous systems](../README.md#why-kapsel-exists). The exact rules
 live in the [effect-gateway contract](EFFECT_GATEWAY.md); this page explains why the pieces are
-arranged this way. It describes current unreleased source. The published v0.2.0 beta has older
-approval and receipt-storage behavior, as separated in
+arranged this way. It describes the current preview implementation. The published v0.2.0 beta has
+older approval and receipt-storage behavior, as separated in
 [Technical scope](SCOPE.md#what-is-published).
 
 ## The request is intentionally boring
@@ -197,14 +197,13 @@ This handoff is outside Kapsel's planner-free core. A signed receipt preserves t
 it does not eliminate the need for operational judgment or prove that the application is healthy.
 
 A rollout may become available after the original `UNKNOWN`. Ordinary status and receipt reads still
-return historical evidence without contacting Kubernetes. A
-[later-observation experiment](LATER_OBSERVATION_EXPERIMENT.md) showed that a separate bounded read
-can help choose the next investigation while preserving the old receipt. That prototype is not a
-supported command and does not establish that the original action caused the later state.
+return historical evidence without contacting Kubernetes. An operator's later observation does not
+rewrite that receipt or establish that the original action caused the later state.
 
 ## Where to go next
 
-- Run the mechanism with the [evaluation guide](EVALUATOR.md).
+- Run the mechanism with the
+  [service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example).
 - Read the exact lifecycle and receipt rules in the [effect-gateway contract](EFFECT_GATEWAY.md).
 - See the implementation boundaries in [Architecture](ARCHITECTURE.md).
 - Review the exact CLI and MCP surfaces in [Evaluator commands](COMMANDS.md) and
