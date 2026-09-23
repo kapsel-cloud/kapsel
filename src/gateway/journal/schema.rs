@@ -1,7 +1,7 @@
-//! Exact SQLite layout recognition and private journal migration.
+//! Exact SQLite layout recognition and fresh journal creation.
 //!
 //! This implementation stays behind the journal interface. Callers cannot select a schema, SQL,
-//! marker, migration step, or durable transition.
+//! marker, initialization step, or durable transition.
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
@@ -55,6 +55,10 @@ const CURRENT_COLUMNS: &[&str] = &[
     "rollout_condition_type",
     "rollout_condition_status",
     "rollout_condition_reason",
+    "approved_uid",
+    "approved_resource_version",
+    "preflight_uid",
+    "preflight_resource_version",
 ];
 
 const CREATE_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
@@ -95,7 +99,11 @@ const CREATE_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
     receipt_key_id TEXT,
     rollout_condition_type TEXT,
     rollout_condition_status TEXT,
-    rollout_condition_reason TEXT
+    rollout_condition_reason TEXT,
+    approved_uid TEXT,
+    approved_resource_version TEXT,
+    preflight_uid TEXT,
+    preflight_resource_version TEXT
 ) STRICT;";
 
 pub(super) fn initialize_schema(
@@ -109,7 +117,6 @@ pub(super) fn initialize_schema(
     } else {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
-    add_snapshot_columns(transaction)?;
     require_persisted_bounds(transaction)
 }
 
@@ -124,30 +131,8 @@ pub(super) fn require_integrity(connection: &Connection) -> Result<(), GatewayEr
     }
 }
 
-const SNAPSHOT_COLUMNS: &[&str] = &[
-    "approved_uid",
-    "approved_resource_version",
-    "preflight_uid",
-    "preflight_resource_version",
-];
-
-fn add_snapshot_columns(connection: &Connection) -> Result<(), GatewayError> {
-    for column in SNAPSHOT_COLUMNS {
-        connection
-            .execute(
-                &format!("ALTER TABLE kubernetes_image_operations ADD COLUMN {column} TEXT"),
-                [],
-            )
-            .map_err(GatewayError::Database)?;
-    }
-    Ok(())
-}
-
 pub(super) fn recognized_supported_schema(connection: &Connection) -> Result<bool, GatewayError> {
-    let columns = [CURRENT_COLUMNS, SNAPSHOT_COLUMNS].concat();
-    let additions = format!(", {} TEXT", SNAPSHOT_COLUMNS.join(" TEXT, "));
-    let sql = CREATE_OPERATION_TABLE.replace("\n) STRICT;", &format!("{additions}\n) STRICT;"));
-    if recognized_schema(connection, &columns, &sql)? {
+    if recognized_schema(connection, CURRENT_COLUMNS, CREATE_OPERATION_TABLE)? {
         require_persisted_bounds(connection)?;
         Ok(true)
     } else {
@@ -158,7 +143,6 @@ pub(super) fn recognized_supported_schema(connection: &Connection) -> Result<boo
 fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError> {
     let value_predicates = CURRENT_COLUMNS
         .iter()
-        .chain(SNAPSHOT_COLUMNS.iter())
         .filter(|name| expected_column_type(name) != "INTEGER")
         .map(|name| format!("COALESCE(length(CAST({name} AS BLOB)), 0) > ?2"))
         .collect::<Vec<_>>()

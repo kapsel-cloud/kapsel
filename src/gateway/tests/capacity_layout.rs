@@ -342,9 +342,9 @@ fn encoded_table_and_schema_payload_boundaries_use_actual_record_headers() {
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
 
         let path = database_path(&format!("encoded-schema-{size}"));
-        // Normal initialization/ALTER produces a 1440-byte table schema record; crossing
+        // Direct initialization produces a 1456-byte table schema record; crossing
         // the SQL serial-type varint boundary adds one header byte as well as the padding.
-        create_padded_layout(&path, usize::try_from(size - 1440 - 1).unwrap());
+        create_padded_layout(&path, usize::try_from(size - 1456 - 1).unwrap());
         assert_eq!(maximum_payload(&path, "sqlite_schema"), size);
         assert_layout_open_paths(&path, size == 65_536);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();

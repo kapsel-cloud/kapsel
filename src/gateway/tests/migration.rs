@@ -40,6 +40,84 @@
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    #[tokio::test]
+    async fn prior_format_five_construction_preserves_authority_history_and_receipt_bytes() {
+        let mut previous_schema_and_rows = None;
+        for prior_construction in [true, false] {
+            let path = database_path(&format!("format-five-construction-{prior_construction}"));
+            if prior_construction {
+                // Frozen CREATE plus four ALTERs from cd9893d, before direct construction.
+                Connection::open(&path)
+                    .unwrap()
+                    .execute_batch(include_str!("format5-before-direct-create.sql"))
+                    .unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let mut gateway = Gateway::open_for_test(&path).unwrap();
+            let mut pending = request();
+            pending.operation_id = "pending-format-five".into();
+            let mut finalized = request();
+            finalized.operation_id = "finalized-format-five".into();
+            for request in [&pending, &finalized] {
+                let mut grant = authorization(request);
+                grant.approved_target = Some(ApprovedTarget {
+                    uid: "deployment-uid-1".into(),
+                    resource_version: "resource-version-0".into(),
+                });
+                gateway.submit_exact_for_test(request, &grant).unwrap();
+            }
+            let mut adapter = failed_adapter(&path, &finalized);
+            gateway
+                .run_operation_once_with_adapter(&finalized.operation_id, &mut adapter)
+                .await
+                .unwrap();
+            gateway
+                .finalize_operation_receipt_once(&finalized.operation_id, &ReceiptSettings {
+                    signing_seed: &[42; 32],
+                    key_id: "format-five-receipt",
+                })
+                .unwrap();
+            let receipt = Gateway::read_loaded_receipt(
+                gateway.loaded_for_test(&finalized.operation_id).unwrap().unwrap(),
+            ).unwrap();
+            let rows = super::storage::stored_rows(&gateway.journal.connection);
+            let sql: String = gateway.journal.connection.query_row(
+                "SELECT sql FROM sqlite_schema WHERE type = 'table'",
+                [],
+                |row| row.get(0),
+            ).unwrap();
+            let schema: String = sql.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+            let schema_and_rows = (schema, rows.clone());
+            if let Some(previous) = &previous_schema_and_rows {
+                assert_eq!(&schema_and_rows, previous);
+            } else {
+                previous_schema_and_rows = Some(schema_and_rows);
+            }
+            drop(gateway);
+            let before = fs::read(&path).unwrap();
+            journal::Journal::validate_replacement(&path, &[]).unwrap();
+            let reopened = Gateway::open_for_test(&path).unwrap();
+            assert_eq!(journal_version(&path), 5);
+            assert_eq!(
+                reopened.get(&pending.operation_id).unwrap(),
+                Some(OperationState::Authorized)
+            );
+            assert_eq!(
+                reopened.get(&finalized.operation_id).unwrap(),
+                Some(OperationState::Finalized)
+            );
+            assert_eq!(super::storage::stored_rows(&reopened.journal.connection), rows);
+            assert_eq!(Gateway::read_loaded_receipt(
+                reopened.loaded_for_test(&finalized.operation_id).unwrap().unwrap(),
+            ).unwrap(), receipt);
+            assert!(reopened.retained_operation(&pending.operation_id).unwrap().is_some());
+            assert!(reopened.retained_operation(&finalized.operation_id).unwrap().is_some());
+            drop(reopened);
+            assert_eq!(fs::read(&path).unwrap(), before);
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
     #[test]
     fn persisted_value_and_row_boundaries_are_checked_on_every_reopen() {
         let value_path = database_path("persisted-value-bound");

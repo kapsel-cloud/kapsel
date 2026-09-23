@@ -1,0 +1,45 @@
+CREATE TABLE kubernetes_image_operations (
+    operation_id TEXT PRIMARY KEY NOT NULL,
+    namespace TEXT NOT NULL,
+    deployment TEXT NOT NULL,
+    container TEXT NOT NULL,
+    immutable_image_digest TEXT NOT NULL,
+    authorization_id TEXT,
+    authorization_signer_key_id TEXT,
+    authorization_grant_digest TEXT,
+    signed_authorization_grant BLOB,
+    state TEXT NOT NULL,
+    write_strategy TEXT,
+    target_rejection TEXT,
+    target_read_failures INTEGER NOT NULL DEFAULT 0,
+    apply_attempted INTEGER NOT NULL DEFAULT 0,
+    target_uid TEXT,
+    target_resource_version TEXT,
+    apply_accepted INTEGER,
+    requested_generation INTEGER,
+    apply_resource_version TEXT,
+    receiver_uid TEXT,
+    receiver_image TEXT,
+    receiver_operation_marker TEXT,
+    current_generation INTEGER,
+    observed_generation INTEGER,
+    receiver_resource_version TEXT,
+    desired_replicas INTEGER,
+    updated_replicas INTEGER,
+    available_replicas INTEGER,
+    unavailable_replicas INTEGER,
+    available_condition INTEGER,
+    progress_deadline_exceeded INTEGER,
+    result TEXT,
+    receipt_digest TEXT,
+    receipt_bytes BLOB,
+    receipt_key_id TEXT,
+    rollout_condition_type TEXT,
+    rollout_condition_status TEXT,
+    rollout_condition_reason TEXT
+) STRICT;
+ALTER TABLE kubernetes_image_operations ADD COLUMN approved_uid TEXT;
+ALTER TABLE kubernetes_image_operations ADD COLUMN approved_resource_version TEXT;
+ALTER TABLE kubernetes_image_operations ADD COLUMN preflight_uid TEXT;
+ALTER TABLE kubernetes_image_operations ADD COLUMN preflight_resource_version TEXT;
+PRAGMA user_version = 5;
