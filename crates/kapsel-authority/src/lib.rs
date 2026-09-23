@@ -8,6 +8,8 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
+mod record;
+
 const GRANT_STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-STATEMENT-V1\0";
 const SIGNED_GRANT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-V1\0";
 const SNAPSHOT_STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-STATEMENT-V2\0";
@@ -662,68 +664,22 @@ fn append_grant_record(
     value: &[u8],
     maximum_bytes: usize,
 ) -> Result<(), AuthorizationGrantError> {
-    let length = u32::try_from(value.len()).map_err(|_| AuthorizationGrantError::Invalid)?;
-    if output
-        .len()
-        .checked_add(5)
-        .and_then(|length| length.checked_add(value.len()))
-        .is_none_or(|length| length > maximum_bytes)
-    {
-        return Err(AuthorizationGrantError::Invalid);
-    }
-    output.push(tag);
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value);
-    Ok(())
+    record::push(output, tag, value, maximum_bytes).map_err(|_| AuthorizationGrantError::Invalid)
 }
 
-struct GrantRecords<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-    next_tag: u8,
-}
+struct GrantRecords<'a>(record::Records<'a>);
 
 impl<'a> GrantRecords<'a> {
     fn new(bytes: &'a [u8], magic: &[u8]) -> Result<Self, AuthorizationGrantError> {
-        if !bytes.starts_with(magic) {
-            return Err(AuthorizationGrantError::Invalid);
-        }
-        Ok(Self {
-            bytes,
-            offset: magic.len(),
-            next_tag: 1,
-        })
+        record::Records::new(bytes, magic)
+            .map(Self)
+            .map_err(|_| AuthorizationGrantError::Invalid)
     }
 
     fn take_record(&mut self, expected_tag: u8) -> Result<&'a [u8], AuthorizationGrantError> {
-        if expected_tag != self.next_tag {
-            return Err(AuthorizationGrantError::Invalid);
-        }
-        let header_end = self
-            .offset
-            .checked_add(5)
-            .ok_or(AuthorizationGrantError::Invalid)?;
-        if header_end > self.bytes.len() || self.bytes[self.offset] != expected_tag {
-            return Err(AuthorizationGrantError::Invalid);
-        }
-        let length = u32::from_be_bytes(
-            self.bytes[self.offset + 1..header_end]
-                .try_into()
-                .map_err(|_| AuthorizationGrantError::Invalid)?,
-        );
-        let length = usize::try_from(length).map_err(|_| AuthorizationGrantError::Invalid)?;
-        let value_end = header_end
-            .checked_add(length)
-            .ok_or(AuthorizationGrantError::Invalid)?;
-        if value_end > self.bytes.len() {
-            return Err(AuthorizationGrantError::Invalid);
-        }
-        self.offset = value_end;
-        self.next_tag = self
-            .next_tag
-            .checked_add(1)
-            .ok_or(AuthorizationGrantError::Invalid)?;
-        Ok(&self.bytes[header_end..value_end])
+        self.0
+            .take(expected_tag)
+            .map_err(|_| AuthorizationGrantError::Invalid)
     }
 
     fn take_ascii_text(&mut self, expected_tag: u8) -> Result<String, AuthorizationGrantError> {
@@ -735,11 +691,9 @@ impl<'a> GrantRecords<'a> {
     }
 
     fn finish_exact(self) -> Result<(), AuthorizationGrantError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(AuthorizationGrantError::Invalid)
-        }
+        self.0
+            .finish()
+            .map_err(|_| AuthorizationGrantError::Invalid)
     }
 }
 
@@ -786,25 +740,11 @@ fn push_trust(
     value: &[u8],
     maximum_bytes: usize,
 ) -> Result<(), ReceiptTrustError> {
-    let length = u32::try_from(value.len()).map_err(|_| ReceiptTrustError::LimitExceeded)?;
-    if output
-        .len()
-        .checked_add(5)
-        .and_then(|length| length.checked_add(value.len()))
-        .is_none_or(|length| length > maximum_bytes)
-    {
-        return Err(ReceiptTrustError::LimitExceeded);
-    }
-    output.push(tag);
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value);
-    Ok(())
+    record::push(output, tag, value, maximum_bytes).map_err(|_| ReceiptTrustError::LimitExceeded)
 }
 
 struct TrustRecords<'a> {
-    input: &'a [u8],
-    offset: usize,
-    next_tag: u8,
+    records: record::Records<'a>,
     maximum_text_bytes: usize,
 }
 
@@ -814,46 +754,25 @@ impl<'a> TrustRecords<'a> {
         magic: &[u8],
         maximum_text_bytes: usize,
     ) -> Result<Self, ReceiptTrustError> {
-        if !input.starts_with(magic) {
-            return Err(ReceiptTrustError::InvalidRecord);
-        }
         Ok(Self {
-            input,
-            offset: magic.len(),
-            next_tag: 1,
+            records: record::Records::new(input, magic)
+                .map_err(|_| ReceiptTrustError::InvalidRecord)?,
             maximum_text_bytes,
         })
     }
 
     fn take(&mut self, expected_tag: u8) -> Result<&'a [u8], ReceiptTrustError> {
-        if expected_tag != self.next_tag {
-            return Err(ReceiptTrustError::InvalidRecord);
-        }
-        let header_end = self
-            .offset
-            .checked_add(5)
-            .ok_or(ReceiptTrustError::LimitExceeded)?;
-        if header_end > self.input.len() || self.input[self.offset] != expected_tag {
-            return Err(ReceiptTrustError::InvalidRecord);
-        }
-        let length = u32::from_be_bytes(
-            self.input[self.offset + 1..header_end]
-                .try_into()
-                .map_err(|_| ReceiptTrustError::InvalidValue)?,
-        );
-        let length = usize::try_from(length).map_err(|_| ReceiptTrustError::LimitExceeded)?;
-        let value_end = header_end
-            .checked_add(length)
-            .ok_or(ReceiptTrustError::LimitExceeded)?;
-        if value_end > self.input.len() {
-            return Err(ReceiptTrustError::InvalidRecord);
-        }
-        self.offset = value_end;
-        self.next_tag = self
-            .next_tag
-            .checked_add(1)
-            .ok_or(ReceiptTrustError::InvalidRecord)?;
-        Ok(&self.input[header_end..value_end])
+        self.records
+            .take(expected_tag)
+            .map_err(|error| match error {
+                record::FrameError::Length | record::FrameError::LengthConversion => {
+                    ReceiptTrustError::LimitExceeded
+                },
+                record::FrameError::HeaderConversion => ReceiptTrustError::InvalidValue,
+                record::FrameError::Header | record::FrameError::Order => {
+                    ReceiptTrustError::InvalidRecord
+                },
+            })
     }
 
     fn text(&mut self, expected_tag: u8) -> Result<String, ReceiptTrustError> {
@@ -868,11 +787,9 @@ impl<'a> TrustRecords<'a> {
     }
 
     fn finish(self) -> Result<(), ReceiptTrustError> {
-        if self.offset == self.input.len() {
-            Ok(())
-        } else {
-            Err(ReceiptTrustError::InvalidRecord)
-        }
+        self.records
+            .finish()
+            .map_err(|_| ReceiptTrustError::InvalidRecord)
     }
 }
 
