@@ -5,10 +5,15 @@ use std::{ffi::OsString, os::unix::ffi::OsStringExt as _, process::Command};
 
 const CLIENT: &str = env!("CARGO_BIN_EXE_kapsel-service-client");
 const DAEMON: &str = env!("CARGO_BIN_EXE_kapseld");
+const MCP: &str = env!("CARGO_BIN_EXE_kapsel-service-mcp");
 
 #[test]
 fn discovery_needs_no_service_or_configuration() {
-    for (binary, name) in [(CLIENT, "kapsel-service-client"), (DAEMON, "kapseld")] {
+    for (binary, name) in [
+        (CLIENT, "kapsel-service-client"),
+        (DAEMON, "kapseld"),
+        (MCP, "kapsel-service-mcp"),
+    ] {
         let version = Command::new(binary)
             .arg("--version")
             .env_clear()

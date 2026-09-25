@@ -7,12 +7,13 @@ its existing filename response. Export failure is an adapter error, not a change
 result, and cannot reopen execution. The [effect-gateway contract](EFFECT_GATEWAY.md) owns the exact
 behavior. The older beta remains pinned to its tagged source.
 
-Status: current preview MCP contract.
+Status: current-source MCP contract. The published preview retains its exact tagged bytes.
 
 Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response
 semantics.
 
-Owns: The current stdio MCP process grammar and wire behavior for the sole effect-gateway operation.
+Owns: The two distinct fixed stdio MCP process grammars: direct execution and the ID-only
+resident-service bridge. Neither is a generic MCP host.
 
 Does not own: Authorization, durable lifecycle, Kubernetes behavior, receiver classification,
 receipt bytes, the local evaluator command, a generic MCP host, or a stable transport API.
@@ -24,12 +25,80 @@ The older v0.2.x compatibility promise belongs to its
 preview behavior is defined here and by the gateway contract. `serverInfo.version` identifies the
 exact running package; it is not a compatibility or production-support claim.
 
-This contract supports one stdio adapter and one tool. It does not support another transport, remote
-endpoint, generic MCP host, SDK, plugin interface, Rust package interface, or production service.
-Canonical grant, lifecycle, receiver-result, and receipt semantics remain owned only by
-[effect-gateway](EFFECT_GATEWAY.md).
+The existing `kapsel mcp` command below remains a direct-execution adapter with one five-field tool.
+Current source also provides `kapsel-service-mcp`, a separate ID-only bridge over the resident
+service. Neither supports another transport, remote endpoint, generic MCP host, SDK, plugin
+interface, Rust package interface, or production service. Canonical grant, lifecycle,
+receiver-result, and receipt semantics remain owned only by [effect-gateway](EFFECT_GATEWAY.md).
 
-## Protocol and process
+## Resident-service bridge (current source only)
+
+`/usr/bin/kapsel-service-mcp` takes no arguments or operator document. The operator launches it
+under the confined `kapsel-service-caller` identity and `kapsel-service-callers` effective group. It
+connects only to `/run/kapsel/kapseld.sock` using the fixed version-1 service protocol. Socket
+access is enforced by the host and service peer credentials. The MCP caller cannot choose a socket,
+credential, grant, authority file, export path, receiver, or lifecycle state. The published
+`v0.3.0-preview.1` archive does **not** contain this source addition; a new authenticated artifact
+must be built and qualified before using this packaged path.
+
+A conventional agent process-launch configuration, provisioned outside agent tool input, is:
+
+```json
+{
+  "mcpServers": {
+    "kapsel-service": {
+      "command": "/usr/bin/kapsel-service-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+For the confined Codex workflow, the caller-owned `~/.codex/config.toml` uses the equivalent
+packaged path:
+
+```toml
+[mcp_servers.kapsel_service]
+command = "/usr/bin/kapsel-service-mcp"
+args = []
+```
+
+The bridge supports exactly MCP `2025-11-25` over line-delimited UTF-8 JSON-RPC 2.0 stdio.
+Initialization, `notifications/initialized`, cancellation, `tools/list`, and `tools/call` use the
+same sequential lifecycle and fixed error codes as the direct adapter below. `serverInfo.name` is
+`kapsel-service`; `serverInfo.version` is the running package version. Only `tools` is advertised.
+There are no server-originated messages, other capabilities, batches, embedded newlines, HTTP, SSE,
+or `Content-Length` framing. The input frame is at most 16 KiB including LF; output is at most 96
+KiB including LF to carry the bounded original receipt hex. Invalid or incomplete frames cannot
+create an action. The bridge processes one request at a time and does not inspect incoming
+cancellation while a socket exchange is in flight. A disconnected bridge does not cancel the
+service's retained job. An absent response is not non-admission.
+
+`tools/list` returns exactly five tools, unpaginated. Each accepts one JSON object with no extra
+properties. `kapsel.list_approved_actions` and `kapsel.list_operation_history` require `after`,
+either null or a valid bounded operation ID. `kapsel.get_status`, `kapsel.get_receipt`, and
+`kapsel.submit` require exactly `operation_id`, a 1-128 byte identity matching `^[A-Za-z0-9._:-]+$`.
+The list schemas enforce the cursor type and bound, and the service verifies cursor semantics. The
+only mutating tool is `kapsel.submit`; it explicitly selects an approved ID or resumes _that same
+ID_. Discovery, history, status and receipt are stored reads, with no receiver access or lifecycle
+advancement. No new identity is minted after ambiguity.
+
+Each tool returns one text item containing a JSON object with `operation_id` (the selected ID, or
+null for list calls) and `service` (the unchanged version-1 service JSON object). The JSON-RPC ID is
+only the request ID, not the durable operation ID. Local bridge errors use the same envelope, with a
+fixed `service.status: "ERROR"` and bridge-local `error_class`. `ERROR` sets `isError: true`;
+`NOT_FOUND`, `NOT_READY`, `NOT_ADMITTED` and `INDETERMINATE` remain distinct machine-readable
+service facts, not JSON-RPC errors. A local exchange failure returns
+`{"status":"ERROR","error_class":"service_exchange_uncertain"}` with `isError: true`. Invalid
+response or receipt digest returns `response_invalid`. Neither says the service did not admit the
+ID. The service owns admission phase, local rejection, execution disposition, receiver
+classification and original signed receipt bytes/digest. The bridge does not export receipt files,
+verify signatures, or infer a receiver outcome from a successful exchange. Read the original ID
+after loss, then explicitly select it only when the service disposition permits. See
+[service protocol](KAPSEL_SERVICE.md#version-1-socket-adoption-contract) and
+[operator recovery](KAPSEL_SERVICE_OPERATOR.md#diagnose-and-resume).
+
+## Direct-execution adapter protocol and process
 
 The adapter supports exactly MCP protocol version `2025-11-25` over the official standard-input /
 standard-output transport. Each message is one UTF-8 JSON-RPC 2.0 object on one line. Standard

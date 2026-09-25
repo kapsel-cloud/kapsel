@@ -108,19 +108,20 @@ starts Docker. See [the hooks](../.githooks/) for exact refusal and caching beha
 Choose the smallest check that owns the changed behavior. Run the complete local gate before handoff
 when practical. Additional environment requirements are listed in the sections below.
 
-| Change                             | Command                                                  |
-| ---------------------------------- | -------------------------------------------------------- |
-| Python scripts                     | `./scripts/ci-local.sh static`                           |
-| Formatting pipeline                | `python3 scripts/test-format.py`                         |
-| Effect gateway                     | `cargo test --locked -p kapsel`                          |
-| Service and private harness        | `cargo test --locked -p kapseld --features test-harness` |
-| Shared operator authority          | `cargo test --locked -p kapsel-authority`                |
-| Service installed assets           | `cargo test --locked -p kapseld --test install_assets`   |
-| MCP adapter                        | `cargo test --locked --test e2e_mcp_adapter`             |
-| Crash-demo harness, without Docker | `./scripts/test-demo-harness.sh`                         |
-| Seeded lifecycle simulation        | `./scripts/test-simulation.sh`                           |
-| Receipt-inspection fuzz smoke      | `./scripts/test-fuzz.sh`                                 |
-| Live Kubernetes behavior           | `./scripts/test-kind-effect-gateway.sh`                  |
+| Change                             | Command                                                                     |
+| ---------------------------------- | --------------------------------------------------------------------------- |
+| Python scripts                     | `./scripts/ci-local.sh static`                                              |
+| Formatting pipeline                | `python3 scripts/test-format.py`                                            |
+| Effect gateway                     | `cargo test --locked -p kapsel`                                             |
+| Service and private harness        | `cargo test --locked -p kapseld --features test-harness`                    |
+| Shared operator authority          | `cargo test --locked -p kapsel-authority`                                   |
+| Service installed assets           | `cargo test --locked -p kapseld --test install_assets`                      |
+| Direct MCP adapter                 | `cargo test --locked --test e2e_mcp_adapter`                                |
+| Service MCP bridge                 | `cargo test --locked -p kapseld --features test-harness --test service_mcp` |
+| Crash-demo harness, without Docker | `./scripts/test-demo-harness.sh`                                            |
+| Seeded lifecycle simulation        | `./scripts/test-simulation.sh`                                              |
+| Receipt-inspection fuzz smoke      | `./scripts/test-fuzz.sh`                                                    |
+| Live Kubernetes behavior           | `./scripts/test-kind-effect-gateway.sh`                                     |
 
 ## Live Kubernetes gate
 
@@ -186,26 +187,30 @@ container copy is removed after the call, and container cleanup removes any rema
 state.
 
 Codex runs as UID 61001, distinct from both root preparation and the Kapsel service identity. It
-lists actual approvals, submits the existing `healthy` ID, reads status and exports its receipt
-through the product client. Before starting Codex, the runner must pass the caller's OS custody
-probes. Codex's inner approval prompts and sandbox are explicitly bypassed **only inside this
-externally isolated disposable caller**. The container's `no-new-privileges`, absent private host
-mounts and OS identities are the boundary, not prompt advice or confirmation dialogs. Never copy
-that bypass flag into a host or operator invocation.
+uses the packaged `/usr/bin/kapsel-service-mcp` through its caller-owned Codex configuration to list
+actual approvals, submit the existing `healthy` ID, read status and retrieve the receipt. The
+independent driver still uses the fixed service client to verify the retained action. Before
+starting Codex, the runner must pass the caller's OS custody probes. Codex's inner approval prompts
+and sandbox are explicitly bypassed **only inside this externally isolated disposable caller**. The
+container's `no-new-privileges`, absent private host mounts and OS identities are the boundary, not
+prompt advice or confirmation dialogs. Never copy that bypass flag into a host or operator
+invocation.
 
 The agent container has a 4 GiB memory ceiling. The driver waits up to 120 seconds for Codex, then
 requires all remaining caller-UID processes to retire before checking evidence or starting scripted
-cases. Killing the host `docker exec` process alone is not sufficient. User configuration and
-exec-policy rules are not loaded, and session persistence is disabled. This tests specific product
-custody boundaries, not comprehensive hostile-code containment. The model can read its own model
+cases. Killing the host `docker exec` process alone is not sufficient. Only the explicit disposable
+caller configuration is loaded, with the fixed MCP command and no host user settings. Exec-policy
+rules are not loaded, and session persistence is disabled. This tests specific product custody
+boundaries, not comprehensive hostile-code containment. The model can read its own model
 authentication and has network access.
 
 The driver checks product state independently of model prose and refuses success if another fixture
 action was admitted. Status comes from the installed native client with its fixed socket. Python
 supervision and receipt readers use isolated mode to exclude model-writable imports. The driver
-snapshots a bounded, regular, non-symlink model receipt **before** creating a canonical export, then
-compares the bytes. It records CLI identity, both executable digests and token usage, not raw model
-sessions. There is no provider SDK, agent framework or new product command.
+snapshots two bounded, regular, non-symlink independent client exports and compares the original
+bytes and digest. It does not treat the model's prose as receipt proof. It records CLI identity,
+both executable digests and token usage, not raw model sessions. There is no provider SDK, agent
+framework or new product command.
 
 This is one model-driven healthy action. The remaining fault and recovery cases are deterministic
 caller programs, not model-driven troubleshooting or evidence of useful action selection. Neither

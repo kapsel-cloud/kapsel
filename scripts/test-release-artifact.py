@@ -95,6 +95,7 @@ def synthetic_archive(
     ordinary = b"ordinary"
     service = b"service"
     client = b"client"
+    mcp_bridge = b"mcp-bridge"
     metadata = {
         "artifact_schema": "kapsel.release-artifact.v3",
         "package_version": "0.2.0",
@@ -116,12 +117,15 @@ def synthetic_archive(
         "service_binary_sha256": hashlib.sha256(service).hexdigest(),
         "client_binary_bytes": len(client),
         "client_binary_sha256": hashlib.sha256(client).hexdigest(),
+        "mcp_bridge_binary_bytes": len(mcp_bridge),
+        "mcp_bridge_binary_sha256": hashlib.sha256(mcp_bridge).hexdigest(),
         "non_claims": "service-preview;not-production;no-public-rust-api;no-other-targets",
     }
     files: dict[str, bytes | int] = {
         f"{basename}/bin/kapsel": ordinary,
         f"{basename}/libexec/kapsel/kapseld": service,
         f"{basename}/bin/kapsel-service-client": client,
+        f"{basename}/bin/kapsel-service-mcp": mcp_bridge,
         f"{basename}/share/kapsel/kapseld.service": b"unit\n",
         f"{basename}/share/kapsel/kapseld.conf": b"sysusers\n",
         f"{basename}/share/kapsel/kapseld-rbac.yaml": b"rbac\n",
@@ -188,7 +192,9 @@ def synthetic_archive(
                 information.mode = (
                     0o755
                     if is_directory
-                    or name.endswith(("/kapsel", "/kapseld", "/kapsel-service-client"))
+                    or name.endswith(
+                        ("/kapsel", "/kapseld", "/kapsel-service-client", "/kapsel-service-mcp")
+                    )
                     else 0o644
                 )
                 if mutate == "unsafe-mode" and name.endswith("/CHANGELOG.md"):
@@ -359,7 +365,7 @@ class ReleaseVerifierTests(unittest.TestCase):
                         return (
                             b"wrong"
                             if case == "receipt-mismatch"
-                            and arguments[-1].endswith("healthy.receipt")
+                            and arguments[-1].endswith("repeated.receipt")
                             else b"frozen receipt"
                         )
                     if arguments[-1] == "--version":
@@ -378,7 +384,9 @@ class ReleaseVerifierTests(unittest.TestCase):
                     return b""
 
                 with (
-                    mock.patch.object(JOURNEY.subprocess, "run", return_value=responses[0]),
+                    mock.patch.object(
+                        JOURNEY.subprocess, "run", return_value=responses[0]
+                    ) as direct,
                     mock.patch.object(
                         JOURNEY, "run_agent_process", side_effect=responses[1:]
                     ) as cli,
@@ -411,7 +419,12 @@ class ReleaseVerifierTests(unittest.TestCase):
                     self.assertEqual(
                         arguments[:5], ["docker", "exec", "--user", "61001:61000", "--workdir"]
                     )
-                    self.assertIn("--ignore-user-config", arguments)
+                    self.assertNotIn("--ignore-user-config", arguments)
+                    config_calls = [call for call in direct.call_args_list if "tee" in call.args[0]]
+                    self.assertEqual(len(config_calls), 1)
+                    self.assertIn(
+                        b'command = "/usr/bin/kapsel-service-mcp"', config_calls[0].kwargs["input"]
+                    )
                     self.assertIn("--ignore-rules", arguments)
                     self.assertIn("--ephemeral", arguments)
                     self.assertEqual(
@@ -1165,6 +1178,7 @@ finally:
                 f"{basename}/libexec/kapsel/",
                 f"{basename}/libexec/kapsel/kapseld",
                 f"{basename}/bin/kapsel-service-client",
+                f"{basename}/bin/kapsel-service-mcp",
                 f"{basename}/share/",
                 f"{basename}/share/kapsel/",
                 f"{basename}/share/kapsel/kapseld.service",
@@ -1199,7 +1213,7 @@ finally:
                     )
                     self.assertEqual(identity, (0, 0, "", "", 0))
                     executable = member.isdir() or member.name.endswith(
-                        ("/kapsel", "/kapseld", "/kapsel-service-client")
+                        ("/kapsel", "/kapseld", "/kapsel-service-client", "/kapsel-service-mcp")
                     )
                     expected_mode = 0o755 if executable else 0o644
                     self.assertEqual(member.mode, expected_mode, member.name)
@@ -1299,6 +1313,8 @@ finally:
                         "service_binary_sha256",
                         "client_binary_bytes",
                         "client_binary_sha256",
+                        "mcp_bridge_binary_bytes",
+                        "mcp_bridge_binary_sha256",
                         "non_claims",
                     ],
                 )
@@ -1307,6 +1323,7 @@ finally:
                     "ordinary": "bin/kapsel",
                     "service": "libexec/kapsel/kapseld",
                     "client": "bin/kapsel-service-client",
+                    "mcp_bridge": "bin/kapsel-service-mcp",
                 }.items():
                     binary_file = release.extractfile(f"{basename}/{path}")
                     self.assertIsNotNone(binary_file)

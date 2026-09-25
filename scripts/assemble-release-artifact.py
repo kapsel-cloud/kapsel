@@ -27,6 +27,7 @@ BINARIES = {
     "ordinary": "bin/kapsel",
     "service": "libexec/kapsel/kapseld",
     "client": "bin/kapsel-service-client",
+    "mcp_bridge": "bin/kapsel-service-mcp",
 }
 SBOM_GENERATOR = "kapsel-release-sbom/1"
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024

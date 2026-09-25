@@ -878,6 +878,146 @@ fn ordinary_restart_reads_before_explicit_reselection_without_second_patch() {
 }
 
 #[test]
+fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
+    use serde_json::json;
+
+    let root = application_root("mcp-bridge-loss");
+    let socket = root.join("kapseld.sock");
+    let server = success_server();
+    let service = spawn_application(&socket, &root, &server.url, "A", None, 3);
+    wait_for_socket(&socket);
+    // Hold the service's durable acknowledgement outside the bridge. Kill its process while
+    // the acknowledgement is undelivered, without cancelling the service-owned worker.
+    let proxy_socket = root.join("mcp-proxy.sock");
+    let proxy_listener = StdUnixListener::bind(&proxy_socket).unwrap();
+    let service_socket = socket.clone();
+    let (ack_tx, ack_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let proxy = thread::spawn(move || {
+        let (mut caller, _) = proxy_listener.accept().unwrap();
+        caller.set_read_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
+        let mut prefix = [0_u8; 4];
+        caller.read_exact(&mut prefix).unwrap();
+        let mut body = vec![0_u8; u32::from_be_bytes(prefix) as usize];
+        caller.read_exact(&mut body).unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(request["request"], "submit_set_deployment_image");
+        assert_eq!(request["operation_id"], "process-op");
+        let mut service = UnixStream::connect(service_socket).unwrap();
+        service.write_all(&prefix).unwrap();
+        service.write_all(&body).unwrap();
+        service.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_admitted(&mut service, "requested");
+        ack_tx.send(()).unwrap();
+        release_rx.recv_timeout(FIXTURE_TIMEOUT).unwrap();
+        drop(caller);
+    });
+
+    let mut bridge = ChildGuard::new(
+        Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
+            .env("KAPSELD_TEST_CLIENT_SOCKET", &proxy_socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let input = bridge.stdin.as_mut().unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":"2025-11-25","capabilities":{},
+            "clientInfo":{"name":"test","version":"1"}}})
+    )
+    .unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+        "params":{"name":"kapsel.submit","arguments":{"operation_id":"process-op"}}})
+    )
+    .unwrap();
+    ack_rx.recv_timeout(FIXTURE_TIMEOUT).unwrap();
+    kill(&mut bridge);
+    release_tx.send(()).unwrap();
+    proxy.join().unwrap();
+    server
+        .observation_started
+        .recv_timeout(FIXTURE_TIMEOUT)
+        .unwrap();
+    server.release_observation.send(()).unwrap();
+    wait_for_finalized(&root.join("journal.sqlite3"));
+
+    let mut reconnect = ChildGuard::new(
+        Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
+            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut input = reconnect.stdin.take().unwrap();
+    for message in [
+        json!({"jsonrpc":"2.0","id":3,"method":"initialize",
+            "params":{"protocolVersion":"2025-11-25","capabilities":{},
+                "clientInfo":{"name":"test","version":"1"}}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
+            "params":{"name":"kapsel.get_status","arguments":{"operation_id":"process-op"}}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call",
+            "params":{"name":"kapsel.get_receipt","arguments":{"operation_id":"process-op"}}}),
+    ] {
+        writeln!(input, "{message}").unwrap();
+    }
+    drop(input);
+    let output = reconnect.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let responses: Vec<serde_json::Value> = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 3);
+    let status: serde_json::Value = serde_json::from_str(
+        responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status["operation_id"], "process-op");
+    assert_eq!(status["service"]["status"], "SUCCEEDED");
+    let receipt: serde_json::Value = serde_json::from_str(
+        responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(receipt["operation_id"], "process-op");
+    assert_eq!(receipt["service"]["status"], "READY");
+    assert_eq!(
+        receipt["service"]["receipt_sha256"].as_str().unwrap().len(),
+        64
+    );
+    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    assert!(service.wait_with_output().unwrap().status.success());
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn ordinary_startup_rejects_every_nonexact_or_active_socket_without_unlinking() {
     for (name, kind) in [
         ("regular", "regular"),

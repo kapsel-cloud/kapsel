@@ -40,9 +40,9 @@ python3 scripts/assemble-release-artifact.py --output-directory dist
 
 Assembly refuses a dirty worktree, a non-`x86_64-unknown-linux-gnu` target, missing Docker, or
 source metadata it cannot validate. It builds the `kapsel` and `kapseld` packages together without
-test/demo features. The three executables use `--release`, `--locked`, the explicit target, fixed
-container path `/workspace`, and source-prefix remapping. Packaging copies those bytes and never
-rebuilds them.
+test/demo features. The four current-source executables use `--release`, `--locked`, the explicit
+target, fixed container path `/workspace`, and source-prefix remapping. Packaging copies those bytes
+and never rebuilds them.
 
 `--allow-dirty` exists only for local script tests. Such metadata records `source_dirty: true`; its
 outputs are not publishable and cannot satisfy candidate evidence.
@@ -79,12 +79,15 @@ reviewed-source, or builder-integrity guarantee.
 
 ## Exact archive
 
-The archive has one top-level directory and exactly this layout:
+This is the current-source assembly layout. The published `v0.3.0-preview.1` archive predates the
+service MCP bridge and retains its original three binaries and authenticated release bytes. The
+archive has one top-level directory and exactly this layout:
 
 ```text
 kapsel-<version>-x86_64-unknown-linux-gnu/
   bin/kapsel
   bin/kapsel-service-client
+  bin/kapsel-service-mcp
   libexec/kapsel/kapseld
   share/kapsel/kapseld.service
   share/kapsel/kapseld.conf
@@ -138,7 +141,7 @@ digest, bundled binary paths and digests, package version, source revision and t
 image, Cargo lockfile digest, and the complete locked Rust package graph reachable from the root and
 service packages, including build and target-conditioned dependencies. Presence in that conservative
 graph is dependency identity evidence, not a runtime-reachability claim. The archive package sets
-SPDX `filesAnalyzed` to false and relates only the three digest-bound binary records explicitly; it
+SPDX `filesAnalyzed` to false and relates only the four digest-bound binary records explicitly; it
 does not claim that every bundled document or asset received file analysis. Metadata independently
 binds the canonical reachable package/relationship graph digest and counts, and artifact smoke
 rejects a deleted or changed graph.

@@ -21,6 +21,8 @@ storage. The caller can select an approved identity and retrieve its evidence. M
 cannot replace the exact grant or redefine the receiver result. A signature authenticates bytes; it
 does not supply missing receiver knowledge.
 
+Current source includes an ID-only stdio MCP bridge to the Linux resident service, separate from the
+older five-field direct-execution MCP adapter. The published preview does not include this bridge.
 The Linux resident service provides a caller-independent lifetime. Its bounded catalog uses
 exact-snapshot approvals, durable admission, one active worker, and read-first startup with explicit
 same-ID resumption. Selection and waiting remain with the caller's surrounding workflow. There is no

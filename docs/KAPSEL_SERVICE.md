@@ -167,7 +167,7 @@ attempted publication did not occur. Startup never automatically reconciles.
 | Item                   | Current source boundary                                                                                                  |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | Packages               | Root `kapsel` and resident `kapseld -> kapsel`                                                                           |
-| Executables            | `/usr/bin/kapsel`, `/usr/libexec/kapsel/kapseld`, `/usr/bin/kapsel-service-client`                                       |
+| Executables            | `/usr/bin/kapsel`, `/usr/libexec/kapsel/kapseld`, `/usr/bin/kapsel-service-client`, `/usr/bin/kapsel-service-mcp`        |
 | Caller interface       | One length-prefixed JSON request and response per Unix-socket connection                                                 |
 | Authentication         | Parent `0750`, socket `0660`, service UID and `kapsel-service-callers` GID; exact effective caller-group peer credential |
 | Connection resources   | At most eight admitted connections; two-second read/write deadlines; no queue                                            |
@@ -285,9 +285,11 @@ write-half-close, one framed response, and close. Request length is 1–16 KiB. 
 at most 16 KiB and receipt responses at most 40 KiB. Aggregate frame-read and response-write
 deadlines are two seconds. Saturation closes immediately without reading a body or creating work.
 
-The five version-1 commands above are the entire socket grammar. Input key order is insignificant.
-Duplicate, unknown, missing, null, wrong-typed, trailing, cross-request, malformed UTF-8, oversized,
-timed-out and out-of-grammar fields fail closed without lifecycle effect.
+The five version-1 commands above are the entire socket grammar. The separate
+[ID-only MCP bridge](MCP.md#resident-service-bridge-current-source-only) projects these commands
+without adding service methods or owning execution. Input key order is insignificant. Duplicate,
+unknown, missing, null, wrong-typed, trailing, cross-request, malformed UTF-8, oversized, timed-out
+and out-of-grammar fields fail closed without lifecycle effect.
 
 Status returns `NOT_FOUND`, `IN_PROGRESS`, `NOT_ATTEMPTED` with its required `target_rejection`,
 `SUCCEEDED`, `FAILED`, or `UNKNOWN`, without Kubernetes access. It projects `approved_target`,
@@ -494,6 +496,7 @@ need receiver access; there is no startup reconciliation.
 | ----------------------------------------- | -------------------------------------------------- |
 | feature-free root `kapsel`                | `/usr/bin/kapsel`                                  |
 | feature-free `kapsel-service-client`      | `/usr/bin/kapsel-service-client`                   |
+| feature-free `kapsel-service-mcp`         | `/usr/bin/kapsel-service-mcp`                      |
 | feature-free `kapseld`                    | `/usr/libexec/kapsel/kapseld`                      |
 | `crates/kapseld/deploy/kapseld.service`   | `/usr/lib/systemd/system/kapseld.service`          |
 | `crates/kapseld/deploy/kapseld.conf`      | `/usr/lib/sysusers.d/kapseld.conf`                 |

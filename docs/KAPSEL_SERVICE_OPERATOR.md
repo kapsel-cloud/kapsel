@@ -528,6 +528,13 @@ sudo -u kapsel-service-caller -g kapsel-service-callers -- \
   /usr/bin/kapsel-service-client status "$operation_id"
 ```
 
+For an agent that speaks MCP, provision the
+[ID-only stdio bridge](MCP.md#resident-service-bridge-current-source-only) with
+`command: "/usr/bin/kapsel-service-mcp"` and `args: []` in its trusted launch configuration. Launch
+the bridge as the same confined caller UID/effective GID. Do not put the operator document, socket
+path, credentials or receipt export path into tool input. This bridge is current source, not a
+binary in the published preview archive.
+
 The caller account's primary group is `kapsel-service-callers`. The explicit `-g` supplies the
 required effective GID without a supplementary membership entry. Every response has integer
 `version: 1`. `ADMITTED` includes the confirmed durable phase, not worker liveness or receiver

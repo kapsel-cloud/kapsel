@@ -123,6 +123,7 @@ for directory in ("/usr/libexec", "/usr/libexec/kapsel"):
     pathlib.Path(directory).chmod(0o755)
 for source, destination in (("bin/kapsel", "/usr/bin/kapsel"),
                             ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
+                            ("bin/kapsel-service-mcp", "/usr/bin/kapsel-service-mcp"),
                             ("libexec/kapsel/kapseld", "/usr/libexec/kapsel/kapseld")):
     pathlib.Path(destination).parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile("/artifact/" + source, destination)
@@ -257,7 +258,8 @@ for path in ('/etc/kapsel/operator.json', '/etc/kapsel/kubeconfig.yaml',
         pass
     else:
         raise AssertionError('private input readable: ' + path)
-for path in ('/usr/bin/kapsel-service-client', '/usr/libexec/kapsel/kapseld'):
+for path in ('/usr/bin/kapsel-service-client', '/usr/bin/kapsel-service-mcp',
+             '/usr/libexec/kapsel/kapseld'):
     assert not os.access(path, os.W_OK)
 assert not os.path.exists('/var/run/docker.sock')
 try:
@@ -413,9 +415,27 @@ def run_agent(
     code_host = binary.with_name("codex-code-mode-host")
     run(["docker", "cp", str(code_host), name + ":/usr/local/bin/codex-code-mode-host"])
     run(["docker", "cp", str(auth), name + ":/home/caller/.codex/auth.json"])
+    config = b'[mcp_servers.kapsel_service]\ncommand = "/usr/bin/kapsel-service-mcp"\nargs = []\n'
+    subprocess.run(
+        ["docker", "exec", "-i", name, "tee", "/home/caller/.codex/config.toml"],
+        input=config,
+        capture_output=True,
+        check=True,
+        timeout=10,
+    )
     run(["docker", "exec", name, "chown", "-R", "61001:61000", "/home/caller"])
     run(["docker", "exec", name, "chmod", "0700", "/home/caller", "/home/caller/.codex"])
-    run(["docker", "exec", name, "chmod", "0600", "/home/caller/.codex/auth.json"])
+    run(
+        [
+            "docker",
+            "exec",
+            name,
+            "chmod",
+            "0600",
+            "/home/caller/.codex/auth.json",
+            "/home/caller/.codex/config.toml",
+        ]
+    )
     caller = [
         "docker",
         "exec",
@@ -431,10 +451,11 @@ def run_agent(
     ]
     version = run([*caller, "/usr/local/bin/codex", "--version"]).decode().strip()
     prompt = (
-        "This is an explicitly approved disposable Kapsel test. Use /usr/bin/kapsel-service-client "
-        "list to inspect the operator-approved catalog. Select only the existing healthy ID for "
-        "demo/agent-healthy, container api. Read its status, submit healthy if not yet admitted, "
-        "then read status until a terminal result. Export its receipt to /home/caller/healthy.receipt. "
+        "This is an explicitly approved disposable Kapsel test. Use only the configured "
+        "kapsel_service MCP tools to list operator-approved handles and read history. "
+        "Select only the existing healthy ID for demo/agent-healthy, container api. Read its "
+        "status, submit healthy if not yet admitted, then read status until a terminal result. "
+        "Get its original receipt using MCP. Do not call a shell to mutate or read private files. "
         "Do not submit any other ID or create authority. Report the receiver result without claiming "
         "application quality. Do not open or print authentication material. You have an unprivileged "
         "shell in a disposable container, not operator or Kubernetes credentials."
@@ -450,7 +471,6 @@ def run_agent(
                     "/usr/local/bin/codex",
                     "exec",
                     "--ephemeral",
-                    "--ignore-user-config",
                     "--ignore-rules",
                     "--skip-git-repo-check",
                     "--enable",
@@ -490,16 +510,6 @@ def run_agent(
                 and json.loads(run([*client, "status", case])).get("status") != "NOT_FOUND"
             ):
                 raise RuntimeError("agent selected an unintended fixture action")
-        snapshot = run(
-            [
-                *caller,
-                "/usr/local/bin/python3",
-                "-I",
-                "-c",
-                RECEIPT_SNAPSHOT,
-                "/home/caller/healthy.receipt",
-            ]
-        )
         exported = json.loads(run([*client, "receipt", "healthy", "/home/caller/checked.receipt"]))
         if exported.get("status") != "READY":
             raise RuntimeError("original receipt unavailable after the model run")
@@ -513,8 +523,19 @@ def run_agent(
                 "/home/caller/checked.receipt",
             ]
         )
-        if snapshot != canonical:
-            raise RuntimeError("model receipt differs from the original product evidence")
+        again = json.loads(run([*client, "receipt", "healthy", "/home/caller/repeated.receipt"]))
+        repeated = run(
+            [
+                *caller,
+                "/usr/local/bin/python3",
+                "-I",
+                "-c",
+                RECEIPT_SNAPSHOT,
+                "/home/caller/repeated.receipt",
+            ]
+        )
+        if repeated != canonical or again.get("receipt_sha256") != exported["receipt_sha256"]:
+            raise RuntimeError("repeated retrieval changed original product evidence")
         # Trust product evidence, not the model's prose. Only this fixed completion signal reaches
         # the fixture driver; model-produced commands and session identifiers never leave the caller.
         path = workspace / "selection.json"
@@ -531,7 +552,7 @@ def run_agent(
             ]
         )
         print(
-            "Confined Codex completed the approved healthy action through the product client",
+            "Confined Codex completed the approved healthy action through the service MCP bridge",
             flush=True,
         )
         return {

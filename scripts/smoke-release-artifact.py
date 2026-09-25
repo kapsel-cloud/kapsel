@@ -39,6 +39,7 @@ BINARIES = {
     "ordinary": "bin/kapsel",
     "service": "libexec/kapsel/kapseld",
     "client": "bin/kapsel-service-client",
+    "mcp_bridge": "bin/kapsel-service-mcp",
 }
 SBOM_GENERATOR = "kapsel-release-sbom/1"
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
@@ -295,6 +296,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         f"{basename}/libexec/kapsel/",
         f"{basename}/libexec/kapsel/kapseld",
         f"{basename}/bin/kapsel-service-client",
+        f"{basename}/bin/kapsel-service-mcp",
         f"{basename}/share/",
         f"{basename}/share/kapsel/",
         f"{basename}/share/kapsel/kapseld.service",
@@ -388,6 +390,8 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         "service_binary_sha256",
         "client_binary_bytes",
         "client_binary_sha256",
+        "mcp_bridge_binary_bytes",
+        "mcp_bridge_binary_sha256",
         "non_claims",
     ]
     if list(metadata) != expected_keys:
@@ -1071,6 +1075,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         "ordinary": pathlib.Path("/usr/bin/kapsel"),
         "service": pathlib.Path("/usr/libexec/kapsel/kapseld"),
         "client": pathlib.Path("/usr/bin/kapsel-service-client"),
+        "mcp_bridge": pathlib.Path("/usr/bin/kapsel-service-mcp"),
     }
     fresh_paths = [
         *private_roots,

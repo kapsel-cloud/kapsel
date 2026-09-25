@@ -2,24 +2,18 @@
 
 use std::{
     fs::OpenOptions,
-    io::{Read as _, Write as _},
-    net::Shutdown,
-    os::unix::{
-        fs::{OpenOptionsExt as _, PermissionsExt as _},
-        net::UnixStream,
-    },
+    io::Write as _,
+    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::Path,
     process::ExitCode,
-    time::Duration,
 };
 
+use kapseld::client_transport::{self, Error as TransportError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
-const SOCKET: &str = "/run/kapsel/kapseld.sock";
-const RESPONSE_BYTES_MAX: usize = 40 * 1024;
-const IO_DEADLINE: Duration = Duration::from_secs(2);
+const SOCKET: &str = client_transport::SOCKET;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,9 +72,13 @@ impl ClientError {
     }
 }
 
-impl From<std::io::Error> for ClientError {
-    fn from(_: std::io::Error) -> Self {
-        Self::Exchange
+impl From<TransportError> for ClientError {
+    fn from(error: TransportError) -> Self {
+        match error {
+            TransportError::Connection => Self::Connection,
+            TransportError::Exchange => Self::Exchange,
+            TransportError::Response => Self::Response,
+        }
     }
 }
 
@@ -127,8 +125,8 @@ fn run(arguments: &[String]) -> Result<(), ClientError> {
     let socket = test_socket.as_deref().unwrap_or(SOCKET);
     #[cfg(not(feature = "test-harness"))]
     let socket = SOCKET;
-    let response = exchange(socket, &request)?;
-    let status = validate_response_version(&response).map_err(|()| ClientError::Response)?;
+    let response = client_transport::exchange(socket, &request)?;
+    let status = client_transport::validate_response_version(&response)?;
     match output {
         None => {
             std::io::stdout()
@@ -181,67 +179,6 @@ fn request(arguments: &[String]) -> Result<(Vec<u8>, Option<&Path>), ()> {
         _ => return Err(()),
     };
     Ok((serde_json::to_vec(&request).map_err(|_| ())?, output))
-}
-
-fn validate_response_version(bytes: &[u8]) -> Result<String, ()> {
-    #[derive(Deserialize)]
-    struct ResponseHeader {
-        version: u8,
-        status: String,
-    }
-    if bytes.is_empty()
-        || bytes.len() > RESPONSE_BYTES_MAX
-        || bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{')
-    {
-        return Err(());
-    }
-    let header: ResponseHeader = serde_json::from_slice(bytes).map_err(|_| ())?;
-    if header.version != 1
-        || !matches!(
-            header.status.as_str(),
-            "READY"
-                | "NOT_FOUND"
-                | "NOT_READY"
-                | "IN_PROGRESS"
-                | "NOT_ATTEMPTED"
-                | "SUCCEEDED"
-                | "FAILED"
-                | "UNKNOWN"
-                | "ADMITTED"
-                | "NOT_ADMITTED"
-                | "INDETERMINATE"
-                | "ERROR"
-        )
-    {
-        return Err(());
-    }
-    Ok(header.status)
-}
-
-fn exchange(socket: &str, request: &[u8]) -> Result<Vec<u8>, ClientError> {
-    let mut stream = UnixStream::connect(socket).map_err(|_| ClientError::Connection)?;
-    stream.set_read_timeout(Some(IO_DEADLINE))?;
-    stream.set_write_timeout(Some(IO_DEADLINE))?;
-    let length = u32::try_from(request.len())
-        .map_err(|_| std::io::Error::other("service request is too large"))?;
-    stream.write_all(&length.to_be_bytes())?;
-    stream.write_all(request)?;
-    stream.shutdown(Shutdown::Write)?;
-
-    let mut prefix = [0_u8; 4];
-    stream.read_exact(&mut prefix)?;
-    let length = usize::try_from(u32::from_be_bytes(prefix))
-        .map_err(|_| std::io::Error::other("service response is too large"))?;
-    if length == 0 || length > RESPONSE_BYTES_MAX {
-        return Err(ClientError::Response);
-    }
-    let mut response = vec![0_u8; length];
-    stream.read_exact(&mut response)?;
-    let mut trailing = [0_u8; 1];
-    if stream.read(&mut trailing)? != 0 {
-        return Err(ClientError::Response);
-    }
-    Ok(response)
 }
 
 fn save_receipt(response: &[u8], path: &Path) -> Result<(), ClientError> {
@@ -378,7 +315,10 @@ mod tests {
 
     #[test]
     fn response_requires_integer_version_one_and_an_object() {
-        assert!(validate_response_version(br#"{"version":1,"status":"INDETERMINATE"}"#).is_ok());
+        assert!(client_transport::validate_response_version(
+            br#"{"version":1,"status":"INDETERMINATE"}"#
+        )
+        .is_ok());
         for invalid in [
             r#"{"status":"ADMITTED"}"#,
             r#"{"version":2,"status":"ADMITTED"}"#,
@@ -388,7 +328,7 @@ mod tests {
             r#"[1,"ADMITTED"]"#,
             r#"{"version":1,"status":"ACCEPTED"}"#,
         ] {
-            assert!(validate_response_version(invalid.as_bytes()).is_err());
+            assert!(client_transport::validate_response_version(invalid.as_bytes()).is_err());
         }
     }
 
