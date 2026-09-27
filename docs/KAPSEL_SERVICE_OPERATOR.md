@@ -571,6 +571,75 @@ The trust file and evaluation time are operator-selected. Inspection reports `IN
 existing file fails export without changing the action. Use a new writable destination for a later
 export. The service needs no receipt directory and the caller never opens its private journal.
 
+## Fresh-session caller (current source)
+
+`python3 scripts/fresh-session-caller.py` is a small read-first caller of the fixed MCP bridge, not
+a daemon or a second action store. Run it under the confined caller identity on the service host
+after provisioning the source `kapsel-service-mcp` binary. The published preview lacks that binary.
+The operator gives the caller a stable, nonsecret label for this host's _retained journal_ (for
+example `host-a-journal-a`). Keep that label with the same journal across service restart; change it
+when replacing or losing the journal. This is a local custody convention, not a cryptographic
+service identity. The fixed socket alone cannot prove which history is behind it. The operator must
+verify journal custody before authorizing resumed work after host/storage change.
+
+The caller owns a private reference file, not grants, credentials, signing material or trust. Run
+these commands under the confined caller UID and effective group. The caller creates the private
+directory before the example starts; the operator supplies the journal label out of band. The
+approved catalog may span pages; `approved [after-id]` reads one page at a time.
+
+```sh
+caller='python3 scripts/fresh-session-caller.py'
+mkdir -m 700 -p ./caller-state  # use a caller-owned private directory
+$caller --service host-a-journal-a --reference ./caller-state/operation.ref approved
+# Choose an approved ID, then explicitly select it once. Use a new reference file.
+$caller --service host-a-journal-a --reference ./caller-state/operation.ref start artifact-op-1
+# A new process, with no conversational state, only reads the original identity:
+$caller --service host-a-journal-a --reference ./caller-state/operation.ref read
+# Only after reading execution.next_action, explicitly request same-ID advancement if permitted:
+$caller --service host-a-journal-a --reference ./caller-state/operation.ref resume
+```
+
+`start` saves and syncs the exclusive reference **before** invoking the bridge's mutating submit
+call. The service, not the example, enforces whether the ID is approved. Once the file exists,
+`start` cannot run again, even if its response was lost or locally refused. An absent status after
+uncertainty is not proof the first selection did not occur. A crash after saving the reference but
+before submission may leave `NOT_FOUND` with no effect; the example stops rather than silently
+reissuing the call. Investigate the original ID and service history with the operator. A definitive
+`NOT_ADMITTED` decision is distinct from an uncertain response, but this example still does not
+remove the reference or invent a replacement identity. `read` starts a new MCP process and only
+reads stored facts. `resume` first reads status, then selects **the same ID** only for
+`IN_PROGRESS / resume_required / select_same_id` owned by the caller. It will not select on
+`NOT_FOUND`, an exchange error, `wait`, `wait_then_select_same_id`, operator-required work or any
+terminal classification. An uncertain submission, including caller exit before acknowledgement,
+requires further reads of the original ID. An admitted task may outlive the caller during
+observation. A service restart loses transient worker explanations, not retained history. A read
+after restart never advances recovery; an explicit same-ID selection is a separate decision. For
+`wait_then_select_same_id`, wait and re-read before deciding to resume. A missing or mismatched
+history label stops this example; an unavailable journal or missing historical trust requires
+operator investigation, not a fresh reference.
+
+`NOT_ATTEMPTED` is local rejection without an effect receipt. `IN_PROGRESS` is unfinished, not
+receiver success. `SUCCEEDED`, `FAILED` and `UNKNOWN` are terminal receiver classifications;
+`UNKNOWN` blocks dependent mutations, replacement IDs, automatic approval refresh and rollback.
+Later green receiver state cannot rewrite the original receipt. These decisions remain with the
+caller and operator, not a scheduler inside this example.
+
+A separate new process can run `receipt` against the same private reference. Its `service` JSON
+contains `receipt_hex` and `receipt_sha256` when ready. For detached inspection, write the decoded
+hex to a private **new** caller-owned file and run
+`/usr/bin/kapsel inspect --receipt FILE --trust TRUST --evaluation-time-unix-s TIME` in an operator
+inspection workspace. Supply `TRUST` and `TIME` separately, never through the MCP tool. Compare
+repeated SHA-256 and bytes, not merely the status token. Receipt retrieval does not query
+Kubernetes. The existing [export and inspection steps](#submit-and-inspect) show the exact
+inspection command.
+
+Run `python3 scripts/test-fresh-session-caller.py` for fresh-process deterministic transcripts and
+separately counted selection calls. These fixture tests do not measure receiver mutations or claim
+native service or Kubernetes qualification. The
+[Linux bridge/service process test](BUILD.md#kapsel-service-candidate) counts one receiver HTTP
+patch across lost acknowledgement, observation, reconnect and restart. The existing service journey
+owns broader live Kubernetes qualification. No model is needed for deterministic replay.
+
 ## Diagnose and resume
 
 An absent row is `NOT_FOUND` with `execution.disposition: "admission_unconfirmed"`. This read cannot

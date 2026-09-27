@@ -39,6 +39,33 @@ changed settings. The Linux service process lane retrieves and inspects original
 export destination is unavailable. The application client retry and snapshot regressions retain
 independent request counts. Process exits do not prove power loss.
 
+## Git ref receiver probe (not a product capability)
+
+Run `python3 scripts/probes/test-git-ref-receiver.py` with Git 2.55.0. The disposable bare `file://`
+receiver has one `refs/heads/approved` branch, rejects non-fast-forwards and deletions, and has
+installed pre/post-receive hooks. The fixture isolates HOME, global and system Git config, disables
+credential prompting, fixes commit dates and uses an explicit
+`--force-with-lease=refs/heads/approved:<A>` and one full-ref refspec. The operator prepares A, B, C
+and D and performs fixture-only resets with `update-ref`. Git's
+[push reference](https://git-scm.com/docs/git-push) defines the explicit expected-value lease and
+notes that a remote failure may mean the receiver did not report an otherwise successful update.
+
+The probe compares fixture-owned operation ID, receiver label, ref and A/B exactly, then checks B's
+commit type and ancestry; changed payload, receiver label, non-commit and non-descendant probes
+fail. This unsigned fixture check is **not** Kapsel authority or repository custody verification. It
+checks receiver-side packet traces for update commands, counts hook invocations, reads the bare ref
+separately and reports sender acknowledgements. A rejected stale lease sends no update in this
+fixture. A current lease for a non-fast-forward B-to-C transition sends an update request that the
+receiver rejects. An exact lease does not itself enforce ancestry. A ref later at B can come from
+another sender after an unsent attempt. Resetting D to A lets the same A-to-B request succeed a
+second time, with a second hook invocation. The lease is not a safe replay policy. For actual
+transport failures, the fixture's pre/post-receive hook kills its parent `receive-pack` process
+before or after the ref update. The sender gets a failed push in both cases, while receiver ref and
+hook counts differ. This local process failure is not network-partition or power-loss evidence. The
+hook counts show invocation, not completed downstream side effects. Nor does the probe establish
+Kapsel restart safety or attribution from ref observation alone. It adds no authorization, journal,
+adapter, supported receiver, or new public command.
+
 ## Receiver-recovery evidence
 
 `gateway::receiver_recovery_tests` crosses the real Kubernetes adapter, journal and receipt path

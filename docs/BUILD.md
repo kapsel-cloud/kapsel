@@ -118,10 +118,22 @@ when practical. Additional environment requirements are listed in the sections b
 | Service installed assets           | `cargo test --locked -p kapseld --test install_assets`                      |
 | Direct MCP adapter                 | `cargo test --locked --test e2e_mcp_adapter`                                |
 | Service MCP bridge                 | `cargo test --locked -p kapseld --features test-harness --test service_mcp` |
+| Fresh-session caller fixture       | `python3 scripts/test-fresh-session-caller.py`                              |
 | Crash-demo harness, without Docker | `./scripts/test-demo-harness.sh`                                            |
 | Seeded lifecycle simulation        | `./scripts/test-simulation.sh`                                              |
 | Receipt-inspection fuzz smoke      | `./scripts/test-fuzz.sh`                                                    |
 | Live Kubernetes behavior           | `./scripts/test-kind-effect-gateway.sh`                                     |
+
+To run the fresh-session caller fixture against the real MCP bridge and a scripted socket (not
+Kubernetes), build the test-harness binary first:
+
+```sh
+cargo build --locked -p kapseld --features test-harness --bin kapsel-service-mcp
+cargo build --locked --bin kapsel
+env KAPSEL_TEST_BRIDGE="$PWD/target/debug/kapsel-service-mcp" \
+  KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
+  python3 scripts/test-fresh-session-caller.py
+```
 
 ## Live Kubernetes gate
 
@@ -299,6 +311,16 @@ tests:
 
 ```sh
 cargo test --locked -p kapseld --features test-harness --test linux_process
+```
+
+For the fresh-session caller's retained-identity delta, run the real Linux bridge/service fixture
+with independent HTTP mutation counting and detached CLI inspection (no Kubernetes cluster):
+
+```sh
+cargo build --locked --bin kapsel
+KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
+  cargo test --locked -p kapseld --features test-harness --test linux_process \
+  mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation -- --exact
 ```
 
 With `sg`, Python 3 and an existing `docker` group that the test user may activate through `sg`,

@@ -136,11 +136,16 @@ fn tools() -> Value {
         "minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},
         "required":["operation_id"],"additionalProperties":false});
     json!({"tools":[
-        {"name":"kapsel.list_approved_actions","description":"Read operator-approved handles.","inputSchema":cursor},
-        {"name":"kapsel.list_operation_history","description":"Read retained operation history.","inputSchema":cursor},
-        {"name":"kapsel.get_status","description":"Read stored status without advancing.","inputSchema":id},
-        {"name":"kapsel.get_receipt","description":"Read original signed receipt bytes and digest.","inputSchema":id},
-        {"name":"kapsel.submit","description":"Explicitly submit or resume the same operation ID.","inputSchema":id}
+        {"name":"kapsel.list_approved_actions",
+         "description":"Read operator-approved handles.","inputSchema":cursor},
+        {"name":"kapsel.list_operation_history",
+         "description":"Read retained operation history.","inputSchema":cursor},
+        {"name":"kapsel.get_status",
+         "description":"Read stored status without advancing.","inputSchema":id},
+        {"name":"kapsel.get_receipt",
+         "description":"Read original signed receipt bytes and digest.","inputSchema":id},
+        {"name":"kapsel.submit",
+         "description":"Explicitly submit or resume the same operation ID.","inputSchema":id}
     ]})
 }
 fn receipt_valid(value: &Value) -> bool {

@@ -237,8 +237,17 @@ fn duplicate_nested_json_is_rejected_before_socket_access() {
     for message in handshake() {
         writeln!(input, "{message}").unwrap();
     }
-    input.write_all(br#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"kapsel.submit","arguments":{"operation_id":"op-1","operation_id":"op-2"}}}
-"#).unwrap();
+    input
+        .write_all(
+            concat!(
+                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"#,
+                r#""name":"kapsel.submit","arguments":{"#,
+                r#""operation_id":"op-1","operation_id":"op-2"}}}"#,
+                "\n",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
     drop(input);
     let output = child.wait_with_output().unwrap();
     let responses: Vec<Value> = BufReader::new(output.stdout.as_slice())

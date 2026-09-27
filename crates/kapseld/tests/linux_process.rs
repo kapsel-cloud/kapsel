@@ -846,16 +846,48 @@ fn ordinary_restart_reads_before_explicit_reselection_without_second_patch() {
     let server = success_server();
     let root = installation_root_with_url("ordinary-recovery", &server.url);
     let socket = root.join("run/kapsel/kapseld.sock");
+    let script = root.join("fresh-session-caller.py");
+    fs::write(
+        &script,
+        include_str!("../../../scripts/fresh-session-caller.py").replace(
+            "BRIDGE = \"/usr/bin/kapsel-service-mcp\"",
+            &format!("BRIDGE = \"{}\"", env!("CARGO_BIN_EXE_kapsel-service-mcp")),
+        ),
+    )
+    .unwrap();
+    let reference = root.join("operation.ref");
+    let run_caller = |command: &str, extra: &[&str]| {
+        let output = Command::new("python3")
+            .arg(&script)
+            .args(["--service", "fixture-history-1", "--reference"])
+            .arg(&reference)
+            .arg(command)
+            .args(extra)
+            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stdout: {}, stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
     let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
-    let mut submit = connect(&socket);
-    write_frame(&mut submit, submit_request().as_bytes());
-    assert_admitted(&mut submit, "requested");
+    drop(connect(&socket));
+    assert_eq!(
+        run_caller("start", &["process-op"])["service"]["status"],
+        "ADMITTED"
+    );
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     assert!(socket.exists());
 
-    let child = spawn_installed(&root, 3);
-    resume_after_read(&socket);
+    let child = spawn_installed(&root, 5);
+    drop(connect(&socket));
+    assert_eq!(run_caller("read", &[])["service"]["status"], "IN_PROGRESS");
+    assert_eq!(run_caller("resume", &[])["service"]["status"], "ADMITTED");
     server
         .observation_started
         .recv_timeout(FIXTURE_TIMEOUT)
@@ -884,9 +916,37 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     let root = application_root("mcp-bridge-loss");
     let socket = root.join("kapseld.sock");
     let server = success_server();
-    let service = spawn_application(&socket, &root, &server.url, "A", None, 3);
+    let service = spawn_application(&socket, &root, &server.url, "A", None, 5);
     wait_for_socket(&socket);
-    // Hold the service's durable acknowledgement outside the bridge. Kill its process while
+    let caller_script = root.join("fresh-session-caller.py");
+    let source = include_str!("../../../scripts/fresh-session-caller.py");
+    fs::write(
+        &caller_script,
+        source.replace(
+            "BRIDGE = \"/usr/bin/kapsel-service-mcp\"",
+            &format!("BRIDGE = \"{}\"", env!("CARGO_BIN_EXE_kapsel-service-mcp")),
+        ),
+    )
+    .unwrap();
+    let reference = root.join("operation.ref");
+    let run_caller = |command: &str, extra: &[&str]| {
+        let output = Command::new("python3")
+            .arg(&caller_script)
+            .args(["--service", "fixture-history-1", "--reference"])
+            .arg(&reference)
+            .arg(command)
+            .args(extra)
+            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    // Hold the service's durable acknowledgement outside the bridge. Kill the thin caller while
     // the acknowledgement is undelivered, without cancelling the service-owned worker.
     let proxy_socket = root.join("mcp-proxy.sock");
     let proxy_listener = StdUnixListener::bind(&proxy_socket).unwrap();
@@ -913,47 +973,40 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         drop(caller);
     });
 
-    let mut bridge = ChildGuard::new(
-        Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
+    let mut caller = ChildGuard::new(
+        Command::new("python3")
+            .arg(&caller_script)
+            .args(["--service", "fixture-history-1", "--reference"])
+            .arg(&reference)
+            .args(["start", "process-op"])
             .env("KAPSELD_TEST_CLIENT_SOCKET", &proxy_socket)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap(),
     );
-    let input = bridge.stdin.as_mut().unwrap();
-    writeln!(
-        input,
-        "{}",
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize",
-        "params":{"protocolVersion":"2025-11-25","capabilities":{},
-            "clientInfo":{"name":"test","version":"1"}}})
-    )
-    .unwrap();
-    writeln!(
-        input,
-        "{}",
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
-    )
-    .unwrap();
-    writeln!(
-        input,
-        "{}",
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
-        "params":{"name":"kapsel.submit","arguments":{"operation_id":"process-op"}}})
-    )
-    .unwrap();
     ack_rx.recv_timeout(FIXTURE_TIMEOUT).unwrap();
-    kill(&mut bridge);
+    assert!(reference.exists());
+    kill(&mut caller);
+    let second_start = Command::new("python3")
+        .arg(&caller_script)
+        .args(["--service", "fixture-history-1", "--reference"])
+        .arg(&reference)
+        .args(["start", "process-op"])
+        .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
+        .output()
+        .unwrap();
+    assert_eq!(second_start.status.code(), Some(4));
     release_tx.send(()).unwrap();
     proxy.join().unwrap();
     server
         .observation_started
         .recv_timeout(FIXTURE_TIMEOUT)
         .unwrap();
+    assert_eq!(run_caller("read", &[])["service"]["status"], "IN_PROGRESS");
     server.release_observation.send(()).unwrap();
     wait_for_finalized(&root.join("journal.sqlite3"));
+    assert_eq!(run_caller("read", &[])["service"]["status"], "SUCCEEDED");
 
     let mut reconnect = ChildGuard::new(
         Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
@@ -1011,8 +1064,61 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         receipt["service"]["receipt_sha256"].as_str().unwrap().len(),
         64
     );
+    let original_hex = receipt["service"]["receipt_hex"].as_str().unwrap();
     assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
     assert!(service.wait_with_output().unwrap().status.success());
+    let restarted = spawn_application(&socket, &root, &server.url, "A", None, 2);
+    wait_for_socket(&socket);
+    assert_eq!(run_caller("read", &[])["service"]["status"], "SUCCEEDED");
+    let repeated = run_caller("receipt", &[]);
+    assert_eq!(repeated["service"]["receipt_hex"], original_hex);
+    assert_eq!(
+        repeated["service"]["receipt_sha256"],
+        receipt["service"]["receipt_sha256"]
+    );
+    let frozen: Vec<u8> = original_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let trust = kapsel::ReceiptTrust {
+        key_id: "process-receipt-key-a".into(),
+        public_key: SigningKey::from_bytes(&[42_u8; 32])
+            .verifying_key()
+            .to_bytes(),
+        accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
+        not_before_unix_s: 100,
+        not_after_unix_s: 200,
+    }
+    .encode()
+    .unwrap();
+    assert_eq!(
+        kapsel::inspect_receipt(&frozen, &trust, 150, kapsel::InspectionLimits::default()).status(),
+        kapsel::InspectionStatus::Inspected
+    );
+    if let Ok(inspector) = std::env::var("KAPSEL_TEST_INSPECT") {
+        let receipt_path = root.join("detached.receipt");
+        let trust_path = root.join("detached.trust");
+        fs::write(&receipt_path, &frozen).unwrap();
+        fs::write(&trust_path, &trust).unwrap();
+        let output = Command::new(inspector)
+            .args(["inspect", "--receipt"])
+            .arg(&receipt_path)
+            .arg("--trust")
+            .arg(&trust_path)
+            .args(["--evaluation-time-unix-s", "150"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["status"], "INSPECTED");
+    }
+    assert!(restarted.wait_with_output().unwrap().status.success());
+    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
