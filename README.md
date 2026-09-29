@@ -25,6 +25,20 @@ Better decisions do not remove lost acknowledgements, competing writers, or auth
 Kapsel gives callers inspectable execution facts with explicit limits. It does not decide which
 change is useful or make receiver observations universally true.
 
+## What we're building toward
+
+We want reliable delegated execution to become a useful building block: start work, disconnect, come
+back, and understand what completed and what remains uncertain. Different effects will expose
+different authority and recovery problems. Building and using real implementations is how we learn
+which mechanisms belong together.
+
+Kapsel is a personal project built to learn through implementation and experimentation.
+
+This repository is the home of Kapsel's technical work. An agreed feature includes the design,
+implementation, tests, and documentation needed to make it work. A useful prototype is a step toward
+integration, not an automatic handoff. We can change our own designs when experience gives us a
+better one; we keep the claims about shipped behavior accurate as we do.
+
 ## What it does today
 
 One operation: `kubernetes.set_deployment_image`. An operator approves an exact Deployment snapshot
@@ -65,8 +79,10 @@ Its archive, extraction procedure, and storage compatibility differ from the ser
 - [Contributing](CONTRIBUTING.md) and [Build and test](docs/BUILD.md): development and proof.
 - [Documentation map](docs/INDEX.md): current technical owners.
 
-Linear owns project direction, priorities, assignments, acceptance decisions, and progress. This
-repository documents implemented contracts and executable evidence, not a parallel backlog.
+The README states the project's purpose and technical ambition. Linear owns the ordered roadmap,
+priorities, assignments, and progress. The repository owns the implementation, current contracts,
+and executable evidence. Keep daily engineering here and work ordering in Linear. Make technical
+decisions as part of carrying the implementation through.
 
 Report vulnerabilities through the [security policy](SECURITY.md). See [privacy](docs/PRIVACY.md)
 for handling sensitive evidence. Licensed under [Apache 2.0](LICENSE).

@@ -1,13 +1,14 @@
 # Documentation
 
-Start with the [README](../README.md) for the mechanism and runnable preview, then follow the
-[service operator guide](KAPSEL_SERVICE_OPERATOR.md). The [technical tour](TOUR.md) explains one
+Start with the [README](../README.md) for the project, mechanism, and runnable preview. Then follow
+the [service operator guide](KAPSEL_SERVICE_OPERATOR.md). The [technical tour](TOUR.md) explains one
 operation; direct contracts specify its behavior.
 
 ## Learn and operate
 
 | Goal                                        | Read                                                                         |
 | ------------------------------------------- | ---------------------------------------------------------------------------- |
+| Understand the purpose and ambition         | [What we're building toward](../README.md#what-were-building-toward)         |
 | Understand the mechanism                    | [Technical tour](TOUR.md)                                                    |
 | Identify the implemented boundary           | [Technical scope](SCOPE.md)                                                  |
 | See implementation ownership                | [Architecture](ARCHITECTURE.md)                                              |
@@ -39,10 +40,11 @@ operation; direct contracts specify its behavior.
 
 ## Authority and history
 
-Linear is the source of truth for accepted direction, planned work, priorities, assignments,
-acceptance, and progress. Repository documents own current technical contracts; implementation and
-tests provide executable evidence. A planned change in Linear is not a claim that behavior already
-exists. Update the direct contract and its implementation together when adopting a change.
+The [README](../README.md) owns the project's purpose and technical ambition. Linear is the source
+of truth for the ordered roadmap, priorities, assignments, and progress. Do not duplicate it here.
+Repository documents own current technical contracts; implementation and tests provide executable
+evidence. Planned work is not a claim that behavior already exists. Deliver a change with its direct
+contract, implementation, and tests together.
 
 For current technical behavior, consult [scope](SCOPE.md), the
 [effect-gateway contract](EFFECT_GATEWAY.md), and the direct surface contract. Decisions explain

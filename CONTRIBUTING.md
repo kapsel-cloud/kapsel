@@ -1,5 +1,7 @@
 # Contributing to Kapsel
 
+Try concrete ideas in a disposable environment and carry useful results into the implementation.
+
 Start by checking Git status and preserving unrelated work. Then read
 [Why Kapsel exists](README.md#why-kapsel-exists), the [technical scope](docs/SCOPE.md), the
 [documentation map](docs/INDEX.md), and the direct contract, implementation, tests, and vectors for
@@ -13,7 +15,8 @@ source changes do not alter previously published bytes.
 ## Engineering rules
 
 [ADR 0001](docs/decisions/0001-kapsel-style.md) owns the engineering philosophy and design
-criterion. Use the [complexity review](#complexity-review) when changing architecture or contracts.
+criterion. The [complexity review](#complexity-review) gives design prompts when they help resolve a
+real tradeoff.
 
 Prioritize the boundaries that make Kapsel useful:
 
@@ -74,19 +77,20 @@ functions for the fact they establish.
 
 ### Documentation and dependencies
 
-Linear is the ground truth for accepted direction, planned work, priorities, assignments, acceptance
-decisions, and progress. Do not maintain competing plans or completion ledgers in Markdown. Public
-documentation describes current technical contracts, active rationale, runnable guidance, and
-reproducible evidence. A planned change is not implemented behavior.
+The README states the project's purpose and technical ambition. Linear owns the ordered roadmap,
+priorities, assignments, and progress. Do not duplicate the backlog or progress ledger in Markdown.
+Public documentation describes the project, current technical contracts, active rationale, runnable
+guidance, and reproducible evidence. A planned change is not implemented behavior.
 
 Delete deprecated documents and retired proposals from the current tree. Preserve still-valid
 invariants in the direct owner and repair inbound references in the same change. Git history and
 release tags retain previous material; do not add archives or tombstone replacements.
 
-A change should improve an enforced guarantee or concrete interaction, remove a maintenance
-obligation, or answer a precise technical question with executable evidence. Bounded technical
-exploration does not require customer discovery. Compare concrete implementations before extracting
-shared machinery, and remove unadopted prototypes when the question is settled.
+Features, simplifications, and technical exploration all belong here. Compare concrete
+implementations before extracting shared machinery. When a prototype works and fits the agreed task,
+integrate it with the relevant contracts and tests. When it does not, use the result to improve the
+design or explain the concrete obstacle. Remove discarded alternatives once they have served their
+purpose.
 
 Public Rust documentation states caller-visible input, bounds, authority, side effects, failures,
 and important non-claims. Every externally reachable public item needs rustdoc. Public `Result`
@@ -174,31 +178,11 @@ Before handing off a change, check:
 
 ### Complexity review
 
-For nontrivial architectural or contract changes, read
-[ADR 0001](docs/decisions/0001-kapsel-style.md#simplicity-is-the-design-criterion) before settling
-the design. Compare the candidates required there before freezing the boundary. Record the chosen
-design and why the alternative loses in the existing review discussion or owning decision, not a
-separate philosophy document.
+[ADR 0001](docs/decisions/0001-kapsel-style.md#simplicity-is-the-design-criterion) explains the
+design criterion. For a meaningful tradeoff, ask what knowledge each design hides, which rules it
+duplicates, and what interfaces or special cases it adds. Try another design when that comparison
+could change the choice. Remove obsolete machinery when its replacement works.
 
-Use this compact block in that review. Fill each field with concrete facts or `None`, and link to
-existing owners and evidence instead of copying them:
-
-```text
-Complexity delta
-
-Contract owner:
-Knowledge hidden:
-New interfaces, dependencies, configuration, or special cases:
-Existing rule duplicated:
-Alternative design considered:
-Obsolete code or documentation removed:
-Proof at the owning boundary:
-```
-
-Before handoff, compare the block with the actual diff. Check that the named owner hides the claimed
-knowledge, resolve duplicated rules or unexplained new surface, and run the proof at that boundary.
-Record any unresolved concern and missing gate in the same discussion. Mechanical edits, formatting,
-and wording corrections do not need this block.
-
-State what changed, what ran, and what remains unproved. Outside the scoped complexity review above,
-no mandatory report template is required.
+Put useful rationale in the existing review discussion or owning decision. No fixed candidate count
+or report template is required. Design and documentation are part of delivering the change, not
+separate permission stages. State what changed, what ran, and any concrete limitation that matters.

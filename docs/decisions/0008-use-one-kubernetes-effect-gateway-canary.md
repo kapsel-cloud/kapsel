@@ -29,13 +29,13 @@ The operation provides exact request matching, durable operation identity, one c
 Kubernetes mutation opportunity, bounded receiver observation or `UNKNOWN`, and a signed
 operation-scoped receipt.
 
-A second capability, generic provider seam, runtime plugin, policy engine, hosted service,
-dashboard, external witness, and stable package format are outside the repository's current
-technical scope.
+Kubernetes is the first concrete receiver. The choice established a working starting point, not a
+permanent capability limit. The current implemented boundary lives in [scope](../SCOPE.md).
 
 ## Consequences
 
 - The public release must demonstrate recovery without a blind second mutation.
 - The implementation remains deep around one operation rather than exposing a reusable provider
   interface.
-- Any broader capability requires a separate technical owner and decision.
+- A selected new capability includes its concrete technical owner, design decisions, contracts, and
+  tests in the implementation work. This canary decision does not require another adoption phase.

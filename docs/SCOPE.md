@@ -6,9 +6,10 @@ Choosing a useful action and judging application quality belong to the surroundi
 
 This page owns the implemented boundary and maturity. The
 [effect-gateway contract](EFFECT_GATEWAY.md) owns exact authorization, lifecycle, recovery, result,
-and receipt semantics. Linear owns accepted direction, planned work, priorities, assignments,
-acceptance decisions, and progress. Work recorded there does not become an implemented capability
-until its contracts, code, and evidence agree.
+and receipt semantics. The [README](../README.md) states the project's purpose and technical
+ambition; Linear owns the ordered roadmap, priorities, assignments, and progress. This page records
+what works today, not the limit of what we may build. Update it with the implementation, contracts,
+and tests when a capability changes.
 
 ## Current boundary
 
@@ -104,5 +105,6 @@ general platform promise. Process-exit tests do not establish disk-backed power-
 The current implementation includes no general Kubernetes administration, arbitrary execution,
 provider SDK, policy language, workflow engine, runtime plugin system, public Rust SDK, hosted
 control plane, dashboard, fleet manager, generic audit product, external witness, or universal
-capture mechanism. Additional mechanisms require a concrete technical question and their own
-executable evidence; an abstract reuse possibility is insufficient.
+capture mechanism. These are current implementation limits. Build concrete effects and compare their
+behavior before introducing shared machinery. Integrate useful results by updating the
+implementation, owning contract, and tests together.

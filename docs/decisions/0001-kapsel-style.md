@@ -39,11 +39,11 @@ implementation and link to the canonical contract rather than restating the rule
 project vocabulary and patterns over local novelty. Remove obsolete paths and explanations instead
 of preserving parallel truths.
 
-Before freezing a durable format, public command, configuration surface, package boundary, or
-lifecycle transition, require two concrete candidate designs. Compare the knowledge each exposes,
-its failure behavior, and the cost of changing it later. Choose the smaller complete boundary, not
-necessarily the shorter implementation. This is a design check, not permission to expand product
-scope or override a direct contract.
+For durable formats, public commands, configuration surfaces, package boundaries, and lifecycle
+transitions, consider what knowledge the design exposes, its failure behavior, and the cost of
+changing it later. Compare concrete alternatives when there is a real tradeoff; there is no required
+candidate count. Choose the smaller complete boundary, not necessarily the shorter implementation.
+An agreed feature includes the design work and contract updates needed to deliver it.
 
 Judge functions and files by cohesion and reasons to change, not arbitrary size limits. Split
 unrelated responsibilities, but keep a complete mechanism together when splitting would force
@@ -73,5 +73,5 @@ documents and tests, not the style guide.
 
 The project accepts explicit code in exchange for auditable state and authority transitions. It does
 not add custom lint infrastructure until repeated objective drift justifies it. The
-[contributor complexity review](../../CONTRIBUTING.md#complexity-review) applies this criterion to
-nontrivial architectural or contract changes without imposing a report on mechanical edits.
+[contributor complexity review](../../CONTRIBUTING.md#complexity-review) provides prompts for useful
+design comparisons without a mandatory report.

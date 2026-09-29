@@ -807,16 +807,16 @@ deterministic test evidence.
 
 ## Explicit exclusions
 
-Do not add:
+Caller input must not acquire authority through arbitrary shell, `kubectl` passthrough, manifests,
+patches, tags, or credentials. Never claim exactly-once Kubernetes mutation, complete audit capture,
+compliance, or production readiness without a mechanism and evidence that establish that claim.
 
-- arbitrary shell, `kubectl` passthrough, manifests, patches, tags, or credentials in agent input;
-- a second capability or provider;
-- a generic provider, capability, queue, policy, authorization, receipt, package, trust, or verifier
-  module;
-- runtime plugins, hosted storage, multi-tenant operation, dashboard, or transparency backend;
-- a claim of exactly-once Kubernetes mutation, complete audit capture, compliance, or production
-  readiness.
+The current implementation contains one Kubernetes capability. It has no generic provider framework,
+runtime plugins, hosted storage, multi-tenant operation, dashboard, or transparency backend. These
+describe current behavior, not a prohibition on the next selected feature.
 
-One adapter remains a hypothesis, not a reusable seam. Keep the implementation deep around its one
-operation: the caller crosses one narrow experiment interface while the implementation owns
-journaling, Kubernetes interaction, recovery, observation, receipt construction, and inspection.
+Keep each implementation deep: the caller crosses a narrow interface while the implementation owns
+journaling, Kubernetes interaction, recovery, observation, receipt construction, and inspection. For
+another receiver, implement its concrete authority, attempt, recovery, and evidence semantics
+together. Update this contract and its tests with the change. Extract common mechanisms only where
+the implementations establish the same rule.
