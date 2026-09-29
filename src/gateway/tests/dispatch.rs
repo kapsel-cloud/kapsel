@@ -1,3 +1,5 @@
+use super::*;
+
 // Evidence for the adopted fresh-commit-to-dispatch boundary, using real journal decisions.
 
 fn observed_target() -> ValidatedTargetIdentity {
@@ -155,10 +157,13 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
             Some(OperationResult::Unknown)
         );
         gateway
-            .finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
-                signing_seed: &[13; 32],
-                key_id: "dispatch-receipt",
-            })
+            .finalize_operation_receipt_once(
+                &request.operation_id,
+                &ReceiptSettings {
+                    signing_seed: &[13; 32],
+                    key_id: "dispatch-receipt",
+                },
+            )
             .unwrap();
         let original =
             Gateway::read_loaded_receipt(gateway.loaded_for_test("op-001").unwrap().unwrap())
@@ -189,47 +194,65 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
 async fn changed_grant_during_apply_stops_before_receiver_observation() {
     struct ChangedCustody(FakeAdapter, bool);
     impl DeploymentImageAdapter for ChangedCustody {
-        async fn identify(&mut self, request: &SetDeploymentImageRequest)
-            -> Result<TargetIdentity, TargetReadError> {
+        async fn identify(
+            &mut self,
+            request: &SetDeploymentImageRequest,
+        ) -> Result<TargetIdentity, TargetReadError> {
             self.0.identify(request).await
         }
         async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
             let outcome = self.0.apply(permission).await?;
             if !self.1 {
-                Connection::open(&self.0.database_path).unwrap().execute(
-                    "UPDATE kubernetes_image_operations SET signed_authorization_grant = X'01'",
-                    [],
-                ).unwrap();
+                Connection::open(&self.0.database_path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE kubernetes_image_operations SET signed_authorization_grant = X'01'",
+                        [],
+                    )
+                    .unwrap();
             }
             Ok(outcome)
         }
-        async fn observe(&mut self, request: &SetDeploymentImageRequest, outcome: &ApplyOutcome)
-            -> Result<ReceiverObservation, ()> {
+        async fn observe(
+            &mut self,
+            request: &SetDeploymentImageRequest,
+            outcome: &ApplyOutcome,
+        ) -> Result<ReceiverObservation, ()> {
             let observation = self.0.observe(request, outcome).await?;
             if self.1 {
-                Connection::open(&self.0.database_path).unwrap().execute(
-                    "UPDATE kubernetes_image_operations SET signed_authorization_grant = X'01'",
-                    [],
-                ).unwrap();
+                Connection::open(&self.0.database_path)
+                    .unwrap()
+                    .execute(
+                        "UPDATE kubernetes_image_operations SET signed_authorization_grant = X'01'",
+                        [],
+                    )
+                    .unwrap();
             }
             Ok(observation)
         }
     }
     for during_observation in [false, true] {
-    let path = database_path("custody-during-apply");
-    let mut gateway = Gateway::open_for_test(&path).unwrap();
-    let request = request();
-    gateway.submit_exact_for_test(&request, &authorization(&request)).unwrap();
-    let mut adapter = ChangedCustody(failed_adapter(&path, &request), during_observation);
-    assert!(matches!(
-        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await,
-        Err(GatewayError::OperationIdentityConflict),
-    ));
-    assert_eq!(adapter.0.apply_calls, 1);
-    assert_eq!(adapter.0.observe_calls, usize::from(during_observation));
-    assert_eq!(gateway.get(&request.operation_id).unwrap(), Some(OperationState::ApplyStarted));
-    drop(gateway);
-    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        let path = database_path("custody-during-apply");
+        let mut gateway = Gateway::open_for_test(&path).unwrap();
+        let request = request();
+        gateway
+            .submit_exact_for_test(&request, &authorization(&request))
+            .unwrap();
+        let mut adapter = ChangedCustody(failed_adapter(&path, &request), during_observation);
+        assert!(matches!(
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await,
+            Err(GatewayError::OperationIdentityConflict),
+        ));
+        assert_eq!(adapter.0.apply_calls, 1);
+        assert_eq!(adapter.0.observe_calls, usize::from(during_observation));
+        assert_eq!(
+            gateway.get(&request.operation_id).unwrap(),
+            Some(OperationState::ApplyStarted)
+        );
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
 
@@ -273,9 +296,8 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
             inner: failed_adapter(&path, &request),
             before_attempt,
         };
-        let mut execution = Box::pin(
-            gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter),
-        );
+        let mut execution =
+            Box::pin(gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter));
         assert!(matches!(
             std::future::poll_fn(|cx| std::task::Poll::Ready(execution.as_mut().poll(cx))).await,
             std::task::Poll::Pending

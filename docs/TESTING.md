@@ -25,6 +25,13 @@ distinguish package integration from binary end-to-end tests. A test-support cra
 provider seam requires multiple real consumers; one production Kubernetes adapter does not justify
 either.
 
+Keep implementation-local unit tests in an inline `#[cfg(test)] mod tests` block beside the code
+that owns the behavior. Named inline groups are fine when they clarify distinct rules. Do not split
+unit tests into detached `tests.rs` or `*_tests.rs` files just to shorten an implementation file.
+Separate modules are appropriate for cross-component, process, simulation and live-receiver
+scenarios; name them for the behavior they prove. Use ordinary Rust modules rather than textual
+`include!` fragments so imports, scope and formatting remain explicit.
+
 Assert pure implementation rules exhaustively once at their owner. At higher layers, assert
 authority separation, durable outcomes, composition, observable output, and non-disclosure. Prefer
 table-driven cases with shared setup, and use separate precise assertions when distinct contract

@@ -1,3 +1,5 @@
+use super::*;
+
 fn snapshot_authorization(request: &SetDeploymentImageRequest) -> ExactAuthorization {
     let mut grant = authorization(request);
     grant.approved_target = Some(ApprovedTarget {
@@ -21,16 +23,25 @@ async fn snapshot_replacement_is_rejected_before_and_after_receipt_completion() 
                 .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
                 .await
                 .unwrap();
-            gateway.finalize_operation_receipt_once(&request.operation_id, &ReceiptSettings {
-                signing_seed: &[42; 32],
-                key_id: "snapshot-receipt",
-            }).unwrap();
+            gateway
+                .finalize_operation_receipt_once(
+                    &request.operation_id,
+                    &ReceiptSettings {
+                        signing_seed: &[42; 32],
+                        key_id: "snapshot-receipt",
+                    },
+                )
+                .unwrap();
         }
         let state = gateway.get(&request.operation_id).unwrap();
         let original = finalized.then(|| {
             Gateway::read_loaded_receipt(
-                gateway.loaded_for_test(&request.operation_id).unwrap().unwrap(),
-            ).unwrap()
+                gateway
+                    .loaded_for_test(&request.operation_id)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
         });
         drop(gateway);
         let gateway = Gateway::open_for_test(&path).unwrap();
@@ -46,7 +57,10 @@ async fn snapshot_replacement_is_rejected_before_and_after_receipt_completion() 
                 gateway.submit_exact_for_test(&request, &replacement),
                 Err(GatewayError::OperationIdentityConflict)
             ));
-            let retained = gateway.loaded_for_test(&request.operation_id).unwrap().unwrap();
+            let retained = gateway
+                .loaded_for_test(&request.operation_id)
+                .unwrap()
+                .unwrap();
             assert_eq!(retained.targets().approved_target, approval.approved_target);
             assert_eq!(gateway.get(&request.operation_id).unwrap(), state);
             if let Some(original) = &original {
@@ -86,7 +100,11 @@ async fn stale_snapshot_is_durable_status_only_without_patch_or_receipt() {
         assert_eq!((adapter.apply_calls, adapter.observe_calls), (0, 0));
         drop(gateway);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
-        let row = gateway.journal.operation(&request.operation_id).unwrap().unwrap();
+        let row = gateway
+            .journal
+            .operation(&request.operation_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(row.target_rejection(), Some(TargetRejection::StaleApproval));
         assert_eq!(row.targets().approved_target, approval.approved_target);
         assert_eq!(
@@ -120,7 +138,10 @@ async fn matching_snapshot_freezes_distinct_approved_observed_and_attempt_target
     let mut adapter = failed_adapter(&path, &request);
 
     assert_eq!(
-        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await.unwrap(),
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await
+            .unwrap(),
         Some(OperationState::ReceiverObserved)
     );
     assert_eq!(adapter.apply_calls, 1);
@@ -134,7 +155,11 @@ async fn matching_snapshot_freezes_distinct_approved_observed_and_attempt_target
             .as_ref()
             .map(|target| (&target.uid, &target.resource_version))
     );
-    let row = gateway.journal.operation(&request.operation_id).unwrap().unwrap();
+    let row = gateway
+        .journal
+        .operation(&request.operation_id)
+        .unwrap()
+        .unwrap();
     let targets = row.targets();
     assert_eq!(targets.approved_target, approval.approved_target);
     assert_eq!(targets.attempt_target, approval.approved_target);
@@ -145,12 +170,22 @@ async fn matching_snapshot_freezes_distinct_approved_observed_and_attempt_target
             resource_version: Some("resource-version-2".into()),
         })
     );
-    let statement = gateway.journal.receipt_statement(&request.operation_id).unwrap().unwrap();
-    assert_eq!(statement.approved_target(), approval.approved_target.as_ref());
+    let statement = gateway
+        .journal
+        .receipt_statement(&request.operation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        statement.approved_target(),
+        approval.approved_target.as_ref()
+    );
     assert_eq!(statement.target_uid(), "deployment-uid-1");
     assert_eq!(statement.target_resource_version(), "resource-version-0");
     assert_eq!(statement.receiver_uid(), Some("deployment-uid-1"));
-    assert_eq!(statement.observed_resource_version(), Some("resource-version-2"));
+    assert_eq!(
+        statement.observed_resource_version(),
+        Some("resource-version-2")
+    );
 }
 
 #[tokio::test]
@@ -164,10 +199,15 @@ async fn snapshot_apply_failure_after_marker_is_attempted_and_recovery_only_obse
     conflict.apply_failure = true;
 
     assert!(matches!(
-        gateway.run_operation_once_with_adapter(&request.operation_id, &mut conflict).await,
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut conflict)
+            .await,
         Err(GatewayError::KubernetesApply)
     ));
-    assert_eq!(gateway.get(&request.operation_id).unwrap(), Some(OperationState::ApplyStarted));
+    assert_eq!(
+        gateway.get(&request.operation_id).unwrap(),
+        Some(OperationState::ApplyStarted)
+    );
     assert_eq!(conflict.apply_calls, 1);
     assert_eq!(
         conflict
@@ -179,7 +219,11 @@ async fn snapshot_apply_failure_after_marker_is_attempted_and_recovery_only_obse
             .as_ref()
             .map(|target| (&target.uid, &target.resource_version))
     );
-    let row = gateway.journal.operation(&request.operation_id).unwrap().unwrap();
+    let row = gateway
+        .journal
+        .operation(&request.operation_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(row.targets().approved_target, approval.approved_target);
     assert_eq!(row.targets().attempt_target, approval.approved_target);
     assert_eq!(
@@ -201,7 +245,14 @@ async fn snapshot_apply_failure_after_marker_is_attempted_and_recovery_only_obse
             .unwrap(),
         Some(OperationState::ReceiverObserved)
     );
-    assert_eq!((recovery.identify_calls, recovery.apply_calls, recovery.observe_calls), (0, 0, 1));
+    assert_eq!(
+        (
+            recovery.identify_calls,
+            recovery.apply_calls,
+            recovery.observe_calls
+        ),
+        (0, 0, 1)
+    );
     drop(gateway);
     std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -226,11 +277,25 @@ async fn restart_before_attempt_revalidates_the_original_snapshot_without_refres
     let mut adapter = failed_adapter(&path, &request);
     adapter.identified_target.resource_version = "intervening-write".into();
     assert_eq!(
-        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await.unwrap(),
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await
+            .unwrap(),
         Some(OperationState::NotAttempted)
     );
-    assert_eq!((adapter.identify_calls, adapter.apply_calls, adapter.observe_calls), (1, 0, 0));
-    let row = gateway.journal.operation(&request.operation_id).unwrap().unwrap();
+    assert_eq!(
+        (
+            adapter.identify_calls,
+            adapter.apply_calls,
+            adapter.observe_calls
+        ),
+        (1, 0, 0)
+    );
+    let row = gateway
+        .journal
+        .operation(&request.operation_id)
+        .unwrap()
+        .unwrap();
     assert_eq!(row.target_rejection(), Some(TargetRejection::StaleApproval));
     assert_eq!(row.targets().approved_target, approval.approved_target);
     assert!(row.targets().attempt_target.is_none());
@@ -262,27 +327,46 @@ async fn snapshot_restart_retains_authority_and_marker_recovery_never_resends() 
             assert!(matches!(attempt, Err(GatewayError::InjectedFault)));
             assert_eq!(adapter.apply_calls, 0);
         } else {
-            let fault = gateway
-                .submit_exact_with_fault_for_test(&request, &approval, Some(seam));
+            let fault = gateway.submit_exact_with_fault_for_test(&request, &approval, Some(seam));
             assert!(matches!(fault, Err(GatewayError::InjectedFault)));
         }
         drop(gateway);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         let mut replacement = approval.clone();
-        replacement.approved_target.as_mut().unwrap().resource_version = "replacement".into();
+        replacement
+            .approved_target
+            .as_mut()
+            .unwrap()
+            .resource_version = "replacement".into();
         let replaced = gateway.submit_exact_for_test(&request, &replacement);
-        assert!(matches!(replaced, Err(GatewayError::OperationIdentityConflict)));
+        assert!(matches!(
+            replaced,
+            Err(GatewayError::OperationIdentityConflict)
+        ));
         let legacy = gateway.submit_exact_for_test(&request, &authorization(&request));
-        assert!(matches!(legacy, Err(GatewayError::OperationIdentityConflict)));
+        assert!(matches!(
+            legacy,
+            Err(GatewayError::OperationIdentityConflict)
+        ));
         gateway.submit_exact_for_test(&request, &approval).unwrap();
         let mut adapter = failed_adapter(&path, &request);
-        gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter).await.unwrap();
+        gateway
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await
+            .unwrap();
         assert_eq!(
             adapter.apply_calls,
             usize::from(seam != FaultPoint::ApplyStartedCommitted)
         );
-        let statement = gateway.journal.receipt_statement(&request.operation_id).unwrap().unwrap();
-        assert_eq!(statement.approved_target(), approval.approved_target.as_ref());
+        let statement = gateway
+            .journal
+            .receipt_statement(&request.operation_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            statement.approved_target(),
+            approval.approved_target.as_ref()
+        );
         let bytes = sign_statement(&statement, &[9_u8; 32], "receipt-key").unwrap();
         let trust = ReceiptTrust {
             key_id: "receipt-key".into(),
