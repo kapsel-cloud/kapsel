@@ -8,13 +8,15 @@ operation; direct contracts specify its behavior.
 
 | Goal                                        | Read                                                                         |
 | ------------------------------------------- | ---------------------------------------------------------------------------- |
-| Understand the purpose and ambition         | [What we're building toward](../README.md#what-were-building-toward)         |
+| Understand the purpose and ambition         | [Why Kapsel exists](../README.md#why-kapsel-exists)                          |
 | Understand the mechanism                    | [Technical tour](TOUR.md)                                                    |
 | Identify the implemented boundary           | [Technical scope](SCOPE.md)                                                  |
 | See implementation ownership                | [Architecture](ARCHITECTURE.md)                                              |
 | Authenticate and extract the preview        | [Release artifacts](RELEASE.md#authenticate-and-extract-the-preview)         |
 | Run one disposable fixture action           | [Service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example) |
 | Provision, submit, inspect, and recover     | [Operator guide](KAPSEL_SERVICE_OPERATOR.md)                                 |
+| Use one caller for both effects             | [Shared caller guide](CALLER_GUIDE.md)                                       |
+| Exercise an exact Git transition            | [Git service example](GIT_REF_TRANSITION.md)                                 |
 | Preserve journals across binary replacement | [Journal retention](UPGRADE.md)                                              |
 
 ## Exact reference

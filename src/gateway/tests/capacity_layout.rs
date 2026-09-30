@@ -65,7 +65,7 @@ fn create_padded_layout(path: &Path, padding: usize) {
     assert_eq!(rusqlite::version(), "3.53.2");
     let sql: String = connection
         .query_row(
-            "SELECT sql FROM sqlite_schema WHERE type = 'table'",
+            "SELECT sql FROM sqlite_schema WHERE name = 'kubernetes_image_operations'",
             [],
             |row| row.get(0),
         )
@@ -264,7 +264,7 @@ fn repack_sparse_table(path: &Path) {
     let connection = Connection::open(path).unwrap();
     let root: u32 = connection
         .query_row(
-            "SELECT rootpage FROM sqlite_schema WHERE type = 'table'",
+            "SELECT rootpage FROM sqlite_schema WHERE name = 'kubernetes_image_operations'",
             [],
             |row| row.get(0),
         )
@@ -357,7 +357,8 @@ fn extend_index_record_header(path: &Path) {
     let connection = Connection::open(path).unwrap();
     let root: u32 = connection
         .query_row(
-            "SELECT rootpage FROM sqlite_schema WHERE type = 'index'",
+            "SELECT rootpage FROM sqlite_schema
+             WHERE name = 'sqlite_autoindex_kubernetes_image_operations_1'",
             [],
             |row| row.get(0),
         )
@@ -439,7 +440,7 @@ fn wrap_leaf_root(path: &Path, schema: bool, empty_child: bool) {
     } else {
         connection
             .query_row(
-                "SELECT rootpage FROM sqlite_schema WHERE type = 'table'",
+                "SELECT rootpage FROM sqlite_schema WHERE name = 'kubernetes_image_operations'",
                 [],
                 |row| row.get(0),
             )
@@ -452,8 +453,8 @@ fn wrap_leaf_root(path: &Path, schema: bool, empty_child: bool) {
     assert_eq!(bytes[start + header], 13);
     let mut child = bytes[start..start + 4096].to_vec();
     if schema {
-        assert_eq!(u16::from_be_bytes(child[103..105].try_into().unwrap()), 2);
-        child.copy_within(100..112, 0);
+        assert_eq!(u16::from_be_bytes(child[103..105].try_into().unwrap()), 4);
+        child.copy_within(100..116, 0);
     }
     let child_page = u32::try_from(bytes.len() / 4096 + 1).unwrap();
     bytes.extend_from_slice(&child);
@@ -507,7 +508,7 @@ fn schema_page_one_may_be_an_empty_internal_root() {
     let path = database_path("schema-empty-internal-root");
     create_padded_layout(&path, 0);
     wrap_leaf_root(&path, true, false);
-    assert_eq!(layout_live_pages(&path), 4);
+    assert_eq!(layout_live_pages(&path), 6);
     assert_layout_open_paths(&path, true);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -516,7 +517,7 @@ fn schema_page_one_may_be_an_empty_internal_root() {
 fn empty_operation_leaf_roots_are_accepted() {
     let path = database_path("empty-operation-roots");
     drop(Gateway::open_for_test(&path).unwrap());
-    assert_eq!(layout_live_pages(&path), 3);
+    assert_eq!(layout_live_pages(&path), 5);
     assert_layout_open_paths(&path, true);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -559,10 +560,10 @@ async fn sparse_accepted_layout_preserves_live_bound_after_legitimate_completion
             "sparse initial live pages: {before}; former bound: {}",
             21 * 8 + 3
         );
-        assert_eq!(before, if padding_kib == 56 { 171 } else { 172 });
+        assert_eq!(before, if padding_kib == 56 { 173 } else { 174 });
         complete_layout_operation(&path, &layout_request()).await;
         assert_eq!(layout_live_pages(&path), before + 1);
-        assert!(layout_live_pages(&path) <= 23 * 8 + 38);
+        assert!(layout_live_pages(&path) <= 23 * 8 + 76);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

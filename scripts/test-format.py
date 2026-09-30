@@ -154,5 +154,40 @@ class FormattingPipelineTests(unittest.TestCase):
         self.assertFalse(self.log.exists())
 
 
+class RustWidthTests(unittest.TestCase):
+    def test_checks_tracked_and_untracked_source_but_not_ignored_files(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="kapsel-width-test-") as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True, timeout=10)
+            (root / ".gitignore").write_text("ignored.rs\n")
+            (root / "ignored.rs").write_text("x" * 101 + "\n")
+            tracked = root / "tracked.rs"
+            untracked = root / "untracked.rs"
+            tracked.write_text("x" * 100 + "\n")
+            untracked.write_text("x" * 101 + "\n")
+            subprocess.run(["git", "add", "tracked.rs"], cwd=root, check=True, timeout=10)
+
+            def check_width() -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["sh", str(ROOT / "scripts/check-rust-width.sh")],
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+
+            result = check_width()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("untracked.rs:1: line is 101 bytes", result.stdout)
+            self.assertNotIn("ignored.rs", result.stdout)
+            untracked.write_text("x" * 100 + "\n")
+            self.assertEqual(check_width().returncode, 0)
+            tracked.write_text("x" * 101 + "\n")
+            result = check_width()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("tracked.rs:1: line is 101 bytes", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

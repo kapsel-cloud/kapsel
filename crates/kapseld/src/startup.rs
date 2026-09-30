@@ -28,6 +28,7 @@ pub(crate) struct InstallationInputs {
     runtime_root: File,
     document: Vec<u8>,
     kubeconfig: Option<Vec<u8>>,
+    git_receiver: Option<Vec<u8>>,
     receipt_seed: Option<Vec<u8>>,
     journal_access_path: PathBuf,
     socket_access_path: PathBuf,
@@ -136,12 +137,14 @@ impl InstallationInputs {
         let kubeconfig =
             read_private_file(configuration, "kubeconfig.yaml", KUBECONFIG_BYTES_MAX).ok();
         let receipt_seed = read_private_file(configuration, "receipt.seed", KEY_BYTES).ok();
+        let git_receiver = read_private_file(configuration, "git-receiver.json", 4096).ok();
         let state_access_path = descriptor_directory_path(state)?;
         let runtime_access_path = descriptor_directory_path(&runtime)?;
         Ok(Self {
             runtime_root: runtime,
             document,
             kubeconfig,
+            git_receiver,
             receipt_seed,
             journal_access_path: state_access_path.join("journal.sqlite3"),
             socket_access_path: runtime_access_path.join("kapseld.sock"),
@@ -182,6 +185,7 @@ impl InstallationInputs {
         Ok(crate::server::ExecutionApplication {
             application: ServiceApplication::open(document.configuration)?,
             kubeconfig: self.kubeconfig.clone(),
+            git_receiver: self.git_receiver.clone(),
             receipt_seed: self.receipt_seed.clone(),
             receipt_signing_key_id: document.receipt_signing_key_id,
         })
@@ -979,7 +983,7 @@ mod lifecycle_tests {
             match mutation {
                 "mode" => fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap(),
                 "restrictive" => {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap()
+                    fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
                 },
                 "symlink" => {
                     fs::remove_file(&path).unwrap();

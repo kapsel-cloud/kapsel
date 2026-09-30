@@ -137,15 +137,22 @@ def main():
     start.add_argument("operation_id")
     approved = commands.add_parser("approved", help="read one page of approved handles")
     approved.add_argument("after", nargs="?", default=None)
+    history = commands.add_parser("history", help="read one page of retained operation history")
+    history.add_argument("after", nargs="?", default=None)
     commands.add_parser("read", help="read stored status only; never advances work")
     commands.add_parser("resume", help="explicit same-ID selection after reading")
     commands.add_parser("receipt", help="retrieve original receipt bytes (hex) and digest")
     args = parser.parse_args()
     try:
-        if args.command == "approved":
+        if args.command in ("approved", "history"):
             if args.after is not None and not IDENTITY.fullmatch(args.after):
-                raise ValueError("invalid catalog cursor")
-            result = exchange("kapsel.list_approved_actions", {"after": args.after})
+                raise ValueError("invalid listing cursor")
+            tool = (
+                "kapsel.list_approved_actions"
+                if args.command == "approved"
+                else "kapsel.list_operation_history"
+            )
+            result = exchange(tool, {"after": args.after})
             print(json.dumps({"service": result}, separators=(",", ":")))
             return 4 if result.get("status") == "ERROR" else 0
         saved = reference(

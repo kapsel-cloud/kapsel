@@ -233,6 +233,7 @@ mod tests {
             .block_on(execution.application.select(
                 "service-op",
                 kapsel::ServiceExecution {
+                    git_receiver: None,
                     kubernetes_client: None,
                     receipt_signing: None,
                 },
@@ -245,15 +246,23 @@ mod tests {
         let original = fs::read(&path).unwrap();
         let journal = root.join("var/lib/kapsel/journal.sqlite3");
         let history = fs::read(&journal).unwrap();
+        let kapsel::ApprovedAction::Kubernetes {
+            request,
+            approved_target,
+            ..
+        } = action
+        else {
+            panic!("expected the Kubernetes fixture approval");
+        };
         let conflicting_grant = kapsel::provision_exact_grant(&kapsel::GrantProvisioning {
             authorization: &kapsel::ExactAuthorization {
                 authorization_id: "different-authority".into(),
-                operation_id: action.request.operation_id,
-                namespace: action.request.namespace,
-                deployment: action.request.deployment,
-                container: action.request.container,
-                immutable_image_digest: action.request.immutable_image_digest,
-                approved_target: Some(action.approved_target),
+                operation_id: request.operation_id,
+                namespace: request.namespace,
+                deployment: request.deployment,
+                container: request.container,
+                immutable_image_digest: request.immutable_image_digest,
+                approved_target: Some(approved_target),
             },
             signing_seed: &[101; 32],
             signing_key_id: "service-owner-key",

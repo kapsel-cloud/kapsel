@@ -45,8 +45,16 @@ signed receipt and terminal state together in SQLite. Filesystem export is a sep
 operation. The crate-level offline inspector consumes receipt bytes directly without opening
 `Application`, the journal, or a Kubernetes client. The journal provides one interface for rows,
 snapshots, worker locking, capacity, and guarded transitions. Private `schema`, `opening` and
-`capacity` children own exact format-5 layout/version rejection, safe SQLite entry and private
+`capacity` children own exact format-6 layout/version rejection, safe SQLite entry and private
 pathname identity, and fixed completion accounting, respectively.
+
+The service resolves retained original authority before selecting the effect. Git has a concrete
+receiver, typed journal table and purpose-separated receipt codec, not a provider framework. Its
+private admission/advancement entry point uses the same worker lease and aggregate limits as
+Kubernetes. Only the freshly committed Git attempt can construct dispatch permission; loaded
+attempts observe, and frozen evidence can finalize without receiver material. Public service reads
+project the exact Git tuple, acknowledgement and observation without reinterpreting Kubernetes
+columns. The [Git contract](EFFECT_GATEWAY.md#git-transition-boundary) owns the distinctions.
 
 ### Complete reconciliation
 

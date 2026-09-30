@@ -346,6 +346,7 @@ fn assert_terminal_status(stream: &mut UnixStream, status: &str, snapshot: bool)
     let actual = serde_json::from_slice::<serde_json::Value>(&read_frame(stream)).unwrap();
     let expected = serde_json::json!({
         "status": status,
+        "effect": "kubernetes.set_deployment_image",
         "approved_target": snapshot.then_some(&target),
         "attempt_target": target,
         "observed_target": {"uid": "uid-1", "resource_version": "3"},
@@ -910,6 +911,10 @@ fn ordinary_restart_reads_before_explicit_reselection_without_second_patch() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one independent-process loss and reconnection transcript"
+)]
 fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     use serde_json::json;
 
@@ -1078,7 +1083,9 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     );
     let frozen: Vec<u8> = original_hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     let trust = kapsel::ReceiptTrust {
@@ -1600,7 +1607,11 @@ fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() 
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    assert_eq!(read_frame(&mut status), br#"{"status":"IN_PROGRESS"}"#);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&read_frame(&mut status)).unwrap(),
+        serde_json::json!({"status":"IN_PROGRESS", "effect":"kubernetes.set_deployment_image",
+            "approved_target":null, "attempt_target":null, "observed_target":null}),
+    );
 
     let mut competing = UnixStream::connect(&socket).unwrap();
     write_frame(&mut competing, submit_request().as_bytes());
@@ -1612,8 +1623,10 @@ fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() 
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
     assert_eq!(
-        read_frame(&mut completed),
-        br#"{"status":"NOT_ATTEMPTED","target_rejection":"DEPLOYMENT_NOT_FOUND"}"#
+        serde_json::from_slice::<serde_json::Value>(&read_frame(&mut completed)).unwrap(),
+        serde_json::json!({"status":"NOT_ATTEMPTED", "target_rejection":"DEPLOYMENT_NOT_FOUND",
+            "effect":"kubernetes.set_deployment_image", "approved_target":null,
+            "attempt_target":null, "observed_target":null})
     );
 
     let output = child.wait_with_output().unwrap();

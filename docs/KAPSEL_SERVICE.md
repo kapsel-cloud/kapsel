@@ -16,7 +16,7 @@ bounded local caller
        -> kapseld under a separate OS identity
             -> kapsel::ServiceApplication
                  -> sole SQLite effect journal
-                 -> concrete Kubernetes adapter
+                 -> concrete Kubernetes or Git receiver
 ```
 
 The service gives execution a lifetime independent of a caller connection. A reconnecting caller can
@@ -24,14 +24,23 @@ read the same action's status and original receipt without gaining credentials o
 to send a mutation again. It is retained as the current bounded broker composition, not a permanent
 hosting or installation commitment.
 
-The sole capability is `kubernetes.set_deployment_image`. Service execution requires an
-exact-snapshot v2 grant, binding the operation tuple and independently acquired Deployment UID and
-resourceVersion. The multi-action application may authenticate retained v1 history for status and
-original receipt reads, but rejects v1 selection before acknowledgement or advancement. CLI/MCP
-retain v1 execution. Existing handles cannot acquire replacement authority. Legacy CLI/MCP grants
-keep their original meaning, but old journal versions cannot be opened by current source.
+For `kubernetes.set_deployment_image`, service execution requires an exact-snapshot v2 grant,
+binding the operation tuple and independently acquired Deployment UID and resourceVersion. The
+multi-action application may authenticate retained v1 history for status and original receipt reads,
+but rejects v1 selection before acknowledgement or advancement. CLI/MCP retain v1 execution.
+Existing handles cannot acquire replacement authority. Legacy CLI/MCP grants keep their original
+meaning, but old journal versions cannot be opened by current source.
 [Exact-snapshot approval](EFFECT_GATEWAY.md#exact-snapshot-approval) owns those distinctions. The
 service composes `ServiceApplication`, never gateway internals.
+
+Current source also supports `git.transition_ref`, with separately purposed grants and evidence,
+through the same ID-only commands. Kubernetes tuple, authority and receipt semantics do not change.
+Git entries identify their effect and repository/ref/A/B tuple; Git status separates attempt,
+acknowledgement and present-ref observation. See the
+[Git contract](EFFECT_GATEWAY.md#git-transition-boundary) and
+[operator example](GIT_REF_TRANSITION.md). The version-1 wire request names retain their historical
+`set_deployment_image` spelling; ID selection resolves the authenticated effect, not caller-supplied
+fields. The published preview remains Kubernetes-only.
 
 The version-1 socket, fixed client, read-first startup, and cold operator-document replacement
 compose durable admission and multi-identity visibility. Completion-capacity accounting bounds
@@ -100,7 +109,9 @@ at most 4 KiB. Labels retain the printable ASCII/128-byte limit. Count overflow 
 deserializing the extra element. The whole-document byte limit precedes JSON parsing.
 
 There are no configurable private paths in this service document. The host retains the fixed
-journal, Kubernetes configuration and receipt-seed paths. `receipt_signing_key_id` is a bounded
+journal, Kubernetes configuration and receipt-seed paths. Git material uses the optional fixed
+`/etc/kapsel/git-receiver.json` file, with the bounded operator-only shape in the
+[Git guide](GIT_REF_TRANSITION.md#operator-preparation). `receipt_signing_key_id` is a bounded
 public identity, not signing material. Parsing establishes structure and bounds. Application opening
 verifies grants, external appointments and retained-identity consistency before use. Missing,
 unreadable, unsafe or malformed execution material does not invalidate the read composition. Startup
@@ -171,7 +182,7 @@ attempted publication did not occur. Startup never automatically reconciles.
 | Caller interface       | One length-prefixed JSON request and response per Unix-socket connection                                                 |
 | Authentication         | Parent `0750`, socket `0660`, service UID and `kapsel-service-callers` GID; exact effective caller-group peer credential |
 | Connection resources   | At most eight admitted connections; two-second read/write deadlines; no queue                                            |
-| Durable store          | Format-5 SQLite effect journal only                                                                                      |
+| Durable store          | Format-6 SQLite effect journal only                                                                                      |
 | Configuration          | Fixed `/etc/kapsel/operator.json`; private authority beneath `/etc/kapsel`                                               |
 | OS ownership           | Locked service identity, `0700` private roots and `0600` private files                                                   |
 | Caller identity        | Locked `kapsel-service-caller`, primary/effective group `kapsel-service-callers`                                         |
@@ -188,6 +199,7 @@ no installer in the active source tree:
 ```text
 /etc/kapsel/operator.json
 /etc/kapsel/kubeconfig.yaml
+/etc/kapsel/git-receiver.json
 /etc/kapsel/receipt.seed
 /var/lib/kapsel/journal.sqlite3
 ```
@@ -215,7 +227,7 @@ Host root, procfs, kernel and service identity remain trusted.
 
 `receiver_observed` freezes the historical statement before signing. Exact signed bytes, digest,
 signer identity and terminal `finalized` state commit together. There is no durable receipt path or
-filesystem-publication phase. Journal versions older than format 5, including format 4, are rejected
+filesystem-publication phase. Journal versions older than format 6, including format 5, are rejected
 before reconciliation and binding, without migration.
 
 Receipt requests read committed bytes through `ServiceApplication`; callers receive no journal
@@ -269,10 +281,16 @@ the same selection authorization checks. It cannot settle another task's pending
 
 Read responses keep their existing status/receipt meanings with the required version field.
 Catalog/history responses contain `status: "READY"`, at most eight `entries` and `next_cursor` as
-null or the last returned identity when more entries exist. Catalog entries contain `operation_id`,
-`namespace`, `deployment`, `container`, `immutable_image_digest`, `approved_target` and `label`.
-History entries contain `operation_id` and an authenticated status/target projection, or only
-`operation_id`, `status: "ERROR"` and a bounded access error. No error entry contains action facts.
+null or the last returned identity when more entries exist. Every catalog entry has `operation_id`,
+`effect` and `label`. Kubernetes entries use `effect: "kubernetes.set_deployment_image"` and contain
+`namespace`, `deployment`, `container`, `immutable_image_digest` and `approved_target`. Git entries
+use `effect: "git.transition_ref"` and contain `repository_id`, `reference`, `old_commit` and
+`new_commit`. Authenticated status/history projections carry the same effect tag; Git facts are in
+`git`, while Kubernetes retains its separate target fields. `NOT_FOUND` and access errors have no
+effect or receiver facts. Explicit Kubernetes tags are an additive version-1 projection amendment,
+not a change to requests, signed evidence, authority or journal format. History entries contain
+`operation_id` and an authenticated status/target projection, or only `operation_id`,
+`status: "ERROR"` and a bounded access error. No error entry contains action facts.
 
 The fixed client's replacement grammar is `list [after-id]`, `history [after-id]`, `submit <id>`,
 `status <id>` and `receipt <id> <new-output-file>`. It must reject responses without version 1 and
@@ -472,7 +490,7 @@ operation-wide countdown. Reconnect and stored reads never extend the surviving 
 observation the single worker remains occupied, so selection of B returns `BUSY` without admission;
 status and receipt reads use the separate stored-read path. The observation bound does not bound
 storage stalls or graceful retirement. No operator or caller configuration changes the budget, and
-format 5 retains no timing facts. The 504 retained / 32 unfinished limits and no-pruning policy are
+format 6 retains no timing facts. The 504 retained / 32 unfinished limits and no-pruning policy are
 unchanged.
 
 The unit uses `Type=exec`, `User=kapsel`, `Group=kapsel-service-callers`, `RuntimeDirectory=kapsel`,
@@ -541,5 +559,6 @@ do not prove power-loss durability. None of this establishes production safety, 
 continuity, backup automation, another platform, broad upgrade/rollback, online identity rotation,
 remote callers or protection from compromised host root, kernel or service UID.
 
-The service provides no queue, periodic controller, HTTP/TCP/MCP server, SDK, generic protocol,
-second store, policy engine, dashboard, hosted authority or second capability.
+The service provides no queue, periodic controller, network MCP endpoint, SDK, generic protocol,
+second store, policy engine, dashboard or hosted authority. Its two concrete effects share the
+[caller lifecycle](CALLER_GUIDE.md), not receiver-result semantics.

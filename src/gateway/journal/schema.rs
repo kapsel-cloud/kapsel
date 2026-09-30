@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 use super::{GatewayError, OPERATION_COUNT_MAX};
 use crate::gateway::receipt::RECEIPT_BYTES_MAX;
 
-pub(super) const JOURNAL_FORMAT_VERSION: u32 = 5;
+pub(super) const JOURNAL_FORMAT_VERSION: u32 = 6;
 
 pub(super) const PERSISTED_VALUE_BYTES_MAX: usize = 16 * 1024;
 pub(super) const PERSISTED_ROW_BYTES_MAX: i32 = 64 * 1024;
@@ -106,6 +106,46 @@ const CREATE_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
     preflight_resource_version TEXT
 ) STRICT;";
 
+const GIT_COLUMNS: &[&str] = &[
+    "operation_id",
+    "repository_id",
+    "ref_name",
+    "old_commit",
+    "new_commit",
+    "authorization_id",
+    "authorization_signer_key_id",
+    "authorization_grant_digest",
+    "signed_authorization_grant",
+    "state",
+    "target_rejection",
+    "acknowledgement",
+    "observed_ref_kind",
+    "observed_commit",
+    "receipt_digest",
+    "receipt_bytes",
+    "receipt_key_id",
+];
+
+const CREATE_GIT_TABLE: &str = "CREATE TABLE git_ref_operations (
+    operation_id TEXT PRIMARY KEY NOT NULL,
+    repository_id TEXT NOT NULL,
+    ref_name TEXT NOT NULL,
+    old_commit TEXT NOT NULL,
+    new_commit TEXT NOT NULL,
+    authorization_id TEXT,
+    authorization_signer_key_id TEXT,
+    authorization_grant_digest TEXT,
+    signed_authorization_grant BLOB,
+    state TEXT NOT NULL,
+    target_rejection TEXT,
+    acknowledgement TEXT,
+    observed_ref_kind TEXT,
+    observed_commit TEXT,
+    receipt_digest TEXT,
+    receipt_bytes BLOB,
+    receipt_key_id TEXT
+) STRICT;";
+
 pub(super) fn initialize_schema(
     transaction: &Transaction<'_>,
     fresh: bool,
@@ -114,10 +154,13 @@ pub(super) fn initialize_schema(
         transaction
             .execute_batch(CREATE_OPERATION_TABLE)
             .map_err(GatewayError::Database)?;
+        transaction
+            .execute_batch(CREATE_GIT_TABLE)
+            .map_err(GatewayError::Database)?;
     } else {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
-    require_persisted_bounds(transaction)
+    require_all_persisted_bounds(transaction)
 }
 
 pub(super) fn require_integrity(connection: &Connection) -> Result<(), GatewayError> {
@@ -132,16 +175,51 @@ pub(super) fn require_integrity(connection: &Connection) -> Result<(), GatewayEr
 }
 
 pub(super) fn recognized_supported_schema(connection: &Connection) -> Result<bool, GatewayError> {
-    if recognized_schema(connection, CURRENT_COLUMNS, CREATE_OPERATION_TABLE)? {
-        require_persisted_bounds(connection)?;
+    if schema_entries(connection)?.len() == 4
+        && recognized_schema(
+            connection,
+            "kubernetes_image_operations",
+            CURRENT_COLUMNS,
+            CREATE_OPERATION_TABLE,
+        )?
+        && recognized_schema(
+            connection,
+            "git_ref_operations",
+            GIT_COLUMNS,
+            CREATE_GIT_TABLE,
+        )?
+    {
+        require_all_persisted_bounds(connection)?;
         Ok(true)
     } else {
         Ok(false)
     }
 }
 
-fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError> {
-    let value_predicates = CURRENT_COLUMNS
+fn require_all_persisted_bounds(connection: &Connection) -> Result<(), GatewayError> {
+    require_persisted_bounds(connection, "kubernetes_image_operations", CURRENT_COLUMNS)?;
+    require_persisted_bounds(connection, "git_ref_operations", GIT_COLUMNS)?;
+    let overlap: bool = connection
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM kubernetes_image_operations AS k
+         JOIN git_ref_operations AS g USING (operation_id))",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(GatewayError::Database)?;
+    if overlap {
+        Err(GatewayError::InvalidPersistedState)
+    } else {
+        Ok(())
+    }
+}
+
+fn require_persisted_bounds(
+    connection: &Connection,
+    table: &str,
+    columns: &[&str],
+) -> Result<(), GatewayError> {
+    let value_predicates = columns
         .iter()
         .filter(|name| expected_column_type(name) != "INTEGER")
         .map(|name| format!("COALESCE(length(CAST({name} AS BLOB)), 0) > ?2"))
@@ -149,9 +227,9 @@ fn require_persisted_bounds(connection: &Connection) -> Result<(), GatewayError>
         .join(" OR ");
     let query = format!(
         "SELECT
-            (SELECT COUNT(*) FROM kubernetes_image_operations) <= ?1
+            (SELECT COUNT(*) FROM {table}) <= ?1
             AND NOT EXISTS (
-                SELECT 1 FROM kubernetes_image_operations
+                SELECT 1 FROM {table}
                 WHERE {value_predicates}
                     OR length(signed_authorization_grant) > 4096
                 LIMIT 1
@@ -193,9 +271,9 @@ fn schema_entries(connection: &Connection) -> Result<Vec<SchemaEntry>, GatewayEr
         .map_err(GatewayError::Database)
 }
 
-fn table_columns(connection: &Connection) -> Result<Vec<ColumnFact>, GatewayError> {
+fn table_columns(connection: &Connection, table: &str) -> Result<Vec<ColumnFact>, GatewayError> {
     let mut statement = connection
-        .prepare("PRAGMA table_xinfo(kubernetes_image_operations)")
+        .prepare(&format!("PRAGMA table_xinfo({table})"))
         .map_err(GatewayError::Database)?;
     let rows = statement
         .query_map([], |row| {
@@ -214,9 +292,9 @@ fn table_columns(connection: &Connection) -> Result<Vec<ColumnFact>, GatewayErro
         .map_err(GatewayError::Database)
 }
 
-fn table_indexes(connection: &Connection) -> Result<Vec<IndexFact>, GatewayError> {
+fn table_indexes(connection: &Connection, table: &str) -> Result<Vec<IndexFact>, GatewayError> {
     let mut statement = connection
-        .prepare("PRAGMA index_list(kubernetes_image_operations)")
+        .prepare(&format!("PRAGMA index_list({table})"))
         .map_err(GatewayError::Database)?;
     let rows = statement
         .query_map([], |row| {
@@ -233,9 +311,12 @@ fn table_indexes(connection: &Connection) -> Result<Vec<IndexFact>, GatewayError
         .map_err(GatewayError::Database)
 }
 
-fn primary_index_columns(connection: &Connection) -> Result<Vec<IndexColumnFact>, GatewayError> {
+fn primary_index_columns(
+    connection: &Connection,
+    table: &str,
+) -> Result<Vec<IndexColumnFact>, GatewayError> {
     let mut statement = connection
-        .prepare("PRAGMA index_xinfo(sqlite_autoindex_kubernetes_image_operations_1)")
+        .prepare(&format!("PRAGMA index_xinfo(sqlite_autoindex_{table}_1)"))
         .map_err(GatewayError::Database)?;
     let rows = statement
         .query_map([], |row| {
@@ -255,23 +336,21 @@ fn primary_index_columns(connection: &Connection) -> Result<Vec<IndexColumnFact>
 
 fn recognized_schema(
     connection: &Connection,
+    table: &str,
     expected_columns: &[&str],
     expected_create_sql: &str,
 ) -> Result<bool, GatewayError> {
-    let schema = schema_entries(connection)?;
-    let expected_index = "sqlite_autoindex_kubernetes_image_operations_1";
+    let schema: Vec<_> = schema_entries(connection)?
+        .into_iter()
+        .filter(|entry| entry.2 == table)
+        .collect();
+    let expected_index = format!("sqlite_autoindex_{table}_1");
     let expected_sql = normalize_schema_sql(expected_create_sql);
     if schema.len() != 2
-        || schema[0]
-            != (
-                "index".into(),
-                expected_index.into(),
-                "kubernetes_image_operations".into(),
-                None,
-            )
+        || schema[0] != ("index".into(), expected_index.clone(), table.into(), None)
         || schema[1].0 != "table"
-        || schema[1].1 != "kubernetes_image_operations"
-        || schema[1].2 != "kubernetes_image_operations"
+        || schema[1].1 != table
+        || schema[1].2 != table
         || schema[1].3.as_deref().map(normalize_schema_sql).as_deref()
             != Some(expected_sql.as_str())
     {
@@ -279,8 +358,8 @@ fn recognized_schema(
     }
     let strict = connection
         .query_row(
-            "SELECT strict FROM pragma_table_list WHERE name = 'kubernetes_image_operations'",
-            [],
+            "SELECT strict FROM pragma_table_list WHERE name = ?1",
+            [table],
             |row| row.get::<_, i64>(0),
         )
         .optional()
@@ -288,7 +367,7 @@ fn recognized_schema(
     if strict != Some(1) {
         return Ok(false);
     }
-    let columns = table_columns(connection)?;
+    let columns = table_columns(connection, table)?;
     if columns.len() != expected_columns.len()
         || !columns.iter().zip(expected_columns).enumerate().all(
             |(
@@ -310,11 +389,11 @@ fn recognized_schema(
     {
         return Ok(false);
     }
-    let indexes = table_indexes(connection)?;
-    if indexes != [(0, expected_index.into(), 1, "pk".into(), 0)] {
+    let indexes = table_indexes(connection, table)?;
+    if indexes != [(0, expected_index, 1, "pk".into(), 0)] {
         return Ok(false);
     }
-    let index_columns = primary_index_columns(connection)?;
+    let index_columns = primary_index_columns(connection, table)?;
     Ok(index_columns
         == [
             (0, 0, Some("operation_id".into()), 0, "BINARY".into(), 1),
@@ -357,6 +436,10 @@ fn expected_column_not_null(name: &str) -> bool {
             | "deployment"
             | "container"
             | "immutable_image_digest"
+            | "repository_id"
+            | "ref_name"
+            | "old_commit"
+            | "new_commit"
             | "state"
             | "target_read_failures"
             | "apply_attempted"

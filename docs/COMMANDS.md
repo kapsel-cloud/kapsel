@@ -6,7 +6,7 @@
 preserves filename output by exporting the committed bytes after execution. Export errors fail the
 command without reopening the terminal action. Repeating the command exports the same bytes under
 current output configuration, without dispatch or re-signing. The export directory need not exist
-during application startup or execution. Journal formats older than format 5 are rejected, not
+during application startup or execution. Journal formats older than format 6 are rejected, not
 upgraded.
 
 Status: current preview command contract. Published v0.2.0 behavior remains owned by its tagged
@@ -41,6 +41,7 @@ kapsel --help
 kapsel --version
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel provision-snapshot-grant --authorization <file> --kubeconfig <file> --signing-seed <file> --signing-key-id <id> --output <file>
+kapsel provision-git-grant --authorization <file> --git-receiver <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel operate --request <file> --operator-config <file>
 kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
                [--receipt-bytes-max <usize>] [--statement-bytes-max <usize>]
@@ -49,9 +50,18 @@ kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
 
 `provision-snapshot-grant` uses the same authorization JSON and output-file custody as
 `provision-grant`, but reads the target UID/resourceVersion through the explicit kubeconfig before
-signing grant v2. It never mutates the receiver. Service approval requires this form. A changed
-target requires a new operator decision and identity, not hidden refresh. See the
+signing grant v2. It never mutates the receiver. Kubernetes service approval requires this form. A
+changed target requires a new operator decision and identity, not hidden refresh. See the
 [service operator path](KAPSEL_SERVICE_OPERATOR.md#provision-authority-and-an-exact-approval).
+
+`provision-git-grant` accepts the six-field Git authorization JSON and bounded receiver material
+specified in the [Git guide](GIT_REF_TRANSITION.md#operator-preparation). It checks the fixed
+receiver, commit objects and ancestry before returning a separately purposed grant, without pushing
+or admitting work. `inspect` recognizes Git envelopes and reports their acknowledgement,
+observation, attribution and derived result under explicit Git-purpose trust. The older `operate`
+command and direct-execution MCP adapter remain Kubernetes-only. Git execution uses the resident
+service's ID-only surface. These additions describe current source, not the published preview
+artifact.
 
 The same executable also has one separately owned MCP process form,
 `kapsel mcp --operator-config <file>`. [MCP adapter](MCP.md) owns its protocol, lifecycle, tool,

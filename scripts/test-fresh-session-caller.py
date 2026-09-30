@@ -104,6 +104,30 @@ class FreshSession(unittest.TestCase):
     def calls(self):
         return json.loads(self.state.read_text())["calls"]
 
+    def test_history_is_read_only_and_preserves_both_effects_and_access_errors(self):
+        self.fixture({"version": 1, "status": "NOT_FOUND"})
+        entries = [
+            {"operation_id": "git-op", "effect": "git.transition_ref", "status": "UNKNOWN"},
+            {
+                "operation_id": "k8s-op",
+                "effect": "kubernetes.set_deployment_image",
+                "status": "SUCCEEDED",
+            },
+            {
+                "operation_id": "unavailable",
+                "status": "ERROR",
+                "error_class": "authority_unavailable",
+            },
+        ]
+        page = {"version": 1, "status": "READY", "entries": entries, "next_cursor": "unavailable"}
+        data = json.loads(self.state.read_text())
+        data["responses"]["kapsel.list_operation_history"] = page
+        self.state.write_text(json.dumps(data))
+        self.assertEqual(self.run_caller("history")[1], page)
+        self.assertEqual(self.run_caller("history", "unavailable")[1], page)
+        self.assertFalse(self.ref.exists())
+        self.assertEqual(self.calls(), ["kapsel.list_operation_history"] * 2)
+
     def test_first_selection_is_explicit_and_cannot_repeat_after_loss(self):
         self.fixture(
             {
@@ -230,6 +254,34 @@ class FreshSession(unittest.TestCase):
                     self.pin()
                 self.assertEqual(self.run_caller("resume")[1]["status"], "NO_SELECTION")
                 self.assertEqual(self.calls(), ["kapsel.get_status"])
+
+    def test_both_effects_use_same_identity_and_stop_at_unknown(self):
+        for effect in ("kubernetes.set_deployment_image", "git.transition_ref"):
+            with self.subTest(effect=effect):
+                self.fixture(
+                    {
+                        "version": 1,
+                        "effect": effect,
+                        "status": "IN_PROGRESS",
+                        "execution": {
+                            "disposition": "resume_required",
+                            "next_action": "select_same_id",
+                            "action_owner": "caller",
+                            "condition": None,
+                        },
+                    }
+                )
+                if not self.ref.exists():
+                    self.pin()
+                self.assertEqual(self.run_caller("read")[1]["effect"], effect)
+                self.assertEqual(self.run_caller("resume")[1]["status"], "ADMITTED")
+                data = json.loads(self.state.read_text())
+                data["responses"]["kapsel.get_status"]["status"] = "UNKNOWN"
+                self.state.write_text(json.dumps(data))
+                self.assertEqual(self.run_caller("read")[0], 4)
+                self.assertEqual(self.run_caller("resume")[1]["status"], "NO_SELECTION")
+                self.assertEqual(self.calls().count("kapsel.submit"), 1)
+                self.assertEqual(json.loads(self.ref.read_text())["operation_id"], "op-1")
 
     def test_contradictory_execution_cannot_select(self):
         self.fixture(

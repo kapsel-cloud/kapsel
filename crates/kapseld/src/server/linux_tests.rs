@@ -69,6 +69,7 @@ impl ApplicationExecution for FixtureExecution {
             .select(
                 &id,
                 ServiceExecution {
+                    git_receiver: None,
                     kubernetes_client: Some(self.client.clone()),
                     receipt_signing: Some(([42; 32], "socket-receipt-key".into())),
                 },
@@ -322,6 +323,18 @@ fn authenticated_status_and_receipt_projection_matrix_crosses_exact_frames() {
                 ),
                 operation_id = operation_id
             );
+            let expected = if matches!(operation_id, "not-found" | "operation-error") {
+                expected.to_owned()
+            } else {
+                format!(
+                    concat!(
+                        "{},\"approved_target\":null,\"attempt_target\":null,",
+                        "\"effect\":\"kubernetes.set_deployment_image\",",
+                        "\"observed_target\":null}}"
+                    ),
+                    expected.strip_suffix('}').unwrap()
+                )
+            };
             assert_socket_response(reads.clone(), request.as_bytes(), expected.as_bytes()).await;
         }
         for (operation_id, expected) in [

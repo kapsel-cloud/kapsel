@@ -13,9 +13,10 @@ and tests when a capability changes.
 
 ## Current boundary
 
-The implementation is a bounded action broker for one Kubernetes Deployment image change. Its core
-is exact authority, stable action identity, worker exclusion, durable attempt ordering,
-observation-only recovery, bounded classification, and immutable evidence.
+The implementation supports an exact Kubernetes Deployment image change and an exact local Git
+branch transition. Both use exact authority, stable action identity, worker exclusion, durable
+attempt ordering, observation-only recovery, and immutable evidence. Their receiver and result
+semantics remain separate.
 
 The operator retains credentials, signed grants, trust, receipt-signing material, and private
 storage. The caller can select an approved identity and retrieve its evidence. Model confidence
@@ -31,10 +32,10 @@ queue or automatic scheduler. [Service contracts](KAPSEL_SERVICE.md) own protoco
 
 The local journal and conditional Kubernetes patch do not coordinate independent agents across
 journals or hosts. They provide no fleet ordering, distributed transaction, or system-wide invariant
-guarantee. A different effect needs its own authority, commit, and recovery semantics. The broader
-motivation does not establish a generic interface or a second implemented capability.
+guarantee. The Git transition likewise has no cross-journal coordination or hook-delivery guarantee.
+Neither implementation exposes a generic command or provider interface.
 
-## One capability
+## Concrete capabilities
 
 ```text
 kubernetes.set_deployment_image(namespace, deployment, container, immutable_image_digest)
@@ -45,7 +46,16 @@ Deployment, container, and immutable digest-bound image; the service caller sele
 prepared ID. Caller input cannot contain credentials, trust, grants, shell commands, `kubectl`,
 manifests, arbitrary patches, tags, wildcards, paths, or lifecycle controls.
 
-## One durable path
+The service also exposes `git.transition_ref`: a separately signed approval binds one repository,
+`refs/heads/approved`, and exact SHA-1 commits A and B. Operator-only material selects private bare
+repositories and Git 2.55.0. The same ID-only caller flow selects this approval; it cannot supply
+Git arguments, paths, credentials, or a replacement tuple. A successful original per-ref
+acknowledgement establishes the ref transition, not hook, CI, or deployment completion. Missing
+acknowledgement stays `UNKNOWN`, even when later observation finds B. See the
+[Git contract](EFFECT_GATEWAY.md#git-transition-boundary) and
+[runnable source example](GIT_REF_TRANSITION.md).
+
+## Durable recovery
 
 ```text
 bounded request
@@ -61,9 +71,9 @@ Kapsel commits target identity and `apply_started` before attempting the patch. 
 dispatch permission connects fresh commitment to the concrete adapter. Recovery from attempted
 history observes; it never derives permission to resend from stored state.
 
-`SUCCEEDED` and `FAILED` are classifications over bounded observations of the same target, image,
-and generation. `UNKNOWN` means reconciliation established neither result. It does not mean failure,
-no effect, safety, or permission to retry.
+For Kubernetes, `SUCCEEDED` and `FAILED` are classifications over bounded observations of the same
+target, image, and generation. `UNKNOWN` means reconciliation established neither result. It does
+not mean failure, no effect, safety, or permission to retry.
 
 A permanent missing or invalid target may finish as `NOT_ATTEMPTED` before the mutation marker.
 Exact-snapshot approval rejects a changed UID or resourceVersion as
@@ -86,7 +96,7 @@ feature-free `kapsel`, `kapseld`, and `kapsel-service-client`, operating assets,
 authenticated extraction route. The [operator guide](KAPSEL_SERVICE_OPERATOR.md) owns preparation
 and operation. There is no custom installer or production-support promise.
 
-Current journal format 5 retains original signed grants and refuses older formats unchanged, with no
+Current journal format 6 retains original signed grants and refuses older formats unchanged, with no
 migration, downgrade, pruning, or host-loss continuity guarantee. Preserve journals, sidecars, and
 original access materials under matching binaries. A fresh journal or new identity is not permission
 to repeat an attempted action. [Journal retention](UPGRADE.md) owns operating guidance.

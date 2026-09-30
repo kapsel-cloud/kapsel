@@ -150,5 +150,7 @@ const fn target_rejection(value: TargetRejection) -> &'static str {
         TargetRejection::ContainerNotFound => "CONTAINER_NOT_FOUND",
         TargetRejection::InvalidTarget => "INVALID_TARGET",
         TargetRejection::StaleApproval => "STALE_APPROVAL",
+        TargetRejection::GitStaleRef => "GIT_STALE_REF",
+        TargetRejection::GitInvalidObjects => "GIT_INVALID_OBJECTS",
     }
 }

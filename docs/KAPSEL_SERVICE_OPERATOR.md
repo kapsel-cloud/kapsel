@@ -437,7 +437,9 @@ check credentials or prove host readiness.
 Proceed only after `PUBLISHED` and exit `0`. Any missing or uncertain response requires inspection,
 not automatic replay. The command obtains UID/resourceVersion from the receiver before signing the
 snapshot grant. Caller-supplied versions cannot substitute for this read. No token or key is bundled
-in the archive. The service rejects legacy grants and journals older than format 5 unchanged.
+in the archive. The published preview rejects legacy grants and journals older than format 5
+unchanged. Current source requires format 6; keep older journals with matching binaries as described
+in [journal retention](UPGRADE.md).
 
 Start explicitly, then read before selecting anything:
 
@@ -573,6 +575,9 @@ export. The service needs no receipt directory and the caller never opens its pr
 
 ## Fresh-session caller (current source)
 
+The [shared caller guide](CALLER_GUIDE.md) runs both capabilities and inventories the maintained
+surfaces and their independent versions.
+
 `python3 scripts/fresh-session-caller.py` is a small read-first caller of the fixed MCP bridge, not
 a daemon or a second action store. Run it under the confined caller identity on the service host
 after provisioning the source `kapsel-service-mcp` binary. The published preview lacks that binary.
@@ -585,7 +590,9 @@ verify journal custody before authorizing resumed work after host/storage change
 The caller owns a private reference file, not grants, credentials, signing material or trust. Run
 these commands under the confined caller UID and effective group. The caller creates the private
 directory before the example starts; the operator supplies the journal label out of band. The
-approved catalog may span pages; `approved [after-id]` reads one page at a time.
+approved catalog may span pages; `approved [after-id]` reads one page at a time. The read-only
+`history [after-id]` command similarly lists retained IDs, including operations withdrawn from the
+catalog and per-ID authority errors. Neither listing creates or changes the reference file.
 
 ```sh
 caller='python3 scripts/fresh-session-caller.py'

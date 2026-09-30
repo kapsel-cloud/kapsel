@@ -1,6 +1,6 @@
 # Journal retention and binary replacement
 
-Current Kapsel uses journal format 5. It accepts fresh journals and existing format-5 journals and
+Current Kapsel uses journal format 6. It accepts fresh journals and existing format-6 journals and
 rejects every older format unchanged before action processing. There is no migration, downgrade,
 pruning, automatic backup, or host-loss recovery protocol.
 
@@ -40,7 +40,7 @@ stop dependent automation rather than creating another attempt.
 The v0.1.1-to-v0.2.0 backup, migration, rollback, and downgrade procedures apply only to that exact
 release pair. Use the
 [v0.2.0 tagged upgrade guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md)
-with matching binaries. Those historical procedures do not apply to format 5.
+with matching binaries. Those historical procedures do not apply to format 6.
 
 ## Evidence limits
 

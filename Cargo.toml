@@ -71,7 +71,7 @@ rustix = { workspace = true, features = ["fs", "process", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["rt", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "time"] }
 tower-http = { version = "0.7.0", default-features = false, features = ["map-response-body"] }
 
 [dev-dependencies]

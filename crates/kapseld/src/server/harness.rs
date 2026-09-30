@@ -104,6 +104,7 @@ impl ApplicationExecution for HarnessApplication {
             .select(
                 &id,
                 ServiceExecution {
+                    git_receiver: self.material.git_receiver.clone(),
                     kubernetes_client: self.material.kubernetes_client.clone(),
                     receipt_signing: self.material.receipt_signing.clone(),
                 },
@@ -183,6 +184,7 @@ fn open_test_application(
     Ok((
         application,
         ServiceExecution {
+            git_receiver: None,
             kubernetes_client: Some(kubernetes_client),
             receipt_signing: Some((signing.0, signing.1.into())),
         },

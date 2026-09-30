@@ -724,18 +724,26 @@ fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
     assert_eq!(rusqlite::version(), "3.53.2");
     // Test the actual owner's plain SQL literals, not separately maintained example queries.
     // A new write or changed source form must deliberately revalidate this qualification.
-    let owner = include_str!("../journal/mod.rs")
-        .split("\n#[cfg(test)]\nmod tests {")
-        .next()
-        .unwrap();
-    let statements = owner
-        .split('"')
-        .filter(|sql| {
-            sql.starts_with("INSERT INTO kubernetes_image_operations")
-                || sql.starts_with("UPDATE kubernetes_image_operations")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(statements.len(), 8);
+    let statements = [
+        include_str!("../journal/mod.rs"),
+        include_str!("../journal/git.rs"),
+    ]
+    .into_iter()
+    .flat_map(|owner| {
+        owner
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap()
+            .split('"')
+    })
+    .filter(|sql| {
+        sql.starts_with("INSERT INTO kubernetes_image_operations")
+            || sql.starts_with("UPDATE kubernetes_image_operations")
+            || sql.starts_with("INSERT INTO git_ref_operations")
+            || sql.starts_with("UPDATE git_ref_operations")
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(statements.len(), 14);
     for sql in statements {
         let insert = sql.starts_with("INSERT");
         let mut statement = gateway

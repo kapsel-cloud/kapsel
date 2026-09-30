@@ -3,6 +3,8 @@
 
 #[path = "service_application_contract/disposition.rs"]
 mod disposition;
+#[path = "service_application_contract/git.rs"]
+mod git;
 
 use std::{
     fs,
@@ -241,6 +243,7 @@ fn cold_validation_rejects_lost_history_and_recovery_without_creating_artifacts(
 
 fn offline() -> ServiceExecution {
     ServiceExecution {
+        git_receiver: None,
         kubernetes_client: None,
         receipt_signing: None,
     }
@@ -344,9 +347,7 @@ async fn catalog_removal_and_missing_trust_do_not_hide_healthy_history() {
     let mut application = ServiceApplication::open(configuration(&root)).unwrap();
     assert_eq!(application.approved_actions(None).unwrap().len(), 2);
     assert_eq!(
-        application.approved_actions(Some("a")).unwrap()[0]
-            .request
-            .operation_id,
+        application.approved_actions(Some("a")).unwrap()[0].operation_id(),
         "b"
     );
     assert_eq!(

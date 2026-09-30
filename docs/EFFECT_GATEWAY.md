@@ -10,8 +10,8 @@ an installed filesystem copy. Recovery before that commit signs only frozen fact
 leaves the observation unchanged, and commit acknowledgement loss is resolved by reading durable
 state rather than dispatching or observing again.
 
-Journal format 5 retains the original signed authorization grant at first insertion. Fresh journals
-and existing format 5 journals are accepted. Format 4 and older versions are rejected unchanged
+Journal format 6 retains the original signed authorization grant at first insertion. Fresh journals
+and existing format 6 journals are accepted. Format 5 and older versions are rejected unchanged
 before action processing, without migration. Preserve their journal, sidecars and access materials
 under the matching binary. A fresh journal is not continuity or permission to recreate old actions.
 Receipt v2/v3, grant v1/v2, trust, exact approval, and observation-only recovery semantics remain
@@ -86,7 +86,7 @@ implementation uses this deliberately narrow input grammar:
 
 No wildcard namespace, deployment, container, tag, shell command, manifest, arbitrary patch, or
 second Kubernetes operation is in scope. The logical ceiling is 10,000 distinct identities, but
-format-5 completion accounting limits admission to 504 retained identities and 32 unfinished
+format-6 completion accounting limits admission to 504 retained identities and 32 unfinished
 identities. An existing identical identity remains readable and idempotent at either limit. The
 owner-signed grant carries one bounded authorization identity and an exact copy of the operation
 identity, namespace, deployment, container, and image. It has no wildcards, policy rules, ambient
@@ -99,6 +99,62 @@ does not accept trust from the request or grant.
 
 The release-owned demonstration uses a local `kind` cluster. It does not require a cloud account,
 hosted Kapsel service, or production credentials.
+
+## Git transition boundary
+
+Current source exposes `git.transition_ref` through the service's existing ID-only approval,
+submission, status, history and receipt flow. `kapsel provision-git-grant` performs read-only
+preflight before signing; `kapsel inspect` recognizes purpose-separated Git receipts. The older
+five-field direct CLI/MCP execution path remains Kubernetes-only. Git uses operator-owned, complete
+local bare sender and receiver repositories, one `refs/heads/approved` branch, and pinned Git
+2.55.0. Preparation and content review belong to the operator. The receiver requires deletion and
+non-fast-forward refusal, and a matching `kapsel.repositoryId`. Paths, executable, local transport
+and configuration never come from the signed grant or caller.
+
+The authenticated Git grant binds authorization ID, operation ID, repository ID, exact full branch,
+and distinct nonzero lowercase 40-byte SHA-1 commit IDs A and B. Its magic prefixes are
+`KAPSEL-GIT-REF-GRANT-STATEMENT-V1\0` and `KAPSEL-GIT-REF-GRANT-V1\0`, with purpose
+`kapsel.git-ref-transition-grant.v1`. Statement tags 1–6 carry those fields in that order. It uses
+the existing bounded ordered-record framing and purpose-separated Ed25519 signature construction,
+with 2 KiB statement and 4 KiB envelope ceilings. Kubernetes grants retain their original purposes.
+
+Preflight validates custody, restricted configuration, commit types, ancestry and the current ref.
+The prepared value is bound to its originating receiver. An immutable verified grant binding and a
+fresh committed attempt together issue one consumable dispatch permission. The command sends only B
+to the fixed ref with the exact A lease. Each subprocess has a 15-second deadline and independent 16
+KiB stdout/stderr ceilings; cancellation kills its process group. This does not contain
+operator-controlled hooks that deliberately escape the group. Repository custody walks are bounded
+by 100,000 entries and depth 32. No generic Git command or remote interface is exposed.
+
+After the marker, recovery only observes. A dropped unsent permission is still attempted history;
+A→B→A never permits another send. Preflight uncertainty remains unfinished rather than claiming a
+known stale ref. Fatal object/ancestry reads remain resumable after material repair; Git's fatal
+object-read status does not distinguish absent objects from permission failures. A successful
+non-commit type read or ancestry exit 1 establishes invalid objects. Definite stale-ref or
+invalid-object refusal is `NOT_ATTEMPTED`. A fresh per-ref fast-forward acknowledgement means
+`SUCCEEDED` for that ref transition. Local pre-send rejection or receiver rejection means `FAILED`
+for the transition, not absence of hook side effects. Up-to-date, transport failure, missing
+acknowledgement and malformed output mean `UNKNOWN`. The present ref is a separate
+commit/missing/unknown observation. Seeing B cannot attribute an uncertain attempt.
+
+Git evidence is frozen before signing and committed with terminal state in the same SQLite journal.
+The statement and envelope prefixes are `KAPSEL-GIT-REF-STATEMENT-V1\0` and
+`KAPSEL-GIT-REF-RECEIPT-V1\0`; the purpose is `kapsel.git-ref-transition-receipt.v1`. They reuse the
+8 KiB statement, 16 KiB receipt and explicit trust/time inspection bounds. Statement tags are:
+
+1. Operation ID, authorization ID, grant signer ID and exact grant SHA-256 (tags 1–4).
+2. Repository ID, full ref, old commit and new commit (tags 5–8).
+3. Fixed `git-exact-lease`, acknowledgement, observed-ref kind and observed commit (tags 9–12).
+4. Derived attribution, result and fixed non-claims (tags 13–15).
+
+An absent observed commit is an empty record. Acknowledgement tokens are `updated`,
+`rejected_before_send`, `receiver_rejected` and `unknown`; observed kinds are `commit`, `missing`
+and `unknown`. Attribution is `acknowledged_update` only for `updated`, otherwise `not_established`.
+It describes the original acknowledgement, not causation of the later observed ref. Inspection
+recomputes attribution and result and requires canonical bytes. Trust uses the existing trust
+encoding with the Git purpose explicitly appointed. Original receipts are never upgraded or
+re-signed on reconnect. Non-claims are exactly
+`no-hook-delivery;no-ci;no-deployment;no-complete-capture;no-witnessing;not-production`.
 
 ## Exact-snapshot approval
 
@@ -141,7 +197,7 @@ approved UID and resourceVersion. An intervening conflict after the marker is st
 path, never `NOT_ATTEMPTED`. The marker does not establish network transmission. Recovery after it
 only observes and never resends.
 
-Journal format 5 retains nullable approved UID/version and preflight observed UID/version columns.
+Journal format 6 retains nullable approved UID/version and preflight observed UID/version columns.
 Legacy-grant actions have null approval and retain their original meaning. Older journal versions,
 including the former format-3 snapshot layout, are rejected without migration before processing. New
 requests atomically retain the exact signed grant bytes with original grant identity, signer, digest
@@ -222,7 +278,8 @@ available. This grants no new lifecycle authority: the gateway alone decides the
 Before attempt, resumption repeats safe reads before a fresh conditional attempt. After attempt it
 only observes, or completes frozen facts. Reads never resume, reset an observation budget or change
 receipt bytes. No automatic retry, reapproval, new durable diagnostic field, schema change or
-reinterpretation of format 5 is introduced. The inert `target_read_failures` column stays inert.
+reinterpretation of retained receiver facts is introduced. The inert `target_read_failures` column
+stays inert.
 
 ## Operation lifecycle
 
@@ -289,7 +346,7 @@ from request success or a timeout.
 | `finalized`         | Exact signed receipt bytes, digest, signing-key identity, and terminal state in one SQLite transaction.                                                             | Read-only. Export the committed bytes separately when requested.                                    |
 
 Execution and receipt completion select only the configured operation identity, with no queue or
-fairness guarantee. Journal format 5 requires schema validation of the inert `target_read_failures`
+fairness guarantee. Journal format 6 requires schema validation of the inert `target_read_failures`
 column. Execution neither increments nor uses it, including for retry timing. Existing values remain
 untouched, with no migration or reinterpretation of persisted rows.
 
@@ -377,24 +434,27 @@ premises:
 - Logical identity limits, per-identity charge, shared headroom or database/rollback file ceilings.
   Spare space in the present conservative bound is not permission to raise the 504/32 limits.
 
-Format 5 requires the complete recognized table layout, including snapshot columns in their existing
-physical order. Existing format-5 journals must remain recognized without rewriting their schema,
-rows, or version. Changes to fresh initialization must preserve completion accounting,
-accepted-layout checks, and schema-payload bounds.
+Format 6 requires both exact typed tables: `kubernetes_image_operations` retains its original
+columns and meanings; `git_ref_operations` stores Git-specific authority, acknowledgement and ref
+observations. Both use the same journal, worker lease, identity namespace and aggregate capacity
+limits. Cross-table identity collisions are refused. Both kinds appear in the same retained history
+through the caller interface. Existing format-6 journals reopen without rewriting schema, rows or
+version. Format 5 remains with its matching binary; no migration or silent recreation is provided.
 
-Owned evidence is in `journal/capacity.rs`, `journal/schema.rs`, `journal/opening.rs` and the eight
-write statements in `journal/mod.rs`, under `src/gateway/`. The locked `libsqlite3-sys` 0.38.2
-amalgamation supplies SQLite 3.53.2. The [accepted-layout tests](BUILD.md#accepted-journal-layouts)
-and [storage qualification](BUILD.md#bounded-storage-failure-qualification) cover physical
-rejection, write plans, rollback accounting, last-slot concurrency, full-capacity completion and
-bounded failure recovery. They complement source inspection, not a universal peak-allocation
-measurement. Disk-backed power loss, native installed-host behavior and live Kubernetes remain
-separate evidence, not claims established by this retention decision.
+Owned evidence is in `journal/capacity.rs`, `journal/schema.rs`, `journal/opening.rs` and the write
+statements in `journal/mod.rs` and `journal/git.rs`, under `src/gateway/`. The locked
+`libsqlite3-sys` 0.38.2 amalgamation supplies SQLite 3.53.2. The
+[accepted-layout tests](BUILD.md#accepted-journal-layouts) and
+[storage qualification](BUILD.md#bounded-storage-failure-qualification) cover physical rejection,
+write plans, rollback accounting, last-slot concurrency, full-capacity completion and bounded
+failure recovery. They complement source inspection, not a universal peak-allocation measurement.
+Disk-backed power loss, native installed-host behavior and live Kubernetes remain separate evidence,
+not claims established by this retention decision.
 
 #### Physical bound
 
-Format 5 uses 4 KiB pages, no reserved page bytes, no auto-vacuum and the single existing primary
-index. The connection enforces 16,384 pages (64 MiB) with `max_page_count`. Each admitted identity
+Format 6 uses 4 KiB pages, no reserved page bytes, no auto-vacuum and one primary index per typed
+table. The connection enforces 16,384 pages (64 MiB) with `max_page_count`. Each admitted identity
 is charged 32 pages (128 KiB), regardless of phase or actual payload. A further 256 pages (1 MiB)
 are held as shared transient-completion headroom. Thus at most 504 identities fit. The charge never
 shrinks when an action terminates; there is no pruning or reservation ledger. The same transaction
@@ -415,7 +475,7 @@ physical limits. Oversized physical records fail without repair or migration.
 Every non-root b-tree page must be nonempty. Empty leaf roots are allowed for empty operation trees;
 page 1 alone may be an empty internal root of `sqlite_schema`. Tree depth is at most 20 pages.
 Metadata must account for exactly the retained table rows, the same number of index cells (including
-interior index cells), two schema rows, and all live pages. With 4,092 usable bytes per overflow
+interior index cells), four schema rows, and all live pages. With 4,092 usable bytes per overflow
 page and at least 489 local bytes for overflowing records:
 
 - Each table record needs at most `ceil((65536 - 489) / 4092) = 16` overflow pages. Nonempty leaves
@@ -423,11 +483,11 @@ page and at least 489 local bytes for overflowing records:
 - Each index record needs at most `ceil((16397 - 489) / 4092) = 4` overflow pages. Every nonempty
   index page holds at least one of the `N` distinct index cells, so there are at most `N` such
   pages.
-- The two schema rows need at most 32 overflow pages and four b-tree pages, including page 1's
-  possible empty internal root. Two additional empty operation roots cover `N = 0`.
+- The four schema rows need at most 64 overflow pages and eight b-tree pages, including page 1's
+  possible empty internal root. Four additional empty operation roots cover empty typed tables.
 
 Thus live pages, excluding the integrity-validated freelist, must fit the conservative
-`23 * identities + 38` bound. This is at most 11,630 pages at 504 identities, below the unchanged
+`23 * identities + 76` bound. This is at most 11,668 pages at 504 identities, below the unchanged
 16,128-page retained charge. Unlike the former `21*N+3` check, these premises bound every accepted
 layout after growth, not only its initial size. Owned inserts and updates retain the 64-KiB encoded
 write limit using fresh-prepared, single-row statements and dedicated record registers; this does
@@ -573,7 +633,7 @@ The [live observation-policy tests](BUILD.md#initial-observation-policy) exercis
 readiness periods. The fixed policy accommodates bounded waiting without promising all rollouts
 complete within it. A durable operation-wide deadline would instead need persisted timing facts and
 a clock-discontinuity and compatibility policy. The per-pass choice adds no timing columns, journal
-version, migration, caller configuration or later-observation path. Format 5 and all finalized
+version, migration, caller configuration or later-observation path. Format 6 and all finalized
 history remain unchanged.
 
 ## Authorization and secrets

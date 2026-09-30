@@ -311,7 +311,7 @@ strict assembly B and compares all five deterministic outputs byte-for-byte. Nei
 another A assembly.
 
 HEAD qualification and candidate acceptance do not require historical migration, rollback, or
-downgrade. Current format 5 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
+downgrade. Current format 6 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
 artifact and source proofs remain separate
 [tagged v0.2.0 evidence](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md), not
 compatibility obligations for a newly assembled HEAD candidate.

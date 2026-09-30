@@ -70,6 +70,7 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
         let mut pass = Box::pin(worker.select(
             "a",
             ServiceExecution {
+                git_receiver: None,
                 kubernetes_client: Some(client.clone()),
                 receipt_signing: Some(([42; 32], "receipt-key".into())),
             },
@@ -106,6 +107,7 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             .select(
                 "b",
                 ServiceExecution {
+                    git_receiver: None,
                     kubernetes_client: Some(client.clone()),
                     receipt_signing: None,
                 },
@@ -132,6 +134,7 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             .select(
                 "a",
                 ServiceExecution {
+                    git_receiver: None,
                     kubernetes_client: Some(client.clone()),
                     receipt_signing: None,
                 },
@@ -177,6 +180,7 @@ async fn interrupt_service_observation(
         worker.select(
             "a",
             ServiceExecution {
+                git_receiver: None,
                 kubernetes_client: Some(client.clone()),
                 receipt_signing: Some(([42; 32], "receipt-key".into())),
             },
@@ -268,6 +272,7 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
             }
         });
         let execution = || ServiceExecution {
+            git_receiver: None,
             kubernetes_client: Some(client.clone()),
             receipt_signing: Some(([42; 32], "receipt-key".into())),
         };

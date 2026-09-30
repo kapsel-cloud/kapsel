@@ -25,14 +25,14 @@ fn assert_refusal_preserves_bytes(path: &Path) {
         Err(GatewayError::InvalidPersistedState)
     ));
     assert_eq!(fs::read(path).unwrap(), before);
-    assert_eq!(journal_version(path), 5);
+    assert_eq!(journal_version(path), 6);
 }
 
 #[test]
 fn fresh_journal_initializes_directly_and_reopens_without_another_write() {
     let path = database_path("fresh-version-marker");
     drop(Gateway::open_for_test(&path).unwrap());
-    assert_eq!(journal_version(&path), 5);
+    assert_eq!(journal_version(&path), 6);
     assert!(!PathBuf::from(format!("{}.kapsel-v011.backup", path.display())).exists());
 
     let before = fs::read(&path).unwrap();
@@ -43,8 +43,7 @@ fn fresh_journal_initializes_directly_and_reopens_without_another_write() {
 }
 
 #[tokio::test]
-async fn prior_format_five_construction_preserves_authority_history_and_receipt_bytes() {
-    let mut previous_schema_and_rows = None;
+async fn format_six_reopens_history_and_refuses_prior_format_five_construction() {
     for prior_construction in [true, false] {
         let path = database_path(&format!("format-five-construction-{prior_construction}"));
         if prior_construction {
@@ -54,6 +53,15 @@ async fn prior_format_five_construction_preserves_authority_history_and_receipt_
                 .execute_batch(include_str!("format5-before-direct-create.sql"))
                 .unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let before = fs::read(&path).unwrap();
+            assert!(matches!(
+                Gateway::open_for_test(&path),
+                Err(GatewayError::UnsupportedJournalVersion)
+            ));
+            assert!(journal::Journal::validate_replacement(&path, &[]).is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+            continue;
         }
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         let mut pending = request();
@@ -90,27 +98,11 @@ async fn prior_format_five_construction_preserves_authority_history_and_receipt_
         )
         .unwrap();
         let rows = super::storage::stored_rows(&gateway.journal.connection);
-        let sql: String = gateway
-            .journal
-            .connection
-            .query_row(
-                "SELECT sql FROM sqlite_schema WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let schema: String = sql.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-        let schema_and_rows = (schema, rows.clone());
-        if let Some(previous) = &previous_schema_and_rows {
-            assert_eq!(&schema_and_rows, previous);
-        } else {
-            previous_schema_and_rows = Some(schema_and_rows);
-        }
         drop(gateway);
         let before = fs::read(&path).unwrap();
         journal::Journal::validate_replacement(&path, &[]).unwrap();
         let reopened = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(journal_version(&path), 5);
+        assert_eq!(journal_version(&path), 6);
         assert_eq!(
             reopened.get(&pending.operation_id).unwrap(),
             Some(OperationState::Authorized)
@@ -261,7 +253,7 @@ fn orphan_pages_cannot_consume_reserved_completion_space_on_reopen() {
 
 #[test]
 fn unknown_or_newer_marker_refuses_without_touching_the_store() {
-    for version in [1, 4, 6] {
+    for version in [1, 4, 5, 7] {
         let path = database_path(&format!("unsupported-version-marker-{version}"));
         drop(Gateway::open_for_test(&path).unwrap());
         set_journal_version(&path, version);

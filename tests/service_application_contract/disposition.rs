@@ -24,6 +24,7 @@ async fn preflight_failure_requires_explicit_selection_and_never_patches() {
         requests
     });
     let execution = || ServiceExecution {
+        git_receiver: None,
         kubernetes_client: Some(client.clone()),
         receipt_signing: None,
     };

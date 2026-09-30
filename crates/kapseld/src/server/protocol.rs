@@ -184,9 +184,7 @@ pub(super) fn render_status_with_targets(
         Err(error) => return service_error(error),
     };
     let mut output = render_status(Ok(status));
-    if status == SetDeploymentImageStatus::NotFound
-        || targets == kapsel::OperationTargets::default()
-    {
+    if status == SetDeploymentImageStatus::NotFound {
         return output;
     }
     let exact = |target: Option<kapsel::ApprovedTarget>| {
@@ -194,13 +192,18 @@ pub(super) fn render_status_with_targets(
         serde_json::json!({ "uid": target.uid, "resource_version": target.resource_version })
     })
     };
-    let fields = serde_json::json!({
-        "approved_target": exact(targets.approved_target),
-        "attempt_target": exact(targets.attempt_target),
-        "observed_target": targets.observed_target.map(|target| serde_json::json!({
-            "uid": target.uid, "resource_version": target.resource_version,
-        })),
-    })
+    let fields = if let Some(git) = targets.git {
+        serde_json::json!({"effect":"git.transition_ref", "git": git_targets(git)})
+    } else {
+        serde_json::json!({
+            "effect": "kubernetes.set_deployment_image",
+            "approved_target": exact(targets.approved_target),
+            "attempt_target": exact(targets.attempt_target),
+            "observed_target": targets.observed_target.map(|target| serde_json::json!({
+                "uid": target.uid, "resource_version": target.resource_version,
+            })),
+        })
+    }
     .to_string();
     // Both objects are locally rendered JSON. Join fields without parsing or changing values.
     output.pop();
@@ -285,24 +288,55 @@ pub(super) fn render_catalog(
 ) -> Vec<u8> {
     let entries: Vec<_> = entries
         .into_iter()
-        .map(|entry| {
-            serde_json::json!({
-                "operation_id": entry.request.operation_id,
-                "namespace": entry.request.namespace,
-                "deployment": entry.request.deployment,
-                "container": entry.request.container,
-                "immutable_image_digest": entry.request.immutable_image_digest,
-                "approved_target": {
-                    "uid": entry.approved_target.uid,
-                    "resource_version": entry.approved_target.resource_version,
-                },
-                "label": entry.label,
-            })
+        .map(|entry| match entry {
+            kapsel::ApprovedAction::Kubernetes {
+                request,
+                approved_target,
+                label,
+            } => {
+                serde_json::json!({
+                    "effect": "kubernetes.set_deployment_image",
+                    "operation_id": request.operation_id,
+                    "namespace": request.namespace,
+                    "deployment": request.deployment,
+                    "container": request.container,
+                    "immutable_image_digest": request.immutable_image_digest,
+                    "approved_target": {
+                        "uid": approved_target.uid,
+                        "resource_version": approved_target.resource_version,
+                    },
+                    "label": label,
+                })
+            },
+            kapsel::ApprovedAction::Git {
+                authorization,
+                label,
+            } => serde_json::json!({
+                "effect":"git.transition_ref", "operation_id": authorization.operation_id,
+                "repository_id": authorization.repository_id, "reference": authorization.reference,
+                "old_commit": authorization.old_commit, "new_commit": authorization.new_commit,
+                "label": label,
+            }),
         })
         .collect();
     serde_json::json!({"version":1,"status":"READY","entries":entries,"next_cursor":next_cursor})
         .to_string()
         .into_bytes()
+}
+
+fn git_targets(targets: kapsel::GitOperationTargets) -> serde_json::Value {
+    let observed = targets.observed_ref.map(|observed| match observed {
+        kapsel::GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
+        kapsel::GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
+        kapsel::GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
+    });
+    serde_json::json!({
+        "repository_id": targets.approval.repository_id, "reference": targets.approval.reference,
+        "old_commit": targets.approval.old_commit, "new_commit": targets.approval.new_commit,
+        "attempted": targets.attempted,
+        "acknowledgement": targets.acknowledgement.map(kapsel::GitAcknowledgement::as_str),
+        "observed_ref": observed,
+    })
 }
 
 #[cfg(test)]
@@ -356,6 +390,8 @@ const fn target_rejection(rejection: TargetRejection) -> &'static str {
         TargetRejection::ContainerNotFound => "CONTAINER_NOT_FOUND",
         TargetRejection::InvalidTarget => "INVALID_TARGET",
         TargetRejection::StaleApproval => "STALE_APPROVAL",
+        TargetRejection::GitStaleRef => "GIT_STALE_REF",
+        TargetRejection::GitInvalidObjects => "GIT_INVALID_OBJECTS",
     }
 }
 
@@ -577,6 +613,59 @@ mod tests {
     }
 
     #[test]
+    fn both_effects_share_history_without_collapsing_receiver_facts() {
+        let git = kapsel::GitOperationTargets {
+            approval: kapsel_authority::GitRefAuthorization {
+                authorization_id: "approval".into(),
+                operation_id: "git-op".into(),
+                repository_id: "repository".into(),
+                reference: "refs/heads/approved".into(),
+                old_commit: "a".repeat(40),
+                new_commit: "b".repeat(40),
+            },
+            attempted: true,
+            acknowledgement: Some(kapsel::GitAcknowledgement::Unknown),
+            observed_ref: Some(kapsel::GitObservedRef::Commit("b".repeat(40))),
+        };
+        let targets = kapsel::OperationTargets {
+            git: Some(git),
+            ..kapsel::OperationTargets::default()
+        };
+        let bytes = render_history(kapsel::HistoryPage {
+            entries: vec![
+                kapsel::HistoryEntry {
+                    operation_id: "git-op".into(),
+                    status: Ok((SetDeploymentImageStatus::Unknown, targets.clone())),
+                },
+                kapsel::HistoryEntry {
+                    operation_id: "k8s-op".into(),
+                    status: Ok((
+                        SetDeploymentImageStatus::InProgress,
+                        kapsel::OperationTargets::default(),
+                    )),
+                },
+            ],
+            next_cursor: None,
+        });
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(page["entries"][0]["effect"], "git.transition_ref");
+        assert_eq!(page["entries"][0]["status"], "UNKNOWN");
+        assert_eq!(page["entries"][0]["git"]["acknowledgement"], "unknown");
+        assert_eq!(
+            page["entries"][0]["git"]["observed_ref"]["commit"],
+            "b".repeat(40)
+        );
+        assert!(page["entries"][0].get("approved_target").is_none());
+        assert_eq!(
+            page["entries"][1]["effect"],
+            "kubernetes.set_deployment_image"
+        );
+        assert!(page["entries"][1].get("git").is_none());
+        let absent = render_status_with_targets(Ok((SetDeploymentImageStatus::NotFound, targets)));
+        assert_eq!(absent, br#"{"version":1,"status":"NOT_FOUND"}"#);
+    }
+
+    #[test]
     fn execution_projection_is_bounded_and_contains_only_fixed_guidance() {
         use kapsel::{ExecutionCondition as Condition, ExecutionDisposition as Disposition};
         for disposition in [
@@ -601,6 +690,8 @@ mod tests {
             assert_eq!(
                 value,
                 serde_json::json!({"version":1, "status":"IN_PROGRESS",
+                    "effect":"kubernetes.set_deployment_image",
+                    "approved_target":null, "attempt_target":null, "observed_target":null,
                     "execution": {"disposition":disposition.as_str(),
                         "condition":disposition.condition().map(Condition::as_str),
                         "next_action":disposition.next_action(),

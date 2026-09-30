@@ -9,6 +9,11 @@ use std::{error::Error, fmt};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
+pub(in crate::gateway) mod git;
+pub use git::{
+    inspect_git_receipt, GitInspectionReport, GitStatement as GitReceiptStatement,
+    PURPOSE as GIT_RECEIPT_PURPOSE,
+};
 pub(in crate::gateway) mod publication;
 
 use super::{

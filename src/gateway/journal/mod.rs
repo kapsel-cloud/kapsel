@@ -5,6 +5,7 @@
 //! backup, and rollback-file behavior without creating a selectable storage interface.
 
 pub(in crate::gateway) mod capacity;
+pub(in crate::gateway) mod git;
 mod opening;
 mod schema;
 
@@ -254,6 +255,7 @@ impl LoadedOperation {
             _ => None,
         };
         super::OperationTargets {
+            git: None,
             approved_target: request.approved_target.clone(),
             attempt_target: attempt.map(|v| super::ApprovedTarget {
                 uid: v.target.deployment_uid().to_owned(),
@@ -658,6 +660,8 @@ impl TargetRejection {
             Self::ContainerNotFound => "container_not_found",
             Self::InvalidTarget => "invalid_target",
             Self::StaleApproval => "stale_approval",
+            Self::GitStaleRef => "git_stale_ref",
+            Self::GitInvalidObjects => "git_invalid_objects",
         }
     }
 
@@ -696,11 +700,22 @@ impl Journal {
         path: &Path,
         approvals: &[AuthorizedRequest],
     ) -> Result<(), GatewayError> {
+        Self::validate_mixed_replacement(path, approvals, &[])
+    }
+
+    pub(in crate::gateway) fn validate_mixed_replacement(
+        path: &Path,
+        approvals: &[AuthorizedRequest],
+        git_approvals: &[git::GitBinding],
+    ) -> Result<(), GatewayError> {
         let Some(connection) = opening::open_validation_snapshot(path)? else {
             return Ok(());
         };
         for approval in approvals {
             authorized_operation_on(&connection, approval, || {})?;
+        }
+        for approval in git_approvals {
+            git::load_on(&connection, approval)?;
         }
         connection
             .close()
@@ -782,7 +797,10 @@ impl Journal {
             .prepare(
                 "SELECT CASE WHEN length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128
                          THEN operation_id END
-             FROM kubernetes_image_operations
+             FROM (
+                 SELECT operation_id FROM kubernetes_image_operations
+                 UNION ALL SELECT operation_id FROM git_ref_operations
+             )
              WHERE (?1 IS NULL OR operation_id > ?1 COLLATE BINARY)
              ORDER BY operation_id COLLATE BINARY LIMIT 9",
             )
@@ -837,15 +855,15 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
-        let operation_count = transaction
+        let other_capability: bool = transaction
             .query_row(
-                "SELECT COUNT(*) FROM kubernetes_image_operations",
-                [],
-                |row| row.get::<_, i64>(0),
+                "SELECT EXISTS (SELECT 1 FROM git_ref_operations WHERE operation_id = ?1)",
+                [request.operation_id()],
+                |row| row.get(0),
             )
             .map_err(GatewayError::Database)?;
-        if operation_count >= OPERATION_COUNT_MAX {
-            return Err(GatewayError::JournalFull);
+        if other_capability {
+            return Err(GatewayError::OperationIdentityConflict);
         }
         capacity::require_admission(&transaction)?;
         transaction
@@ -1276,7 +1294,18 @@ fn authorized_operation_on(
         signed_grant,
     )) = existing
     else {
-        return Ok(None);
+        let collision: bool = connection
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM git_ref_operations WHERE operation_id = ?1)",
+                [request.operation_id()],
+                |row| row.get(0),
+            )
+            .map_err(GatewayError::Database)?;
+        return if collision {
+            Err(GatewayError::OperationIdentityConflict)
+        } else {
+            Ok(None)
+        };
     };
     let signed_grant = signed_grant.ok_or(GatewayError::InvalidPersistedState)?;
     if signed_grant != authorization.signed_grant

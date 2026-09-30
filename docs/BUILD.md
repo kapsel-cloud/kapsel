@@ -304,6 +304,29 @@ from the elapsed ceiling (180 seconds including stalled reads). Real I/O can exh
 before all reads occur. Per-pass bounds do not promise a cumulative ceiling across interrupted
 explicit resumptions. The [gateway contract](EFFECT_GATEWAY.md#result-meaning) owns that policy.
 
+## Git transition service
+
+The Git lane requires an explicitly selected Git 2.55.0. Receiver fixtures copy it into private
+custody; it is not discovered through ambient PATH. Run the core recovery matrix on macOS or Linux:
+
+```sh
+(umask 077; KAPSEL_TEST_GIT=/absolute/path/to/git \
+  cargo test --locked -p kapsel --lib gateway::git::tests -- --include-ignored)
+```
+
+On Linux, exercise real service-process loss and the maintained caller through the fixed-root test
+harness, without installation or a live repository:
+
+```sh
+cargo build --locked -p kapsel --bin kapsel
+cargo build --locked -p kapseld --features test-harness
+python3 scripts/test-git-service.py --git /absolute/path/to/git
+```
+
+See the [Git service example](GIT_REF_TRANSITION.md) for material, semantics and evidence limits.
+The owning deterministic gate remains `./scripts/ci-local.sh`; the Linux process gate below is also
+required when service startup or protocol composition changes.
+
 ## Kapsel service candidate
 
 The focused package command above includes the service's private harness. On Linux, run the process
@@ -411,7 +434,7 @@ source-backed page and main-rollback arguments.
 
 ## Journal version rejection
 
-Repository HEAD uses journal format 5 and rejects older versions, including format 4, without
+Repository HEAD uses journal format 6 and rejects older versions, including format 5, without
 migration. Run the rejection proof:
 
 ```sh

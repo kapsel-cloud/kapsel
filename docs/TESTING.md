@@ -46,6 +46,34 @@ changed settings. The Linux service process lane retrieves and inspects original
 export destination is unavailable. The application client retry and snapshot regressions retain
 independent request counts. Process exits do not prove power loss.
 
+## Git receiver and service checks
+
+The receiver/journal boundary has focused tests, alongside mixed-effect service application tests.
+Inline `gateway::git`, `gateway::journal::git` and `gateway::receipt::git` suites cover restricted
+inputs, subprocess bounds, receiver-bound dispatch, immutable authority, shared capacity, phase
+guards and purpose-separated evidence. The real-Git lane additionally needs an explicitly selected
+Git 2.55.0 executable:
+
+```sh
+(umask 077; KAPSEL_TEST_GIT=/absolute/path/to/git \
+  cargo test --locked -p kapsel --lib gateway::git::tests -- --include-ignored)
+```
+
+The private umask matches the service unit and keeps newly created repository contents private.
+Disposable fixtures copy the selected executable into private custody and invoke the same receiver
+code. They cover a fresh transition, stale competitor, transfer to another receiver, loss before and
+after the ref update, dropped dispatch permission with A→B→A, onward movement, and reopening
+unchanged signed evidence without receiver or signing material. Receiver packet traces and hook
+invocations are counted separately; fixture-owned intervening writes are explicit. Hook counts
+establish invocation, not downstream completion. The service-application case additionally proves
+selection, signing-only resumption and exact receipt retrieval after receiver/material removal.
+
+On Linux, the [runnable Git service fixture](GIT_REF_TRANSITION.md#runnable-source-example)
+exercises CLI provisioning, startup material, real service-process loss, the maintained
+fresh-session caller, MCP bridge and detached inspection. It covers send/receipt-commit loss and
+pre/post-receive loss, then reopens the same history without selectable catalog or execution
+material. This is source-level process evidence, not power-loss or installed-systemd qualification.
+
 ## Git ref receiver probe (not a product capability)
 
 Run `python3 scripts/probes/test-git-ref-receiver.py` with Git 2.55.0. The disposable bare `file://`
@@ -122,7 +150,7 @@ for current commands. The deterministic gate does not qualify live or platform-s
 | Receipt/inspection   | Canonical vectors carry all classifier inputs; inspection recomputes under explicit trust and limits.     |
 | Receipt completion   | Frozen observation precedes signing; bytes, digest, signer and finalized state commit together.           |
 | Export               | Collision-safe export uses committed bytes. Failure cannot reopen completion or block later retrieval.    |
-| Compatibility        | Format 5 refuses older journals, including format 4, without migration; wire meanings remain explicit.    |
+| Compatibility        | Format 6 refuses older journals, including format 5, without migration; wire meanings remain explicit.    |
 | Hostile input        | Malformed, oversized, duplicate, reordered, unknown, and trailing records fail closed.                    |
 | Disclosure           | Secrets and unbounded provider bodies stay out of SQLite, receipts, reports, errors, and logs.            |
 
@@ -144,7 +172,7 @@ preserves committed bytes without re-signing. Export may use a new destination w
 durable action or signing identity.
 
 The transient-target gateway regression checks no journal update, no PATCH, safe GET repetition on
-reopen, and preservation of an existing inert `target_read_failures` value. Format-5 schema
+reopen, and preservation of an existing inert `target_read_failures` value. Format-6 schema
 validation still requires that column. `application_contract` tests actual `Application` selection
 with another authorized or receiver-observed operation in the same journal, preserving every value
 in that other row while the configured operation completes. The receiver-observed fixture removes
@@ -169,7 +197,7 @@ configuration outside caller input, typed `SUCCEEDED`, `FAILED`, `UNKNOWN`, and 
 vocabulary, restart, protocol-only standard output, bounded hostile input, and secret-free failures.
 Cancellation, EOF, or transport completion never determines receiver outcome.
 
-The current format-5 version-rejection test proves older journals, including format 4, remain
+The current format-6 version-rejection test proves older journals, including format 5, remain
 untouched without migration. [Build and test](BUILD.md#journal-version-rejection) owns the current
 command. Historical v0.1.1 migration/restore fixtures describe the published pre-format-4 baseline,
 not a current migration path. [Journal retention](UPGRADE.md) owns current operating precautions;

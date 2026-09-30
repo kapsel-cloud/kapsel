@@ -6,6 +6,7 @@
 mod authorization;
 #[cfg(feature = "demo-harness")]
 mod demo_control;
+mod git;
 mod journal;
 mod kubernetes;
 mod receipt;
@@ -19,6 +20,9 @@ pub(crate) use authorization::{
     sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
 pub use authorization::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
+pub use git::{
+    Acknowledgement as GitAcknowledgement, GitReceiverConfiguration, ObservedRef as GitObservedRef,
+};
 use journal::Journal;
 pub(crate) use journal::{DispatchPermission, LoadedOperation};
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
@@ -31,8 +35,9 @@ pub(crate) use kubernetes::{
 };
 use kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity, ValidatedTargetIdentity};
 pub use receipt::{
-    inspect_receipt, InspectionLimits, InspectionReport, InspectionStatus, ReceiptError,
-    ReceiptStatement, ReceiptTrust,
+    inspect_git_receipt, inspect_receipt, GitInspectionReport, GitReceiptStatement,
+    InspectionLimits, InspectionReport, InspectionStatus, ReceiptError, ReceiptStatement,
+    ReceiptTrust, GIT_RECEIPT_PURPOSE,
 };
 use receipt::{publication, sign_statement};
 pub(crate) use receipt::{publication::validate_private_directory, validate_key_id};
@@ -177,6 +182,21 @@ pub struct OperationTargets {
     pub observed_target: Option<ObservedTarget>,
     /// Frozen mutation preconditions, absent before apply_started.
     pub attempt_target: Option<ApprovedTarget>,
+    /// Git-specific evidence, absent for Kubernetes operations.
+    pub git: Option<GitOperationTargets>,
+}
+
+/// Exact Git approval and distinct attempt/acknowledgement/observation facts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitOperationTargets {
+    /// Original authenticated approval, not refreshed from the current ref.
+    pub approval: kapsel_authority::GitRefAuthorization,
+    /// Whether a durable dispatch marker exists, not proof of transmission.
+    pub attempted: bool,
+    /// Retained per-ref acknowledgement, absent until recorded or frozen.
+    pub acknowledgement: Option<GitAcknowledgement>,
+    /// Frozen present-ref observation, never used to infer acknowledgement or attribution.
+    pub observed_ref: Option<GitObservedRef>,
 }
 
 /// Public durable states defined by the effect-gateway owner.
@@ -216,6 +236,10 @@ pub enum TargetRejection {
     InvalidTarget,
     /// The observed object identity or version differs from the signed approval.
     StaleApproval,
+    /// A direct Git ref read differs from the approved old commit, or the branch is absent.
+    GitStaleRef,
+    /// The fixed Git preflight could not validate the approved commits and ancestry.
+    GitInvalidObjects,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,9 +251,9 @@ pub(crate) enum TargetReadError {
 /// Receiver result vocabulary owned by the effect gateway.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationResult {
-    /// The requested generation and image reached the bounded available predicate.
+    /// The effect-specific success predicate was established (rollout or acknowledged ref update).
     Succeeded,
-    /// Kubernetes reported the requested generation exceeded its progress deadline.
+    /// The effect-specific failure predicate was established (rollout deadline or ref rejection).
     Failed,
     /// Bounded receiver facts established neither defined outcome.
     Unknown,
@@ -358,10 +382,11 @@ impl Gateway {
         })
     }
 
-    pub(crate) fn validate_replacement<'a>(
+    pub(crate) fn validate_replacement_with_git<'a>(
         path: &Path,
         authorities: &[AuthorizationTrust],
         approvals: impl Iterator<Item = (&'a SetDeploymentImageRequest, &'a [u8])>,
+        git_approvals: impl Iterator<Item = &'a [u8]>,
     ) -> Result<(), GatewayError> {
         let authorized = approvals
             .map(|(request, bytes)| {
@@ -371,7 +396,14 @@ impl Gateway {
                 )
             })
             .collect::<Result<Vec<_>, GatewayError>>()?;
-        Journal::validate_replacement(path, &authorized)
+        let git = git_approvals
+            .map(|bytes| journal::git::GitBinding::verify(bytes, authorities))
+            .collect::<Result<Vec<_>, _>>()?;
+        if git.is_empty() {
+            Journal::validate_replacement(path, &authorized)
+        } else {
+            Journal::validate_mixed_replacement(path, &authorized, &git)
+        }
     }
 
     pub(crate) fn verify_grant(&self, bytes: &[u8]) -> Result<VerifiedAuthorization, GatewayError> {
@@ -1064,6 +1096,8 @@ pub(crate) enum GatewayError {
     InvalidPersistedState,
     /// A guarded durable transition did not affect exactly one row.
     InvalidTransition,
+    /// Fixed Git receiver material is missing, unsafe or unavailable.
+    GitReceiverUnavailable,
     /// Kubernetes target observation failed without exposing an unbounded diagnostic.
     KubernetesTargetObservation,
     /// Kubernetes conditional image patch failed without exposing an unbounded diagnostic.
@@ -1098,6 +1132,7 @@ impl fmt::Display for GatewayError {
             Self::OperationIdentityConflict => "operation_identity_conflict",
             Self::InvalidPersistedState => "invalid_persisted_state",
             Self::InvalidTransition => "invalid_transition",
+            Self::GitReceiverUnavailable => "git_receiver_unavailable",
             Self::KubernetesTargetObservation => "kubernetes_target_observation",
             Self::KubernetesApply => "kubernetes_apply",
             Self::KubernetesReceiverObservation => "kubernetes_receiver_observation",
@@ -1128,6 +1163,7 @@ impl Error for GatewayError {
             | Self::OperationIdentityConflict
             | Self::InvalidPersistedState
             | Self::InvalidTransition
+            | Self::GitReceiverUnavailable
             | Self::KubernetesTargetObservation
             | Self::KubernetesApply
             | Self::KubernetesReceiverObservation

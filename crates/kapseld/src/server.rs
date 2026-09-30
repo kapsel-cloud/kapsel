@@ -62,11 +62,9 @@ impl ApplicationReads for ServiceApplication {
                 let result = self.approved_actions(after.as_deref()).and_then(|entries| {
                     let next_cursor = match entries.last() {
                         Some(last)
-                            if !self
-                                .approved_actions(Some(&last.request.operation_id))?
-                                .is_empty() =>
+                            if !self.approved_actions(Some(last.operation_id()))?.is_empty() =>
                         {
-                            Some(last.request.operation_id.clone())
+                            Some(last.operation_id().to_owned())
                         },
                         _ => None,
                     };
@@ -118,6 +116,7 @@ pub(crate) trait ApplicationExecution: Send {
 pub(crate) struct ExecutionApplication {
     pub(crate) application: ServiceApplication,
     pub(crate) kubeconfig: Option<Vec<u8>>,
+    pub(crate) git_receiver: Option<Vec<u8>>,
     pub(crate) receipt_seed: Option<Vec<u8>>,
     pub(crate) receipt_signing_key_id: String,
 }
@@ -133,7 +132,8 @@ impl ApplicationExecution for ExecutionApplication {
             self.receipt_seed.as_deref(),
             &self.receipt_signing_key_id,
         )
-        .await;
+        .await
+        .with_git_receiver_snapshot(self.git_receiver.as_deref());
         self.application
             .select(&operation_id, material, acknowledged)
             .await

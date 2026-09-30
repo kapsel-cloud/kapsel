@@ -45,6 +45,7 @@ pub(crate) fn run(arguments: impl Iterator<Item = OsString>) -> CommandResult {
         "validate-service-config" => {
             service::validate(parse_options("validate-service-config", arguments)?)
         },
+        "provision-git-grant" => provision_git(parse_options("provision-git-grant", arguments)?),
         "provision-grant" => provision(parse_options("provision-grant", arguments)?, false),
         "provision-snapshot-grant" => {
             provision(parse_options("provision-snapshot-grant", arguments)?, true)
@@ -60,12 +61,13 @@ fn help(mut arguments: impl Iterator<Item = OsString>) -> CommandResult {
         return Err(CommandError::input("kapsel"));
     }
     Ok(concat!(
-        "kapsel: controlled Deployment-image execution and offline receipt inspection\n",
+        "kapsel: controlled effects and offline receipt inspection\n",
         "Usage:\n",
         "  kapsel --help | --version\n",
         "  kapsel provision-grant --authorization <file> --signing-seed <file>\n",
         "    --signing-key-id <id> --output <new-file>\n",
         "  kapsel provision-snapshot-grant <same options> --kubeconfig <file>\n",
+        "  kapsel provision-git-grant <same options> --git-receiver <file>\n",
         "  kapsel prepare-service-config [--authorization-key <id> <raw-public-key-file>]...\n",
         "    [--approval <label> <signed-grant-file>]...\n",
         "    --receipt-signing-key-id <id> --output <new-file>\n",
@@ -223,6 +225,66 @@ fn provision(mut options: BTreeMap<String, OsString>, snapshot: bool) -> Command
     ))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitAuthorizationDocument {
+    operation_id: String,
+    authorization_id: String,
+    repository_id: String,
+    reference: String,
+    old_commit: String,
+    new_commit: String,
+}
+
+fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
+    const COMMAND: &str = "provision-git-grant";
+    let authorization_path = take_path(&mut options, "--authorization", COMMAND)?;
+    let receiver_path = take_path(&mut options, "--git-receiver", COMMAND)?;
+    let seed_path = take_path(&mut options, "--signing-seed", COMMAND)?;
+    let key_id = take_text(&mut options, "--signing-key-id", COMMAND)?;
+    let output = take_path(&mut options, "--output", COMMAND)?;
+    finish_options(&options, COMMAND)?;
+    let bytes = read_bounded(&authorization_path, 4096, COMMAND, ErrorClass::CommandInput)?;
+    if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+        return Err(CommandError::input(COMMAND));
+    }
+    let document: GitAuthorizationDocument =
+        serde_json::from_slice(&bytes).map_err(|_| CommandError::input(COMMAND))?;
+    let receiver = read_bounded(
+        &receiver_path,
+        4096,
+        COMMAND,
+        ErrorClass::OperatorConfiguration,
+    )?;
+    let receiver = kapsel::GitReceiverConfiguration::from_document(&receiver)
+        .ok_or_else(|| CommandError::configuration(COMMAND))?;
+    let seed = read_exact_32(&seed_path, COMMAND, ErrorClass::OperatorConfiguration)?;
+    let authorization = kapsel_authority::GitRefAuthorization {
+        operation_id: document.operation_id,
+        authorization_id: document.authorization_id,
+        repository_id: document.repository_id,
+        reference: document.reference,
+        old_commit: document.old_commit,
+        new_commit: document.new_commit,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| CommandError::configuration(COMMAND))?;
+    let grant = runtime
+        .block_on(kapsel::provision_git_ref_grant(
+            &authorization,
+            &receiver,
+            &seed,
+            &key_id,
+        ))
+        .map_err(|_| CommandError::input(COMMAND))?;
+    write_new_private(&output, &grant).map_err(|_| CommandError::configuration(COMMAND))?;
+    Ok(format!(
+        "{{\"command\":\"{COMMAND}\",\"status\":\"PROVISIONED\"}}"
+    ))
+}
+
 fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
     let request_path = take_path(&mut options, "--request", "operate")?;
     let operator_path = take_path(&mut options, "--operator-config", "operate")?;
@@ -308,12 +370,21 @@ fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
         "inspect",
         ErrorClass::CommandInput,
     )?;
-    let output = render_inspection(&inspect_receipt(
-        &receipt,
-        &trust,
-        evaluation_time_unix_s,
-        limits,
-    ));
+    let output = if receipt.starts_with(b"KAPSEL-GIT-REF-RECEIPT-") {
+        render_git_inspection(&kapsel::inspect_git_receipt(
+            &receipt,
+            &trust,
+            evaluation_time_unix_s,
+            limits,
+        ))
+    } else {
+        render_inspection(&inspect_receipt(
+            &receipt,
+            &trust,
+            evaluation_time_unix_s,
+            limits,
+        ))
+    };
     if output
         .len()
         .checked_add(1)
@@ -496,6 +567,34 @@ fn structure_rejected_output() -> String {
     render_inspection_fields("STRUCTURE_REJECTED", None)
 }
 
+fn render_git_inspection(report: &kapsel::GitInspectionReport) -> String {
+    let Some(statement) = report.statement() else {
+        return serde_json::json!({"command":"inspect", "effect":"git.transition_ref",
+            "status":inspection_status(report.status()), "statement":null})
+        .to_string();
+    };
+    let approval = statement.authorization();
+    let observed = match statement.observed_ref() {
+        kapsel::GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
+        kapsel::GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
+        kapsel::GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
+    };
+    serde_json::json!({
+        "command":"inspect", "effect":"git.transition_ref",
+        "status":inspection_status(report.status()), "operation_id":approval.operation_id,
+        "authorization_id":approval.authorization_id,
+        "authorization_signer_key_id":statement.authorization_signer_key_id(),
+        "authorization_grant_digest":statement.authorization_grant_digest(),
+        "repository_id":approval.repository_id, "reference":approval.reference,
+        "old_commit":approval.old_commit, "new_commit":approval.new_commit,
+        "write_strategy":"git-exact-lease", "acknowledgement":statement.acknowledgement().as_str(),
+        "observed_ref":observed, "attribution":statement.attribution(),
+        "result":operation_result(statement.result()),
+        "non_claims":kapsel::GitReceiptStatement::non_claims(),
+    })
+    .to_string()
+}
+
 fn render_inspection(report: &InspectionReport) -> String {
     render_inspection_fields(inspection_status(report.status()), report.statement())
 }
@@ -619,6 +718,7 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
         &json_string(operation_result(statement.result())),
     );
     let targets = kapsel::OperationTargets {
+        git: None,
         approved_target: statement.approved_target().cloned(),
         attempt_target: Some(kapsel::ApprovedTarget {
             uid: statement.target_uid().into(),

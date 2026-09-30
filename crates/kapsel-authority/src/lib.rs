@@ -8,7 +8,13 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
+mod git;
 mod record;
+
+pub use git::{
+    git_commit_id_is_valid, sign_git_ref_grant, verify_git_ref_grant, GitRefAuthorization,
+    ValidatedGitRefGrant, APPROVED_GIT_REF,
+};
 
 const GRANT_STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-STATEMENT-V1\0";
 const SIGNED_GRANT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-GRANT-V1\0";

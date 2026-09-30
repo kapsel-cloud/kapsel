@@ -1231,6 +1231,7 @@ mod observation_experiment {
 
     fn execution(client: &Client) -> ServiceExecution {
         ServiceExecution {
+            git_receiver: None,
             kubernetes_client: Some(client.clone()),
             receipt_signing: Some(([42; 32], "observation-receipt".into())),
         }

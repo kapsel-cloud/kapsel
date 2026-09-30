@@ -342,6 +342,30 @@ pub fn provision_exact_grant(
     .map_err(|_| ApplicationError::InvalidGrantProvisioning)
 }
 
+/// Signs an exact Git transition only after checking the operator's fixed receiver and objects.
+///
+/// This performs read-only preflight, not a push or journal admission. Submission repeats the
+/// check; the later exact lease still owns rejection if the ref changes after provisioning.
+///
+/// # Errors
+///
+/// Returns [`ApplicationError::InvalidGrantProvisioning`] for invalid authority or failed
+/// preflight.
+pub async fn provision_git_ref_grant(
+    authorization: &kapsel_authority::GitRefAuthorization,
+    receiver: &crate::GitReceiverConfiguration,
+    signing_seed: &[u8; 32],
+    signing_key_id: &str,
+) -> Result<Vec<u8>, ApplicationError> {
+    let grant = kapsel_authority::sign_git_ref_grant(authorization, signing_seed, signing_key_id)
+        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+    receiver
+        .validate_preparation(authorization)
+        .await
+        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+    Ok(grant)
+}
+
 /// Acquires the operator-selected Deployment version and signs one snapshot grant.
 ///
 /// No snapshot fields are accepted in the proposal. Kubernetes authority is an explicit bounded
@@ -422,7 +446,10 @@ pub enum SetDeploymentImageReceipt {
     },
 }
 
-/// Read-only status projection for the configured Deployment image operation.
+/// Read-only operation status, also used by the multi-effect service.
+///
+/// The historical type name remains for the direct Kubernetes API; each service effect owns its
+/// success and failure predicates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetDeploymentImageStatus {
     /// No durable operation exists for the supplied identity.

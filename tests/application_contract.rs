@@ -218,6 +218,7 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
         let result = service.select(
             &operation.operation_id,
             kapsel::ServiceExecution {
+                git_receiver: None,
                 kubernetes_client: Some(client),
                 receipt_signing: None,
             },

@@ -18,7 +18,8 @@ pub(in crate::gateway) const UNFINISHED_CAPACITY: i64 = 32;
 // Includes record headers: 16-KiB retained key, eight-byte rowid, five-byte header.
 const INDEX_PAYLOAD_BYTES_MAX: usize = schema::PERSISTED_VALUE_BYTES_MAX + 8 + 5;
 const LIVE_PAGES_PER_IDENTITY: i64 = 23;
-const LIVE_FIXED_PAGES: i64 = 38;
+// Four schema records (two typed operation tables and their primary indexes), plus four roots.
+const LIVE_FIXED_PAGES: i64 = 76;
 const TREE_DEPTH_MAX: usize = 20;
 
 pub(super) fn counts(connection: &Connection) -> Result<(i64, i64), GatewayError> {
@@ -26,7 +27,10 @@ pub(super) fn counts(connection: &Connection) -> Result<(i64, i64), GatewayError
         .query_row(
             "SELECT COUNT(*), COALESCE(SUM(state IN (
                 'requested', 'authorized', 'apply_started', 'receiver_observed'
-             )), 0) FROM kubernetes_image_operations",
+             )), 0) FROM (
+                SELECT state FROM kubernetes_image_operations
+                UNION ALL SELECT state FROM git_ref_operations
+             )",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -79,8 +83,20 @@ fn require_physical_bounds(
         .map_err(GatewayError::Database)?;
     let mut rows = statement.query([]).map_err(GatewayError::Database)?;
     let mut seen_pages = 0;
-    let mut roots = [0; 3];
-    let mut cells = [0_i64; 3];
+    let (kubernetes, git): (i64, i64) = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM kubernetes_image_operations),
+                (SELECT COUNT(*) FROM git_ref_operations)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(GatewayError::Database)?;
+    if kubernetes + git != identities {
+        return Err(GatewayError::InvalidPersistedState);
+    }
+    let expected_cells = [kubernetes, kubernetes, git, git, 4];
+    let mut roots = [0; 5];
+    let mut cells = [0_i64; 5];
     while let Some(row) = rows.next().map_err(GatewayError::Database)? {
         let name: String = row.get(0).map_err(GatewayError::Database)?;
         let path: String = row.get(1).map_err(GatewayError::Database)?;
@@ -91,7 +107,9 @@ fn require_physical_bounds(
         let tree = match name.as_str() {
             "kubernetes_image_operations" => 0,
             "sqlite_autoindex_kubernetes_image_operations_1" => 1,
-            "sqlite_schema" => 2,
+            "git_ref_operations" => 2,
+            "sqlite_autoindex_git_ref_operations_1" => 3,
+            "sqlite_schema" => 4,
             _ => return Err(GatewayError::InvalidPersistedState),
         };
         seen_pages += 1;
@@ -107,9 +125,9 @@ fn require_physical_bounds(
         let root = path == "/";
         roots[tree] += i32::from(root);
         let empty_root = root
-            && ((kind == "leaf" && tree != 2 && identities == 0)
-                || (kind == "internal" && tree == 2 && page == 1));
-        let maximum = if tree == 1 {
+            && ((kind == "leaf" && tree != 4 && expected_cells[tree] == 0)
+                || (kind == "internal" && tree == 4 && page == 1));
+        let maximum = if tree == 1 || tree == 3 {
             i64::try_from(INDEX_PAYLOAD_BYTES_MAX)
                 .map_err(|_| GatewayError::InvalidPersistedState)?
         } else {
@@ -122,11 +140,11 @@ fn require_physical_bounds(
         {
             return Err(GatewayError::InvalidPersistedState);
         }
-        if tree == 1 || kind == "leaf" {
+        if tree == 1 || tree == 3 || kind == "leaf" {
             cells[tree] += count;
         }
     }
-    if roots != [1; 3] || cells != [identities, identities, 2] || seen_pages != live {
+    if roots != [1; 5] || cells != expected_cells || seen_pages != live {
         return Err(GatewayError::InvalidPersistedState);
     }
     Ok(())
@@ -198,18 +216,18 @@ mod tests {
         assert_eq!((65_536_usize - 489).div_ceil(4092), 16);
         assert_eq!((INDEX_PAYLOAD_BYTES_MAX - 489).div_ceil(4092), 4);
         assert_eq!(INDEX_PAYLOAD_BYTES_MAX, 16_397);
-        assert_eq!(LIVE_FIXED_PAGES, 2 * 16 + 4 + 2);
+        assert_eq!(LIVE_FIXED_PAGES, 4 * 16 + 8 + 4);
         assert_eq!(LIVE_PAGES_PER_IDENTITY, 2 + 16 + 1 + 4);
         for identities in 0..=IDENTITY_CAPACITY {
             let live = LIVE_PAGES_PER_IDENTITY * identities + LIVE_FIXED_PAGES;
             assert!(live + COMPLETION_HEADROOM_PAGES <= DATABASE_PAGES);
-            if identities >= 5 {
+            if identities >= 9 {
                 assert!(live <= identities * IDENTITY_PAGES);
             }
         }
         assert_eq!(
             LIVE_PAGES_PER_IDENTITY * IDENTITY_CAPACITY + LIVE_FIXED_PAGES,
-            11_630
+            11_668
         );
     }
 

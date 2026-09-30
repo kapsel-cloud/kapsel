@@ -25,28 +25,23 @@ Better decisions do not remove lost acknowledgements, competing writers, or auth
 Kapsel gives callers inspectable execution facts with explicit limits. It does not decide which
 change is useful or make receiver observations universally true.
 
-## What we're building toward
-
-We want reliable delegated execution to become a useful building block: start work, disconnect, come
-back, and understand what completed and what remains uncertain. Different effects will expose
-different authority and recovery problems. Building and using real implementations is how we learn
-which mechanisms belong together.
-
-Kapsel is a personal project built to learn through implementation and experimentation.
-
-This repository is the home of Kapsel's technical work. An agreed feature includes the design,
-implementation, tests, and documentation needed to make it work. A useful prototype is a step toward
-integration, not an automatic handoff. We can change our own designs when experience gives us a
-better one; we keep the claims about shipped behavior accurate as we do.
+The aim is to make delegated work easier to rely on: start something, disconnect, and come back to
+see what completed and what remains uncertain. Different kinds of work bring different authority and
+recovery problems. Kapsel's design grows from building and trying concrete implementations.
 
 ## What it does today
 
-One operation: `kubernetes.set_deployment_image`. An operator approves an exact Deployment snapshot
-and immutable image digest. A caller selects that approval without receiving cluster credentials.
-The resident Linux service retains the action and its original signed receipt across caller loss.
+Two concrete effects in current source: `kubernetes.set_deployment_image` and `git.transition_ref`.
+An operator approves an exact Deployment snapshot and immutable image, or one fixed repository's
+branch transition from commit A to prepared descendant B. A caller selects that approval without
+receiving receiver credentials. The resident Linux service retains the action and its original
+signed receipt across caller loss.
 
-Kubernetes is the current proving ground. The implemented operation remains deliberately concrete:
-there is no arbitrary shell execution, general agent runtime, workflow engine, or provider SDK.
+The effects have distinct authority and result semantics. Acknowledged Git ref acceptance does not
+establish hook delivery, CI or deployment completion; missing acknowledgement remains `UNKNOWN`.
+There is no arbitrary shell execution, general agent runtime, workflow engine, or provider SDK. The
+[Git source example](docs/GIT_REF_TRANSITION.md) exercises provisioning, caller reconnection and
+offline inspection; it is not included in the published preview below.
 
 The published
 [v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) is a
@@ -79,10 +74,4 @@ Its archive, extraction procedure, and storage compatibility differ from the ser
 - [Contributing](CONTRIBUTING.md) and [Build and test](docs/BUILD.md): development and proof.
 - [Documentation map](docs/INDEX.md): current technical owners.
 
-The README states the project's purpose and technical ambition. Linear owns the ordered roadmap,
-priorities, assignments, and progress. The repository owns the implementation, current contracts,
-and executable evidence. Keep daily engineering here and work ordering in Linear. Make technical
-decisions as part of carrying the implementation through.
-
-Report vulnerabilities through the [security policy](SECURITY.md). See [privacy](docs/PRIVACY.md)
-for handling sensitive evidence. Licensed under [Apache 2.0](LICENSE).
+Licensed under [Apache 2.0](LICENSE).
