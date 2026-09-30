@@ -1,5 +1,64 @@
 use super::*;
 
+#[test]
+fn service_admission_acknowledges_capacity_but_not_unsettled_commit_errors() {
+    let path = database_path("admission-error");
+    let gateway = Gateway::open_for_test(&path).unwrap();
+    for capacity in [false, true] {
+        let mut acknowledged = false;
+        let result = gateway.admit_service_operation(
+            None,
+            |journal, worker| {
+                assert!(journal.owns_worker(worker));
+                Err(if capacity {
+                    GatewayError::JournalFull
+                } else {
+                    GatewayError::InjectedFault
+                })
+            },
+            |decision| {
+                assert!(matches!(decision, AdmissionDecision::Full));
+                acknowledged = true;
+            },
+        );
+        assert_eq!(acknowledged, capacity);
+        if capacity {
+            assert!(matches!(result, Ok(None)));
+        } else {
+            assert!(matches!(
+                result,
+                Err(ReconciliationError::Submission(GatewayError::InjectedFault))
+            ));
+        }
+        assert!(gateway.journal.try_lock_worker().unwrap().is_some());
+    }
+    drop(gateway);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn terminal_service_admission_does_not_acquire_a_worker_or_insert() {
+    let path = database_path("terminal-admission");
+    let gateway = Gateway::open_for_test(&path).unwrap();
+    let worker = gateway.journal.try_lock_worker().unwrap().unwrap();
+    for state in [OperationState::Finalized, OperationState::NotAttempted] {
+        let mut acknowledged = false;
+        let result = gateway.admit_service_operation(
+            Some(state),
+            |_, _| Err(GatewayError::InjectedFault),
+            |decision| {
+                assert!(matches!(decision, AdmissionDecision::Admitted(actual) if actual == state));
+                acknowledged = true;
+            },
+        );
+        assert!(matches!(result, Ok(None)));
+        assert!(acknowledged);
+    }
+    drop(worker);
+    drop(gateway);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
 #[tokio::test]
 async fn requested_recovery_rechecks_exact_authorization_before_advancing() {
     let path = database_path("requested-recovery");

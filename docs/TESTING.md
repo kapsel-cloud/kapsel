@@ -66,7 +66,8 @@ after the ref update, dropped dispatch permission with A→B→A, onward movemen
 unchanged signed evidence without receiver or signing material. Receiver packet traces and hook
 invocations are counted separately; fixture-owned intervening writes are explicit. Hook counts
 establish invocation, not downstream completion. The service-application case additionally proves
-selection, signing-only resumption and exact receipt retrieval after receiver/material removal.
+selection and signing-only resumption after receiver/material removal. The process fixture below
+owns detached inspection and byte-identical receipt retrieval after material removal.
 
 On Linux, the [runnable Git service fixture](GIT_REF_TRANSITION.md#runnable-source-example)
 exercises CLI provisioning, startup material, real service-process loss, the maintained

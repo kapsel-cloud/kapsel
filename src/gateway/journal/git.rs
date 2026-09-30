@@ -214,8 +214,8 @@ impl Journal {
         if !self.owns_worker(worker) || prepared.authorization() != &binding.authorization {
             return Err(GatewayError::InvalidTransition);
         }
-        let transaction = self.git_write(binding, worker)?;
-        if load_on(&transaction, binding)? != Some(GitPhase::Authorized) {
+        let (transaction, phase) = self.git_write(binding, worker)?;
+        if phase != GitPhase::Authorized {
             return Err(GatewayError::InvalidTransition);
         }
         changed_one(
@@ -238,8 +238,8 @@ impl Journal {
         rejection: GitRejection,
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let transaction = self.git_write(binding, worker)?;
-        if load_on(&transaction, binding)? != Some(GitPhase::Authorized) {
+        let (transaction, phase) = self.git_write(binding, worker)?;
+        if phase != GitPhase::Authorized {
             return Err(GatewayError::InvalidTransition);
         }
         let rejection = match rejection {
@@ -264,8 +264,8 @@ impl Journal {
         acknowledgement: Acknowledgement,
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let transaction = self.git_write(binding, worker)?;
-        if load_on(&transaction, binding)? != Some(GitPhase::Attempted(None)) {
+        let (transaction, phase) = self.git_write(binding, worker)?;
+        if phase != GitPhase::Attempted(None) {
             return Err(GatewayError::InvalidTransition);
         }
         changed_one(
@@ -273,7 +273,7 @@ impl Journal {
                 .execute(
                     "UPDATE git_ref_operations SET acknowledgement = ?2
              WHERE operation_id = ?1 AND state = 'apply_started' AND acknowledgement IS NULL",
-                    params![binding.authorization.operation_id, acknowledgement.as_sql()],
+                    params![binding.authorization.operation_id, acknowledgement.as_str()],
                 )
                 .map_err(GatewayError::Database)?,
         )?;
@@ -286,8 +286,8 @@ impl Journal {
         observed: &ObservedRef,
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let transaction = self.git_write(binding, worker)?;
-        let Some(GitPhase::Attempted(ack)) = load_on(&transaction, binding)? else {
+        let (transaction, phase) = self.git_write(binding, worker)?;
+        let GitPhase::Attempted(ack) = phase else {
             return Err(GatewayError::InvalidTransition);
         };
         let (kind, commit) = match observed {
@@ -303,7 +303,7 @@ impl Journal {
                 observed_ref_kind = ?3, observed_commit = ?4
              WHERE operation_id = ?1 AND state = 'apply_started'",
             params![binding.authorization.operation_id,
-                ack.unwrap_or(Acknowledgement::Unknown).as_sql(), kind, commit],
+                ack.unwrap_or(Acknowledgement::Unknown).as_str(), kind, commit],
         ).map_err(GatewayError::Database)?)?;
         transaction.commit().map_err(GatewayError::Database)
     }
@@ -314,8 +314,7 @@ impl Journal {
         bytes: &[u8],
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let transaction = self.git_write(binding, worker)?;
-        let phase = load_on(&transaction, binding)?.ok_or(GatewayError::InvalidTransition)?;
+        let (transaction, phase) = self.git_write(binding, worker)?;
         if !matches!(phase, GitPhase::Observed { .. }) {
             return Err(GatewayError::InvalidTransition);
         }
@@ -341,38 +340,15 @@ impl Journal {
         &self,
         binding: &GitBinding,
         worker: &WorkerLock,
-    ) -> Result<Transaction<'_>, GatewayError> {
+    ) -> Result<(Transaction<'_>, GitPhase), GatewayError> {
         if !self.owns_worker(worker) {
             return Err(GatewayError::InvalidTransition);
         }
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
-        if load_on(&transaction, binding)?.is_none() {
-            return Err(GatewayError::InvalidTransition);
-        }
-        Ok(transaction)
-    }
-}
-
-impl Acknowledgement {
-    fn as_sql(self) -> &'static str {
-        match self {
-            Self::Updated => "updated",
-            Self::RejectedBeforeSend => "rejected_before_send",
-            Self::ReceiverRejected => "receiver_rejected",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    fn from_sql(value: &str) -> Result<Self, GatewayError> {
-        match value {
-            "updated" => Ok(Self::Updated),
-            "rejected_before_send" => Ok(Self::RejectedBeforeSend),
-            "receiver_rejected" => Ok(Self::ReceiverRejected),
-            "unknown" => Ok(Self::Unknown),
-            _ => Err(GatewayError::InvalidPersistedState),
-        }
+        let phase = load_on(&transaction, binding)?.ok_or(GatewayError::InvalidTransition)?;
+        Ok((transaction, phase))
     }
 }
 
@@ -502,7 +478,9 @@ fn decode_phase(
     observed_kind: Option<&str>,
     observed_commit: Option<String>,
 ) -> Result<GitPhase, GatewayError> {
-    let acknowledgement = ack.map(Acknowledgement::from_sql).transpose()?;
+    let acknowledgement = ack
+        .map(|value| Acknowledgement::parse(value).ok_or(GatewayError::InvalidPersistedState))
+        .transpose()?;
     let observed = match (observed_kind, observed_commit) {
         (None, None) => None,
         (Some("unknown"), None) => Some(ObservedRef::Unknown),
@@ -609,6 +587,10 @@ mod tests {
         let changed = binding_with_commit("operation", "c".repeat(40));
         assert!(matches!(
             journal.insert_git(&changed, &worker),
+            Err(GatewayError::OperationIdentityConflict)
+        ));
+        assert!(matches!(
+            journal.reject_git(&changed, GitRejection::StaleRef, &worker),
             Err(GatewayError::OperationIdentityConflict)
         ));
         assert_eq!(

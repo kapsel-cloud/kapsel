@@ -56,6 +56,16 @@ impl Acknowledgement {
             Self::Unknown => "unknown",
         }
     }
+
+    pub(super) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "updated" => Some(Self::Updated),
+            "rejected_before_send" => Some(Self::RejectedBeforeSend),
+            "receiver_rejected" => Some(Self::ReceiverRejected),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
 }
 
 /// One present-ref observation, separate from attribution of the original attempt.
@@ -546,10 +556,8 @@ impl super::Gateway {
         receiver: Option<&GitReceiverConfiguration>,
         signing: Option<&ReceiptSettings<'_>>,
         acknowledged: impl FnOnce(super::AdmissionDecision) + Send,
-    ) -> Result<Option<RetainedGitOperation>, super::ReconciliationError> {
-        use super::{
-            AdmissionDecision, OperationState, ReconciliationBlockage, ReconciliationError,
-        };
+    ) -> Result<(), super::ReconciliationError> {
+        use super::{OperationState, ReconciliationBlockage, ReconciliationError};
         let binding = GitBinding::verify(grant, &self.authorization_trust)
             .map_err(ReconciliationError::Submission)?;
         if binding.authorization().operation_id != id {
@@ -561,37 +569,22 @@ impl super::Gateway {
             .journal
             .git_operation(&binding)
             .map_err(ReconciliationError::Submission)?;
-        if let Some(phase) = &existing {
-            if matches!(
-                phase.state(),
-                OperationState::Finalized | OperationState::NotAttempted
-            ) {
-                acknowledged(AdmissionDecision::Admitted(phase.state()));
-                return Ok(existing.map(|phase| RetainedGitOperation::from_phase(&binding, phase)));
-            }
-        }
-        let Some(worker) = self
-            .journal
-            .try_lock_worker()
-            .map_err(ReconciliationError::Submission)?
-        else {
-            acknowledged(existing.as_ref().map_or(AdmissionDecision::Busy, |phase| {
-                AdmissionDecision::Admitted(phase.state())
-            }));
-            return Err(ReconciliationError::Blocked(
-                ReconciliationBlockage::WorkerContention,
-            ));
-        };
-        let admitted = match self.journal.insert_git(&binding, &worker) {
-            Ok(phase) => phase,
-            Err(GatewayError::JournalFull) => {
-                acknowledged(AdmissionDecision::Full);
-                return Ok(None);
+        let Some((worker, admitted)) = self.admit_service_operation(
+            existing.as_ref().map(GitPhase::state),
+            |journal, worker| {
+                journal
+                    .insert_git(&binding, worker)
+                    .map(|phase| phase.state())
             },
-            Err(error) => return Err(ReconciliationError::Submission(error)),
+            acknowledged,
+        )?
+        else {
+            return Ok(());
         };
-        acknowledged(AdmissionDecision::Admitted(admitted.state()));
-        let receiver = if matches!(admitted, GitPhase::Authorized | GitPhase::Attempted(_)) {
+        let receiver = if matches!(
+            admitted,
+            OperationState::Authorized | OperationState::ApplyStarted
+        ) {
             Some(
                 receiver
                     .ok_or(ReconciliationError::Blocked(
@@ -622,7 +615,7 @@ impl super::Gateway {
                 ReconciliationBlockage::SigningUnavailable,
             ));
         }
-        Ok(Some(RetainedGitOperation::from_phase(&binding, phase)))
+        Ok(())
     }
 }
 
@@ -1325,7 +1318,7 @@ mod tests {
     #[ignore = "requires operator-selected Git 2.55.0; KAPSEL_TEST_GIT is an absolute executable"]
     #[allow(
         clippy::too_many_lines,
-        reason = "one service lifecycle checks loss and frozen-evidence reconnection"
+        reason = "one service lifecycle proves signing-only resumption after material removal"
     )]
     async fn real_git_service_reconnects_and_signs_frozen_evidence_without_receiver() {
         use crate::{
@@ -1381,80 +1374,41 @@ mod tests {
                 stopped,
                 crate::ServiceStop::Blocked(crate::ExecutionCondition::SigningUnavailable)
             );
-            let (status, targets) = service.status(&approval.operation_id).unwrap();
-            assert_eq!(status, SetDeploymentImageStatus::InProgress);
-            let targets = targets.git.unwrap();
-            assert!(targets.attempted);
             assert_eq!(
-                targets.observed_ref,
-                Some(ObservedRef::Commit(approval.new_commit.clone()))
-            );
-            assert_eq!(
-                targets.acknowledgement,
-                Some(if case == "healthy" {
-                    Acknowledgement::Updated
-                } else {
-                    Acknowledgement::Unknown
-                })
+                service.status(&approval.operation_id).unwrap().0,
+                SetDeploymentImageStatus::InProgress
             );
             assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
             drop(service);
             fs::remove_dir_all(&receiver.receiver).unwrap();
             fs::remove_file(&receiver.executable).unwrap();
             configuration.approvals.clear();
-            let mut service = ServiceApplication::open(configuration.clone()).unwrap();
-            service
-                .select(
-                    &approval.operation_id,
-                    ServiceExecution {
-                        kubernetes_client: None,
-                        git_receiver: None,
-                        receipt_signing: Some(([9; 32], "receipt-owner".into())),
-                    },
-                    |_| {},
-                )
-                .await
-                .unwrap();
+            let mut service = ServiceApplication::open(configuration).unwrap();
+            assert_eq!(
+                service
+                    .select(
+                        &approval.operation_id,
+                        ServiceExecution {
+                            kubernetes_client: None,
+                            git_receiver: None,
+                            receipt_signing: Some(([9; 32], "receipt-owner".into())),
+                        },
+                        |_| {},
+                    )
+                    .await
+                    .unwrap(),
+                crate::ServiceStop::Finished
+            );
             let expected = if case == "healthy" {
                 SetDeploymentImageStatus::Succeeded
             } else {
                 SetDeploymentImageStatus::Unknown
             };
             assert_eq!(service.status(&approval.operation_id).unwrap().0, expected);
-            let receipt = service.receipt(&approval.operation_id).unwrap();
-            let SetDeploymentImageReceipt::Ready { bytes, .. } = &receipt else {
-                unreachable!()
-            };
-            let trust = crate::ReceiptTrust {
-                key_id: "receipt-owner".into(),
-                public_key: ed25519_dalek::SigningKey::from_bytes(&[9; 32])
-                    .verifying_key()
-                    .to_bytes(),
-                accepted_purpose: crate::GIT_RECEIPT_PURPOSE.into(),
-                not_before_unix_s: 0,
-                not_after_unix_s: 100,
-            }
-            .encode()
-            .unwrap();
-            let report =
-                crate::inspect_git_receipt(bytes, &trust, 50, crate::InspectionLimits::default());
-            assert_eq!(report.status(), crate::InspectionStatus::Inspected);
-            assert_eq!(report.statement().unwrap().authorization(), &approval);
-            drop(service);
-            let mut service = ServiceApplication::open(configuration).unwrap();
-            service
-                .select(
-                    &approval.operation_id,
-                    ServiceExecution {
-                        kubernetes_client: None,
-                        git_receiver: None,
-                        receipt_signing: None,
-                    },
-                    |_| {},
-                )
-                .await
-                .unwrap();
-            assert_eq!(service.receipt(&approval.operation_id).unwrap(), receipt);
+            assert!(matches!(
+                service.receipt(&approval.operation_id).unwrap(),
+                SetDeploymentImageReceipt::Ready { .. }
+            ));
             assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
         }
     }

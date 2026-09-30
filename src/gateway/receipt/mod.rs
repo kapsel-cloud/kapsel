@@ -549,68 +549,111 @@ pub(crate) fn sign_statement(
 ) -> Result<Vec<u8>, ReceiptError> {
     validate_key_id(key_id)?;
     let statement_bytes = statement.encode()?;
-    Ok(sign_statement_bytes(&statement_bytes, seed, key_id))
-}
-
-fn sign_statement_bytes(statement_bytes: &[u8], seed: &[u8; 32], key_id: &str) -> Vec<u8> {
-    let signature = SigningKey::from_bytes(seed).sign(&signature_input(statement_bytes));
-    let mut output = Vec::with_capacity(statement_bytes.len() + 160);
-    output.extend_from_slice(if statement_bytes.starts_with(SNAPSHOT_STATEMENT_MAGIC) {
-        SNAPSHOT_RECEIPT_MAGIC
-    } else {
-        RECEIPT_MAGIC
-    });
-    push(
-        &mut output,
-        1,
-        statement_purpose(statement_bytes).as_bytes(),
-        RECEIPT_BYTES_MAX,
+    sign_envelope(
+        &statement_bytes,
+        if statement.approved_target.is_some() {
+            SNAPSHOT_RECEIPT_MAGIC
+        } else {
+            RECEIPT_MAGIC
+        },
+        statement_purpose(&statement_bytes),
+        seed,
+        key_id,
     )
-    .unwrap_or_else(|_| unreachable!("validated receipt purpose fits the receipt bound"));
-    push_text(&mut output, 2, key_id, RECEIPT_BYTES_MAX)
-        .unwrap_or_else(|_| unreachable!("validated receipt key ID fits the receipt bound"));
-    push(&mut output, 3, statement_bytes, RECEIPT_BYTES_MAX)
-        .unwrap_or_else(|_| unreachable!("validated statement fits the receipt bound"));
-    push(&mut output, 4, &signature.to_bytes(), RECEIPT_BYTES_MAX)
-        .unwrap_or_else(|_| unreachable!("fixed signature fits the receipt bound"));
-    output
 }
 
-struct ReceiptEnvelope<'a> {
-    accepted_purpose: String,
+fn sign_envelope(
+    statement: &[u8],
+    magic: &[u8],
+    purpose: &str,
+    seed: &[u8; 32],
+    key_id: &str,
+) -> Result<Vec<u8>, ReceiptError> {
+    let signature = SigningKey::from_bytes(seed).sign(&signature_input(purpose, statement));
+    let mut output = magic.to_vec();
+    push_text(&mut output, 1, purpose, RECEIPT_BYTES_MAX)?;
+    push_text(&mut output, 2, key_id, RECEIPT_BYTES_MAX)?;
+    push(&mut output, 3, statement, RECEIPT_BYTES_MAX)?;
+    push(&mut output, 4, &signature.to_bytes(), RECEIPT_BYTES_MAX)?;
+    Ok(output)
+}
+
+struct ReceiptEnvelope<'a, Statement> {
+    accepted_purpose: &'static str,
     key_id: String,
     statement_bytes: &'a [u8],
-    statement: ReceiptStatement,
+    statement: Statement,
     signature: Signature,
+}
+
+impl<Statement> ReceiptEnvelope<'_, Statement> {
+    fn authenticate(
+        &self,
+        trust: &ReceiptTrust,
+        time: i64,
+    ) -> Result<InspectionStatus, ReceiptError> {
+        VerifyingKey::from_bytes(&trust.public_key)
+            .map_err(|_| ReceiptError::InvalidValue)?
+            .verify_strict(
+                &signature_input(self.accepted_purpose, self.statement_bytes),
+                &self.signature,
+            )
+            .map_err(|_| ReceiptError::BadSignature)?;
+        Ok(
+            if trust.accepted_purpose != self.accepted_purpose
+                || trust.key_id != self.key_id
+                || time < trust.not_before_unix_s
+                || time >= trust.not_after_unix_s
+            {
+                InspectionStatus::UntrustedSigner
+            } else {
+                InspectionStatus::Inspected
+            },
+        )
+    }
 }
 
 fn parse_receipt_envelope(
     receipt: &[u8],
     limits: InspectionLimits,
-) -> Result<ReceiptEnvelope<'_>, ReceiptError> {
-    limits.validate()?;
-    bounded(receipt, limits.receipt_bytes_max)?;
+) -> Result<ReceiptEnvelope<'_, ReceiptStatement>, ReceiptError> {
     let snapshot = receipt.starts_with(SNAPSHOT_RECEIPT_MAGIC);
-    let mut records = Records::new(
+    parse_envelope(
         receipt,
         if snapshot {
             SNAPSHOT_RECEIPT_MAGIC
         } else {
             RECEIPT_MAGIC
         },
-        limits.text_bytes_max,
-    )?;
-    let purpose = records.text(1)?;
-    if purpose != if snapshot { SNAPSHOT_PURPOSE } else { PURPOSE } {
+        if snapshot { SNAPSHOT_PURPOSE } else { PURPOSE },
+        limits,
+        |bytes| {
+            let statement = ReceiptStatement::parse(bytes, limits)?;
+            if statement.approved_target.is_some() != snapshot {
+                return Err(ReceiptError::InvalidValue);
+            }
+            Ok(statement)
+        },
+    )
+}
+
+fn parse_envelope<'a, Statement>(
+    receipt: &'a [u8],
+    magic: &[u8],
+    purpose: &'static str,
+    limits: InspectionLimits,
+    parse_statement: impl FnOnce(&'a [u8]) -> Result<Statement, ReceiptError>,
+) -> Result<ReceiptEnvelope<'a, Statement>, ReceiptError> {
+    limits.validate()?;
+    bounded(receipt, limits.receipt_bytes_max)?;
+    let mut records = Records::new(receipt, magic, limits.text_bytes_max)?;
+    if records.text(1)? != purpose {
         return Err(ReceiptError::InvalidValue);
     }
     let key_id = records.text(2)?;
     validate_key_id(&key_id)?;
     let statement_bytes = records.take(3)?;
-    let statement = ReceiptStatement::parse(statement_bytes, limits)?;
-    if statement.approved_target.is_some() != snapshot {
-        return Err(ReceiptError::InvalidValue);
-    }
+    let statement = parse_statement(statement_bytes)?;
     let signature = Signature::from_bytes(&array(records.take(4)?)?);
     records.finish()?;
     Ok(ReceiptEnvelope {
@@ -730,20 +773,8 @@ fn inspect_inner(
     let envelope = parse_receipt_envelope(receipt, limits)?;
     let parsed_trust = ReceiptTrust::parse(trust, limits)?;
 
-    let verifying_key = VerifyingKey::from_bytes(&parsed_trust.public_key)
-        .map_err(|_| ReceiptError::InvalidValue)?;
-    verifying_key
-        .verify_strict(
-            &signature_input(envelope.statement_bytes),
-            &envelope.signature,
-        )
-        .map_err(|_| ReceiptError::BadSignature)?;
-
-    let trust_matches_envelope = parsed_trust.key_id == envelope.key_id
-        && parsed_trust.accepted_purpose == envelope.accepted_purpose;
-    if !trust_matches_envelope
-        || evaluation_time_unix_s < parsed_trust.not_before_unix_s
-        || evaluation_time_unix_s >= parsed_trust.not_after_unix_s
+    if envelope.authenticate(&parsed_trust, evaluation_time_unix_s)?
+        == InspectionStatus::UntrustedSigner
     {
         return Err(ReceiptError::UntrustedSigner(Box::new(envelope.statement)));
     }
@@ -824,9 +855,9 @@ fn statement_purpose(statement: &[u8]) -> &'static str {
     }
 }
 
-fn signature_input(statement: &[u8]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(PURPOSE.len() + 1 + statement.len());
-    input.extend_from_slice(statement_purpose(statement).as_bytes());
+fn signature_input(purpose: &str, statement: &[u8]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(purpose.len() + 1 + statement.len());
+    input.extend_from_slice(purpose.as_bytes());
     input.push(0);
     input.extend_from_slice(statement);
     input
@@ -1243,7 +1274,8 @@ mod tests {
         for (tag, value) in invalid_values {
             let mut hostile = valid.clone();
             replace_record(&mut hostile, STATEMENT_MAGIC, *tag, value);
-            let receipt = sign_statement_bytes(&hostile, &seed, "kap0038-test-key");
+            let receipt =
+                sign_envelope(&hostile, RECEIPT_MAGIC, PURPOSE, &seed, "kap0038-test-key").unwrap();
             assert_eq!(
                 inspect_receipt(&receipt, &trust, 150, InspectionLimits::default()).status(),
                 InspectionStatus::StructureRejected
@@ -1261,11 +1293,42 @@ mod tests {
         ] {
             let mut hostile = valid.clone();
             replace_record(&mut hostile, STATEMENT_MAGIC, tag, value);
-            let receipt = sign_statement_bytes(&hostile, &seed, "kap0038-test-key");
+            let receipt =
+                sign_envelope(&hostile, RECEIPT_MAGIC, PURPOSE, &seed, "kap0038-test-key").unwrap();
             assert_eq!(
                 inspect_receipt(&receipt, &trust, 150, InspectionLimits::default()).status(),
                 InspectionStatus::StructureRejected
             );
+        }
+    }
+
+    #[test]
+    fn snapshot_and_legacy_envelopes_require_matching_statement_versions() {
+        let mut snapshot = statement();
+        snapshot.approved_target = Some(super::super::ApprovedTarget {
+            uid: snapshot.target_uid.clone(),
+            resource_version: snapshot.target_resource_version.clone(),
+        });
+        for statement in [statement(), snapshot] {
+            let snapshot = statement.approved_target.is_some();
+            let receipt = sign_statement(&statement, &[9; 32], "kap0038-test-key").unwrap();
+            assert_eq!(decode_frozen_receipt(&receipt).unwrap().1, statement);
+            let mixed = sign_envelope(
+                &statement.encode().unwrap(),
+                if snapshot {
+                    RECEIPT_MAGIC
+                } else {
+                    SNAPSHOT_RECEIPT_MAGIC
+                },
+                if snapshot { PURPOSE } else { SNAPSHOT_PURPOSE },
+                &[9; 32],
+                "kap0038-test-key",
+            )
+            .unwrap();
+            assert!(matches!(
+                parse_receipt_envelope(&mixed, InspectionLimits::default()),
+                Err(ReceiptError::InvalidValue)
+            ));
         }
     }
 
@@ -1289,7 +1352,14 @@ mod tests {
     fn strict_verification_rejects_real_small_order_key_and_signature() {
         let seed = [9_u8; 32];
         let statement = statement().encode().unwrap();
-        let mut receipt = sign_statement_bytes(&statement, &seed, "kap0038-test-key");
+        let mut receipt = sign_envelope(
+            &statement,
+            RECEIPT_MAGIC,
+            PURPOSE,
+            &seed,
+            "kap0038-test-key",
+        )
+        .unwrap();
         replace_record(
             &mut receipt,
             RECEIPT_MAGIC,

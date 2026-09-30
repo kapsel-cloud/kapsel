@@ -374,28 +374,28 @@ impl ServiceApplication {
             });
         };
         let result = match selected {
-            Selection::Kubernetes(request, signed_grant, _) => self
-                .gateway
-                .admit_and_reconcile(
-                    &request,
-                    &signed_grant,
-                    execution.kubernetes_client,
-                    receipt.as_ref(),
-                    callback,
-                )
-                .await
-                .map(|_| ()),
-            Selection::Git(signed_grant, _) => self
-                .gateway
-                .admit_and_reconcile_git(
-                    operation_id,
-                    &signed_grant,
-                    execution.git_receiver.as_ref(),
-                    receipt.as_ref(),
-                    callback,
-                )
-                .await
-                .map(|_| ()),
+            Selection::Kubernetes(request, signed_grant, _) => {
+                self.gateway
+                    .admit_and_reconcile(
+                        &request,
+                        &signed_grant,
+                        execution.kubernetes_client,
+                        receipt.as_ref(),
+                        callback,
+                    )
+                    .await
+            },
+            Selection::Git(signed_grant, _) => {
+                self.gateway
+                    .admit_and_reconcile_git(
+                        operation_id,
+                        &signed_grant,
+                        execution.git_receiver.as_ref(),
+                        receipt.as_ref(),
+                        callback,
+                    )
+                    .await
+            },
         };
         result
             .map(|()| ServiceStop::Finished)

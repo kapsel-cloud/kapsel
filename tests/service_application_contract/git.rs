@@ -1,7 +1,7 @@
 //! Mixed-effect catalog and retained-ID routing without receiver credentials.
 use super::*;
 
-fn git_approval(id: &str) -> ServiceApproval {
+pub(super) fn git_approval(id: &str) -> ServiceApproval {
     let authorization = kapsel_authority::GitRefAuthorization {
         operation_id: id.into(),
         authorization_id: format!("git-{id}"),

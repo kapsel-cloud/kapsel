@@ -1,8 +1,11 @@
 //! Fixed-purpose authority for an exact transition of the operator's prepared Git branch.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 
-use super::{digest_hex, identity_is_valid, record, AuthorizationGrantError, AuthorizationTrust};
+use super::{
+    digest_hex, identity_is_valid, record, sign_grant_statement, signature_input,
+    AuthorizationGrantError, AuthorizationTrust,
+};
 
 const STATEMENT_MAGIC: &[u8] = b"KAPSEL-GIT-REF-GRANT-STATEMENT-V1\0";
 const GRANT_MAGIC: &[u8] = b"KAPSEL-GIT-REF-GRANT-V1\0";
@@ -103,13 +106,7 @@ pub fn sign_git_ref_grant(
     ]) {
         push(&mut statement, tag, value.as_bytes(), STATEMENT_MAX)?;
     }
-    let signature = SigningKey::from_bytes(signing_seed).sign(&signature_input(&statement));
-    let mut output = GRANT_MAGIC.to_vec();
-    push(&mut output, 1, PURPOSE.as_bytes(), GRANT_MAX)?;
-    push(&mut output, 2, key_id.as_bytes(), GRANT_MAX)?;
-    push(&mut output, 3, &statement, GRANT_MAX)?;
-    push(&mut output, 4, &signature.to_bytes(), GRANT_MAX)?;
-    Ok(output)
+    sign_grant_statement(&statement, GRANT_MAGIC, PURPOSE, signing_seed, key_id)
 }
 
 /// Verifies canonical Git authority against one external identity/key appointment.
@@ -163,7 +160,7 @@ pub fn verify_git_ref_grant(
     VerifyingKey::from_bytes(&trust.public_key)
         .map_err(|_| AuthorizationGrantError::Invalid)?
         .verify_strict(
-            &signature_input(statement),
+            &signature_input(PURPOSE, statement),
             &Signature::from_bytes(&signature),
         )
         .map_err(|_| AuthorizationGrantError::Untrusted)?;
@@ -172,14 +169,6 @@ pub fn verify_git_ref_grant(
         signer_key_id: key_id,
         grant_digest: digest_hex(bytes),
     })
-}
-
-fn signature_input(statement: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(PURPOSE.len() + 1 + statement.len());
-    bytes.extend_from_slice(PURPOSE.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(statement);
-    bytes
 }
 
 fn text(bytes: &[u8], maximum: usize) -> Result<String, AuthorizationGrantError> {
@@ -204,6 +193,8 @@ fn invalid(_: record::FrameError) -> AuthorizationGrantError {
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::SigningKey;
+
     use super::*;
 
     fn approval() -> GitRefAuthorization {
@@ -232,6 +223,10 @@ mod tests {
         assert_eq!(actual, original);
         assert_eq!(signer, "git-owner");
         assert_eq!(digest, digest_hex(&bytes));
+        assert_eq!(
+            digest,
+            "c264a2a3c342f2dfff1c5ba5fbda1966f8471aef04516af51106d38dabe76d38"
+        );
         assert_eq!(
             bytes,
             sign_git_ref_grant(&actual, &[7; 32], &signer).unwrap()

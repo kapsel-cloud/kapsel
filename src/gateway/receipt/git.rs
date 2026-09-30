@@ -3,9 +3,9 @@
 use kapsel_authority::GitRefAuthorization;
 
 use super::{
-    array, bounded, push, push_text, validate_digest, validate_key_id, InspectionLimits,
-    InspectionStatus, ReceiptError, ReceiptTrust, Records, Signature, Signer, SigningKey,
-    VerifyingKey, RECEIPT_BYTES_MAX, STATEMENT_BYTES_MAX,
+    bounded, parse_envelope, push, push_text, sign_envelope, validate_digest, validate_key_id,
+    InspectionLimits, InspectionStatus, ReceiptEnvelope, ReceiptError, ReceiptTrust, Records,
+    STATEMENT_BYTES_MAX,
 };
 use crate::gateway::{
     git::{Acknowledgement, ObservedRef},
@@ -149,13 +149,8 @@ impl GitStatement {
         if records.text(9)? != "git-exact-lease" {
             return Err(ReceiptError::InvalidValue);
         }
-        let acknowledgement = match records.text(10)?.as_str() {
-            "updated" => Acknowledgement::Updated,
-            "rejected_before_send" => Acknowledgement::RejectedBeforeSend,
-            "receiver_rejected" => Acknowledgement::ReceiverRejected,
-            "unknown" => Acknowledgement::Unknown,
-            _ => return Err(ReceiptError::InvalidValue),
-        };
+        let acknowledgement =
+            Acknowledgement::parse(&records.text(10)?).ok_or(ReceiptError::InvalidValue)?;
         let kind = records.text(11)?;
         let oid = records.text(12)?;
         let observed = match (kind.as_str(), oid.as_str()) {
@@ -192,48 +187,15 @@ pub(in crate::gateway) fn sign(
 ) -> Result<Vec<u8>, ReceiptError> {
     validate_key_id(key_id)?;
     let statement = statement.encode()?;
-    let signature = SigningKey::from_bytes(seed).sign(&signature_input(&statement));
-    let mut output = RECEIPT_MAGIC.to_vec();
-    push_text(&mut output, 1, PURPOSE, RECEIPT_BYTES_MAX)?;
-    push_text(&mut output, 2, key_id, RECEIPT_BYTES_MAX)?;
-    push(&mut output, 3, &statement, RECEIPT_BYTES_MAX)?;
-    push(&mut output, 4, &signature.to_bytes(), RECEIPT_BYTES_MAX)?;
-    Ok(output)
+    sign_envelope(&statement, RECEIPT_MAGIC, PURPOSE, seed, key_id)
 }
 
-fn signature_input(statement: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(PURPOSE.len() + 1 + statement.len());
-    bytes.extend_from_slice(PURPOSE.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(statement);
-    bytes
-}
-
-struct Envelope<'a> {
-    key_id: String,
-    statement: GitStatement,
-    statement_bytes: &'a [u8],
-    signature: Signature,
-}
-
-fn envelope(bytes: &[u8], limits: InspectionLimits) -> Result<Envelope<'_>, ReceiptError> {
-    limits.validate()?;
-    bounded(bytes, limits.receipt_bytes_max)?;
-    let mut records = Records::new(bytes, RECEIPT_MAGIC, limits.text_bytes_max)?;
-    if records.text(1)? != PURPOSE {
-        return Err(ReceiptError::InvalidValue);
-    }
-    let key_id = records.text(2)?;
-    validate_key_id(&key_id)?;
-    let statement_bytes = records.take(3)?;
-    let statement = GitStatement::parse(statement_bytes, limits)?;
-    let signature = Signature::from_bytes(&array(records.take(4)?)?);
-    records.finish()?;
-    Ok(Envelope {
-        key_id,
-        statement,
-        statement_bytes,
-        signature,
+fn envelope(
+    bytes: &[u8],
+    limits: InspectionLimits,
+) -> Result<ReceiptEnvelope<'_, GitStatement>, ReceiptError> {
+    parse_envelope(bytes, RECEIPT_MAGIC, PURPOSE, limits, |statement| {
+        GitStatement::parse(statement, limits)
     })
 }
 
@@ -287,32 +249,18 @@ fn inspect(
     let Ok(trust) = ReceiptTrust::parse(trust, limits) else {
         return (InspectionStatus::StructureRejected, None);
     };
-    let Ok(key) = VerifyingKey::from_bytes(&trust.public_key) else {
-        return (InspectionStatus::StructureRejected, None);
-    };
-    if key
-        .verify_strict(
-            &signature_input(envelope.statement_bytes),
-            &envelope.signature,
-        )
-        .is_err()
-    {
-        return (InspectionStatus::SignatureRejected, None);
-    }
-    let status = if trust.accepted_purpose != PURPOSE
-        || trust.key_id != envelope.key_id
-        || time < trust.not_before_unix_s
-        || time >= trust.not_after_unix_s
-    {
-        InspectionStatus::UntrustedSigner
-    } else {
-        InspectionStatus::Inspected
+    let status = match envelope.authenticate(&trust, time) {
+        Ok(status) => status,
+        Err(ReceiptError::BadSignature) => return (InspectionStatus::SignatureRejected, None),
+        Err(_) => return (InspectionStatus::StructureRejected, None),
     };
     (status, Some(envelope.statement))
 }
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::SigningKey;
+
     use super::*;
 
     fn statement(acknowledgement: Acknowledgement) -> GitStatement {
@@ -352,6 +300,12 @@ mod tests {
         ] {
             let statement = statement(ack);
             let bytes = sign(&statement, &[7; 32], "signer").unwrap();
+            if ack == Acknowledgement::Unknown {
+                assert_eq!(
+                    super::super::publication::receipt_digest_hex(&bytes),
+                    "92f6bcc78e348fbb9e92323603a24072b1c9479403e0f1c2c311be5c73e3a5a5"
+                );
+            }
             let (status, parsed) = inspect(
                 &bytes,
                 &trust().encode().unwrap(),
@@ -391,21 +345,27 @@ mod tests {
             inspect(&changed, &trusted, 50, InspectionLimits::default()).0,
             InspectionStatus::SignatureRejected
         );
-        let mut wrong = trust();
-        wrong.accepted_purpose = super::super::PURPOSE.into();
+        for (purpose, key_id, time) in [
+            (super::super::PURPOSE, "signer", 50),
+            (PURPOSE, "another-signer", 50),
+            (PURPOSE, "signer", -1),
+            (PURPOSE, "signer", 100),
+        ] {
+            let mut wrong = trust();
+            wrong.accepted_purpose = purpose.into();
+            wrong.key_id = key_id.into();
+            let wrong = wrong.encode().unwrap();
+            let (status, statement) = inspect(&bytes, &wrong, time, InspectionLimits::default());
+            assert_eq!(status, InspectionStatus::UntrustedSigner);
+            assert!(statement.is_some());
+            assert_eq!(
+                inspect(&changed, &wrong, time, InspectionLimits::default()).0,
+                InspectionStatus::SignatureRejected
+            );
+        }
         assert_eq!(
-            inspect(
-                &bytes,
-                &wrong.encode().unwrap(),
-                50,
-                InspectionLimits::default()
-            )
-            .0,
-            InspectionStatus::UntrustedSigner
-        );
-        assert_eq!(
-            inspect(&bytes, &trusted, 100, InspectionLimits::default()).0,
-            InspectionStatus::UntrustedSigner
+            inspect(&bytes, &trusted, 0, InspectionLimits::default()).0,
+            InspectionStatus::Inspected
         );
         changed = bytes;
         changed.push(0);

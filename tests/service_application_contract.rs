@@ -271,9 +271,23 @@ async fn optional_operator_snapshots_never_require_or_replace_execution_material
 
 #[tokio::test]
 async fn admission_is_durable_before_callback_and_retains_the_worker_lease() {
+    for git in [false, true] {
+        assert_admission_commit_and_exclusion(git).await;
+    }
+}
+
+async fn assert_admission_commit_and_exclusion(git: bool) {
     let root = root("admission");
-    let mut application = ServiceApplication::open(configuration(&root)).unwrap();
-    let projection = ServiceApplication::open(configuration(&root)).unwrap();
+    let mut config = configuration(&root);
+    let phase = if git {
+        config.approvals[0] = git::git_approval("a");
+        OperationState::Authorized
+    } else {
+        OperationState::Requested
+    };
+    let original_grant = config.approvals[0].signed_grant.clone();
+    let mut application = ServiceApplication::open(config.clone()).unwrap();
+    let projection = ServiceApplication::open(config).unwrap();
     assert_eq!(projection.admitted_state("a").unwrap(), None);
     assert_eq!(
         projection.admitted_state("absent"),
@@ -282,16 +296,10 @@ async fn admission_is_durable_before_callback_and_retains_the_worker_lease() {
     let (decision, read) = std::sync::mpsc::channel();
     application
         .select("a", offline(), move |admitted| {
-            assert_eq!(
-                admitted,
-                ServiceAdmission::Admitted(OperationState::Requested)
-            );
+            assert_eq!(admitted, ServiceAdmission::Admitted(phase));
             // Independent connection sees the complete committed identity before acknowledgement.
             let reader = projection;
-            assert_eq!(
-                reader.admitted_state("a").unwrap(),
-                Some(OperationState::Requested)
-            );
+            assert_eq!(reader.admitted_state("a").unwrap(), Some(phase));
             assert_eq!(
                 reader.status("a").unwrap().0,
                 SetDeploymentImageStatus::InProgress
@@ -299,15 +307,22 @@ async fn admission_is_durable_before_callback_and_retains_the_worker_lease() {
             let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
             let grant: Vec<u8> = connection
                 .query_row(
-                    concat!(
-                        "SELECT signed_authorization_grant FROM kubernetes_image_operations ",
-                        "WHERE operation_id='a'",
-                    ),
+                    if git {
+                        concat!(
+                            "SELECT signed_authorization_grant FROM git_ref_operations ",
+                            "WHERE operation_id='a'",
+                        )
+                    } else {
+                        concat!(
+                            "SELECT signed_authorization_grant FROM kubernetes_image_operations ",
+                            "WHERE operation_id='a'",
+                        )
+                    },
                     [],
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(grant, approval("a", 41).signed_grant);
+            assert_eq!(grant, original_grant);
             let lock = fs::OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -469,8 +484,18 @@ async fn history_is_bounded_ordered_and_keeps_inaccessible_ids_visible() {
 
 #[tokio::test]
 async fn contention_preserves_existing_admission_but_refuses_new_work() {
+    for git in [false, true] {
+        assert_contention_admission(git).await;
+    }
+}
+
+async fn assert_contention_admission(git: bool) {
     let root = root("busy");
-    let mut application = ServiceApplication::open(configuration(&root)).unwrap();
+    let mut config = configuration(&root);
+    if git {
+        config.approvals = vec![git::git_approval("a"), git::git_approval("b")];
+    }
+    let mut application = ServiceApplication::open(config).unwrap();
     application.select("a", offline(), |_| {}).await.unwrap();
     let lock = fs::OpenOptions::new()
         .read(true)

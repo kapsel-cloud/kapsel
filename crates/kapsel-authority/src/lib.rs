@@ -243,28 +243,17 @@ pub fn sign_authorization_grant(
         return Err(AuthorizationGrantError::Invalid);
     }
     let statement = encode_statement(authorization)?;
-    let signature = SigningKey::from_bytes(signing_seed).sign(&grant_signature_input(&statement));
-    let mut output = Vec::with_capacity(statement.len() + 192);
-    output.extend_from_slice(if authorization.approved_target.is_some() {
-        SNAPSHOT_GRANT_MAGIC
-    } else {
-        SIGNED_GRANT_MAGIC
-    });
-    append_grant_record(
-        &mut output,
-        1,
-        grant_purpose(&statement).as_bytes(),
-        SIGNED_GRANT_BYTES_MAX,
-    )?;
-    append_grant_record(&mut output, 2, key_id.as_bytes(), SIGNED_GRANT_BYTES_MAX)?;
-    append_grant_record(&mut output, 3, &statement, SIGNED_GRANT_BYTES_MAX)?;
-    append_grant_record(
-        &mut output,
-        4,
-        &signature.to_bytes(),
-        SIGNED_GRANT_BYTES_MAX,
-    )?;
-    Ok(output)
+    sign_grant_statement(
+        &statement,
+        if authorization.approved_target.is_some() {
+            SNAPSHOT_GRANT_MAGIC
+        } else {
+            SIGNED_GRANT_MAGIC
+        },
+        grant_purpose(&statement),
+        signing_seed,
+        key_id,
+    )
 }
 
 /// Validates an explicitly configured authorization signer identity and key.
@@ -335,7 +324,7 @@ pub fn verify_authorization_grant(
     let key = VerifyingKey::from_bytes(&trust.public_key)
         .map_err(|_| AuthorizationGrantError::Invalid)?;
     key.verify_strict(
-        &grant_signature_input(statement_bytes),
+        &signature_input(grant_purpose(statement_bytes), statement_bytes),
         &Signature::from_bytes(&signature_bytes),
     )
     .map_err(|_| AuthorizationGrantError::Untrusted)?;
@@ -656,9 +645,29 @@ fn grant_purpose(statement: &[u8]) -> &'static str {
     }
 }
 
-fn grant_signature_input(statement: &[u8]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(GRANT_PURPOSE.len() + 1 + statement.len());
-    input.extend_from_slice(grant_purpose(statement).as_bytes());
+fn sign_grant_statement(
+    statement: &[u8],
+    magic: &[u8],
+    purpose: &str,
+    seed: &[u8; 32],
+    key_id: &str,
+) -> Result<Vec<u8>, AuthorizationGrantError> {
+    let signature = SigningKey::from_bytes(seed).sign(&signature_input(purpose, statement));
+    let mut output = magic.to_vec();
+    for (tag, value) in (1..=4).zip([
+        purpose.as_bytes(),
+        key_id.as_bytes(),
+        statement,
+        &signature.to_bytes(),
+    ]) {
+        append_grant_record(&mut output, tag, value, SIGNED_GRANT_BYTES_MAX)?;
+    }
+    Ok(output)
+}
+
+fn signature_input(purpose: &str, statement: &[u8]) -> Vec<u8> {
+    let mut input = Vec::with_capacity(purpose.len() + 1 + statement.len());
+    input.extend_from_slice(purpose.as_bytes());
     input.push(0);
     input.extend_from_slice(statement);
     input

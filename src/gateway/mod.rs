@@ -1,4 +1,4 @@
-//! Deep implementation of the one authorized Kubernetes Deployment image operation.
+//! Concrete Kubernetes and Git effects with shared authority, admission and journal custody.
 //!
 //! This module owns orchestration and its private test seams. The crate root remains a compact map
 //! of the caller-visible interface and concrete internal owners.
@@ -581,6 +581,41 @@ impl Gateway {
         AuthorizedRequest::bind(ValidatedRequest::try_from(request)?, verified)
     }
 
+    /// Acknowledges only confirmed admission/refusal, retaining exclusion through the callback.
+    /// The caller supplies an authenticated snapshot and rechecks identity in `admit` under the
+    /// worker lease. `None` means terminal reselection or capacity refusal: neither advances.
+    fn admit_service_operation(
+        &self,
+        existing: Option<OperationState>,
+        admit: impl FnOnce(&Journal, &journal::WorkerLock) -> Result<OperationState, GatewayError>,
+        acknowledged: impl FnOnce(AdmissionDecision),
+    ) -> Result<Option<(journal::WorkerLock, OperationState)>, ReconciliationError> {
+        if let Some(state @ (OperationState::Finalized | OperationState::NotAttempted)) = existing {
+            acknowledged(AdmissionDecision::Admitted(state));
+            return Ok(None);
+        }
+        let Some(worker) = self
+            .journal
+            .try_lock_worker()
+            .map_err(ReconciliationError::Submission)?
+        else {
+            acknowledged(existing.map_or(AdmissionDecision::Busy, AdmissionDecision::Admitted));
+            return Err(ReconciliationError::Blocked(
+                ReconciliationBlockage::WorkerContention,
+            ));
+        };
+        let state = match admit(&self.journal, &worker) {
+            Ok(state) => state,
+            Err(GatewayError::JournalFull) => {
+                acknowledged(AdmissionDecision::Full);
+                return Ok(None);
+            },
+            Err(error) => return Err(ReconciliationError::Submission(error)),
+        };
+        acknowledged(AdmissionDecision::Admitted(state));
+        Ok(Some((worker, state)))
+    }
+
     pub(crate) async fn admit_and_reconcile(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -588,63 +623,31 @@ impl Gateway {
         client: Option<kube::Client>,
         receipt_settings: Option<&ReceiptSettings<'_>>,
         acknowledged: impl FnOnce(AdmissionDecision) + Send,
-    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
-        let verified = self
-            .verify_grant(signed_grant)
-            .map_err(ReconciliationError::Submission)?;
-        let validated =
-            ValidatedRequest::try_from(request).map_err(ReconciliationError::Submission)?;
-        let authorized = AuthorizedRequest::bind(validated, verified)
+    ) -> Result<(), ReconciliationError> {
+        let authorized = self
+            .bind_authorization(request, signed_grant)
             .map_err(ReconciliationError::Submission)?;
         let existing = self
             .journal
             .authorized_operation(&authorized)
             .map_err(ReconciliationError::Submission)?;
-        if let Some(operation) = existing.as_ref() {
-            if matches!(
-                operation.state(),
-                OperationState::Finalized | OperationState::NotAttempted
-            ) {
-                acknowledged(AdmissionDecision::Admitted(operation.state()));
-                return Ok(existing);
-            }
-        }
-        let Some(worker) = self
-            .journal
-            .try_lock_worker()
-            .map_err(ReconciliationError::Submission)?
+        let Some((worker, _)) = self.admit_service_operation(
+            existing.as_ref().map(LoadedOperation::state),
+            |journal, _worker| {
+                if let Some(state) = journal.existing_submission(&authorized)? {
+                    return Ok(state);
+                }
+                journal.insert_requested(&authorized)?;
+                Ok(OperationState::Requested)
+            },
+            acknowledged,
+        )?
         else {
-            acknowledged(
-                existing
-                    .as_ref()
-                    .map_or(AdmissionDecision::Busy, |operation| {
-                        AdmissionDecision::Admitted(operation.state())
-                    }),
-            );
-            return Err(ReconciliationError::Blocked(
-                ReconciliationBlockage::WorkerContention,
-            ));
+            return Ok(());
         };
-        let state = if let Some(state) = self
-            .journal
-            .existing_submission(&authorized)
-            .map_err(ReconciliationError::Submission)?
-        {
-            state
-        } else {
-            match self.journal.insert_requested(&authorized) {
-                Ok(()) => {},
-                Err(GatewayError::JournalFull) => {
-                    acknowledged(AdmissionDecision::Full);
-                    return Ok(None);
-                },
-                Err(error) => return Err(ReconciliationError::Submission(error)),
-            }
-            OperationState::Requested
-        };
-        acknowledged(AdmissionDecision::Admitted(state));
         self.reconcile_locked(request, signed_grant, client, receipt_settings, &worker)
             .await
+            .map(|_| ())
     }
 
     /// Advances an existing exact-authorized operation to a blocked or terminal snapshot.

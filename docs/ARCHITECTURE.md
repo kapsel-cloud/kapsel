@@ -50,11 +50,16 @@ pathname identity, and fixed completion accounting, respectively.
 
 The service resolves retained original authority before selecting the effect. Git has a concrete
 receiver, typed journal table and purpose-separated receipt codec, not a provider framework. Its
-private admission/advancement entry point uses the same worker lease and aggregate limits as
-Kubernetes. Only the freshly committed Git attempt can construct dispatch permission; loaded
-attempts observe, and frozen evidence can finalize without receiver material. Public service reads
-project the exact Git tuple, acknowledgement and observation without reinterpreting Kubernetes
-columns. The [Git contract](EFFECT_GATEWAY.md#git-transition-boundary) owns the distinctions.
+private advancement entry point shares `Gateway::admit_service_operation` with Kubernetes. That
+helper owns terminal reselection, worker contention, capacity refusal and post-commit
+acknowledgement, and returns the held lease for advancement. Each receiver's admission closure
+rechecks original identity under exclusion and commits its own initial state: Kubernetes
+`requested`, Git `authorized`. Receiver transitions, journal rows and signed evidence stay concrete
+rather than using a generic lifecycle engine. Only the freshly committed Git attempt can construct
+dispatch permission; loaded attempts observe, and frozen evidence can finalize without receiver
+material. Public service reads project the exact Git tuple, acknowledgement and observation without
+reinterpreting Kubernetes columns. The [Git contract](EFFECT_GATEWAY.md#git-transition-boundary)
+owns the distinctions.
 
 ### Complete reconciliation
 
@@ -115,11 +120,13 @@ their exact external contracts.
 ## Receipt and export composition
 
 The receipt module owns canonical classifier-complete bytes, signatures, bounded parsing,
-recomputation, and explicit trust, time, and limit inputs. Inspection is offline. SQLite commits
-signed receipt bytes, their digest, signer identity, and terminal state atomically. The export
-module owns Unix descriptor-relative, owner-private, collision-safe installation of already frozen
-bytes. Neither module appoints ambient trust or establishes receiver truth, causation, or complete
-capture.
+recomputation, and explicit trust, time, and limit inputs. Git and Kubernetes share private envelope
+signing, framing and signature/trust checks; statement parsing, version checks and classifiers stay
+separate. Authentication uses the original statement bytes, not a re-encoded account. Inspection is
+offline. SQLite commits signed receipt bytes, their digest, signer identity, and terminal state
+atomically. The export module owns Unix descriptor-relative, owner-private, collision-safe
+installation of already frozen bytes. Neither module appoints ambient trust or establishes receiver
+truth, causation, or complete capture.
 
 ## Release composition
 
