@@ -146,9 +146,15 @@ double quotes, LF endings, and a 100-column target. Unlike Rust's physical-line 
 target allows exact fixture strings and indivisible URLs to remain intact. Lint checks basic errors,
 unused names, import ordering, and likely bugs, not general code quality or safety.
 
-Formatting does not apply lint fixes. Review fixes explicitly, avoid unsafe fixes, and use only
-narrow, explained suppressions. [Build and test](docs/BUILD.md#deterministic-gate-and-formatting)
-owns setup and commands.
+The format command covers Rust, Python, Markdown, structured data, and shell scripts. Prettier reads
+`.prettierrc.json`; shfmt 3.14.1 uses two-space indentation, and the static gate runs ShellCheck
+0.11.0. Setup installs the shell binaries into the existing isolated tool environment. TOML uses
+Taplo 0.10.0. Install it through a system package manager or
+`cargo install --locked taplo-cli --version 0.10.0` before running setup.
+
+Formatting sorts imports before running Ruff's formatter. It does not apply other lint fixes. Review
+other fixes explicitly, avoid unsafe fixes, and use only narrow, explained suppressions.
+[Build and test](docs/BUILD.md#deterministic-gate-and-formatting) owns setup and commands.
 
 ## Commits and review
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# shellcheck disable=SC2016 # awk field references are not shell expansions.
 set -eu
 
 # Rustfmt's max_width is advisory. Check tracked and untracked Rust source so

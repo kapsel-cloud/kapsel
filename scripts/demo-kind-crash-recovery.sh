@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # Diagnostic strings contain literal command examples.
 set -euo pipefail
 
 cluster_name="kapsel-demo-$$-${RANDOM}"
@@ -40,7 +41,7 @@ configure_demo_inputs() {
   script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
   if [[ -z ${KAPSEL_DEMO_EXECUTABLE:-} && -z ${KAPSEL_DEMO_ASSET_DIRECTORY:-} ]]; then
     if [[ $(basename "$script_directory") == kapsel &&
-      $(basename "$(dirname "$script_directory")") == share ]]; then
+    $(basename "$(dirname "$script_directory")") == share ]]; then
       release_root=$(cd "$script_directory/../.." && pwd -P)
       demo_executable="$release_root/libexec/kapsel-demo-harness"
       asset_directory=$script_directory
@@ -267,8 +268,8 @@ kill_at_seam() {
   KAPSEL_DEMO_CONTROL_DIRECTORY="$workspace/control" \
     KAPSEL_DEMO_PAUSE="$seam" \
     "$demo_executable" operate \
-      --request "$workspace/failed-request.json" \
-      --operator-config "$operator" >"$log" 2>&1 &
+    --request "$workspace/failed-request.json" \
+    --operator-config "$operator" >"$log" 2>&1 &
   local pid=$!
   active_child_pid=$pid
   wait_marker "$pid" "$marker" "$marker_wait_seconds"
@@ -414,7 +415,8 @@ kill_at_seam after_receipt_commit "$workspace/control/after-receipt-commit.ready
   "$workspace/failed-operator.json" "$workspace/after-publication.log" 60
 [[ $(<"$workspace/control/provider-apply-count") == 1 ]]
 [[ $(find "$workspace/failed-receipts" -mindepth 1 -maxdepth 1 | wc -l) -eq 0 ]]
-frozen_digest=$(python3 - "$workspace/failed-journal.sqlite3" <<'PYSQL'
+frozen_digest=$(
+  python3 - "$workspace/failed-journal.sqlite3" <<'PYSQL'
 import sqlite3
 import sys
 with sqlite3.connect(sys.argv[1]) as connection:
@@ -439,9 +441,9 @@ phase 8 'deleting the owned cluster and inspecting the frozen receipt offline'
 delete_owned_cluster
 KUBECONFIG=/unavailable/ambient-kubeconfig HTTPS_PROXY=http://127.0.0.1:1 \
   "$demo_executable" inspect \
-    --receipt "$frozen_receipt" \
-    --trust "$workspace/receipt.trust" \
-    --evaluation-time-unix-s 150 >"$workspace/inspection.log" 2>&1
+  --receipt "$frozen_receipt" \
+  --trust "$workspace/receipt.trust" \
+  --evaluation-time-unix-s 150 >"$workspace/inspection.log" 2>&1
 grep -Fq '"status":"INSPECTED"' "$workspace/inspection.log"
 grep -Fq '"result":"FAILED"' "$workspace/inspection.log"
 grep -Fq '"rollout_condition_reason":"ProgressDeadlineExceeded"' \

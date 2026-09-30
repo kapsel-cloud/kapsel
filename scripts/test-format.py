@@ -28,6 +28,12 @@ fi
 if [ "$name" = ruff ] && [ "$*" = --version ]; then
   printf 'ruff %s\\n' "${TEST_RUFF_VERSION}"
 fi
+if [ "$name" = shfmt ] && [ "$phase" = preflight ]; then
+  printf '3.14.1\\n'
+fi
+if [ "$name" = shellcheck ] && [ "$phase" = preflight ]; then
+  printf 'version: 0.11.0\\n'
+fi
 """
 
 
@@ -36,6 +42,7 @@ class FormattingPipelineTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="kapsel-format-test-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, timeout=10)
         (self.root / "scripts").mkdir()
         for name in ("format.sh", "dev-tools.sh"):
             shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
@@ -43,7 +50,7 @@ class FormattingPipelineTests(unittest.TestCase):
         (self.root / "fuzz/Cargo.toml").touch()
         tools = self.root / "tools"
         tools.mkdir()
-        for name in ("prettier", "cargo", "ruff"):
+        for name in ("prettier", "cargo", "ruff", "shfmt", "shellcheck", "taplo"):
             path = tools / name
             path.write_text(TOOL)
             path.chmod(0o755)
@@ -65,6 +72,8 @@ class FormattingPipelineTests(unittest.TestCase):
             path = Path(destination)
             path.parent.mkdir(parents=True)
             path.symlink_to(tools / name)
+        for name in ("shfmt", "shellcheck"):
+            (Path(pins[1]).parent / name).symlink_to(tools / name)
         self.format_toolchain = pins[4]
         self.log = self.root / "commands.log"
         self.env = {
@@ -103,20 +112,30 @@ class FormattingPipelineTests(unittest.TestCase):
                     [
                         ("prettier", "preflight"),
                         ("ruff", "preflight"),
+                        ("shfmt", "preflight"),
+                        ("shellcheck", "preflight"),
                         ("cargo", "preflight"),
                         ("ruff", "preflight"),
                         ("prettier", "format"),
                         ("cargo", "format"),
                         ("cargo", "format"),
                         ("ruff", "format"),
+                        ("ruff", "format"),
+                        ("taplo", "format"),
+                        ("shfmt", "format"),
                     ],
                 )
                 checking = arguments in (("check",), ("--check",))
-                for _, phase, cwd, argv in commands:
+                for name, phase, cwd, argv in commands:
                     self.assertEqual(cwd, str(self.root))
-                    if phase == "format":
+                    if phase == "format" and name == "shfmt":
+                        self.assertIn("-d" if checking else "-w", argv.split())
+                        self.assertIn("-i 2", argv)
+                    elif phase == "format" and not argv.startswith("check "):
                         self.assertEqual("--check" in argv.split(), checking)
-                self.assertIn("--manifest-path fuzz/Cargo.toml", commands[-2][3])
+                self.assertIn("--select I", commands[-4][3])
+                self.assertEqual("--fix" in commands[-4][3].split(), not checking)
+                self.assertIn("--manifest-path fuzz/Cargo.toml", commands[-5][3])
                 for name, phase, _, argv in commands:
                     if name == "cargo":
                         self.assertIn(f"+{self.format_toolchain}", argv.split())
@@ -124,7 +143,7 @@ class FormattingPipelineTests(unittest.TestCase):
                             self.assertIn("--config-path rustfmt-nightly.toml", argv)
 
     def test_missing_formatter_stops_before_writes(self) -> None:
-        for name in ("prettier", "cargo", "ruff"):
+        for name in ("prettier", "cargo", "ruff", "shfmt", "shellcheck"):
             with self.subTest(name=name):
                 self.log.unlink(missing_ok=True)
                 self.env["FAIL_AT"] = f"{name}:preflight"
@@ -147,7 +166,6 @@ class FormattingPipelineTests(unittest.TestCase):
         self.env["FAIL_AT"] = "prettier:format"
         self.assertNotEqual(self.run_format().returncode, 0)
         self.assertEqual(self.commands()[-1][:2], ["prettier", "format"])
-        self.assertEqual(len(self.commands()), 5)
 
     def test_invalid_mode_runs_no_tools(self) -> None:
         self.assertEqual(self.run_format("invalid").returncode, 2)

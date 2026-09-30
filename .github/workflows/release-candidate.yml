@@ -32,9 +32,13 @@ jobs:
             --output-directory "$RUNNER_TEMP/kapsel-release-a")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - name: Verify and smoke-test exact candidate A
-        run: python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+        run:
+          python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive
+          }}"
       - name: Assemble B and compare deterministic bytes
-        run: python3 scripts/test-release-reproducibility.py --reference-archive "${{ steps.artifact-a.outputs.archive }}"
+        run:
+          python3 scripts/test-release-reproducibility.py --reference-archive "${{
+          steps.artifact-a.outputs.archive }}"
       - name: Stage exact candidate A
         env:
           ARCHIVE_A: ${{ steps.artifact-a.outputs.archive }}
@@ -176,7 +180,8 @@ jobs:
             "$manifest"
       - name: Record bounded candidate event evidence
         env:
-          CANDIDATE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CANDIDATE_RUN_URL:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -eu
           python3 - <<'PY'

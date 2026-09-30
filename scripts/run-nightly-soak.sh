@@ -34,7 +34,7 @@ if [ -f "$lock_file" ]; then
   fi
 fi
 
-echo "$$" > "$lock_file"
+echo "$$" >"$lock_file"
 cleanup() {
   rm -f "$lock_file"
 }
@@ -75,7 +75,7 @@ fingerprint_and_record() {
   if grep -Fq "$fp" "$seen_bugs_file"; then
     echo "Known bug ($category fp=$fp) - suppressing notification."
   else
-    echo "$fp" >> "$seen_bugs_file"
+    echo "$fp" >>"$seen_bugs_file"
     new_bugs=$((new_bugs + 1))
     send_notification "ALERT: New Kapsel $category bug on $commit_sha (fp=$fp): $raw"
   fi
@@ -89,9 +89,9 @@ while [ "$seed_idx" -le "$sim_seeds" ]; do
   seed=$(od -An -N8 -tu8 /dev/urandom 2>/dev/null | tr -d ' ' || echo "$((start_time + seed_idx))")
   sim_log=$(mktemp "${TMPDIR:-/tmp}/kapsel-soak-sim.XXXXXX")
   if ! KAPSEL_SIMULATION_SHARDS="$shards" \
-       KAPSEL_SIMULATION_CASES="$sim_cases" \
-       KAPSEL_SIMULATION_SEED="$seed" \
-       ./scripts/test-simulation.sh >"$sim_log" 2>&1; then
+    KAPSEL_SIMULATION_CASES="$sim_cases" \
+    KAPSEL_SIMULATION_SEED="$seed" \
+    ./scripts/test-simulation.sh >"$sim_log" 2>&1; then
     panic_line=$(grep -E 'panicked at|FAILED|assertion' "$sim_log" | head -n 1 || echo "Simulation failed for seed $seed")
     fingerprint_and_record "$panic_line" "simulation"
   fi
@@ -104,7 +104,7 @@ if [ "$fuzz_seconds" -gt 0 ]; then
   echo "==> Running receipt fuzzing for ${fuzz_seconds}s..."
   fuzz_log=$(mktemp "${TMPDIR:-/tmp}/kapsel-soak-fuzz.XXXXXX")
   if ! KAPSEL_FUZZ_MAX_TIME="$fuzz_seconds" \
-       ./scripts/test-fuzz.sh >"$fuzz_log" 2>&1; then
+    ./scripts/test-fuzz.sh >"$fuzz_log" 2>&1; then
     crash_line=$(grep -E 'ERROR: libFuzzer:|panicked at|deadly signal' "$fuzz_log" | head -n 1 || echo "Fuzz crash")
     fingerprint_and_record "$crash_line" "fuzz"
   fi

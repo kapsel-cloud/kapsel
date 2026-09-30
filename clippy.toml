@@ -24,39 +24,39 @@ disallowed-names = ["foo", "bar", "baz", "tmp", "temp", "test", "data"]
 
 # Documentation requirements
 doc-valid-idents = [
-    "PostgreSQL",
-    "WebSocket",
-    "OAuth",
-    "OpenTelemetry",
-    "gRPC",
-    "UUID",
-    "URL",
-    "URI",
-    "HTTP",
-    "HTTPS",
-    "TCP",
-    "UDP",
-    "TLS",
-    "mTLS",
-    "JWT",
-    "HMAC",
-    "SHA256",
-    "API",
-    "JSON",
-    "YAML",
-    "TOML",
-    "SQL",
-    "HTML",
-    "CSS",
-    "JavaScript",
-    "TypeScript",
-    "GitHub",
-    "GitLab",
-    "CPU",
-    "GPU",
-    "RAM",
-    "I/O",
-    "Kapsel",
+  "PostgreSQL",
+  "WebSocket",
+  "OAuth",
+  "OpenTelemetry",
+  "gRPC",
+  "UUID",
+  "URL",
+  "URI",
+  "HTTP",
+  "HTTPS",
+  "TCP",
+  "UDP",
+  "TLS",
+  "mTLS",
+  "JWT",
+  "HMAC",
+  "SHA256",
+  "API",
+  "JSON",
+  "YAML",
+  "TOML",
+  "SQL",
+  "HTML",
+  "CSS",
+  "JavaScript",
+  "TypeScript",
+  "GitHub",
+  "GitLab",
+  "CPU",
+  "GPU",
+  "RAM",
+  "I/O",
+  "Kapsel",
 ]
 
 # Maximum size of an enum variant
@@ -77,23 +77,22 @@ max-include-file-size = 1000000
 # Encourage good practices
 
 
-
 # Standard library functions that should be avoided
 disallowed-methods = [
-    { path = "std::env::set_var", reason = "Use a proper configuration system instead" },
-    { path = "std::env::remove_var", reason = "Use a proper configuration system instead" },
-    { path = "std::mem::forget", reason = "Use ManuallyDrop or proper ownership instead" },
-    { path = "std::vec::Vec::leak", reason = "Leaking memory is almost never correct" },
-    { path = "std::boxed::Box::leak", reason = "Leaking memory is almost never correct" },
+  { path = "std::env::set_var", reason = "Use a proper configuration system instead" },
+  { path = "std::env::remove_var", reason = "Use a proper configuration system instead" },
+  { path = "std::mem::forget", reason = "Use ManuallyDrop or proper ownership instead" },
+  { path = "std::vec::Vec::leak", reason = "Leaking memory is almost never correct" },
+  { path = "std::boxed::Box::leak", reason = "Leaking memory is almost never correct" },
 ]
 
 # Macros that should be avoided
 disallowed-macros = [
-    { path = "std::print", reason = "Use tracing instead" },
-    { path = "std::println", reason = "Use tracing instead" },
-    { path = "std::eprint", reason = "Use tracing instead" },
-    { path = "std::eprintln", reason = "Use tracing instead" },
-    { path = "std::dbg", reason = "Use tracing instead" },
+  { path = "std::print", reason = "Use tracing instead" },
+  { path = "std::println", reason = "Use tracing instead" },
+  { path = "std::eprint", reason = "Use tracing instead" },
+  { path = "std::eprintln", reason = "Use tracing instead" },
+  { path = "std::dbg", reason = "Use tracing instead" },
 ]
 
 # Third-party crate behavior

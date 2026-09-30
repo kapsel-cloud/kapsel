@@ -11,8 +11,8 @@ shard=0
 while [ "$shard" -lt "$shards" ]; do
   KAPSEL_SIMULATION_SHARDS="$shards" KAPSEL_SIMULATION_SHARD_INDEX="$shard" \
     cargo test --release --locked -p kapsel --lib \
-      simulation_tests::seeded_lifecycle_crash_simulation_preserves_invariants -- \
-      --ignored --exact --nocapture >"$log_directory/$shard.log" 2>&1 &
+    simulation_tests::seeded_lifecycle_crash_simulation_preserves_invariants -- \
+    --ignored --exact --nocapture >"$log_directory/$shard.log" 2>&1 &
   pids="$pids $!"
   shard=$((shard + 1))
 done

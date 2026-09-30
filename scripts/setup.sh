@@ -1,16 +1,22 @@
 #!/usr/bin/env sh
 set -eu
-cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 . ./scripts/dev-tools.sh
 
 case "${1:-install}" in
-  install|--check) mode=${1:-install} ;;
-  *) printf '%s\n' "usage: $0 [--check]" >&2; exit 2 ;;
+install | --check) mode=${1:-install} ;;
+*)
+  printf '%s\n' "usage: $0 [--check]" >&2
+  exit 2
+  ;;
 esac
-[ "$#" -le 1 ] || { printf '%s\n' "usage: $0 [--check]" >&2; exit 2; }
+[ "$#" -le 1 ] || {
+  printf '%s\n' "usage: $0 [--check]" >&2
+  exit 2
+}
 
 missing=0
-for tool in git cc rustup python3 node npm; do
+for tool in git cc rustup python3 node npm taplo; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf 'Missing host prerequisite: %s\n' "$tool" >&2
     missing=1
@@ -18,10 +24,12 @@ for tool in git cc rustup python3 node npm; do
 done
 [ "$missing" = 0 ] || exit 1
 python3 -c 'import sys, venv, ensurepip; sys.exit(sys.version_info < (3, 11))' || {
-  printf '%s\n' 'Python 3.11+ with venv and ensurepip is required.' >&2; exit 1;
+  printf '%s\n' 'Python 3.11+ with venv and ensurepip is required.' >&2
+  exit 1
 }
 node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0)' || {
-  printf '%s\n' 'Node.js 24+ is required.' >&2; exit 1;
+  printf '%s\n' 'Node.js 24+ is required.' >&2
+  exit 1
 }
 
 # Read the compiler pin rather than duplicating it in setup or CI.
@@ -33,6 +41,8 @@ if [ "$mode" = install ]; then
     python3 -m venv "$RUFF_HOME"
     "$RUFF_HOME/bin/python" -m pip install --disable-pip-version-check "ruff==$RUFF_VERSION"
   fi
+  "$RUFF_HOME/bin/python" -m pip install --disable-pip-version-check \
+    shfmt-py==4.2.0 shellcheck-py==0.11.0.1
   if [ "$("$PRETTIER" --version 2>/dev/null || :)" != "$PRETTIER_VERSION" ]; then
     npm install --prefix "$PRETTIER_HOME" --no-save --package-lock=false \
       --ignore-scripts --no-audit --no-fund "prettier@$PRETTIER_VERSION"
@@ -41,7 +51,8 @@ fi
 check_formatters
 # Avoid even creating rustup's home during read-only diagnosis.
 [ -d "${RUSTUP_HOME:-$HOME/.rustup}/toolchains" ] || {
-  printf '%s\n' 'Rust toolchain missing. Run ./scripts/setup.sh.' >&2; exit 1;
+  printf '%s\n' 'Rust toolchain missing. Run ./scripts/setup.sh.' >&2
+  exit 1
 }
 # rustup run does not install a missing toolchain.
 rustup run "$toolchain" cargo --version

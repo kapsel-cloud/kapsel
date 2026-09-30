@@ -7,15 +7,15 @@ cp fuzz/corpus/inspect_receipt/canonical-receipt-and-trust "$corpus_directory/"
 cd fuzz
 runs="${KAPSEL_FUZZ_RUNS:-10000}"
 seed="${KAPSEL_FUZZ_SEED:-2118243591}"
-max_time_arg=""
+set --
 if [ -n "${KAPSEL_FUZZ_MAX_TIME:-}" ]; then
-  max_time_arg="-max_total_time=${KAPSEL_FUZZ_MAX_TIME}"
+  set -- "-max_total_time=${KAPSEL_FUZZ_MAX_TIME}"
 fi
 
 start_time=$(date +%s)
 status=0
 if ! rustup run nightly-2026-07-03 cargo fuzz run --dev inspect_receipt "$corpus_directory" -- \
-  -runs="$runs" -seed="$seed" $max_time_arg; then
+  -runs="$runs" -seed="$seed" "$@"; then
   status=1
 fi
 

@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
+        with:
+          tool: taplo@0.10.0
+          fallback: none
       - name: Prepare pinned contributor tools
         run: ./scripts/setup.sh
       - uses: Swatinem/rust-cache@v2
@@ -98,9 +102,13 @@ jobs:
             --output-directory "$RUNNER_TEMP/kapsel-release-a")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - name: Verify and smoke-test exact artifact A
-        run: python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+        run:
+          python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive
+          }}"
       - name: Assemble B and compare deterministic bytes
-        run: python3 scripts/test-release-reproducibility.py --reference-archive "${{ steps.artifact-a.outputs.archive }}"
+        run:
+          python3 scripts/test-release-reproducibility.py --reference-archive "${{
+          steps.artifact-a.outputs.archive }}"
       - name: Stage exact artifact A for upload
         if: github.event_name == 'push'
         env:

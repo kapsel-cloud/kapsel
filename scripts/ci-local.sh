@@ -1,11 +1,14 @@
 #!/usr/bin/env sh
 set -eu
-cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+cd "$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 . ./scripts/dev-tools.sh
 
 run_static_checks() {
-  echo "==> Markdown, Rust, and Python format"
+  echo "==> Markdown, Rust, Python, and shell format"
   ./scripts/format.sh --check
+
+  printf '%s\n' "==> Shell lint"
+  "$SHFMT" -f=0 . | xargs -0 "$SHELLCHECK" -x
 
   printf '%s\n' "==> Python lint"
   "$RUFF" check --no-cache --config ruff.toml .
@@ -51,26 +54,26 @@ run_documentation_tests() {
 }
 
 case "${1:-all}" in
-  all)
-    run_static_checks
-    run_rust_checks
-    run_documentation_tests
-    echo "==> Kapsel default gate passed"
-    ;;
-  static)
-    run_static_checks
-    echo "==> Static checks passed"
-    ;;
-  rust)
-    run_rust_checks
-    echo "==> Rust checks and deterministic tests passed"
-    ;;
-  doc)
-    run_documentation_tests
-    echo "==> Documentation tests passed"
-    ;;
-  *)
-    printf '%s\n' "usage: $0 [all|static|rust|doc]" >&2
-    exit 2
-    ;;
+all)
+  run_static_checks
+  run_rust_checks
+  run_documentation_tests
+  echo "==> Kapsel default gate passed"
+  ;;
+static)
+  run_static_checks
+  echo "==> Static checks passed"
+  ;;
+rust)
+  run_rust_checks
+  echo "==> Rust checks and deterministic tests passed"
+  ;;
+doc)
+  run_documentation_tests
+  echo "==> Documentation tests passed"
+  ;;
+*)
+  printf '%s\n' "usage: $0 [all|static|rust|doc]" >&2
+  exit 2
+  ;;
 esac
