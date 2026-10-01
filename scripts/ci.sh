@@ -39,6 +39,9 @@ run_static_checks() {
 }
 
 run_rust_checks() {
+  echo "==> locked fuzz dependency graph"
+  cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 >/dev/null
+
   echo "==> clippy"
   cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 

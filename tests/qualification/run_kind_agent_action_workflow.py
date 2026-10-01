@@ -497,12 +497,25 @@ def run_agent(
             event.get("item", {}).get("type") == "error" for event in events
         ):
             raise RuntimeError("Codex did not complete a turn without runtime errors")
+        # Bounded diagnostics omit model text, tool arguments/results and credentials.
+        known_items = {"agent_message", "mcp_tool_call", "command_execution", "reasoning", "error"}
+        item_counts: dict[str, int] = {}
+        for event in events:
+            item = event.get("item", {}).get("type")
+            if item is not None:
+                kind = item if item in known_items else "other"
+                item_counts[kind] = item_counts.get(kind, 0) + 1
+        diagnostics = {
+            "item_counts": item_counts,
+            "mcp_startup_failed": b"startup failed" in result.stderr.lower(),
+        }
         # This is the installed native client with its fixed socket, not a Python script.
         client = [*caller, "/usr/bin/kapsel-service-client"]
         status = json.loads(run([*client, "status", "healthy"]))
         if status.get("status") != "SUCCEEDED":
             raise RuntimeError(
-                f"agent did not complete the original approved action: {status.get('status')}"
+                f"agent did not complete the original approved action: {status.get('status')}; "
+                f"safe diagnostics: {json.dumps(diagnostics, sort_keys=True)}"
             )
         for case in CASES:
             if (

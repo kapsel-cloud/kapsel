@@ -5,6 +5,9 @@ corpus_directory=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-fuzz-corpus.XXXXXX")
 trap 'rm -rf "$corpus_directory"' EXIT HUP INT TERM
 cp fuzz/corpus/inspect_receipt/canonical-receipt-and-trust "$corpus_directory/"
 cd fuzz
+# cargo-fuzz has no --locked flag. Reject an incomplete graph before it can repair the lock.
+rustup run nightly-2026-07-03 cargo metadata --locked --format-version 1 >/dev/null
+lock_before=$(cksum Cargo.lock)
 runs="${KAPSEL_FUZZ_RUNS:-10000}"
 seed="${KAPSEL_FUZZ_SEED:-2118243591}"
 set --
@@ -16,6 +19,10 @@ start_time=$(date +%s)
 status=0
 if ! rustup run nightly-2026-07-03 cargo fuzz run --dev inspect_receipt "$corpus_directory" -- \
   -runs="$runs" -seed="$seed" "$@"; then
+  status=1
+fi
+if [ "$(cksum Cargo.lock)" != "$lock_before" ]; then
+  echo 'fuzz lockfile changed during qualification' >&2
   status=1
 fi
 

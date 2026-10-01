@@ -222,9 +222,31 @@ class RunnerOutcomeTests(unittest.TestCase):
                     evidence.mkdir()
                     previous = Path.cwd()
 
+                    resolved_root = (directory / "repo").resolve()
+
                     def run(
-                        command: list[str], *, selected_outcome: str = outcome, **kwargs: object
+                        command: list[str],
+                        *,
+                        selected_outcome: str = outcome,
+                        selected_root: Path = resolved_root,
+                        **kwargs: object,
                     ) -> subprocess.CompletedProcess:
+                        self.assertEqual(
+                            command[command.index("--user") + 1],
+                            f"{os.getuid()}:{os.getgid()}",
+                        )
+                        self.assertIn("CARGO_HOME=/tmp/kapsel-cargo", command)
+                        self.assertEqual(
+                            command[command.index("--tmpfs") + 1],
+                            "/kapsel-enospc:rw,nosuid,nodev,noexec,size=100663296,mode=0700,"
+                            f"uid={os.getuid()},gid={os.getgid()}",
+                        )
+                        self.assertIn("--cap-drop=ALL", command)
+                        self.assertIn("--security-opt=no-new-privileges", command)
+                        self.assertIn(
+                            "type=bind,src=" + str(selected_root) + ",dst=/workspace,readonly",
+                            command,
+                        )
                         kwargs["stdout"].write(
                             b"KAPSEL_REAL_ENOSPC_CASES_PASSED\n"
                             b"test result: ok. 1 passed; 0 failed; 0 ignored\n"
