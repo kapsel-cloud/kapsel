@@ -218,9 +218,12 @@ Fuzzing calls production hostile-input interfaces from canonical corpus vectors 
 ambient authority. Failures retain a minimized artifact and exact replay information.
 
 Long simulations generate bounded lifecycle schedules, crash windows, transient target-read errors,
-and reopen operations from an explicit seed. Every step checks durable state, provider-call count,
-terminal state, and frozen-receipt invariants. The seed is always replayable; wall-clock duration
-may change only how many cases run, not their semantics.
+and reopen operations from an explicit seed. Each shard uses independent fixture journals with at
+most 100 identities per journal. It retains earlier histories until successful fixture cleanup; it
+does not prune history or reset an attempted operation to bypass capacity. Separate storage tests
+own full-capacity guarantees. Every step checks durable state, provider-call count, terminal state,
+and frozen-receipt invariants. The seed is always replayable; wall-clock duration may change only
+how many cases run, not their semantics.
 
 ### Live Kubernetes and demonstration
 

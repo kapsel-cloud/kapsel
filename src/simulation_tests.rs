@@ -10,6 +10,9 @@ use crate::{
 
 const DEFAULT_SEED: u64 = 0x004b_4150_3030_3338;
 const DEFAULT_CASES: usize = 10_000;
+// Lifecycle simulation is separate from capacity qualification. Keep each independent
+// fixture history below the journal's retained-identity ceiling without pruning old history.
+const CASES_PER_JOURNAL: usize = 100;
 
 struct Generator(u64);
 
@@ -125,22 +128,26 @@ async fn seeded_lifecycle_crash_simulation_preserves_invariants() {
     );
 }
 
+#[tokio::test]
+async fn simulation_uses_independent_bounded_histories() {
+    let journals = run_simulation(DEFAULT_SEED ^ 1, CASES_PER_JOURNAL + 1, 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(journals, 2);
+}
+
 async fn run_simulation(
     seed: u64,
     cases: usize,
     shard_index: usize,
     shard_count: usize,
-) -> SimulationResult {
+) -> SimulationResult<usize> {
     let root = std::env::temp_dir().join(format!(
         "kapsel-lifecycle-simulation-{}-{seed}-{shard_index}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&root);
     private_directory(&root)?;
-    let journal_path = root.join("journal.sqlite3");
-    let paths = SimulationPaths {
-        journal: &journal_path,
-    };
     let mut generator = Generator(seed);
     let apply_faults = [
         FaultPoint::TargetObserved,
@@ -165,12 +172,27 @@ async fn run_simulation(
             publication_fault: publication_faults[generator.index(publication_faults.len())],
         };
         if case % shard_count == shard_index {
+            let batch = (case / shard_count) / CASES_PER_JOURNAL;
+            let journal_path = root.join(format!("journal-{batch}.sqlite3"));
+            let paths = SimulationPaths {
+                journal: &journal_path,
+            };
             run_case(seed, case, paths, schedule).await?;
         }
     }
 
+    let journals = fs::read_dir(&root)?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "sqlite3")
+        })
+        .count();
     fs::remove_dir_all(root)?;
-    Ok(())
+    Ok(journals)
 }
 
 async fn run_case(

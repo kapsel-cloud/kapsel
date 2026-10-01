@@ -191,6 +191,10 @@ docker exec "${cluster_name}-control-plane" crictl pull "$target_image"
 phase 4 "installing the instrumented recovery-policy admission webhook"
 docker build --tag "$webhook_image" tests/fixtures/recovery-policy-webhook
 webhook_image_owned=1
+# Prove the non-root fixture can read its public program even under a private checkout umask.
+docker run --rm --network none --user 65532:65532 --security-opt=no-new-privileges \
+  --pids-limit 16 --memory 64m --entrypoint python3 "$webhook_image" \
+  -I -c "with open('/webhook.py', 'rb') as source: assert source.read(1)"
 kind load docker-image --name "$cluster_name" "$webhook_image"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -keyout "$workspace/tls.key" \
