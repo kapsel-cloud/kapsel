@@ -24,5 +24,4 @@ These documents own the current security claims and limits:
 - [Threat model](docs/THREAT_MODEL.md) — adversaries, assumptions, surviving claims, and non-claims.
 - [Privacy](docs/PRIVACY.md) — sensitive fields and disclosure rules.
 
-Report preview vulnerabilities through the same private channel. Preview publication does not extend
-the v0.2.0 support posture or establish production support.
+Preview publication does not extend the v0.2.0 maintenance posture or establish production support.

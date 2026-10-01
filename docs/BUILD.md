@@ -1,8 +1,8 @@
 # Build and test Kapsel
 
-For source development, start below. To try the published resident-service preview, use the
-[service operator guide](KAPSEL_SERVICE_OPERATOR.md). [Testing](TESTING.md) explains what each test
-proves; this page owns setup and commands.
+This page covers source setup, commands, and validation gates. [Testing](TESTING.md) explains what
+each test proves. To run the published preview instead, use the
+[service operator guide](KAPSEL_SERVICE_OPERATOR.md).
 
 ## Everyday commands
 
@@ -56,18 +56,18 @@ and `ensurepip`, and [Node.js](https://nodejs.org/en/download) 24+ with npm. The
 cargo xtask setup
 ```
 
-Setup installs the Rust toolchain selected by `rust-toolchain.toml`, a pinned nightly rustfmt, and
-pinned Prettier, Ruff, Taplo, shfmt and ShellCheck in versioned directories beneath
-`$HOME/.local/share/kapsel/dev-tools`. Taplo is built from its locked crate. The scripts invoke
-those isolated executables directly. Nothing is installed globally, no shell profile changes, and no
-virtualenv activation is needed in a new shell. Rerunning setup reuses matching tools. Network
-access is needed for missing installations. `cargo xtask doctor` checks prerequisites and installed
-tools without installing or rewriting source. Cargo may first build xtask or prepare its selected
-compiler; `./scripts/setup.sh --check` bypasses that bootstrap for read-only diagnosis on an
-unprepared host. Hooks remain a separate opt-in.
+Setup installs the selected Rust toolchain and pinned nightly rustfmt. It installs Prettier, Ruff,
+Taplo, shfmt, and ShellCheck beneath `$HOME/.local/share/kapsel/dev-tools`. Taplo is built from its
+locked crate. Scripts invoke isolated tools directly: no global installation, shell-profile change,
+or virtualenv activation is needed. Repeated setup reuses matching tools; missing tools need network
+access. Hooks are a separate opt-in.
+
+`cargo xtask doctor` checks prerequisites and installed tools without installing or rewriting
+source. Cargo may first build xtask or prepare its compiler. On an unprepared host, use
+`./scripts/setup.sh --check` to bypass that bootstrap.
 
 [`tools/dev/dev-tools.sh`](../tools/dev/dev-tools.sh) owns formatter versions for local setup and
-CI. The small [`xtask`](../xtask/src/main.rs) owns contributor command routing, not release or
+CI. [`xtask`](../xtask/src/main.rs) routes contributor commands; it does not define release or
 qualification semantics. Commands resolve the checkout root even when invoked from a subdirectory.
 The three files in `scripts/` implement setup, formatting and the deterministic gate; setup can also
 be invoked directly before the selected Rust toolchain is installed. Python installation ignores
@@ -240,11 +240,10 @@ caller programs, not model-driven troubleshooting or evidence of useful action s
 mode qualifies native systemd installation, application quality, publication, or a cumulative
 observation deadline across interruptions.
 
-The printed private workspace retains sanitized result summaries, bounded exercise output, and
-fixture inputs for inspection. It also contains a cluster-admin kubeconfig and an expiring scoped
-fixture token. Do not publish that directory. The owned container and cluster are removed after the
-run. A cleanup error requires inspection of those named resources, not broad Docker or kind cleanup.
-The native example separately retains its stopped host state.
+The printed private workspace retains result summaries, bounded output, and fixture inputs. It also
+contains a cluster-admin kubeconfig and an expiring scoped token. **Do not publish that directory.**
+The runner removes its container and cluster. If cleanup fails, inspect those named resources; do
+not run broad Docker or kind cleanup. The native example separately retains its stopped host state.
 
 ## Public crash-recovery demonstration
 

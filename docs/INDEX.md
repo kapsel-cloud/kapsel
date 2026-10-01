@@ -1,8 +1,8 @@
 # Documentation
 
-Start with the [README](../README.md) for the project, mechanism, and runnable preview. Then follow
-the [service operator guide](KAPSEL_SERVICE_OPERATOR.md). The [technical tour](TOUR.md) explains one
-operation; direct contracts specify its behavior.
+Start with the [README](../README.md) for purpose, behavior, and the runnable preview. Use the
+[service operator guide](KAPSEL_SERVICE_OPERATOR.md) to run it. Read the [technical tour](TOUR.md)
+to understand one operation. Use the tables below to find exact contracts and contributor guidance.
 
 ## Learn and operate
 
@@ -32,28 +32,22 @@ operation; direct contracts specify its behavior.
 
 ## Contribute
 
-| Goal                                      | Read                                                   |
-| ----------------------------------------- | ------------------------------------------------------ |
-| Change code or contracts                  | [Contributing](../CONTRIBUTING.md)                     |
-| Build or choose a focused gate            | [Build and test](BUILD.md)                             |
-| Understand proof placement                | [Testing](TESTING.md)                                  |
-| Understand an active design choice        | [Accepted decisions](decisions/README.md)              |
-| Run the independent kubectl client corpus | [Client-contract evidence](INDEPENDENT_TOOL_CORPUS.md) |
+| Goal                                      | Read                                                      |
+| ----------------------------------------- | --------------------------------------------------------- |
+| Change code or contracts                  | [Contributing](../CONTRIBUTING.md)                        |
+| Write or review documentation             | [Technical writing](../CONTRIBUTING.md#technical-writing) |
+| Build or choose a focused gate            | [Build and test](BUILD.md)                                |
+| Understand proof placement                | [Testing](TESTING.md)                                     |
+| Understand an active design choice        | [Accepted decisions](decisions/README.md)                 |
+| Run the independent kubectl client corpus | [Client-contract evidence](INDEPENDENT_TOOL_CORPUS.md)    |
 
 ## Authority and history
 
-The [README](../README.md) owns the project's purpose and technical ambition. Linear is the source
-of truth for the ordered roadmap, priorities, assignments, and progress. Do not duplicate it here.
-Repository documents own current technical contracts; implementation and tests provide executable
-evidence. Planned work is not a claim that behavior already exists. Deliver a change with its direct
-contract, implementation, and tests together.
+The README owns purpose and ambition. Contracts own current behavior; decisions explain rationale
+without overriding contracts. Code and tests provide executable evidence. Resolve contradictions in
+the document that owns the behavior.
 
-For current technical behavior, consult [scope](SCOPE.md), the
-[effect-gateway contract](EFFECT_GATEWAY.md), and the direct surface contract. Decisions explain
-rationale and do not override those owners. Resolve contradictions at the owning boundary.
-
-Published versions retain their own contracts in Git tags. Use the
+Published versions retain their contracts in Git tags. Use the
 [v0.2.0 documentation](https://github.com/kapsel-cloud/kapsel/tree/v0.2.0/docs) for the older beta.
 The [preview release](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
-identifies its exact bytes and qualification. Retired proposals and experiment reports are removed
-from the current tree; Git history retains previous revisions.
+identifies its exact bytes and qualification. Git history retains removed proposals and reports.

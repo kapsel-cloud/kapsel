@@ -1,22 +1,16 @@
 # MCP adapter
 
+This contract defines two fixed stdio processes: direct Kubernetes execution and the ID-only
+resident-service bridge. It owns protocol, framing, lifecycle, tools, bounds, and responses. The
+[effect-gateway contract](EFFECT_GATEWAY.md) owns authority, recovery, results, and receipt bytes.
+Neither process is a generic MCP host or a stable transport API.
+
 ## Receipt completion
 
 Execution commits terminal receipt evidence in SQLite before the adapter exports receipt bytes for
 its existing filename response. Export failure is an adapter error, not a change to the action
 result, and cannot reopen execution. The [effect-gateway contract](EFFECT_GATEWAY.md) owns the exact
 behavior. The older beta remains pinned to its tagged source.
-
-Status: current-source MCP contract. The published preview retains its exact tagged bytes.
-
-Kind: contract. Authority: the fixed MCP protocol, transport, lifecycle, tool, bounds, and response
-semantics.
-
-Owns: The two distinct fixed stdio MCP process grammars: direct execution and the ID-only
-resident-service bridge. Neither is a generic MCP host.
-
-Does not own: Authorization, durable lifecycle, Kubernetes behavior, receiver classification,
-receipt bytes, the local evaluator command, a generic MCP host, or a stable transport API.
 
 ## Compatibility posture
 
@@ -111,9 +105,8 @@ The operator starts the process with exactly:
 kapsel mcp --operator-config <file>
 ```
 
-A generic stdio MCP client's process-launch entry may be written as the following conventional
-configuration. Client wrapper field names are not part of this protocol contract; the executable,
-arguments, and authority separation are:
+This example configures a stdio client's process launch. Wrapper field names are client-specific;
+this contract fixes the executable, arguments, and authority separation:
 
 ```json
 {
@@ -281,10 +274,9 @@ No response-time, remediation, availability, platform, or production-support SLA
 ## Official protocol basis
 
 The wire contract is based on the official MCP `2025-11-25` [versioning], [lifecycle], [stdio
-transport], [messages], [tools], and [cancellation] specifications and their [canonical schema]. The
-official Rust SDK is [`rmcp`]; registry version `2.2.0` was current when this contract was written,
-but Kapsel does not add it because its generic server and tool machinery would widen this fixed
-surface without reducing the owned bounds.
+transport], [messages], [tools], and [cancellation] specifications and their [canonical schema].
+Kapsel does not use the official Rust SDK, [`rmcp`]. Its generic server and tool machinery would
+widen this fixed surface without reducing the bounds Kapsel must enforce.
 
 [versioning]: https://modelcontextprotocol.io/specification/2025-11-25/basic/versioning
 [lifecycle]: https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle

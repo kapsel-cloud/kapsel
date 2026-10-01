@@ -1,12 +1,10 @@
 # Kapsel service
 
-Status: current resident-service contract. v0.3.0-preview.1 is a published non-production preview;
-its exact release evidence does not establish production support.
-
-This page owns the `kapseld -> kapsel` composition, authenticated local protocol, fixed filesystem
-roots, process lifecycle, static assets, and experimental-host precautions. The
+This contract defines service composition, authenticated local protocol, fixed filesystem roots,
+process lifecycle, static assets, and experimental-host precautions. The
 [effect-gateway contract](EFFECT_GATEWAY.md) owns authorization, action lifecycle, recovery,
-receiver results and receipts. [Technical scope](SCOPE.md) owns the accepted product boundary.
+results, and receipts. [Technical scope](SCOPE.md) separates current source from published releases.
+The published v0.3.0-preview.1 is non-production and has no production-support promise.
 
 ## Boundary
 
@@ -20,9 +18,8 @@ bounded local caller
 ```
 
 The service gives execution a lifetime independent of a caller connection. A reconnecting caller can
-read the same action's status and original receipt without gaining credentials or deciding whether
-to send a mutation again. It is retained as the current bounded broker composition, not a permanent
-hosting or installation commitment.
+read the same action's status and original receipt without gaining credentials or permission to
+resend a mutation. This local service is not a hosting or installation-support commitment.
 
 For `kubernetes.set_deployment_image`, service execution requires an exact-snapshot v2 grant,
 binding the operation tuple and independently acquired Deployment UID and resourceVersion. The
@@ -238,8 +235,8 @@ bytes together. There is no automatic backup or host-loss continuity promise.
 
 ## Version-1 socket adoption contract
 
-This contract is implemented together with the fixed client and startup composition in current HEAD.
-Unversioned task-only acceptance is not supported. Task creation is never durable admission.
+The fixed client and service use version 1. Unversioned task-only acceptance is unsupported.
+Creating a task does not establish durable admission.
 
 Every request is a named JSON object with integer `version: 1`. Version is mandatory on every
 variant. Unversioned input, other versions, positional arrays, duplicate/unknown fields and trailing
@@ -372,13 +369,13 @@ These conditions are process observations, not new signed evidence.
 ### Operator diagnostics
 
 The daemon emits only fixed ASCII codes prefixed `kapseld: ` on stderr, routed by the unit to the
-systemd journal. Stdout remains null. This deliberately extends the former health-fields-only
-surface. No raw error, operation ID, grant, credential, signing seed, response body or private path
-is logged. The panic hook also emits only `internal_failure`. Rendering has no diagnostic side
-effects. Read-access failures are reported at the application bridge or retained-admission probe, at
-most once per failure class per service lifetime across all IDs and status/history/receipt reads.
-Success does not reset suppression. Explicit selection failure is reported once by its execution
-owner, never again by response rendering. Startup retains its own failure boundary.
+systemd journal. Stdout remains null. No raw error, operation ID, grant, credential, signing seed,
+response body, or private path is logged. The panic hook also emits only `internal_failure`.
+Rendering has no diagnostic side effects. Read-access failures are reported at the application
+bridge or retained-admission probe, at most once per failure class per service lifetime across all
+IDs and status/history/receipt reads. Success does not reset suppression. Explicit selection failure
+is reported once by its execution owner, never again by response rendering. Startup retains its own
+failure boundary.
 
 Emission is best-effort, not durable evidence. Before startup, the daemon retains a close-on-exec
 stderr descriptor only when it identifies a pipe or socket, and sets its shared open-file
@@ -449,11 +446,11 @@ Execution and projection `ServiceApplication` handles open the same bounded cata
 They are two handles to one store, not separate lifecycle owners. Projection does not advance
 lifecycle state or call Kubernetes.
 
-Source now runs synchronous storage in a bounded blocking-job registry rather than on the
-current-thread reactor. Each job is registered before it starts. Its supervisor and blocking closure
-share connection ownership, and execution also retains its one execution permit. A response deadline
-or supervisor cancellation cannot free resources while the blocking closure survives. At most eight
-jobs are tracked, and completed records are reaped rather than accumulated.
+Synchronous storage runs in a bounded blocking-job registry, not on the current-thread reactor. Each
+job is registered before it starts. Its supervisor and blocking closure share connection ownership.
+Execution also retains its one execution permit. A response deadline or supervisor cancellation
+cannot release resources while the blocking closure survives. The registry tracks at most eight jobs
+and removes completed records.
 
 On SIGTERM, finite serving completion or a recoverable accept error, stop accepting and drain
 handlers, then supervisors and final blocking-job ownership while still inside the outer runtime
@@ -531,9 +528,9 @@ Static files alone are not an authenticated installer; use the exact authenticat
 Kapsel has no supported service installer, upgrade or migration path. Experimental installer builds
 could create host identities without completing installation. Source deletion is not uninstall.
 
-Source removal is not host cleanup. Matching account names, paths, or bytes do not establish
-ownership or authorize deletion. Preserve ambiguous evidence and obtain independent ownership facts
-before changing a host that may contain retained actions.
+Matching account names, paths, or bytes do not establish ownership or authorize deletion. Preserve
+ambiguous evidence. Establish ownership independently before changing a host that may retain
+actions.
 
 On any disposable host that ran a staged build, an operator must inventory the `kapsel` and
 `kapsel-service-callers` groups, `kapsel` and `kapsel-service-caller` users,

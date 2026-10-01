@@ -1,11 +1,11 @@
 # Threat model
 
-> A durable operation record narrows crash ambiguity. It does not make a provider action exactly
-> once, prove that the receiver is truthful, or prove that no action bypassed Kapsel.
+This page describes threats, controls, assumptions, and security limits for the Kubernetes gateway
+and resident service. The [effect-gateway contract](EFFECT_GATEWAY.md) owns exact semantics,
+including the separate Git boundary. [Technical scope](SCOPE.md) owns maturity and support limits.
 
-This page owns adversaries, surviving claims, assumptions, and non-claims for the active Kubernetes
-effect gateway and resident-service boundary. The [effect-gateway contract](EFFECT_GATEWAY.md) owns
-exact semantics; [technical scope](SCOPE.md) owns maturity and support posture.
+A durable record narrows crash ambiguity. It does not establish exactly-once effects, receiver
+truth, or absence of gateway bypass.
 
 ## Assets, trust, and seams
 
@@ -21,10 +21,10 @@ The relevant seams are:
 - receipt transport and the offline inspector; and
 - externally supplied inspection trust, time, and limits.
 
-The owner protects credentials, journal storage, signing material, and inspection trust. Kubernetes
-RBAC should limit the configured credential to the intended target, but Kapsel's concrete
-adapter—not RBAC—owns the image-only patch. Collusion, compromised credentials, compromised host
-administration, or bypass of the gateway removes independence. Receipts must not imply otherwise.
+The operator protects credentials, journal storage, signing material, and inspection trust.
+Kubernetes RBAC should restrict credentials to the target. The adapter, not RBAC, restricts patch
+fields. Collusion, compromised credentials or host administration, and gateway bypass remove
+independence. Receipts must not imply otherwise.
 
 ## Surviving claims
 
@@ -48,9 +48,9 @@ receiver result. The [gateway contract](EFFECT_GATEWAY.md#durable-facts-and-reco
 operation-selection semantics.
 
 The process can fail after Kubernetes receives a request but before Kapsel records the response.
-Kapsel safely validates the target, atomically records target identity with `apply_started`, and
-only then attempts the conditional patch. Recovery from ambiguity observes the same target and
-requested image. It never blindly applies again.
+Kapsel validates the target, then commits target identity with `apply_started` before attempting the
+conditional patch. Recovery observes the stored target and requested image. It never sends the patch
+again.
 
 Request acceptance, transport completion, process exit, and command success establish no rollout
 result. A timeout or evidence that satisfies neither exact classifier is `UNKNOWN`, not `SUCCEEDED`

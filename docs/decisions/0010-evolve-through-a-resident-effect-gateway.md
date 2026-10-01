@@ -14,15 +14,16 @@ observation-only recovery, receiver-bounded results, and receipts. The removed h
 that remote admission, scheduling, authority staging, cleanup, and a second state store form a
 separate system rather than a natural extension of that module.
 
-CLI and stdio MCP preserve the root semantics but attach lifetime to the invoking process and do not
-provide read-only reconnect/status or exact receipt retrieval across a separate authority identity.
+Direct CLI and stdio MCP execution preserve root semantics but depend on the invoking process's
+lifetime. They do not provide read-only reconnection or original receipt retrieval across a separate
+OS identity.
 
 ## Decision
 
 Provider credentials, grants, trust, signing material, durable state, and effect execution remain in
-an operator-controlled resident process. The `kapseld -> kapsel` package may own local admission,
-process composition, bounded concurrency, health integration, and diagnostics, while the deep root
-package continues to own effect semantics.
+an operator-controlled resident process. The `kapseld -> kapsel` composition separates local
+admission, process lifetime, bounded concurrency, health, and diagnostics from the root package's
+effect semantics.
 
 A remote coordination layer must not become the source of provider truth or move provider authority
 across the resident boundary.

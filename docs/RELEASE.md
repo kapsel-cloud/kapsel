@@ -1,17 +1,13 @@
 # Release artifacts
 
-Status: current resident-service preview artifact contract. The
+This contract defines the current preview target, archive layout, assembly, SBOM, publisher
+authentication, extraction, and artifact checks. Execution, commands, and receipt bytes have
+separate contracts. This page does not authorize publication or establish production support.
+
+The
 [published v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
-identifies exact bytes and finite qualification. New candidates require their own qualification and
-publication. The v0.2.0 archive remains reproducible from its tagged source, not this assembler.
-
-Kind: contract. Authority: supported release target, archive layout, assembly, SBOM,
-publisher-authentication, installation, and artifact-only behavior.
-
-Owns: The bounded HEAD preview distribution format and verification route.
-
-Does not own: Capability behavior, command or MCP semantics, receipt bytes, Kubernetes behavior,
-GitHub publication approval, production support, or another target.
+identifies its exact bytes and qualification. New candidates need their own qualification. The
+v0.2.0 archive remains reproducible from its tagged source, not the current assembler.
 
 ## Supported target and inputs
 
@@ -65,14 +61,17 @@ authentication starts with the separately signed `SHA256SUMS` manifest.
 The gzip header has timestamp zero and no source filename. The USTAR stream has stable lexical
 ordering, owner/group `0`, empty names, timestamp zero, and fixed modes.
 
-The release proof uses exactly two strict isolated assemblies of the same clean revision and pinned
-inputs. Assembly A remains outside the worktree, passes exact layout and hostile-archive
-verification, and is smoke-tested only through extracted files. Independent assembly B uses a
-separate target and output directory. The archive, checksum, SBOM, digest manifest and verifier from
-A and B must be byte-identical. Only after smoke and comparison pass are the exact five A files
-copied byte-for-byte to `dist/` for upload; B is never uploaded. Neither target directory nor
-compiled output is shared between A and B. An immutable Cargo registry/download cache may be shared
-because it supplies inputs rather than compiled output.
+Release proof requires two isolated assemblies of the same clean revision and pinned inputs:
+
+1. Assemble A outside the worktree. Check its exact layout and hostile-archive refusals. Run smoke
+   tests using only extracted files.
+2. Assemble B with separate target and output directories. All five deterministic files must match A
+   byte-for-byte.
+3. After smoke and comparison pass, copy the exact five A files to `dist/` for upload. Never upload
+   B.
+
+A and B share neither target directories nor compiled output. They may share an immutable Cargo
+registry/download cache because it contains inputs, not compiled output.
 
 This is a bounded reproducibility claim for those files, not a general Rust reproducible build,
 reviewed-source, or builder-integrity guarantee.

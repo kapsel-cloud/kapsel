@@ -12,10 +12,9 @@ Kapsel's critical seam lies between a bounded agent request and a consequential 
 system must durably identify an attempt, avoid blind retries across crashes, observe the receiver,
 and explain uncertainty without claiming exactly-once execution.
 
-A Kubernetes Deployment image change is consequential, locally reproducible with `kind`, visibly
-ambiguous across process failures, and familiar to infrastructure developers. One operation is
-enough to exercise authorization, mutation ordering, recovery, receiver observation, and receipt
-inspection without introducing a generic provider abstraction.
+A Kubernetes Deployment image change has observable effects and is reproducible with `kind`. Process
+failures can leave its outcome uncertain. One operation exercises authorization, mutation ordering,
+recovery, observation, and receipt inspection without a generic provider abstraction.
 
 ## Decision
 
@@ -37,5 +36,5 @@ permanent capability limit. The current implemented boundary lives in [scope](..
 - The public release must demonstrate recovery without a blind second mutation.
 - The implementation remains deep around one operation rather than exposing a reusable provider
   interface.
-- A selected new capability includes its concrete technical owner, design decisions, contracts, and
-  tests in the implementation work. This canary decision does not require another adoption phase.
+- Each new capability needs its own authority, recovery, result, and evidence rules, with contracts
+  and tests. The canary does not establish those rules for another receiver.

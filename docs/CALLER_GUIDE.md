@@ -1,8 +1,8 @@
 # One caller, two effects
 
-Current source uses the same resident-service caller for `kubernetes.set_deployment_image` and
-`git.transition_ref`. The published v0.3.0-preview.1 does not contain the Git capability or MCP
-bridge. This guide exercises source, not a published or production-qualified installation.
+Use the same resident-service caller for `kubernetes.set_deployment_image` and `git.transition_ref`.
+This guide exercises current source. The published v0.3.0-preview.1 contains neither Git nor the MCP
+bridge; these steps do not qualify a production installation.
 
 ## Disposable source exercise
 
@@ -21,10 +21,10 @@ python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 These fixtures use private disposable roots, not installed paths or existing receiver resources. The
 Kubernetes case uses a loopback HTTP receiver, not a cluster. It loses caller acknowledgement,
 reconnects through the real bridge/service, resumes the original ID after service loss and checks
-one PATCH and original evidence. The Git cases run real Git transitions through fresh caller
-processes, interrupt execution, resume the same ID, and compare original receipt bytes after
-receiver and signing material are removed. Neither lane proves power-loss or installed-systemd
-behavior. See [build and test](BUILD.md#git-transition-service) for the separate receiver gates.
+one PATCH and original evidence. The Git cases use fresh caller processes and real Git transitions.
+They interrupt execution, resume the same ID, and compare original receipts after removing receiver
+and signing material. Neither lane proves power-loss or installed-systemd behavior. See
+[build and test](BUILD.md#git-transition-service) for the separate receiver gates.
 
 ## The same commands for either approval
 
@@ -92,15 +92,14 @@ reference or grant permission to select an operation.
 | `kapsel-service-mcp`            | The same resident lifecycle for stdio tool callers, with no caller paths or credentials.           |
 | `fresh_session_caller.py`       | Read-first process example retaining an ID before submission; no second lifecycle store.           |
 | `kapsel operate` / `kapsel mcp` | Local operator-configured Kubernetes execution without a Linux resident service; not Git adapters. |
-| `kapsel inspect`                | Offline verification of original Kubernetes and Git receipts under independently supplied trust.   |
+| `kapsel inspect`                | Offline inspection of original Kubernetes and Git receipts under independently supplied trust.     |
 
-No adapter above replaces another's concrete use. Receiver-independent admission, status, history,
-execution guidance and receipt retrieval remain owned by the service application. Receiver facts
-stay distinct. The [version-1 socket contract](KAPSEL_SERVICE.md#version-1-socket-adoption-contract)
-owns response shapes and bounds; [MCP](MCP.md) owns its wrapper. Authenticated
-catalog/status/history entries carry an explicit `effect`; missing IDs and inaccessible history
-carry no invented effect. Receipt responses return original bytes, not a normalized replacement
-receipt.
+The service application owns admission, status, history, execution guidance, and receipt retrieval.
+Each effect retains its own receiver facts. The
+[version-1 socket contract](KAPSEL_SERVICE.md#version-1-socket-adoption-contract) owns response
+shapes and bounds; [MCP](MCP.md) owns its wrapper. Authenticated catalog/status/history entries
+carry an explicit `effect`; missing IDs and inaccessible history carry no invented effect. Receipt
+responses return original bytes, not a normalized replacement receipt.
 
 Service protocol version `1`, MCP protocol `2025-11-25`, caller-reference version `1`, journal
 format `6`, and signed grant/receipt versions are independent. The effect tag does not select a

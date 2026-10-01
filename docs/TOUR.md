@@ -1,16 +1,14 @@
 # One operation through Kapsel
 
-Kapsel is built around an awkward gap: a system can know that it attempted an external effect
-without knowing whether the receiver reached the intended state.
+Kapsel can record an attempt without knowing whether the receiver reached the intended state. This
+tour follows one Kubernetes image change through authorization, execution, recovery, and receipt
+inspection.
 
-This tour follows one Kubernetes image change across that gap. It is the first concrete example of
-[controlled execution beneath autonomous systems](../README.md#why-kapsel-exists). The exact rules
-live in the [effect-gateway contract](EFFECT_GATEWAY.md); this page explains why the pieces are
-arranged this way. It describes the current preview implementation. The published v0.2.0 beta has
-older approval and receipt-storage behavior, as separated in
-[Technical scope](SCOPE.md#what-is-published).
+The [effect-gateway contract](EFFECT_GATEWAY.md) owns exact rules. This page explains the current
+service path. The older v0.2.0 beta has different approval and receipt-storage behavior. See
+[Technical scope](SCOPE.md#what-is-published) for release distinctions.
 
-## The request is intentionally boring
+## Separate the request from authority
 
 An automated workflow asks for one operation:
 
@@ -23,11 +21,11 @@ kubernetes.set_deployment_image(
 )
 ```
 
-It also supplies a stable operation identity so a restart can find the same durable operation. It
-cannot provide credentials, a kubeconfig, trust, a signing key, a manifest, a patch, a tag, a shell
-command, or instructions about retry and recovery.
+The direct CLI/MCP caller supplies these fields and a stable operation identity. The service caller
+selects an operator-prepared action ID instead. Neither can supply credentials, a kubeconfig, trust,
+a signing key, a manifest, a patch, a tag, a shell command, or retry and recovery instructions.
 
-The operator supplies those powerful inputs separately:
+The operator supplies authority and private material separately:
 
 ```text
 caller
@@ -40,13 +38,15 @@ operator
   -> receipt signing key
 ```
 
-The signed grant binds the operation identity, namespace, Deployment, container, and immutable image
-digest. Kapsel checks it against application-configured trust before Kubernetes access. The request
-cannot appoint its own authority. Current snapshot grants also bind the operator-acquired Deployment
-UID and opaque resourceVersion. The resident service requires this approval. A changed version, even
-from status or annotation churn, stops as `NOT_ATTEMPTED / STALE_APPROVAL` before a PATCH.
-Reapproval needs an operator decision and a new action identity, never replacement authority on the
-old handle. Legacy CLI/MCP grants retain their original late-bound target meaning.
+The signed grant binds operation identity, namespace, Deployment, container, and immutable image.
+Kapsel checks the grant against configured trust before accessing Kubernetes. The request cannot
+appoint its own authority.
+
+The service requires snapshot grants. These also bind the Deployment UID and opaque resourceVersion
+acquired by the operator. A changed version, including a status or annotation update, produces
+`NOT_ATTEMPTED / STALE_APPROVAL` before a PATCH. Reapproval needs an operator decision and a new
+action ID. It cannot replace authority on the existing action. Legacy CLI/MCP grants retain their
+late-bound target meaning.
 
 ## First, make the intent durable
 
@@ -69,14 +69,15 @@ not_attempted
 There is no effect receipt for `NOT_ATTEMPTED`, because there was no recorded provider attempt to
 explain.
 
-## The important write happens before Kubernetes
+## Record the attempt before sending the patch
 
 Once Kapsel has safely identified the target, it commits `apply_started` to SQLite. That durable
 record includes the Deployment UID, resource version, write strategy, and attempt marker.
 
-Only the fresh, successfully acknowledged conditional commit gives the adapter a private one-use
-dispatch permission. The adapter consumes it to send the conditional strategic merge patch. Loading
-an attempted row cannot recreate permission, and the application disables automatic PATCH retries.
+The adapter receives private permission to send the patch only after the fresh conditional commit is
+confirmed successful. It can use that permission once. The adapter consumes it to send the
+conditional strategic merge patch. Loading an attempted row cannot restore permission. The
+application disables automatic PATCH retries.
 
 ```text
 SQLite commit: apply_started
@@ -84,13 +85,12 @@ SQLite commit: apply_started
 ```
 
 The patch changes one named container image and writes the operation identity as a Deployment
-annotation. The UID and resource-version preconditions make replacement or concurrent desired-state
-changes fail closed at persistence instead of forcing the patch through. They do not prevent
-mutating admission from producing effects before a conflict is returned.
+annotation. UID and resource-version preconditions reject updates to a replaced or concurrently
+changed target. They do not prevent mutating admission from causing effects before Kubernetes
+returns a conflict.
 
-This does not provide exactly-once mutation. It creates a trustworthy boundary: before
-`apply_started`, no attempt was recorded; after it, Kapsel must assume the request may have crossed
-the provider boundary.
+This is not exactly-once mutation. Before `apply_started`, no attempt was recorded. After it, Kapsel
+must assume the request may have reached Kubernetes.
 
 ## A lost response does not become a retry
 
@@ -98,9 +98,9 @@ Imagine Kubernetes applies the patch, but Kapsel dies before recording the respo
 journal says `apply_started`. It does not say whether Kubernetes received, rejected, or applied the
 request.
 
-The tempting recovery strategy is to send the patch again. Kapsel deliberately refuses. The same
-attempted state can also mean the process died before sending anything. That authorized action may
-remain unsent. Avoiding a second mutation opportunity costs useful completion in that window.
+Kapsel does not send the patch again. The same stored state could also mean it died before sending
+anything. In that case, an authorized action can remain unsent. This is the cost of preventing a
+second mutation opportunity after an uncertain attempt.
 
 Recovery loads the stored target identity and observes the Deployment. It issues no blind second
 patch. When the original response is missing, Kapsel can associate an observed generation with the
@@ -134,14 +134,14 @@ A successful HTTP response to the patch is not `SUCCEEDED`. `ReplicaFailure=True
 `FAILED`. A timeout is `UNKNOWN`, not failure. `UNKNOWN` also does not mean the effect did not
 happen or that retrying is safe.
 
-The useful promise is not universal truth. It is the strongest honest conclusion Kapsel can support
-from the bounded observations it retained.
+These results describe retained, bounded observations. They do not establish universal receiver
+truth.
 
-## Freeze the story before exporting it
+## Freeze the evidence before exporting it
 
-After classification, `receiver_observed` durably freezes the receiver facts and result. Kapsel
-signs those facts, then commits the exact bytes, digest, signing-key identity and `finalized` state
-together in SQLite. A signing failure cannot trigger a new observation to improve the old result.
+The `receiver_observed` state freezes receiver facts and the classified result. Kapsel signs those
+facts. SQLite then commits the exact bytes, digest, signing-key identity, and `finalized` state
+together. A signing failure cannot trigger new observations to improve the result.
 
 Retrieval returns the committed bytes without re-signing. Filesystem export is optional and separate
 from completion. A failed export cannot reopen the action, and the service can retrieve the original
@@ -165,12 +165,8 @@ other actor changed the Deployment, or that every relevant event was captured. T
 
 ## What an automated workflow gains
 
-The workflow receives two bounded things:
-
-1. authority to request one exact operation without receiving Kubernetes credentials; and
-2. a durable outcome vocabulary that preserves uncertainty instead of inventing certainty.
-
-That lets downstream automation distinguish:
+The workflow can request one approved operation without receiving Kubernetes credentials. It can
+also retrieve durable evidence that distinguishes:
 
 ```text
 receiver success
@@ -180,7 +176,7 @@ pre-attempt local rejection
 operation or configuration error
 ```
 
-Those distinctions survive process loss and remain inspectable later. They are narrow on purpose.
+These distinctions survive process loss and remain inspectable later.
 
 ### When the result is unknown
 
@@ -193,8 +189,8 @@ mutations and present the operation identity and available receipt for operator 
 a fresh operation identity or automatically rolling back is not a way to resolve the uncertainty.
 Any corrective action needs its own authorization and reasoning about current state.
 
-This handoff is outside Kapsel's planner-free core. A signed receipt preserves the bounded account;
-it does not eliminate the need for operational judgment or prove that the application is healthy.
+The surrounding workflow owns this handoff. A signed receipt preserves evidence; it does not replace
+operational judgment or prove application health.
 
 A rollout may become available after the original `UNKNOWN`. Ordinary status and receipt reads still
 return historical evidence without contacting Kubernetes. An operator's later observation does not

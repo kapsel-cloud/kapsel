@@ -1,4 +1,12 @@
-# Kubernetes effect-gateway contract
+# Effect-gateway contract
+
+This contract owns authorization, durable state, recovery, receiver results, and signed receipts.
+The Kubernetes sections define the direct-execution path. The
+[Git boundary](#git-transition-boundary) defines the second effect exposed through the resident
+service. [Technical scope](SCOPE.md) separates current source from published releases.
+
+It does not define a generic agent runtime, provider interface, MCP protocol, stable package format,
+external witnessing, or production assurance.
 
 ## SQLite-owned receipt completion
 
@@ -30,19 +38,13 @@ rollback-journal/FULL settings, private storage, and allocation bounds remain. P
 not prove power-loss behavior or the filesystem and hardware assumptions of
 [SQLite atomic commit](https://sqlite.org/atomiccommit.html).
 
-Status: current execution contract. The published preview pins its exact source and artifact bytes.
-
-This contract owns one operation's authorization, durable lifecycle, receiver observation, result
-meaning, receipt bytes, and demonstration. It does not define a generic agent runtime, MCP or
-Kubernetes protocol semantics, reusable provider seam, stable package format, external witnessing,
-or production assurance.
-
 ## Short answer
 
-An agent may request one bounded operation. The gateway verifies an owner-signed, fixed-purpose,
-single-operation grant against application-configured trust, durably records the target and attempt,
-issues at most one conditional mutation request, observes the receiver, reconciles after a crash,
-and emits an inspectable receipt whose classifier inputs can be recomputed offline.
+A caller can request one approved operation. For Kubernetes, the gateway checks the exact signed
+grant against configured trust, then records target identity and the attempt before mutation. It
+permits at most one conditional mutation request and observes the receiver. After a crash, recovery
+only observes attempted history. The signed receipt contains the inputs needed to recompute its
+classifier result offline.
 
 ```text
 agent intent
@@ -53,15 +55,12 @@ agent intent
   -> signed, classifier-complete receipt
 ```
 
-The receipt preserves the execution account. It is not a compliance product, evidence of complete
-capture, or a claim that a signature proves the Kubernetes state was true. Signatures allow a
-consumer with separately appointed trust to authenticate portable bytes and reject tampering. They
-do not add receiver knowledge or establish decision quality. The signed grant and receipt remain
-part of the current contract.
+A signature authenticates receipt bytes under separately appointed trust and detects tampering. It
+does not prove receiver truth, complete capture, compliance, or decision quality.
 
 ## One capability
 
-Kapsel accepts only `kubernetes.set_deployment_image` with:
+The direct-execution path accepts only `kubernetes.set_deployment_image` with:
 
 - Kubernetes namespace;
 - deployment name;
@@ -805,14 +804,14 @@ SQLite-committed receipt bytes, whether exported or not, rather than decoded fac
 
 ## Required release demonstration
 
-The sequence below describes current source. The published v0.2.0 demonstration retains its original
-filesystem-publication seam and is not evidence that the release includes format-4 completion.
+The sequence below describes the source-only Kubernetes crash harness. The published v0.2.0 demo
+retains its historical filesystem-publication seam and archive layout. It does not establish the
+current SQLite completion behavior. The resident-service preview does not include that demo.
 
-The source Unix harness runs from one repository command against one uniquely named, disposable
-`kind` cluster. In the fixed archive layout, the script safely locates its adjacent public vector
-and the separate demonstration executable; source mode and explicit artifact overrides remain
-available for repository and packaging proofs. It uses the supported `kapsel provision-grant`,
-`kapsel operate`, and `kapsel inspect` grammar and fixed operator-owned files.
+The Unix harness runs from one repository command against a uniquely named disposable `kind`
+cluster. Source mode and explicit artifact overrides support repository and packaging checks. It
+uses `kapsel provision-grant`, `kapsel operate`, and `kapsel inspect` with fixed operator-owned
+files.
 
 Before creating a workspace or inspecting clusters, the harness reports the detected prerequisite
 versions and refuses an unavailable Docker daemon, `kind` older than 0.32, unavailable or pre-1.30
@@ -871,9 +870,9 @@ Caller input must not acquire authority through arbitrary shell, `kubectl` passt
 patches, tags, or credentials. Never claim exactly-once Kubernetes mutation, complete audit capture,
 compliance, or production readiness without a mechanism and evidence that establish that claim.
 
-The current implementation contains one Kubernetes capability. It has no generic provider framework,
-runtime plugins, hosted storage, multi-tenant operation, dashboard, or transparency backend. These
-describe current behavior, not a prohibition on the next selected feature.
+Current source has one Kubernetes capability and the separate Git transition defined above. It has
+no generic provider framework, runtime plugins, hosted storage, multi-tenant operation, dashboard,
+or transparency backend.
 
 Keep each implementation deep: the caller crosses a narrow interface while the implementation owns
 journaling, Kubernetes interaction, recovery, observation, receipt construction, and inspection. For

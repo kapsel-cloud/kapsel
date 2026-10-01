@@ -114,12 +114,11 @@ language to this Rust repository.
 
 Retain observation-only recovery after `apply_started`.
 
-No replay means death before send can abandon an authorized action. This is reported as `UNKNOWN`,
-not hidden as success or failure. Exact replay improves that one completion window, but after a lost
-response, conflict, or replacement it adds another mutating-admission invocation and can repeat an
-out-of-band receiver effect that frozen UID and resource version cannot prevent. No-replay therefore
-passes the decision test because it prevents a concrete receiver effect that frozen replay cannot
-prevent.
+Without replay, death before send can abandon an authorized action. Kapsel reports `UNKNOWN`, not
+success or failure. Exact replay could complete that unsent action. After a lost response, conflict,
+or replacement, however, replay adds another mutating-admission invocation. It can repeat
+out-of-band effects that frozen UID and resource version cannot prevent. Retaining no-replay avoids
+that concrete receiver risk.
 
 Do not adopt Temporal for this operation. Its bounded Activity retry has the same receiver exposure
 as exact replay and does not replace the capability-specific authority, receiver, or receipt logic.
@@ -176,10 +175,9 @@ commit error returns no permission. No transaction spans a network call or await
 Snapshot comparison belongs to `Journal::begin_attempt`. The seeded harness executes the same
 journal/gateway decisions as production.
 
-A separate event-machine kernel was rejected because it duplicated policy without replacing
-production orchestration. Its bounded explorer assumed fresh acknowledgements and correspondence
-between driver decisions and I/O, rather than proving durability. The historical prototype and
-report are available at
+A separate event-machine kernel duplicated policy without replacing production orchestration. Its
+bounded explorer assumed fresh acknowledgements and correspondence between driver decisions and I/O;
+it did not prove durability. The historical prototype and report are available at
 `21f0a2534e9555130025a4082e935194886a6cb2:docs/APPROVAL_KERNEL_EXPERIMENT.md`, not current
 production evidence.
 

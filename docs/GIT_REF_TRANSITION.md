@@ -1,9 +1,9 @@
 # Exact Git ref transitions
 
-Current source supports `git.transition_ref` through the resident service and its existing ID-only
-caller tools. This is not included in the published `v0.3.0-preview.1` artifact. The
-[effect contract](EFFECT_GATEWAY.md#git-transition-boundary) owns authority, recovery and receipt
-semantics; the [service contract](KAPSEL_SERVICE.md) owns admission and caller lifetime.
+Use this guide to prepare and exercise `git.transition_ref` through the resident service's ID-only
+caller tools. It requires current source; the published `v0.3.0-preview.1` does not include Git. The
+[effect contract](EFFECT_GATEWAY.md#git-transition-boundary) owns authority, recovery, and receipts.
+The [service contract](KAPSEL_SERVICE.md) owns admission and process lifetime.
 
 ## What is authorized
 
@@ -51,14 +51,14 @@ absent from ordinary builds.
 
 ## Operator preparation
 
-The intended deployment retains the service's fixed roots and custody rules. Provision a canonical
-absolute Git executable named `git`, complete bare repositories, and reviewed commits. Receiver and
-sender files must remain under service-identity custody; symlinks, linked object stores,
-shared-write paths, shallow repositories, alternates, replace refs and unsupported configuration are
-refused. Use the service unit's `UMask=0077` (or `umask 077` for a direct process) so newly created
-Git contents retain private custody. Choose repository locations the service's filesystem
-restrictions permit, such as its private state root. A system Git installation under shared-writable
-package-manager custody may need a private operator-controlled copy.
+Follow the service's fixed-root and custody rules. Provision a canonical absolute Git executable
+named `git`, complete bare repositories, and reviewed commits. Keep sender and receiver files under
+service-identity custody. The receiver refuses symlinks, linked object stores, shared-write paths,
+shallow repositories, alternates, replace refs, and unsupported configuration. Use the service
+unit's `UMask=0077` (or `umask 077` for a direct process) so newly created Git contents retain
+private custody. Choose repository locations the service's filesystem restrictions permit, such as
+its private state root. A system Git installation under shared-writable package-manager custody may
+need a private operator-controlled copy.
 
 The optional fixed file `/etc/kapsel/git-receiver.json` is at most 4096 bytes and accepts exactly:
 

@@ -7,14 +7,15 @@ Status: bounded client-contract experiment, run with kubectl v1.33.9.
 Can the failure cases learned from Kapsel expose a useful recovery or reporting hazard in an
 independent tool, without requiring that tool to adopt Kapsel?
 
-The experiment runs the real `kubectl set image` and `kubectl rollout status` executables against a
-small loopback HTTP fixture. It reproduces actionable integration risks: an image update does not
-establish rollout completion, a new status process observes the current named Deployment rather than
-the original action, and a successful non-watching status command can describe a pending rollout.
-None is claimed as an upstream kubectl bug. They are ordinary client-contract tests.
+The experiment runs real `kubectl set image` and `kubectl rollout status` commands against a
+loopback HTTP fixture. It reproduces three integration risks:
 
-The cases are useful as ordinary adapter tests. They do not qualify a replacement for Kapsel's
-authorization, durable lifecycle, or recovery behavior.
+- An image update does not establish rollout completion.
+- A new status process observes the current named Deployment, not the original action.
+- A successful non-watching status command can describe a pending rollout.
+
+These are client-contract observations, not claims of upstream kubectl bugs. They can inform adapter
+tests, but do not replace Kapsel's authorization, durable state, or recovery rules.
 
 Evidence revision: `b73d30753347faa8523aceb02b572fcb7caab2e0`.
 
@@ -117,11 +118,10 @@ An upgrade requires reviewing upstream behavior and rerunning controls. It does 
 maintaining a Kubernetes simulator, corpus interchange format, or general tool adapter. The results
 remain specific to the tested client and fixture.
 
-Two concrete approaches were considered. Extending the live kind lane would establish actual
-receiver behavior but add cluster, image, credential, and controller setup to a client-reporting
-question. The selected loopback fixture executes the independent client and isolates the reporting
-contract in seconds. Its deliberately narrower evidence cannot replace live kind proof. No new live
-cluster experiment was run here.
+A live kind test would establish receiver behavior but add cluster, image, credential, and
+controller setup to a client-reporting question. The loopback fixture isolates that reporting
+contract in seconds. Its evidence cannot replace live kind checks. This experiment ran no new live
+cluster test.
 
 The recommendation remains limited to this one independently maintained client and these fixed
 failure cases. No agent model was run and no second independently maintained agent wrapper was

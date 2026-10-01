@@ -1,7 +1,8 @@
 # Privacy
 
-Kapsel is local and self-hosted, but its journals, receipts, reports, and demonstration artifacts
-can disclose operational metadata. Treat them as sensitive unless they are intentionally published.
+Treat journals, receipts, reports, and demonstration artifacts as sensitive. Local execution does
+not prevent operational metadata disclosure. Review these files before intentionally publishing
+them.
 
 Potentially revealing material includes:
 
@@ -29,10 +30,10 @@ Potentially revealing material includes:
 
 `tools/checks/check_source_privacy.py` is an independent source check in the default static gate. It
 rejects known private absolute paths, private-key headers, AWS/GitHub token patterns and private
-artifact suffixes. In Markdown it also rejects specific affirmative production, SLA, exactly-once,
-universal Kubernetes and native-host performance claims. Diagnostics name the category and source
-location, not the matched material. `tools/checks/test_source_checks.py` owns its rejection
-regressions.
+artifact suffixes. In Markdown, it also rejects selected affirmative claims about production, SLAs,
+exactly-once effects, universal Kubernetes behavior, and native-host performance. Diagnostics
+identify the category and source location, not the matched material.
+`tools/checks/test_source_checks.py` owns its rejection regressions.
 
 The checker selects existing tracked and non-ignored untracked files under `crates/`, `src/`,
 `tests/`, `vectors/`, `docs/`, `scripts/`, `tools/`, `examples/`, `xtask/`, `fuzz/`, `.cargo/`,

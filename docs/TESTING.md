@@ -1,8 +1,8 @@
 # Testing
 
-This page owns proof strategy, test placement, deterministic inputs, hostile-input coverage, and
-crash recovery expectations. [Build and test](BUILD.md) owns runnable commands; direct contracts own
-exact behavior and evidence limits.
+Use this page to choose where a test belongs and what evidence it must establish. It covers
+deterministic inputs, hostile-input coverage, and crash recovery. [Build and test](BUILD.md) owns
+commands; direct contracts own exact behavior and limits.
 
 ## Test through the owning interface
 
@@ -355,17 +355,18 @@ The local evidence commit is not a published release or proof of remote availabi
 
 ### Release artifact
 
-Artifact proof crosses extracted `x86_64-unknown-linux-gnu` bytes rather than a Cargo test binary.
-Two isolated assemblies must produce identical archive, checksum, SBOM, and digest-manifest bytes.
-Hostile archive validation precedes extraction; smoke uses only extracted files to prove identity,
-grant provisioning, operation and restart, offline inspection, MCP equivalence, demonstration-binary
-separation, cleanup, and uninstall. It kills the extracted demonstration executable at both owned
-seams and preserves one provider attempt and frozen receipt bytes under rotated settings. The
-Sigstore bundle receives identity and failure checks rather than a false reproducibility
-requirement.
+Artifact checks use extracted `x86_64-unknown-linux-gnu` binaries, not Cargo test binaries. Two
+isolated assemblies must produce identical archive, checksum, SBOM, digest-manifest, and verifier
+bytes. Hostile-archive validation precedes extraction. Smoke uses extracted files to check binary
+identity, grant provisioning, operation, read-first restart, offline inspection, and MCP behavior.
+The service-container lane checks fixed paths, separate identities, original receipt retrieval, and
+independent mutation counts. It does not qualify native systemd or interrupted-attempt recovery.
 
-The live artifact demonstration is a separate environment-owning gate. Exact layout, publisher
-authentication, provenance, and evidence limits belong to [Release artifacts](RELEASE.md).
+The preview archive contains no demonstration binary or pause feature. The older v0.2.0 artifact
+retains its tagged demo and crash checks. Current packaged interrupted-execution and live-receiver
+checks are separate lanes. The Sigstore bundle receives identity and failure checks, not a
+reproducibility requirement. [Release artifacts](RELEASE.md) owns exact layout, authentication,
+provenance, and evidence limits.
 
 ### Kapsel service
 
@@ -398,9 +399,8 @@ The service evidence is layered around `ServiceApplication`, one bounded catalog
   Root-substitution tests prove journal creation and socket bind stay with retained directory
   identities; receipt retrieval has no receipt-root dependency.
 
-Current tests own authorization, HTTP retry counterexamples, attempt-loss recovery, and original
-receipt immutability. These boundaries do not acquire supplementary observation or volatile
-admission semantics from retired prototypes.
+Current tests cover authorization, HTTP retry counterexamples, attempt-loss recovery, and original
+receipt immutability. Retired prototypes do not define current behavior.
 
 Service-client tests freeze five versioned commands (`list`, `history`, `submit`, `status`,
 `receipt`), bounded framing, receipt digest verification, exclusive mode-`0600` output and refusal

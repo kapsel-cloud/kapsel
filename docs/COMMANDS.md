@@ -1,5 +1,9 @@
 # Evaluator commands
 
+This contract defines the current local `kapsel` commands, operator files, output, bounds, and exit
+classes. The [effect-gateway contract](EFFECT_GATEWAY.md) owns execution and receipt semantics.
+[MCP](MCP.md) owns the separate stdio protocol; [Release artifacts](RELEASE.md) owns packaging.
+
 ## Receipt completion
 
 `operate` commits terminal receipt evidence in SQLite before optional filesystem export. It
@@ -8,17 +12,6 @@ command without reopening the terminal action. Repeating the command exports the
 current output configuration, without dispatch or re-signing. The export directory need not exist
 during application startup or execution. Journal formats older than format 6 are rejected, not
 upgraded.
-
-Status: current preview command contract. Published v0.2.0 behavior remains owned by its tagged
-source. The preview provides exact-snapshot provisioning without changing the older archive.
-
-Kind: contract. Authority: local evaluator command grammar, operator files, output, bounds,
-diagnostics, and exit classes.
-
-Owns: The exact local `kapsel` command surface in HEAD.
-
-Does not own: Gateway lifecycle/result semantics, receipt bytes, Kubernetes semantics, MCP,
-packaging, or the release demonstration crash demonstration.
 
 ## Compatibility posture
 
@@ -70,10 +63,10 @@ responses, and bounds; this document continues to own the shared operator-file g
 `kapsel --help` accepts no additional argument and prints the fixed command map without opening
 configuration or contacting a service. Invalid usage retains the bounded command-input failure.
 
-`kapsel --version` accepts no additional argument, reads no configuration or environment, writes
-`kapsel <Cargo package version>` plus one newline to standard output, writes no diagnostic, and
-exits zero. The value identifies the running binary; it does not imply another workspace package,
-platform, registry artifact, or production support.
+`kapsel --version` accepts no additional argument and reads no configuration or environment. It
+prints `kapsel <Cargo package version>` and one newline to stdout, writes no diagnostic, and exits
+zero. The version identifies the binary, not platform support, a registry artifact, or production
+support.
 
 Options may appear in any order, exactly once. Unknown options, duplicate options, positional
 values, missing values, and additional arguments are command-input failures. There are no
@@ -204,9 +197,9 @@ Successful operation/reconciliation:
 ```
 
 States and values use the effect-gateway vocabulary. A pre-attempt rejection reports
-`NOT_ATTEMPTED`, a null result, and one of `DEPLOYMENT_NOT_FOUND`, `CONTAINER_NOT_FOUND`, or
-`INVALID_TARGET`. `SUCCEEDED`, `FAILED`, and `UNKNOWN` are receiver outcomes and all are successful
-command execution.
+`NOT_ATTEMPTED`, a null result, and one of `DEPLOYMENT_NOT_FOUND`, `CONTAINER_NOT_FOUND`,
+`INVALID_TARGET`, or `STALE_APPROVAL`. `SUCCEEDED`, `FAILED`, and `UNKNOWN` are receiver outcomes
+and all are successful command execution.
 
 Offline inspection reports the classifier-complete signed statement in fixed field order:
 

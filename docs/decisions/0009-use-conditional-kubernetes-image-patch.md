@@ -4,19 +4,16 @@ Status: accepted.
 
 Kind: decision. Date: 2026-07-15.
 
-Owns: Why effect-gateway uses a UID/resource-version-guarded strategic merge patch instead of
-no-force server-side apply for its one Deployment image mutation.
-
-Does not own: The operation lifecycle, receiver-result meaning, receipt bytes, another Kubernetes
-operation, or a reusable provider seam.
+This decision explains the UID/resource-version-guarded strategic merge patch. The
+[effect-gateway contract](../EFFECT_GATEWAY.md) owns current preconditions, lifecycle, results, and
+receipt bytes.
 
 ## Context
 
-Ordinary Deployments are normally managed by another actor that owns the container image field.
-Server-side apply with `force=false` therefore returns `409 FieldManagerConflict` for the
-image-change operation. Forcing apply would take field ownership from that actor, which exceeds the
-operation's bounded authority. Restricting the capability to Kapsel-owned Deployments would hide
-that limitation rather than solve it.
+Ordinary Deployments are normally managed by another actor that owns the container image field. In
+that case, server-side apply with `force=false` returns `409 FieldManagerConflict`. Forcing apply
+would take field ownership from that actor and exceed this operation's authority. Restricting the
+capability to Kapsel-owned Deployments would hide that limitation rather than solve it.
 
 Kubernetes strategic merge patch treats the container list as name-keyed. Kubernetes also enforces
 supplied object UID and resource-version preconditions, allowing the adapter to reject deletion,

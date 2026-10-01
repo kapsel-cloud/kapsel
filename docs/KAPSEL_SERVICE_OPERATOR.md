@@ -1,11 +1,11 @@
 # Kapsel service operator guide
 
-Status: operating guide for the non-production resident-service preview. Use exact authenticated
-artifacts; current source is not a new published or production-supported release.
+Use this guide to prepare approvals, run the resident service, and retrieve original evidence. The
+operator supplies authority and private execution material. A separate caller selects approved
+action IDs; it cannot change authority or control the service.
 
-The operator prepares exact approvals and private execution material. A separate caller can select
-an approved ID and retrieve its evidence, but cannot change authority or control the service. The
-[service contract](KAPSEL_SERVICE.md) owns fixed paths, identities and process lifecycle.
+Use exact authenticated artifacts. The preview is non-production, and current source is not a new
+published release. The [service contract](KAPSEL_SERVICE.md) owns paths, identities, and lifecycle.
 
 ## Artifact requirements
 
@@ -117,9 +117,14 @@ Its structure is shown with those variable values redacted, **not as a loadable 
 }
 ```
 
-Cold publication returned `PUBLISHED`. `list` returned `artifact-op-1`, its approved image and
-snapshot `artifact-deployment-uid` / resourceVersion `1`. Initial `history` was empty. Neither read
-contacted the receiver. After `submit artifact-op-1`, the exact admission response was:
+The captured run returned:
+
+- Cold publication: `PUBLISHED`.
+- `list`: `artifact-op-1`, its approved image, and snapshot `artifact-deployment-uid` /
+  resourceVersion `1`.
+- Initial `history`: empty.
+
+Neither read contacted the receiver. After `submit artifact-op-1`, the admission response was:
 
 <!-- example-admitted -->
 
@@ -434,12 +439,10 @@ For a configuration you edited or received from elsewhere, validate it independe
 `VALIDATED_STATIC` confirms those same static checks. It does not open history, contact Kubernetes,
 check credentials or prove host readiness.
 
-Proceed only after `PUBLISHED` and exit `0`. Any missing or uncertain response requires inspection,
-not automatic replay. The command obtains UID/resourceVersion from the receiver before signing the
-snapshot grant. Caller-supplied versions cannot substitute for this read. No token or key is bundled
-in the archive. The published preview rejects legacy grants and journals older than format 5
-unchanged. Current source requires format 6; keep older journals with matching binaries as described
-in [journal retention](UPGRADE.md).
+Proceed only after `PUBLISHED` and exit `0`. A missing or uncertain response requires inspection,
+not automatic replay. No token or key is bundled in the archive. The published preview rejects
+legacy grants and journals older than format 5 unchanged. Current source requires format 6. Keep
+older journals with matching binaries as described in [journal retention](UPGRADE.md).
 
 Start explicitly, then read before selecting anything:
 
@@ -460,10 +463,9 @@ resumption. Expired credentials do not justify reapproval, a new ID or a receive
 The fixed `/etc/kapsel/operator.json` uses the
 [versioned service document](KAPSEL_SERVICE.md#versioned-operator-document), not the legacy CLI/MCP
 document. It supplies bounded snapshot approvals and external historical public-key appointments.
-Each approved ID and tuple is immutable. Reapproval requires an operator decision, a new grant and a
-new handle. Restart must not refresh authority on an existing action. Credential provisioning and
-renewal remain explicit operator work. Source completion-capacity qualification does not establish
-installed-service or native-host acceptance.
+Each approved ID and tuple is immutable. Reapproval requires an operator decision, a new grant, and
+a new action ID. Restart must not refresh an existing action's authority. Source completion-capacity
+tests do not qualify an installed service or native host.
 
 ## Stop, replace or remove executables
 
@@ -606,24 +608,24 @@ $caller --service host-a-journal-a --reference ./caller-state/operation.ref read
 $caller --service host-a-journal-a --reference ./caller-state/operation.ref resume
 ```
 
-`start` saves and syncs the exclusive reference **before** invoking the bridge's mutating submit
-call. The service, not the example, enforces whether the ID is approved. Once the file exists,
-`start` cannot run again, even if its response was lost or locally refused. An absent status after
-uncertainty is not proof the first selection did not occur. A crash after saving the reference but
-before submission may leave `NOT_FOUND` with no effect; the example stops rather than silently
-reissuing the call. Investigate the original ID and service history with the operator. A definitive
-`NOT_ADMITTED` decision is distinct from an uncertain response, but this example still does not
-remove the reference or invent a replacement identity. `read` starts a new MCP process and only
-reads stored facts. `resume` first reads status, then selects **the same ID** only for
-`IN_PROGRESS / resume_required / select_same_id` owned by the caller. It will not select on
-`NOT_FOUND`, an exchange error, `wait`, `wait_then_select_same_id`, operator-required work or any
-terminal classification. An uncertain submission, including caller exit before acknowledgement,
-requires further reads of the original ID. An admitted task may outlive the caller during
-observation. A service restart loses transient worker explanations, not retained history. A read
-after restart never advances recovery; an explicit same-ID selection is a separate decision. For
-`wait_then_select_same_id`, wait and re-read before deciding to resume. A missing or mismatched
-history label stops this example; an unavailable journal or missing historical trust requires
-operator investigation, not a fresh reference.
+The caller commands have distinct responsibilities:
+
+- `start` saves and syncs the exclusive reference **before** submitting. The service checks
+  approval. Once the reference exists, `start` cannot run again, even after a lost response or local
+  refusal. The example retains the reference after definite `NOT_ADMITTED` as well as uncertainty.
+- `read` starts a new MCP process and reads stored facts only. An uncertain submission requires
+  further reads of the original ID. `NOT_FOUND` does not prove that the first selection never
+  occurred. A crash between reference creation and submission can leave an unsent action; the
+  example stops instead of silently resubmitting. Investigate with the operator.
+- `resume` reads status first. It selects **the same ID** only for caller-owned
+  `IN_PROGRESS / resume_required / select_same_id`. It refuses `NOT_FOUND`, exchange errors, `wait`,
+  `wait_then_select_same_id`, operator-required work, and terminal classifications. For
+  `wait_then_select_same_id`, wait and re-read before deciding to resume.
+
+Admitted work can outlive the caller. Service restart loses transient worker explanations, not
+history. A read after restart never advances recovery; selection is a separate decision. A missing
+or mismatched journal label stops the example. An unavailable journal or missing historical trust
+requires operator investigation, not a fresh reference.
 
 `NOT_ATTEMPTED` is local rejection without an effect receipt. `IN_PROGRESS` is unfinished, not
 receiver success. `SUCCEEDED`, `FAILED` and `UNKNOWN` are terminal receiver classifications;

@@ -41,9 +41,8 @@ of preserving parallel truths.
 
 For durable formats, public commands, configuration surfaces, package boundaries, and lifecycle
 transitions, consider what knowledge the design exposes, its failure behavior, and the cost of
-changing it later. Compare concrete alternatives when there is a real tradeoff; there is no required
-candidate count. Choose the smaller complete boundary, not necessarily the shorter implementation.
-An agreed feature includes the design work and contract updates needed to deliver it.
+changing it later. Compare concrete alternatives when there is a real tradeoff. Choose the smaller
+complete boundary, not necessarily the shorter implementation.
 
 Judge functions and files by cohesion and reasons to change, not arbitrary size limits. Split
 unrelated responsibilities, but keep a complete mechanism together when splitting would force
@@ -55,7 +54,7 @@ Explicit states, bounds, and typed failures can require more code while reducing
 The Tiger-style discipline makes those facts auditable. Simplicity does not justify collapsing
 domain states, weakening checks, or hiding uncertainty.
 
-Adopt the discipline, not the costume:
+Apply these safety practices:
 
 - small, deep interfaces;
 - explicit state machines and visible transition ordering;
@@ -71,7 +70,7 @@ documents and tests, not the style guide.
 
 ## Consequences
 
-The project accepts explicit code in exchange for auditable state and authority transitions. It does
-not add custom lint infrastructure until repeated objective drift justifies it. The
-[contributor complexity review](../../CONTRIBUTING.md#complexity-review) provides prompts for useful
-design comparisons without a mandatory report.
+Explicit code makes state and authority transitions auditable. Add custom lint rules only when
+repeated objective drift justifies them. The
+[contributor complexity review](../../CONTRIBUTING.md#complexity-review) supports design
+comparisons.
