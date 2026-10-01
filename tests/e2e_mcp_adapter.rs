@@ -17,7 +17,10 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
-use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+use kapsel::{
+    provision_exact_grant, AgentRequest, Application, AuthorizationTrust, ExactAuthorization,
+    GrantProvisioning, OperationResult, OperatorConfiguration,
+};
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
@@ -239,8 +242,18 @@ fn serve_outcome(listener: &TcpListener, receiver_plan: ReceiverPlan) {
             .to_string(),
         );
     }
+    for body in outcome_responses(receiver_plan) {
+        serve_response(listener, "200 OK", &body.to_string());
+    }
+}
+
+fn outcome_responses(receiver_plan: ReceiverPlan) -> [serde_json::Value; 3] {
+    let old_image = concat!(
+        "registry.example/agent-api@sha256:",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
     let failed = matches!(receiver_plan, ReceiverPlan::Failed);
-    let responses = [
+    [
         serde_json::json!({
             "apiVersion": "apps/v1", "kind": "Deployment",
             "metadata": {"name": "agent-api", "namespace": "demo", "uid": "uid-1",
@@ -283,10 +296,58 @@ fn serve_outcome(listener: &TcpListener, receiver_plan: ReceiverPlan) {
                         "reason": "MinimumReplicasAvailable"})
                 }]}
         }),
-    ];
-    for body in responses.map(|value| value.to_string()) {
-        serve_response(listener, "200 OK", &body);
-    }
+    ]
+}
+
+async fn retain_unknown_outcome(fixture: &Fixture) {
+    use http::{Method, Request, Response};
+    use kube::{client::Body, Client};
+    use tower_test::mock;
+
+    let (service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
+    let mut application = Application::open(OperatorConfiguration {
+        journal_path: fixture.root.join("journal.sqlite3"),
+        receipt_output_directory: Some(fixture.root.join("receipts")),
+        authorization_trust: AuthorizationTrust {
+            key_id: "mcp-authorization-key".into(),
+            public_key: SigningKey::from_bytes(&[41; 32]).verifying_key().to_bytes(),
+        },
+        signed_authorization_grant: fs::read(fixture.root.join("grant.bin")).unwrap(),
+        kubernetes_client: Client::new(service, "demo"),
+        receipt_signing_seed: [42; 32],
+        receipt_signing_key_id: "mcp-receipt-key".into(),
+    })
+    .unwrap();
+    let [preflight, patch, observation] = outcome_responses(ReceiverPlan::Unknown);
+    let responder = tokio::spawn(async move {
+        let dispatch_exchanges = [(Method::GET, &preflight), (Method::PATCH, &patch)];
+        let observation_reads = std::iter::repeat_n((Method::GET, &observation), 180);
+        for (expected_method, response) in dispatch_exchanges.into_iter().chain(observation_reads) {
+            let (request, send) = handle.next_request().await.unwrap();
+            assert_eq!(request.method(), expected_method);
+            assert_eq!(
+                request.uri().path(),
+                "/apis/apps/v1/namespaces/demo/deployments/agent-api"
+            );
+            send.send_response(Response::new(Body::from(
+                serde_json::to_vec(response).unwrap(),
+            )));
+        }
+    });
+    let started = tokio::time::Instant::now();
+    let report = application
+        .execute(&AgentRequest {
+            operation_id: "mcp-op-1".into(),
+            namespace: "demo".into(),
+            deployment: "agent-api".into(),
+            container: "api".into(),
+            immutable_image_digest: IMAGE.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.result, Some(OperationResult::Unknown));
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(179));
+    responder.await.unwrap();
 }
 
 fn serve_response(listener: &TcpListener, status: &str, body: &str) {
@@ -615,8 +676,8 @@ fn mutable_image_and_exact_grant_mismatch_are_request_rejections() {
     );
 }
 
-#[test]
-fn application_outcomes_preserve_domain_parity_across_cli_and_mcp() {
+#[tokio::test(start_paused = true)]
+async fn application_outcomes_preserve_domain_parity_across_cli_and_mcp() {
     for (plan, expected_state, expected_result, expected_rejection) in [
         (
             ReceiverPlan::DeploymentNotFound,
@@ -645,7 +706,14 @@ fn application_outcomes_preserve_domain_parity_across_cli_and_mcp() {
         (ReceiverPlan::Failed, "FINALIZED", Some("FAILED"), None),
         (ReceiverPlan::Unknown, "FINALIZED", Some("UNKNOWN"), None),
     ] {
-        let mut fixture = target_rejection_fixture(plan);
+        let mut fixture = if matches!(plan, ReceiverPlan::Unknown) {
+            let fixture = fixture();
+            // Use virtual time to prepare UNKNOWN; the binaries prove retained-outcome replay.
+            retain_unknown_outcome(&fixture).await;
+            fixture
+        } else {
+            target_rejection_fixture(plan)
+        };
         let response = mcp_operation(&fixture);
         assert_eq!(response["result"]["isError"], false);
         let report = tool_report(&response);
@@ -658,7 +726,9 @@ fn application_outcomes_preserve_domain_parity_across_cli_and_mcp() {
             report["target_rejection"],
             expected_rejection.map_or(serde_json::Value::Null, serde_json::Value::from)
         );
-        fixture.server.take().unwrap().join().unwrap();
+        if let Some(server) = fixture.server.take() {
+            server.join().unwrap();
+        }
 
         let local = local_operation(&fixture);
         assert_eq!(local.status.code(), Some(0));
@@ -902,7 +972,7 @@ fn framing_boundaries_reject_incomplete_utf8_and_batch_input() {
 }
 
 #[test]
-fn tool_call_matches_the_local_request_and_typed_outcome() {
+fn repeated_tool_calls_preserve_the_report_and_accept_progress_metadata() {
     let mut fixture = successful_fixture();
     let responses = run_session(
         &fixture,
@@ -957,27 +1027,4 @@ fn tool_call_matches_the_local_request_and_typed_outcome() {
         responses[1]["result"]["content"][0]["text"]
     );
     fixture.server.take().unwrap().join().unwrap();
-
-    let local = Command::new(env!("CARGO_BIN_EXE_kapsel"))
-        .args([
-            "operate",
-            "--request",
-            fixture.request.to_str().unwrap(),
-            "--operator-config",
-            fixture.operator_config.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(local.status.code(), Some(0));
-    let local_report: serde_json::Value = serde_json::from_slice(&local.stdout).unwrap();
-    for field in [
-        "operation_id",
-        "state",
-        "result",
-        "target_rejection",
-        "receipt_file",
-        "receipt_sha256",
-    ] {
-        assert_eq!(report[field], local_report[field], "field {field}");
-    }
 }

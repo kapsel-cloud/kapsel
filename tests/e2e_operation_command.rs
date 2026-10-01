@@ -684,12 +684,9 @@ fn unsafe_operator_authority_files_fail_before_journal_creation() {
     let special = fixture_with_receiver(false);
     let key = special.root.join("authorization.pub");
     fs::remove_file(&key).unwrap();
-    let short_socket = PathBuf::from(format!(
-        "/tmp/kapsel-special-{}-{}",
-        std::process::id(),
-        NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = fs::remove_file(&short_socket);
+    // Keep the bind name short for Unix socket limits, but on the fixture's filesystem:
+    // TMPDIR need not share a mount with /tmp.
+    let short_socket = special.root.join("s");
     let _socket = std::os::unix::net::UnixListener::bind(&short_socket).unwrap();
     fs::rename(&short_socket, &key).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))

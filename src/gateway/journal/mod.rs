@@ -2315,6 +2315,10 @@ mod tests {
             Some(OperationState::Requested)
         );
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
+        other
+            .connection
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
 
         let snapshot = journal
             .authorized_operation_with(&authorized, || {
@@ -2324,7 +2328,10 @@ mod tests {
                      WHERE operation_id = ?2",
                     params![b"changed-custody".as_slice(), "snapshot-op"],
                 );
-                assert!(result.is_err());
+                assert_eq!(
+                    result.unwrap_err().sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy)
+                );
             })
             .unwrap()
             .unwrap();
@@ -2413,6 +2420,10 @@ mod tests {
             AuthorizedRequest::bind(ValidatedRequest::try_from(&request).unwrap(), verified)
                 .unwrap();
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
+        other
+            .connection
+            .busy_timeout(std::time::Duration::ZERO)
+            .unwrap();
 
         let snapshot = journal
             .authorized_operation_with(&authorized, || {
@@ -2422,7 +2433,10 @@ mod tests {
                      WHERE operation_id = ?2",
                     params![b"replacement".as_slice(), "snapshot-op"],
                 );
-                assert!(result.is_err());
+                assert_eq!(
+                    result.unwrap_err().sqlite_error_code(),
+                    Some(rusqlite::ErrorCode::DatabaseBusy)
+                );
             })
             .unwrap()
             .unwrap();

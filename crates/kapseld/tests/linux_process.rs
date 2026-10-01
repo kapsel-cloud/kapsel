@@ -1645,8 +1645,7 @@ fn saturated_ninth_is_closed_and_new_tenth_succeeds_after_recovery() {
     for _ in 1..8 {
         admitted.push(UnixStream::connect(&socket).unwrap());
     }
-    thread::sleep(Duration::from_millis(50));
-
+    // Connections are queued in order; the ninth denial acknowledges saturation.
     let mut ninth = UnixStream::connect(&socket).unwrap();
     ninth
         .set_read_timeout(Some(Duration::from_millis(500)))
@@ -1659,8 +1658,13 @@ fn saturated_ninth_is_closed_and_new_tenth_succeeds_after_recovery() {
     }
     assert!(denied.is_empty());
 
-    drop(admitted.remove(0));
-    thread::sleep(Duration::from_millis(50));
+    // EOF terminates this idle handler without spawning a storage job. The fixture's
+    // current-thread runtime releases its permit before it can accept the tenth peer.
+    let mut released = admitted.remove(0);
+    released.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut closed = Vec::new();
+    released.read_to_end(&mut closed).unwrap();
+    assert!(closed.is_empty());
     let mut tenth = UnixStream::connect(&socket).unwrap();
     write_frame(
         &mut tenth,

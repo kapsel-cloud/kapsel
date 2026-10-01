@@ -402,14 +402,16 @@ filesystem reservation, ENOSPC, power-loss or native/live qualification. The own
 ## Bounded storage failure qualification
 
 The normal package gate includes source-named SQLite write-plan checks, rollback-record accounting,
-concurrent admission at 31 unfinished identities, and the existing full-capacity receipt test
-expanded to nine insertion-order/pending-phase combinations. It uses maximal legal fields and valid
-fragmented freelists at 16,384 pages, and compares all retained rows without repeatedly verifying
-unchanged signatures. Focused commands:
+concurrent admission at 31 unfinished identities, and three full-capacity receipt tests, one per
+insertion order. Each covers all three pending phases, retaining nine combinations. Closed,
+production-generated baseline histories are copied into isolated cases rather than rebuilding
+unchanged completed operations. The cases use maximal legal fields and valid fragmented freelists at
+16,384 pages, and compare all retained rows without repeatedly verifying unchanged signatures.
+Focused commands:
 
 ```sh
 cargo test --locked -p kapsel --lib gateway::tests::storage -- --nocapture
-cargo test --locked -p kapsel --lib full_identity_capacity_completes_all_remaining_receipts
+cargo test --locked -p kapsel --lib full_identity_capacity
 cargo test --locked -p kapsel --lib concurrent_submissions_at_31_unfinished
 ```
 

@@ -212,25 +212,9 @@ pub(super) fn maximal_adapter(path: &Path, operation: &SetDeploymentImageRequest
     adapter
 }
 
-pub(super) async fn qualify_full_capacity() {
-    for order in ["ascending", "descending", "alternating"] {
-        for phase in [
-            OperationState::Authorized,
-            OperationState::ApplyStarted,
-            OperationState::ReceiverObserved,
-        ] {
-            qualify_full_capacity_case(order, phase).await;
-        }
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one trace compares every retained row through full-capacity completion"
-)]
-async fn qualify_full_capacity_case(order: &str, phase: OperationState) {
-    let path = database_path(&format!("full-capacity-{order}-{phase:?}"));
-    let mut gateway = maximal_gateway(&path);
+pub(super) async fn qualify_full_capacity_order(order: &str) {
+    let baseline = database_path(&format!("full-capacity-{order}-baseline"));
+    let mut gateway = maximal_gateway(&baseline);
     let key = "k".repeat(128);
     let settings = ReceiptSettings {
         signing_seed: &[13; 32],
@@ -246,16 +230,68 @@ async fn qualify_full_capacity_case(order: &str, phase: OperationState) {
         };
         let operation = maximal_request(identity);
         let grant = maximal_grant(&operation);
-        gateway
-            .submit_authorized_with_fault(&operation, &grant, None)
-            .unwrap();
-        if index >= 472 && phase == OperationState::Authorized {
+        if index >= 472 {
             pending.push((operation, grant));
             continue;
         }
-        let mut adapter = maximal_adapter(&path, &operation);
-        let fault = (index >= 472 && phase == OperationState::ApplyStarted)
-            .then_some(FaultPoint::ApplyOutcomeCommitted);
+        gateway
+            .submit_authorized_with_fault(&operation, &grant, None)
+            .unwrap();
+        let mut adapter = maximal_adapter(&baseline, &operation);
+        assert_eq!(
+            gateway
+                .run_operation_once_with_adapter(&operation.operation_id, &mut adapter)
+                .await
+                .unwrap(),
+            Some(OperationState::ReceiverObserved)
+        );
+        assert_eq!(adapter.apply_calls, 1);
+        gateway
+            .finalize_operation_receipt_once(&operation.operation_id, &settings)
+            .unwrap();
+    }
+    drop(gateway);
+    for phase in [
+        OperationState::Authorized,
+        OperationState::ApplyStarted,
+        OperationState::ReceiverObserved,
+    ] {
+        eprintln!("full-capacity case: order={order}, phase={phase:?}");
+        qualify_full_capacity_case(order, phase, &baseline, &pending).await;
+    }
+    fs::remove_dir_all(baseline.parent().unwrap()).unwrap();
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one trace compares every retained row through full-capacity completion"
+)]
+async fn qualify_full_capacity_case(
+    order: &str,
+    phase: OperationState,
+    baseline: &Path,
+    pending: &[(SetDeploymentImageRequest, Vec<u8>)],
+) {
+    let path = database_path(&format!("full-capacity-{order}-{phase:?}"));
+    copy_closed_journal(baseline, &path);
+    let mut gateway = maximal_gateway(&path);
+    let key = "k".repeat(128);
+    let settings = ReceiptSettings {
+        signing_seed: &[13; 32],
+        key_id: &key,
+    };
+    // Keep the original insertion/advance order for the pending tail: its phase affects
+    // record growth and page layout. Only the identical completed prefix is reused.
+    for (operation, grant) in pending {
+        gateway
+            .submit_authorized_with_fault(operation, grant, None)
+            .unwrap();
+        if phase == OperationState::Authorized {
+            continue;
+        }
+        let mut adapter = maximal_adapter(&path, operation);
+        let fault =
+            (phase == OperationState::ApplyStarted).then_some(FaultPoint::ApplyOutcomeCommitted);
         let result = gateway
             .run_operation_once_with_adapter_and_fault(&operation.operation_id, &mut adapter, fault)
             .await;
@@ -265,13 +301,6 @@ async fn qualify_full_capacity_case(order: &str, phase: OperationState) {
             assert_eq!(result.unwrap(), Some(OperationState::ReceiverObserved));
         }
         assert_eq!(adapter.apply_calls, 1);
-        if index >= 472 {
-            pending.push((operation, grant));
-        } else {
-            gateway
-                .finalize_operation_receipt_once(&operation.operation_id, &settings)
-                .unwrap();
-        }
     }
     let overflow = request();
     assert!(matches!(
@@ -286,11 +315,11 @@ async fn qualify_full_capacity_case(order: &str, phase: OperationState) {
         let mut gateway = maximal_gateway(&path);
         assert_eq!(
             gateway
-                .submit_authorized_with_fault(&operation, &grant, None)
+                .submit_authorized_with_fault(operation, grant, None)
                 .unwrap(),
             SubmissionResult::Existing(phase)
         );
-        let mut adapter = maximal_adapter(&path, &operation);
+        let mut adapter = maximal_adapter(&path, operation);
         gateway
             .run_operation_once_with_adapter(&operation.operation_id, &mut adapter)
             .await
@@ -384,12 +413,21 @@ async fn qualify_full_capacity_case(order: &str, phase: OperationState) {
             );
         }
         assert_eq!(after, original, "an unrelated retained row changed");
-        after.insert(operation.operation_id, updated);
+        after.insert(operation.operation_id.clone(), updated);
         original = after;
     }
     assert_eq!(fs::metadata(&path).unwrap().len(), 64 * 1024 * 1024);
     eprintln!("completed504 retained/32 {phase:?}, order={order}, fragmented16384-page database");
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+// Copy committed bytes only; each case owns a fresh worker lock and rollback journal.
+fn copy_closed_journal(source: &Path, destination: &Path) {
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", source.display()));
+        assert!(!sidecar.exists());
+    }
+    fs::copy(source, destination).unwrap();
 }
 
 pub(super) fn park_receipt_after_sql(ready: PathBuf) {
@@ -452,10 +490,12 @@ async fn failure_history(path: &Path) -> SetDeploymentImageRequest {
 
 #[tokio::test]
 async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_preserve_history() {
+    let baseline = database_path("full-capacity-kill-baseline");
+    let selected = failure_history(&baseline).await;
+    fragmented_maximum_page_count(&baseline);
     for scenario in ["before_receipt_commit", "receipt_sql_executed", "receipt"] {
         let path = database_path(&format!("full-capacity-kill-{scenario}"));
-        let selected = failure_history(&path).await;
-        fragmented_maximum_page_count(&path);
+        copy_closed_journal(&baseline, &path);
         let before = stored_rows(&Connection::open(&path).unwrap());
         let ready = path.parent().unwrap().join("ready");
         let mut child = spawn_process_child(scenario, &path, &ready, None, None);
@@ -511,6 +551,7 @@ async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_prese
         drop(Gateway::open_for_test(&path).unwrap());
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
+    fs::remove_dir_all(baseline.parent().unwrap()).unwrap();
 }
 
 #[cfg(target_os = "linux")]

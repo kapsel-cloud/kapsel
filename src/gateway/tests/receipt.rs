@@ -74,8 +74,18 @@ async fn maximal_request_fields_complete_a_bounded_durable_receipt() {
 }
 
 #[tokio::test]
-async fn full_identity_capacity_completes_all_remaining_receipts() {
-    super::storage::qualify_full_capacity().await;
+async fn full_identity_capacity_ascending_completes_all_remaining_receipts() {
+    super::storage::qualify_full_capacity_order("ascending").await;
+}
+
+#[tokio::test]
+async fn full_identity_capacity_descending_completes_all_remaining_receipts() {
+    super::storage::qualify_full_capacity_order("descending").await;
+}
+
+#[tokio::test]
+async fn full_identity_capacity_alternating_completes_all_remaining_receipts() {
+    super::storage::qualify_full_capacity_order("alternating").await;
 }
 
 #[tokio::test]

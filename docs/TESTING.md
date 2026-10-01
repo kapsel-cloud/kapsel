@@ -163,7 +163,10 @@ receiver truth, causation, complete capture, compliance, or `VERIFIED`.
 Default semantic tests do not depend on wall-clock time, random keys, live services, ambient trust,
 locale, or filesystem order. Use fixed keys, explicit evaluation time, private temporary
 directories, seeded inputs, and sorted output. A subprocess test may use a bounded monotonic
-coordination deadline; result meaning must not depend on polling order or timing.
+coordination deadline; result meaning must not depend on polling order or timing. Test intentional
+SQLite lock conflicts with a zero busy timeout and assert the lock error. Use paused Tokio time for
+in-memory deadline tests. Process fixtures should acknowledge admission or handler completion
+instead of using fixed sleeps as readiness evidence.
 
 Fault tests, simulations, process recovery, and compile-time demonstration controls cross the same
 private operation-selected provider and receipt-completion implementations used by `Application`.
@@ -196,7 +199,11 @@ Kubernetes semantics, release integrity, or production readiness.
 The MCP subprocess lane proves bounded newline-delimited framing, one five-field tool, operator
 configuration outside caller input, typed `SUCCEEDED`, `FAILED`, `UNKNOWN`, and `NOT_ATTEMPTED`
 vocabulary, restart, protocol-only standard output, bounded hostile input, and secret-free failures.
-Cancellation, EOF, or transport completion never determines receiver outcome.
+Cancellation, EOF, or transport completion never determines receiver outcome. CLI/MCP `UNKNOWN`
+report parity uses a retained outcome produced by the real application under paused Tokio time;
+production binaries replay that history rather than spending another observation budget. Fresh
+binary execution still covers success, failure and target rejection. Service MCP socket fixtures
+assert exact request bodies and exchange counts, including zero requests for rejected caller input.
 
 The current format-6 version-rejection test proves older journals, including format 5, remain
 untouched without migration. [Build and test](BUILD.md#journal-version-rejection) owns the current

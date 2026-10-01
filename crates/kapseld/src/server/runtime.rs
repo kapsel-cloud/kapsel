@@ -684,29 +684,30 @@ mod tests {
         });
     }
 
-    #[test]
-    fn aggregate_read_and_write_deadlines_abandon_stalled_io() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let (_idle_writer, mut idle_reader) = tokio::io::duplex(1);
-            assert!(read_request_with_deadline(&mut idle_reader).await.is_err());
+    #[tokio::test(start_paused = true)]
+    async fn read_deadline_abandons_stalled_input() {
+        let (_idle_writer, mut idle_reader) = tokio::io::duplex(1);
+        let started = Instant::now();
+        assert!(read_request_with_deadline(&mut idle_reader).await.is_err());
+        assert_eq!(started.elapsed(), IO_DEADLINE);
+    }
 
-            let (mut stalled_writer, mut stalled_reader) = tokio::io::duplex(1);
-            assert!(
-                write_response_with_deadline(&mut stalled_writer, b"bounded")
-                    .await
-                    .is_err()
-            );
-            drop(stalled_writer);
-            let mut partial = Vec::new();
-            stalled_reader.read_to_end(&mut partial).await.unwrap();
-            let complete = [7_u32.to_be_bytes().as_slice(), b"bounded"].concat();
-            assert!(!partial.is_empty());
-            assert_ne!(partial, complete);
-        });
+    #[tokio::test(start_paused = true)]
+    async fn write_deadline_leaves_only_an_incomplete_frame() {
+        let (mut stalled_writer, mut stalled_reader) = tokio::io::duplex(1);
+        let started = Instant::now();
+        assert!(
+            write_response_with_deadline(&mut stalled_writer, b"bounded")
+                .await
+                .is_err()
+        );
+        assert_eq!(started.elapsed(), IO_DEADLINE);
+        drop(stalled_writer);
+        let mut partial = Vec::new();
+        stalled_reader.read_to_end(&mut partial).await.unwrap();
+        let complete = [7_u32.to_be_bytes().as_slice(), b"bounded"].concat();
+        assert!(!partial.is_empty());
+        assert_ne!(partial, complete);
     }
 }
 

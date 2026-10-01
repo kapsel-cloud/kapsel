@@ -34,6 +34,7 @@ tokio = { workspace = true, features = [
 [dev-dependencies]
 rusqlite = { version = "0.40.2", features = ["bundled", "limits"] }
 http.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tower-test.workspace = true
 
 [lints]
