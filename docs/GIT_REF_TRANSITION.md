@@ -49,6 +49,14 @@ receipt seed. These hook inputs are not packet-level evidence; the
 The fixture is not installed-systemd, power-loss or production qualification. Its test overrides are
 absent from ordinary builds.
 
+## Packaged production-binary qualification
+
+The [artifact journey](BUILD.md#git-transition-service) exercises the same Git boundary without
+source-harness binaries. It uses the authenticated archive's production service and fixed caller
+inside disposable Linux containers. Receiver-owned hook faults establish lost acknowledgement and
+service-loss windows. Independent ref and hook-input checks accompany same-ID recovery and retained
+receipt comparison. It does not establish native systemd behavior or packet-level counts.
+
 ## Operator preparation
 
 Follow the service's fixed-root and custody rules. Provision a canonical absolute Git executable

@@ -110,6 +110,18 @@ The earlier [v0.2.0 beta](https://github.com/kapsel-cloud/kapsel/releases/tag/v0
 and historical journal-upgrade promises do not apply to the preview. Current source changes do not
 alter published artifacts.
 
+## Next release boundary
+
+The selected `v0.3.0` scope includes both effects, the resident service, the fixed ID-only client,
+the service MCP bridge, and fresh-session caller continuity. It remains a non-production developer
+release on the sole x86-64 GNU/Linux target. This is a release target, not a published capability or
+completed qualification claim.
+
+The [release path](RELEASE.md#path-to-v030) owns graduation gates and candidate sequencing. It
+selects a fresh-install boundary from the format-5 preview, not migration. Existing attempted
+history must remain protected under [journal retention](UPGRADE.md); a new installation is not
+permission to repeat an old action.
+
 ## Maturity and exclusions
 
 Preview evidence covers one operation, receiver, platform, and named failure windows. It does not

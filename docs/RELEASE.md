@@ -9,6 +9,75 @@ The
 identifies its exact bytes and qualification. New candidates need their own qualification. The
 v0.2.0 archive remains reproducible from its tagged source, not the current assembler.
 
+## Path to v0.3.0
+
+The next release target is `v0.3.0`, a bounded **non-production developer release**. Removing the
+prerelease suffix does not establish production readiness or a general compatibility promise. There
+is no release date. Publication requires the evidence below and explicit maintainer approval. This
+section defines acceptance criteria, not work status or completed qualification.
+
+### Selected scope
+
+Freeze the candidate scope at the current resident service, fixed ID-only client, service MCP
+bridge, and fresh-session caller continuity. Include both `kubernetes.set_deployment_image` and
+`git.transition_ref` under their existing [effect contracts](EFFECT_GATEWAY.md). The sole release
+target remains `x86_64-unknown-linux-gnu`.
+
+Do not add another effect, target, scheduler, provider interface, installer, or production-support
+promise to this release. Fixes needed to satisfy the selected contracts remain in scope. The
+[technical scope](SCOPE.md) owns capability limits; this release does not relax them.
+
+### Compatibility boundary
+
+Select a fresh-install boundary for users of `v0.3.0-preview.1`, not a format-5 migration. The
+candidate uses journal format 6 and must reject older journals unchanged. Keep preview history,
+sidecars, original authority, and matching binaries together. A separate installation does not
+continue an attempted preview action or authorize its repetition.
+
+Existing format-6 history must retain its action identities and original receipt bytes under the
+candidate. Follow [journal retention](UPGRADE.md) for binary replacement. Do not advertise
+migration, downgrade, stale-backup restoration, or host-loss continuity.
+
+### Graduation gates
+
+A maintainer must accept one exact clean source revision and its exact artifact bytes. All required
+lanes must pass; missing evidence blocks release. Record commands, environment identities, outcomes,
+and source/artifact digests without publishing private fixture material.
+
+| Gate             | Required evidence                                                                                                                                                                                                   | Owner                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source           | Full deterministic gate, fresh source security scan, Linux service process tests, receiver-recovery matrix, seeded simulation, receipt fuzz smoke, and bounded storage ENOSPC qualification                         | [Build and test](BUILD.md)                                                                                                                         |
+| Artifact         | Two isolated assemblies with identical deterministic files, hostile-archive checks, extracted-binary smoke, and exact-artifact SBOM scan                                                                            | [Assembly](#deterministic-assembly), [artifact proof](#install-upgrade-and-artifact-only-proof), and [SBOM](#spdx-sbom)                            |
+| Native service   | Authenticated extraction and the shipped systemd unit on a fresh native x86-64 Linux host                                                                                                                           | [Native qualification](#native-installed-systemd-qualification)                                                                                    |
+| Kubernetes       | Live receiver gate and packaged-service workflow covering caller loss, service crash, same-ID recovery, frozen uncertainty, and independent mutation counts                                                         | [Live gate](BUILD.md#live-kubernetes-gate) and [packaged workflow](BUILD.md#packaged-service-live-workflow)                                        |
+| Git              | Core recovery matrix, Linux service-process recovery, and an extracted production-artifact journey covering acknowledgement loss, same-ID recovery, receiver ref/hook observations, and identical retained receipts | [Git service](BUILD.md#git-transition-service) and [Git example](GIT_REF_TRANSITION.md)                                                            |
+| Caller           | Fresh-session identity retention through the real Linux MCP bridge and one representative model-driven packaged healthy action                                                                                      | [Caller fixture](BUILD.md#kapsel-service-candidate) and [agent workflow](BUILD.md#packaged-service-live-workflow)                                  |
+| Release identity | Version agreement across binaries, MCP, archive, metadata and SBOM; explicit compatibility notes; publisher authentication and downloaded-byte verification                                                         | [Metadata](#release-metadata), [authentication](#publisher-authentication-and-provenance), and [extraction](#authenticate-and-extract-the-preview) |
+
+The [packaged Git journey](BUILD.md#git-transition-service) must run separately from the source Git
+harness. Source tests alone cannot discharge that gate. The candidate-signing workflow also does not
+run all native, live, Git, or agent lanes. A successful workflow run is not complete release
+acceptance.
+
+### Candidate and publication sequence
+
+1. Close qualification gaps within the selected scope. Keep current-source and published-preview
+   claims separate.
+2. Prepare a newly named release candidate, such as `0.3.0-rc.1`. Update package identity and
+   release notes without changing the existing preview tag or bytes.
+3. Qualify that candidate against every graduation gate. Sign it only with explicit maintainer
+   authorization. Publish candidate evidence tied to its exact revision and artifact digests.
+4. Prepare `0.3.0` after candidate acceptance. The version change creates a new revision and new
+   bytes. Re-run the graduation gates for the final revision; do not relabel candidate artifacts or
+   inherit their qualification by assumption.
+5. With separate publication approval, publish the final authenticated artifacts and evidence.
+   Download them through the public release route and verify their identity, signature, and
+   extraction. Update the README and scope to describe only the accepted published release.
+
+A failed gate requires a fix and a newly qualified revision. Keep rejected or withdrawn candidate
+identities distinct; never overwrite their artifacts. Neither this plan nor passing tests authorizes
+signing, tagging, pushing, or publication.
+
 ## Supported target and inputs
 
 The sole preview target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in pinned x86-64

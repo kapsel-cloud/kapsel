@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel"
-version = "0.2.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "ed25519-dalek",
  "http-body-util",
@@ -769,7 +769,7 @@ dependencies = [
 
 [[package]]
 name = "kapsel-authority"
-version = "0.2.0"
+version = "0.3.0-rc.1"
 dependencies = [
  "ed25519-dalek",
  "sha2",

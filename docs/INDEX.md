@@ -34,6 +34,7 @@ to understand one operation. Use the tables below to find exact contracts and co
 
 | Goal                                      | Read                                                      |
 | ----------------------------------------- | --------------------------------------------------------- |
+| Understand v0.3 scope and release gates   | [Release path](RELEASE.md#path-to-v030)                   |
 | Change code or contracts                  | [Contributing](../CONTRIBUTING.md)                        |
 | Write or review documentation             | [Technical writing](../CONTRIBUTING.md#technical-writing) |
 | Build or choose a focused gate            | [Build and test](BUILD.md)                                |

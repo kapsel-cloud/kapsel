@@ -54,6 +54,10 @@ The published
 client, operating assets, and authenticated release companions. It is not a stable v0.3 release and
 has no production-support promise.
 
+The next release target is a bounded non-production `v0.3.0` developer release. The
+[release path](docs/RELEASE.md#path-to-v030) defines its frozen scope, fresh-install compatibility
+boundary, and qualification gates. No release date or completed qualification is implied.
+
 ## Try it
 
 Use a **fresh disposable native x86-64 Debian 12 VM** with systemd and root access. The example is

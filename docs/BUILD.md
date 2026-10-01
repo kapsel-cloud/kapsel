@@ -333,6 +333,23 @@ cargo build --locked -p kapsel-daemon --features test-harness
 python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```
 
+For the production-artifact journey, use an exact accepted clean archive and an independently
+accepted Linux Git 2.55.0 executable compatible with the pinned Debian 12 runner:
+
+```sh
+python3 tests/qualification/run_git_artifact.py \
+  --archive "$archive" --revision "$revision" --git /absolute/path/to/git
+```
+
+This lane creates one isolated, network-disabled container per case. Only extracted production
+binaries and the selected Git executable enter the operating environment. Separate service and
+caller identities enforce private-material custody. Receiver hooks supply acknowledgement-loss and
+service-crash windows; no product test hook is used. The cases check exact ref and hook inputs,
+observation-only same-ID recovery, original receipt retrieval after catalog/material withdrawal, and
+detached inspection. Hook inputs are not packet counts or proof of complete hook delivery.
+Containers are removed; the printed private evidence workspace is retained. This is not native
+systemd, power-loss, or live-repository qualification.
+
 See the [Git service example](GIT_REF_TRANSITION.md) for material, semantics and evidence limits.
 The owning deterministic gate remains `cargo xtask ci`; the Linux process gate below is also
 required when service startup or protocol composition changes.

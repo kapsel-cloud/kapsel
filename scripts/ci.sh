@@ -17,8 +17,9 @@ run_static_checks() {
   python3 tools/dev/test_format.py
   python3 tools/dev/test_dev_tools.py
 
-  printf '%s\n' "==> Storage ENOSPC runner regressions"
+  printf '%s\n' "==> Qualification runner regressions"
   python3 tests/qualification/test_storage_enospc.py
+  python3 tests/qualification/test_git_artifact.py
 
   printf '%s\n' "==> Rust line width"
   ./tools/checks/check-rust-width.sh

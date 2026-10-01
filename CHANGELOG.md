@@ -2,6 +2,24 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
+## Unreleased - 0.3.0-rc.1
+
+- Selects a bounded non-production developer release with the resident service, fixed ID-only
+  client, service MCP bridge, and fresh-session caller continuity.
+- Adds exact local `git.transition_ref` operations alongside Kubernetes Deployment image changes,
+  with effect-specific acknowledgement, recovery, and receipt semantics.
+- Uses journal format 6. Format-5 preview history remains under matching binaries; there is no
+  migration, downgrade, or permission to repeat an attempted action in a new installation.
+- Renames the internal daemon package to `kapsel-daemon`. The `kapseld` executable, systemd unit,
+  socket, and installed paths retain their names.
+- Adds a packaged Git qualification journey with receiver-hook faults, real service loss,
+  observation-only same-ID recovery, private-material custody checks, and retained receipt
+  comparison.
+
+This candidate is not a published release or completed qualification claim. The
+[release path](docs/RELEASE.md#path-to-v030) owns scope and graduation gates. Published preview
+artifacts retain their original version, contracts, and evidence.
+
 ## 0.3.0-preview.1 - 2026-09-22
 
 - Selects the resident-service archive with feature-free `kapsel`, `kapseld` and
