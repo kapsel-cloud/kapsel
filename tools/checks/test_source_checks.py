@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import tempfile
@@ -12,19 +11,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parent.parent
+import check_source_privacy as PRIVACY
+import scan_source_security as SECURITY
 
-
-def load(name: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-PRIVACY = load("check-source-privacy")
-SECURITY = load("scan-source-security")
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class SourcePrivacyTests(unittest.TestCase):
@@ -39,7 +29,13 @@ class SourcePrivacyTests(unittest.TestCase):
                 ".github/workflows/ci.yml",
                 "crates/kapseld/src/main.rs",
                 "crates/kapsel-authority/src/lib.rs",
-                "scripts/check.py",
+                "scripts/setup.sh",
+                "tools/checks/check.py",
+                "tools/release/verify.py",
+                "tools/dev/setup.py",
+                "examples/caller.py",
+                "xtask/src/main.rs",
+                ".cargo/config.toml",
                 "src/lib.rs",
                 "tests/test.rs",
                 "vectors/example.hex",

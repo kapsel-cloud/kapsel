@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import os
 import subprocess
@@ -14,13 +13,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "storage_enospc", ROOT / "scripts/test-storage-enospc.py"
-)
-assert SPEC is not None and SPEC.loader is not None
-RUNNER = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(RUNNER)
+import run_storage_enospc as RUNNER
+
+ROOT = Path(__file__).resolve().parents[2]
 CONTAINER_ID = "a" * 64
 
 
@@ -222,7 +217,7 @@ class RunnerOutcomeTests(unittest.TestCase):
             with self.subTest(outcome=outcome, cleanup_fails=cleanup_fails):
                 with tempfile.TemporaryDirectory(prefix="kapsel-storage-outcome-") as temporary:
                     directory = Path(temporary)
-                    (directory / "repo/scripts").mkdir(parents=True)
+                    (directory / "repo/tests/qualification").mkdir(parents=True)
                     evidence = directory / "evidence"
                     evidence.mkdir()
                     previous = Path.cwd()
@@ -244,7 +239,9 @@ class RunnerOutcomeTests(unittest.TestCase):
                     try:
                         with (
                             mock.patch.object(
-                                RUNNER, "__file__", str(directory / "repo/scripts/runner.py")
+                                RUNNER,
+                                "__file__",
+                                str(directory / "repo/tests/qualification/runner.py"),
                             ),
                             mock.patch.object(
                                 RUNNER.tempfile, "mkdtemp", return_value=str(evidence)

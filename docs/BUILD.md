@@ -10,13 +10,14 @@ Run these from the checkout. Ordinary Cargo builds need only Rust and a C compil
 
 | Task                                      | Command                                                                             |
 | ----------------------------------------- | ----------------------------------------------------------------------------------- |
-| Prepare contributor tools                 | `./scripts/setup.sh`                                                                |
-| Diagnose prerequisites without installing | `./scripts/setup.sh --check`                                                        |
+| Prepare contributor tools                 | `cargo xtask setup`                                                                 |
+| Diagnose prerequisites without installing | `cargo xtask doctor`                                                                |
 | Build debug executables                   | `cargo build --locked --workspace`                                                  |
 | Fast compile check                        | `cargo check --locked --workspace`                                                  |
 | Focused test                              | `cargo test --locked -p kapsel --test service_application_contract cold_validation` |
-| Format                                    | `./scripts/format.sh`                                                               |
-| Full deterministic gate                   | `./scripts/ci-local.sh`                                                             |
+| Format                                    | `cargo xtask fmt`                                                                   |
+| Check formatting                          | `cargo xtask fmt-check`                                                             |
+| Full deterministic gate                   | `cargo xtask ci`                                                                    |
 
 The
 [one-command disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
@@ -52,40 +53,48 @@ For contributor checks, also install [Python](https://www.python.org/downloads/)
 and `ensurepip`, and [Node.js](https://nodejs.org/en/download) 24+ with npm. Then run:
 
 ```sh
-./scripts/setup.sh
+cargo xtask setup
 ```
 
 Setup installs the Rust toolchain selected by `rust-toolchain.toml`, a pinned nightly rustfmt, and
-pinned Prettier/Ruff in versioned directories beneath `$HOME/.local/share/kapsel/dev-tools`. The
-scripts invoke those isolated executables directly. Nothing is installed globally, no shell profile
-changes, and no virtualenv activation is needed in a new shell. Rerunning setup reuses matching
-tools. Network access is needed for missing installations. `./scripts/setup.sh --check` checks
-prerequisites and installed tools without installing or rewriting source. Hooks remain a separate
-opt-in.
+pinned Prettier, Ruff, Taplo, shfmt and ShellCheck in versioned directories beneath
+`$HOME/.local/share/kapsel/dev-tools`. Taplo is built from its locked crate. The scripts invoke
+those isolated executables directly. Nothing is installed globally, no shell profile changes, and no
+virtualenv activation is needed in a new shell. Rerunning setup reuses matching tools. Network
+access is needed for missing installations. `cargo xtask doctor` checks prerequisites and installed
+tools without installing or rewriting source. Cargo may first build xtask or prepare its selected
+compiler; `./scripts/setup.sh --check` bypasses that bootstrap for read-only diagnosis on an
+unprepared host. Hooks remain a separate opt-in.
 
-[`scripts/dev-tools.sh`](../scripts/dev-tools.sh) owns formatter versions for local setup and CI.
-Nightly rustfmt enforces `StdExternalCrate` import grouping and `Crate` import granularity through
-`rustfmt-nightly.toml`. Ordinary compilation still uses the stable toolchain.
+[`tools/dev/dev-tools.sh`](../tools/dev/dev-tools.sh) owns formatter versions for local setup and
+CI. The small [`xtask`](../xtask/src/main.rs) owns contributor command routing, not release or
+qualification semantics. Commands resolve the checkout root even when invoked from a subdirectory.
+The three files in `scripts/` implement setup, formatting and the deterministic gate; setup can also
+be invoked directly before the selected Rust toolchain is installed. Python installation ignores
+ambient pip configuration and destination overrides. Formatting explicitly selects the pinned
+Rustfmt executable rather than an ambient `RUSTFMT` override. Nightly rustfmt enforces
+`StdExternalCrate` import grouping and `Crate` import granularity through `rustfmt-nightly.toml`.
+Ordinary compilation still uses the stable toolchain.
 
 The everyday loop is:
 
 ```sh
-./scripts/format.sh
-./scripts/ci-local.sh
+cargo xtask fmt
+cargo xtask ci
 ```
 
 Formatting runs **Markdown, Rust, then Python**, including the fuzz workspace and Python fixtures.
 It checks tool availability before rewriting files and does not apply lint fixes. To check layout
-without changing source, run `./scripts/format.sh --check`.
+without changing source, run `cargo xtask fmt-check`.
 
 The local gate checks formatting, Python lint, Markdown links, tooling regressions, Rust line width,
 Clippy, rustdoc, deterministic Rust tests, and doctests. It does not start Docker or a cluster. For
 a smaller check:
 
 ```sh
-./scripts/ci-local.sh static  # formatting, lint, links, and tooling regressions
-./scripts/ci-local.sh rust    # Clippy, rustdoc, and deterministic Rust tests
-./scripts/ci-local.sh doc     # Rust doctests
+cargo xtask ci static  # formatting, lint, links, and tooling regressions
+cargo xtask ci rust    # Clippy, rustdoc, and deterministic Rust tests
+cargo xtask ci doc     # Rust doctests
 ```
 
 ### Git hooks
@@ -110,19 +119,19 @@ when practical. Additional environment requirements are listed in the sections b
 
 | Change                             | Command                                                                     |
 | ---------------------------------- | --------------------------------------------------------------------------- |
-| Python scripts                     | `./scripts/ci-local.sh static`                                              |
-| Formatting pipeline                | `python3 scripts/test-format.py`                                            |
+| Python tooling                     | `cargo xtask ci static`                                                     |
+| Formatting pipeline                | `python3 tools/dev/test_format.py`                                          |
 | Effect gateway                     | `cargo test --locked -p kapsel`                                             |
 | Service and private harness        | `cargo test --locked -p kapseld --features test-harness`                    |
 | Shared operator authority          | `cargo test --locked -p kapsel-authority`                                   |
 | Service installed assets           | `cargo test --locked -p kapseld --test install_assets`                      |
 | Direct MCP adapter                 | `cargo test --locked --test e2e_mcp_adapter`                                |
 | Service MCP bridge                 | `cargo test --locked -p kapseld --features test-harness --test service_mcp` |
-| Fresh-session caller fixture       | `python3 scripts/test-fresh-session-caller.py`                              |
-| Crash-demo harness, without Docker | `./scripts/test-demo-harness.sh`                                            |
-| Seeded lifecycle simulation        | `./scripts/test-simulation.sh`                                              |
-| Receipt-inspection fuzz smoke      | `./scripts/test-fuzz.sh`                                                    |
-| Live Kubernetes behavior           | `./scripts/test-kind-effect-gateway.sh`                                     |
+| Fresh-session caller fixture       | `python3 examples/test_fresh_session_caller.py`                             |
+| Crash-demo harness, without Docker | `./examples/test-demo-harness.sh`                                           |
+| Seeded lifecycle simulation        | `./tests/qualification/run-simulation.sh`                                   |
+| Receipt-inspection fuzz smoke      | `./fuzz/smoke.sh`                                                           |
+| Live Kubernetes behavior           | `./tests/qualification/run-kind-effect-gateway.sh`                          |
 
 To run the fresh-session caller fixture against the real MCP bridge and a scripted socket (not
 Kubernetes), build the test-harness binary first:
@@ -132,7 +141,7 @@ cargo build --locked -p kapseld --features test-harness --bin kapsel-service-mcp
 cargo build --locked --bin kapsel
 env KAPSEL_TEST_BRIDGE="$PWD/target/debug/kapsel-service-mcp" \
   KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
-  python3 scripts/test-fresh-session-caller.py
+  python3 examples/test_fresh_session_caller.py
 ```
 
 ## Live Kubernetes gate
@@ -140,7 +149,7 @@ env KAPSEL_TEST_BRIDGE="$PWD/target/debug/kapsel-service-mcp" \
 Requires Docker, kind 0.32+, kubectl 1.30+, Python 3.11+, and OpenSSL:
 
 ```sh
-./scripts/test-kind-effect-gateway.sh
+./tests/qualification/run-kind-effect-gateway.sh
 ```
 
 The script creates and removes its own uniquely named cluster and exports failure logs. It records
@@ -156,7 +165,8 @@ Use an exact accepted clean preview archive and its matching sidecars. This is a
 **disposable test environment**, not permission to use an existing cluster:
 
 ```sh
-python3 scripts/test-kind-agent-action-workflow.py --archive "$archive" --revision "$revision"
+python3 tests/qualification/run_kind_agent_action_workflow.py \
+  --archive "$archive" --revision "$revision"
 ```
 
 The runner creates one uniquely named, pinned kind cluster and an isolated Linux service container.
@@ -186,7 +196,8 @@ Linux x86-64 Codex 0.155.1 executable, its matching `codex-code-mode-host` sibli
 model authentication. The runner does not install or update Codex:
 
 ```sh
-python3 scripts/test-kind-agent-action-workflow.py --archive "$archive" --revision "$revision" \
+python3 tests/qualification/run_kind_agent_action_workflow.py \
+  --archive "$archive" --revision "$revision" \
   --agent --codex-binary /absolute/path/to/verified/codex
 ```
 
@@ -240,7 +251,7 @@ The native example separately retains its stopped host state.
 Requires Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 
 ```sh
-./scripts/demo-kind-crash-recovery.sh
+./examples/demo-kind-crash-recovery.sh
 ```
 
 The source demo builds its Rust harness, refuses pre-existing kind clusters, and cleans up its owned
@@ -252,7 +263,7 @@ cluster and workspace. To run the published artifact without a Rust toolchain, f
 With the pinned kubectl v1.33.9 build and Python 3.11+, run:
 
 ```sh
-python3 scripts/test-independent-kubectl.py
+python3 tests/qualification/run_independent_kubectl.py
 ```
 
 The [kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md) uses a loopback fixture, not a cluster or
@@ -320,11 +331,11 @@ harness, without installation or a live repository:
 ```sh
 cargo build --locked -p kapsel --bin kapsel
 cargo build --locked -p kapseld --features test-harness
-python3 scripts/test-git-service.py --git /absolute/path/to/git
+python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```
 
 See the [Git service example](GIT_REF_TRANSITION.md) for material, semantics and evidence limits.
-The owning deterministic gate remains `./scripts/ci-local.sh`; the Linux process gate below is also
+The owning deterministic gate remains `cargo xtask ci`; the Linux process gate below is also
 required when service startup or protocol composition changes.
 
 ## Kapsel service candidate
@@ -405,7 +416,7 @@ cargo test --locked -p kapsel --lib concurrent_submissions_at_31_unfinished
 The separate genuine-ENOSPC lane requires Docker and Python 3.11 or later:
 
 ```sh
-python3 scripts/test-storage-enospc.py
+python3 tests/qualification/run_storage_enospc.py
 ```
 
 The runner creates a disposable pinned Linux container with a read-only source bind, no additional
@@ -454,31 +465,31 @@ the deterministic gate. Check the target or run a bounded smoke test:
 
 ```sh
 rustup run nightly-2026-07-03 cargo fuzz check --manifest-path fuzz/Cargo.toml inspect_receipt
-./scripts/test-fuzz.sh
+./fuzz/smoke.sh
 ```
 
 For a longer run:
 
 ```sh
-KAPSEL_FUZZ_RUNS=1000000 KAPSEL_FUZZ_MAX_TIME=3600 ./scripts/test-fuzz.sh
+KAPSEL_FUZZ_RUNS=1000000 KAPSEL_FUZZ_MAX_TIME=3600 ./fuzz/smoke.sh
 ```
 
 Run the seeded lifecycle simulation with defaults, or supply a seed and workload for replay:
 
 ```sh
-./scripts/test-simulation.sh
+./tests/qualification/run-simulation.sh
 KAPSEL_SIMULATION_SEED=21182435914953528 \
-KAPSEL_SIMULATION_CASES=10000 KAPSEL_SIMULATION_SHARDS=8 ./scripts/test-simulation.sh
+KAPSEL_SIMULATION_CASES=10000 KAPSEL_SIMULATION_SHARDS=8 ./tests/qualification/run-simulation.sh
 ```
 
 Optional `KAPSEL_FUZZ_NOTIFY_URL` and `KAPSEL_SIMULATION_NOTIFY_URL` send completion summaries
 through `curl` to a destination you control.
 
-For unattended runs, inspect [the soak runner](../scripts/run-nightly-soak.sh) first. It updates the
-checkout by default, so use a dedicated checkout or disable updates explicitly:
+For unattended runs, inspect [the soak runner](../tools/dev/run-nightly-soak.sh) first. It updates
+the checkout by default, so use a dedicated checkout or disable updates explicitly:
 
 ```sh
-KAPSEL_SOAK_AUTO_UPDATE=0 ./scripts/run-nightly-soak.sh
+KAPSEL_SOAK_AUTO_UPDATE=0 ./tools/dev/run-nightly-soak.sh
 ```
 
 ## Source privacy and security
@@ -487,8 +498,8 @@ The default static gate runs the source privacy check and offline scanner regres
 privacy check directly with:
 
 ```sh
-python3 scripts/check-source-privacy.py
-python3 scripts/test-source-checks.py
+python3 tools/checks/check_source_privacy.py
+python3 tools/checks/test_source_checks.py
 ```
 
 [Privacy](PRIVACY.md#source-check) owns its scope and limitations. The separate source security scan
@@ -496,7 +507,7 @@ requires cargo-audit 0.22.2 and Trivy 0.72.0, network access to refresh their da
 committed checkout:
 
 ```sh
-python3 scripts/scan-source-security.py --output /tmp/kapsel-source-security.json
+python3 tools/checks/scan_source_security.py --output /tmp/kapsel-source-security.json
 ```
 
 It rejects RustSec vulnerabilities or warnings, Trivy HIGH/CRITICAL vulnerabilities and secrets, and
@@ -526,16 +537,16 @@ archive. The checksum-bound verifier companion supplies the
 Assemble the archive and sidecars under `dist/`:
 
 ```sh
-python3 scripts/assemble-release-artifact.py --output-directory dist
+python3 tools/release/assemble_artifact.py --output-directory dist
 ```
 
 For the complete two-assembly proof, keep output outside the worktree:
 
 ```sh
 a_dir=$(mktemp -d "${TMPDIR:-/tmp}/kapsel-release-a.XXXXXX")
-archive_a=$(python3 scripts/assemble-release-artifact.py --output-directory "$a_dir")
-python3 scripts/test-release-artifact.py --archive "$archive_a"
-python3 scripts/test-release-reproducibility.py --reference-archive "$archive_a"
+archive_a=$(python3 tools/release/assemble_artifact.py --output-directory "$a_dir")
+python3 tools/release/test_artifact.py --archive "$archive_a"
+python3 tools/release/test_reproducibility.py --reference-archive "$archive_a"
 ```
 
 The artifact test first exercises the companion's extraction-only command outside the checkout,
@@ -553,7 +564,7 @@ workflow merely to obtain missing test evidence.
 For a quick hostile-layout and dependency-graph regression without building:
 
 ```sh
-python3 scripts/test-release-artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
+python3 tools/release/test_artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
 ```
 
 Remove `"$a_dir"` when its evidence is no longer needed. [Release artifacts](RELEASE.md) owns
@@ -584,6 +595,41 @@ Coverage is informational and non-blocking, not correctness evidence.
 
 Cargo manifests and `Cargo.lock` own Rust dependencies. `rust-toolchain.toml` selects the compiler;
 `rustfmt.toml`, `rustfmt-nightly.toml`, `clippy.toml`, and `ruff.toml` own style settings.
-[`scripts/format.sh`](../scripts/format.sh), [`scripts/ci-local.sh`](../scripts/ci-local.sh), and
-[CI](../.github/workflows/ci.yml) own tool invocation. CI consumes the same setup command and pins
-as local development. Optional qualification tools keep their pins in their owning lanes.
+[`scripts/fmt.sh`](../scripts/fmt.sh), [`scripts/ci.sh`](../scripts/ci.sh), and
+[CI](../.github/workflows/ci.yml) own tool invocation. CI consumes the same setup implementation and
+pins as local development. Optional qualification tools keep their pins in their owning lanes.
+
+### Tooling ownership
+
+| Owner                   | Responsibility                                                     |
+| ----------------------- | ------------------------------------------------------------------ |
+| `xtask/` and `scripts/` | Contributor commands and their three shell implementations         |
+| `tools/dev/`            | Tool pins, contributor-tool regressions and unattended soak runner |
+| `tools/checks/`         | Source checks and their regression tests                           |
+| `tools/release/`        | Assembly, standalone verification, SBOM scanning and their tests   |
+| `tests/qualification/`  | Environment-specific and long-running evidence lanes               |
+| `tests/probes/`         | Independent receiver experiments                                   |
+| `examples/`             | Maintained caller and crash demonstration, with their tests        |
+| `fuzz/`                 | Fuzz workspace and bounded smoke runner                            |
+
+Rust owns product semantics; Python and shell retain external orchestration and independent checks.
+Contributor commands use `cargo xtask <command>` through one Cargo alias. Stock `cargo build`,
+`check`, `test` and `fmt` keep their normal meaning; xtask explicitly selects the broader
+contributor workflow. A shared command vocabulary does not require a shared tooling library or a
+language rewrite. The release verifier remains a standalone distributed file, independent of xtask
+and repository imports.
+
+### Tooling names
+
+Rust and Python files use `snake_case`; shell executables use hyphenated names. Contributor shell
+entry points mirror their commands: `setup.sh`, `fmt.sh` and `ci.sh`. Name the responsibility rather
+than repeating the directory: `tools/release/assemble_artifact.py`, `verify_artifact.py` and
+`scan_sbom.py` own distinct release steps.
+
+Use `test` for regression suites, `run` for qualification runners, `probe` for independent
+experiments, and `demo` for demonstrations. A `check` enforces source rules; a `scan` produces
+security or dependency findings; `verify` authenticates and validates an artifact. A smoke lane is a
+bounded exercise, not a substitute for the owning qualification gate. Python regressions import
+adjacent modules normally; explicit path loading remains useful across owners and in isolated
+subprocesses. These conventions add neither aliases nor a shared tooling library. Source filenames
+do not rename distributed companions or paths retained in published tags.

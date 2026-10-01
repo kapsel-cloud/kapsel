@@ -100,7 +100,7 @@ impl DeploymentImageAdapter for SimulationAdapter {
 }
 
 #[tokio::test]
-#[ignore = "long replayable lane; run through scripts/test-simulation.sh"]
+#[ignore = "long replayable lane; run through tests/qualification/run-simulation.sh"]
 async fn seeded_lifecycle_crash_simulation_preserves_invariants() {
     let seed = environment_number("KAPSEL_SIMULATION_SEED", DEFAULT_SEED);
     let cases = usize::try_from(environment_number(

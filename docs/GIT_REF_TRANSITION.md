@@ -30,12 +30,12 @@ On Linux, with the repository's Rust toolchain, Python 3, OpenSSL and an operato
 ```sh
 cargo build --locked -p kapsel --bin kapsel
 cargo build --locked -p kapseld --features test-harness
-python3 scripts/test-git-service.py --git /absolute/path/to/git
+python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```
 
 This uses disposable private directories and the compile-time fixed-root service fixture. It does
 not install anything, modify systemd, or use a live repository. It drives the maintained
-[`fresh-session-caller.py`](../scripts/fresh-session-caller.py), the real MCP bridge, real service
+[`fresh_session_caller.py`](../examples/fresh_session_caller.py), the real MCP bridge, real service
 startup, CLI grant preparation, Git receiver, retained receipt retrieval and detached CLI
 inspection. Each caller invocation is a new process with the same caller-owned reference.
 

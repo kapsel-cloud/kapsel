@@ -18,7 +18,7 @@ import tarfile
 import tempfile
 import tomllib
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
@@ -562,7 +562,7 @@ def assemble(output_directory: pathlib.Path, allow_dirty: bool) -> pathlib.Path:
     checksum_value = f"{file_sha256(archive)}  {archive.name}\n".encode()
     write_exclusive(checksum, checksum_value)
     created_sbom = create_sbom(archive, revision, tree, source_date, cargo_metadata)
-    verifier_bytes = ROOT.joinpath("scripts/smoke-release-artifact.py").read_bytes()
+    verifier_bytes = ROOT.joinpath("tools/release/verify_artifact.py").read_bytes()
     if len(verifier_bytes) > VERIFIER_BYTES_MAX:
         raise RuntimeError("release verifier exceeded its byte bound")
     write_exclusive(verifier, verifier_bytes)

@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 cd "$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-. ./scripts/dev-tools.sh
+. ./tools/dev/dev-tools.sh
 
 case "${1:-install}" in
 install | --check) mode=${1:-install} ;;
@@ -16,7 +16,7 @@ esac
 }
 
 missing=0
-for tool in git cc rustup python3 node npm taplo; do
+for tool in git cc rustup python3 node npm; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf 'Missing host prerequisite: %s\n' "$tool" >&2
     missing=1
@@ -39,10 +39,20 @@ if [ "$mode" = install ]; then
   rustup toolchain install "$FORMAT_TOOLCHAIN" --profile minimal --component rustfmt --no-self-update
   if [ "$("$RUFF" --version 2>/dev/null || :)" != "ruff $RUFF_VERSION" ]; then
     python3 -m venv "$RUFF_HOME"
-    "$RUFF_HOME/bin/python" -m pip install --disable-pip-version-check "ruff==$RUFF_VERSION"
+    PIP_CONFIG_FILE=/dev/null "$RUFF_HOME/bin/python" -I -m pip --isolated install \
+      --disable-pip-version-check "ruff==$RUFF_VERSION"
   fi
-  "$RUFF_HOME/bin/python" -m pip install --disable-pip-version-check \
-    shfmt-py==4.2.0 shellcheck-py==0.11.0.1
+  shfmt_version=$("$SHFMT" --version 2>/dev/null || :)
+  if [ "${shfmt_version#v}" != "$SHFMT_VERSION" ] ||
+    ! "$SHELLCHECK" --version 2>/dev/null | grep -qx "version: $SHELLCHECK_VERSION"; then
+    PIP_CONFIG_FILE=/dev/null "$RUFF_HOME/bin/python" -I -m pip --isolated install \
+      --disable-pip-version-check "shfmt-py==$SHFMT_PACKAGE_VERSION" \
+      "shellcheck-py==$SHELLCHECK_PACKAGE_VERSION"
+  fi
+  if [ "$("$TAPLO" --version 2>/dev/null || :)" != "taplo $TAPLO_VERSION" ]; then
+    rustup run "$toolchain" cargo install taplo-cli --version "=$TAPLO_VERSION" \
+      --locked --root "$TAPLO_HOME" --force
+  fi
   if [ "$("$PRETTIER" --version 2>/dev/null || :)" != "$PRETTIER_VERSION" ]; then
     npm install --prefix "$PRETTIER_HOME" --no-save --package-lock=false \
       --ignore-scripts --no-audit --no-fund "prettier@$PRETTIER_VERSION"
@@ -51,7 +61,7 @@ fi
 check_formatters
 # Avoid even creating rustup's home during read-only diagnosis.
 [ -d "${RUSTUP_HOME:-$HOME/.rustup}/toolchains" ] || {
-  printf '%s\n' 'Rust toolchain missing. Run ./scripts/setup.sh.' >&2
+  printf '%s\n' 'Rust toolchain missing. Run cargo xtask setup.' >&2
   exit 1
 }
 # rustup run does not install a missing toolchain.

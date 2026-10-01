@@ -26,8 +26,8 @@ It needs neither Cargo nor Kapsel binaries, Kubernetes, Docker, model calls, or 
 credentials.
 
 ```sh
-python3 scripts/test-independent-kubectl.py > /tmp/kubectl-corpus.json
-python3 scripts/test-independent-kubectl.py --case recreated-same-revision \
+python3 tests/qualification/run_independent_kubectl.py > /tmp/kubectl-corpus.json
+python3 tests/qualification/run_independent_kubectl.py --case recreated-same-revision \
   > /tmp/kubectl-recreation.json
 ```
 

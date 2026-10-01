@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-HARNESS = ROOT / "scripts" / "demo-kind-crash-recovery.sh"
+HARNESS = pathlib.Path(__file__).with_name("demo-kind-crash-recovery.sh")
 
 FAKE_DEMO_EXECUTABLE = r"""
 command=$1
@@ -77,7 +77,8 @@ class HarnessPrerequisiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="kapsel-demo-prerequisites-") as temporary:
             directory = pathlib.Path(temporary)
             log = directory / "calls.log"
-            for name, body in commands.items():
+            # Prerequisite and cleanup fixtures do not need a real build or Cargo's build lock.
+            for name, body in {"cargo": "exit 0", **commands}.items():
                 if name == "docker" and body == "exit 0":
                     body = "[ \"$1\" = version ] && echo '29.4.0'; exit 0"
                 path = directory / name

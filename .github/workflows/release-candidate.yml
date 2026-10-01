@@ -28,16 +28,15 @@ jobs:
         id: artifact-a
         shell: bash
         run: |
-          archive=$(python3 scripts/assemble-release-artifact.py \
+          archive=$(python3 tools/release/assemble_artifact.py \
             --output-directory "$RUNNER_TEMP/kapsel-release-a")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
       - name: Verify and smoke-test exact candidate A
         run:
-          python3 scripts/test-release-artifact.py --archive "${{ steps.artifact-a.outputs.archive
-          }}"
+          python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
       - name: Assemble B and compare deterministic bytes
         run:
-          python3 scripts/test-release-reproducibility.py --reference-archive "${{
+          python3 tools/release/test_reproducibility.py --reference-archive "${{
           steps.artifact-a.outputs.archive }}"
       - name: Stage exact candidate A
         env:
@@ -60,10 +59,10 @@ jobs:
       - name: Test and scan exact candidate SBOM
         run: |
           set -eu
-          python3 scripts/test-scan-release-sbom.py
+          python3 tools/release/test_scan_sbom.py
           sbom=$(find dist -maxdepth 1 -type f -name '*.tar.gz.spdx.json')
           test "$(find dist -maxdepth 1 -type f -name '*.tar.gz.spdx.json' | wc -l)" -eq 1
-          python3 scripts/scan-release-sbom.py \
+          python3 tools/release/scan_sbom.py \
             --sbom "$sbom" \
             --output dist/candidate-sbom-scan.json
       - name: Install pinned Cosign
@@ -291,7 +290,7 @@ jobs:
           archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
           docker run --rm --platform linux/amd64 \
             --volume "$PWD/downloaded:/input:ro" \
-            --volume "$PWD/scripts/smoke-release-artifact.py:/smoke.py:ro" \
+            --volume "$PWD/tools/release/verify_artifact.py:/smoke.py:ro" \
             python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 \
             python3 /smoke.py \
               --archive "/input/$(basename "$archive")" \

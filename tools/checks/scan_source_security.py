@@ -162,7 +162,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     if subprocess.run(["git", "diff", "--quiet", "--exit-code"], cwd=root).returncode != 0:
         raise RuntimeError("security scan requires a clean source tree")
     if (

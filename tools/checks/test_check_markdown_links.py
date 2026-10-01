@@ -4,23 +4,13 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-sys.dont_write_bytecode = True
-
-CHECKER = Path(__file__).with_name("check-markdown-links.py")
-SPEC = importlib.util.spec_from_file_location("check_markdown_links", CHECKER)
-if SPEC is None or SPEC.loader is None:
-    raise RuntimeError("cannot load Markdown link checker")
-checker = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = checker
-SPEC.loader.exec_module(checker)
+import check_markdown_links as checker
 
 
 def run(root: Path) -> tuple[int, str]:

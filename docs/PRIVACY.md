@@ -27,18 +27,19 @@ Potentially revealing material includes:
 
 ## Source check
 
-`scripts/check-source-privacy.py` is an independent source check in the default static gate. It
+`tools/checks/check_source_privacy.py` is an independent source check in the default static gate. It
 rejects known private absolute paths, private-key headers, AWS/GitHub token patterns and private
 artifact suffixes. In Markdown it also rejects specific affirmative production, SLA, exactly-once,
 universal Kubernetes and native-host performance claims. Diagnostics name the category and source
-location, not the matched material. `scripts/test-source-checks.py` owns its rejection regressions.
+location, not the matched material. `tools/checks/test_source_checks.py` owns its rejection
+regressions.
 
 The checker selects existing tracked and non-ignored untracked files under `crates/`, `src/`,
-`tests/`, `vectors/`, `docs/`, `scripts/`, `fuzz/`, `.github/` and `.githooks/`, plus the root
-manifests, lockfile, Rust toolchain, README, SECURITY, CONTRIBUTING and AGENTS files. Generated
-build/release output and unrelated root files are not scanned. Only the checker and its
-pattern-fixture test are exempt from credential/path matching, not from the private-artifact suffix
-check.
+`tests/`, `vectors/`, `docs/`, `scripts/`, `tools/`, `examples/`, `xtask/`, `fuzz/`, `.cargo/`,
+`.github/` and `.githooks/`, plus the root manifests, lockfile, Rust toolchain, README, SECURITY,
+CONTRIBUTING and AGENTS files. Generated build/release output and unrelated root files are not
+scanned. Only the checker and its pattern-fixture test are exempt from credential/path matching, not
+from the private-artifact suffix check.
 
 These are finite patterns, not a general secret detector or a semantic review of public claims. The
 disclosure checklist still requires human review. The separate

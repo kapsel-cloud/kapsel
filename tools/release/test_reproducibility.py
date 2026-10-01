@@ -10,8 +10,8 @@ import stat
 import subprocess
 import tempfile
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-ASSEMBLER = ROOT / "scripts" / "assemble-release-artifact.py"
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+ASSEMBLER = pathlib.Path(__file__).with_name("assemble_artifact.py")
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
 SIDECARS = [
     (".sha256", "checksum", 1024),

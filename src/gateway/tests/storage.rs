@@ -623,7 +623,7 @@ fn require_sparse_receipt_destinations(connection: &Connection, path: &Path, all
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "requires scripts/test-storage-enospc.py dedicated bounded container tmpfs"]
+#[ignore = "requires tests/qualification/run_storage_enospc.py bounded container tmpfs"]
 async fn genuine_enospc_during_receipt_sql_and_commit_recovers_without_resend() {
     use std::os::unix::fs::MetadataExt as _;
     for at_commit in [false, true] {

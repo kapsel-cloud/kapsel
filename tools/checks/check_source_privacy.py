@@ -20,12 +20,16 @@ ROOT_FILES = {
     "rust-toolchain.toml",
 }
 ROOT_PREFIXES = (
+    ".cargo/",
     ".github/",
     ".githooks/",
     "crates/",
     "fuzz/",
     "docs/",
+    "examples/",
     "scripts/",
+    "tools/",
+    "xtask/",
     "src/",
     "tests/",
     "vectors/",
@@ -48,8 +52,8 @@ AFFIRMATIVE_OVERCLAIMS = (
 )
 PRIVATE_ARTIFACT_SUFFIXES = (".key", ".kubeconfig", ".pem", ".receipt", ".seed", ".sqlite3")
 PATTERN_FIXTURE_FILES = {
-    "scripts/check-source-privacy.py",
-    "scripts/test-source-checks.py",
+    "tools/checks/check_source_privacy.py",
+    "tools/checks/test_source_checks.py",
 }
 
 
@@ -103,7 +107,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     paths = tracked_paths(root)
     digest = validate(root, paths)
     result = {

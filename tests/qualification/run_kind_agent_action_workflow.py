@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 NODE = (
     "kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4"
 )
@@ -610,7 +610,7 @@ def main() -> None:
     workspace = pathlib.Path(tempfile.mkdtemp(prefix="kapsel-live-artifact-"))
     print(f"Private evidence workspace: {workspace}", flush=True)
     spec = importlib.util.spec_from_file_location(
-        "artifact", ROOT / "scripts/smoke-release-artifact.py"
+        "artifact", ROOT / "tools/release/verify_artifact.py"
     )
     assert spec is not None and spec.loader is not None
     artifact = importlib.util.module_from_spec(spec)

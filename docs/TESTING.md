@@ -77,7 +77,7 @@ material. This is source-level process evidence, not power-loss or installed-sys
 
 ## Git ref receiver probe (not a product capability)
 
-Run `python3 scripts/probes/test-git-ref-receiver.py` with Git 2.55.0. The disposable bare `file://`
+Run `python3 tests/probes/probe_git_ref_receiver.py` with Git 2.55.0. The disposable bare `file://`
 receiver has one `refs/heads/approved` branch, rejects non-fast-forwards and deletions, and has
 installed pre/post-receive hooks. The fixture isolates HOME, global and system Git config, disables
 credential prompting, fixes commit dates and uses an explicit
@@ -334,9 +334,9 @@ that revision and run:
 ```sh
 cargo test --locked -p kapsel --lib \
   kind_tests::patch_experiment::frozen_json_document -- --nocapture
-./scripts/format.sh
-./scripts/ci-local.sh
-TMPDIR=/tmp ./scripts/test-kind-effect-gateway.sh
+cargo xtask fmt
+cargo xtask ci
+TMPDIR=/tmp ./tests/qualification/run-kind-effect-gateway.sh
 ```
 
 The launcher records the base revision and binary working-tree diff SHA-256. Untracked source is

@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 cd "$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-. ./scripts/dev-tools.sh
+. ./tools/dev/dev-tools.sh
 
 run_static_checks() {
   echo "==> Markdown, Rust, Python, and shell format"
-  ./scripts/format.sh --check
+  ./scripts/fmt.sh --check
 
   printf '%s\n' "==> Shell lint"
   "$SHFMT" -f=0 . | xargs -0 "$SHELLCHECK" -x
@@ -14,26 +14,26 @@ run_static_checks() {
   "$RUFF" check --no-cache --config ruff.toml .
 
   printf '%s\n' "==> Formatting pipeline regressions"
-  python3 scripts/test-format.py
-  python3 scripts/test-dev-tools.py
+  python3 tools/dev/test_format.py
+  python3 tools/dev/test_dev_tools.py
 
   printf '%s\n' "==> Storage ENOSPC runner regressions"
-  python3 scripts/test-storage-enospc-runner.py
+  python3 tests/qualification/test_storage_enospc.py
 
   printf '%s\n' "==> Rust line width"
-  ./scripts/check-rust-width.sh
+  ./tools/checks/check-rust-width.sh
 
   printf '%s\n' "==> Source privacy and security regressions"
-  python3 scripts/test-source-checks.py
+  python3 tools/checks/test_source_checks.py
 
   printf '%s\n' "==> Source privacy"
-  python3 scripts/check-source-privacy.py
+  python3 tools/checks/check_source_privacy.py
 
   printf '%s\n' "==> Markdown link checker regressions"
-  ./scripts/test-check-markdown-links.py
+  ./tools/checks/test_check_markdown_links.py
 
   printf '%s\n' "==> Markdown links"
-  ./scripts/check-markdown-links.py
+  ./tools/checks/check_markdown_links.py
 
 }
 

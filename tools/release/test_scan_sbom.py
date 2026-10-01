@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import pathlib
@@ -13,16 +12,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "scan_release_sbom",
-    ROOT / "scripts" / "scan-release-sbom.py",
-)
-if SPEC is None or SPEC.loader is None:
-    raise RuntimeError("could not load the release SBOM scanner")
-SCANNER = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(SCANNER)
+import scan_sbom as SCANNER
 
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 FAKE_TRIVY = r"""#!/usr/bin/env python3
 import datetime
@@ -69,7 +61,7 @@ class ReleaseSbomScannerTests(unittest.TestCase):
             os.mkfifo(path)
             code = (
                 "import importlib.util,pathlib\n"
-                f"s=importlib.util.spec_from_file_location('scanner', {str(ROOT / 'scripts/scan-release-sbom.py')!r})\n"
+                f"s=importlib.util.spec_from_file_location('scanner', {str(ROOT / 'tools/release/scan_sbom.py')!r})\n"
                 "m=importlib.util.module_from_spec(s)\ns.loader.exec_module(m)\n"
                 f"m.read_bounded_regular(pathlib.Path({str(path)!r}),256)\n"
             )

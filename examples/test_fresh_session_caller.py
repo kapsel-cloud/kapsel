@@ -13,7 +13,7 @@ import threading
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("fresh-session-caller.py")
+SCRIPT = Path(__file__).with_name("fresh_session_caller.py")
 
 FAKE = """#!/usr/bin/env python3
 import json, os, sys

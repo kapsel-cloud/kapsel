@@ -847,10 +847,10 @@ fn ordinary_restart_reads_before_explicit_reselection_without_second_patch() {
     let server = success_server();
     let root = installation_root_with_url("ordinary-recovery", &server.url);
     let socket = root.join("run/kapsel/kapseld.sock");
-    let script = root.join("fresh-session-caller.py");
+    let script = root.join("fresh_session_caller.py");
     fs::write(
         &script,
-        include_str!("../../../scripts/fresh-session-caller.py").replace(
+        include_str!("../../../examples/fresh_session_caller.py").replace(
             "BRIDGE = \"/usr/bin/kapsel-service-mcp\"",
             &format!("BRIDGE = \"{}\"", env!("CARGO_BIN_EXE_kapsel-service-mcp")),
         ),
@@ -923,8 +923,8 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     let server = success_server();
     let service = spawn_application(&socket, &root, &server.url, "A", None, 5);
     wait_for_socket(&socket);
-    let caller_script = root.join("fresh-session-caller.py");
-    let source = include_str!("../../../scripts/fresh-session-caller.py");
+    let caller_script = root.join("fresh_session_caller.py");
+    let source = include_str!("../../../examples/fresh_session_caller.py");
     fs::write(
         &caller_script,
         source.replace(

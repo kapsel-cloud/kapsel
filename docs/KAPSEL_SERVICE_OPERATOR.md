@@ -578,7 +578,7 @@ export. The service needs no receipt directory and the caller never opens its pr
 The [shared caller guide](CALLER_GUIDE.md) runs both capabilities and inventories the maintained
 surfaces and their independent versions.
 
-`python3 scripts/fresh-session-caller.py` is a small read-first caller of the fixed MCP bridge, not
+`python3 examples/fresh_session_caller.py` is a small read-first caller of the fixed MCP bridge, not
 a daemon or a second action store. Run it under the confined caller identity on the service host
 after provisioning the source `kapsel-service-mcp` binary. The published preview lacks that binary.
 The operator gives the caller a stable, nonsecret label for this host's _retained journal_ (for
@@ -595,7 +595,7 @@ approved catalog may span pages; `approved [after-id]` reads one page at a time.
 catalog and per-ID authority errors. Neither listing creates or changes the reference file.
 
 ```sh
-caller='python3 scripts/fresh-session-caller.py'
+caller='python3 examples/fresh_session_caller.py'
 mkdir -m 700 -p ./caller-state  # use a caller-owned private directory
 $caller --service host-a-journal-a --reference ./caller-state/operation.ref approved
 # Choose an approved ID, then explicitly select it once. Use a new reference file.
@@ -640,7 +640,7 @@ repeated SHA-256 and bytes, not merely the status token. Receipt retrieval does 
 Kubernetes. The existing [export and inspection steps](#submit-and-inspect) show the exact
 inspection command.
 
-Run `python3 scripts/test-fresh-session-caller.py` for fresh-process deterministic transcripts and
+Run `python3 examples/test_fresh_session_caller.py` for fresh-process deterministic transcripts and
 separately counted selection calls. These fixture tests do not measure receiver mutations or claim
 native service or Kubernetes qualification. The
 [Linux bridge/service process test](BUILD.md#kapsel-service-candidate) counts one receiver HTTP
@@ -774,7 +774,7 @@ The executable guide blocks are checked by the existing artifact test owner. Run
 accepted artifact and its independently recorded source revision:
 
 ```sh
-python3 scripts/test-release-artifact.py --archive "$archive" \
+python3 tools/release/test_artifact.py --archive "$archive" \
   --example-revision "$revision" \
   ReleaseArtifactTests.test_documented_operator_example
 ```

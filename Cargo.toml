@@ -17,6 +17,8 @@ include = [
   "/vectors/**",
   "/docs/**",
   "/scripts/**",
+  "/tools/**",
+  "/examples/**",
   "/rust-toolchain.toml",
   "/rustfmt.toml",
   "/rustfmt-nightly.toml",
@@ -28,7 +30,7 @@ include = [
 ]
 
 [workspace]
-members = ["crates/kapsel-authority", "crates/kapseld"]
+members = ["crates/kapsel-authority", "crates/kapseld", "xtask"]
 exclude = ["fuzz"]
 resolver = "2"
 

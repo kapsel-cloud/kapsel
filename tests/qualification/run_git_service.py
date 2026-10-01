@@ -13,7 +13,7 @@ from pathlib import Path
 
 REF = "refs/heads/approved"
 PURPOSE = b"kapsel.git-ref-transition-receipt.v1"
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 
 
 def run(*args, **kwargs):
@@ -163,7 +163,7 @@ def fixture(args, case):
         write(config / "receipt.seed", (root / "receipt.seed").read_bytes())
         caller = root / "caller.py"
         caller.write_text(
-            (REPO / "scripts/fresh-session-caller.py")
+            (REPO / "examples/fresh_session_caller.py")
             .read_text()
             .replace('BRIDGE = "/usr/bin/kapsel-service-mcp"', f"BRIDGE = {str(args.bridge)!r}")
         )

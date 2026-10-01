@@ -10,23 +10,32 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 TOOL = """#!/bin/sh
 set -eu
 name=${0##*/}
 phase=format
 case "$*" in
-  *--version*|*--show-settings*) phase=preflight ;;
+  *--version*|*--show-settings*|*which*) phase=preflight ;;
 esac
 printf '%s|%s|%s|%s\\n' "$name" "$phase" "$PWD" "$*" >> "$FORMAT_LOG"
 if [ "$name:$phase" = "${FAIL_AT:-}" ]; then
   exit 1
+fi
+if [ "$name" = rustup ]; then
+  printf '%s\\n' "$TEST_RUSTFMT"
+fi
+if [ "$name" = cargo ] && [ "$RUSTFMT" != "$TEST_RUSTFMT" ]; then
+  exit 88
 fi
 if [ "$name" = prettier ] && [ "$phase" = preflight ]; then
   printf '%s\\n' "${TEST_PRETTIER_VERSION}"
 fi
 if [ "$name" = ruff ] && [ "$*" = --version ]; then
   printf 'ruff %s\\n' "${TEST_RUFF_VERSION}"
+fi
+if [ "$name" = taplo ] && [ "$phase" = preflight ]; then
+  printf 'taplo %s\\n' "${TEST_TAPLO_VERSION}"
 fi
 if [ "$name" = shfmt ] && [ "$phase" = preflight ]; then
   printf '3.14.1\\n'
@@ -44,13 +53,23 @@ class FormattingPipelineTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         subprocess.run(["git", "init", "-q", str(self.root)], check=True, timeout=10)
         (self.root / "scripts").mkdir()
-        for name in ("format.sh", "dev-tools.sh"):
-            shutil.copyfile(ROOT / "scripts" / name, self.root / "scripts" / name)
+        shutil.copyfile(ROOT / "scripts/fmt.sh", self.root / "scripts/fmt.sh")
+        (self.root / "tools/dev").mkdir(parents=True)
+        shutil.copyfile(ROOT / "tools/dev/dev-tools.sh", self.root / "tools/dev/dev-tools.sh")
         (self.root / "fuzz").mkdir()
         (self.root / "fuzz/Cargo.toml").touch()
-        tools = self.root / "tools"
+        tools = self.root / "bin"
         tools.mkdir()
-        for name in ("prettier", "cargo", "ruff", "shfmt", "shellcheck", "taplo"):
+        for name in (
+            "prettier",
+            "cargo",
+            "ruff",
+            "shfmt",
+            "shellcheck",
+            "taplo",
+            "rustup",
+            "rustfmt",
+        ):
             path = tools / name
             path.write_text(TOOL)
             path.chmod(0o755)
@@ -58,8 +77,9 @@ class FormattingPipelineTests(unittest.TestCase):
             [
                 "sh",
                 "-c",
-                '. ./scripts/dev-tools.sh; printf "%s\\n%s\\n%s\\n%s\\n%s" '
-                '"$PRETTIER" "$RUFF" "$PRETTIER_VERSION" "$RUFF_VERSION" "$FORMAT_TOOLCHAIN"',
+                '. ./tools/dev/dev-tools.sh; printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s" '
+                '"$PRETTIER" "$RUFF" "$PRETTIER_VERSION" "$RUFF_VERSION" '
+                '"$FORMAT_TOOLCHAIN" "$TAPLO" "$TAPLO_VERSION"',
             ],
             cwd=self.root,
             env={**os.environ, "HOME": str(self.root)},
@@ -74,6 +94,9 @@ class FormattingPipelineTests(unittest.TestCase):
             path.symlink_to(tools / name)
         for name in ("shfmt", "shellcheck"):
             (Path(pins[1]).parent / name).symlink_to(tools / name)
+        taplo = Path(pins[5])
+        taplo.parent.mkdir(parents=True)
+        taplo.symlink_to(tools / "taplo")
         self.format_toolchain = pins[4]
         self.log = self.root / "commands.log"
         self.env = {
@@ -84,11 +107,14 @@ class FormattingPipelineTests(unittest.TestCase):
             "HOME": str(self.root),
             "TEST_PRETTIER_VERSION": pins[2],
             "TEST_RUFF_VERSION": pins[3],
+            "TEST_TAPLO_VERSION": pins[6],
+            "TEST_RUSTFMT": str(tools / "rustfmt"),
+            "RUSTFMT": str(tools / "ambient-override"),
         }
 
     def run_format(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["/bin/sh", str(self.root / "scripts/format.sh"), *arguments],
+            ["/bin/sh", str(self.root / "scripts/fmt.sh"), *arguments],
             cwd=self.root / "tools",
             env=self.env,
             text=True,
@@ -112,8 +138,10 @@ class FormattingPipelineTests(unittest.TestCase):
                     [
                         ("prettier", "preflight"),
                         ("ruff", "preflight"),
+                        ("taplo", "preflight"),
                         ("shfmt", "preflight"),
                         ("shellcheck", "preflight"),
+                        ("rustup", "preflight"),
                         ("cargo", "preflight"),
                         ("ruff", "preflight"),
                         ("prettier", "format"),
@@ -143,7 +171,7 @@ class FormattingPipelineTests(unittest.TestCase):
                             self.assertIn("--config-path rustfmt-nightly.toml", argv)
 
     def test_missing_formatter_stops_before_writes(self) -> None:
-        for name in ("prettier", "cargo", "ruff", "shfmt", "shellcheck"):
+        for name in ("prettier", "cargo", "ruff", "taplo", "shfmt", "shellcheck", "rustup"):
             with self.subTest(name=name):
                 self.log.unlink(missing_ok=True)
                 self.env["FAIL_AT"] = f"{name}:preflight"
@@ -151,13 +179,17 @@ class FormattingPipelineTests(unittest.TestCase):
                 self.assertTrue(all(command[1] == "preflight" for command in self.commands()))
 
     def test_wrong_version_stops_before_writes(self) -> None:
-        for variable in ("TEST_PRETTIER_VERSION", "TEST_RUFF_VERSION"):
+        for variable in ("TEST_PRETTIER_VERSION", "TEST_RUFF_VERSION", "TEST_TAPLO_VERSION"):
             with self.subTest(variable=variable):
                 original = self.env[variable]
                 self.env[variable] = "0.0.0"
                 result = self.run_format()
                 self.assertNotEqual(result.returncode, 0)
-                name = "Prettier" if variable == "TEST_PRETTIER_VERSION" else "Ruff"
+                name = {
+                    "TEST_PRETTIER_VERSION": "Prettier",
+                    "TEST_RUFF_VERSION": "Ruff",
+                    "TEST_TAPLO_VERSION": "Taplo",
+                }[variable]
                 self.assertIn(f"{name} unavailable or mismatched: expected", result.stderr)
                 self.assertTrue(all(command[1] == "preflight" for command in self.commands()))
                 self.env[variable] = original
@@ -187,7 +219,7 @@ class RustWidthTests(unittest.TestCase):
 
             def check_width() -> subprocess.CompletedProcess[str]:
                 return subprocess.run(
-                    ["sh", str(ROOT / "scripts/check-rust-width.sh")],
+                    ["sh", str(ROOT / "tools/checks/check-rust-width.sh")],
                     cwd=root,
                     text=True,
                     capture_output=True,

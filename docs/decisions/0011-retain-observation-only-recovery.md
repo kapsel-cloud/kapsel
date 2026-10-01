@@ -70,12 +70,13 @@ current generation as the requested generation. Neither replay nor Temporal iden
 patch generation, so this row is not evidence that the original effect caused the later rollout. The
 receipt's no-causation claim remains material.
 
-The live command `./scripts/test-kind-effect-gateway.sh` adds a pinned Kubernetes v1.33.12 proof. An
-instrumented mutating webhook records each unique AdmissionReview UID and operation ID as an
-out-of-band log effect. The first frozen strategic patch persists and creates one new ReplicaSet.
-Replaying the identical stale patch invokes the webhook again, then returns Kubernetes API
-`409 Conflict`. The post-replay Deployment UID, resource version, generation, complete desired spec,
-operation annotation, both container images, and ReplicaSet count equal the post-first-patch state.
+The live command `./tests/qualification/run-kind-effect-gateway.sh` adds a pinned Kubernetes
+v1.33.12 proof. An instrumented mutating webhook records each unique AdmissionReview UID and
+operation ID as an out-of-band log effect. The first frozen strategic patch persists and creates one
+new ReplicaSet. Replaying the identical stale patch invokes the webhook again, then returns
+Kubernetes API `409 Conflict`. The post-replay Deployment UID, resource version, generation,
+complete desired spec, operation annotation, both container images, and ReplicaSet count equal the
+post-first-patch state.
 
 That ordering is expected from the pinned Kubernetes source. Strategic PATCH invokes mutating
 admission while producing the updated object inside `GuaranteedUpdate`; storage checks the stale
@@ -212,8 +213,8 @@ Run the sequential checks on the current checkout with:
 cargo test --locked -p kapsel --lib gateway::tests::dispatch -- --nocapture
 cargo test --locked -p kapsel --test application_retry
 KAPSEL_SIMULATION_SEED=21182435914953528 KAPSEL_SIMULATION_CASES=256 \
-  KAPSEL_SIMULATION_SHARDS=1 ./scripts/test-simulation.sh
-./scripts/ci-local.sh
+  KAPSEL_SIMULATION_SHARDS=1 ./tests/qualification/run-simulation.sh
+cargo xtask ci
 ```
 
 ## Consequences and limits

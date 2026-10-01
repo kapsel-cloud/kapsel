@@ -15,7 +15,7 @@ cargo build --locked -p kapseld --features test-harness
 KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
   cargo test --locked -p kapseld --features test-harness --test linux_process \
   mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation -- --exact
-python3 scripts/test-git-service.py --git /absolute/path/to/git
+python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```
 
 These fixtures use private disposable roots, not installed paths or existing receiver resources. The
@@ -35,7 +35,7 @@ configuration. Follow [Kubernetes preparation](KAPSEL_SERVICE_OPERATOR.md) or
 
 ```sh
 mkdir -m 700 caller-state
-caller='python3 scripts/fresh-session-caller.py'
+caller='python3 examples/fresh_session_caller.py'
 # Read one catalog/history page. Pass next_cursor as the final argument for another page.
 $caller --service host-a-journal-a --reference caller-state/k8s.ref approved
 $caller --service host-a-journal-a --reference caller-state/k8s.ref history
@@ -60,7 +60,7 @@ Discard conversational context or open a new shell. These invocations each start
 process and use only the caller-owned reference:
 
 ```sh
-caller='python3 scripts/fresh-session-caller.py'
+caller='python3 examples/fresh_session_caller.py'
 $caller --service host-a-journal-a --reference caller-state/k8s.ref read
 $caller --service host-a-journal-a --reference caller-state/git.ref read
 # Only for IN_PROGRESS with caller-owned resume_required / select_same_id:
@@ -90,7 +90,7 @@ reference or grant permission to select an operation.
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `kapsel-service-client`         | Fixed ID-only socket commands and exclusive receipt-file export for shell callers.                 |
 | `kapsel-service-mcp`            | The same resident lifecycle for stdio tool callers, with no caller paths or credentials.           |
-| `fresh-session-caller.py`       | Read-first process example retaining an ID before submission; no second lifecycle store.           |
+| `fresh_session_caller.py`       | Read-first process example retaining an ID before submission; no second lifecycle store.           |
 | `kapsel operate` / `kapsel mcp` | Local operator-configured Kubernetes execution without a Linux resident service; not Git adapters. |
 | `kapsel inspect`                | Offline verification of original Kubernetes and Git receipts under independently supplied trust.   |
 

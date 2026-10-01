@@ -18,11 +18,13 @@ check | --check)
   ;;
 esac
 
-. ./scripts/dev-tools.sh
+. ./tools/dev/dev-tools.sh
 check_formatters
-command -v taplo >/dev/null
+# Cargo otherwise honors an ambient RUSTFMT override even with an explicit toolchain.
+RUSTFMT=$(rustup which --toolchain "$FORMAT_TOOLCHAIN" rustfmt)
+export RUSTFMT
 cargo +"$FORMAT_TOOLCHAIN" fmt --version >/dev/null
-"$RUFF" check --no-cache --config ruff.toml --show-settings scripts/check-markdown-links.py >/dev/null
+"$RUFF" check --no-cache --config ruff.toml --show-settings tools/checks/check_markdown_links.py >/dev/null
 
 "$PRETTIER" "$prettier_mode" --ignore-path .gitignore '**/*.{md,json,jsonc,yaml,yml}'
 cargo +"$FORMAT_TOOLCHAIN" fmt --all -- --config-path rustfmt-nightly.toml ${check_mode:+"$check_mode"}
@@ -37,7 +39,7 @@ else
 fi
 "$RUFF" format --no-cache --config ruff.toml ${check_mode:+"$check_mode"} .
 git ls-files -z --cached --others --exclude-standard '*.toml' |
-  xargs -0 taplo fmt ${check_mode:+"$check_mode"}
+  xargs -0 "$TAPLO" fmt ${check_mode:+"$check_mode"}
 if [ -n "$check_mode" ]; then
   "$SHFMT" -i 2 -d .
 else

@@ -51,8 +51,8 @@ ceiling on requested development. Private planning notes are never a prerequisit
 
 ## Finish cleanly
 
-Run `./scripts/format.sh` for Markdown, Rust, and Python formatting. Documentation changes need
-local links and anchors and `git diff --check`. Code changes need the relevant behavior checks and
+Run `cargo xtask fmt` for Markdown, Rust, and Python formatting. Documentation changes need local
+links and anchors and `git diff --check`. Code changes need the relevant behavior checks and
 applicable broader gate from [docs/BUILD.md](docs/BUILD.md). Do not repeat checks that add no
 evidence. If a check cannot run, name the missing prerequisite and finish what can be verified.
 

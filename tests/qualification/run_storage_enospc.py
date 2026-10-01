@@ -103,7 +103,7 @@ def cleanup_container(name: str, expected_owner: str) -> str:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     os.chdir(root)
     evidence = Path(tempfile.mkdtemp(prefix="kapsel-storage-enospc-"))
     name = f"kapsel-storage-{evidence.name.rsplit('-', 1)[-1]}"

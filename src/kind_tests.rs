@@ -138,7 +138,7 @@ impl DeploymentImageAdapter for PreconditionRaceAdapter {
 }
 
 #[tokio::test]
-#[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+#[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
 async fn kind_changes_exactly_one_container_through_the_gateway() {
     assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
     let client = Client::try_default().await.unwrap();
@@ -182,7 +182,7 @@ async fn kind_changes_exactly_one_container_through_the_gateway() {
 }
 
 #[tokio::test]
-#[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+#[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
 async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt() {
     assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
     let client = Client::try_default().await.unwrap();
@@ -229,7 +229,7 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
 }
 
 #[tokio::test]
-#[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+#[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
 async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receipt() {
     assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
     let client = Client::try_default().await.unwrap();
@@ -273,7 +273,7 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
 }
 
 #[tokio::test]
-#[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+#[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
 async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_change() {
     assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
     let client = Client::try_default().await.unwrap();
@@ -321,7 +321,7 @@ async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_ch
 }
 
 #[tokio::test]
-#[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+#[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
 async fn kind_snapshot_approval_rejects_stale_targets_and_pins_the_conditional_patch() {
     assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
     let client = Client::try_default().await.unwrap();
@@ -1361,7 +1361,7 @@ mod observation_experiment {
     }
 
     #[tokio::test]
-    #[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+    #[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
     async fn kind_service_observation_policy() {
         assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
         let mut config = kube::Config::infer().await.unwrap();
@@ -1593,7 +1593,7 @@ mod patch_experiment {
     }
 
     #[tokio::test]
-    #[ignore = "requires scripts/test-kind-effect-gateway.sh"]
+    #[ignore = "requires tests/qualification/run-kind-effect-gateway.sh"]
     async fn kind_frozen_patch_receiver_matrix() {
         assert_eq!(std::env::var("KAPSEL_KIND_TEST").as_deref(), Ok("1"));
         let mut config = kube::Config::infer().await.unwrap();

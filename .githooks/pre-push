@@ -40,7 +40,7 @@ if test -f "$stamp" && test "$(cat "$stamp")" = "$pushed_tree"; then
   exit 0
 fi
 
-./scripts/ci-local.sh
+cargo xtask ci
 
 if test -n "$(git status --porcelain --untracked-files=normal)"; then
   printf '%s\n' 'Kapsel pre-push gate changed the worktree; refusing to cache or push.' >&2

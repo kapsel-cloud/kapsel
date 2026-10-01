@@ -25,8 +25,11 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-ASSEMBLER = ROOT / "scripts" / "assemble-release-artifact.py"
+import assemble_artifact as ASSEMBLY
+import verify_artifact as SMOKE
+
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+ASSEMBLER = pathlib.Path(__file__).with_name("assemble_artifact.py")
 TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
@@ -48,21 +51,8 @@ def sha256(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-SMOKE_SPEC = importlib.util.spec_from_file_location(
-    "smoke_release_artifact",
-    ROOT / "scripts" / "smoke-release-artifact.py",
-)
-if SMOKE_SPEC is None or SMOKE_SPEC.loader is None:
-    raise RuntimeError("could not load the release verifier")
-SMOKE = importlib.util.module_from_spec(SMOKE_SPEC)
-SMOKE_SPEC.loader.exec_module(SMOKE)
-ASSEMBLY_SPEC = importlib.util.spec_from_file_location("assemble_release_artifact", ASSEMBLER)
-if ASSEMBLY_SPEC is None or ASSEMBLY_SPEC.loader is None:
-    raise RuntimeError("could not load the release assembler")
-ASSEMBLY = importlib.util.module_from_spec(ASSEMBLY_SPEC)
-ASSEMBLY_SPEC.loader.exec_module(ASSEMBLY)
 JOURNEY_SPEC = importlib.util.spec_from_file_location(
-    "kind_agent_action_workflow", ROOT / "scripts/test-kind-agent-action-workflow.py"
+    "kind_agent_action_workflow", ROOT / "tests/qualification/run_kind_agent_action_workflow.py"
 )
 if JOURNEY_SPEC is None or JOURNEY_SPEC.loader is None:
     raise RuntimeError("could not load the live journey runner")
@@ -314,7 +304,7 @@ class ReleaseVerifierTests(unittest.TestCase):
             os.mkfifo(path)
             code = (
                 "import importlib.util,pathlib\n"
-                f"s=importlib.util.spec_from_file_location('smoke', {str(ROOT / 'scripts/smoke-release-artifact.py')!r})\n"
+                f"s=importlib.util.spec_from_file_location('smoke', {str(ROOT / 'tools/release/verify_artifact.py')!r})\n"
                 "m=importlib.util.module_from_spec(s)\ns.loader.exec_module(m)\n"
                 f"m.read_bounded_regular(pathlib.Path({str(path)!r}),256)\n"
             )
@@ -1158,7 +1148,7 @@ finally:
             verifier = output / f"{archive.name}.verify.py"
             self.assertEqual(
                 SMOKE.read_bounded_regular(verifier, 64 * 1024),
-                ROOT.joinpath("scripts/smoke-release-artifact.py").read_bytes(),
+                ROOT.joinpath("tools/release/verify_artifact.py").read_bytes(),
             )
             checksum_bytes = SMOKE.read_bounded_regular(checksum, 1024)
             sbom_bytes = SMOKE.read_bounded_regular(sbom, 2 * 1024 * 1024)
@@ -1365,7 +1355,7 @@ finally:
                     "--volume",
                     f"{output}:/input:ro",
                     "--volume",
-                    f"{ROOT / 'scripts' / 'smoke-release-artifact.py'}:/smoke.py:ro",
+                    f"{ROOT / 'tools/release/verify_artifact.py'}:/smoke.py:ro",
                     SMOKE_IMAGE,
                     "python3",
                     "/smoke.py",
