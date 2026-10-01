@@ -22,6 +22,41 @@ class GitArtifactTests(unittest.TestCase):
         self.assertNotIn("KAPSEL_DEMO", JOURNEY.EXERCISE)
         self.assertEqual(JOURNEY.CASES, ("healthy", "pre-receive", "post-receive", "service-loss"))
 
+    def test_fixture_subcommands_use_the_selected_git(self):
+        tree = ast.parse(JOURNEY.EXERCISE)
+        helper = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "git"
+        )
+        command = mock.Mock(return_value=b"selected\n")
+        namespace = {"git_binary": Path("/private/git"), "command": command, "environment": {}}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), "fixture", "exec"), namespace)
+        self.assertEqual(namespace["git"]("--version"), "selected")
+        self.assertEqual(
+            command.call_args.args[0], ["/private/git", "--exec-path=/private", "--version"]
+        )
+        bootstrap = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and any(
+                isinstance(arg, ast.Constant) and arg.value == "push" for arg in node.value.args
+            )
+        )
+        invoke = mock.Mock()
+        exec(
+            compile(ast.Module(body=[bootstrap], type_ignores=[]), "fixture", "exec"),
+            {
+                "git": invoke,
+                "git_binary": Path("/private/git"),
+                "sender": "sender",
+                "receiver": "receiver",
+                "old": "a" * 40,
+                "reference": "refs/heads/approved",
+            },
+        )
+        self.assertIn("--receive-pack=/private/git receive-pack", invoke.call_args.args)
+
     def test_runtime_custody_mode_survives_private_umask(self):
         tree = ast.parse(JOURNEY.EXERCISE)
         setup = next(node for node in tree.body if isinstance(node, ast.For))

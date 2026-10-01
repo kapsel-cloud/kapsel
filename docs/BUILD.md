@@ -321,7 +321,7 @@ custody; it is not discovered through ambient PATH. Run the core recovery matrix
 
 ```sh
 (umask 077; KAPSEL_TEST_GIT=/absolute/path/to/git \
-  cargo test --locked -p kapsel --lib gateway::git::tests -- --include-ignored)
+  cargo test --locked -p kapsel --lib gateway::git::tests -- --include-ignored --test-threads=1)
 ```
 
 On Linux, exercise real service-process loss and the maintained caller through the fixed-root test

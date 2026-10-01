@@ -43,7 +43,6 @@ control = state / "fixture-control"
 for directory, mode in ((state, 0o700), (config, 0o700), (Path("/run/kapsel"), 0o750)):
     directory.mkdir(mode=mode)
     directory.chmod(mode)
-    os.chown(directory, service_uid, service_uid)
 for directory in (control, state / "git-bin", Path("/caller"), Path("/evidence")):
     directory.mkdir(mode=0o700)
 os.chown("/caller", caller_uid, service_uid)
@@ -63,7 +62,7 @@ git_binary = state / "git-bin/git"
 shutil.copyfile("/inputs/git", git_binary)
 git_binary.chmod(0o700)
 environment = {
-    "PATH": "/usr/bin:/bin", "HOME": str(state), "GIT_CONFIG_NOSYSTEM": "1",
+    "PATH": str(git_binary.parent) + ":/usr/bin:/bin", "HOME": str(state), "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_AUTHOR_NAME": "Fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
     "GIT_COMMITTER_NAME": "Fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
 }
@@ -76,7 +75,8 @@ def command(arguments, *, uid=0, **kwargs):
     return result.stdout
 
 def git(*arguments, **kwargs):
-    return command([str(git_binary), *map(str, arguments)], env=environment, **kwargs).decode().strip()
+    return command([str(git_binary), f"--exec-path={git_binary.parent}", *map(str, arguments)],
+                   env=environment, **kwargs).decode().strip()
 
 def write(path, value):
     path.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode())
@@ -98,16 +98,19 @@ for key, value in (("receive.denyDeletes", "true"), ("receive.denyNonFastForward
 tree = git("--git-dir", sender, "hash-object", "-w", "-t", "tree", "--stdin", input=b"")
 old = git("--git-dir", sender, "commit-tree", tree, input=b"A\n")
 new = git("--git-dir", sender, "commit-tree", tree, "-p", old, input=b"B\n")
-git("--git-dir", sender, "push", receiver, f"{old}:{reference}")
+git("--git-dir", sender, "push", f"--receive-pack={git_binary} receive-pack", receiver, f"{old}:{reference}")
+(receiver / "hooks").mkdir(mode=0o700)
 for hook in ("pre-receive", "post-receive"):
     path = receiver / "hooks" / hook
-    script = f"#!/bin/sh\nwhile read -r line; do printf '%s\\n' \"$line\" >> '{control / hook}'; done\n"
+    script = "#!/usr/local/bin/python3 -I\nimport os,signal,sys,time\nfrom pathlib import Path\n"
+    script += f"with Path({str(control / hook)!r}).open('a') as output: output.write(sys.stdin.read())\n"
     if hook == case:
-        script += 'kill -KILL "$PPID"\n'
+        script += "os.kill(os.getppid(), signal.SIGKILL)\n"
     elif case == "service-loss" and hook == "post-receive":
-        script += f"touch '{control / 'ready'}'\n"
-        script += f"n=0; while test ! -f '{control / 'release'}'; do n=$((n+1)); test $n -lt 200 || exit 1; sleep 0.1; done\n"
-        script += f"touch '{control / 'finished'}'\n"
+        script += f"Path({str(control / 'ready')!r}).touch()\ndeadline=time.monotonic()+20\n"
+        script += f"while not Path({str(control / 'release')!r}).exists():\n"
+        script += "    assert time.monotonic()<deadline\n    time.sleep(0.1)\n"
+        script += f"Path({str(control / 'finished')!r}).touch()\n"
     path.write_text(script)
     path.chmod(0o700)
 material = {"executable": str(git_binary), "sender": str(sender), "receiver": str(receiver),
@@ -141,6 +144,7 @@ write(config / "receipt.seed", Path("/inputs/receipt.seed").read_bytes())
 for root in (state, config):
     for path in [root, *root.rglob("*")]:
         os.chown(path, service_uid, service_uid)
+os.chown("/run/kapsel", service_uid, service_uid)
 
 # The caller must not have direct access to receiver, journal, authority or private Git.
 for path in (config / "operator.json", config / "receipt.seed", git_binary, receiver / "config"):
@@ -237,7 +241,9 @@ try:
     start()
     reopened = call("status", "git-example")
     assert reopened["status"] == expected and reopened["git"] == expected_evidence, reopened
-    assert call("submit", "git-example")["status"] == "NO_SELECTION"
+    assert call("list")["entries"] == []
+    retained_admission = call("submit", "git-example")
+    assert retained_admission == {"version": 1, "status": "ADMITTED", "phase": "finalized"}, retained_admission
     second = call("receipt", "git-example", "/caller/second.bin")
     assert second["receipt_sha256"] == first["receipt_sha256"]
     assert Path("/caller/second.bin").read_bytes() == first_bytes
