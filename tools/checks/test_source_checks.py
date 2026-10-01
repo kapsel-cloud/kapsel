@@ -27,7 +27,7 @@ class SourcePrivacyTests(unittest.TestCase):
                 "CONTRIBUTING.md",
                 "AGENTS.md",
                 ".github/workflows/ci.yml",
-                "crates/kapseld/src/main.rs",
+                "crates/kapsel-daemon/src/main.rs",
                 "crates/kapsel-authority/src/lib.rs",
                 "scripts/setup.sh",
                 "tools/checks/check.py",

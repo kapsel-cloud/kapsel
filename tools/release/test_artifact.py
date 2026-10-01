@@ -538,7 +538,7 @@ class ReleaseVerifierTests(unittest.TestCase):
             }
             for name, manifest in [
                 ("kapsel", "/workspace/Cargo.toml"),
-                ("kapseld", "/workspace/crates/kapseld/Cargo.toml"),
+                ("kapsel-daemon", "/workspace/crates/kapsel-daemon/Cargo.toml"),
                 ("service-only", "/registry/service-only/Cargo.toml"),
                 ("test-only", "/registry/test-only/Cargo.toml"),
             ]
@@ -553,7 +553,7 @@ class ReleaseVerifierTests(unittest.TestCase):
             {"packages": packages, "resolve": {"nodes": nodes}}
         )
         self.assertEqual(
-            {package["name"] for package in graph}, {"kapsel", "kapseld", "service-only"}
+            {package["name"] for package in graph}, {"kapsel", "kapsel-daemon", "service-only"}
         )
         self.assertEqual(len(edges), 2)
         self.assertEqual(root, "SPDXRef-Package-kapsel-source")
@@ -1213,7 +1213,7 @@ finally:
                     self.assertIsNotNone(asset_file)
                     self.assertEqual(
                         asset_file.read(),
-                        ROOT.joinpath("crates/kapseld/deploy", asset).read_bytes(),
+                        ROOT.joinpath("crates/kapsel-daemon/deploy", asset).read_bytes(),
                     )
 
                 for document_name in [

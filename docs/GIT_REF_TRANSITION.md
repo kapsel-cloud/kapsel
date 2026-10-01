@@ -29,7 +29,7 @@ On Linux, with the repository's Rust toolchain, Python 3, OpenSSL and an operato
 
 ```sh
 cargo build --locked -p kapsel --bin kapsel
-cargo build --locked -p kapseld --features test-harness
+cargo build --locked -p kapsel-daemon --features test-harness
 python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```
 

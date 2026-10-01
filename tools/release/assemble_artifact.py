@@ -91,7 +91,7 @@ def build_binaries(
         }}
         trap restore_target_ownership EXIT
         cargo metadata --locked --format-version 1 > /target/cargo-metadata.json
-        cargo build --release --locked --target {TARGET} -p kapsel -p kapseld --bins
+        cargo build --release --locked --target {TARGET} -p kapsel -p kapsel-daemon --bins
     """
     command = [
         "docker",
@@ -195,15 +195,15 @@ def stage_release(
             copy_file(source, staging / BINARIES[name], 0o755)
 
     assets = {
-        ROOT / "crates" / "kapseld" / "deploy" / "kapseld.service": (
+        ROOT / "crates" / "kapsel-daemon" / "deploy" / "kapseld.service": (
             staging / "share" / "kapsel" / "kapseld.service",
             0o644,
         ),
-        ROOT / "crates" / "kapseld" / "deploy" / "kapseld.conf": (
+        ROOT / "crates" / "kapsel-daemon" / "deploy" / "kapseld.conf": (
             staging / "share" / "kapsel" / "kapseld.conf",
             0o644,
         ),
-        ROOT / "crates" / "kapseld" / "deploy" / "kapseld-rbac.yaml": (
+        ROOT / "crates" / "kapsel-daemon" / "deploy" / "kapseld-rbac.yaml": (
             staging / "share" / "kapsel" / "kapseld-rbac.yaml",
             0o644,
         ),
@@ -349,8 +349,8 @@ def cargo_graph(
     service_packages = [
         package
         for package in metadata["packages"]
-        if package["name"] == "kapseld"
-        and package["manifest_path"] == "/workspace/crates/kapseld/Cargo.toml"
+        if package["name"] == "kapsel-daemon"
+        and package["manifest_path"] == "/workspace/crates/kapsel-daemon/Cargo.toml"
     ]
     if len(service_packages) != 1:
         raise RuntimeError("Cargo metadata did not identify the service package")

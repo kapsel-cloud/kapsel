@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use kapseld::client_transport::{self, Error as TransportError};
+use kapsel_daemon::client_transport::{self, Error as TransportError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};

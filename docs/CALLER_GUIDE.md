@@ -11,9 +11,9 @@ On Linux with the repository Rust toolchain, Python 3, OpenSSL and an explicitly
 
 ```sh
 cargo build --locked -p kapsel --bin kapsel
-cargo build --locked -p kapseld --features test-harness
+cargo build --locked -p kapsel-daemon --features test-harness
 KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
-  cargo test --locked -p kapseld --features test-harness --test linux_process \
+  cargo test --locked -p kapsel-daemon --features test-harness --test linux_process \
   mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation -- --exact
 python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```

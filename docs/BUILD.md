@@ -117,27 +117,27 @@ starts Docker. See [the hooks](../.githooks/) for exact refusal and caching beha
 Choose the smallest check that owns the changed behavior. Run the complete local gate before handoff
 when practical. Additional environment requirements are listed in the sections below.
 
-| Change                             | Command                                                                     |
-| ---------------------------------- | --------------------------------------------------------------------------- |
-| Python tooling                     | `cargo xtask ci static`                                                     |
-| Formatting pipeline                | `python3 tools/dev/test_format.py`                                          |
-| Effect gateway                     | `cargo test --locked -p kapsel`                                             |
-| Service and private harness        | `cargo test --locked -p kapseld --features test-harness`                    |
-| Shared operator authority          | `cargo test --locked -p kapsel-authority`                                   |
-| Service installed assets           | `cargo test --locked -p kapseld --test install_assets`                      |
-| Direct MCP adapter                 | `cargo test --locked --test e2e_mcp_adapter`                                |
-| Service MCP bridge                 | `cargo test --locked -p kapseld --features test-harness --test service_mcp` |
-| Fresh-session caller fixture       | `python3 examples/test_fresh_session_caller.py`                             |
-| Crash-demo harness, without Docker | `./examples/test-demo-harness.sh`                                           |
-| Seeded lifecycle simulation        | `./tests/qualification/run-simulation.sh`                                   |
-| Receipt-inspection fuzz smoke      | `./fuzz/smoke.sh`                                                           |
-| Live Kubernetes behavior           | `./tests/qualification/run-kind-effect-gateway.sh`                          |
+| Change                             | Command                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
+| Python tooling                     | `cargo xtask ci static`                                                           |
+| Formatting pipeline                | `python3 tools/dev/test_format.py`                                                |
+| Effect gateway                     | `cargo test --locked -p kapsel`                                                   |
+| Service and private harness        | `cargo test --locked -p kapsel-daemon --features test-harness`                    |
+| Shared operator authority          | `cargo test --locked -p kapsel-authority`                                         |
+| Service installed assets           | `cargo test --locked -p kapsel-daemon --test install_assets`                      |
+| Direct MCP adapter                 | `cargo test --locked --test e2e_mcp_adapter`                                      |
+| Service MCP bridge                 | `cargo test --locked -p kapsel-daemon --features test-harness --test service_mcp` |
+| Fresh-session caller fixture       | `python3 examples/test_fresh_session_caller.py`                                   |
+| Crash-demo harness, without Docker | `./examples/test-demo-harness.sh`                                                 |
+| Seeded lifecycle simulation        | `./tests/qualification/run-simulation.sh`                                         |
+| Receipt-inspection fuzz smoke      | `./fuzz/smoke.sh`                                                                 |
+| Live Kubernetes behavior           | `./tests/qualification/run-kind-effect-gateway.sh`                                |
 
 To run the fresh-session caller fixture against the real MCP bridge and a scripted socket (not
 Kubernetes), build the test-harness binary first:
 
 ```sh
-cargo build --locked -p kapseld --features test-harness --bin kapsel-service-mcp
+cargo build --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp
 cargo build --locked --bin kapsel
 env KAPSEL_TEST_BRIDGE="$PWD/target/debug/kapsel-service-mcp" \
   KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
@@ -329,7 +329,7 @@ harness, without installation or a live repository:
 
 ```sh
 cargo build --locked -p kapsel --bin kapsel
-cargo build --locked -p kapseld --features test-harness
+cargo build --locked -p kapsel-daemon --features test-harness
 python3 tests/qualification/run_git_service.py --git /absolute/path/to/git
 ```
 
@@ -343,7 +343,7 @@ The focused package command above includes the service's private harness. On Lin
 tests:
 
 ```sh
-cargo test --locked -p kapseld --features test-harness --test linux_process
+cargo test --locked -p kapsel-daemon --features test-harness --test linux_process
 ```
 
 For the fresh-session caller's retained-identity delta, run the real Linux bridge/service fixture
@@ -352,7 +352,7 @@ with independent HTTP mutation counting and detached CLI inspection (no Kubernet
 ```sh
 cargo build --locked --bin kapsel
 KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
-  cargo test --locked -p kapseld --features test-harness --test linux_process \
+  cargo test --locked -p kapsel-daemon --features test-harness --test linux_process \
   mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation -- --exact
 ```
 
@@ -362,7 +362,7 @@ GID. In a disposable root-owned test container, provision that fixture group ins
 not on the development host. The test uses only the group identity, not Docker daemon access:
 
 ```sh
-cargo test --locked -p kapseld --features test-harness --test linux_process \
+cargo test --locked -p kapsel-daemon --features test-harness --test linux_process \
   distinct_effective_gid_is_denied_before_frame_read -- --ignored --exact
 ```
 
@@ -370,7 +370,7 @@ Cold publication validation also runs at the shared application owner:
 
 ```sh
 cargo test --locked -p kapsel --test service_application_contract cold_validation
-cargo test --locked -p kapseld --features test-harness
+cargo test --locked -p kapsel-daemon --features test-harness
 ```
 
 Linux startup/publication tests cover private lock custody, owned temporary cleanup and publication

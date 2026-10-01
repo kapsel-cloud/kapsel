@@ -21,9 +21,9 @@ OS identity.
 ## Decision
 
 Provider credentials, grants, trust, signing material, durable state, and effect execution remain in
-an operator-controlled resident process. The `kapseld -> kapsel` composition separates local
-admission, process lifetime, bounded concurrency, health, and diagnostics from the root package's
-effect semantics.
+an operator-controlled resident process. The `kapsel-daemon -> kapsel` package composition separates
+local admission, process lifetime, bounded concurrency, health, and diagnostics from the root
+package's effect semantics.
 
 A remote coordination layer must not become the source of provider truth or move provider authority
 across the resident boundary.
@@ -40,7 +40,8 @@ Conceptual genericity alone is insufficient.
 ## Consequences
 
 - The hosted sandbox topology is not a production template.
-- `kapseld` depends on `kapsel`; the root package does not depend on the Kapsel service adapter.
+- `kapsel-daemon` produces the `kapseld` binary and depends on `kapsel`; the root package does not
+  depend on the Kapsel service adapter.
 - The Kapsel service interface remains local and capability-specific.
 - Receipt, protocol, SDK, provider, Kubernetes, storage, and separate CLI packages are not created
   without their named extraction condition.

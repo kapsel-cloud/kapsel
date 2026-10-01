@@ -169,7 +169,8 @@ Startup removes only an exact inactive service-owned stale socket.
 Systemd owns process lifecycle, runtime-directory cleanup, health, and diagnostics. Static assets
 define the service identity and namespaced Kubernetes RBAC.
 
-Private modules in `crates/kapseld/src` separate the mechanisms:
+The `kapsel-daemon` package produces the `kapseld` binary. Private modules in
+`crates/kapsel-daemon/src` separate the mechanisms:
 
 - `server/protocol.rs`: JSON decoding, shared request validation, response rendering, and byte
   limits. It performs no I/O or ambient-authority lookup.

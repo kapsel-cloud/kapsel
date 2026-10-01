@@ -35,10 +35,10 @@ python3 tools/release/assemble_artifact.py --output-directory dist
 ```
 
 Assembly refuses a dirty worktree, a non-`x86_64-unknown-linux-gnu` target, missing Docker, or
-source metadata it cannot validate. It builds the `kapsel` and `kapseld` packages together without
-test/demo features. The four current-source executables use `--release`, `--locked`, the explicit
-target, fixed container path `/workspace`, and source-prefix remapping. Packaging copies those bytes
-and never rebuilds them.
+source metadata it cannot validate. It builds the `kapsel` and `kapsel-daemon` packages together
+without test/demo features. The four current-source executables use `--release`, `--locked`, the
+explicit target, fixed container path `/workspace`, and source-prefix remapping. Packaging copies
+those bytes and never rebuilds them.
 
 `--allow-dirty` exists only for local script tests. Such metadata records `source_dirty: true`; its
 outputs are not publishable and cannot satisfy candidate evidence.

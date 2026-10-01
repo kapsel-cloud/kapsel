@@ -507,16 +507,16 @@ at startup and the receiver client is constructed only on selection; issuance an
 operator responsibilities. Credential expiry cannot become a receiver result. Local reads do not
 need receiver access; there is no startup reconciliation.
 
-| Repository input                          | Direct-source destination                          |
-| ----------------------------------------- | -------------------------------------------------- |
-| feature-free root `kapsel`                | `/usr/bin/kapsel`                                  |
-| feature-free `kapsel-service-client`      | `/usr/bin/kapsel-service-client`                   |
-| feature-free `kapsel-service-mcp`         | `/usr/bin/kapsel-service-mcp`                      |
-| feature-free `kapseld`                    | `/usr/libexec/kapsel/kapseld`                      |
-| `crates/kapseld/deploy/kapseld.service`   | `/usr/lib/systemd/system/kapseld.service`          |
-| `crates/kapseld/deploy/kapseld.conf`      | `/usr/lib/sysusers.d/kapseld.conf`                 |
-| `crates/kapseld/deploy/kapseld-rbac.yaml` | `/usr/share/kapsel/kapseld-rbac.yaml`              |
-| `docs/KAPSEL_SERVICE_OPERATOR.md`         | `/usr/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md` |
+| Repository input                                | Direct-source destination                          |
+| ----------------------------------------------- | -------------------------------------------------- |
+| feature-free root `kapsel`                      | `/usr/bin/kapsel`                                  |
+| feature-free `kapsel-service-client`            | `/usr/bin/kapsel-service-client`                   |
+| feature-free `kapsel-service-mcp`               | `/usr/bin/kapsel-service-mcp`                      |
+| feature-free `kapseld`                          | `/usr/libexec/kapsel/kapseld`                      |
+| `crates/kapsel-daemon/deploy/kapseld.service`   | `/usr/lib/systemd/system/kapseld.service`          |
+| `crates/kapsel-daemon/deploy/kapseld.conf`      | `/usr/lib/sysusers.d/kapseld.conf`                 |
+| `crates/kapsel-daemon/deploy/kapseld-rbac.yaml` | `/usr/share/kapsel/kapseld-rbac.yaml`              |
+| `docs/KAPSEL_SERVICE_OPERATOR.md`               | `/usr/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md` |
 
 The static RBAC manifest contains one token-automount-disabled `ServiceAccount/demo/kapsel-service`,
 one Role for `apps/deployments` `get`/`patch` with `resourceNames: ["agent-api"]`, and one

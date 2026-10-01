@@ -749,7 +749,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kapseld"
+name = "kapsel-daemon"
 version = "0.3.0-preview.1"
 dependencies = [
  "ed25519-dalek",

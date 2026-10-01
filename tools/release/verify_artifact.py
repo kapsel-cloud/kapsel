@@ -201,7 +201,9 @@ def validate_sbom(
         raise RuntimeError("release SBOM archive package disagrees")
     if root_packages[0].get("versionInfo") != metadata["package_version"]:
         raise RuntimeError("release SBOM root package version disagrees")
-    service_packages = [package for package in cargo_packages if package.get("name") == "kapseld"]
+    service_packages = [
+        package for package in cargo_packages if package.get("name") == "kapsel-daemon"
+    ]
     if (
         len(service_packages) != 1
         or service_packages[0].get("versionInfo") != metadata["package_version"]

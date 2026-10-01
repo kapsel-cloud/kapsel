@@ -11,7 +11,7 @@ use std::{
     io::{BufRead as _, Read as _, Write as _},
 };
 
-use kapseld::client_transport;
+use kapsel_daemon::client_transport;
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
