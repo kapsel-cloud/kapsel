@@ -493,8 +493,13 @@ class ReleaseVerifierTests(unittest.TestCase):
 
     def test_documented_bootstrap_never_executes_after_authentication_failure(self) -> None:
         document = ROOT.joinpath("docs/RELEASE.md").read_text()
-        marker = "archive=kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu.tar.gz"
-        block = marker + document.split(marker, 1)[1].split("```", 1)[0]
+        _, heading, section = document.partition("## Authenticate and extract the release\n")
+        self.assertTrue(heading, "release authentication section is missing")
+        section = section.split("\n## ", 1)[0]
+        _, fence, commands = section.partition("```sh\n")
+        self.assertTrue(fence, "release authentication command block is missing")
+        block, closing_fence, _ = commands.partition("```")
+        self.assertTrue(closing_fence, "release authentication command block is unterminated")
         with tempfile.TemporaryDirectory(prefix="kapsel-bootstrap-") as temporary:
             private = pathlib.Path(temporary)
             for name, code in {
