@@ -1,8 +1,8 @@
 # Release artifacts
 
-This contract defines the current preview target, archive layout, assembly, SBOM, publisher
-authentication, extraction, and artifact checks. Execution, commands, and receipt bytes have
-separate contracts. This page does not authorize publication or establish production support.
+This contract defines the release target, archive layout, assembly, SBOM, publisher authentication,
+extraction, and artifact checks. Execution, commands, and receipt bytes have separate contracts.
+This page does not authorize publication or establish production support.
 
 The
 [published v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
@@ -11,10 +11,10 @@ v0.2.0 archive remains reproducible from its tagged source, not the current asse
 
 ## Path to v0.3.0
 
-The next release target is `v0.3.0`, a bounded **non-production developer release**. Removing the
-prerelease suffix does not establish production readiness or a general compatibility promise. There
-is no release date. Publication requires the evidence below and explicit maintainer approval. This
-section defines acceptance criteria, not work status or completed qualification.
+The release target is `v0.3.0`, a **pre-beta, non-production developer release**. The version does
+not establish production readiness or a general compatibility promise. Use `0.3.0` directly during
+qualification; no prerelease sequence is required. This section defines the required checks, not
+work status or completed qualification.
 
 ### Selected scope
 
@@ -59,28 +59,24 @@ harness. Source tests alone cannot discharge that gate. The candidate-signing wo
 run all native, live, Git, or agent lanes. A successful workflow run is not complete release
 acceptance.
 
-### Candidate and publication sequence
+### Qualification and publication sequence
 
-1. Close qualification gaps within the selected scope. Keep current-source and published-preview
-   claims separate.
-2. Prepare a newly named release candidate, such as `0.3.0-rc.1`. Update package identity and
-   release notes without changing the existing preview tag or bytes.
-3. Qualify that candidate against every graduation gate. Sign it only with explicit maintainer
-   authorization. Publish candidate evidence tied to its exact revision and artifact digests.
-4. Prepare `0.3.0` after candidate acceptance. The version change creates a new revision and new
-   bytes. Re-run the graduation gates for the final revision; do not relabel candidate artifacts or
-   inherit their qualification by assumption.
-5. With separate publication approval, publish the final authenticated artifacts and evidence.
-   Download them through the public release route and verify their identity, signature, and
-   extraction. Update the README and scope to describe only the accepted published release.
+1. Set the package version to `0.3.0` and prepare its release notes. Preserve existing published
+   tags and bytes.
+2. Run the required checks. Identify internal builds by their exact source revision and artifact
+   digests, with separate output directories. Fix failures without incrementing the unpublished
+   version. Re-run the affected checks; the shipped bytes must match the qualified revision.
+3. Authenticate and publish those exact artifacts as `v0.3.0`. Download them through the public
+   release route and verify their identity, signature, and extraction. Update the README and scope
+   to describe the published release.
 
-A failed gate requires a fix and a newly qualified revision. Keep rejected or withdrawn candidate
-identities distinct; never overwrite their artifacts. Neither this plan nor passing tests authorizes
-signing, tagging, pushing, or publication.
+Prerelease publication is not part of this process. Source revisions and artifact digests
+distinguish internal qualification attempts; they are not published releases. Preserve useful
+evidence, and never overwrite an existing published tag or artifact.
 
 ## Supported target and inputs
 
-The sole preview target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in pinned x86-64
+The sole release target is `x86_64-unknown-linux-gnu`. Kapsel builds and tests it in pinned x86-64
 Debian 12 environments. There is no support claim for macOS, ARM, musl, Windows, another Linux
 target, or older glibc environments. Adding a target requires a separately accepted native clean
 artifact lane and owner update.
@@ -92,7 +88,7 @@ Debian 12. The clean smoke container is
 Debian 12. Both run with `--platform linux/amd64`. Their digests are build and smoke inputs, not
 claims that the builder or image contents are trustworthy.
 
-The root `kapsel` archive is the only selected package. The preview selects no crates.io, docs.rs,
+The root `kapsel` archive is the only selected package. The release selects no crates.io, docs.rs,
 `cargo install`, source-package, sandbox, image, or second-target artifact.
 
 ## Deterministic assembly

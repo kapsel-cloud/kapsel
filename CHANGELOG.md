@@ -2,7 +2,7 @@
 
 All notable public Kapsel experiment releases are recorded here.
 
-## Unreleased - 0.3.0-rc.3
+## 0.3.0 - 2026-10-02
 
 - Selects a bounded non-production developer release with the resident service, fixed ID-only
   client, service MCP bridge, and fresh-session caller continuity.
@@ -16,9 +16,9 @@ All notable public Kapsel experiment releases are recorded here.
   observation-only same-ID recovery, private-material custody checks, and retained receipt
   comparison.
 
-This candidate is not a published release or completed qualification claim. The
-[release path](docs/RELEASE.md#path-to-v030) owns scope and graduation gates. Published preview
-artifacts retain their original version, contracts, and evidence.
+This pre-beta release remains non-production. The [release path](docs/RELEASE.md#path-to-v030) owns
+scope and required qualification. Published preview artifacts retain their original version,
+contracts, and evidence.
 
 ## 0.3.0-preview.1 - 2026-09-22
 
