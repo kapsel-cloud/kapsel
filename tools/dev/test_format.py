@@ -11,37 +11,37 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-TOOL = """#!/bin/sh
+TOOL = r"""#!/bin/sh
 set -eu
 name=${0##*/}
 phase=format
 case "$*" in
   *--version*|*--show-settings*|*which*) phase=preflight ;;
 esac
-printf '%s|%s|%s|%s\\n' "$name" "$phase" "$PWD" "$*" >> "$FORMAT_LOG"
+printf '%s|%s|%s|%s\n' "$name" "$phase" "$PWD" "$*" >> "$FORMAT_LOG"
 if [ "$name:$phase" = "${FAIL_AT:-}" ]; then
   exit 1
 fi
 if [ "$name" = rustup ]; then
-  printf '%s\\n' "$TEST_RUSTFMT"
+  printf '%s\n' "$TEST_RUSTFMT"
 fi
 if [ "$name" = cargo ] && [ "$RUSTFMT" != "$TEST_RUSTFMT" ]; then
   exit 88
 fi
 if [ "$name" = prettier ] && [ "$phase" = preflight ]; then
-  printf '%s\\n' "${TEST_PRETTIER_VERSION}"
+  printf '%s\n' "${TEST_PRETTIER_VERSION}"
 fi
 if [ "$name" = ruff ] && [ "$*" = --version ]; then
-  printf 'ruff %s\\n' "${TEST_RUFF_VERSION}"
+  printf 'ruff %s\n' "${TEST_RUFF_VERSION}"
 fi
 if [ "$name" = taplo ] && [ "$phase" = preflight ]; then
-  printf 'taplo %s\\n' "${TEST_TAPLO_VERSION}"
+  printf 'taplo %s\n' "${TEST_TAPLO_VERSION}"
 fi
 if [ "$name" = shfmt ] && [ "$phase" = preflight ]; then
-  printf '3.14.1\\n'
+  printf '3.14.1\n'
 fi
 if [ "$name" = shellcheck ] && [ "$phase" = preflight ]; then
-  printf 'version: 0.11.0\\n'
+  printf 'version: 0.11.0\n'
 fi
 """
 

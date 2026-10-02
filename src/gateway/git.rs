@@ -1134,10 +1134,14 @@ mod tests {
         fs::create_dir_all(receiver.receiver.join("hooks")).unwrap();
         for name in ["pre-receive", "post-receive"] {
             let script = format!(
-                "#!/bin/sh\nprintf 'invoked\\n' >> '{}'\nwhile read -r line; do :; done\n{}",
+                r"#!/bin/sh
+printf 'invoked\n' >> '{}'
+while read -r line; do :; done
+{}",
                 fixture.0.join(name).display(),
                 if name == kill_at {
-                    "kill -KILL \"$PPID\"\n"
+                    r#"kill -KILL "$PPID"
+"#
                 } else {
                     ""
                 },
