@@ -479,36 +479,122 @@ for that separate evidence. Rejection coverage does not replace historical migra
 
 Fuzzing additionally requires cargo-fuzz 0.13+ and uses nightly for sanitizer instrumentation. The
 pinned nightly is already installed by contributor setup. Cargo-fuzz is not needed for formatting or
-the deterministic gate. Check the target or run a bounded smoke test:
+the deterministic gate. Check the target without starting exploration:
 
 ```sh
-rustup run nightly-2026-07-03 cargo fuzz check --manifest-path fuzz/Cargo.toml inspect_receipt
-./fuzz/smoke.sh
+rustup run nightly-2026-07-03 cargo fuzz check --fuzz-dir fuzz inspect_receipt
 ```
 
-For a longer run:
+The shell runners require Python 3.11+, a clean committed checkout, and two existing private (0700),
+user-owned directories outside the checkout. Select absolute paths without symlink components. State
+and scratch roots must be disjoint. Neither runner updates source. Ordinary contributor Cargo builds
+and deterministic tests still accept a dirty checkout.
+
+Supply your owned roots before invoking smoke or simulation:
 
 ```sh
-KAPSEL_FUZZ_RUNS=1000000 KAPSEL_FUZZ_MAX_TIME=3600 ./fuzz/smoke.sh
+export KAPSEL_SOAK_STATE_DIR=/absolute/owned/robustness-state
+export KAPSEL_SCRATCH_ROOT=/absolute/owned/robustness-scratch
+./fuzz/smoke.sh --fuzz-seconds 30
+./tests/qualification/run-simulation.sh --seed 21182435914953528 --cases 1000 --shards 2
 ```
 
-Run the seeded lifecycle simulation with defaults, or supply a seed and workload for replay:
+Smoke defaults to 10,000 fuzz iterations and an ephemeral corpus. It removes scratch only on
+success; failed scratch and libFuzzer artifacts remain available. `KAPSEL_FUZZ_RUNS` selects the
+smoke iteration maximum. `KAPSEL_FUZZ_MAX_TIME` or `--fuzz-seconds` selects its time maximum. A time
+maximum is not a promise to run for that duration.
+
+For persistent exploration, queue this separate lane instead of extending smoke:
 
 ```sh
-./tests/qualification/run-simulation.sh
-KAPSEL_SIMULATION_SEED=21182435914953528 \
-KAPSEL_SIMULATION_CASES=10000 KAPSEL_SIMULATION_SHARDS=8 ./tests/qualification/run-simulation.sh
+python3 tools/dev/run_robustness.py fuzz --seed 2118243591 --fuzz-seconds 1800 --timeout 3600
 ```
 
-Optional `KAPSEL_FUZZ_NOTIFY_URL` and `KAPSEL_SIMULATION_NOTIFY_URL` send completion summaries
-through `curl` to a destination you control.
+Exploration uses `-runs=-1` and the retained `state/corpus`. Each invocation preserves its exact
+starting corpus, hashes, seed, command, and failure artifacts. It records the selected nightly
+compiler and cargo-fuzz versions. Fuzz compilation is a setup step; the runner then launches the
+built libFuzzer executable directly, with its digest recorded. This avoids cargo-fuzz's default
+artifact-directory creation in the source checkout. Build output stays in the owned scratch root.
+The overall timeout includes compilation. Simulation builds once and directly invokes the resulting
+libtest executable per shard. A pass requires each shard's expected case-count marker and one passed
+test, not merely a zero process exit.
 
-For unattended runs, inspect [the soak runner](../tools/dev/run-nightly-soak.sh) first. It updates
-the checkout by default, so use a dedicated checkout or disable updates explicitly:
+### Background sweep and retained evidence
+
+[The soak runner](../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random seeds,
+1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout including
+compilation. Repeat `--seed` to select an exact sweep; each shard consumes the same generated case
+sequence and runs its assigned cases.
 
 ```sh
-KAPSEL_SOAK_AUTO_UPDATE=0 ./tools/dev/run-nightly-soak.sh
+./tools/dev/run-nightly-soak.sh --timeout 3600 --cases 1000 --shards 2
 ```
+
+[The Python owner](../tools/dev/run_robustness.py) holds one nonblocking OS advisory lock in the
+state root. It never unlinks that lock or uses a PID file as identity. Launched commands inherit the
+lock descriptor. Each command owns a process group, which the runner kills on failure, timeout,
+cancellation, or command completion to retire leftover descendants. Host isolation must prevent
+process-group escape and supervise the entire job on supervisor SIGKILL or reboot. These process
+groups are not a hostile-code sandbox. Signal handlers request cancellation; safe checkpoints handle
+it after child registration and complete retirement. Cancellation during final scratch cleanup is
+classified, but cleanup already in progress can finish. The terminal-decision boundary follows
+cleanup; later signals do not change the selected outcome.
+
+The printed `state/run-*/` directory contains:
+
+- `result.json`: full source SHA, toolchain identity, selected workload, scratch path, status,
+  timestamps, and runner exit status;
+- `commands.json` and `command-*.log`: exact argument vectors, lane environment, process exit
+  statuses, and output (at most 8 MiB per command);
+- `simulation.json`: seed list, shard and case counts, and executable digest; or
+- `fuzz.json`, `corpus-before/`, `corpus-after.json`, and `artifacts/`: fuzz replay evidence.
+
+The runner stops rather than silently truncating and passing. It refuses new runs near its 1 GiB
+retained-state budget or below 128 MiB free space, and checks retained storage during command
+execution. This is not a filesystem reservation or hard allocation ceiling. Infrastructure must
+supply bounded scratch and evidence storage, CPU/memory ceilings, credential-free execution, and
+whole-job supervision. Keep source read-only during execution and provide writable Cargo caches and
+simulation build output outside source. Use a credential-free home, with no personal home mounts,
+SSH agents, signing material, service state, or Docker socket. The provisional sweep budget is two
+logical CPUs and approximately 4 GiB host memory; useful throughput and compilation peaks still need
+measurement.
+
+| Runner status | Exit | Meaning                                                                 |
+| ------------- | ---- | ----------------------------------------------------------------------- |
+| `PASSED`      | 0    | Every selected test and expected case completed; owned scratch removed  |
+| `FINDING`     | 1    | Test failure or fuzz failure diagnostic; replay evidence retained       |
+| `INCOMPLETE`  | 2    | Setup, timeout, missing execution, storage, or evidence failure         |
+| `CANCELLED`   | 130  | Handled cancellation; owned command groups retired                      |
+| `RUNNING`     | none | No terminal result; treat an abandoned run as interrupted, never passed |
+
+A preflight failure exits 2 and may have no run directory. An interrupted write may leave temporary
+JSON files; they are not terminal results. No previous scratch directory is automatically removed.
+Failures stop the affected lane. An unclassified run directory without a result stops both lanes.
+There is no automatic replay, failure deduplication, or evidence pruning.
+
+Before resuming a failed lane, reproduce the finding, commit a regression, and run its owning check.
+Then explicitly record that reference and passing command:
+
+```sh
+python3 tools/dev/run_robustness.py triage --run run-EXAMPLE \
+  --regression 'COMMIT:test-name; passing command'
+```
+
+Triage changes the result to `TRIAGED` and preserves the previous status and evidence. The reference
+is an operator attestation, not an automated proof that a regression exists. For interrupted or
+incomplete execution, record the diagnosed cause and recovery check in the same field. Triage never
+replays the old run or deletes retained scratch. Archive resolved evidence explicitly when needed;
+never discard the first unresolved replay example to make space.
+
+Infrastructure should alert on nonzero exits, new findings, missing/stuck scheduled jobs, stale
+`RUNNING` records, and incomplete evidence. Passing runs need no alert. The old notification URL
+variables are no longer used. The infrastructure owner controls schedules, alert delivery, and
+activation; this runner neither installs a resident service nor qualifies native systemd behavior.
+Public-PR execution remains on hosted CI unless a separately reviewed isolation design is approved.
+
+Run the small, offline harness regressions with `python3 tools/dev/test_robustness.py`. They cover
+exclusion, retained failures, interrupted runs, bounded output, unsafe paths, empty selection,
+timeout, and cancellation. They do not qualify isolation or reboot behavior on the deployment host.
 
 ## Source privacy and security
 

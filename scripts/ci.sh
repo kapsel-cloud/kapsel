@@ -16,6 +16,7 @@ run_static_checks() {
   printf '%s\n' "==> Formatting pipeline regressions"
   python3 tools/dev/test_format.py
   python3 tools/dev/test_dev_tools.py
+  python3 tools/dev/test_robustness.py
 
   printf '%s\n' "==> Qualification runner regressions"
   python3 tests/qualification/test_storage_enospc.py

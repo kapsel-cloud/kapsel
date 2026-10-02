@@ -1,6 +1,12 @@
 //! Replayable long lifecycle simulations over the private deterministic adapter seam.
 
-use std::{error::Error, fs, io, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    error::Error,
+    fs, io,
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use crate::{
     ApplyOutcome, DeploymentImageAdapter, ExactAuthorization, FaultPoint, Gateway, GatewayError,
@@ -13,6 +19,16 @@ const DEFAULT_CASES: usize = 10_000;
 // Lifecycle simulation is separate from capacity qualification. Keep each independent
 // fixture history below the journal's retained-identity ceiling without pruning old history.
 const CASES_PER_JOURNAL: usize = 100;
+
+struct SimulationScratch(PathBuf);
+
+impl Drop for SimulationScratch {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = fs::write(self.0.join("status"), "FINDING\n");
+        }
+    }
+}
 
 struct Generator(u64);
 
@@ -121,6 +137,14 @@ async fn seeded_lifecycle_crash_simulation_preserves_invariants() {
         "seed={seed} invalid shard {shard_index}/{shard_count}"
     );
 
+    assert!(
+        std::env::var_os("KAPSEL_SIMULATION_SCRATCH_ROOT").is_some(),
+        "select an owned KAPSEL_SIMULATION_SCRATCH_ROOT for the long lane"
+    );
+    assert!(
+        seed != 0 && shard_count <= cases,
+        "nonzero seed and nonempty shards required"
+    );
     let result = run_simulation(seed, cases, shard_index, shard_count).await;
     assert!(
         result.is_ok(),
@@ -136,18 +160,67 @@ async fn simulation_uses_independent_bounded_histories() {
     assert_eq!(journals, 2);
 }
 
+#[tokio::test]
+async fn simulation_preserves_preexisting_scratch() {
+    let seed = DEFAULT_SEED ^ 2;
+    let parent = std::env::var_os("KAPSEL_SIMULATION_SCRATCH_ROOT")
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let earlier = parent.join(format!(
+        "kapsel-lifecycle-simulation-{}-{seed}-0",
+        std::process::id()
+    ));
+    // Exclusive fixture creation gives this test ownership; never adopt an earlier directory.
+    private_directory(&earlier).unwrap();
+    fs::write(earlier.join("preserve"), b"earlier replay evidence").unwrap();
+    run_simulation(seed, 1, 0, 1).await.unwrap();
+    assert_eq!(
+        fs::read(earlier.join("preserve")).unwrap(),
+        b"earlier replay evidence"
+    );
+    fs::remove_dir_all(earlier).unwrap();
+}
+
 async fn run_simulation(
     seed: u64,
     cases: usize,
     shard_index: usize,
     shard_count: usize,
 ) -> SimulationResult<usize> {
-    let root = std::env::temp_dir().join(format!(
-        "kapsel-lifecycle-simulation-{}-{seed}-{shard_index}",
+    // Only the small deterministic regression may fall back to the host temporary directory.
+    let parent = std::env::var_os("KAPSEL_SIMULATION_SCRATCH_ROOT")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+    let metadata = fs::symlink_metadata(&parent)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("simulation scratch root must be a real directory".into());
+    }
+    let externally_selected = std::env::var_os("KAPSEL_SIMULATION_SCRATCH_ROOT").is_some();
+    if externally_selected {
+        if !parent.is_absolute() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err("selected simulation root must be absolute and private".into());
+        }
+        for ancestor in parent.ancestors() {
+            if fs::symlink_metadata(ancestor)?.file_type().is_symlink() {
+                return Err("selected simulation root has a symlink component".into());
+            }
+        }
+    }
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_nanos();
+    let root = parent.join(format!(
+        "kapsel-lifecycle-simulation-{}-{seed}-{shard_index}-{nonce}",
         std::process::id()
     ));
-    let _ = fs::remove_dir_all(&root);
+    // Exclusive creation: never remove a directory from an earlier process or invocation.
     private_directory(&root)?;
+    let _scratch = SimulationScratch(root.clone());
+    let root_identity = fs::symlink_metadata(&root)?;
+    if externally_selected && root_identity.uid() != metadata.uid() {
+        return Err("selected simulation root must be owned by the test user".into());
+    }
+    fs::write(root.join("status"), "RUNNING\n")?;
+    eprintln!("KAPSEL_SIMULATION_SCRATCH {}", root.display());
+    let mut executed = 0;
     let mut generator = Generator(seed);
     let apply_faults = [
         FaultPoint::TargetObserved,
@@ -177,7 +250,15 @@ async fn run_simulation(
             let paths = SimulationPaths {
                 journal: &journal_path,
             };
-            run_case(seed, case, paths, schedule).await?;
+            fs::write(
+                root.join("replay"),
+                format!("seed={seed} case={case} shard={shard_index}/{shard_count}\n"),
+            )?;
+            if let Err(error) = run_case(seed, case, paths, schedule).await {
+                fs::write(root.join("status"), "FINDING\n")?;
+                return Err(error);
+            }
+            executed += 1;
         }
     }
 
@@ -191,7 +272,17 @@ async fn run_simulation(
                 .is_some_and(|extension| extension == "sqlite3")
         })
         .count();
-    fs::remove_dir_all(root)?;
+    let current = fs::symlink_metadata(&root)?;
+    if !current.is_dir()
+        || current.dev() != root_identity.dev()
+        || current.ino() != root_identity.ino()
+    {
+        return Err("simulation scratch identity changed; refusing cleanup".into());
+    }
+    fs::remove_dir_all(&root)?;
+    println!(
+        "KAPSEL_SIMULATION_COMPLETED seed={seed} shard={shard_index}/{shard_count} cases={executed}"
+    );
     Ok(journals)
 }
 
@@ -362,8 +453,7 @@ fn environment_number(name: &str, default: u64) -> u64 {
 }
 
 fn private_directory(path: &Path) -> io::Result<()> {
-    fs::create_dir(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    fs::DirBuilder::new().mode(0o700).create(path)
 }
 
 fn request(case: usize) -> SetDeploymentImageRequest {
