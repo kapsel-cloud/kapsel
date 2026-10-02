@@ -4,21 +4,22 @@ Use this guide to prepare approvals, run the resident service, and retrieve orig
 operator supplies authority and private execution material. A separate caller selects approved
 action IDs; it cannot change authority or control the service.
 
-Use exact authenticated artifacts. The preview is non-production, and current source is not a new
-published release. The [service contract](KAPSEL_SERVICE.md) owns paths, identities, and lifecycle.
+Use exact authenticated artifacts. The published v0.3.0 is pre-beta and non-production; later source
+changes do not alter its bytes. The [service contract](KAPSEL_SERVICE.md) owns paths, identities,
+and lifecycle.
 
 ## Artifact requirements
 
-The published
-[v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) uses source
-revision `cd9893d313d741eb9e8a6149322d67e18e7508d6` and archive SHA-256
-`e42048607306455d292814d410df72fdaa2b576751630e52cee8a88590253263`. Its release page identifies
+The published [v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) uses source
+revision `64e204f0b5bdca9c31cc617d5d822cbfb3541597` and archive SHA-256
+`b6958a802e7c320e5c8ed5efe59cf2bceb130a2210b37c8e61e7aaa4e50d0c36`. Its release page identifies
 qualification and publisher evidence. Bundled documentation was frozen before publication; the
 release page establishes availability of those exact bytes.
 
 Identify every archive by source revision and SHA-256, not the package version alone. Do not mix an
 archive with a newer verifier companion. Accept the complete matching archive and sidecars. A local
-build is a separate candidate and does not inherit qualification from the published preview.
+build is a separate internal attempt and does not inherit qualification from a published release.
+The older published preview retains its own bytes, format-5 history, and matching documentation.
 
 ## One-command disposable example
 
@@ -32,8 +33,8 @@ sudo/root, `systemd-sysusers`, `systemd-analyze`, `journalctl`, `useradd` and GN
 have no existing Kapsel identities, installation or state. Do not clear existing state to make the
 example run. Docker and ARM emulation do not satisfy this native example's prerequisites.
 
-Obtain the archive and its four companions using the
-[authenticated preparation route](RELEASE.md#authenticate-and-extract-the-preview). Keep all five
+Obtain the archive and its five companions, including the Sigstore bundle, using the
+[authenticated preparation route](RELEASE.md#authenticate-and-extract-the-release). Keep all six
 files together. For an unsigned local build, independently record its exact source and archive
 digests and transfer it through a trusted channel. That is not publisher authentication.
 
@@ -184,7 +185,7 @@ above.
 
 Use one fresh, disposable native x86-64 Debian 12 host with systemd, Python 3.11, OpenSSL, sudo and
 standard account tools. Artifact preparation additionally requires Cosign 3.1.2 and GNU `sha256sum`.
-Follow [Authenticate and extract the preview](RELEASE.md#authenticate-and-extract-the-preview) using
+Follow [Authenticate and extract the release](RELEASE.md#authenticate-and-extract-the-release) using
 its checksum-bound verifier companion and Python 3.11 or newer. An unsigned local test archive is
 not authenticated publication. No Rust toolchain or repository checkout is needed on the operating
 host.

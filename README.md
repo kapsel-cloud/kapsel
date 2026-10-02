@@ -1,7 +1,7 @@
 # kapsel
 
 [![CI](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/kapsel-cloud/kapsel/actions/workflows/ci.yml)
-[![Preview](https://img.shields.io/badge/preview-v0.3.0--preview.1-orange)](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+[![Release](https://img.shields.io/badge/release-v0.3.0-orange)](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0)
 
 **Run an approved operation. Keep the evidence, including uncertainty.**
 
@@ -46,24 +46,26 @@ Each effect has its own result rules. Git acknowledgement establishes ref accept
 delivery, CI completion, or deployment completion. A missing acknowledgement remains `UNKNOWN`.
 There is no arbitrary shell execution, general agent runtime, workflow engine, or provider SDK. The
 [Git source example](docs/GIT_REF_TRANSITION.md) covers provisioning, caller reconnection, and
-offline inspection. It is not part of the published preview.
+offline inspection. The older published preview does not include Git.
 
-The published
-[v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) is a
-**non-production preview** for x86-64 GNU/Linux. It contains `kapsel`, `kapseld`, the fixed service
-client, operating assets, and authenticated release companions. It is not a stable v0.3 release and
-has no production-support promise.
+The published [v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) is a **pre-beta,
+non-production developer release** for x86-64 GNU/Linux. It includes both effects, `kapsel`,
+`kapseld`, the fixed service client, the service MCP bridge, operating assets, and authenticated
+release companions. Its release page identifies exact bytes and qualification. There is no
+production-support promise.
 
-The next release target is a bounded non-production `v0.3.0` developer release. The
-[release path](docs/RELEASE.md#path-to-v030) defines its frozen scope, fresh-install compatibility
-boundary, and qualification gates. No release date or completed qualification is implied.
+Journal format 6 rejects older formats unchanged. The
+[release contract](docs/RELEASE.md#path-to-v030) defines scope and the fresh-install boundary;
+[journal retention](docs/UPGRADE.md) protects existing attempted history. The earlier
+[v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) retains its
+original bytes and format-5 history. There is no migration or permission to repeat an old action.
 
 ## Try it
 
 Use a **fresh disposable native x86-64 Debian 12 VM** with systemd and root access. The example is
 not an installer for an existing host.
 
-[Authenticate and extract the preview](docs/RELEASE.md#authenticate-and-extract-the-preview). Then
+[Authenticate and extract the release](docs/RELEASE.md#authenticate-and-extract-the-release). Then
 run the
 [disposable service example](docs/KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example). It
 starts the real service under systemd, submits one approved action, inspects its receipt, and

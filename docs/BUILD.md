@@ -1,7 +1,7 @@
 # Build and test Kapsel
 
 This page covers source setup, commands, and validation gates. [Testing](TESTING.md) explains what
-each test proves. To run the published preview instead, use the
+each test proves. To run the published release instead, use the
 [service operator guide](KAPSEL_SERVICE_OPERATOR.md).
 
 ## Everyday commands
@@ -21,7 +21,7 @@ Run these from the checkout. Ordinary Cargo builds need only Rust and a C compil
 
 The
 [one-command disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
-uses authenticated preview binaries on a fresh native Linux/systemd VM. The older kind crash demo
+uses authenticated release binaries on a fresh native Linux/systemd VM. The older kind crash demo
 below is not the resident service. Live, native and artifact gates are separate from the everyday
 loop.
 
@@ -161,7 +161,7 @@ admission, and frozen JSON Patch comparison cases.
 ## Packaged-service live workflow
 
 The separate extracted-artifact lane requires Docker, kind 0.32+, kubectl 1.30+ and Python 3.11+.
-Use an exact accepted clean preview archive and its matching sidecars. This is a privileged
+Use an exact accepted clean release archive and its matching sidecars. This is a privileged
 **disposable test environment**, not permission to use an existing cluster:
 
 ```sh
@@ -634,10 +634,10 @@ See [MCP](MCP.md) for protocol details. The focused-gate table lists its black-b
 ## Release artifact
 
 Requires a clean checkout, Python 3.11+, and Docker with `linux/amd64` support. The sole release
-target is `x86_64-unknown-linux-gnu`. HEAD assembles a service-preview artifact containing `kapsel`,
+target is `x86_64-unknown-linux-gnu`. HEAD assembles a service artifact containing `kapsel`,
 `kapseld`, the fixed service client and existing operating assets. It is not the published v0.2 demo
 archive. The checksum-bound verifier companion supplies the
-[extraction-only route](RELEASE.md#authenticate-and-extract-the-preview) without repository source.
+[extraction-only route](RELEASE.md#authenticate-and-extract-the-release) without repository source.
 Assemble the archive and sidecars under `dist/`:
 
 ```sh

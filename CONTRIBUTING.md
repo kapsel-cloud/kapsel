@@ -5,8 +5,9 @@ and the [technical scope](docs/SCOPE.md). Use the [documentation map](docs/INDEX
 contract, implementation, tests, and vectors for your change.
 
 Try ideas in disposable environments. Integrate useful results with their contracts and tests. Keep
-current source, the v0.3.0-preview.1 service preview, and the older v0.2.0 beta distinct. Link the
-exact release when describing its behavior. Source changes do not alter published bytes.
+current source, the v0.3.0 pre-beta release, the older v0.3.0-preview.1, and the v0.2.0 beta
+distinct. Link the exact release when describing its behavior. Source changes do not alter published
+bytes.
 
 ## Engineering rules
 

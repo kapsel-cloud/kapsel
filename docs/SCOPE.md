@@ -23,7 +23,7 @@ waiting. There is no queue or automatic scheduler. [Service contracts](KAPSEL_SE
 protocol and limits.
 
 Current source also includes an ID-only stdio MCP bridge to this service. It is separate from the
-older five-field direct-execution MCP adapter and is not in the published preview.
+older five-field direct-execution MCP adapter. It ships in v0.3.0, not the older published preview.
 
 Neither effect coordinates independent journals or hosts. There is no fleet ordering, distributed
 transaction, or system-wide invariant guarantee. Git also has no hook-delivery guarantee. Neither
@@ -92,12 +92,16 @@ capture, or compliance.
 
 ## What is published
 
-[v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) is a
-**non-production** resident-service preview for `x86_64-unknown-linux-gnu`. Its release page
-identifies exact source and artifact digests and qualification evidence. It contains feature-free
-`kapsel`, `kapseld`, and `kapsel-service-client`, operating assets, and an authenticated extraction
-route. The [operator guide](KAPSEL_SERVICE_OPERATOR.md) owns preparation and operation. There is no
-custom installer or production-support promise.
+[v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) is a **pre-beta, non-production
+developer release** for `x86_64-unknown-linux-gnu`. It includes both effects and feature-free
+`kapsel`, `kapseld`, `kapsel-service-client`, and `kapsel-service-mcp`, operating assets, and an
+authenticated extraction route. Its release page identifies exact source, artifact digests, and
+finite qualification. The [operator guide](KAPSEL_SERVICE_OPERATOR.md) owns preparation and
+operation. There is no custom installer or production-support promise.
+
+The earlier [v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
+retains its original Kubernetes-only service bytes and format-5 history. It has no service MCP
+bridge or Git effect. Current source changes do not alter either release.
 
 Current journal format 6 retains original signed grants and rejects older formats without changing
 them. There is no migration, downgrade, pruning, or host-loss continuity guarantee. Preserve
@@ -107,26 +111,26 @@ procedure.
 
 The earlier [v0.2.0 beta](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.2.0) retains its
 [tagged contracts](https://github.com/kapsel-cloud/kapsel/tree/v0.2.0/docs). Its CLI, MCP, archive,
-and historical journal-upgrade promises do not apply to the preview. Current source changes do not
-alter published artifacts.
+and historical journal-upgrade promises do not apply to v0.3.0 or its older preview. Current source
+changes do not alter published artifacts.
 
-## Next release boundary
+## v0.3.0 release boundary
 
-The selected `v0.3.0` scope includes both effects, the resident service, the fixed ID-only client,
-the service MCP bridge, and fresh-session caller continuity. It remains a non-production developer
-release on the sole x86-64 GNU/Linux target. This is a release target, not a published capability or
-completed qualification claim.
+The [release contract](RELEASE.md#path-to-v030) owns selected scope and qualification requirements.
+The published release includes fresh-session caller continuity through the service MCP bridge. Its
+model-driven qualification covers one healthy approved action; deterministic callers own the fault
+and recovery cases. Neither proves useful action selection or application quality.
 
-The [release path](RELEASE.md#path-to-v030) owns graduation gates and candidate sequencing. It
-selects a fresh-install boundary from the format-5 preview, not migration. Existing attempted
-history must remain protected under [journal retention](UPGRADE.md); a new installation is not
-permission to repeat an old action.
+The release selects a fresh-install boundary from the format-5 preview, not migration. Existing
+attempted history must remain protected under [journal retention](UPGRADE.md); a new installation is
+not permission to repeat an old action.
 
 ## Maturity and exclusions
 
-Preview evidence covers one operation, receiver, platform, and named failure windows. It does not
-establish production availability, support, remediation, high availability, backup automation, or a
-general platform guarantee. Process-exit tests do not establish disk-backed power-loss durability.
+Release evidence covers the two selected effects, one platform, and named failure windows. It does
+not establish production availability, support, remediation, high availability, backup automation,
+or a general platform guarantee. Process-exit tests do not establish disk-backed power-loss
+durability.
 
 Current source has no general Kubernetes administration, arbitrary execution, provider SDK, policy
 language, workflow engine, runtime plugins, public Rust SDK, hosted control plane, dashboard, fleet

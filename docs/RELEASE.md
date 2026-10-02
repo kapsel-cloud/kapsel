@@ -4,6 +4,12 @@ This contract defines the release target, archive layout, assembly, SBOM, publis
 extraction, and artifact checks. Execution, commands, and receipt bytes have separate contracts.
 This page does not authorize publication or establish production support.
 
+The [published v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) is the pre-beta,
+non-production developer release for source `64e204f0b5bdca9c31cc617d5d822cbfb3541597`. Its archive
+SHA-256 is `b6958a802e7c320e5c8ed5efe59cf2bceb130a2210b37c8e61e7aaa4e50d0c36`. The release page
+records exact-byte qualification and publication; the requirements below remain separate from that
+evidence.
+
 The
 [published v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
 identifies its exact bytes and qualification. New candidates need their own qualification. The
@@ -52,7 +58,7 @@ and source/artifact digests without publishing private fixture material.
 | Kubernetes       | Live receiver gate and packaged-service workflow covering caller loss, service crash, same-ID recovery, frozen uncertainty, and independent mutation counts                                                         | [Live gate](BUILD.md#live-kubernetes-gate) and [packaged workflow](BUILD.md#packaged-service-live-workflow)                                        |
 | Git              | Core recovery matrix, Linux service-process recovery, and an extracted production-artifact journey covering acknowledgement loss, same-ID recovery, receiver ref/hook observations, and identical retained receipts | [Git service](BUILD.md#git-transition-service) and [Git example](GIT_REF_TRANSITION.md)                                                            |
 | Caller           | Fresh-session identity retention through the real Linux MCP bridge and one representative model-driven packaged healthy action                                                                                      | [Caller fixture](BUILD.md#kapsel-service-candidate) and [agent workflow](BUILD.md#packaged-service-live-workflow)                                  |
-| Release identity | Version agreement across binaries, MCP, archive, metadata and SBOM; explicit compatibility notes; publisher authentication and downloaded-byte verification                                                         | [Metadata](#release-metadata), [authentication](#publisher-authentication-and-provenance), and [extraction](#authenticate-and-extract-the-preview) |
+| Release identity | Version agreement across binaries, MCP, archive, metadata and SBOM; explicit compatibility notes; publisher authentication and downloaded-byte verification                                                         | [Metadata](#release-metadata), [authentication](#publisher-authentication-and-provenance), and [extraction](#authenticate-and-extract-the-release) |
 
 The [packaged Git journey](BUILD.md#git-transition-service) must run separately from the source Git
 harness. Source tests alone cannot discharge that gate. The candidate-signing workflow also does not
@@ -287,14 +293,14 @@ Publisher authentication proves that the appointed workflow signed exact manifes
 prove source review, workflow safety, builder integrity, dependency safety, reproducibility,
 operational fitness, production support, or universal existence time.
 
-## Authenticate and extract the preview
+## Authenticate and extract the release
 
 Use Python 3.11 or newer, Cosign 3.1.2, and GNU `sha256sum` on the selected Linux host. Obtain the
 exact archive and all five sidecars, including the Sigstore bundle, from the
-[published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1). Its
-source revision is `cd9893d313d741eb9e8a6149322d67e18e7508d6`. For a local candidate, transfer the
-locally recorded exact bytes through your trusted operator channel. An unsigned local candidate has
-no publisher authentication.
+[published v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0). Its source revision
+is `64e204f0b5bdca9c31cc617d5d822cbfb3541597`. For a local candidate, transfer the locally recorded
+exact bytes through your trusted operator channel. An unsigned local candidate has no publisher
+authentication.
 
 The `.verify.py` companion is a byte-for-byte copy of the existing
 `tools/release/verify_artifact.py` verification owner, at most 64 KiB. It is covered by the signed
@@ -306,8 +312,8 @@ old-layout extractor.
 In a private, caller-owned download directory containing only those files:
 
 ```sh
-archive=kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu.tar.gz
-revision='<exact accepted 40-lowercase-hex source revision>'
+archive=kapsel-0.3.0-x86_64-unknown-linux-gnu.tar.gz
+revision=64e204f0b5bdca9c31cc617d5d822cbfb3541597
 cosign verify-blob \
   --bundle "$archive.SHA256SUMS.sigstore.json" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -330,11 +336,10 @@ contact Kubernetes, create system identities or touch private service state. It 
 verified archive tree and prints its path. On an I/O failure, a partial new destination may remain;
 inspect it and use a new empty destination, never merge with or overwrite an existing tree.
 
-The result is `./extracted/kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu/`. Use that absolute path
-as `artifact` in the
-[operator guide](KAPSEL_SERVICE_OPERATOR.md#prepare-your-own-extracted-artifact). Keep the archive,
-sidecars, source revision and digests as the artifact identity. Installation is a separate, explicit
-operator step.
+The result is `./extracted/kapsel-0.3.0-x86_64-unknown-linux-gnu/`. Use that absolute path as
+`artifact` in the [operator guide](KAPSEL_SERVICE_OPERATOR.md#prepare-your-own-extracted-artifact).
+Keep the archive, sidecars, source revision and digests as the artifact identity. Installation is a
+separate, explicit operator step.
 
 ## Install, upgrade, and artifact-only proof
 
@@ -343,7 +348,7 @@ archive and may install `bin/kapsel` to `$HOME/.local/bin/kapsel`. Installation 
 authority, trust, journal, or receipt. `kapsel --version`, MCP `serverInfo.version`, archive
 identity, metadata, and SBOM must all report the same package version.
 
-The preview's operator path is [service preparation and operation](KAPSEL_SERVICE_OPERATOR.md). The
+The release's operator path is [service preparation and operation](KAPSEL_SERVICE_OPERATOR.md). The
 CLI prepares snapshot grants and inspects receipts. The daemon owns private execution and history.
 The client supplies the caller's fixed ID-only interface. The systemd unit owns process lifecycle.
 No custom installer is supplied.
@@ -399,15 +404,15 @@ Prerequisites are Python 3.11+, root operator access, systemd/systemd-sysusers, 
 journalctl, useradd, GNU coreutils, and a fresh host with no Kapsel accounts, groups, unit,
 overrides, enablement references, static destinations or private state. Existing dangling enablement
 links are refused unchanged. First follow the
-[authenticated preparation route](#authenticate-and-extract-the-preview). For an unsigned local
+[authenticated preparation route](#authenticate-and-extract-the-release). For an unsigned local
 candidate, use separately recorded exact digests and a trusted transfer; this does not establish
 publisher authentication. Dirty-source artifacts are refused for this mode.
 
 From the private directory holding the already authenticated and checksum-verified artifact files:
 
 ```sh
-archive=kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu.tar.gz
-revision='<exact accepted 40-lowercase-hex source revision>'
+archive=kapsel-0.3.0-x86_64-unknown-linux-gnu.tar.gz
+revision=64e204f0b5bdca9c31cc617d5d822cbfb3541597
 sha256sum --check --strict "$archive.SHA256SUMS" &&
 sudo python3 "$archive.verify.py" --archive "$archive" \
   --expected-revision "$revision" --service-systemd
