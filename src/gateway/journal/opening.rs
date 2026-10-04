@@ -327,7 +327,7 @@ fn configure_durable_connection(connection: &Connection) -> Result<(), GatewayEr
 fn open_private_file(path: &Path) -> io::Result<File> {
     let file = File::from(open(
         path,
-        OFlags::CREATE | OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        OFlags::CREATE | OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::RUSR | Mode::WUSR,
     )?);
     let metadata = file.metadata()?;
@@ -347,7 +347,8 @@ fn open_private_file(path: &Path) -> io::Result<File> {
 fn open_existing_private_file(path: &Path) -> io::Result<File> {
     let file = File::from(open(
         path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        // Reject special files below without first waiting for a FIFO writer at open().
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )?);
     let metadata = file.metadata()?;
@@ -413,6 +414,44 @@ mod tests {
 
     use super::*;
     use crate::gateway::journal::Journal;
+
+    #[test]
+    fn journal_opening_rejects_fifos_without_waiting_for_a_peer() {
+        let directory =
+            std::env::temp_dir().join(format!("kapsel-opening-fifos-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = directory.join("journal.sqlite3");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            open_validation_snapshot(&path),
+            Err(GatewayError::JournalFile(_))
+        ));
+        assert!(matches!(
+            open_journal(&path),
+            Err(GatewayError::JournalFile(_))
+        ));
+        fs::remove_file(&path).unwrap();
+        drop(Journal::open(&path).unwrap());
+        let rollback = directory.join("journal.sqlite3-journal");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&rollback)
+            .status()
+            .unwrap()
+            .success());
+        fs::set_permissions(&rollback, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            open_journal(&path),
+            Err(GatewayError::JournalBackup(_))
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn replacement_validation_holds_one_read_only_snapshot_without_creating_a_worker() {

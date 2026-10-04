@@ -268,6 +268,126 @@ fn hostile_receipt_inputs_fail_closed_without_verified_vocabulary() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    clippy::panic,
+    reason = "one controlled fixture trace compares rejected candidates and original evidence"
+)]
+async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changing_history() {
+    let path = database_path("receipt-facts-binding");
+    let foreign_path = database_path("receipt-foreign-binding");
+    let request = request();
+    let mut gateway = Gateway::open_for_test(&path).unwrap();
+    let mut foreign = Gateway::open_for_test(&foreign_path).unwrap();
+    for (owner, owner_path, reason) in [
+        (&mut gateway, &path, "original-reason"),
+        (&mut foreign, &foreign_path, "foreign-reason"),
+    ] {
+        owner
+            .submit_exact_for_test(&request, &authorization(&request))
+            .unwrap();
+        let mut adapter = failed_adapter(owner_path, &request);
+        adapter.observation.rollout_condition_reason = Some(reason.into());
+        owner
+            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+            .await
+            .unwrap();
+        assert_eq!((adapter.apply_calls, adapter.observe_calls), (1, 1));
+    }
+    let original = gateway
+        .journal
+        .operation(&request.operation_id)
+        .unwrap()
+        .unwrap();
+    let journal::LoadedOperation::ReceiverObserved(operation) = original.clone() else {
+        panic!("fixture must have frozen facts");
+    };
+    let journal::LoadedOperation::ReceiverObserved(foreign_operation) = foreign
+        .journal
+        .operation(&request.operation_id)
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("foreign fixture must have frozen facts");
+    };
+    let retained_grant = || {
+        gateway
+            .journal
+            .connection
+            .query_row(
+                "SELECT signed_authorization_grant FROM kubernetes_image_operations
+             WHERE operation_id = ?1",
+                [&request.operation_id],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .unwrap()
+    };
+    let grant = retained_grant();
+    let settings = ReceiptSettings {
+        signing_seed: &[71; 32],
+        key_id: "original-key",
+    };
+    let foreign_candidate = Gateway::build_receipt(&foreign_operation, &settings).unwrap();
+    // The current snapshot cannot legitimize same-ID bytes for different receiver facts.
+    assert!(matches!(
+        gateway
+            .journal
+            .commit_receipt(&operation, &foreign_candidate),
+        Err(GatewayError::InvalidPersistedState)
+    ));
+    // Nor can the foreign snapshot and its matching candidate substitute the frozen row.
+    assert!(matches!(
+        gateway
+            .journal
+            .commit_receipt(&foreign_operation, &foreign_candidate),
+        Err(GatewayError::InvalidTransition)
+    ));
+    assert_eq!(
+        gateway.journal.operation(&request.operation_id).unwrap(),
+        Some(original)
+    );
+    assert_eq!(retained_grant(), grant);
+
+    let candidate = Gateway::build_receipt(&operation, &settings).unwrap();
+    gateway
+        .journal
+        .commit_receipt(&operation, &candidate)
+        .unwrap();
+    let finalized = gateway
+        .journal
+        .operation(&request.operation_id)
+        .unwrap()
+        .unwrap();
+    let evidence = Gateway::read_loaded_receipt(finalized.clone()).unwrap();
+    assert!(matches!(
+        gateway
+            .journal
+            .commit_receipt(&operation, &foreign_candidate),
+        Err(GatewayError::InvalidTransition)
+    ));
+    assert_eq!(
+        gateway.journal.operation(&request.operation_id).unwrap(),
+        Some(finalized)
+    );
+    assert_eq!(
+        Gateway::read_loaded_receipt(
+            gateway
+                .journal
+                .operation(&request.operation_id)
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap(),
+        evidence
+    );
+    assert_eq!(retained_grant(), grant);
+    drop(gateway);
+    drop(foreign);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    fs::remove_dir_all(foreign_path.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
 async fn finalizer_contender_changes_no_durable_or_public_fact() {
     let path = database_path("receipt-finalizer-lock");
     let output_directory = path.parent().unwrap().join("receipts");

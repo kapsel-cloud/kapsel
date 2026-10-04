@@ -158,6 +158,64 @@ for current commands. The deterministic gate does not qualify live or platform-s
 `INSPECTED` means authenticated bytes and classifier consistency under supplied trust. It is not
 receiver truth, causation, complete capture, compliance, or `VERIFIED`.
 
+## Defensive boundary checks
+
+The maintained parser and I/O owners enforce the following limits. These bound accepted bytes and
+work, not measured RSS or operating-system I/O latency. Configuration and private filesystem custody
+remain operator responsibilities. The audit found no public receipt-injection path: Kubernetes
+completion now checks the private candidate against the current row instead of relying on its
+builder's call convention.
+
+| Boundary                     | Exact owner                                                                                                                                              | Enforced limit and placement                                                                                                                                                                                                                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kubernetes grant             | `crates/kapsel-authority/src/lib.rs::verify_authorization_grant`                                                                                         | 4 KiB envelope before decoding; 2 KiB statement before parsing; 512-byte ASCII text before copying.                                                                                                                                                                                            |
+| Git grant                    | `crates/kapsel-authority/src/git.rs::verify_git_ref_grant`                                                                                               | 4 KiB envelope, 2 KiB statement; bounded identities, one fixed ref and 40-byte commit IDs.                                                                                                                                                                                                     |
+| Ordered binary records       | `crates/kapsel-authority/src/record.rs::Records`, `src/gateway/receipt/mod.rs::Records`                                                                  | Checked header/end/tag arithmetic; exact order and exhaustion; borrowed values before bounded text allocation.                                                                                                                                                                                 |
+| Receipt and trust inspection | `src/gateway/receipt/mod.rs::parse_envelope`, `InspectionLimits::validate`, `crates/kapsel-authority/src/lib.rs::parse_receipt_trust`                    | Both effect receipts: 16 KiB envelope, 8 KiB statement, 1 KiB trust, 512-byte text; supplied limits can only narrow maxima. No ambient trust, clock or I/O.                                                                                                                                    |
+| Service operator document    | `src/application/service/document.rs::parse_service_operator_document`, `BoundedVec`                                                                     | 160 KiB before JSON parsing; 128 keys and 32 approvals; reject an extra array element before decoding it. Hex conversion checks length before output allocation: 32-byte keys, 4 KiB grants.                                                                                                   |
+| Direct operator document     | `src/application/mod.rs::parse_operator_document`                                                                                                        | 16 KiB before JSON parsing, including both public application constructors; oversize refusal performs no file reads.                                                                                                                                                                           |
+| Receiver configuration       | `src/gateway/git.rs::GitReceiverConfiguration::from_document`, `src/application/mod.rs::read_operator_file`, `ServiceExecution::from_operator_snapshots` | Git JSON 4 KiB; kubeconfig 16 KiB; seeds/public keys exactly 32 bytes. JSON/YAML work is bounded by the input ceiling; service strings also remain within the document ceiling before field validation.                                                                                        |
+| Operator file reads          | `src/transport_support.rs::read_bounded`, `crates/kapsel-daemon/src/startup.rs::read_private_file`                                                       | Metadata size/type checks before allocation/read; capped maximum-plus-one reads catch growth. Nonblocking no-follow opens reject special files without waiting for a FIFO peer. Service inputs additionally enforce owner/group, mode and single-link custody.                                 |
+| Production Kubernetes HTTP   | `src/application/mod.rs::load_operator_kubernetes_client`, `src/gateway/kubernetes/adapter.rs`                                                           | Response body limited to 2 MiB before aggregate collection/JSON decoding; 10-second request deadline, 180 reads/180 seconds per observation pass; one PATCH with transport retries disabled. Custom operator clients retain their own no-retry/body-bound obligations.                         |
+| Socket framing               | `crates/kapsel-daemon/src/server/protocol.rs::request_length`, `server/runtime.rs::read_request_frame`                                                   | Nonzero 16 KiB request length before frame allocation; reject trailing bytes. Eight connection permits; two-second whole-frame read/write deadlines. Ordinary/receipt responses are 16/40 KiB; bounded projections precede output validation.                                                  |
+| Fixed client replies         | `crates/kapsel-daemon/src/client_transport.rs::exchange`                                                                                                 | 40 KiB checked prefix before allocation; reject trailing bytes; two-second per-socket-operation timeouts, not a cumulative exchange deadline.                                                                                                                                                  |
+| Stdio MCP                    | `src/mcp.rs::serve`, `crates/kapsel-daemon/src/bin/kapsel-service-mcp.rs::main`                                                                          | 16 KiB line plus one sentinel byte before JSON parsing; duplicate-key rejection; direct/bridge output ceilings 8/96 KiB. Stdio waiting has no elapsed deadline.                                                                                                                                |
+| Receipt files                | `src/gateway/receipt/publication.rs::read_bounded`                                                                                                       | 16 KiB metadata ceiling before allocation; maximum-plus-one read; no-follow, nonblocking regular-file reads.                                                                                                                                                                                   |
+| Journal opening              | `src/gateway/journal/opening.rs`, `journal/schema.rs`, `journal/capacity.rs`                                                                             | 64 MiB database and 65 MiB main rollback checks before SQLite recovery; fixed 100-byte header read; 64 KiB SQLite value/row allocation limit; physical encoded payload/depth validation before row loading. No-follow, nonblocking opens then check regular-file/private/single-link identity. |
+| Retained journal work        | `src/gateway/journal/capacity.rs::require_retained_bounds`                                                                                               | 504 retained/32 unfinished identities; 16,384 pages, 20-level accepted trees, 16 KiB individual persisted values and 4 KiB retained grants. Integrity work is physically bounded, not subject to an elapsed deadline.                                                                          |
+| Git subprocess               | `src/gateway/git.rs::run`, `run_bounded`, `read_bounded`                                                                                                 | Explicit executable, cleared environment, fixed arguments/protocol restrictions; 15 seconds per command; each stdout/stderr at most 16 KiB before buffer extension. Failure/cancellation retires the owned process group; escaping operator hooks remain outside the boundary.                 |
+| Git custody walk             | `src/gateway/git.rs::private_tree`, `trusted_ancestors`                                                                                                  | At most 100,000 entries and depth 32; check pending count before enqueueing; reject links, foreign ownership and writable custody. Paths are operator-owned; filesystem calls have no elapsed deadline.                                                                                        |
+
+The application-level direct-document cap closes a library-entry gap previously covered only by CLI
+file reading. Journal read-only and rollback-file opening also reject FIFOs without blocking at
+`open`. The FIFO regression uses real special files with no peer, not simulated metadata.
+
+The Kubernetes completion regression supplies a correct current snapshot with a same-ID receipt for
+different facts, then supplies the foreign snapshot with its matching candidate. Both fail without
+changing the phase, frozen statement or retained grant. Correct completion still works. A later
+candidate cannot replace prior terminal evidence. Existing signing-failure, acknowledgement-loss,
+key-rotation and process-exit traces require original facts and identical retrieval without receiver
+I/O. Git already compares the decoded candidate to its transaction-owned statement.
+
+Completion adds transaction-owned reads and takes an immediate write transaction; its UPDATE,
+schema, persisted payload bounds and single-write commit shape are unchanged. The owned write-plan,
+retained-charge, physical-layout, main-rollback and full-capacity regressions therefore remain the
+owning capacity checks. No savepoint, extra tree mutation or new rollback payload is introduced.
+
+The reviewed production owners contain no `unwrap()`, `expect()` or `panic!` exceptions. Always-on
+assertions there relate only to compile-time size/schedule constants; schedule assertions and
+panic/unwrap permissions are test-only. Other narrow lint exceptions concern module/style or
+coherent transition decoding, not operating-error panics. Authority, result classification and
+execution-disposition matches keep distinct typed outcomes; parser wildcard branches reject unknown
+values. Kubeconfig rejects external credential files, exec and auth providers, and prevents ambient
+proxy discovery. Git clears its environment and fixes the executable and configuration sources.
+Receipt inspection receives trust, evaluation time and limits explicitly.
+
+`cfg(test)` and explicit `demo-harness`/`test-harness` features own fault controls. Default features
+are empty. The release assembler builds the locked production packages without either feature;
+test-feature evidence does not qualify installed production artifacts. These checks do not establish
+host confinement, power-loss behavior, a hard memory ceiling or a deadline for stalled storage.
+
 ## Determinism and crash proof
 
 Default semantic tests do not depend on wall-clock time, random keys, live services, ambient trust,

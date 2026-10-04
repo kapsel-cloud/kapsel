@@ -13,10 +13,12 @@ external witnessing, or production assurance.
 Receipt completion commits the original signed evidence in SQLite, independently of export.
 `receiver_observed` durably freezes the historical receiver statement before signing. One
 conditional SQLite transaction commits the exact signed receipt bytes, their SHA-256 digest, signer
-identity, and terminal `finalized` state together. `finalized` means durable terminal evidence, not
-an installed filesystem copy. Recovery before that commit signs only frozen facts. A signing failure
-leaves the observation unchanged, and commit acknowledgement loss is resolved by reading durable
-state rather than dispatching or observing again.
+identity, and terminal `finalized` state together. Under that write transaction, the journal binds
+completion to the current frozen facts and rejects a same-ID receipt with a different statement. A
+stale or foreign snapshot cannot substitute those facts. `finalized` means durable terminal
+evidence, not an installed filesystem copy. Recovery before that commit signs only frozen facts. A
+signing failure leaves the observation unchanged, and commit acknowledgement loss is resolved by
+reading durable state rather than dispatching or observing again.
 
 Journal format 6 retains the original signed authorization grant at first insertion. Fresh journals
 and existing format 6 journals are accepted. Format 5 and older versions are rejected unchanged

@@ -80,8 +80,8 @@ struct OperatorDocument {
 ///
 /// # Errors
 ///
-/// Returns a typed application configuration error when the document, one input, or application
-/// composition is invalid.
+/// Returns a typed application configuration error when the document exceeds 16 KiB, one input
+/// is invalid, or application composition fails.
 pub async fn open_application_from_operator_document(
     document: &[u8],
     read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
@@ -99,8 +99,8 @@ pub async fn open_application_from_operator_document(
 ///
 /// # Errors
 ///
-/// Returns [`ApplicationError::InvalidOperatorConfiguration`] when the document is malformed, its
-/// state paths differ from the fixed paths, or the supplied reader rejects an input. Other typed
+/// Returns [`ApplicationError::InvalidOperatorConfiguration`] when the document is malformed or
+/// exceeds 16 KiB, its state paths differ, or the supplied reader rejects an input. Other typed
 /// application configuration errors are preserved.
 pub async fn open_application_from_fixed_operator_document(
     document: &[u8],
@@ -123,6 +123,9 @@ struct FixedStatePaths<'a> {
 }
 
 fn parse_operator_document(document: &[u8]) -> Result<OperatorDocument, ApplicationError> {
+    if document.is_empty() || document.len() > 16 * 1024 {
+        return Err(ApplicationError::InvalidOperatorConfiguration);
+    }
     serde_json::from_slice(document).map_err(|_| ApplicationError::InvalidOperatorConfiguration)
 }
 
@@ -840,6 +843,50 @@ mod operator_tests {
     use super::*;
 
     const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
+
+    #[tokio::test]
+    async fn operator_document_limit_is_enforced_before_composition() {
+        let mut document = br#"{
+            "signed_authorization_grant":"/grant", "authorization_key_id":"owner",
+            "authorization_public_key":"/key", "kubeconfig":"/kubeconfig",
+            "journal":"/journal", "receipt_signing_seed":"/seed",
+            "receipt_signing_key_id":"receipt"
+        }"#
+        .to_vec();
+        document.resize(16 * 1024, b' ');
+        assert!(parse_operator_document(&document).is_ok());
+        document.push(b' ');
+        assert!(matches!(
+            parse_operator_document(&document),
+            Err(ApplicationError::InvalidOperatorConfiguration)
+        ));
+        let mut reads = 0;
+        let result = open_application_from_operator_document(&document, |_, _| {
+            reads += 1;
+            Err(ApplicationError::InvalidOperatorConfiguration)
+        })
+        .await;
+        assert!(matches!(
+            result,
+            Err(ApplicationError::InvalidOperatorConfiguration)
+        ));
+        let result = open_application_from_fixed_operator_document(
+            &document,
+            Path::new("/journal"),
+            Path::new("/journal"),
+            |_, _| {
+                reads += 1;
+                Err(ApplicationError::InvalidOperatorConfiguration)
+            },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ApplicationError::InvalidOperatorConfiguration)
+        ));
+        assert_eq!(reads, 0);
+        assert!(parse_operator_document(b"").is_err());
+    }
 
     enum ResponseFraming {
         ContentLength,

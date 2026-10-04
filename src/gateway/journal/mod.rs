@@ -997,10 +997,24 @@ impl Journal {
         if receipt.operation_id != operation.operation_id() {
             return Err(GatewayError::InvalidTransition);
         }
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(GatewayError::Database)?;
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
+                .map_err(GatewayError::Database)?;
+        // A phase-typed snapshot can originate in another journal. Bind it to the current frozen
+        // row while excluding concurrent writes, then compare the encoded candidate as well.
+        if loaded_operation_on(&transaction, operation.operation_id())?
+            != Some(LoadedOperation::ReceiverObserved(operation.clone()))
+        {
+            return Err(GatewayError::InvalidTransition);
+        }
+        let (key_id, statement) =
+            decode_frozen_receipt(&receipt.bytes).map_err(GatewayError::Receipt)?;
+        if statement != *operation.statement()
+            || key_id != receipt.key_id
+            || publication::receipt_digest_hex(&receipt.bytes) != receipt.digest
+        {
+            return Err(GatewayError::InvalidPersistedState);
+        }
         let changed = transaction
             .execute(
                 "UPDATE kubernetes_image_operations
