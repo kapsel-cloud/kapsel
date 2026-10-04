@@ -53,12 +53,17 @@ if [ "$mode" = install ]; then
     rustup run "$toolchain" cargo install taplo-cli --version "=$TAPLO_VERSION" \
       --locked --root "$TAPLO_HOME" --force
   fi
+  if [ "$("$PYRIGHT" --version 2>/dev/null || :)" != "pyright $PYRIGHT_VERSION" ]; then
+    npm install --prefix "$PYRIGHT_HOME" --no-save --package-lock=false \
+      --ignore-scripts --no-audit --no-fund "pyright@$PYRIGHT_VERSION"
+  fi
   if [ "$("$PRETTIER" --version 2>/dev/null || :)" != "$PRETTIER_VERSION" ]; then
     npm install --prefix "$PRETTIER_HOME" --no-save --package-lock=false \
       --ignore-scripts --no-audit --no-fund "prettier@$PRETTIER_VERSION"
   fi
 fi
 check_formatters
+check_type_checker
 # Avoid even creating rustup's home during read-only diagnosis.
 [ -d "${RUSTUP_HOME:-$HOME/.rustup}/toolchains" ] || {
   printf '%s\n' 'Rust toolchain missing. Run cargo xtask setup.' >&2

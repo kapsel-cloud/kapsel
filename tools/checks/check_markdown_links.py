@@ -120,6 +120,7 @@ def anchors(path: Path) -> set[str]:
     for index, line in enumerate(lines):
         for explicit in EXPLICIT_ANCHOR.findall(line):
             found.add(explicit)
+
         atx = ATX_HEADING.match(line)
         if atx is not None:
             add_heading(atx.group(2))
@@ -262,21 +263,24 @@ def check_target(
     target = link.target.strip()
     if not target or SCHEME.match(target) or target.startswith("//"):
         return None
-    split = urlsplit(target)
-    path_part = unquote(split.path)
-    fragment = unquote(split.fragment)
+
+    destination = urlsplit(target)
+    path_part = unquote(destination.path)
+    fragment = unquote(destination.fragment)
     if path_part:
         if path_part.startswith("/"):
             return f"absolute local path {target}"
         resolved = (source.parent / path_part).resolve()
     else:
         resolved = source.resolve()
+
     try:
         resolved.relative_to(ROOT)
     except ValueError:
         return f"path escapes repository {target}"
     if not resolved.exists():
         return f"missing path {target}"
+
     if fragment and resolved.suffix.lower() == ".md":
         target_anchors = anchor_cache.setdefault(resolved, anchors(resolved))
         if fragment not in target_anchors:
@@ -301,6 +305,7 @@ def main() -> int:
             failure = check_target(source, link, anchor_cache)
             if failure is not None:
                 failures.append(f"{source.relative_to(ROOT)}:{link.line_number}: {failure}")
+
     if failures:
         print("broken local Markdown links:", file=sys.stderr)
         for failure in sorted(failures):

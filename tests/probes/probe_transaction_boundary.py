@@ -109,6 +109,7 @@ def main() -> None:
         ready()
         HOST = docker("exec", CONTAINER, "hostname", "-i").split()[0]
         psql("postgres", (ROOT / "transaction-boundary.sql").read_text())
+
         wrong_password = connection("alice")
         wrong_password[wrong_password.index("-e") + 1] = "PGPASSWORD=wrong"
         assert (
@@ -118,6 +119,7 @@ def main() -> None:
             != 0
         )
         print("PASS database rejects wrong password on container-network TCP")
+
         check(
             "public function execute revoked",
             psql(
@@ -140,6 +142,7 @@ def main() -> None:
         ):
             assert psql("mallory", sql, success=False), sql
         print("PASS privilege escalation: direct read/write, schema CREATE, owner role refused")
+
         assert psql("mallory", "SELECT reservation.consume('parallel', 3);", success=False)
         assert psql("alice", "SELECT reservation.consume('parallel', 4);", success=False)
         check(
@@ -231,6 +234,7 @@ def main() -> None:
             ),
             "0",
         )
+
         after = start_query(
             "alice",
             "BEGIN; SELECT reservation.consume('postcrash', 2); COMMIT; SELECT pg_sleep(30);\n",

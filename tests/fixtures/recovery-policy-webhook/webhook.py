@@ -52,6 +52,7 @@ class ControlHandler(Handler):
                     "invocations": [],
                     "effects": [],
                 }
+
             state = SCENARIOS[operation_id]
             if command["action"] == "release":
                 state["released"] = command["through"]
@@ -77,6 +78,7 @@ class AdmissionHandler(Handler):
                     return
                 state["invocations"].append(request["uid"])
                 ordinal = len(state["invocations"])
+
             if not request.get("dryRun", False):
                 # The log is the actual out-of-band effect. The separate ledger
                 # lets the test cross-check invocations against observed pod logs.
@@ -87,11 +89,13 @@ class AdmissionHandler(Handler):
                 )
                 if state is not None:
                     state["effects"].append(request["uid"])
+
             if state is not None and state["hold"]:
                 released = CONDITION.wait_for(lambda: state["released"] >= ordinal, timeout=20)
                 if not released:
                     response["allowed"] = False
                     response["status"] = {"message": "fixture barrier deadline exceeded"}
+
             if state is not None and state["invalidate_first"]:
                 # Keep every invocation invalid until the test receives the first
                 # API response and explicitly enables replay. One API request can
@@ -108,7 +112,7 @@ class AdmissionHandler(Handler):
         )
 
 
-if __name__ == "__main__":
+def main() -> None:
     control = http.server.ThreadingHTTPServer(("0.0.0.0", 8080), ControlHandler)
     threading.Thread(target=control.serve_forever, daemon=True).start()
     server = http.server.ThreadingHTTPServer(("0.0.0.0", 8443), AdmissionHandler)
@@ -116,3 +120,7 @@ if __name__ == "__main__":
     context.load_cert_chain("/tls/tls.crt", "/tls/tls.key")
     server.socket = context.wrap_socket(server.socket, server_side=True)
     server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

@@ -17,6 +17,91 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CargoPackage:
+    identity: str
+    name: str
+    version: str
+    manifest_path: str
+    license: str | None
+    source: str | None
+
+
+@dataclass(frozen=True)
+class CargoDependency:
+    package: str
+    kinds: tuple[str | None, ...]
+
+
+@dataclass(frozen=True)
+class CargoGraph:
+    packages: tuple[CargoPackage, ...]
+    nodes: dict[str, tuple[CargoDependency, ...]]
+
+
+def cargo_graph_records(value: object) -> CargoGraph:
+    """Validate the fields consumed from Cargo's independently produced metadata."""
+    if not isinstance(value, dict):
+        raise RuntimeError("Cargo metadata is not an object")
+    packages = value.get("packages")
+    resolve = value.get("resolve")
+    if not isinstance(packages, list) or not isinstance(resolve, dict):
+        raise RuntimeError("Cargo metadata has no package graph")
+    nodes = resolve.get("nodes")
+    if not isinstance(nodes, list):
+        raise RuntimeError("Cargo metadata has no resolved nodes")
+
+    def text(record: dict[str, object], field: str) -> str:
+        item = record.get(field)
+        if not isinstance(item, str):
+            raise RuntimeError(f"Cargo metadata has an invalid {field}")
+        return item
+
+    def optional_text(record: dict[str, object], field: str) -> str | None:
+        if field not in record:
+            raise RuntimeError(f"Cargo metadata has no {field}")
+        item = record[field]
+        if item is not None and not isinstance(item, str):
+            raise RuntimeError(f"Cargo metadata has an invalid {field}")
+        return item
+
+    package_records = []
+    for package in packages:
+        if not isinstance(package, dict):
+            raise RuntimeError("Cargo metadata has an invalid package")
+        package_records.append(
+            CargoPackage(
+                text(package, "id"),
+                text(package, "name"),
+                text(package, "version"),
+                text(package, "manifest_path"),
+                optional_text(package, "license"),
+                optional_text(package, "source"),
+            )
+        )
+
+    node_records: dict[str, tuple[CargoDependency, ...]] = {}
+    for node in nodes:
+        if not isinstance(node, dict) or not isinstance(node.get("deps"), list):
+            raise RuntimeError("Cargo metadata has an invalid node")
+        dependencies = []
+        for dependency in node["deps"]:
+            if not isinstance(dependency, dict) or not isinstance(
+                dependency.get("dep_kinds"), list
+            ):
+                raise RuntimeError("Cargo metadata has an invalid dependency")
+            kinds = []
+            for kind in dependency["dep_kinds"]:
+                if not isinstance(kind, dict):
+                    raise RuntimeError("Cargo metadata has an invalid dependency kind")
+                kinds.append(optional_text(kind, "kind"))
+            dependencies.append(CargoDependency(text(dependency, "pkg"), tuple(kinds)))
+        node_records[text(node, "id")] = tuple(dependencies)
+    return CargoGraph(tuple(package_records), node_records)
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TARGET = "x86_64-unknown-linux-gnu"
@@ -257,9 +342,15 @@ def stage_release(
         "relationships": cargo_relationships,
         "root_package_id": root_package_id,
     }
-    graph_sha256 = hashlib.sha256(
-        json.dumps(graph, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    canonical_graph = json.dumps(graph, sort_keys=True, separators=(",", ":")).encode()
+    graph_sha256 = hashlib.sha256(canonical_graph).hexdigest()
+
+    binary_metadata: dict[str, object] = {}
+    for name, relative_path in BINARIES.items():
+        staged_binary = staging / relative_path
+        binary_metadata[f"{name}_binary_bytes"] = staged_binary.stat().st_size
+        binary_metadata[f"{name}_binary_sha256"] = file_sha256(staged_binary)
+
     metadata = {
         "artifact_schema": "kapsel.release-artifact.v3",
         "package_version": package_version(),
@@ -275,14 +366,7 @@ def stage_release(
         "license_sha256": file_sha256(staging / "LICENSE"),
         "builder_image": BUILDER_IMAGE,
         "smoke_image": SMOKE_IMAGE,
-        **{
-            field: value
-            for name, relative in BINARIES.items()
-            for field, value in (
-                (f"{name}_binary_bytes", (staging / relative).stat().st_size),
-                (f"{name}_binary_sha256", file_sha256(staging / relative)),
-            )
-        },
+        **binary_metadata,
         "non_claims": NON_CLAIMS,
     }
     staging.joinpath("RELEASE-METADATA.json").write_text(
@@ -335,34 +419,38 @@ def spdx_id(prefix: str, value: str) -> str:
 
 
 def cargo_graph(
-    metadata: dict[str, object],
+    metadata: object,
 ) -> tuple[list[dict[str, object]], list[dict[str, str]], str]:
+    records = cargo_graph_records(metadata)
     root_packages = [
         package
-        for package in metadata["packages"]
-        if package["name"] == "kapsel" and package["manifest_path"] == "/workspace/Cargo.toml"
+        for package in records.packages
+        if package.name == "kapsel" and package.manifest_path == "/workspace/Cargo.toml"
     ]
     if len(root_packages) != 1:
         raise RuntimeError("Cargo metadata did not identify the root package")
-    root_id = root_packages[0]["id"]
-    nodes = {node["id"]: node for node in metadata["resolve"]["nodes"]}
+    root_id = root_packages[0].identity
+    nodes = records.nodes
+
     service_packages = [
         package
-        for package in metadata["packages"]
-        if package["name"] == "kapsel-daemon"
-        and package["manifest_path"] == "/workspace/crates/kapsel-daemon/Cargo.toml"
+        for package in records.packages
+        if package.name == "kapsel-daemon"
+        and package.manifest_path == "/workspace/crates/kapsel-daemon/Cargo.toml"
     ]
     if len(service_packages) != 1:
         raise RuntimeError("Cargo metadata did not identify the service package")
-    reachable = {root_id, service_packages[0]["id"]}
+
+    reachable = {root_id, service_packages[0].identity}
     pending = sorted(reachable)
     edges: list[tuple[str, str]] = []
     while pending:
         source = pending.pop()
-        for dependency in nodes[source]["deps"]:
-            if not any(kind["kind"] != "dev" for kind in dependency["dep_kinds"]):
+        for dependency in nodes[source]:
+            has_non_dev_dependency = any(kind != "dev" for kind in dependency.kinds)
+            if not has_non_dev_dependency:
                 continue
-            target = dependency["pkg"]
+            target = dependency.package
             edges.append((source, target))
             if target not in reachable:
                 reachable.add(target)
@@ -374,41 +462,42 @@ def cargo_graph(
         for package in lock["package"]
     }
     identifiers = {
-        package["id"]: (
+        package.identity: (
             "SPDXRef-Package-kapsel-source"
-            if package["id"] == root_id
-            else spdx_id("Package", package["id"])
+            if package.identity == root_id
+            else spdx_id("Package", package.identity)
         )
-        for package in metadata["packages"]
-        if package["id"] in reachable
+        for package in records.packages
+        if package.identity in reachable
     }
+
+    reachable_packages = [package for package in records.packages if package.identity in reachable]
+    reachable_packages.sort(key=lambda package: (package.name, package.version, package.identity))
     packages: list[dict[str, object]] = []
-    for package in sorted(
-        (package for package in metadata["packages"] if package["id"] in reachable),
-        key=lambda value: (value["name"], value["version"], value["id"]),
-    ):
+    for package in reachable_packages:
         entry: dict[str, object] = {
-            "SPDXID": identifiers[package["id"]],
-            "name": package["name"],
-            "versionInfo": package["version"],
+            "SPDXID": identifiers[package.identity],
+            "name": package.name,
+            "versionInfo": package.version,
             "downloadLocation": "NOASSERTION",
             "filesAnalyzed": False,
             "licenseConcluded": "NOASSERTION",
-            "licenseDeclared": package["license"] or "NOASSERTION",
+            "licenseDeclared": package.license or "NOASSERTION",
             "copyrightText": "NOASSERTION",
         }
-        checksum = lock_checksums.get((package["name"], package["version"], package["source"]))
+        checksum = lock_checksums.get((package.name, package.version, package.source))
         if checksum is not None:
             entry["checksums"] = [{"algorithm": "SHA256", "checksumValue": checksum}]
-        if package["source"] and package["source"].startswith("registry+"):
+        if package.source and package.source.startswith("registry+"):
             entry["externalRefs"] = [
                 {
                     "referenceCategory": "PACKAGE-MANAGER",
                     "referenceType": "purl",
-                    "referenceLocator": f"pkg:cargo/{package['name']}@{package['version']}",
+                    "referenceLocator": f"pkg:cargo/{package.name}@{package.version}",
                 }
             ]
         packages.append(entry)
+
     relationships = [
         {
             "spdxElementId": identifiers[source],
@@ -436,6 +525,7 @@ def create_sbom(
         if metadata_file is None:
             raise RuntimeError("release metadata is missing while creating the SBOM")
         metadata = json.load(metadata_file)
+
     cargo_packages, cargo_relationships, root_package_id = cargo_graph(cargo_metadata)
     archive_id = "SPDXRef-Package-kapsel-archive"
     binary_ids = {name: "SPDXRef-File-" + path.replace("/", "-") for name, path in BINARIES.items()}
@@ -476,6 +566,7 @@ def create_sbom(
         ],
         *cargo_relationships,
     ]
+
     sbom = {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
@@ -509,6 +600,7 @@ def create_sbom(
         ],
         "relationships": relationships,
     }
+
     sbom_path = archive.with_name(archive.name + ".spdx.json")
     encoded = (json.dumps(sbom, indent=2, separators=(",", ": ")) + "\n").encode()
     write_exclusive(sbom_path, encoded)
@@ -536,6 +628,7 @@ def assemble(output_directory: pathlib.Path, allow_dirty: bool) -> pathlib.Path:
     if shutil.which("docker") is None:
         raise RuntimeError("Docker is required for release assembly")
     run("docker", "info")
+
     version = package_version()
     basename = f"kapsel-{version}-{TARGET}"
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -562,10 +655,12 @@ def assemble(output_directory: pathlib.Path, allow_dirty: bool) -> pathlib.Path:
     checksum_value = f"{file_sha256(archive)}  {archive.name}\n".encode()
     write_exclusive(checksum, checksum_value)
     created_sbom = create_sbom(archive, revision, tree, source_date, cargo_metadata)
+
     verifier_bytes = ROOT.joinpath("tools/release/verify_artifact.py").read_bytes()
     if len(verifier_bytes) > VERIFIER_BYTES_MAX:
         raise RuntimeError("release verifier exceeded its byte bound")
     write_exclusive(verifier, verifier_bytes)
+
     create_digest_manifest(archive, checksum, created_sbom, verifier)
     return archive
 

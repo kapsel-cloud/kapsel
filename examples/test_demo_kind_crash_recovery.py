@@ -36,15 +36,7 @@ case "$command" in
         while :; do sleep 1; done
         ;;
       after_receipt_commit)
-        python3 - "$workspace/failed-journal.sqlite3" <<'PYSQL'
-import hashlib
-import sqlite3
-import sys
-with sqlite3.connect(sys.argv[1]) as connection:
-    connection.execute("CREATE TABLE kubernetes_image_operations(state, receipt_digest)")
-    connection.execute("INSERT INTO kubernetes_image_operations VALUES (?, ?)",
-                       ("finalized", hashlib.sha256(b"receipt").hexdigest()))
-PYSQL
+        python3 "$KAPSEL_DEMO_FIXTURE_JOURNAL_PROGRAM" "$workspace/failed-journal.sqlite3"
         : >"$KAPSEL_DEMO_CONTROL_DIRECTORY/after-receipt-commit.ready"
         while :; do sleep 1; done
         ;;
@@ -87,6 +79,10 @@ class HarnessPrerequisiteTests(unittest.TestCase):
             environment = os.environ.copy()
             environment["PATH"] = f"{directory}:{environment['PATH']}"
             environment["FAKE_LOG"] = str(log)
+            environment["KAPSEL_DEMO_FIXTURE_JOURNAL_PROGRAM"] = str(
+                pathlib.Path(__file__).with_name("demo_journal_fixture.py")
+            )
+
             harness = HARNESS
             if packaged:
                 root = directory / "release"
@@ -112,6 +108,7 @@ class HarnessPrerequisiteTests(unittest.TestCase):
                     assets.joinpath("kap0038-trust.hex").write_text("00")
                 environment["KAPSEL_DEMO_EXECUTABLE"] = str(executable)
                 environment["KAPSEL_DEMO_ASSET_DIRECTORY"] = str(assets)
+
             result = subprocess.run(
                 [str(harness)],
                 cwd=ROOT,

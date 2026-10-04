@@ -202,6 +202,7 @@ class Fixture:
                     fixture.errors.append("unexpected PATCH shape or content type")
                     self.reply({}, 400)
                     return
+
                 with fixture.lock:
                     fixture.requests.append({"method": "PATCH", "path": self.path, "body": patch})
                     before = facts(fixture.obj)
@@ -216,6 +217,7 @@ class Fixture:
                     fixture.effects.append(
                         {"actor": "kubectl-patch", "before": before, "after": facts(current)}
                     )
+
                 fixture.persisted.set()
                 if fixture.fault == "kill-after-persistence":
                     fixture.release.wait(10)
@@ -348,6 +350,7 @@ def experiment(kubectl, case):
             )
         elif case != "pending-no-watch":
             fixture.settle()
+
         status = run(["rollout", "status", "deployment/api", "--watch=false", "--timeout=2s"])
         assert status["exit"] == 0
         if case == "pending-no-watch":
@@ -362,9 +365,11 @@ def experiment(kubectl, case):
                 assert pinned["exit"] != 0 and "different from" in pinned["stderr"]
             else:
                 assert pinned["exit"] == 0 and "successfully rolled out" in pinned["stdout"]
-        patches = [r for r in fixture.requests if r["method"] == "PATCH"]
+
+        patches = [request for request in fixture.requests if request["method"] == "PATCH"]
         assert len(patches) == 1, "unexpected retry or mutation during status reconstruction"
         assert not fixture.errors, fixture.errors
+
         return {
             "case": case,
             "intended": intended,
@@ -392,6 +397,7 @@ def main():
     client = version["clientVersion"]
     if (client["gitVersion"], client["gitCommit"]) != (VERSION, COMMIT):
         raise SystemExit(f"requires kubectl {VERSION} at {COMMIT}")
+
     started = time.monotonic()
     cases = [experiment(kubectl, case) for case in ((args.case,) if args.case else CASES)]
     print(

@@ -17,18 +17,26 @@ import run_git_artifact as JOURNEY
 
 class GitArtifactTests(unittest.TestCase):
     def test_exercise_is_valid_python_without_product_test_hooks(self):
-        ast.parse(JOURNEY.EXERCISE)
-        self.assertNotIn("KAPSELD_TEST", JOURNEY.EXERCISE)
-        self.assertNotIn("KAPSEL_DEMO", JOURNEY.EXERCISE)
+        source = JOURNEY.EXERCISE_SOURCE.read_bytes()
+        ast.parse(source)
+        self.assertNotIn(b"KAPSELD_TEST", source)
+        self.assertNotIn(b"KAPSEL_DEMO", source)
         self.assertEqual(JOURNEY.CASES, ("healthy", "pre-receive", "post-receive", "service-loss"))
 
     def test_fixture_subcommands_use_the_selected_git(self):
-        tree = ast.parse(JOURNEY.EXERCISE)
+        tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
         helper = next(
-            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "git"
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "git"
         )
         command = mock.Mock(return_value=b"selected\n")
-        namespace = {"git_binary": Path("/private/git"), "command": command, "environment": {}}
+        namespace = {
+            "git_binary": Path("/private/git"),
+            "command": command,
+            "environment": {},
+            "Path": Path,
+        }
         exec(compile(ast.Module(body=[helper], type_ignores=[]), "fixture", "exec"), namespace)
         self.assertEqual(namespace["git"]("--version"), "selected")
         self.assertEqual(
@@ -36,7 +44,7 @@ class GitArtifactTests(unittest.TestCase):
         )
         bootstrap = next(
             node
-            for node in tree.body
+            for node in ast.walk(tree)
             if isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Call)
             and any(
@@ -58,8 +66,11 @@ class GitArtifactTests(unittest.TestCase):
         self.assertIn("--receive-pack=/private/git receive-pack", invoke.call_args.args)
 
     def test_runtime_custody_mode_survives_private_umask(self):
-        tree = ast.parse(JOURNEY.EXERCISE)
-        setup = next(node for node in tree.body if isinstance(node, ast.For))
+        tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
+        main = next(
+            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"
+        )
+        setup = next(node for node in main.body if isinstance(node, ast.For))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             namespace = {
@@ -155,7 +166,7 @@ class GitArtifactTests(unittest.TestCase):
                 mock.patch.object(JOURNEY, "run", side_effect=transport) as docker,
                 mock.patch.object(
                     JOURNEY.subprocess, "run", return_value=SimpleNamespace(returncode=0)
-                ),
+                ) as execution,
             ):
                 self.assertEqual(JOURNEY.qualify(archive, "a" * 40, git), workspace)
                 summary = json.loads((workspace / "summary.json").read_bytes())
@@ -166,6 +177,12 @@ class GitArtifactTests(unittest.TestCase):
                 self.assertEqual(
                     summary["git_sha256"], hashlib.sha256(git.read_bytes()).hexdigest()
                 )
+                source = JOURNEY.EXERCISE_SOURCE.read_bytes()
+                self.assertEqual(summary["exercise_sha256"], hashlib.sha256(source).hexdigest())
+                self.assertEqual((workspace / JOURNEY.EXERCISE_SOURCE.name).read_bytes(), source)
+                self.assertEqual(len(execution.call_args_list), len(JOURNEY.CASES))
+                for call in execution.call_args_list:
+                    self.assertEqual(call.kwargs["input"], source)
                 self.assertEqual(tuple(case["case"] for case in summary["cases"]), JOURNEY.CASES)
                 removals = [
                     call.args[0] for call in docker.call_args_list if call.args[0][1] == "rm"

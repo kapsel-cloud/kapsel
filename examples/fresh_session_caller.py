@@ -10,13 +10,60 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import Literal, NotRequired, TypedDict, cast
+
+
+class ExecutionResponse(TypedDict, total=False):
+    disposition: str
+    action_owner: str
+    next_action: str
+
+
+class ServiceResponse(TypedDict):
+    status: str
+    version: NotRequired[int]
+    error_class: NotRequired[str]
+    execution: NotRequired[ExecutionResponse]
+    receipt_hex: NotRequired[str]
+    receipt_sha256: NotRequired[str]
+
+
+class NoSelectionResponse(TypedDict):
+    status: Literal["NO_SELECTION"]
+    current: ServiceResponse
+
+
+class OperationReference(TypedDict):
+    version: int
+    service: str
+    operation_id: str
+
+
+def service_response(value: object) -> ServiceResponse:
+    """Validate the response fields this caller consumes; retain other protocol fields."""
+    if not isinstance(value, dict) or not isinstance(value.get("status"), str):
+        raise ValueError("invalid service response")
+    if "version" in value and type(value["version"]) is not int:
+        raise ValueError("invalid service version")
+    for field in ("error_class", "receipt_hex", "receipt_sha256"):
+        if field in value and not isinstance(value[field], str):
+            raise ValueError("invalid service response field")
+    if "execution" in value:
+        execution = value["execution"]
+        if not isinstance(execution, dict):
+            raise ValueError("invalid execution response")
+        for field in ("disposition", "action_owner", "next_action"):
+            if field in execution and not isinstance(execution[field], str):
+                raise ValueError("invalid execution response field")
+    return cast(ServiceResponse, value)
+
 
 BRIDGE = "/usr/bin/kapsel-service-mcp"
 PROTOCOL = "2025-11-25"
 IDENTITY = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 
 
-def exchange(name, arguments):
+def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
     messages = [
         {
             "jsonrpc": "2.0",
@@ -47,19 +94,25 @@ def exchange(name, arguments):
         )
         if len(result.stdout) > 100_000:
             raise ValueError("oversized MCP response")
+
         lines = result.stdout.splitlines()
         if len(lines) != 2:
             raise ValueError("unexpected MCP response count")
         init, reply = (json.loads(line) for line in lines)
+        if not isinstance(init, dict) or not isinstance(reply, dict):
+            raise ValueError("unexpected MCP response shape")
+        initialization = init.get("result")
         if (
             init.get("id") != 1
-            or init.get("result", {}).get("protocolVersion") != PROTOCOL
+            or not isinstance(initialization, dict)
+            or initialization.get("protocolVersion") != PROTOCOL
             or reply.get("id") != 2
         ):
             raise ValueError("unexpected MCP handshake")
+
         text = reply["result"]["content"][0]["text"]
         body = json.loads(text)
-        service = body["service"]
+        service = service_response(body["service"])
         if body.get("operation_id") != arguments.get("operation_id") or not isinstance(
             service, dict
         ):
@@ -71,10 +124,11 @@ def exchange(name, arguments):
         return {"status": "ERROR", "error_class": "exchange_uncertain"}
 
 
-def reference(path, service, operation_id=None):
+def reference(path: str, service: str, operation_id: str | None = None) -> OperationReference:
     """Create before submission; never overwrite a reference after an uncertain response."""
     if not service or len(service) > 128 or not IDENTITY.fullmatch(service):
         raise ValueError("invalid operator-provisioned service label")
+
     parent = Path(path).parent
     directory = parent.stat()
     if (
@@ -83,26 +137,26 @@ def reference(path, service, operation_id=None):
         or directory.st_mode & 0o077
     ):
         raise ValueError("reference directory must be private and caller-owned")
+
     if operation_id is not None:
         if not IDENTITY.fullmatch(operation_id):
             raise ValueError("invalid operation ID")
-        data = {"version": 1, "service": service, "operation_id": operation_id}
+        data: OperationReference = {"version": 1, "service": service, "operation_id": operation_id}
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        # Leave a partial reference visible after failure; retry must not replace the pinned ID.
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(data, output, separators=(",", ":"))
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            with os.fdopen(descriptor, "w") as output:
-                json.dump(data, output, separators=(",", ":"))
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-            directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except BaseException:
-            # Keep a partially written reference visible for manual inspection; never replace it.
-            raise
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
         return data
+
     info = Path(path).lstat()
     if (
         not stat.S_ISREG(info.st_mode)
@@ -113,22 +167,24 @@ def reference(path, service, operation_id=None):
         raise ValueError("reference must be a private caller-owned regular file")
     if info.st_size > 512:
         raise ValueError("oversized reference")
-    data = json.loads(Path(path).read_text())
+
+    decoded = json.loads(Path(path).read_text())
     if (
-        data.get("version") != 1
-        or data.get("service") != service
-        or not isinstance(data.get("operation_id"), str)
-        or not IDENTITY.fullmatch(data["operation_id"])
+        not isinstance(decoded, dict)
+        or decoded.get("version") != 1
+        or decoded.get("service") != service
+        or not isinstance(decoded.get("operation_id"), str)
+        or not IDENTITY.fullmatch(decoded["operation_id"])
     ):
         raise ValueError("reference does not match this service/history label")
-    return data
+    return cast(OperationReference, decoded)
 
 
-def status(operation_id):
+def status(operation_id: str) -> ServiceResponse:
     return exchange("kapsel.get_status", {"operation_id": operation_id})
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--service", required=True, help="operator-provisioned history label")
     parser.add_argument("--reference", required=True, help="private caller-owned reference file")
@@ -143,6 +199,7 @@ def main():
     commands.add_parser("resume", help="explicit same-ID selection after reading")
     commands.add_parser("receipt", help="retrieve original receipt bytes (hex) and digest")
     args = parser.parse_args()
+    result: ServiceResponse | NoSelectionResponse
     try:
         if args.command in ("approved", "history"):
             if args.after is not None and not IDENTITY.fullmatch(args.after):
@@ -155,6 +212,7 @@ def main():
             result = exchange(tool, {"after": args.after})
             print(json.dumps({"service": result}, separators=(",", ":")))
             return 4 if result.get("status") == "ERROR" else 0
+
         saved = reference(
             args.reference, args.service, args.operation_id if args.command == "start" else None
         )
@@ -167,7 +225,7 @@ def main():
         elif args.command == "receipt":
             result = exchange("kapsel.get_receipt", {"operation_id": operation_id})
             if result.get("status") == "READY":
-                receipt_hex = result["receipt_hex"]
+                receipt_hex = result.get("receipt_hex")
                 if (
                     not isinstance(receipt_hex, str)
                     or len(receipt_hex) > 80_000
@@ -176,20 +234,22 @@ def main():
                 ):
                     raise ValueError("invalid receipt encoding")
                 raw = bytes.fromhex(receipt_hex)
-                if hashlib.sha256(raw).hexdigest() != result["receipt_sha256"]:
+                if hashlib.sha256(raw).hexdigest() != result.get("receipt_sha256"):
                     raise ValueError("receipt digest mismatch")
         else:
             current = status(operation_id)
             execution = current.get("execution", {})
-            if (
-                current.get("status") != "IN_PROGRESS"
-                or execution.get("disposition") != "resume_required"
-                or execution.get("action_owner") != "caller"
-                or execution.get("next_action") != "select_same_id"
-            ):
+            requires_caller_selection = (
+                current.get("status") == "IN_PROGRESS"
+                and execution.get("disposition") == "resume_required"
+                and execution.get("action_owner") == "caller"
+                and execution.get("next_action") == "select_same_id"
+            )
+            if not requires_caller_selection:
                 result = {"status": "NO_SELECTION", "current": current}
             else:
                 result = exchange("kapsel.submit", {"operation_id": operation_id})
+
         print(json.dumps({"reference": saved, "service": result}, separators=(",", ":")))
         if result.get("status") in ("ERROR", "UNKNOWN", "NO_SELECTION"):
             return 4

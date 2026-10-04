@@ -45,6 +45,25 @@ class RobustnessTests(unittest.TestCase):
             *(str(argument) for argument in arguments),
         ]
 
+    def test_retained_record_shapes_are_validated_before_use(self):
+        path = self.evidence / "result.json"
+        for field, value in (
+            ("revision", []),
+            ("cases", True),
+            ("seeds", ["7"]),
+            ("finished", "now"),
+            ("prior_status", "SUCCESS"),
+        ):
+            with self.subTest(field=field):
+                runner.atomic_json(
+                    path, {"status": "INCOMPLETE", "lane": "simulation", field: value}
+                )
+                with self.assertRaises(runner.Incomplete):
+                    runner.read_result(path)
+        minimal = {"status": "INCOMPLETE", "lane": "unclassified"}
+        runner.atomic_json(path, minimal)
+        self.assertEqual(runner.read_result(path), minimal)
+
     def test_exit_status_and_empty_execution(self):
         with self.assertRaises(runner.Finding):
             self.supervisor.run([self.command("raise SystemExit(7)")], finding=True)
@@ -336,7 +355,15 @@ class RobustnessTests(unittest.TestCase):
             str(self.scratch),
         ]
         with patch.object(sys, "argv", arguments), redirect_stdout(io.StringIO()):
-            with patch.object(runner, "source_identity", return_value={"revision": "a" * 40}):
+            with patch.object(
+                runner,
+                "source_identity",
+                return_value={
+                    "revision": "a" * 40,
+                    "rustc": "fixture rustc",
+                    "cargo": "fixture cargo",
+                },
+            ):
                 with patch.object(runner, "simulation", side_effect=runner.Finding("fixture")):
                     self.assertEqual(runner.main(), 1)
                     with self.assertRaises(runner.Incomplete):
@@ -378,7 +405,15 @@ class RobustnessTests(unittest.TestCase):
             (runner.Incomplete("overall timeout"), 2, "INCOMPLETE"),
         ):
             with patch.object(sys, "argv", arguments), redirect_stdout(io.StringIO()):
-                with patch.object(runner, "source_identity", return_value={"revision": "b" * 40}):
+                with patch.object(
+                    runner,
+                    "source_identity",
+                    return_value={
+                        "revision": "b" * 40,
+                        "rustc": "fixture rustc",
+                        "cargo": "fixture cargo",
+                    },
+                ):
                     with patch.object(runner, "simulation", side_effect=error):
                         self.assertEqual(runner.main(), expected_code)
             results = [
@@ -400,7 +435,15 @@ class RobustnessTests(unittest.TestCase):
             str(self.scratch),
         ]
         with patch.object(sys, "argv", arguments), redirect_stdout(io.StringIO()):
-            with patch.object(runner, "source_identity", return_value={"revision": "c" * 40}):
+            with patch.object(
+                runner,
+                "source_identity",
+                return_value={
+                    "revision": "c" * 40,
+                    "rustc": "fixture rustc",
+                    "cargo": "fixture cargo",
+                },
+            ):
                 with patch.object(runner, "simulation", side_effect=runner.Cancelled("signal")):
                     self.assertEqual(runner.main(), 130)
         result = json.loads(next(self.state.glob("run-*/result.json")).read_text())

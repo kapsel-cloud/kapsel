@@ -54,6 +54,7 @@ def setup(root, env):
         git(env, "-C", sender, "add", "payload")
         git(env, "-C", sender, "commit", "--quiet", "-m", name)
         git(env, "-C", sender, "tag", name)
+
     ids = {name: git(env, "-C", sender, "rev-parse", name).stdout.strip() for name in "ABCD"}
     git(
         env,
@@ -65,6 +66,7 @@ def setup(root, env):
         f"file://{receiver}",
         f"{ids['A']}:{REF}",
     )
+
     for hook in ("pre-receive", "post-receive"):
         path = receiver / "hooks" / hook
         path.write_text(
@@ -100,10 +102,10 @@ def counts(root, trace):
 def validate_approval(env, sender, receiver, approval, proposed):
     if proposed != approval or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", approval.operation_id):
         return False
-    if (
-        approval.receiver_id
-        != git(env, "--git-dir", receiver, "config", "--get", "kapsel.probeIdentity").stdout.strip()
-    ):
+    receiver_identity = git(
+        env, "--git-dir", receiver, "config", "--get", "kapsel.probeIdentity"
+    ).stdout.strip()
+    if approval.receiver_id != receiver_identity:
         return False
     if approval.ref != REF or approval.old == approval.new:
         return False
@@ -111,19 +113,17 @@ def validate_approval(env, sender, receiver, approval, proposed):
         return False
     if git(env, "-C", sender, "cat-file", "-t", approval.new).stdout.strip() != "commit":
         return False
-    return (
-        git(
-            env,
-            "-C",
-            sender,
-            "merge-base",
-            "--is-ancestor",
-            approval.old,
-            approval.new,
-            check=False,
-        ).returncode
-        == 0
+    ancestry = git(
+        env,
+        "-C",
+        sender,
+        "merge-base",
+        "--is-ancestor",
+        approval.old,
+        approval.new,
+        check=False,
     )
+    return ancestry.returncode == 0
 
 
 def push(env, root, sender, receiver, old, new, kill_at="none"):
@@ -164,6 +164,7 @@ def main():
         version = git(env, "--version").stdout.strip()
         if version != GIT_VERSION:
             raise SystemExit(f"probe requires {GIT_VERSION}; found {version}")
+
         sender, receiver, ids = setup(root, env)
         contender = root / "contender"
         git(env, "clone", "--quiet", "--no-local", sender, contender)
@@ -172,6 +173,7 @@ def main():
             == 0
         )
         assert ids["B"] != ids["C"]
+
         approved = Approval("operation-1", RECEIVER_ID, REF, ids["A"], ids["B"])
         assert validate_approval(env, sender, receiver, approved, approved)
         assert not validate_approval(
@@ -202,6 +204,7 @@ def main():
             approved,
             Approval("operation-1", RECEIVER_ID, REF, ids["B"], ids["C"]),
         )
+
         non_descendant = Approval("operation-3", RECEIVER_ID, REF, ids["B"], ids["C"])
         assert not validate_approval(env, sender, receiver, non_descendant, non_descendant)
         blob = git(env, "-C", sender, "rev-parse", f"{ids['B']}:payload").stdout.strip()

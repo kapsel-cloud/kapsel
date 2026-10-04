@@ -130,13 +130,29 @@ terminology checks, and `git diff --check`.
 
 Python scripts follow the engineering rules above. Rust owns product lifecycle and recovery
 semantics; Python owns external orchestration and independent checks. Prefer the standard library.
-Use annotations at meaningful boundaries and preserve exception causes when adding context. Bound
-subprocess output and execution time, and clean up only resources owned by the invocation.
+Use annotations at meaningful boundaries and preserve exception causes when adding context. Pyright
+checks the maintained tooling scope in [`pyrightconfig.json`](pyrightconfig.json) through the static
+gate, targeting Python 3.11 on Linux and macOS. The source-privacy checker is the initial strict
+owner; the remaining selected scripts use standard checking. Validate decoded records before
+exposing their types. An annotation or cast does not validate input. Bound subprocess output and
+execution time, and clean up only resources owned by the invocation.
 
 [`ruff.toml`](ruff.toml) owns Python style: Python 3.11-compatible syntax, four-space indentation,
 double quotes, LF endings, and a 100-column target. Unlike Rust's physical-line limit, the Python
 target allows exact fixture strings and indivisible URLs to remain intact. Lint checks basic errors,
 unused names, import ordering, and likely bugs, not general code quality or safety.
+
+Use blank lines to separate logical sections within a function. Name intermediate values when they
+explain a condition, comparison, or unit. Extract coherent phases, but keep service lifetime,
+recovery ordering, and cleanup ownership visible in the execution flow. Comments should explain a
+constraint, mechanism, or assertion purpose rather than narrate the next statement. Passing Ruff and
+Pyright does not establish readability.
+
+Keep maintained fixture programs in `.py` files instead of multiline Python strings. Put execution
+behind an import-safe `main()` entry point and include the files in the typing scope. Where custody
+requires isolation, transfer the exact source bytes and execute them with an isolated interpreter;
+do not import helpers from caller-writable paths. Tiny probes and intentional malformed-source
+fixtures may remain inline.
 
 Formatting sorts imports before running Ruff's formatter. It does not apply other lint fixes. Review
 those fixes explicitly. Avoid unsafe fixes and use only narrow, explained suppressions.

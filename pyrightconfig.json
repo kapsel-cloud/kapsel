@@ -1,0 +1,34 @@
+{
+  "include": [
+    "tools/checks",
+    "tools/release",
+    "tools/dev",
+    "examples/fresh_session_caller.py",
+    "examples/test_fresh_session_caller.py",
+    "examples/mcp_bridge_fixture.py",
+    "examples/demo_journal_fixture.py",
+    "tests/qualification/run_git_artifact.py",
+    "tests/qualification/git_artifact_exercise.py",
+    "tests/qualification/git_receiver_hook.py",
+    "tests/qualification/test_git_artifact.py",
+    "tests/qualification/run_git_service.py",
+    "tests/qualification/test_git_service.py",
+    "tests/qualification/run_kind_agent_action_workflow.py",
+    "tests/qualification/kind_agent_action_exercise.py",
+    "tests/qualification/caller_custody_probe.py",
+    "tests/qualification/retire_callers.py",
+    "tests/qualification/snapshot_receipt.py",
+    "tests/qualification/submit_without_ack.py"
+  ],
+  "strict": ["tools/checks/check_source_privacy.py"],
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "executionEnvironments": [
+    { "root": "tools/checks" },
+    { "root": "tools/release" },
+    { "root": "tools/dev" },
+    { "root": "examples" },
+    { "root": "tests/qualification" }
+  ]
+}

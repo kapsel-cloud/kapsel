@@ -52,16 +52,18 @@ def require_regular(path: pathlib.Path, maximum: int) -> bytes:
 def compare(reference: pathlib.Path, candidate: pathlib.Path) -> None:
     if reference.name != candidate.name:
         raise RuntimeError("isolated release archive names are not identical")
-    if require_regular(reference, ARCHIVE_BYTES_MAX) != require_regular(
-        candidate, ARCHIVE_BYTES_MAX
-    ):
+
+    reference_bytes = require_regular(reference, ARCHIVE_BYTES_MAX)
+    candidate_bytes = require_regular(candidate, ARCHIVE_BYTES_MAX)
+    if reference_bytes != candidate_bytes:
         raise RuntimeError("isolated release archives are not byte-for-byte identical")
+
     for suffix, label, maximum in SIDECARS:
         reference_sidecar = reference.with_name(reference.name + suffix)
         candidate_sidecar = candidate.with_name(candidate.name + suffix)
-        if require_regular(reference_sidecar, maximum) != require_regular(
-            candidate_sidecar, maximum
-        ):
+        reference_bytes = require_regular(reference_sidecar, maximum)
+        candidate_bytes = require_regular(candidate_sidecar, maximum)
+        if reference_bytes != candidate_bytes:
             raise RuntimeError(f"isolated release {label} files are not identical")
 
 

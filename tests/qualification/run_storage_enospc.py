@@ -40,9 +40,10 @@ def capture_source(evidence: Path) -> tuple[str, bytes, dict[str, bytes]]:
 
 def verify_source(snapshot: tuple[str, bytes, dict[str, bytes]]) -> None:
     base, source_diff, sources = snapshot
-    if git("diff", "--binary", "--no-ext-diff", "--no-textconv", base, "--") != source_diff or (
-        untracked_sources() != sources
-    ):
+    tracked_source_changed = (
+        git("diff", "--binary", "--no-ext-diff", "--no-textconv", base, "--") != source_diff
+    )
+    if tracked_source_changed or untracked_sources() != sources:
         raise RuntimeError("source changed during read-only container gate")
 
 
@@ -82,6 +83,7 @@ def cleanup_container(name: str, expected_owner: str) -> str:
                 f"container cleanup unverified: {name} exists but inspect failed {owner.stderr!r}"
             )
         return "Container absent in successful Docker inventory after failed inspection.\n"
+
     fields = owner.stdout.decode().strip().split("\t")
     if (
         len(fields) != 2
@@ -89,7 +91,8 @@ def cleanup_container(name: str, expected_owner: str) -> str:
         or fields[1] != expected_owner
     ):
         raise RuntimeError(f"container cleanup unverified: ownership/identity mismatch for {name}")
-    # Delete the verified immutable ID, not a name that could have been replaced since inspection.
+
+    # The name can be replaced after inspection; remove only the verified immutable ID.
     removed = subprocess.run(
         ["docker", "rm", "--force", fields[0]],
         stdout=subprocess.PIPE,
@@ -153,6 +156,7 @@ def main() -> None:
             result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=1800)
         if result.returncode:
             raise SystemExit(f"ENOSPC fixture failed ({result.returncode}); see {evidence}")
+
         output = (evidence / "enospc.log").read_bytes()
         if b"KAPSEL_REAL_ENOSPC_CASES_PASSED" not in output or (
             b"test result: ok. 1 passed; 0 failed; 0 ignored" not in output

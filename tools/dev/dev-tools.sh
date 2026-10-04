@@ -2,6 +2,7 @@
 # shellcheck disable=SC2034 # Shared tool paths and pins are used by sourcing scripts.
 PRETTIER_VERSION=3.9.6
 RUFF_VERSION=0.16.6
+PYRIGHT_VERSION=1.1.414
 TAPLO_VERSION=0.10.0
 SHFMT_VERSION=3.14.1
 SHELLCHECK_VERSION=0.11.0
@@ -11,12 +12,22 @@ FORMAT_TOOLCHAIN=nightly-2026-07-03
 DEV_TOOLS="${HOME}/.local/share/kapsel/dev-tools"
 PRETTIER_HOME="$DEV_TOOLS/prettier-$PRETTIER_VERSION"
 RUFF_HOME="$DEV_TOOLS/ruff-$RUFF_VERSION"
+PYRIGHT_HOME="$DEV_TOOLS/pyright-$PYRIGHT_VERSION"
+PYRIGHT="$PYRIGHT_HOME/node_modules/.bin/pyright"
 PRETTIER="$PRETTIER_HOME/node_modules/.bin/prettier"
 RUFF="$RUFF_HOME/bin/ruff"
 TAPLO_HOME="$DEV_TOOLS/taplo-$TAPLO_VERSION"
 TAPLO="$TAPLO_HOME/bin/taplo"
 SHFMT="$RUFF_HOME/bin/shfmt"
 SHELLCHECK="$RUFF_HOME/bin/shellcheck"
+
+check_type_checker() {
+  if [ "$("$PYRIGHT" --version 2>/dev/null || :)" != "pyright $PYRIGHT_VERSION" ]; then
+    printf 'Pyright unavailable or mismatched: expected %s\n' "$PYRIGHT_VERSION" >&2
+    printf '%s\n' 'Run cargo xtask setup to prepare the pinned tools.' >&2
+    return 1
+  fi
+}
 
 check_formatters() {
   formatter_status=0

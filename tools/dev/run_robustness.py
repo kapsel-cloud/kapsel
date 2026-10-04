@@ -16,14 +16,57 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from types import FrameType
+from typing import BinaryIO, Literal, NotRequired, TypedDict, cast
+
+RunStatus = Literal["RUNNING", "PASSED", "FINDING", "INCOMPLETE", "CANCELLED", "TRIAGED"]
+Lane = Literal["simulation", "fuzz", "unclassified"]
+
+
+class CommandRecord(TypedDict):
+    command: list[str]
+    cwd: str
+    environment: dict[str, str]
+    status: Literal["RUNNING", "EXITED", "RETIREMENT_UNCONFIRMED"]
+    log: str
+    exit_status: NotRequired[int | None]
+
+
+class SourceIdentity(TypedDict):
+    revision: str
+    rustc: str
+    cargo: str
+
+
+class ResultRecord(TypedDict):
+    status: RunStatus
+    lane: Lane
+    mode: NotRequired[str]
+    seeds: NotRequired[list[int]]
+    cases: NotRequired[int]
+    shards: NotRequired[int]
+    scratch: NotRequired[str]
+    started: NotRequired[float]
+    timeout: NotRequired[int]
+    revision: NotRequired[str]
+    rustc: NotRequired[str]
+    cargo: NotRequired[str]
+    error: NotRequired[str]
+    prior_status: NotRequired[RunStatus]
+    regression: NotRequired[str]
+    cancellation_requested: NotRequired[str]
+    finished: NotRequired[float]
+    exit_status: NotRequired[int]
+
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST = "simulation_tests::seeded_lifecycle_crash_simulation_preserves_invariants"
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
 STATE_LIMIT = 1024 * 1024 * 1024
-_pending_signal = None
+_pending_signal: int | None = None
 _terminal_decided = False
 
 
@@ -54,7 +97,7 @@ def private_root(value: str) -> Path:
     return path
 
 
-def atomic_json(path: Path, value: dict) -> None:
+def atomic_json(path: Path, value: Mapping[str, object]) -> None:
     fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".new", dir=path.parent)
     temporary = Path(name)
     with os.fdopen(fd, "w") as output:
@@ -63,6 +106,7 @@ def atomic_json(path: Path, value: dict) -> None:
         output.flush()
         os.fsync(output.fileno())
     os.replace(temporary, path)
+
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
@@ -108,7 +152,7 @@ def check_storage(state: Path, enforce_budget: bool = True) -> None:
             raise Incomplete("insufficient evidence storage")
 
 
-def read_result(path: Path) -> dict:
+def read_result(path: Path) -> ResultRecord:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
@@ -123,11 +167,41 @@ def read_result(path: Path) -> dict:
     statuses = {"RUNNING", "PASSED", "FINDING", "INCOMPLETE", "CANCELLED", "TRIAGED"}
     if (
         not isinstance(result, dict)
+        or not isinstance(result.get("status"), str)
         or result.get("status") not in statuses
+        or not isinstance(result.get("lane"), str)
         or result.get("lane") not in {"simulation", "fuzz", "unclassified"}
     ):
         raise Incomplete("invalid result record")
-    return result
+    # Legacy interrupted records can be partial. Validate each optional field before typing it.
+    for field in (
+        "mode",
+        "scratch",
+        "revision",
+        "rustc",
+        "cargo",
+        "error",
+        "regression",
+        "cancellation_requested",
+    ):
+        if field in result and not isinstance(result[field], str):
+            raise Incomplete("invalid result record")
+    for field in ("cases", "shards", "timeout", "exit_status"):
+        if field in result and type(result[field]) is not int:
+            raise Incomplete("invalid result record")
+    for field in ("started", "finished"):
+        if field in result and type(result[field]) not in (int, float):
+            raise Incomplete("invalid result record")
+    if "prior_status" in result and (
+        not isinstance(result["prior_status"], str) or result["prior_status"] not in statuses
+    ):
+        raise Incomplete("invalid result record")
+    if "seeds" in result and (
+        not isinstance(result["seeds"], list)
+        or any(type(seed) is not int for seed in result["seeds"])
+    ):
+        raise Incomplete("invalid result record")
+    return cast(ResultRecord, result)
 
 
 def unresolved(state: Path, lane: str) -> list[Path]:
@@ -154,7 +228,7 @@ def check_cancellation() -> None:
         raise Cancelled(f"cancelled by signal {signum}")
 
 
-def retire_all(processes: list[subprocess.Popen]) -> None:
+def retire_all(processes: list[subprocess.Popen[bytes]]) -> None:
     # Kill every owned group before waiting on any leader. A stuck leader must not spare peers.
     error = None
     for process in processes:
@@ -174,31 +248,31 @@ def retire_all(processes: list[subprocess.Popen]) -> None:
         raise Incomplete("command retirement could not be confirmed") from error
 
 
-def retire(process: subprocess.Popen) -> None:
+def retire(process: subprocess.Popen[bytes]) -> None:
     retire_all([process])
 
 
 class Supervisor:
-    def __init__(self, evidence: Path, scratch: Path, lock: int, seconds: int):
+    def __init__(self, evidence: Path, scratch: Path, lock: int, seconds: int) -> None:
         self.evidence = evidence
         self.scratch = scratch
         self.lock = lock
         self.deadline = time.monotonic() + seconds
         self.counter = 0
-        self.commands = []
+        self.commands: list[CommandRecord] = []
 
     def run(
         self,
         commands: list[list[str]],
-        environments: list[dict] | None = None,
+        environments: list[dict[str, str]] | None = None,
         finding: bool = False,
     ) -> list[str]:
         if not commands:
             raise Incomplete("empty command selection")
         selector = selectors.DefaultSelector()
-        children = []
-        logs = []
-        records = []
+        children: list[subprocess.Popen[bytes]] = []
+        logs: list[BinaryIO] = []
+        records: list[CommandRecord] = []
         outputs = [bytearray() for _ in commands]
         try:
             for index, command in enumerate(commands):
@@ -210,7 +284,7 @@ class Supervisor:
                 selected_environment.update(
                     TMPDIR=str(self.scratch), KAPSEL_SIMULATION_SCRATCH_ROOT=str(self.scratch)
                 )
-                record = {
+                record: CommandRecord = {
                     "command": command,
                     "cwd": str(ROOT),
                     "environment": selected_environment,
@@ -235,8 +309,11 @@ class Supervisor:
                     pass_fds=(self.lock,),
                 )
                 children.append(process)
+                if process.stdout is None:
+                    raise Incomplete("command output pipe was not created")
                 selector.register(process.stdout, selectors.EVENT_READ, index)
                 check_cancellation()
+
             next_storage_check = 0.0
             failure = None
             retired = set()
@@ -261,6 +338,7 @@ class Supervisor:
                         raise Incomplete(
                             "log limit exceeded; execution stopped, evidence incomplete"
                         )
+
                 if failure is None:
                     for index, process in enumerate(children):
                         status = process.poll()
@@ -268,15 +346,15 @@ class Supervisor:
                             retire(process)
                             retired.add(index)
                         if status not in (None, 0):
-                            failure = (
-                                Finding if finding and process.returncode > 0 else Incomplete
-                            )(f"command exited {process.returncode}")
+                            failure_type = Finding if finding and status > 0 else Incomplete
+                            failure = failure_type(f"command exited {process.returncode}")
                             # Stop peers immediately, but drain bounded output before classifying.
                             retire_all(children)
                             break
             check_cancellation()
             if failure is not None:
                 raise failure
+
             for process in children:
                 remaining = max(0.01, self.deadline - time.monotonic())
                 try:
@@ -299,7 +377,8 @@ class Supervisor:
                 record["status"] = (
                     "EXITED" if process.returncode is not None else "RETIREMENT_UNCONFIRMED"
                 )
-                process.stdout.close()
+                if process.stdout is not None:
+                    process.stdout.close()
             for log in logs:
                 log.flush()
                 os.fsync(log.fileno())
@@ -311,7 +390,7 @@ class Supervisor:
             check_cancellation()
 
 
-def source_identity(supervisor: Supervisor) -> dict:
+def source_identity(supervisor: Supervisor) -> SourceIdentity:
     revision, dirty, compiler, cargo = supervisor.run(
         [
             ["git", "rev-parse", "HEAD"],
@@ -392,7 +471,7 @@ def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int
                 raise Incomplete(f"missing execution evidence for seed={seed} shard={index}")
 
 
-def corpus_identity(path: Path) -> dict:
+def corpus_identity(path: Path) -> dict[str, str]:
     entries = {}
     total = 0
     for item in sorted(path.iterdir()):
@@ -442,6 +521,7 @@ def fuzz(supervisor: Supervisor, state: Path, seed: int, seconds: int, smoke: bo
             ],
         ]
     )
+
     host = re.search(r"^host: ([a-zA-Z0-9_.-]+)$", identities[0], re.MULTILINE)
     if host is None:
         raise Incomplete("missing nightly target identity")
@@ -522,6 +602,7 @@ def fuzz(supervisor: Supervisor, state: Path, seed: int, seconds: int, smoke: bo
     finally:
         if lock.read_bytes() != before_lock:
             raise Incomplete("fuzz lockfile changed")
+
     completed = re.search(r"Done (\d+) runs in ", output)
     if completed is None or int(completed[1]) <= 0:
         raise Incomplete("missing fuzz execution evidence")
@@ -535,7 +616,7 @@ def positive(value: str) -> int:
     return number
 
 
-def cancel(signum, _frame):
+def cancel(signum: int, _frame: FrameType | None) -> None:
     global _pending_signal
     if _terminal_decided:
         return
@@ -544,6 +625,51 @@ def cancel(signum, _frame):
         signal.signal(name, signal.SIG_IGN)
     # Never raise asynchronously: spawning and cleanup must finish registering/retiring children.
     _pending_signal = signum
+
+
+def triage_run(state: Path, run_name: str | None, regression: str | None) -> None:
+    if (
+        not run_name
+        or not run_name.startswith("run-")
+        or Path(run_name).name != run_name
+        or not regression
+    ):
+        raise Incomplete("triage requires --run basename and --regression reference")
+
+    result_path = state / run_name / "result.json"
+    result: ResultRecord = (
+        read_result(result_path)
+        if result_path.exists()
+        else {
+            "status": "INCOMPLETE",
+            "lane": "unclassified",
+            "error": "interrupted before initial result publication",
+        }
+    )
+    if result["status"] in ("PASSED", "TRIAGED"):
+        raise Incomplete("run does not need triage")
+
+    result.update(status="TRIAGED", prior_status=result["status"], regression=regression)
+    atomic_json(result_path, result)
+
+
+def select_seeds(lane: Lane, mode: str, explicit: list[int] | None) -> list[int]:
+    seeds = explicit
+    seed_bits = 64 if lane == "simulation" else 32
+    if not seeds:
+        environment_key = "KAPSEL_SIMULATION_SEED" if lane == "simulation" else "KAPSEL_FUZZ_SEED"
+        environment_seed = os.environ.get(environment_key)
+        if environment_seed:
+            seeds = [int(environment_seed)]
+        else:
+            seed_count = 3 if mode == "soak" else 1
+            seeds = [secrets.randbits(seed_bits) or 1 for _ in range(seed_count)]
+
+    if any(not 0 < seed < 2**seed_bits for seed in seeds):
+        raise Incomplete(f"seeds must be nonzero u{seed_bits} values")
+    if lane == "fuzz" and len(seeds) != 1:
+        raise Incomplete("fuzz requires exactly one seed")
+    return seeds
 
 
 def main() -> int:
@@ -573,65 +699,29 @@ def main() -> int:
     if os.environ.get("KAPSEL_SOAK_AUTO_UPDATE", "0") != "0":
         raise Incomplete("automatic source updates are not supported")
     state = private_root(args.state)
-    fd = acquire_lock(state)
+    lock_descriptor = acquire_lock(state)
     try:
         check_storage(state, enforce_budget=args.mode != "triage")
         if args.mode == "triage":
-            if (
-                not args.run
-                or not args.run.startswith("run-")
-                or Path(args.run).name != args.run
-                or not args.regression
-            ):
-                raise Incomplete("triage requires --run basename and --regression reference")
-            path = state / args.run / "result.json"
-            result = (
-                read_result(path)
-                if path.exists()
-                else {
-                    "status": "INCOMPLETE",
-                    "lane": "unclassified",
-                    "error": "interrupted before initial result publication",
-                }
-            )
-            if result["status"] in ("PASSED", "TRIAGED"):
-                raise Incomplete("run does not need triage")
-            result.update(
-                status="TRIAGED", prior_status=result["status"], regression=args.regression
-            )
-            atomic_json(path, result)
+            triage_run(state, args.run, args.regression)
             return 0
+
         scratch_root = private_root(args.scratch)
         if state == scratch_root or state in scratch_root.parents or scratch_root in state.parents:
             raise Incomplete("state and scratch roots must be disjoint")
-        lane = "simulation" if args.mode in ("simulation", "soak") else "fuzz"
+        lane: Lane = "simulation" if args.mode in ("simulation", "soak") else "fuzz"
         blocked = unresolved(state, lane)
         if blocked:
             raise Incomplete(f"lane stopped pending explicit triage: {blocked[0]}")
         if args.shards > 128 or args.shards > args.cases:
             raise Incomplete("simulation requires 1..128 nonempty shards")
-        seeds = args.seed
-        if not seeds:
-            env_seed = os.environ.get(
-                "KAPSEL_SIMULATION_SEED" if lane == "simulation" else "KAPSEL_FUZZ_SEED"
-            )
-            seeds = (
-                [int(env_seed)]
-                if env_seed
-                else [
-                    secrets.randbits(64 if lane == "simulation" else 32) or 1
-                    for _ in range(3 if args.mode == "soak" else 1)
-                ]
-            )
-        seed_bits = 64 if lane == "simulation" else 32
-        if any(not 0 < seed < 2**seed_bits for seed in seeds):
-            raise Incomplete(f"seeds must be nonzero u{seed_bits} values")
-        if lane == "fuzz" and len(seeds) != 1:
-            raise Incomplete("fuzz requires exactly one seed")
+
+        seeds = select_seeds(lane, args.mode, args.seed)
+
         evidence = Path(tempfile.mkdtemp(prefix="run-", dir=state))
         scratch = Path(tempfile.mkdtemp(prefix="run-", dir=scratch_root))
         scratch_identity = scratch.stat()
-        result = {
+        result: ResultRecord = {
             "status": "RUNNING",
             "lane": lane,
             "mode": args.mode,
@@ -644,17 +734,21 @@ def main() -> int:
         }
         atomic_json(evidence / "result.json", result)
         print(f"evidence: {evidence}", flush=True)
-        supervisor = Supervisor(evidence, scratch, fd, args.timeout)
+
+        supervisor = Supervisor(evidence, scratch, lock_descriptor, args.timeout)
         code = 2
         try:
-            result.update(source_identity(supervisor))
+            identity = source_identity(supervisor)
+            result.update(
+                revision=identity["revision"], rustc=identity["rustc"], cargo=identity["cargo"]
+            )
             atomic_json(evidence / "result.json", result)
             if lane == "simulation":
                 simulation(supervisor, seeds, args.cases, args.shards)
             else:
                 fuzz(supervisor, state, seeds[0], args.fuzz_seconds, args.mode == "fuzz-smoke")
             # Refuse a pass if source changed during execution.
-            if source_identity(supervisor)["revision"] != result["revision"]:
+            if source_identity(supervisor)["revision"] != identity["revision"]:
                 raise Incomplete("source changed during run")
             check_cancellation()
             private_root(str(scratch_root))
@@ -694,7 +788,7 @@ def main() -> int:
         print(f"{result['status']}: {evidence}", flush=True)
         return code
     finally:
-        os.close(fd)
+        os.close(lock_descriptor)
 
 
 if __name__ == "__main__":

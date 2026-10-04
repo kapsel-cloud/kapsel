@@ -83,7 +83,11 @@ def cancellation_at_finalization(state: str, scratch: str, phase: str) -> int:
     arguments = ["runner", "simulation", "--state", state, "--scratch", scratch, "--seed", "1"]
     with (
         patch.object(sys, "argv", arguments),
-        patch.object(runner, "source_identity", return_value={"revision": "a" * 40}),
+        patch.object(
+            runner,
+            "source_identity",
+            return_value={"revision": "a" * 40, "rustc": "fixture rustc", "cargo": "fixture cargo"},
+        ),
         patch.object(runner, "simulation"),
         patch.object(runner, "private_root", side_effect=validate_root),
         patch.object(runner.shutil, "rmtree", side_effect=remove),

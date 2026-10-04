@@ -31,314 +31,16 @@ DESIRED = (
 )
 CASES = {"healthy": 0, "stale": 0, "service-loss": 60, "caller-loss": 210, "independent": 0}
 
-# Runs only as the caller in the fixture's private PID namespace. Linux kill(-1) applies
-# kernel UID checks and excludes the invoking process. No numeric-PID kill race, privileged
-# signals, or reliance on killing only the host docker-exec client. Never invoke this as root.
-RETIRE_CALLERS = r"""
-import os
-import pathlib
-import signal
-import time
-
-assert os.getuid() == os.geteuid() == 61001 and os.getpid() != 1
-self_status = pathlib.Path("/proc/self/status").read_bytes()
-assert int(next(line for line in self_status.splitlines() if line.startswith(b"CapEff:")).split()[1], 16) == 0
-deadline = time.monotonic() + 3
-quiet = False
-while True:
-    try:
-        os.kill(-1, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    active = 0
-    processes = list(pathlib.Path("/proc").glob("[0-9]*"))
-    assert len(processes) <= 256, "unexpected process population"
-    for path in processes:
-        if int(path.name) == os.getpid():
-            continue
-        try:
-            with (path / "status").open("rb") as stream:
-                data = stream.read(4097)
-        except FileNotFoundError:
-            continue
-        assert len(data) <= 4096
-        fields = dict(line.split(b":", 1) for line in data.splitlines() if b":" in line)
-        if fields[b"Uid"].split()[0] == b"61001" and fields[b"State"].split()[0] not in (b"Z", b"X"):
-            active += 1
-    if active == 0 and quiet:
-        break
-    quiet = active == 0
-    assert time.monotonic() < deadline, "caller retirement incomplete"
-    time.sleep(0.01)
-print("CALLERS_RETIRED")
-"""
-
-RECEIPT_SNAPSHOT = r"""
-import os
-import stat
-import sys
-
-fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-try:
-    metadata = os.fstat(fd)
-    assert stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
-    assert metadata.st_uid == os.getuid() and metadata.st_size <= 65536
-    with os.fdopen(fd, "rb", closefd=False) as stream:
-        data = stream.read(65537)
-    assert len(data) <= 65536
-    sys.stdout.buffer.write(data)
-finally:
-    os.close(fd)
-"""
+RETIRE_SOURCE = pathlib.Path(__file__).with_name("retire_callers.py")
+SNAPSHOT_SOURCE = pathlib.Path(__file__).with_name("snapshot_receipt.py")
+CUSTODY_PROBE_SOURCE = pathlib.Path(__file__).with_name("caller_custody_probe.py")
+LOST_ACK_SOURCE = pathlib.Path(__file__).with_name("submit_without_ack.py")
+RETIRE_CALLERS = RETIRE_SOURCE.read_bytes().decode("utf-8")
+RECEIPT_SNAPSHOT = SNAPSHOT_SOURCE.read_bytes().decode("utf-8")
 
 # Only the artifact, public procedure and scoped fixture authority enter the operating container.
 # No product source, test-feature binary, private database edit or lifecycle hook is used.
-EXERCISE = r'''
-import base64
-import hashlib
-import json
-import os
-import pathlib
-import re
-import shutil
-import socket
-import ssl
-import subprocess
-import sys
-import time
-import urllib.request
-
-os.umask(0o077)
-pathlib.Path("/evidence").mkdir(mode=0o700)
-settings = json.loads(pathlib.Path("/inputs/settings.json").read_text())
-workspace = pathlib.Path("/operator")
-workspace.mkdir(mode=0o700)
-os.chdir(workspace)
-guide = pathlib.Path("/artifact/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md").read_text()
-match = re.findall(r"<!-- example-keys -->\s*```sh\n(.*?)\n```", guide, re.S)
-assert len(match) == 1, "artifact lacks the public key-generation example"
-subprocess.run(["sh", "-eu", "-c", match[0]], check=True, timeout=30)
-for directory in ("/usr/libexec", "/usr/libexec/kapsel"):
-    pathlib.Path(directory).mkdir(mode=0o755, exist_ok=True)
-    pathlib.Path(directory).chmod(0o755)
-for source, destination in (("bin/kapsel", "/usr/bin/kapsel"),
-                            ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
-                            ("bin/kapsel-service-mcp", "/usr/bin/kapsel-service-mcp"),
-                            ("libexec/kapsel/kapseld", "/usr/libexec/kapsel/kapseld")):
-    pathlib.Path(destination).parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile("/artifact/" + source, destination)
-    pathlib.Path(destination).chmod(0o755)
-for path, mode in (("/etc/kapsel", 0o700), ("/var/lib/kapsel", 0o700), ("/run/kapsel", 0o750)):
-    pathlib.Path(path).mkdir(mode=mode)
-    pathlib.Path(path).chmod(mode)
-    os.chown(path, 61000, 61000)
-
-config = json.loads(pathlib.Path("/inputs/kubeconfig.json").read_text())
-cluster = config["clusters"][0]["cluster"]
-context = ssl.create_default_context(cadata=base64.b64decode(cluster["certificate-authority-data"]).decode())
-token = config["users"][0]["user"]["token"]
-
-def receiver(name, patch=None):
-    data = None if patch is None else json.dumps(patch).encode()
-    request = urllib.request.Request(cluster["server"] + "/apis/apps/v1/namespaces/demo/deployments/" + name,
-        data=data, method="GET" if patch is None else "PATCH",
-        headers={"Authorization": "Bearer " + token, "User-Agent": "kapsel-journey-fixture",
-                 "Content-Type": "application/merge-patch+json"})
-    with urllib.request.urlopen(request, context=context, timeout=10) as response:
-        body = response.read(262145)
-        assert len(body) <= 262144
-        return json.loads(body)
-
-def command(arguments, **kwargs):
-    result = subprocess.run(arguments, capture_output=True, timeout=30, **kwargs)
-    assert result.returncode == 0, (arguments[0], result.returncode)
-    return result.stdout
-
-# The fixture operator explicitly owns these disposable Deployments. No GitOps reconciler is
-# disabled. B is independently assessed; conflicting intent is never provisioned to the caller.
-prepare = ["/usr/bin/kapsel", "prepare-service-config", "--authorization-key", "approval-key-1", "approval.pub"]
-for case in settings["cases"]:
-    intent = {"authorization_id": "approval-" + case, "operation_id": case,
-        "namespace": "demo", "deployment": "agent-" + case, "container": "api",
-        "immutable_image_digest": settings["desired"]}
-    pathlib.Path(case + ".json").write_text(json.dumps(intent))
-    command(["/usr/bin/kapsel", "provision-snapshot-grant", "--authorization", case + ".json",
-        "--kubeconfig", "/inputs/kubeconfig.json", "--signing-seed", "approval.seed",
-        "--signing-key-id", "approval-key-1", "--output", case + ".grant"])
-    prepare += ["--approval", "Approved " + case, case + ".grant"]
-prepare += ["--receipt-signing-key-id", "receipt-key-1", "--output", "candidate.json"]
-command(prepare)
-document = pathlib.Path("candidate.json").read_bytes()
-for source, target in (("/inputs/kubeconfig.json", "/etc/kapsel/kubeconfig.yaml"),
-                       ("receipt.seed", "/etc/kapsel/receipt.seed")):
-    shutil.copyfile(source, target)
-    os.chmod(target, 0o600)
-    os.chown(target, 61000, 61000)
-service = "/usr/libexec/kapsel/kapseld"
-client = "/usr/bin/kapsel-service-client"
-identity = {"user": 61001, "group": 61000, "extra_groups": []}
-
-def publish(value):
-    result = command([service, "--replace-operator-config"], input=value,
-                     user=61000, group=61000, extra_groups=[])
-    assert result == b"PUBLISHED\n"
-
-publish(document)
-receiver("agent-stale", {"metadata": {"annotations": {"journey-fixture/stale": "true"}}})
-process = None
-reports = []
-
-def read(*arguments):
-    result = json.loads(command([client, *arguments], **identity))
-    assert result["version"] == 1
-    return result
-
-def wait(case, predicate, seconds=200):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        assert process.poll() is None, "service exited"
-        result = read("status", case)
-        if predicate(result):
-            return result
-        time.sleep(0.1)
-    raise AssertionError("status deadline: " + case)
-
-def start():
-    global process
-    process = subprocess.Popen([service, "--operator-config", "/etc/kapsel/operator.json",
-        "--socket", "/run/kapsel/kapseld.sock"], stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        user=61000, group=61000, extra_groups=[], umask=0o077)
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        assert process.poll() is None, "service startup failed"
-        result = subprocess.run([client, "history"], capture_output=True, timeout=10, **identity)
-        if result.returncode == 0:
-            return
-        time.sleep(0.05)
-    raise AssertionError("history unavailable")
-
-def stop(crash=False):
-    if crash:
-        process.kill()
-    else:
-        process.terminate()
-    _, diagnostics = process.communicate(timeout=30)
-    assert process.returncode == (-9 if crash else 0)
-    assert len(diagnostics) <= 4096
-    for secret in (token.encode(), pathlib.Path("approval.seed").read_bytes().hex().encode(),
-                   pathlib.Path("receipt.seed").read_bytes().hex().encode()):
-        assert secret not in diagnostics
-
-def receipt(case, suffix):
-    path = pathlib.Path("/tmp/" + case + "-" + suffix + ".receipt")
-    assert read("receipt", case, str(path))["status"] == "READY"
-    report = json.loads(command(["/usr/bin/kapsel", "inspect", "--receipt", str(path),
-        "--trust", "receipt.trust", "--evaluation-time-unix-s",
-        pathlib.Path("evaluation-time.txt").read_text().strip()]))
-    assert report["status"] == "INSPECTED"
-    assert report["operation_id"] == case, report
-    assert report["result"] == ("UNKNOWN" if case == "caller-loss" else "SUCCEEDED"), report
-    return path.read_bytes()
-
-try:
-    start()
-    catalog = read("list")
-    assert {entry["operation_id"] for entry in catalog["entries"]} == set(settings["cases"])
-    assert read("history")["entries"] == []
-    # These probes run under the exact caller identity, not merely a polite tool allowlist.
-    probe = r"""
-import os
-for path in ('/etc/kapsel/operator.json', '/etc/kapsel/kubeconfig.yaml',
-             '/etc/kapsel/receipt.seed', '/var/lib/kapsel/journal.sqlite3',
-             '/operator/approval.seed', '/inputs/kubeconfig.json'):
-    try:
-        open(path, 'rb')
-    except PermissionError:
-        pass
-    else:
-        raise AssertionError('private input readable: ' + path)
-for path in ('/usr/bin/kapsel-service-client', '/usr/bin/kapsel-service-mcp',
-             '/usr/libexec/kapsel/kapseld'):
-    assert not os.access(path, os.W_OK)
-assert not os.path.exists('/var/run/docker.sock')
-try:
-    os.setuid(0)
-except PermissionError:
-    pass
-else:
-    raise AssertionError('caller became root')
-"""
-    probe_result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True,
-                                  timeout=10, cwd="/tmp", **identity)
-    assert probe_result.returncode == 0, probe_result.stderr[:2048]
-    if settings["agent"]:
-        pathlib.Path("/operator/caller-ready").touch()
-        selection = pathlib.Path("/operator/selection.json")
-        deadline = time.monotonic() + 150
-        while not selection.exists():
-            assert time.monotonic() < deadline, "agent completion deadline"
-            time.sleep(0.1)
-        assert json.loads(selection.read_text()) == {"operation_id": "healthy"}
-    for case in settings["cases"]:
-        started = time.monotonic()
-        if case == "caller-loss":
-            # The public framed socket request is sent by the caller process, which exits without
-            # reading an acknowledgement. Reconnect never invents another operation identity.
-            body = json.dumps({"version": 1, "request": "submit_set_deployment_image",
-                               "operation_id": case}).encode()
-            lost = "import socket,os; s=socket.socket(socket.AF_UNIX); s.connect('/run/kapsel/kapseld.sock'); s.sendall(bytes.fromhex('" + (len(body).to_bytes(4, 'big') + body).hex() + "')); os._exit(0)"
-            command([sys.executable, "-I", "-c", lost], cwd="/tmp", **identity)
-        elif not (settings["agent"] and case == "healthy"):
-            assert read("submit", case)["status"] == "ADMITTED"
-        if case == "service-loss":
-            deadline = time.monotonic() + 20
-            while receiver("agent-" + case)["spec"]["template"]["spec"]["containers"][0]["image"] != settings["desired"]:
-                assert time.monotonic() < deadline
-                time.sleep(0.02)
-            stop(crash=True)
-            start()
-            state = read("status", case)
-            assert state["status"] == "IN_PROGRESS", state
-            assert state["execution"]["disposition"] == "resume_required", state
-            # Startup has not selected B or resumed A. The caller explicitly reselects original A.
-            assert read("status", "independent")["status"] == "NOT_FOUND"
-            assert read("submit", case)["status"] == "ADMITTED"
-        terminal = wait(case, lambda r: r["status"] in ("SUCCEEDED", "FAILED", "UNKNOWN", "NOT_ATTEMPTED"))
-        expected = "NOT_ATTEMPTED" if case == "stale" else "UNKNOWN" if case == "caller-loss" else "SUCCEEDED"
-        assert terminal["status"] == expected, (case, terminal)
-        if case == "stale":
-            assert terminal["target_rejection"] == "STALE_APPROVAL", terminal
-            digest = None
-        else:
-            frozen = receipt(case, "first")
-            digest = hashlib.sha256(frozen).hexdigest()
-            assert read("submit", case) == {"version": 1, "status": "ADMITTED", "phase": "finalized"}
-            assert receipt(case, "duplicate") == frozen
-        if case == "caller-loss":
-            # A conflicting follow-on approval was deliberately never provisioned. Hostile ID
-            # selection cannot make it available, including after an enforced cold replacement.
-            assert read("submit", "conflicting-b")["status"] == "ERROR"
-            stop()
-            changed = json.loads(document)
-            changed["approvals"] = [a for a in changed["approvals"] if a["label"] == "Approved independent"]
-            publish(json.dumps(changed).encode())
-            start()
-            assert read("submit", "conflicting-b")["status"] == "ERROR"
-            assert read("status", "conflicting-b")["status"] == "NOT_FOUND"
-            assert read("status", case) == terminal
-            assert receipt(case, "restart") == frozen
-            assert receipt("healthy", "old-result")
-        reports.append({"case": case, "status": expected, "seconds": round(time.monotonic() - started, 3),
-                        "receipt_sha256": digest})
-        print(json.dumps(reports[-1]), flush=True)
-    stop()
-    pathlib.Path("/evidence/results.json").write_text(json.dumps(reports, indent=2) + "\n")
-finally:
-    if process is not None and process.poll() is None:
-        process.kill()
-        process.communicate(timeout=10)
-'''
+EXERCISE_SOURCE = pathlib.Path(__file__).with_name("kind_agent_action_exercise.py")
 
 
 def run(arguments: list[str], *, data: bytes | None = None, timeout: int = 60) -> bytes:
@@ -366,13 +68,15 @@ def run_agent_process(arguments: list[str], *, timeout: float = 120) -> subproce
     ):
         try:
             for index, stream in enumerate((process.stdout, process.stderr)):
+                if stream is None:
+                    raise RuntimeError("confined Codex output pipe was not created")
                 selector.register(stream, selectors.EVENT_READ, index)
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(arguments[0], timeout)
                 for key, _ in selector.select(remaining):
-                    chunk = os.read(key.fileobj.fileno(), 8192)
+                    chunk = os.read(key.fd, 8192)
                     if not chunk:
                         selector.unregister(key.fileobj)
                         continue
@@ -393,6 +97,57 @@ def run_agent_process(arguments: list[str], *, timeout: float = 120) -> subproce
     )
 
 
+def check_agent_product_evidence(caller: list[str], diagnostics: dict[str, object]) -> str:
+    """Read installed-client evidence only after all model caller processes retire."""
+    client = [*caller, "/usr/bin/kapsel-service-client"]
+    status = json.loads(run([*client, "status", "healthy"]))
+    if status.get("status") != "SUCCEEDED":
+        raise RuntimeError(
+            f"agent did not complete the original approved action: {status.get('status')}; "
+            f"safe diagnostics: {json.dumps(diagnostics, sort_keys=True)}"
+        )
+    for case in CASES:
+        if (
+            case != "healthy"
+            and json.loads(run([*client, "status", case])).get("status") != "NOT_FOUND"
+        ):
+            raise RuntimeError("agent selected an unintended fixture action")
+
+    exported = json.loads(run([*client, "receipt", "healthy", "/home/caller/checked.receipt"]))
+    if exported.get("status") != "READY":
+        raise RuntimeError("original receipt unavailable after the model run")
+    canonical = run(
+        [
+            *caller,
+            "/usr/local/bin/python3",
+            "-I",
+            "-c",
+            RECEIPT_SNAPSHOT,
+            "/home/caller/checked.receipt",
+        ]
+    )
+
+    again = json.loads(run([*client, "receipt", "healthy", "/home/caller/repeated.receipt"]))
+    repeated = run(
+        [
+            *caller,
+            "/usr/local/bin/python3",
+            "-I",
+            "-c",
+            RECEIPT_SNAPSHOT,
+            "/home/caller/repeated.receipt",
+        ]
+    )
+    digest = exported.get("receipt_sha256")
+    if (
+        not isinstance(digest, str)
+        or repeated != canonical
+        or again.get("receipt_sha256") != digest
+    ):
+        raise RuntimeError("repeated retrieval changed original product evidence")
+    return digest
+
+
 def run_agent(
     name: str, workspace: pathlib.Path, binary: pathlib.Path, auth: pathlib.Path
 ) -> dict[str, object]:
@@ -410,6 +165,7 @@ def run_agent(
         time.sleep(0.1)
     else:
         raise RuntimeError("caller confinement probes did not finish")
+
     run(["docker", "exec", name, "mkdir", "-m", "0700", "-p", "/home/caller/.codex"])
     run(["docker", "cp", str(binary), name + ":/usr/local/bin/codex"])
     code_host = binary.with_name("codex-code-mode-host")
@@ -436,6 +192,7 @@ def run_agent(
             "/home/caller/.codex/config.toml",
         ]
     )
+
     caller = [
         "docker",
         "exec",
@@ -491,64 +248,27 @@ def run_agent(
                 raise RuntimeError("model caller processes did not retire")
         if result.returncode != 0:
             raise RuntimeError("confined Codex run failed; inspect original product identity")
+
         events = [json.loads(line) for line in result.stdout.splitlines()]
         completed = [event for event in events if event.get("type") == "turn.completed"]
-        if len(completed) != 1 or any(
-            event.get("item", {}).get("type") == "error" for event in events
-        ):
+        runtime_error = any(event.get("item", {}).get("type") == "error" for event in events)
+        if len(completed) != 1 or runtime_error:
             raise RuntimeError("Codex did not complete a turn without runtime errors")
         # Bounded diagnostics omit model text, tool arguments/results and credentials.
         known_items = {"agent_message", "mcp_tool_call", "command_execution", "reasoning", "error"}
         item_counts: dict[str, int] = {}
         for event in events:
-            item = event.get("item", {}).get("type")
-            if item is not None:
-                kind = item if item in known_items else "other"
-                item_counts[kind] = item_counts.get(kind, 0) + 1
+            item_type = event.get("item", {}).get("type")
+            if item_type is not None:
+                count_key = item_type if item_type in known_items else "other"
+                item_counts[count_key] = item_counts.get(count_key, 0) + 1
         diagnostics = {
             "item_counts": item_counts,
             "mcp_startup_failed": b"startup failed" in result.stderr.lower(),
         }
-        # This is the installed native client with its fixed socket, not a Python script.
-        client = [*caller, "/usr/bin/kapsel-service-client"]
-        status = json.loads(run([*client, "status", "healthy"]))
-        if status.get("status") != "SUCCEEDED":
-            raise RuntimeError(
-                f"agent did not complete the original approved action: {status.get('status')}; "
-                f"safe diagnostics: {json.dumps(diagnostics, sort_keys=True)}"
-            )
-        for case in CASES:
-            if (
-                case != "healthy"
-                and json.loads(run([*client, "status", case])).get("status") != "NOT_FOUND"
-            ):
-                raise RuntimeError("agent selected an unintended fixture action")
-        exported = json.loads(run([*client, "receipt", "healthy", "/home/caller/checked.receipt"]))
-        if exported.get("status") != "READY":
-            raise RuntimeError("original receipt unavailable after the model run")
-        canonical = run(
-            [
-                *caller,
-                "/usr/local/bin/python3",
-                "-I",
-                "-c",
-                RECEIPT_SNAPSHOT,
-                "/home/caller/checked.receipt",
-            ]
-        )
-        again = json.loads(run([*client, "receipt", "healthy", "/home/caller/repeated.receipt"]))
-        repeated = run(
-            [
-                *caller,
-                "/usr/local/bin/python3",
-                "-I",
-                "-c",
-                RECEIPT_SNAPSHOT,
-                "/home/caller/repeated.receipt",
-            ]
-        )
-        if repeated != canonical or again.get("receipt_sha256") != exported["receipt_sha256"]:
-            raise RuntimeError("repeated retrieval changed original product evidence")
+
+        receipt_digest = check_agent_product_evidence(caller, diagnostics)
+
         # Trust product evidence, not the model's prose. Only this fixed completion signal reaches
         # the fixture driver; model-produced commands and session identifiers never leave the caller.
         path = workspace / "selection.json"
@@ -573,17 +293,80 @@ def run_agent(
             "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
             "code_mode_host_sha256": hashlib.sha256(code_host.read_bytes()).hexdigest(),
             "operation_id": "healthy",
-            "status": status["status"],
+            "status": "SUCCEEDED",
             "usage": completed[0].get("usage"),
             "uid": 61001,
             "raw_session_retained": False,
-            "receipt_sha256": exported["receipt_sha256"],
+            "receipt_sha256": receipt_digest,
         }
     finally:
         run(["docker", "exec", name, "rm", "-f", "/home/caller/.codex/auth.json"])
 
 
-def main() -> None:
+def execute_journey_container(
+    name: str,
+    evidence: pathlib.Path,
+    source: bytes,
+    workspace: pathlib.Path,
+    agent_binary: pathlib.Path | None,
+    agent_auth: pathlib.Path,
+) -> tuple[int, dict[str, object] | None]:
+    agent_evidence = None
+    with (evidence / "exercise.log").open("wb") as log:
+        process = subprocess.Popen(
+            ["docker", "start", "--attach", "--interactive", name],
+            stdin=subprocess.PIPE,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            if process.stdin is None:
+                raise RuntimeError("journey input pipe was not created")
+            process.stdin.write(source)
+            process.stdin.close()
+            if agent_binary is not None:
+                agent_evidence = run_agent(name, workspace, agent_binary, agent_auth)
+            exercise_exit = process.wait(timeout=450)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+    return exercise_exit, agent_evidence
+
+
+def collect_patch_counts(name: str) -> dict[str, int]:
+    """Read bounded, unrotated API-server audit evidence, independently of product counters."""
+    audit = run(
+        [
+            "docker",
+            "exec",
+            name + "-control-plane",
+            "sh",
+            "-c",
+            "test -z \"$(find /var/log/kubernetes -maxdepth 1 -name 'journey-audit*' ! -name journey-audit.log -print)\" && head -c 8388609 /var/log/kubernetes/journey-audit.log",
+        ]
+    )
+    assert len(audit) <= 8388608, "audit exceeded evidence bound"
+    counts = {case: 0 for case in CASES}
+    seen_audit_ids = set()
+    for line in audit.splitlines():
+        event = json.loads(line)
+        is_patch = event.get("verb") == "patch"
+        is_fixture_write = event.get("userAgent") == "kapsel-journey-fixture"
+        if not is_patch or is_fixture_write:
+            continue
+
+        username = event.get("user", {}).get("username")
+        if username != "system:serviceaccount:demo:journey":
+            continue
+        assert event["auditID"] not in seen_audit_ids
+        seen_audit_ids.add(event["auditID"])
+        case = event["objectRef"]["name"].removeprefix("agent-")
+        counts[case] += 1
+    return counts
+
+
+def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=pathlib.Path)
     parser.add_argument("--revision", required=True)
@@ -619,9 +402,28 @@ def main() -> None:
             parser.error(
                 "Codex auth must be an owned private single-link regular file, at most 64 KiB"
             )
+    return args
+
+
+def main() -> None:
+    args = parse_arguments()
     os.umask(0o077)
     workspace = pathlib.Path(tempfile.mkdtemp(prefix="kapsel-live-artifact-"))
     print(f"Private evidence workspace: {workspace}", flush=True)
+    exercise_source = EXERCISE_SOURCE.read_bytes()
+    (workspace / EXERCISE_SOURCE.name).write_bytes(exercise_source)
+    custody_probe = CUSTODY_PROBE_SOURCE.read_bytes()
+    lost_ack_source = LOST_ACK_SOURCE.read_bytes()
+    for source_path, source_bytes in (
+        (LOST_ACK_SOURCE, lost_ack_source),
+        (CUSTODY_PROBE_SOURCE, custody_probe),
+        (RETIRE_SOURCE, RETIRE_CALLERS.encode("utf-8")),
+        (SNAPSHOT_SOURCE, RECEIPT_SNAPSHOT.encode("utf-8")),
+    ):
+        (workspace / source_path.name).write_bytes(source_bytes)
+        digest = hashlib.sha256(source_bytes).hexdigest()
+        (workspace / (source_path.name + ".sha256")).write_text(digest + "\n")
+
     spec = importlib.util.spec_from_file_location(
         "artifact", ROOT / "tools/release/verify_artifact.py"
     )
@@ -632,12 +434,17 @@ def main() -> None:
     extracted = artifact.extract_release(
         archive, pathlib.Path(str(archive) + ".sha256"), args.revision, workspace / "extracted"
     )
+
     name = "kapsel-journey-" + uuid.uuid4().hex[:10]
     kubeconfig = workspace / "admin.yaml"
     inputs = workspace / "inputs"
     inputs.mkdir(mode=0o700)
+    (inputs / CUSTODY_PROBE_SOURCE.name).write_bytes(custody_probe)
+    (inputs / LOST_ACK_SOURCE.name).write_bytes(lost_ack_source)
+
     evidence = workspace / "evidence"
     evidence.mkdir(mode=0o700)
+
     policy = {
         "apiVersion": "audit.k8s.io/v1",
         "kind": "Policy",
@@ -708,6 +515,7 @@ nodes:
         )
         for image in (INITIAL, DESIRED):
             run(["docker", "exec", name + "-control-plane", "crictl", "pull", image], timeout=120)
+
         run([*kubectl, "create", "namespace", "demo"])
         for case in CASES:
             deployment = {
@@ -742,6 +550,7 @@ nodes:
             ],
             timeout=320,
         )
+
         run([*kubectl, "-n", "demo", "create", "serviceaccount", "journey"])
         run(
             [
@@ -768,6 +577,7 @@ nodes:
                 "--serviceaccount=demo:journey",
             ]
         )
+
         token = (
             run([*kubectl, "-n", "demo", "create", "token", "journey", "--duration=1h"])
             .decode()
@@ -805,6 +615,7 @@ nodes:
             "users": [{"name": "journey", "user": {"token": token}}],
             "contexts": [{"name": "journey", "context": {"cluster": "journey", "user": "journey"}}],
         }
+
         (inputs / "kubeconfig.json").write_text(json.dumps(scoped))
         (inputs / "settings.json").write_text(
             json.dumps({"cases": CASES, "desired": DESIRED, "agent": args.agent})
@@ -827,6 +638,7 @@ nodes:
                 "-i",
                 RUNNER,
                 "python3",
+                "-I",
                 "-",
             ]
         )
@@ -834,57 +646,23 @@ nodes:
         # Host bind permissions are not a portable caller boundary (notably under Docker Desktop).
         # Copy the private directory into the container with Docker's default root ownership.
         run(["docker", "cp", str(inputs), name + ":/inputs"])
+
         started = time.monotonic()
-        agent_evidence = None
-        with (evidence / "exercise.log").open("wb") as log:
-            process = subprocess.Popen(
-                ["docker", "start", "--attach", "--interactive", name],
-                stdin=subprocess.PIPE,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-            )
-            try:
-                assert process.stdin is not None
-                process.stdin.write(EXERCISE.encode())
-                process.stdin.close()
-                if args.agent:
-                    agent_evidence = run_agent(
-                        name, workspace, args.codex_binary.resolve(), args.codex_auth.resolve()
-                    )
-                exercise_exit = process.wait(timeout=450)
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=10)
-        run(["docker", "cp", name + ":/evidence/.", str(evidence)])
-        # Read the API server's bounded audit file, not product or shim counters. Rotation invalidates
-        # completeness rather than silently dropping early requests.
-        audit = run(
-            [
-                "docker",
-                "exec",
-                name + "-control-plane",
-                "sh",
-                "-c",
-                "test -z \"$(find /var/log/kubernetes -maxdepth 1 -name 'journey-audit*' ! -name journey-audit.log -print)\" && head -c 8388609 /var/log/kubernetes/journey-audit.log",
-            ]
+        exercise_exit, agent_evidence = execute_journey_container(
+            name,
+            evidence,
+            exercise_source,
+            workspace,
+            args.codex_binary.resolve() if args.agent else None,
+            args.codex_auth.resolve(),
         )
-        assert len(audit) <= 8388608, "audit exceeded evidence bound"
-        counts = {case: 0 for case in CASES}
-        seen = set()
-        for line in audit.splitlines():
-            event = json.loads(line)
-            if event.get("verb") != "patch" or event.get("userAgent") == "kapsel-journey-fixture":
-                continue
-            if event.get("user", {}).get("username") != "system:serviceaccount:demo:journey":
-                continue
-            assert event["auditID"] not in seen
-            seen.add(event["auditID"])
-            case = event["objectRef"]["name"].removeprefix("agent-")
-            counts[case] += 1
+        run(["docker", "cp", name + ":/evidence/.", str(evidence)])
+
+        counts = collect_patch_counts(name)
         summary = {
             "source_revision": args.revision,
             "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "exercise_sha256": hashlib.sha256(exercise_source).hexdigest(),
             "node": NODE,
             "runner": RUNNER,
             "http_patch_counts": counts,

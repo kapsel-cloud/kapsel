@@ -66,8 +66,10 @@ class SourcePrivacyTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 (root / name).write_bytes(contents)
+
                 with self.assertRaises(RuntimeError) as caught:
                     PRIVACY.validate(root, [name])
+
                 self.assertIn(name, str(caught.exception))
                 self.assertNotIn(contents.decode(errors="replace").strip(), str(caught.exception))
 
@@ -183,6 +185,7 @@ class SourceSecurityTests(unittest.TestCase):
                     cwd=root,
                     check=True,
                 )
+
                 with (
                     mock.patch.object(SECURITY, "run", side_effect=run),
                     mock.patch.object(SECURITY, "trivy_database", return_value=database),

@@ -23,6 +23,10 @@ import tempfile
 import tomllib
 import unittest
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 from unittest import mock
 
 import assemble_artifact as ASSEMBLY
@@ -67,11 +71,12 @@ class ZeroReader(io.RawIOBase):
     def readable(self) -> bool:
         return True
 
-    def readinto(self, buffer: bytearray) -> int:
-        count = min(len(buffer), self.remaining)
+    def readinto(self, buffer: WriteableBuffer) -> int:
+        view = memoryview(buffer).cast("B")
+        count = min(len(view), self.remaining)
         if count == 0:
             return 0
-        buffer[:count] = b"\0" * count
+        view[:count] = b"\0" * count
         self.remaining -= count
         return count
 
@@ -144,6 +149,7 @@ def synthetic_archive(
     if mutate == "oversized-expanded":
         for name in ["COMMANDS.md", "KAPSEL_SERVICE_OPERATOR.md", "KAPSEL_SERVICE.md"]:
             files[f"{basename}/share/doc/kapsel/{name}"] = 22 * 1024 * 1024
+
     directories = {
         f"{basename}/",
         f"{basename}/bin/",
@@ -164,12 +170,13 @@ def synthetic_archive(
         }[mutate]
         entries.append(added)
         entries.sort()
+
     output = io.BytesIO()
     with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
         archive_format = {
             "pax": tarfile.PAX_FORMAT,
             "gnu": tarfile.GNU_FORMAT,
-        }.get(mutate, tarfile.USTAR_FORMAT)
+        }.get(mutate or "", tarfile.USTAR_FORMAT)
         with tarfile.open(fileobj=compressed, mode="w", format=archive_format) as release:
             for name in entries:
                 is_directory = name.endswith("/")
@@ -218,6 +225,156 @@ def synthetic_archive(
 
 
 class ReleaseVerifierTests(unittest.TestCase):
+    def test_service_candidate_preparation_uses_one_receiver_read_and_exact_bytes(self) -> None:
+        selected = os.environ.get("KAPSEL_TEST_INSPECT")
+        if selected is None:
+            self.skipTest("set KAPSEL_TEST_INSPECT to the built ordinary executable")
+        assert selected is not None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            SMOKE.reset_kubernetes_fixture()
+            SMOKE.KubernetesFixture.receiver_responses.insert(0, SMOKE.deployment("1", 1, False))
+            server = SMOKE.http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), SMOKE.KubernetesFixture
+            )
+            thread = SMOKE.threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                candidate = SMOKE.prepare_service_candidate(
+                    pathlib.Path(selected), root, server.server_port
+                )
+                self.assertEqual(candidate, (root / "operator.candidate.json").read_bytes())
+                self.assertEqual(SMOKE.KubernetesFixture.requests, 1)
+                self.assertEqual(SMOKE.KubernetesFixture.mutations, 0)
+                self.assertEqual(json.loads(candidate)["service_configuration_version"], 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=5)
+                SMOKE.reset_kubernetes_fixture()
+
+    def test_cargo_records_reject_malformed_shapes(self) -> None:
+        for document in (
+            None,
+            {"packages": {}, "resolve": {"nodes": []}},
+            {"packages": [7], "resolve": {"nodes": []}},
+            {"packages": [], "resolve": {"nodes": [{"id": "x", "deps": [7]}]}},
+            {
+                "packages": [],
+                "resolve": {"nodes": [{"id": "x", "deps": [{"pkg": "y", "dep_kinds": [{}]}]}]},
+            },
+            {
+                "packages": [{"id": "x", "name": "x", "version": "1", "manifest_path": "x"}],
+                "resolve": {"nodes": []},
+            },
+            {
+                "packages": [],
+                "resolve": {
+                    "nodes": [{"id": "x", "deps": [{"pkg": "y", "dep_kinds": [{"kind": 7}]}]}]
+                },
+            },
+        ):
+            with self.subTest(document=document), self.assertRaises(RuntimeError):
+                ASSEMBLY.cargo_graph_records(document)
+
+    def test_kind_caller_probe_compiles_in_the_isolated_interpreter(self) -> None:
+        source = JOURNEY.CUSTODY_PROBE_SOURCE.read_text()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import sys; compile(sys.stdin.read(), '<caller-probe>', 'exec')",
+            ],
+            input=source,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_extracted_fixture_imports_do_not_execute_the_journeys(self) -> None:
+        fixtures = (
+            ROOT / "tests/qualification/git_artifact_exercise.py",
+            JOURNEY.EXERCISE_SOURCE,
+            pathlib.Path(__file__).with_name("operator_example_exercise.py"),
+            pathlib.Path(__file__).with_name("caller_custody_exercise.py"),
+            pathlib.Path(__file__).with_name("background_caller_fixture.py"),
+            JOURNEY.CUSTODY_PROBE_SOURCE,
+            JOURNEY.RETIRE_SOURCE,
+            JOURNEY.SNAPSHOT_SOURCE,
+            JOURNEY.LOST_ACK_SOURCE,
+            ROOT / "tests/qualification/git_receiver_hook.py",
+            ROOT / "examples/mcp_bridge_fixture.py",
+            ROOT / "examples/demo_journal_fixture.py",
+            pathlib.Path(__file__).with_name("trivy_fixture.py"),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "pathlib.py").write_text("raise SystemExit(99)\n")
+            for fixture in fixtures:
+                with self.subTest(fixture=fixture.name):
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            "-I",
+                            "-c",
+                            "import runpy, sys; program = runpy.run_path(sys.argv[1], run_name='fixture_import'); assert callable(program['main'])",
+                            str(fixture),
+                        ],
+                        cwd=root,
+                        capture_output=True,
+                        timeout=10,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+            self.assertEqual(tuple(path.name for path in root.iterdir()), ("pathlib.py",))
+
+    def test_journey_streams_exact_fixture_bytes_through_a_real_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            docker = root / "docker"
+            docker.write_text(
+                f"#!{sys.executable}\n"
+                "import hashlib, sys\n"
+                "assert sys.argv[1:] == ['start', '--attach', '--interactive', 'fixture']\n"
+                "source = sys.stdin.buffer.read()\n"
+                "compile(source, '<transferred-fixture>', 'exec')\n"
+                "print(hashlib.sha256(source).hexdigest())\n"
+            )
+            docker.chmod(0o700)
+            source = JOURNEY.EXERCISE_SOURCE.read_bytes()
+            with mock.patch.dict(os.environ, PATH=str(root)):
+                code, agent = JOURNEY.execute_journey_container(
+                    "fixture", root, source, root, None, root / "unused-auth"
+                )
+            self.assertEqual(code, 0)
+            self.assertIsNone(agent)
+            self.assertEqual(
+                (root / "exercise.log").read_text().strip(), hashlib.sha256(source).hexdigest()
+            )
+
+    def test_audit_collection_distinguishes_fixture_writes_and_duplicate_observations(self) -> None:
+        event = {
+            "verb": "patch",
+            "userAgent": "kapsel",
+            "auditID": "first",
+            "user": {"username": "system:serviceaccount:demo:journey"},
+            "objectRef": {"name": "agent-healthy"},
+        }
+        fixture_write = dict(event, auditID="fixture", userAgent="kapsel-journey-fixture")
+        audit = b"\n".join(json.dumps(item).encode() for item in (fixture_write, event))
+        with mock.patch.object(JOURNEY, "run", return_value=audit):
+            counts = JOURNEY.collect_patch_counts("fixture")
+        self.assertEqual(counts, {case: int(case == "healthy") for case in JOURNEY.CASES})
+        duplicate = b"\n".join([json.dumps(event).encode()] * 2)
+        with (
+            mock.patch.object(JOURNEY, "run", return_value=duplicate),
+            self.assertRaises(AssertionError),
+        ):
+            JOURNEY.collect_patch_counts("fixture")
+
     def test_agent_output_streams_are_bounded_before_completion(self) -> None:
         for stream in (1, 2):
             with self.subTest(stream=stream):
@@ -240,7 +397,7 @@ class ReleaseVerifierTests(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"out", b"err"))
 
     def test_journey_python_calls_exclude_caller_writable_imports(self) -> None:
-        tree = ast.parse(JOURNEY.EXERCISE)
+        tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
         invocations = [
             node
             for node in ast.walk(tree)
@@ -263,13 +420,13 @@ class ReleaseVerifierTests(unittest.TestCase):
                     ),
                     {"sys": sys},
                 )
-                self.assertEqual(prefix, [sys.executable, "-I", "-c"])
-                subprocess.run([*prefix, "import socket"], cwd=root, check=True, timeout=5)
+                self.assertEqual(prefix, [sys.executable, "-I", "-"])
+                subprocess.run(prefix, input=b"import socket\n", cwd=root, check=True, timeout=5)
 
     def test_journey_receipt_binds_action_and_result(self) -> None:
         function = next(
             node
-            for node in ast.parse(JOURNEY.EXERCISE).body
+            for node in ast.walk(ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes()))
             if isinstance(node, ast.FunctionDef) and node.name == "receipt"
         )
         for operation, result in (
@@ -331,7 +488,7 @@ class ReleaseVerifierTests(unittest.TestCase):
                 binary = workspace / "codex"
                 binary.write_bytes(b"fixture binary")
                 binary.with_name("codex-code-mode-host").write_bytes(b"fixture helper")
-                responses = [
+                responses: list[subprocess.CompletedProcess[bytes] | Exception] = [
                     subprocess.CompletedProcess([], 0, b"", b""),
                     subprocess.CompletedProcess(
                         [],
@@ -342,7 +499,9 @@ class ReleaseVerifierTests(unittest.TestCase):
                 ]
 
                 if case == "runtime-error":
-                    responses[1].stdout += b'{"type":"item.completed","item":{"type":"error"}}\n'
+                    response = responses[1]
+                    assert isinstance(response, subprocess.CompletedProcess)
+                    response.stdout += b'{"type":"item.completed","item":{"type":"error"}}\n'
                 if case == "timeout":
                     responses[1] = subprocess.TimeoutExpired("docker exec", 120)
                 if case == "output-overflow":
@@ -617,101 +776,18 @@ class ReleaseVerifierTests(unittest.TestCase):
 class ReleaseArtifactTests(unittest.TestCase):
     def test_model_process_retirement_and_receipt_custody(self) -> None:
         """Real Linux probes for timeout descendants and forged model receipt paths."""
-        script = (
-            "retire = "
-            + repr(JOURNEY.RETIRE_CALLERS)
-            + "\nsnapshot = "
-            + repr(JOURNEY.RECEIPT_SNAPSHOT)
-            + "\n"
-            + r'''
-import os
-import pathlib
-import select
-import subprocess
-import sys
-import tempfile
-
-identity = {"user": 61001, "group": 61000, "extra_groups": [], "cwd": "/tmp"}
-assert subprocess.run([sys.executable, "-I", "-c", retire], capture_output=True, timeout=5).returncode != 0
-process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, **identity)
-try:
-    process.wait(timeout=0.05)
-    raise AssertionError("timeout fixture exited early")
-except subprocess.TimeoutExpired:
-    pass
-assert subprocess.check_output([sys.executable, "-I", "-c", retire], timeout=5, **identity) == b"CALLERS_RETIRED\n"
-assert process.wait(timeout=5) == -9
-
-launcher = """
-import os
-import time
-pid = os.fork()
-if pid == 0:
-    os.close(1)
-    os.close(2)
-    time.sleep(60)
-else:
-    print(pid, flush=True)
-    os._exit(0)
-"""
-read_fd, write_fd = os.pipe()
-try:
-    subprocess.run([sys.executable, "-c", launcher], capture_output=True,
-                   pass_fds=(write_fd,), check=True, timeout=5, **identity)
-    os.close(write_fd)
-    write_fd = None
-    assert not select.select([read_fd], [], [], 0)[0], "background fixture already retired"
-    assert subprocess.check_output([sys.executable, "-I", "-c", retire], timeout=5, **identity) == b"CALLERS_RETIRED\n"
-    assert select.select([read_fd], [], [], 1)[0], "background child survived completed parent"
-    assert os.read(read_fd, 1) == b"", "background child retained its descriptor"
-finally:
-    os.close(read_fd)
-    if write_fd is not None:
-        os.close(write_fd)
-
-root = pathlib.Path(tempfile.mkdtemp())
-os.chown(root, 61001, 61000)
-# A writable model HOME/CWD must not poison the independent Python observer.
-(root / "sitecustomize.py").write_text("raise SystemExit(99)\n")
-(root / "pathlib.py").write_text("raise SystemExit(99)\n")
-identity["cwd"] = str(root)
-identity["env"] = dict(os.environ, PYTHONPATH=str(root), HOME=str(root))
-assert subprocess.check_output([sys.executable, "-I", "-c", retire], timeout=5, **identity) == b"CALLERS_RETIRED\n"
-model = root / "model.receipt"
-canonical = root / "checked.receipt"
-model.symlink_to(canonical)
-for exists in (False, True):
-    if exists:
-        canonical.write_bytes(b"frozen")
-        os.chown(canonical, 61001, 61000)
-    result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
-                            capture_output=True, timeout=5, **identity)
-    assert result.returncode != 0 and not result.stdout
-model.unlink()
-os.link(canonical, model)
-result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
-                        capture_output=True, timeout=5, **identity)
-assert result.returncode != 0
-model.unlink()
-for content in (b"x" * 65537, b"frozen"):
-    model.write_bytes(content)
-    os.chown(model, 61001, 61000)
-    result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
-                            capture_output=True, timeout=5, **identity)
-    assert (result.returncode == 0) == (content == b"frozen")
-    if result.returncode == 0:
-        assert result.stdout == content
-model.unlink()
-os.mkfifo(model, 0o600)
-os.chown(model, 61001, 61000)
-result = subprocess.run([sys.executable, "-I", "-c", snapshot, str(model)],
-                        capture_output=True, timeout=5, **identity)
-assert result.returncode != 0
-print("Caller timeout/background retirement and receipt custody probes passed")
-'''
+        fixture_directory = pathlib.Path(__file__).parent
+        script = (fixture_directory / "caller_custody_exercise.py").read_bytes()
+        probe_sources = (
+            JOURNEY.RETIRE_SOURCE,
+            JOURNEY.SNAPSHOT_SOURCE,
+            fixture_directory / "background_caller_fixture.py",
         )
+        probe_volumes = [
+            argument
+            for source in probe_sources
+            for argument in ("--volume", f"{source}:/fixtures/{source.name}:ro")
+        ]
         subprocess.run(
             [
                 "docker",
@@ -725,11 +801,13 @@ print("Caller timeout/background retirement and receipt custody probes passed")
                 "--security-opt=no-new-privileges",
                 "--pids-limit=128",
                 "--memory=256m",
+                *probe_volumes,
                 SMOKE_IMAGE,
                 "python3",
+                "-I",
                 "-",
             ],
-            input=script.encode(),
+            input=script,
             check=True,
             timeout=40,
         )
@@ -750,274 +828,7 @@ print("Caller timeout/background retirement and receipt custody probes passed")
             )
             # Only extracted binaries, their checksum-bound fixture and authored documentation
             # enter this container. No source build or private operator guidance is available.
-            script = r"""
-import importlib.util
-import json
-import os
-import pathlib
-import re
-import shutil
-import sqlite3
-import subprocess
-import tempfile
-import threading
-import time
-
-spec = importlib.util.spec_from_file_location("fixture", "/fixture.py")
-fixture = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(fixture)
-guide = pathlib.Path("/guide.md").read_text()
-
-def block(name, language):
-    matches = re.findall(
-        rf"<!-- example-{name} -->\s*```{language}\n(.*?)\n```", guide, re.S
-    )
-    assert len(matches) == 1, name
-    return matches[0]
-
-started = time.monotonic()
-os.umask(0o077)
-workspace = pathlib.Path(tempfile.mkdtemp(prefix="operator-"))
-os.chdir(workspace)
-binary = pathlib.Path("/usr/bin/kapsel")
-shutil.copyfile("/artifact/bin/kapsel", binary)
-binary.chmod(0o755)
-client = pathlib.Path("/artifact/bin/kapsel-service-client")
-service = pathlib.Path("/artifact/libexec/kapsel/kapseld")
-subprocess.run(["sh", "-eu", "-c", block("keys", "sh")], check=True, timeout=30)
-assert pathlib.Path("approval.seed").read_bytes() != pathlib.Path("receipt.seed").read_bytes()
-for name in ("approval.seed", "receipt.seed", "approval.pub", "receipt.pub", "receipt.trust"):
-    assert pathlib.Path(name).stat().st_mode & 0o777 == 0o600
-target = json.loads(fixture.deployment("1", 1, False))
-for field in ("uid", "resourceVersion", "generation"):
-    del target["metadata"][field]
-assert json.loads(block("deployment", "json")) == target
-intent = json.loads(block("authorization", "json"))
-assert intent["operation_id"] == fixture.OPERATION
-assert intent["immutable_image_digest"] == fixture.IMAGE
-pathlib.Path("authorization.json").write_text(json.dumps(intent))
-fixture.reset_kubernetes_fixture()
-fixture.KubernetesFixture.responses.insert(0, fixture.deployment("1", 1, False))
-server = fixture.http.server.ThreadingHTTPServer(("127.0.0.1", 0), fixture.KubernetesFixture)
-thread = threading.Thread(target=server.serve_forever, daemon=True)
-thread.start()
-pathlib.Path("kubeconfig.yaml").write_text(json.dumps({
-    "apiVersion": "v1", "kind": "Config", "current-context": "fixture",
-    "clusters": [{"name": "fixture", "cluster": {
-        "server": f"http://127.0.0.1:{server.server_port}"
-    }}],
-    "contexts": [{"name": "fixture", "context": {"cluster": "fixture", "user": "fixture"}}],
-    "users": [{"name": "fixture", "user": {}}],
-}))
-process = None
-
-def start():
-    return subprocess.Popen(
-        [str(service), "--operator-config", "/etc/kapsel/operator.json",
-         "--socket", "/run/kapsel/kapseld.sock"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        user=61000, group=61000, extra_groups=[], umask=0o077,
-    )
-
-def read(command):
-    return fixture.service_client(client, command, 61001, 61000)
-
-def wait_for_read(command, predicate):
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        assert process.poll() is None, "service exited"
-        try:
-            result = read(command)
-        except RuntimeError:
-            time.sleep(0.02)
-            continue
-        if predicate(result):
-            return result
-        time.sleep(0.02)
-    raise AssertionError("documented operation did not reach expected state")
-
-try:
-    subprocess.run(["sh", "-eu", "-c", block("prepare", "sh")], check=True, timeout=30)
-    assert fixture.KubernetesFixture.requests == 1
-    assert fixture.KubernetesFixture.mutations == 0
-    document = pathlib.Path("operator.candidate.json").read_bytes()
-    config = json.loads(document)
-    assert config == {
-        "service_configuration_version": 1,
-        "authorization_keys": [{"key_id": "approval-key-1",
-            "public_key_hex": pathlib.Path("approval.pub").read_bytes().hex()}],
-        "approvals": [{"label": "Approved image for agent-api",
-            "signed_grant_hex": pathlib.Path("approval.grant").read_bytes().hex()}],
-        "receipt_signing_key_id": "receipt-key-1",
-    }
-    subprocess.run([str(binary), "validate-service-config", "--operator-config",
-                    "operator.candidate.json"], check=True, timeout=10)
-    for path, mode in (("/etc/kapsel", 0o700), ("/var/lib/kapsel", 0o700),
-                       ("/run/kapsel", 0o750)):
-        pathlib.Path(path).mkdir(mode=mode)
-        pathlib.Path(path).chmod(mode)
-        os.chown(path, 61000, 61000)
-    # Start without receiver material. Read availability and admission are independent of it.
-    published = subprocess.run([str(service), "--replace-operator-config"], input=document,
-        capture_output=True, user=61000, group=61000, extra_groups=[], timeout=30)
-    assert (published.returncode, published.stdout, published.stderr) == (0, b"PUBLISHED\n", b"")
-    print("Cold publication: PUBLISHED", flush=True)
-    process = start()
-    print("List:", json.dumps(wait_for_read(["list"], lambda r: r["status"] == "READY")), flush=True)
-    assert read(["history"])["entries"] == []
-    assert fixture.KubernetesFixture.requests == 1
-    admitted = read(["submit", fixture.OPERATION])
-    assert admitted == json.loads(block("admitted", "json"))
-    print("Submit:", json.dumps(admitted), flush=True)
-    unavailable = wait_for_read(["status", fixture.OPERATION],
-        lambda r: r.get("execution", {}).get("condition") == "receiver_unavailable")
-    assert unavailable["status"] == "IN_PROGRESS"
-    assert unavailable["execution"]["action_owner"] == "operator"
-    assert fixture.KubernetesFixture.requests == 1
-    process.terminate()
-    _, diagnostics = process.communicate(timeout=30)
-    assert process.returncode == 0
-    assert b"receiver_unavailable" in diagnostics
-    fixture.write_private(pathlib.Path("/etc/kapsel/kubeconfig.yaml"),
-                          pathlib.Path("kubeconfig.yaml").read_bytes())
-    os.chown("/etc/kapsel/kubeconfig.yaml", 61000, 61000)
-    # Keep valid execution material but remove the actual receiver listener. This is a transport
-    # outage, distinct from missing credentials, and cannot become a receiver result.
-    port = server.server_port
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=5)
-    process = start()
-    wait_for_read(["status", fixture.OPERATION],
-        lambda r: r.get("execution", {}).get("disposition") == "resume_required")
-    assert fixture.KubernetesFixture.requests == 1
-    selected = read(["submit", fixture.OPERATION])
-    assert selected == {"version": 1, "status": "ADMITTED", "phase": "authorized"}, selected
-    offline = wait_for_read(["status", fixture.OPERATION],
-        lambda r: r.get("execution", {}).get("condition") == "preflight_unavailable")
-    assert offline["status"] == "IN_PROGRESS"
-    assert fixture.KubernetesFixture.mutations == 0
-    assert fixture.KubernetesFixture.requests == 1
-    server = fixture.http.server.ThreadingHTTPServer(("127.0.0.1", port), fixture.KubernetesFixture)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    assert read(["submit", fixture.OPERATION]) == selected
-    print("Receiver access restored: explicit same-ID selection, no replacement approval", flush=True)
-    stopped = wait_for_read(["status", fixture.OPERATION],
-        lambda r: r.get("execution", {}).get("condition") == "signing_unavailable")
-    assert stopped["status"] == "IN_PROGRESS"
-    assert stopped["execution"] == json.loads(block("signing", "json"))
-    assert fixture.KubernetesFixture.mutations == 1
-    print("Signing unavailable:", json.dumps(stopped), flush=True)
-    process.terminate()
-    _, diagnostics = process.communicate(timeout=30)
-    assert process.returncode == 0
-    fixture.write_private(pathlib.Path("/etc/kapsel/receipt.seed"), pathlib.Path("receipt.seed").read_bytes())
-    os.chown("/etc/kapsel/receipt.seed", 61000, 61000)
-    before = fixture.KubernetesFixture.requests
-    process = start()
-    resumed = wait_for_read(["status", fixture.OPERATION],
-        lambda r: r.get("execution", {}).get("disposition") == "resume_required")
-    assert fixture.KubernetesFixture.requests == before
-    assert resumed["execution"] == json.loads(block("resume", "json"))
-    print("Read-first restart:", json.dumps(resumed), flush=True)
-    readmitted = read(["submit", fixture.OPERATION])
-    assert readmitted == json.loads(block("readmitted", "json"))
-    print("Same-ID submit:", json.dumps(readmitted), flush=True)
-    complete = wait_for_read(["status", fixture.OPERATION], lambda r: r["status"] == "SUCCEEDED")
-    assert fixture.KubernetesFixture.requests == before, "completion acquired new receiver facts"
-    print("Completed:", json.dumps(complete), flush=True)
-    receipt = pathlib.Path("/tmp/documented-example.receipt")
-    print("Receipt:", json.dumps(read(["receipt", fixture.OPERATION, str(receipt)])), flush=True)
-    inspection = subprocess.run([str(binary), "inspect", "--receipt", str(receipt),
-        "--trust", "receipt.trust", "--evaluation-time-unix-s",
-        pathlib.Path("evaluation-time.txt").read_text().strip()],
-        capture_output=True, check=True, timeout=10)
-    report = json.loads(inspection.stdout)
-    assert report["status"] == "INSPECTED", report
-    print("Inspection:", inspection.stdout.decode().strip(), flush=True)
-    assert fixture.KubernetesFixture.mutations == 1
-    assert fixture.KubernetesFixture.requests == 4
-    print(f"Documented example: one PATCH, same-ID signing recovery; {time.monotonic() - started:.2f}s", flush=True)
-
-    # Exercise loss of an external trust appointment, not loss/replacement of the retained grant.
-    # Remediation uses only cold publication and the original operator-held document.
-    frozen = receipt.read_bytes()
-    process.terminate()
-    _, diagnostics = process.communicate(timeout=30)
-    assert process.returncode == 0
-    journal = pathlib.Path("/var/lib/kapsel/journal.sqlite3")
-    retained = journal.read_bytes()
-    withdrawn = dict(config, approvals=[], authorization_keys=[])
-    published = subprocess.run([str(service), "--replace-operator-config"],
-        input=json.dumps(withdrawn).encode(), capture_output=True,
-        user=61000, group=61000, extra_groups=[], timeout=30)
-    assert (published.returncode, published.stdout, published.stderr) == (0, b"PUBLISHED\n", b"")
-    assert journal.read_bytes() == retained
-    # Execution material is deliberately unavailable throughout historical read recovery.
-    pathlib.Path("/etc/kapsel/kubeconfig.yaml").unlink()
-    pathlib.Path("/etc/kapsel/receipt.seed").unlink()
-    process = start()
-    inaccessible = {"version": 1, "status": "ERROR", "error_class": "authority_unavailable"}
-    assert wait_for_read(["status", fixture.OPERATION], lambda r: r == inaccessible) == inaccessible
-    history = read(["history"])
-    assert history["entries"] == [{"operation_id": fixture.OPERATION,
-        "status": "ERROR", "error_class": "authority_unavailable"}]
-    assert read(["submit", fixture.OPERATION]) == inaccessible
-    denied_receipt = pathlib.Path("/tmp/unavailable-authority.receipt")
-    denied = subprocess.run([str(client), "receipt", fixture.OPERATION, str(denied_receipt)],
-        capture_output=True, user=61001, group=61000, extra_groups=[], timeout=10)
-    assert denied.returncode != 0 and not denied_receipt.exists()
-    assert fixture.KubernetesFixture.requests == before
-    process.terminate()
-    _, diagnostics = process.communicate(timeout=30)
-    assert process.returncode == 0
-    assert b"original_authority_unavailable" in diagnostics
-    assert journal.read_bytes() == retained
-    for private in (pathlib.Path("approval.seed").read_bytes().hex().encode(),
-                    pathlib.Path("receipt.seed").read_bytes().hex().encode(),
-                    pathlib.Path("approval.grant").read_bytes().hex().encode()):
-        assert private not in diagnostics + denied.stdout + denied.stderr
-    print("Missing original trust: authority_unavailable; history preserved; export refused", flush=True)
-
-    restored = subprocess.run([str(service), "--replace-operator-config"], input=document,
-        capture_output=True, user=61000, group=61000, extra_groups=[], timeout=30)
-    assert (restored.returncode, restored.stdout, restored.stderr) == (0, b"PUBLISHED\n", b"")
-    process = start()
-    recovered = wait_for_read(["status", fixture.OPERATION], lambda r: r["status"] == "SUCCEEDED")
-    assert recovered == complete
-    original = pathlib.Path("/tmp/restored-authority.receipt")
-    assert read(["receipt", fixture.OPERATION, str(original)])["status"] == "READY"
-    assert original.read_bytes() == frozen
-    assert fixture.KubernetesFixture.requests == before
-    assert fixture.KubernetesFixture.mutations == 1
-    process.terminate()
-    process.communicate(timeout=30)
-    assert process.returncode == 0
-    assert journal.read_bytes() == retained
-    print("Original trust restored: identical receipt, no receiver or signing material, zero HTTP", flush=True)
-
-    # Fault preparation only: mark this disposable journal unsupported. The operator procedure
-    # must stop here, not rewrite the version, restore an older database, or create a new ID.
-    with sqlite3.connect(journal) as connection:
-        connection.execute("PRAGMA user_version = 4")
-    refused = journal.read_bytes()
-    process = start()
-    _, diagnostics = process.communicate(timeout=30)
-    assert process.returncode != 0
-    assert b"storage_or_operation_blocked" in diagnostics
-    assert journal.read_bytes() == refused
-    assert fixture.KubernetesFixture.requests == before
-    assert fixture.KubernetesFixture.mutations == 1
-    print("Unsupported-version fixture: startup refused, journal unchanged; stop and inspect", flush=True)
-finally:
-    if process is not None and process.poll() is None:
-        process.terminate()
-        process.communicate(timeout=30)
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=5)
-"""
+            script = pathlib.Path(__file__).with_name("operator_example_exercise.py").read_bytes()
             subprocess.run(
                 [
                     "docker",
@@ -1034,9 +845,10 @@ finally:
                     f"{ROOT / 'docs/KAPSEL_SERVICE_OPERATOR.md'}:/guide.md:ro",
                     SMOKE_IMAGE,
                     "python3",
+                    "-I",
                     "-",
                 ],
-                input=script.encode(),
+                input=script,
                 check=True,
                 timeout=180,
             )
@@ -1215,7 +1027,7 @@ finally:
 
                 for asset in ("kapseld.service", "kapseld.conf", "kapseld-rbac.yaml"):
                     asset_file = release.extractfile(f"{basename}/share/kapsel/{asset}")
-                    self.assertIsNotNone(asset_file)
+                    assert asset_file is not None
                     self.assertEqual(
                         asset_file.read(),
                         ROOT.joinpath("crates/kapsel-daemon/deploy", asset).read_bytes(),
@@ -1233,7 +1045,7 @@ finally:
                     document_file = release.extractfile(
                         f"{basename}/share/doc/kapsel/{document_name}"
                     )
-                    self.assertIsNotNone(document_file)
+                    assert document_file is not None
                     document = document_file.read().decode()
                     for link in re.findall(
                         r"]\((?!https?://|#|mailto:)([^)\s]+[.]md)(?:#[^)]+)?\)", document
@@ -1243,7 +1055,7 @@ finally:
                         self.assertIn(target, names, document_name)
 
                 metadata_file = release.extractfile(f"{basename}/RELEASE-METADATA.json")
-                self.assertIsNotNone(metadata_file)
+                assert metadata_file is not None
                 metadata_bytes = metadata_file.read()
                 self.assertTrue(metadata_bytes.endswith(b"\n"))
                 metadata = json.loads(metadata_bytes)
@@ -1272,7 +1084,7 @@ finally:
                 manifest = tomllib.loads(ROOT.joinpath("Cargo.toml").read_text())
                 self.assertEqual(metadata["license"], manifest["workspace"]["package"]["license"])
                 license_file = release.extractfile(f"{basename}/LICENSE")
-                self.assertIsNotNone(license_file)
+                assert license_file is not None
                 license_bytes = license_file.read()
                 self.assertEqual(license_bytes, ROOT.joinpath("LICENSE").read_bytes())
                 self.assertEqual(
@@ -1321,7 +1133,7 @@ finally:
                     "mcp_bridge": "bin/kapsel-service-mcp",
                 }.items():
                     binary_file = release.extractfile(f"{basename}/{path}")
-                    self.assertIsNotNone(binary_file)
+                    assert binary_file is not None
                     binary = binary_file.read()
                     self.assertEqual(len(binary), metadata[f"{name}_binary_bytes"])
                     self.assertEqual(

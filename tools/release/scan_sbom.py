@@ -79,6 +79,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
         snapshot = private / "candidate.spdx.json"
         snapshot.write_bytes(sbom_bytes)
         snapshot.chmod(0o600)
+
         subprocess.run(
             [
                 "trivy",
@@ -100,6 +101,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
                 text=True,
             ).stdout
         )
+
         database = version.get("VulnerabilityDB")
         if version.get("Version") != TRIVY_VERSION:
             raise RuntimeError("Trivy identity changed after database refresh")
@@ -113,6 +115,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
         if not database_path.is_file():
             raise RuntimeError("private Trivy vulnerability database file is unavailable")
         database_sha256 = sha256(database_path)
+
         raw = private / "trivy.json"
         subprocess.run(
             [
@@ -154,6 +157,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
                 str(finding["package"]),
             )
         )
+
         blocked = [finding for finding in findings if finding["severity"] in {"HIGH", "CRITICAL"}]
         summary = {
             "schema": "kapsel.release-sbom-scan.v1",
@@ -167,6 +171,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
             "findings": findings,
             "status": "failed" if blocked else "passed",
         }
+
     encoded = (json.dumps(summary, indent=2, separators=(",", ": ")) + "\n").encode()
     if len(encoded) > OUTPUT_BYTES_MAX:
         raise RuntimeError("release SBOM vulnerability summary exceeded its byte bound")

@@ -82,11 +82,13 @@ def validate(root: Path, paths: list[str]) -> str:
         path = root / relative
         if relative.endswith(PRIVATE_ARTIFACT_SUFFIXES):
             fail("private artifact", relative)
+
         data = path.read_bytes()
         digest.update(relative.encode())
         digest.update(b"\0")
         digest.update(data)
         digest.update(b"\0")
+
         if relative not in PATTERN_FIXTURE_FILES:
             for pattern in PRIVATE_PATHS:
                 if pattern.search(data):
@@ -94,6 +96,7 @@ def validate(root: Path, paths: list[str]) -> str:
             for pattern in CREDENTIAL_PATTERNS:
                 if pattern.search(data):
                     fail("credential material", relative)
+
         if path.suffix == ".md":
             text = data.decode("utf-8")
             for line_number, line in enumerate(text.splitlines(), start=1):

@@ -16,42 +16,7 @@ import scan_sbom as SCANNER
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-FAKE_TRIVY = r"""#!/usr/bin/env python3
-import datetime
-import json
-import os
-import pathlib
-import sys
-
-home = pathlib.Path(os.environ["HOME"])
-arguments = sys.argv[1:]
-cache = pathlib.Path(arguments[arguments.index("--cache-dir") + 1]) if "--cache-dir" in arguments else home / ".cache" / "trivy"
-database = cache / "db" / "trivy.db"
-if arguments and arguments[0] == "filesystem" and "--download-db-only" in arguments:
-    database.parent.mkdir(parents=True, exist_ok=True)
-    database.write_bytes(b"fresh-database")
-elif "--version" in arguments and "--format" in arguments:
-    updated = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-    print(json.dumps({
-        "Version": "0.72.0",
-        "VulnerabilityDB": {"Version": 2, "UpdatedAt": updated},
-    }))
-elif arguments and arguments[0] == "sbom":
-    if os.environ.get("FAKE_TRIVY_MUTATE") == "1":
-        database.write_bytes(b"changed-database")
-    severity = os.environ.get("FAKE_TRIVY_SEVERITY")
-    vulnerabilities = [] if not severity else [{
-        "VulnerabilityID": "CVE-TEST-1",
-        "PkgName": "example",
-        "InstalledVersion": "1.0.0",
-        "FixedVersion": "1.0.1",
-        "Severity": severity,
-    }]
-    output = pathlib.Path(arguments[arguments.index("--output") + 1])
-    output.write_text(json.dumps({"Results": [{"Vulnerabilities": vulnerabilities}]}))
-else:
-    raise SystemExit(f"unexpected fake Trivy arguments: {arguments}")
-"""
+TRIVY_FIXTURE = pathlib.Path(__file__).with_name("trivy_fixture.py")
 
 
 class ReleaseSbomScannerTests(unittest.TestCase):
@@ -79,7 +44,7 @@ class ReleaseSbomScannerTests(unittest.TestCase):
         binary_directory = root / "bin"
         binary_directory.mkdir()
         trivy = binary_directory / "trivy"
-        trivy.write_text(FAKE_TRIVY)
+        trivy.write_bytes(TRIVY_FIXTURE.read_bytes())
         trivy.chmod(0o755)
         sbom = root / "candidate.spdx.json"
         sbom.write_text("{}\n")

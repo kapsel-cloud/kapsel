@@ -73,7 +73,16 @@ class FormattingPipelineTests(unittest.TestCase):
             path = tools / name
             path.write_text(TOOL)
             path.chmod(0o755)
-        pins = subprocess.run(
+
+        (
+            prettier_path,
+            ruff_path,
+            prettier_version,
+            ruff_version,
+            format_toolchain,
+            taplo_path,
+            taplo_version,
+        ) = subprocess.run(
             [
                 "sh",
                 "-c",
@@ -88,16 +97,17 @@ class FormattingPipelineTests(unittest.TestCase):
             check=True,
             timeout=10,
         ).stdout.splitlines()
-        for name, destination in zip(("prettier", "ruff"), pins[:2], strict=True):
+        for name, destination in (("prettier", prettier_path), ("ruff", ruff_path)):
             path = Path(destination)
             path.parent.mkdir(parents=True)
             path.symlink_to(tools / name)
         for name in ("shfmt", "shellcheck"):
-            (Path(pins[1]).parent / name).symlink_to(tools / name)
-        taplo = Path(pins[5])
+            (Path(ruff_path).parent / name).symlink_to(tools / name)
+        taplo = Path(taplo_path)
         taplo.parent.mkdir(parents=True)
         taplo.symlink_to(tools / "taplo")
-        self.format_toolchain = pins[4]
+
+        self.format_toolchain = format_toolchain
         self.log = self.root / "commands.log"
         self.env = {
             **os.environ,
@@ -105,9 +115,9 @@ class FormattingPipelineTests(unittest.TestCase):
             "FORMAT_LOG": str(self.log),
             "FAIL_AT": "",
             "HOME": str(self.root),
-            "TEST_PRETTIER_VERSION": pins[2],
-            "TEST_RUFF_VERSION": pins[3],
-            "TEST_TAPLO_VERSION": pins[6],
+            "TEST_PRETTIER_VERSION": prettier_version,
+            "TEST_RUFF_VERSION": ruff_version,
+            "TEST_TAPLO_VERSION": taplo_version,
             "TEST_RUSTFMT": str(tools / "rustfmt"),
             "RUSTFMT": str(tools / "ambient-override"),
         }

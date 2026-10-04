@@ -21,6 +21,34 @@ import tarfile
 import tempfile
 import threading
 import time
+from typing import TypedDict, cast
+
+
+class ReleaseMetadata(TypedDict):
+    artifact_schema: str
+    package_version: str
+    rust_target: str
+    source_revision: str
+    source_tree: str
+    source_dirty: bool
+    cargo_lock_sha256: str
+    cargo_graph_sha256: str
+    cargo_package_count: int
+    cargo_relationship_count: int
+    license: str
+    license_sha256: str
+    builder_image: str
+    smoke_image: str
+    ordinary_binary_bytes: int
+    ordinary_binary_sha256: str
+    service_binary_bytes: int
+    service_binary_sha256: str
+    client_binary_bytes: int
+    client_binary_sha256: str
+    mcp_bridge_binary_bytes: int
+    mcp_bridge_binary_sha256: str
+    non_claims: str
+
 
 IMAGE = (
     "registry.example/kapsel/agent-api@sha256:"
@@ -118,7 +146,7 @@ def validate_sbom(
     archive: pathlib.Path,
     archive_bytes: bytes,
     sbom_bytes: bytes,
-    metadata: dict[str, object],
+    metadata: ReleaseMetadata,
 ) -> None:
     if not sbom_bytes.endswith(b"\n"):
         raise RuntimeError("release SBOM has no trailing newline")
@@ -133,6 +161,7 @@ def validate_sbom(
     created = creation.get("created")
     if not isinstance(created, str) or not created.endswith("Z"):
         raise RuntimeError("release SBOM normalized creation time is invalid")
+
     archive_digest = hashlib.sha256(archive_bytes).hexdigest()
     expected_namespace = (
         "https://github.com/kapsel-cloud/kapsel/sbom/"
@@ -151,6 +180,7 @@ def validate_sbom(
     ]
     if not isinstance(comment, str) or any(fact not in comment for fact in required_comment_facts):
         raise RuntimeError("release SBOM source or builder binding changed")
+
     packages = sbom.get("packages")
     if not isinstance(packages, list) or len(packages) < 2:
         raise RuntimeError("release SBOM package inventory is incomplete")
@@ -165,6 +195,7 @@ def validate_sbom(
     ]
     if len(archive_packages) != 1 or len(root_packages) != 1:
         raise RuntimeError("release SBOM root package identities changed")
+
     cargo_packages = [
         package for package in packages if package.get("SPDXID") != "SPDXRef-Package-kapsel-archive"
     ]
@@ -181,15 +212,15 @@ def validate_sbom(
         "relationships": cargo_relationships,
         "root_package_id": "SPDXRef-Package-kapsel-source",
     }
-    graph_digest = hashlib.sha256(
-        json.dumps(graph, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    canonical_graph = json.dumps(graph, sort_keys=True, separators=(",", ":")).encode()
+    graph_digest = hashlib.sha256(canonical_graph).hexdigest()
     if (
         len(cargo_packages) != metadata["cargo_package_count"]
         or len(cargo_relationships) != metadata["cargo_relationship_count"]
         or graph_digest != metadata["cargo_graph_sha256"]
     ):
         raise RuntimeError("release SBOM Cargo graph is incomplete")
+
     archive_package = archive_packages[0]
     if (
         archive_package.get("name") != archive.name
@@ -209,6 +240,7 @@ def validate_sbom(
         or service_packages[0].get("versionInfo") != metadata["package_version"]
     ):
         raise RuntimeError("release SBOM service package identity disagrees")
+
     files = sbom.get("files")
     expected_files = {
         f"./{path}": metadata[f"{name}_binary_sha256"] for name, path in BINARIES.items()
@@ -226,6 +258,7 @@ def validate_sbom(
         or actual_files != expected_files
     ):
         raise RuntimeError("release SBOM binary inventory disagrees")
+
     contains = {
         relationship.get("relatedSpdxElement")
         for relationship in relationships
@@ -250,6 +283,7 @@ def bounded_ustar_bytes(archive_bytes: bytes, expected_entries: int) -> bytes:
         value = compressed.read(TAR_STREAM_BYTES_MAX + 1)
     if len(value) > TAR_STREAM_BYTES_MAX:
         raise RuntimeError("release tar stream exceeds its decompressed bound")
+
     offset = 0
     entries = 0
     zero_blocks = 0
@@ -263,6 +297,7 @@ def bounded_ustar_bytes(archive_bytes: bytes, expected_entries: int) -> bytes:
             continue
         if zero_blocks:
             raise RuntimeError("release tar has data after an end marker")
+
         entries += 1
         if entries > expected_entries:
             raise RuntimeError("release tar has too many raw entries")
@@ -270,6 +305,7 @@ def bounded_ustar_bytes(archive_bytes: bytes, expected_entries: int) -> bytes:
             raise RuntimeError("release tar is not exact USTAR")
         if header[156:157] not in {b"\0", b"0", b"5"}:
             raise RuntimeError("release tar contains an extension, link, or special header")
+
         size_field = header[124:136].rstrip(b"\0 ")
         if any(character not in b"01234567" for character in size_field):
             raise RuntimeError("release tar size is not canonical octal")
@@ -282,7 +318,7 @@ def bounded_ustar_bytes(archive_bytes: bytes, expected_entries: int) -> bytes:
     return value
 
 
-def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, object]:
+def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> ReleaseMetadata:
     suffix = f"-{TARGET}.tar.gz"
     if not archive.name.startswith("kapsel-") or not archive.name.endswith(suffix):
         raise RuntimeError("release archive name does not identify the supported target")
@@ -324,6 +360,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         f"{basename}/LICENSE": "license",
         **{f"{basename}/{path}": name for name, path in BINARIES.items()},
     }
+    executable_paths = {f"{basename}/{path}" for path in BINARIES.values()}
     evidence: dict[str, bytes] = {}
     expanded_size = 0
     entry_count = 0
@@ -349,9 +386,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
             identity = (member.uid, member.gid, member.uname, member.gname, member.mtime)
             if identity != (0, 0, "", "", 0):
                 raise RuntimeError("release archive metadata is not normalized")
-            executable = member.isdir() or member.name in {
-                f"{basename}/{path}" for path in BINARIES.values()
-            }
+            executable = member.isdir() or member.name in executable_paths
             expected_mode = 0o755 if executable else 0o644
             if member.mode != expected_mode:
                 raise RuntimeError("release archive mode is not canonical")
@@ -366,6 +401,11 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
                 evidence[evidence_key] = value
     if entry_count != len(expected_order) or len(evidence) != len(evidence_names):
         raise RuntimeError("release archive layout or evidence is incomplete")
+
+    return validate_metadata(version, evidence)
+
+
+def validate_metadata(version: str, evidence: dict[str, bytes]) -> ReleaseMetadata:
     metadata_bytes = evidence["metadata"]
     license_bytes = evidence["license"]
     if not metadata_bytes.endswith(b"\n"):
@@ -402,6 +442,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         raise RuntimeError("release metadata schema changed")
     if metadata["package_version"] != version or metadata["rust_target"] != TARGET:
         raise RuntimeError("release metadata disagrees with archive identity")
+
     revision = metadata["source_revision"]
     invalid_revision = (
         not isinstance(revision, str)
@@ -440,6 +481,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         raise RuntimeError("release Cargo graph counts are invalid")
     if not isinstance(metadata["source_dirty"], bool):
         raise RuntimeError("release dirty state is not boolean")
+
     license_digest = hashlib.sha256(license_bytes).hexdigest()
     if metadata["license"] != "Apache-2.0" or metadata["license_sha256"] != license_digest:
         raise RuntimeError("release license provenance disagrees")
@@ -447,14 +489,17 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> dict[str, o
         raise RuntimeError("release container provenance disagrees")
     if metadata["non_claims"] != NON_CLAIMS:
         raise RuntimeError("release non-claims changed")
+
     for name in BINARIES:
-        if type(metadata[f"{name}_binary_bytes"]) is not int or metadata[
-            f"{name}_binary_bytes"
-        ] != len(evidence[name]):
+        declared_size = metadata[f"{name}_binary_bytes"]
+        declared_digest = metadata[f"{name}_binary_sha256"]
+        binary_bytes = evidence[name]
+        if type(declared_size) is not int or declared_size != len(binary_bytes):
             raise RuntimeError("release binary size disagrees")
-        if metadata[f"{name}_binary_sha256"] != hashlib.sha256(evidence[name]).hexdigest():
+        if declared_digest != hashlib.sha256(binary_bytes).hexdigest():
             raise RuntimeError("release binary digest disagrees")
-    return metadata
+    # Every field above has its independent shape and artifact binding checked before exposure.
+    return cast(ReleaseMetadata, metadata)
 
 
 def extract_exact_archive(
@@ -536,7 +581,7 @@ def deployment(resource_version: str, generation: int, observed: bool) -> bytes:
 
 
 class KubernetesFixture(http.server.BaseHTTPRequestHandler):
-    responses: list[bytes] = []
+    receiver_responses: list[bytes] = []
     requests = 0
     mutations = 0
 
@@ -545,10 +590,10 @@ class KubernetesFixture(http.server.BaseHTTPRequestHandler):
 
     def respond(self) -> None:
         type(self).requests += 1
-        if not type(self).responses:
+        if not type(self).receiver_responses:
             self.send_error(500)
             return
-        body = type(self).responses.pop(0)
+        body = type(self).receiver_responses.pop(0)
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
@@ -564,7 +609,7 @@ class KubernetesFixture(http.server.BaseHTTPRequestHandler):
 
 
 def reset_kubernetes_fixture() -> None:
-    KubernetesFixture.responses = [
+    KubernetesFixture.receiver_responses = [
         deployment("1", 1, False),
         deployment("2", 2, False),
         deployment("3", 2, True),
@@ -837,7 +882,7 @@ def verified_release(
     archive: pathlib.Path,
     checksum: pathlib.Path,
     expected_revision: str | None,
-) -> tuple[bytes, dict[str, object]]:
+) -> tuple[bytes, ReleaseMetadata]:
     archive_bytes, checksum_bytes = verify_checksum(archive, checksum)
     sbom = archive.with_name(archive.name + ".spdx.json")
     manifest = archive.with_name(archive.name + ".SHA256SUMS")
@@ -895,7 +940,7 @@ def smoke(
         evaluation = pathlib.Path(temporary) / "evaluation"
         evaluation.mkdir(mode=0o700)
         try:
-            paths = prepare_inputs(evaluation, fixture.server_address)
+            paths = prepare_inputs(evaluation, ("127.0.0.1", fixture.server_port))
             provision_and_write_operator(binary, evaluation, paths)
             receipt = execute_and_restart(binary, paths)
             if KubernetesFixture.requests != 3:
@@ -1066,6 +1111,64 @@ def exercise_journald_failure() -> None:
     print("Next: prepare and publish the explicit approval, then start the service.")
 
 
+def prepare_service_candidate(
+    binary: pathlib.Path, evaluation: pathlib.Path, server_port: int
+) -> bytes:
+    """Provision the snapshot, then validate the exact candidate without receiver work."""
+    paths = prepare_inputs(evaluation, ("127.0.0.1", server_port))
+    grant = evaluation / "snapshot.grant"
+    provision = run_binary(
+        binary,
+        [
+            "provision-snapshot-grant",
+            "--authorization",
+            str(paths["authorization"]),
+            "--kubeconfig",
+            str(evaluation / "kubeconfig.yaml"),
+            "--signing-seed",
+            str(evaluation / "authorization.seed"),
+            "--signing-key-id",
+            "artifact-authorization-key",
+            "--output",
+            str(grant),
+        ],
+    )
+    if provision.returncode != 0 or KubernetesFixture.requests != 1:
+        raise RuntimeError("artifact snapshot provisioning failed")
+    print("Snapshot approval:", paths["authorization"].read_text())
+
+    candidate = evaluation / "operator.candidate.json"
+    prepared = run_binary(
+        binary,
+        [
+            "prepare-service-config",
+            "--authorization-key",
+            "artifact-authorization-key",
+            str(evaluation / "authorization.pub"),
+            "--approval",
+            "Artifact smoke",
+            str(grant),
+            "--receipt-signing-key-id",
+            "kap0038-test-key",
+            "--output",
+            str(candidate),
+        ],
+    )
+    if prepared.returncode != 0:
+        raise RuntimeError("artifact configuration preparation failed")
+
+    document = read_bounded_regular(candidate, 160 * 1024)
+    validated = run_binary(binary, ["validate-service-config", "--operator-config", str(candidate)])
+    if (
+        validated.returncode != 0
+        or json.loads(validated.stdout).get("status") != "VALIDATED_STATIC"
+        or candidate.read_bytes() != document
+        or KubernetesFixture.requests != 1
+    ):
+        raise RuntimeError("artifact static configuration validation failed")
+    return document
+
+
 def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool = False) -> None:
     """Explicit fresh-host qualification only. Never adopts or removes retained state."""
     if os.geteuid() != 0 or (not native and not pathlib.Path("/.dockerenv").is_file()):
@@ -1093,6 +1196,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
     ]
     if any(os.path.lexists(path) for path in fresh_paths):
         raise RuntimeError("service smoke refuses existing installation or state")
+
     service_uid, caller_uid, caller_gid = (
         install_systemd_assets(root) if native else (61000, 61001, 61000)
     )
@@ -1104,6 +1208,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         with destination.open("xb") as output:
             output.write((root / BINARIES[name]).read_bytes())
         destination.chmod(0o755)
+
     for directory in private_roots:
         mode = 0o750 if directory == private_roots[2] else 0o700
         directory.mkdir(mode=mode)
@@ -1115,72 +1220,26 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         )
         print("Installed the extracted assets with separate service and caller identities.")
         exercise_journald_failure()
-    # The temporary fixture remains operator-only. Neither service nor caller traverses it.
+
+    # Neither service nor caller can traverse the operator's fixture directory.
     evaluation = temporary / "service-evaluation"
     evaluation.mkdir(mode=0o700)
     reset_kubernetes_fixture()
-    KubernetesFixture.responses.insert(0, deployment("1", 1, False))
+    KubernetesFixture.receiver_responses.insert(0, deployment("1", 1, False))
     fixture = http.server.ThreadingHTTPServer(("127.0.0.1", 0), KubernetesFixture)
     thread = threading.Thread(target=fixture.serve_forever, daemon=True)
     thread.start()
-    process = None
+    process: subprocess.Popen[bytes] | None = None
+    frozen: bytes | None = None
     try:
-        paths = prepare_inputs(evaluation, fixture.server_address)
-        grant = evaluation / "snapshot.grant"
-        provision = run_binary(
-            destinations["ordinary"],
-            [
-                "provision-snapshot-grant",
-                "--authorization",
-                str(paths["authorization"]),
-                "--kubeconfig",
-                str(evaluation / "kubeconfig.yaml"),
-                "--signing-seed",
-                str(evaluation / "authorization.seed"),
-                "--signing-key-id",
-                "artifact-authorization-key",
-                "--output",
-                str(grant),
-            ],
+        document = prepare_service_candidate(
+            destinations["ordinary"], evaluation, fixture.server_port
         )
-        if provision.returncode != 0 or KubernetesFixture.requests != 1:
-            raise RuntimeError("artifact snapshot provisioning failed")
-        print("Snapshot approval:", paths["authorization"].read_text())
-        candidate = evaluation / "operator.candidate.json"
-        prepared = run_binary(
-            destinations["ordinary"],
-            [
-                "prepare-service-config",
-                "--authorization-key",
-                "artifact-authorization-key",
-                str(evaluation / "authorization.pub"),
-                "--approval",
-                "Artifact smoke",
-                str(grant),
-                "--receipt-signing-key-id",
-                "kap0038-test-key",
-                "--output",
-                str(candidate),
-            ],
-        )
-        if prepared.returncode != 0:
-            raise RuntimeError("artifact configuration preparation failed")
-        document = read_bounded_regular(candidate, 160 * 1024)
-        validated = run_binary(
-            destinations["ordinary"],
-            ["validate-service-config", "--operator-config", str(candidate)],
-        )
-        if (
-            validated.returncode != 0
-            or json.loads(validated.stdout).get("status") != "VALIDATED_STATIC"
-            or candidate.read_bytes() != document
-            or KubernetesFixture.requests != 1
-        ):
-            raise RuntimeError("artifact static configuration validation failed")
         for name in ("kubeconfig.yaml", "receipt.seed"):
             destination = private_roots[0] / name
             write_private(destination, (evaluation / name).read_bytes())
             os.chown(destination, service_uid, caller_gid)
+
         publication = subprocess.run(
             [str(destinations["service"]), "--replace-operator-config"],
             input=document,
@@ -1199,11 +1258,13 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
         ):
             raise RuntimeError("artifact initial cold publication failed")
         print("Configuration: PREPARED, then PUBLISHED. Static checks are not execution readiness.")
+
         trust = private_roots[0] / "example-receipt.trust"
         write_private(trust, fixture_receipt_trust(snapshot=True))
         os.chown(trust, service_uid, caller_gid)
+
         for restart in range(2):
-            before = KubernetesFixture.requests
+            requests_before_start = KubernetesFixture.requests
             if native:
                 print(
                     "Start:" if restart == 0 else "Read-first restart:",
@@ -1227,6 +1288,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                     extra_groups=[],
                     umask=0o077,
                 )
+
             deadline = time.monotonic() + 20
             # A stale socket pathname is not readiness. Retry only the offline read.
             while True:
@@ -1247,8 +1309,14 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                     break
                 except RuntimeError:
                     time.sleep(0.02)
-            socket = pathlib.Path("/run/kapsel/kapseld.sock").stat()
-            if (socket.st_mode & 0o777, socket.st_uid, socket.st_gid) != (
+
+            socket_metadata = pathlib.Path("/run/kapsel/kapseld.sock").stat()
+            socket_custody = (
+                socket_metadata.st_mode & 0o777,
+                socket_metadata.st_uid,
+                socket_metadata.st_gid,
+            )
+            if socket_custody != (
                 0o660,
                 service_uid,
                 caller_gid,
@@ -1265,10 +1333,12 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
             )
             if denied.returncode == 0 or b"PermissionError" not in denied.stderr:
                 raise RuntimeError("caller private-file confinement not established")
-            # Read first after every start. Startup and reads must not contact the receiver.
+
+            # Startup and offline reads must not contact the receiver.
             service_client(destinations["client"], ["history"], caller_uid, caller_gid)
-            if KubernetesFixture.requests != before:
+            if KubernetesFixture.requests != requests_before_start:
                 raise RuntimeError("artifact startup or reads contacted the receiver")
+
             if restart == 0:
                 admitted = service_client(
                     destinations["client"], ["submit", OPERATION], caller_uid, caller_gid
@@ -1276,6 +1346,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 if admitted.get("status") != "ADMITTED":
                     raise RuntimeError("artifact did not admit the selected approval")
                 print("Submit:", json.dumps(admitted, sort_keys=True))
+
             while True:
                 status = service_client(
                     destinations["client"], ["status", OPERATION], caller_uid, caller_gid
@@ -1286,6 +1357,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                     raise RuntimeError("artifact selection failed to complete")
                 time.sleep(0.02)
             print("Stored status:", json.dumps(status, sort_keys=True))
+
             receipt = pathlib.Path(f"/tmp/kapsel-artifact-receipt-{restart}")
             exported = service_client(
                 destinations["client"], ["receipt", OPERATION, str(receipt)], caller_uid, caller_gid
@@ -1299,6 +1371,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 frozen = receipt.read_bytes()
             elif receipt.read_bytes() != frozen:
                 raise RuntimeError("artifact restart changed receipt bytes")
+
             if native:
                 systemctl("stop", "kapseld.service")
                 print("Stop: systemctl stop kapseld.service")
@@ -1330,6 +1403,8 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 ):
                     raise RuntimeError("native cold replacement against retained history failed")
             else:
+                if process is None:
+                    raise RuntimeError("artifact service process was not started")
                 process.terminate()
                 _, diagnostic = process.communicate(timeout=30)
                 if process.returncode != 0 or len(diagnostic) > 4096:

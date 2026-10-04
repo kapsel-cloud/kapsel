@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import runpy
 import socket
 import struct
 import subprocess
@@ -15,24 +16,7 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("fresh_session_caller.py")
 
-FAKE = """#!/usr/bin/env python3
-import json, os, sys
-from pathlib import Path
-requests = [json.loads(line) for line in sys.stdin]
-call = requests[2]["params"]["name"]
-operation_id = requests[2]["params"]["arguments"].get("operation_id")
-state = Path(os.environ["FIXTURE_STATE"])
-data = json.loads(state.read_text())
-data["calls"].append(call)
-response = data["responses"][call]
-if isinstance(response, list):
-    value = response.pop(0)
-else:
-    value = response
-state.write_text(json.dumps(data))
-print(json.dumps({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}))
-print(json.dumps({"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":json.dumps({"operation_id":operation_id,"service":value})}]}}))
-"""
+BRIDGE_FIXTURE = Path(__file__).with_name("mcp_bridge_fixture.py")
 
 
 class FreshSession(unittest.TestCase):
@@ -41,7 +25,7 @@ class FreshSession(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.bridge = root / "bridge"
-        self.bridge.write_text(FAKE)
+        self.bridge.write_bytes(BRIDGE_FIXTURE.read_bytes())
         self.bridge.chmod(0o700)
         self.script = root / "caller.py"
         self.script.write_text(
@@ -103,6 +87,51 @@ class FreshSession(unittest.TestCase):
 
     def calls(self):
         return json.loads(self.state.read_text())["calls"]
+
+    def test_reference_validation_preserves_accepted_fields(self):
+        saved = {
+            "version": 1,
+            "service": "host-a-journal-a",
+            "operation_id": "op-1",
+            "caller_note": "keep",
+        }
+        self.ref.write_text(json.dumps(saved))
+        self.ref.chmod(0o600)
+        namespace = runpy.run_path(str(SCRIPT), run_name="caller_import")
+        self.assertEqual(namespace["reference"](str(self.ref), "host-a-journal-a"), saved)
+        self.assertEqual(json.loads(self.ref.read_text()), saved)
+
+    def test_malformed_mcp_envelopes_remain_uncertain(self):
+        ready = {"id": 1, "result": {"protocolVersion": "2025-11-25"}}
+        for initialization, reply in ((7, {}), ({"id": 1, "result": None}, {}), (ready, 7)):
+            with self.subTest(initialization=initialization, reply=reply):
+                self.fixture({"version": 1, "status": "NOT_FOUND"})
+                self.pin()
+                self.bridge.write_text(
+                    "#!/usr/bin/env python3\nimport sys\nsys.stdin.read()\n"
+                    f"print({json.dumps(initialization)!r})\nprint({json.dumps(reply)!r})\n"
+                )
+                self.assertEqual(
+                    self.run_caller("read"),
+                    (4, {"status": "ERROR", "error_class": "exchange_uncertain"}),
+                )
+                self.assertEqual(self.calls(), [])
+
+    def test_malformed_response_remains_uncertain_and_cannot_select(self):
+        for response in (
+            7,
+            {"version": 1, "status": 7},
+            {"version": "1", "status": "IN_PROGRESS"},
+            {"version": 1, "status": "IN_PROGRESS", "execution": "resume_required"},
+            {"version": 1, "status": "IN_PROGRESS", "execution": {"next_action": []}},
+        ):
+            with self.subTest(response=response):
+                self.fixture(response)
+                self.pin()
+                code, result = self.run_caller("read")
+                self.assertEqual(code, 4)
+                self.assertEqual(result, {"status": "ERROR", "error_class": "exchange_uncertain"})
+                self.assertEqual(self.calls(), ["kapsel.get_status"])
 
     def test_history_is_read_only_and_preserves_both_effects_and_access_errors(self):
         self.fixture({"version": 1, "status": "NOT_FOUND"})

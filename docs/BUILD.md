@@ -57,17 +57,17 @@ cargo xtask setup
 ```
 
 Setup installs the selected Rust toolchain and pinned nightly rustfmt. It installs Prettier, Ruff,
-Taplo, shfmt, and ShellCheck beneath `$HOME/.local/share/kapsel/dev-tools`. Taplo is built from its
-locked crate. Scripts invoke isolated tools directly: no global installation, shell-profile change,
-or virtualenv activation is needed. Repeated setup reuses matching tools; missing tools need network
-access. Hooks are a separate opt-in.
+Pyright, Taplo, shfmt, and ShellCheck beneath `$HOME/.local/share/kapsel/dev-tools`. Taplo is built
+from its locked crate. Scripts invoke isolated tools directly: no global installation, shell-profile
+change, or virtualenv activation is needed. Repeated setup reuses matching tools; missing tools need
+network access. Hooks are a separate opt-in.
 
 `cargo xtask doctor` checks prerequisites and installed tools without installing or rewriting
 source. Cargo may first build xtask or prepare its compiler. On an unprepared host, use
 `./scripts/setup.sh --check` to bypass that bootstrap.
 
-[`tools/dev/dev-tools.sh`](../tools/dev/dev-tools.sh) owns formatter versions for local setup and
-CI. [`xtask`](../xtask/src/main.rs) routes contributor commands; it does not define release or
+[`tools/dev/dev-tools.sh`](../tools/dev/dev-tools.sh) owns contributor tool versions for local setup
+and CI. [`xtask`](../xtask/src/main.rs) routes contributor commands; it does not define release or
 qualification semantics. Commands resolve the checkout root even when invoked from a subdirectory.
 The three files in `scripts/` implement setup, formatting and the deterministic gate; setup can also
 be invoked directly before the selected Rust toolchain is installed. Python installation ignores
@@ -87,15 +87,29 @@ Formatting runs **Markdown, Rust, then Python**, including the fuzz workspace an
 It checks tool availability before rewriting files and does not apply lint fixes. To check layout
 without changing source, run `cargo xtask fmt-check`.
 
-The local gate checks formatting, Python lint, Markdown links, tooling regressions, Rust line width,
-Clippy, rustdoc, deterministic Rust tests, and doctests. It does not start Docker or a cluster. For
-a smaller check:
+The local gate checks formatting, Python lint and types, Markdown links, tooling regressions, Rust
+line width, Clippy, rustdoc, deterministic Rust tests, and doctests. It does not start Docker or a
+cluster. For a smaller check:
 
 ```sh
-cargo xtask ci static  # formatting, lint, links, and tooling regressions
+cargo xtask ci static  # formatting, lint, types, links, and tooling regressions
 cargo xtask ci rust    # Clippy, rustdoc, and deterministic Rust tests
 cargo xtask ci doc     # Rust doctests
 ```
+
+### Python type checking
+
+[`pyrightconfig.json`](../pyrightconfig.json) selects Python 3.11, standard checking, and script
+directory import roots. The static gate runs the pinned Pyright on Linux and macOS targets,
+independent of the host interpreter. `tools/checks/check_source_privacy.py` uses strict checking.
+The checked scope includes source checks, release tooling and fixtures, developer tooling, the
+maintained fresh-session caller and its tests, and the selected Git and Kubernetes qualification
+runners and their extracted fixtures. Other qualification lanes are not yet in the checked scope.
+
+Extracted journey programs remain standalone source. Runners stream their bytes into disposable
+containers rather than importing repository modules there. The Git and Kubernetes runners retain the
+exact executed source and its digest with their private qualification evidence. The distributed
+release verifier remains independent of repository imports and retains its 64-KiB limit.
 
 ### Git hooks
 
