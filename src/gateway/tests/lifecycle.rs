@@ -37,6 +37,60 @@ fn service_admission_acknowledges_capacity_but_not_unsettled_commit_errors() {
 }
 
 #[test]
+fn admission_acknowledgement_loss_covers_absent_and_committed_original_authority() {
+    for committed in [false, true] {
+        let path = database_path(if committed {
+            "admission-committed"
+        } else {
+            "admission-absent"
+        });
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        let request = request();
+        let signed = sign_authorization_grant(
+            &authorization(&request),
+            &[7; 32],
+            "effect-gateway-authorization-test-key",
+        )
+        .unwrap();
+        let authorized = gateway.bind_authorization(&request, &signed).unwrap();
+        let mut acknowledged = false;
+        let result = gateway.admit_service_operation(
+            None,
+            |journal, _| {
+                if committed {
+                    journal.insert_requested(&authorized)?;
+                }
+                Err(GatewayError::InjectedFault)
+            },
+            |_| acknowledged = true,
+        );
+        assert!(matches!(
+            result,
+            Err(ReconciliationError::Submission(GatewayError::InjectedFault))
+        ));
+        assert!(
+            !acknowledged,
+            "unsettled admission must not acknowledge refusal"
+        );
+        drop(gateway);
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        assert_eq!(
+            gateway.journal.existing_submission(&authorized).unwrap(),
+            committed.then_some(OperationState::Requested)
+        );
+        if committed {
+            let retained = gateway
+                .retained_operation(&request.operation_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(retained.signed_grant, signed);
+        }
+        drop(gateway);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
 fn terminal_service_admission_does_not_acquire_a_worker_or_insert() {
     let path = database_path("terminal-admission");
     let gateway = Gateway::open_for_test(&path).unwrap();

@@ -632,6 +632,12 @@ pub enum ServiceError {
     InvalidRequest,
     /// Required original grant trust is unavailable or does not authenticate the grant.
     AuthorityUnavailable,
+    /// Prior storage artifacts survive without the database needed for continuity.
+    StorageMissing,
+    /// Retained storage is malformed, corrupt or unsupported by this binary.
+    StorageInvalid,
+    /// Storage access or a required write failed; commitment may be indeterminate.
+    StorageUnavailable,
     /// Durable history or its original authority binding is inconsistent or inaccessible.
     OperationFailure,
 }
@@ -643,6 +649,9 @@ impl ServiceError {
             Self::Configuration => "configuration_invalid",
             Self::InvalidRequest => "request_invalid",
             Self::AuthorityUnavailable => "original_authority_unavailable",
+            Self::StorageMissing => "storage_history_missing",
+            Self::StorageInvalid => "storage_history_invalid",
+            Self::StorageUnavailable => "storage_unavailable",
             Self::OperationFailure => "storage_or_operation_blocked",
         }
     }
@@ -654,6 +663,9 @@ impl fmt::Display for ServiceError {
             Self::Configuration => "invalid_service_configuration",
             Self::InvalidRequest => "invalid_service_request",
             Self::AuthorityUnavailable => "authority_unavailable",
+            Self::StorageMissing => "storage_history_missing",
+            Self::StorageInvalid => "storage_history_invalid",
+            Self::StorageUnavailable => "storage_unavailable",
             Self::OperationFailure => "service_operation_failure",
         })
     }
@@ -725,6 +737,22 @@ fn map_gateway_error(error: GatewayError) -> ServiceError {
     match error {
         GatewayError::UntrustedAuthorizationGrant => ServiceError::AuthorityUnavailable,
         GatewayError::InvalidInput(_) => ServiceError::InvalidRequest,
+        GatewayError::MissingJournalHistory => ServiceError::StorageMissing,
+        GatewayError::InvalidPersistedState
+        | GatewayError::UnsupportedJournalVersion
+        | GatewayError::JournalBackupMismatch => ServiceError::StorageInvalid,
+        GatewayError::Database(rusqlite::Error::SqliteFailure(error, _))
+            if matches!(
+                error.code,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase
+            ) =>
+        {
+            ServiceError::StorageInvalid
+        },
+        GatewayError::Database(_)
+        | GatewayError::JournalFile(_)
+        | GatewayError::JournalBackup(_)
+        | GatewayError::WorkerLock(_) => ServiceError::StorageUnavailable,
         _ => ServiceError::OperationFailure,
     }
 }

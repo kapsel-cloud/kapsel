@@ -248,6 +248,7 @@ class RunnerOutcomeTests(unittest.TestCase):
                             command,
                         )
                         kwargs["stdout"].write(
+                            b"KAPSEL_ADMISSION_ENOSPC_PASSED\n"
                             b"KAPSEL_REAL_ENOSPC_CASES_PASSED\n"
                             b"test result: ok. 1 passed; 0 failed; 0 ignored\n"
                         )

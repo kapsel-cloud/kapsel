@@ -457,17 +457,19 @@ output and controls stay outside the full mount, inside the container; logs and 
 dirty-source snapshot are saved in the printed host temporary directory. It changes no host
 configuration and fills no host filesystem. The fixture verifies the exact tmpfs mount/type/size and
 caps actual filler writes at 128 MiB even if its mount precondition is wrong. It explicitly runs the
-otherwise ignored test and requires evidence that both cases executed, rather than accepting an
+otherwise ignored test and requires evidence that all three cases executed, rather than accepting an
 empty test selection.
 
-At 504 retained identities/32 observed pending operations, the first case exhausts space before
-receipt SQL can complete. The second fills only after receipt SQL executes, with `dbstat` locating
-new destination pages and Linux `SEEK_HOLE` confirming they still require filesystem allocation.
-Page 1 is already in the rollback journal at that checkpoint. Commit then reports SQLite disk-full
-under actual OS ENOSPC, not the configured page ceiling. Both cases remove only their owned filler,
-recover original rows/grants/frozen facts/earlier receipts, and complete without another mutation or
-observation. The main journal length observed before commit is finite evidence, not a sampled
-universal peak measurement.
+An admission case first exhausts the tmpfs before inserting a new identity. It requires a storage
+error without admission acknowledgement, preserved earlier receipt/history bytes and explicit
+same-ID admission after removing only its owned filler. At 504 retained identities/32 observed
+pending operations, the next case exhausts space before receipt SQL can complete. The second fills
+only after receipt SQL executes, with `dbstat` locating new destination pages and Linux `SEEK_HOLE`
+confirming they still require filesystem allocation. Page 1 is already in the rollback journal at
+that checkpoint. Commit then reports SQLite disk-full under actual OS ENOSPC, not the configured
+page ceiling. Both cases remove only their owned filler, recover original rows/grants/frozen
+facts/earlier receipts, and complete without another mutation or observation. The main journal
+length observed before commit is finite evidence, not a sampled universal peak measurement.
 
 Default deterministic gates never start this container. Process-kill tests cover before receipt SQL,
 SQL-executed/precommit and after commit; none is an observed kill inside SQLite commit. This lane

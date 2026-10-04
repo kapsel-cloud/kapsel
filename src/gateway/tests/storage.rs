@@ -663,10 +663,88 @@ fn require_sparse_receipt_destinations(connection: &Connection, path: &Path, all
 }
 
 #[cfg(target_os = "linux")]
+async fn qualify_admission_enospc() {
+    let directory = require_enospc_mount().join("admission");
+    private_directory(&directory);
+    let path = directory.join("journal.sqlite3");
+    let original_request = request();
+    let mut gateway = Gateway::open_for_test(&path).unwrap();
+    gateway
+        .submit_exact_for_test(&original_request, &authorization(&original_request))
+        .unwrap();
+    let mut adapter = failed_adapter(&path, &original_request);
+    gateway
+        .run_operation_once_with_adapter(&original_request.operation_id, &mut adapter)
+        .await
+        .unwrap();
+    gateway
+        .finalize_operation_receipt_once(
+            &original_request.operation_id,
+            &ReceiptSettings {
+                signing_seed: &[13; 32],
+                key_id: "original-receipt",
+            },
+        )
+        .unwrap();
+    let original = stored_rows(&gateway.journal.connection);
+    let mut selected = original_request.clone();
+    selected.operation_id = "enospc-admission".into();
+    let signed = sign_authorization_grant(
+        &authorization(&selected),
+        &[7; 32],
+        "effect-gateway-authorization-test-key",
+    )
+    .unwrap();
+    let filler = directory.join("owned-filler");
+    fill_owned_tmpfs(&filler);
+    let mut acknowledged = false;
+    let result = gateway
+        .admit_and_reconcile(&selected, &signed, None, None, |_| acknowledged = true)
+        .await;
+    assert!(
+        !acknowledged,
+        "disk-full admission is not a capacity refusal"
+    );
+    assert!(matches!(result, Err(ReconciliationError::Submission(
+        GatewayError::Database(rusqlite::Error::SqliteFailure(error, _))))
+        if error.code == rusqlite::ErrorCode::DiskFull));
+    assert_eq!(stored_rows(&gateway.journal.connection), original);
+    fs::remove_file(&filler).unwrap();
+    drop(gateway);
+    let mut gateway = Gateway::open_for_test(&path).unwrap();
+    assert_eq!(stored_rows(&gateway.journal.connection), original);
+    let result = gateway
+        .admit_and_reconcile(&selected, &signed, None, None, |decision| {
+            assert!(matches!(
+                decision,
+                AdmissionDecision::Admitted(OperationState::Requested)
+            ));
+        })
+        .await;
+    assert!(matches!(
+        result,
+        Err(ReconciliationError::Blocked(
+            ReconciliationBlockage::ReceiverUnavailable
+        ))
+    ));
+    let mut repaired = stored_rows(&gateway.journal.connection);
+    repaired.remove(&selected.operation_id);
+    assert_eq!(
+        repaired, original,
+        "repair changed retained facts or original receipt bytes"
+    );
+    assert_eq!((adapter.apply_calls, adapter.observe_calls), (1, 1));
+    drop(gateway);
+    fs::remove_dir_all(directory).unwrap();
+    eprintln!("KAPSEL_ADMISSION_ENOSPC_PASSED");
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test]
 #[ignore = "requires tests/qualification/run_storage_enospc.py bounded container tmpfs"]
-async fn genuine_enospc_during_receipt_sql_and_commit_recovers_without_resend() {
+async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
     use std::os::unix::fs::MetadataExt as _;
+    qualify_admission_enospc().await;
     for at_commit in [false, true] {
         let root = require_enospc_mount();
         let directory = root.join(if at_commit {

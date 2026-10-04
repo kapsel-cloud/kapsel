@@ -12,7 +12,7 @@ from pathlib import Path
 
 IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 TEST = (
-    "gateway::tests::storage::genuine_enospc_during_receipt_sql_and_commit_recovers_without_resend"
+    "gateway::tests::storage::genuine_enospc_during_admission_and_receipt_recovers_without_resend"
 )
 
 
@@ -158,8 +158,10 @@ def main() -> None:
             raise SystemExit(f"ENOSPC fixture failed ({result.returncode}); see {evidence}")
 
         output = (evidence / "enospc.log").read_bytes()
-        if b"KAPSEL_REAL_ENOSPC_CASES_PASSED" not in output or (
-            b"test result: ok. 1 passed; 0 failed; 0 ignored" not in output
+        if (
+            b"KAPSEL_ADMISSION_ENOSPC_PASSED" not in output
+            or (b"KAPSEL_REAL_ENOSPC_CASES_PASSED" not in output)
+            or (b"test result: ok. 1 passed; 0 failed; 0 ignored" not in output)
         ):
             raise SystemExit("expected ENOSPC test did not execute both cases")
         verify_source(snapshot)

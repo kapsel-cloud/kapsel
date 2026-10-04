@@ -31,6 +31,15 @@ pub(super) struct OpenedJournal {
 
 pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
+    // A surviving sidecar/lock is evidence of prior responsibility, not a fresh install.
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            require_no_history_artifacts(path)?;
+        },
+        Err(error) => return Err(GatewayError::JournalFile(error)),
+        Ok(metadata) if metadata.len() == 0 => require_no_history_artifacts(path)?,
+        Ok(_) => {},
+    }
     let mut database_file = open_private_file(path).map_err(GatewayError::JournalFile)?;
     let database_identity = database_file
         .metadata()
@@ -94,21 +103,21 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
 /// No writable connection, worker-lock creation, sidecar recovery or immutable bypass is used.
 pub(super) fn open_validation_snapshot(path: &Path) -> Result<Option<Connection>, GatewayError> {
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
-    for suffix in ["-journal", "-wal", "-shm"] {
-        let mut name = path.as_os_str().to_os_string();
-        name.push(suffix);
-        require_absent(Path::new(&name))?;
-    }
     let mut file = match open_existing_private_file(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             // A dangling leaf or surviving worker lock is lost history, not a fresh install.
             require_absent(path)?;
-            require_absent(&worker_lock_path(path))?;
+            require_no_history_artifacts(path)?;
             return Ok(None);
         },
         Err(error) => return Err(GatewayError::JournalFile(error)),
     };
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        require_absent(Path::new(&name))?;
+    }
     let identity = file.metadata().map_err(GatewayError::JournalFile)?;
     if identity.len() > JOURNAL_BYTES_MAX || identity.len() == 0 {
         return Err(GatewayError::InvalidPersistedState);
@@ -138,6 +147,19 @@ pub(super) fn open_validation_snapshot(path: &Path) -> Result<Option<Connection>
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
     require_valid_snapshot(&connection)?;
     Ok(Some(connection))
+}
+
+fn require_no_history_artifacts(path: &Path) -> Result<(), GatewayError> {
+    for suffix in [".kap0038-worker.lock", "-journal", "-wal", "-shm"] {
+        let mut artifact = path.as_os_str().to_os_string();
+        artifact.push(suffix);
+        match fs::symlink_metadata(Path::new(&artifact)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+            Err(error) => return Err(GatewayError::JournalFile(error)),
+            Ok(_) => return Err(GatewayError::MissingJournalHistory),
+        }
+    }
+    Ok(())
 }
 
 fn require_absent(path: &Path) -> Result<(), GatewayError> {

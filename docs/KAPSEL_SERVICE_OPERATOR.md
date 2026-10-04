@@ -693,6 +693,9 @@ caller responses.
 | `configuration_invalid`                             | Validate the version-1 operator document and separately appointed original grant keys. Use cold replacement, never caller input.                                         |
 | `original_authority_unavailable`                    | Restore the original externally appointed trust key for the retained grant. Do not replace authority under the same ID.                                                  |
 | `storage_or_operation_blocked`, `operation_blocked` | Inspect journal version, custody, filesystem availability and retained history using the owning binary. Do not delete, rotate or restore stale history as a retry.       |
+| `storage_history_missing`                           | Stop. Retained artifacts survive without their database. Preserve all artifacts; do not initialize replacement history.                                                  |
+| `storage_history_invalid`                           | Stop. History is malformed, corrupt or unsupported. Preserve exact bytes and use the matching binary; do not edit versions or rows.                                      |
+| `storage_unavailable`                               | Inspect filesystem space, inodes, access and I/O health. A failed write does not establish non-admission or receiver outcome.                                            |
 | `preflight_unavailable`                             | Check receiver connectivity, narrow RBAC and credential validity. The code does not distinguish these from bounded/malformed response failure.                           |
 | `receiver_unavailable`                              | Repair the fixed kubeconfig or receiver access. Execution snapshots are loaded at startup, so changed material needs graceful stop/start. Read before same-ID selection. |
 | `signing_unavailable`                               | Restore the intended private receipt seed and valid configured signer ID. Restart to reload material, then select the same ID to complete frozen facts.                  |
@@ -705,6 +708,52 @@ cause. Status is still readable when execution material is unavailable. Unsafe o
 authority and storage may prevent startup. The journal retains at most **504 identities and 32
 unfinished actions**. There is no pruning. Clearing history to make room or resume would destroy the
 no-resend boundary.
+
+### Storage refusal and repair
+
+These diagnostics describe current source. Published artifacts keep their original diagnostics. The
+catalog accepts at most 32 selectable approvals. An oversized catalog is invalid configuration, not
+journal exhaustion. Catalog withdrawal never removes retained history or releases its capacity.
+`NOT_ADMITTED / CAPACITY` refuses new work at 504 retained or 32 unfinished identities. Reads and
+identical-ID selection remain available wherever stored state permits. Completing unfinished work
+releases only an unfinished slot. Exporting receipts releases neither limit.
+
+For `storage_unavailable` or `completion_blocked`, run these read-only checks in an operator shell:
+
+```sh
+systemctl show kapseld.service -p ActiveState -p SubState -p MainPID -p ExecMainStatus
+journalctl -u kapseld.service --no-pager -n 50
+df -h /var/lib/kapsel
+df -i /var/lib/kapsel
+```
+
+Free bytes do not prove writable storage: inode exhaustion, custody failures and I/O errors remain
+possible. Private-root checks can report `provisioning_unavailable` before the journal opens. Do not
+paste private files or raw errors into caller output. No diagnostic establishes a receiver result or
+proves that a possibly committed admission failed.
+
+1. Request `systemctl stop kapseld.service`. Wait for `ActiveState=inactive` and `MainPID=0` before
+   changing storage or material. A blocked stop is incomplete; do not bypass lifecycle exclusion.
+2. Repair only the diagnosed availability problem under operator authorization. For exhaustion,
+   release unrelated storage, never Kapsel history, locks, SQLite sidecars or original authority.
+3. Start the service. Read `history` and `status` for the original ID with the
+   [fixed client commands](#submit-and-inspect). Startup never selects work.
+4. Follow execution guidance. Explicit same-ID submission completes frozen observations without
+   receiver I/O, or observes attempted history without another mutation. A committed receipt remains
+   byte-identical. An absent row after uncertain admission still requires operator investigation.
+
+**Stop repair** if history is missing, invalid, unsupported or cannot be authenticated. Preserve the
+journal and sidecars together; do not discard a rollback journal to make opening succeed. A receipt
+export cannot restore no-resend history. Never restore stale state, edit rows or format markers,
+create replacement history, raise limits or mint another ID to make uncertain work runnable. If all
+artifacts were lost, the service cannot distinguish that loss from a fresh install. Operator
+custody, not a successful empty startup, establishes continuity.
+
+The [commit-alternative table](EFFECT_GATEWAY.md#storage-failure-and-commit-alternatives) separates
+unconfirmed admission, unfinished completion and original receipt retrieval. The
+[storage lane](BUILD.md#bounded-storage-failure-qualification) exercises genuine bounded ENOSPC and
+same-ID recovery. Application and Linux process tests check fixed damaged-history diagnostics and
+refusal without database creation. These are not disk-backed power-loss or host-loss guarantees.
 
 ### Recover access to original evidence
 

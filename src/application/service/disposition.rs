@@ -283,7 +283,7 @@ mod tests {
             classify_stop(ReconciliationError::Advancement(GatewayError::JournalFile(
                 std::io::Error::other("SECRET /private/path grant credential")
             ))),
-            Err(ServiceError::OperationFailure)
+            Err(ServiceError::StorageUnavailable)
         );
         let entry = super::super::HistoryEntry {
             operation_id: "hidden".into(),

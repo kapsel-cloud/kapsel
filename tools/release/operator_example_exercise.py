@@ -409,7 +409,10 @@ def main() -> None:
         process = example.start()
         _, diagnostics = process.communicate(timeout=30)
         assert process.returncode != 0
-        assert b"storage_or_operation_blocked" in diagnostics
+        assert any(
+            code in diagnostics
+            for code in (b"storage_history_invalid", b"storage_or_operation_blocked")
+        )  # Published v0.3 retains its original fixed code.
         assert journal.read_bytes() == refused
         assert fixture.KubernetesFixture.requests == recovery_request_baseline
         assert fixture.KubernetesFixture.mutations == 1

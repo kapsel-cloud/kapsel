@@ -1,6 +1,58 @@
 //! Real daemon diagnostics remain bounded while admitted history stays available offline.
 use super::*;
 
+#[test]
+fn lost_and_corrupt_history_refuse_real_startup_with_distinct_fixed_codes() {
+    for missing in [false, true] {
+        let root = installation_root_with_url(
+            if missing {
+                "history-missing"
+            } else {
+                "history-corrupt"
+            },
+            "http://127.0.0.1:1",
+        );
+        let child = start(&root);
+        let _ = status(&root.join("run/kapsel/kapseld.sock"));
+        stop(child);
+        let journal = root.join("var/lib/kapsel/journal.sqlite3");
+        let displaced = root.join("var/lib/kapsel/displaced.sqlite3");
+        if missing {
+            fs::rename(&journal, &displaced).unwrap();
+        } else {
+            private_file(&journal, b"corrupt fixture");
+        }
+        let preserved = fs::read(if missing { &displaced } else { &journal }).unwrap();
+        let mut child = start(&root);
+        let deadline = Instant::now() + FIXTURE_TIMEOUT;
+        while child.try_wait().unwrap().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "unsafe history must refuse startup"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert_eq!(
+            output.stderr,
+            if missing {
+                b"kapseld: storage_history_missing\n".as_slice()
+            } else {
+                b"kapseld: storage_history_invalid\n".as_slice()
+            }
+        );
+        assert_eq!(
+            fs::read(if missing { &displaced } else { &journal }).unwrap(),
+            preserved
+        );
+        if missing {
+            assert!(!journal.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn command(root: &Path) -> Command {
     let mut command = installed_command(
         root,

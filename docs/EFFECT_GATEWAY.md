@@ -545,6 +545,39 @@ Configured capacity does not prevent external filesystem exhaustion, failed sync
 indeterminate commit. Such failure must preserve admitted responsibility and already frozen facts.
 It cannot manufacture a receiver result or authorize another mutation.
 
+#### Storage failure and commit alternatives
+
+New-work capacity refusal is definite `NOT_ADMITTED / CAPACITY`. Filesystem exhaustion or a failed
+write is not that refusal. Before admission acknowledgement, any storage error leaves acceptance
+unconfirmed. Read the same identity after repair; never substitute a replacement identity.
+
+The fault tests map interrupted writes to these stored alternatives:
+
+| Interrupted boundary                   | Possible retained state                                         | Safe continuation                                                                                            |
+| -------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| First admission transaction            | No row, or `requested` with exact original grant                | Inspect the same ID after storage repair; no receiver call preceded this commit.                             |
+| Authorization or pre-attempt rejection | Previous phase, or complete next phase                          | Reauthenticate original authority; repeat only safe preflight reads if needed.                               |
+| Attempt commit                         | `authorized`, or `apply_started`                                | Only a confirmed fresh commit issues dispatch permission. Attempted history never issues another permission. |
+| Apply-response or receiver-facts write | Previous attempted facts, or complete newly frozen facts        | Observe only if facts are not frozen. Never resend.                                                          |
+| Receipt transaction                    | `receiver_observed`, or `finalized` with original receipt bytes | Complete frozen facts or retrieve committed bytes; no new receiver calls.                                    |
+
+Each transaction retains either its previous facts or the complete next state under the documented
+SQLite/filesystem assumptions. An error alone cannot identify which alternative survived. Injected
+acknowledgement loss tests exercise the alternatives; process kills do not establish power-loss
+behavior or claim a kill inside SQLite commit. Actual bounded tmpfs ENOSPC covers admission, receipt
+SQL and receipt commit separately.
+
+Writable startup and cold validation refuse absent database history when a worker lock or SQLite
+sidecar survives. Writable startup also refuses an empty database with those artifacts. They do not
+create a replacement database. Missing-history, invalid/unsupported-history and unavailable-storage
+operator codes remain distinct, while caller wire errors retain the existing `operation_failure`
+class. A safe genuinely fresh directory can initialize storage. Complete removal of every artifact
+cannot be distinguished from a fresh install; the operator must preserve custody and continuity. No
+reset, pruning, stale rollback, backup restoration or host-loss recovery is supplied.
+
+The [operator storage procedure](KAPSEL_SERVICE_OPERATOR.md#storage-refusal-and-repair) defines the
+repair stop point. Restoring storage availability is not permission to change retained facts.
+
 The implementation holds one crash-released exclusive worker lock around provider and receiver I/O
 so two processes cannot advance the same journal concurrently. A contender performs no provider or
 receiver call and changes no public fact. The implementation may add other internal lease or

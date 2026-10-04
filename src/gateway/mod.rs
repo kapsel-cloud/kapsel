@@ -1083,6 +1083,8 @@ pub(crate) enum GatewayError {
     JournalBackup(std::io::Error),
     /// An offline upgrade backup did not exactly match its source and SHA-256 sidecar.
     JournalBackupMismatch,
+    /// The database is absent or empty while retained history artifacts survive.
+    MissingJournalHistory,
     /// The private journal marker is not recognized by this binary.
     UnsupportedJournalVersion,
     /// Hostile or unsupported input failed its named bound.
@@ -1127,6 +1129,7 @@ impl fmt::Display for GatewayError {
             Self::WorkerLock(_) => "worker_lock",
             Self::JournalBackup(_) => "journal_backup",
             Self::JournalBackupMismatch => "journal_backup_mismatch",
+            Self::MissingJournalHistory => "missing_journal_history",
             Self::UnsupportedJournalVersion => "unsupported_journal_version",
             Self::InvalidInput(_) => "invalid_input",
             Self::InvalidAuthorizationGrant => "invalid_authorization_grant",
@@ -1159,6 +1162,7 @@ impl Error for GatewayError {
             Self::Receipt(error) => Some(error),
             Self::InvalidInput(_)
             | Self::JournalBackupMismatch
+            | Self::MissingJournalHistory
             | Self::UnsupportedJournalVersion
             | Self::InvalidAuthorizationGrant
             | Self::UntrustedAuthorizationGrant

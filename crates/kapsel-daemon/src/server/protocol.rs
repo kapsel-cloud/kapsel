@@ -139,7 +139,11 @@ pub(super) fn service_error(error: ServiceError) -> Vec<u8> {
     let class = match error {
         ServiceError::InvalidRequest => "invalid_request",
         ServiceError::AuthorityUnavailable => "authority_unavailable",
-        ServiceError::Configuration | ServiceError::OperationFailure => "operation_failure",
+        ServiceError::Configuration
+        | ServiceError::OperationFailure
+        | ServiceError::StorageMissing
+        | ServiceError::StorageInvalid
+        | ServiceError::StorageUnavailable => "operation_failure",
     };
     format!("{{\"version\":1,\"status\":\"ERROR\",\"error_class\":\"{class}\"}}").into_bytes()
 }

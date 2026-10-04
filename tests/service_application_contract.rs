@@ -5,6 +5,8 @@
 mod disposition;
 #[path = "service_application_contract/git.rs"]
 mod git;
+#[path = "service_application_contract/storage.rs"]
+mod storage;
 
 use std::{
     fs,

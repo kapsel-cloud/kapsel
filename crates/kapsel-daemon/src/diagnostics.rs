@@ -69,6 +69,9 @@ impl ReadFailures {
             ServiceError::AuthorityUnavailable => 1,
             ServiceError::OperationFailure => 2,
             ServiceError::Configuration => 4,
+            ServiceError::StorageMissing => 8,
+            ServiceError::StorageInvalid => 16,
+            ServiceError::StorageUnavailable => 32,
         };
         if self.0.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
             emit(error.operator_diagnostic());
@@ -103,6 +106,9 @@ mod tests {
                             ServiceError::OperationFailure,
                             ServiceError::Configuration,
                             ServiceError::InvalidRequest,
+                            ServiceError::StorageMissing,
+                            ServiceError::StorageInvalid,
+                            ServiceError::StorageUnavailable,
                         ] {
                             failures.report_to(error, |_| {
                                 count.fetch_add(1, Ordering::Relaxed);
@@ -112,7 +118,7 @@ mod tests {
                 });
             }
         });
-        assert_eq!(count.load(Ordering::Relaxed), 3);
+        assert_eq!(count.load(Ordering::Relaxed), 6);
     }
 
     #[test]
