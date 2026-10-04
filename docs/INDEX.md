@@ -40,6 +40,7 @@ to understand one operation. Use the tables below to find exact contracts and co
 | Build or choose a focused gate            | [Build and test](BUILD.md)                                |
 | Understand proof placement                | [Testing](TESTING.md)                                     |
 | Understand an active design choice        | [Accepted decisions](decisions/README.md)                 |
+| Review the proposed v0.4 beta quality bar | [Beta proposal](decisions/0012-v04-beta-quality-bar.md)   |
 | Run the independent kubectl client corpus | [Client-contract evidence](INDEPENDENT_TOOL_CORPUS.md)    |
 
 ## Authority and history
