@@ -531,9 +531,11 @@ starting corpus, hashes, seed, command, and failure artifacts. It records the se
 compiler and cargo-fuzz versions. Fuzz compilation is a setup step; the runner then launches the
 built libFuzzer executable directly, with its digest recorded. This avoids cargo-fuzz's default
 artifact-directory creation in the source checkout. Build output stays in the owned scratch root.
-The overall timeout includes compilation. Simulation builds once and directly invokes the resulting
-libtest executable per shard. A pass requires each shard's expected case-count marker and one passed
-test, not merely a zero process exit.
+The overall timeout includes compilation. Simulation explicitly selects
+`scratch/run-*/simulation-build` as its Cargo target directory, overriding ambient
+`CARGO_TARGET_DIR`. It builds once and directly invokes the resulting libtest executable per shard.
+A pass requires each shard's expected case-count marker and one passed test, not merely a zero
+process exit.
 
 ### Background sweep and retained evidence
 

@@ -417,6 +417,8 @@ def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int
                 "--lib",
                 "--no-run",
                 "--message-format=json",
+                "--target-dir",
+                str(supervisor.scratch / "simulation-build"),
             ]
         ]
     )[0]

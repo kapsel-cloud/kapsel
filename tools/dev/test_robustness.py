@@ -230,6 +230,34 @@ class RobustnessTests(unittest.TestCase):
     def test_signal_after_terminal_decision_preserves_completed_result(self):
         self.finalization_cancellation("terminal")
 
+    def test_simulation_build_output_is_owned_by_scratch(self):
+        executable = self.scratch / "simulation-build/test-binary"
+        executable.parent.mkdir(mode=0o700)
+        executable.write_bytes(b"simulation fixture")
+        message = {
+            "reason": "compiler-artifact",
+            "executable": str(executable),
+            "target": {"name": "kapsel"},
+            "profile": {"test": True},
+        }
+        output = (
+            "KAPSEL_SIMULATION_COMPLETED seed=1 shard=0/1 cases=2\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored;"
+        )
+        with (
+            patch.dict(os.environ, {"CARGO_TARGET_DIR": str(runner.ROOT / "target")}),
+            patch.object(
+                self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]
+            ) as run,
+        ):
+            runner.simulation(self.supervisor, [1], 2, 1)
+        build_command = run.call_args_list[0].args[0][0]
+        target_index = build_command.index("--target-dir")
+        self.assertEqual(build_command[target_index + 1], str(executable.parent))
+        evidence = json.loads((self.evidence / "simulation.json").read_text())
+        self.assertEqual(evidence["executable"], str(executable))
+        self.assertEqual(evidence["seeds"], [1])
+
     def test_missing_shard_completion_is_incomplete(self):
         executable = self.scratch / "fake-test"
         executable.write_text("#!/bin/sh\necho 'test result: ok. 0 passed; 0 failed'\n")
