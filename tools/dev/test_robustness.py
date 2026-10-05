@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tiny process fixtures for the robustness supervisor; no exploration or host changes."""
 
+import errno
 import io
 import json
 import os
@@ -166,6 +167,40 @@ class RobustnessTests(unittest.TestCase):
             self.supervisor.run([self.fixture_command("spawn-sleeping-descendant")]), [""]
         )
 
+    def test_peer_failure_does_not_retire_a_successful_group_again(self):
+        marker = self.scratch / "successful-group-retired"
+        actual_killpg = os.killpg
+        actual_retire = runner.retire
+        retired_groups = set()
+
+        def killpg_once(pid, signum):
+            if pid in retired_groups:
+                raise PermissionError(errno.EPERM, "process group already retired")
+            retired_groups.add(pid)
+            actual_killpg(pid, signum)
+
+        def retire_success(process):
+            actual_retire(process)
+            marker.touch()
+
+        with (
+            patch.object(runner.os, "killpg", side_effect=killpg_once),
+            patch.object(runner, "retire", side_effect=retire_success),
+        ):
+            with self.assertRaisesRegex(runner.Finding, "command exited 7"):
+                self.supervisor.run(
+                    [self.command("pass"), self.fixture_command("fail-after-marker", marker)],
+                    finding=True,
+                )
+
+        self.assertEqual(len(retired_groups), 2)
+        records = json.loads((self.evidence / "commands.json").read_text())["commands"]
+        self.assertEqual([record["exit_status"] for record in records], [0, 7])
+        self.assertIn(
+            "peer failure after successful retirement",
+            (self.evidence / "command-002.log").read_text(),
+        )
+
     def test_fifo_result_is_rejected_without_blocking(self):
         path = self.evidence / "result.json"
         os.mkfifo(path, mode=0o600)
@@ -316,6 +351,60 @@ class RobustnessTests(unittest.TestCase):
             original = runner.corpus_identity(directory / "corpus")
             self.assertEqual(runner.corpus_identity(evidence / "corpus-before"), original)
             self.assertEqual(json.loads((evidence / "corpus-after.json").read_text()), original)
+
+    def test_distinct_target_corpus_build_and_input_bounds(self):
+        target = "service_document"
+        executable = self.scratch / "fuzz-build/fixture-host/debug" / target
+        executable.parent.mkdir(mode=0o700, parents=True)
+        executable.write_bytes(b"service fuzz fixture")
+        with patch.object(
+            self.supervisor,
+            "run",
+            side_effect=[
+                ["host: fixture-host", "fuzz", "metadata"],
+                ["built"],
+                ["Done 10 runs in 0 second(s)"],
+            ],
+        ) as run:
+            runner.fuzz(self.supervisor, self.state, 17, 1, False, target)
+        self.assertEqual(run.call_args_list[1].args[0][0][-1], target)
+        command = run.call_args.args[0][0]
+        self.assertEqual(command[0], str(executable))
+        self.assertIn("-max_len=163841", command)
+        self.assertIn("-timeout=10", command)
+        self.assertTrue((self.state / "corpus-service_document").is_dir())
+        self.assertFalse((self.state / "corpus").exists())
+        evidence = json.loads((self.evidence / "fuzz.json").read_text())
+        self.assertEqual(evidence["target"], target)
+        self.assertEqual(
+            evidence["sha256"], runner.hashlib.sha256(executable.read_bytes()).hexdigest()
+        )
+
+    def test_unknown_target_cannot_select_a_path_or_command(self):
+        with self.assertRaises(runner.Incomplete):
+            runner.fuzz(self.supervisor, self.state, 17, 1, False, "../escape")
+        self.assertFalse((self.evidence / "corpus-before").exists())
+
+    def test_retained_corpus_adds_new_seeds_without_replacing_discoveries(self):
+        corpus = self.state / "corpus"
+        corpus.mkdir(mode=0o700)
+        discovery = corpus / "canonical-receipt-and-trust"
+        discovery.write_bytes(b"retained discovery")
+        self.fuzz_binary()
+        with patch.object(
+            self.supervisor,
+            "run",
+            side_effect=[
+                ["host: fixture-host", "fuzz", "metadata"],
+                ["built"],
+                ["Done 10 runs in 0 second(s)"],
+            ],
+        ):
+            runner.fuzz(self.supervisor, self.state, 17, 1, False)
+        self.assertEqual(discovery.read_bytes(), b"retained discovery")
+        seeds = runner.corpus_identity(runner.ROOT / "fuzz/corpus/inspect_receipt")
+        for digest in seeds.values():
+            self.assertIn(digest, runner.corpus_identity(corpus).values())
 
     def test_fuzz_setup_failure_is_not_finding(self):
         with patch.object(

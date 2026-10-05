@@ -144,7 +144,7 @@ when practical. Additional environment requirements are listed in the sections b
 | Fresh-session caller fixture       | `python3 examples/test_fresh_session_caller.py`                                   |
 | Crash-demo harness, without Docker | `./examples/test-demo-harness.sh`                                                 |
 | Seeded lifecycle simulation        | `./tests/qualification/run-simulation.sh`                                         |
-| Receipt-inspection fuzz smoke      | `./fuzz/smoke.sh`                                                                 |
+| Hostile-input fuzz smoke           | `./fuzz/smoke.sh --fuzz-target inspect_receipt`                                   |
 | Live Kubernetes behavior           | `./tests/qualification/run-kind-effect-gateway.sh`                                |
 
 To run the fresh-session caller fixture against the real MCP bridge and a scripted socket (not
@@ -498,8 +498,29 @@ pinned nightly is already installed by contributor setup. Cargo-fuzz is not need
 the deterministic gate. Check the target without starting exploration:
 
 ```sh
-rustup run nightly-2026-07-03 cargo fuzz check --fuzz-dir fuzz inspect_receipt
+rustup run nightly-2026-07-03 cargo fuzz check --fuzz-dir fuzz
+cargo test --locked --manifest-path fuzz/Cargo.toml --test corpus
+cargo run --locked --manifest-path fuzz/Cargo.toml --example seed_corpus -- --check
 ```
+
+The fuzz workspace maintains five distinct targets:
+
+| Target                    | Production entry point and fixture input                                    |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `inspect_receipt`         | Kubernetes receipt inspection; four-byte big-endian split, receipt, trust   |
+| `inspect_git_receipt`     | Git receipt inspection; the same explicit receipt/trust split               |
+| `verify_kubernetes_grant` | Kubernetes grant verification; raw v1/v2 envelope, fixed fixture trust      |
+| `verify_git_grant`        | Git grant verification; raw envelope, fixed fixture trust                   |
+| `service_document`        | Service-document parsing; raw JSON, fixed operator-owned inert journal path |
+
+Receipt targets evaluate at time 150, trust-window boundaries and extreme times. They also exercise
+lower legal byte, statement and text limits. Grant targets appoint `owner` and the public key from
+fixture seed `[7; 32]` externally. Drivers never open the supplied journal path or contact
+receivers. They inspect raw signatures and separately re-sign bounded mutated statements with the
+fixture key. Re-signing reaches semantic parser branches; it does not authenticate hostile input for
+execution. `seed_corpus` regenerates maintained valid/invalid seeds only when invoked without
+`--check`. The deterministic gate checks their exact bytes and acceptance through production entry
+points.
 
 The shell runners require Python 3.11+, a clean committed checkout, and two existing private (0700),
 user-owned directories outside the checkout. Select absolute paths without symlink components. State
@@ -511,7 +532,7 @@ Supply your owned roots before invoking smoke or simulation:
 ```sh
 export KAPSEL_SOAK_STATE_DIR=/absolute/owned/robustness-state
 export KAPSEL_SCRATCH_ROOT=/absolute/owned/robustness-scratch
-./fuzz/smoke.sh --fuzz-seconds 30
+./fuzz/smoke.sh --fuzz-target inspect_receipt --fuzz-seconds 30
 ./tests/qualification/run-simulation.sh --seed 21182435914953528 --cases 1000 --shards 2
 ```
 
@@ -526,16 +547,31 @@ For persistent exploration, queue this separate lane instead of extending smoke:
 python3 tools/dev/run_robustness.py fuzz --seed 2118243591 --fuzz-seconds 1800 --timeout 3600
 ```
 
-Exploration uses `-runs=-1` and the retained `state/corpus`. Each invocation preserves its exact
-starting corpus, hashes, seed, command, and failure artifacts. It records the selected nightly
-compiler and cargo-fuzz versions. Fuzz compilation is a setup step; the runner then launches the
-built libFuzzer executable directly, with its digest recorded. This avoids cargo-fuzz's default
-artifact-directory creation in the source checkout. Build output stays in the owned scratch root.
-The overall timeout includes compilation. Simulation explicitly selects
-`scratch/run-*/simulation-build` as its Cargo target directory, overriding ambient
-`CARGO_TARGET_DIR`. It builds once and directly invokes the resulting libtest executable per shard.
-A pass requires each shard's expected case-count marker and one passed test, not merely a zero
-process exit.
+Select another decoder with `--fuzz-target`; the default remains `inspect_receipt`. Run all five
+smokes or explorations explicitly, rather than treating one decoder's pass as coverage of the
+others:
+
+```sh
+for target in inspect_receipt inspect_git_receipt verify_kubernetes_grant verify_git_grant service_document; do
+  ./fuzz/smoke.sh --fuzz-target "$target" --seed 2118243591 --fuzz-seconds 10
+  python3 tools/dev/run_robustness.py fuzz --fuzz-target "$target" \
+    --seed 2118243591 --fuzz-seconds 300 --timeout 3600
+done
+```
+
+Exploration uses `-runs=-1`. Kubernetes keeps the existing `state/corpus`; other targets retain
+`state/corpus-TARGET`. Maintained seeds are added without replacing discoveries. Each invocation
+preserves its exact starting corpus, hashes, seed, command, and failure artifacts. It records the
+selected nightly compiler and cargo-fuzz versions. Fuzz compilation is a setup step; the runner then
+launches the built libFuzzer executable directly, with its digest recorded. This avoids cargo-fuzz's
+default artifact-directory creation in the source checkout. Build output stays in the owned scratch
+root. Each target has a maximum input length at its production ceiling plus one sentinel byte (and
+receipt split framing). LibFuzzer uses a ten-second per-input timeout and a 2-GiB sampled RSS limit;
+these do not replace host isolation or storage supervision. The overall timeout includes
+compilation. Simulation explicitly selects `scratch/run-*/simulation-build` as its Cargo target
+directory, overriding ambient `CARGO_TARGET_DIR`. It builds once and directly invokes the resulting
+libtest executable per shard. A pass requires each shard's expected case-count marker and one passed
+test, not merely a zero process exit.
 
 ### Background sweep and retained evidence
 
@@ -588,7 +624,34 @@ measurement.
 A preflight failure exits 2 and may have no run directory. An interrupted write may leave temporary
 JSON files; they are not terminal results. No previous scratch directory is automatically removed.
 Failures stop the affected lane. An unclassified run directory without a result stops both lanes.
-There is no automatic replay, failure deduplication, or evidence pruning.
+There is no automatic replay, failure deduplication, or evidence pruning. A failure artifact is not
+a minimized input. In the same credential-free, bounded environment, select the retained executable
+from `fuzz.json` and explicitly minimize and replay a copy of the artifact:
+
+```sh
+ASAN_OPTIONS=detect_odr_violation=0 "$executable" "$artifact" \
+  -minimize_crash=1 -max_total_time=30 -exact_artifact_path="$minimized"
+ASAN_OPTIONS=detect_odr_violation=0 "$executable" "$minimized" -runs=1
+```
+
+Keep the original, minimized bytes, hashes, both commands and bounded diagnostics. Require the same
+property failure on replay; a setup failure or different panic does not demonstrate preservation.
+Minimization may find no smaller input. Retain that result rather than claiming every crash was
+already minimal. Do not overwrite an existing artifact path or mutate the baseline checkout.
+
+For detection-strength checks, apply one negative control at a time in disposable source copies. The
+deterministic corpus driver must pass on baseline and fail for the named property on each copy:
+
+- Accept trailing binary records: `trailing receipt record` or `trailing grant record`.
+- Ignore the receipt trust interval: `trust time window`.
+- Accept a service document one byte above 160 KiB: `service byte limit`.
+- Accept an inconsistent signed Git result: `inconsistent signed statement`.
+
+Record each exact mutation diff, source/executable/compiler identity, input and failing command.
+Minimize and replay at least one failure with its mutated executable, then replay the same bytes
+against baseline. These are isolated test faults, not changes to maintained production semantics. A
+surviving required control blocks coverage retirement; no mutation-score threshold replaces owner,
+compatibility, transport or receiver checks.
 
 Before resuming a failed lane, reproduce the finding, commit a regression, and run its owning check.
 Then explicitly record that reference and passing command:

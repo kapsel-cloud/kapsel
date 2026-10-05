@@ -52,12 +52,17 @@ run_rust_checks() {
 
   echo "==> clippy"
   cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+  cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
 
   echo "==> rustdoc"
   RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
   echo "==> deterministic Rust tests"
   cargo test --locked --workspace --lib --bins --tests
+
+  echo "==> hostile-input corpus and semantic oracles (no exploration)"
+  cargo test --locked --manifest-path fuzz/Cargo.toml --test corpus
+  cargo run --locked --manifest-path fuzz/Cargo.toml --example seed_corpus -- --check
 }
 
 run_documentation_tests() {

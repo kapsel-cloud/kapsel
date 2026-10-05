@@ -10,10 +10,40 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 kapsel = { path = ".." }
+kapsel-authority = { path = "../crates/kapsel-authority" }
+ed25519-dalek = "3.0.0"
 
 [[bin]]
 name = "inspect_receipt"
 path = "fuzz_targets/inspect_receipt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inspect_git_receipt"
+path = "fuzz_targets/inspect_git_receipt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_kubernetes_grant"
+path = "fuzz_targets/verify_kubernetes_grant.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_git_grant"
+path = "fuzz_targets/verify_git_grant.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "service_document"
+path = "fuzz_targets/service_document.rs"
 test = false
 doc = false
 bench = false

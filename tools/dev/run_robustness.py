@@ -66,6 +66,13 @@ TEST = "simulation_tests::seeded_lifecycle_crash_simulation_preserves_invariants
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
 STATE_LIMIT = 1024 * 1024 * 1024
+FUZZ_TARGETS = {
+    "inspect_receipt": 17 * 1024 + 5,
+    "inspect_git_receipt": 17 * 1024 + 5,
+    "verify_kubernetes_grant": 4097,
+    "verify_git_grant": 4097,
+    "service_document": 160 * 1024 + 1,
+}
 _pending_signal: int | None = None
 _terminal_decided = False
 
@@ -245,7 +252,7 @@ def retire_all(processes: list[subprocess.Popen[bytes]]) -> None:
         except (OSError, subprocess.TimeoutExpired) as failure:
             error = failure
     if error is not None:
-        raise Incomplete("command retirement could not be confirmed") from error
+        raise Incomplete(f"command retirement could not be confirmed: {error}") from error
 
 
 def retire(process: subprocess.Popen[bytes]) -> None:
@@ -274,6 +281,7 @@ class Supervisor:
         logs: list[BinaryIO] = []
         records: list[CommandRecord] = []
         outputs = [bytearray() for _ in commands]
+        retired: set[int] = set()
         try:
             for index, command in enumerate(commands):
                 if time.monotonic() >= self.deadline:
@@ -316,7 +324,6 @@ class Supervisor:
 
             next_storage_check = 0.0
             failure = None
-            retired = set()
             while selector.get_map() or any(child.poll() is None for child in children):
                 check_cancellation()
                 if time.monotonic() >= next_storage_check:
@@ -340,16 +347,18 @@ class Supervisor:
                         )
 
                 if failure is None:
-                    for index, process in enumerate(children):
+                    for process in children:
                         status = process.poll()
-                        if status == 0 and index not in retired:
+                        if status == 0 and process.pid not in retired:
                             retire(process)
-                            retired.add(index)
+                            retired.add(process.pid)
                         if status not in (None, 0):
                             failure_type = Finding if finding and status > 0 else Incomplete
                             failure = failure_type(f"command exited {process.returncode}")
                             # Stop peers immediately, but drain bounded output before classifying.
-                            retire_all(children)
+                            pending = [child for child in children if child.pid not in retired]
+                            retire_all(pending)
+                            retired.update(child.pid for child in pending)
                             break
             check_cancellation()
             if failure is not None:
@@ -369,7 +378,7 @@ class Supervisor:
         finally:
             retirement_error = None
             try:
-                retire_all(children)
+                retire_all([process for process in children if process.pid not in retired])
             except Incomplete as error:
                 retirement_error = error
             for process, record in zip(children, records, strict=False):
@@ -489,21 +498,37 @@ def corpus_identity(path: Path) -> dict[str, str]:
     return entries
 
 
-def fuzz(supervisor: Supervisor, state: Path, seed: int, seconds: int, smoke: bool) -> None:
-    corpus = supervisor.scratch / "corpus" if smoke else state / "corpus"
+def fuzz(
+    supervisor: Supervisor,
+    state: Path,
+    seed: int,
+    seconds: int,
+    smoke: bool,
+    target: str = "inspect_receipt",
+) -> None:
+    if target not in FUZZ_TARGETS:
+        raise Incomplete("unknown fuzz target")
+    # Preserve the original Kubernetes retained corpus; distinct decoders never share corpus state.
+    corpus_name = "corpus" if target == "inspect_receipt" else "corpus-" + target
+    corpus = (supervisor.scratch if smoke else state) / corpus_name
+    seeds = ROOT / "fuzz/corpus" / target
+    seed_identity = corpus_identity(seeds)
     if not corpus.exists():
-        corpus.mkdir(mode=0o700)
-        shutil.copyfile(
-            ROOT / "fuzz/corpus/inspect_receipt/canonical-receipt-and-trust",
-            corpus / "canonical-receipt-and-trust",
-        )
+        shutil.copytree(seeds, corpus)
+        corpus.chmod(0o700)
+    else:
+        # Add new maintained seeds without replacing or pruning discovered inputs.
+        for name, digest in seed_identity.items():
+            destination = corpus / ("seed-" + digest)
+            if not destination.exists():
+                shutil.copyfile(seeds / name, destination)
     before = corpus_identity(corpus)
     # Keep the exact starting corpus, not only names or hashes after mutation.
     replay = supervisor.evidence / "corpus-before"
     shutil.copytree(corpus, replay)
     atomic_json(
         supervisor.evidence / "fuzz.json",
-        {"seed": seed, "seconds": seconds, "corpus_before": before},
+        {"target": target, "seed": seed, "seconds": seconds, "corpus_before": before},
     )
     identities = supervisor.run(
         [
@@ -553,16 +578,17 @@ def fuzz(supervisor: Supervisor, state: Path, seed: int, seconds: int, smoke: bo
                     host[1],
                     "--target-dir",
                     str(build_root),
-                    "inspect_receipt",
+                    target,
                 ]
             ]
         )
-        executable = build_root / host[1] / "debug/inspect_receipt"
+        executable = build_root / host[1] / "debug" / target
         if not executable.is_file():
             raise Incomplete("missing built fuzz executable")
         atomic_json(
             supervisor.evidence / "fuzz.json",
             {
+                "target": target,
                 "seed": seed,
                 "seconds": seconds,
                 "corpus_before": before,
@@ -585,6 +611,9 @@ def fuzz(supervisor: Supervisor, state: Path, seed: int, seconds: int, smoke: bo
                     f"-runs={runs}",
                     f"-seed={seed}",
                     f"-max_total_time={seconds}",
+                    f"-max_len={FUZZ_TARGETS[target]}",
+                    "-timeout=10",
+                    "-rss_limit_mb=2048",
                     f"-artifact_prefix={artifacts}/",
                 ]
             ],
@@ -692,6 +721,7 @@ def main() -> int:
     parser.add_argument(
         "--fuzz-seconds", type=positive, default=os.environ.get("KAPSEL_FUZZ_MAX_TIME", "1800")
     )
+    parser.add_argument("--fuzz-target", choices=tuple(FUZZ_TARGETS), default="inspect_receipt")
     parser.add_argument("--run")
     parser.add_argument("--regression", help="committed regression reference and passing check")
     args = parser.parse_args()
@@ -748,7 +778,14 @@ def main() -> int:
             if lane == "simulation":
                 simulation(supervisor, seeds, args.cases, args.shards)
             else:
-                fuzz(supervisor, state, seeds[0], args.fuzz_seconds, args.mode == "fuzz-smoke")
+                fuzz(
+                    supervisor,
+                    state,
+                    seeds[0],
+                    args.fuzz_seconds,
+                    args.mode == "fuzz-smoke",
+                    args.fuzz_target,
+                )
             # Refuse a pass if source changed during execution.
             if source_identity(supervisor)["revision"] != identity["revision"]:
                 raise Incomplete("source changed during run")

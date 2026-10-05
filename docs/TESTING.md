@@ -272,8 +272,26 @@ that older release pair.
 
 ### Robustness
 
-Fuzzing calls production hostile-input interfaces from canonical corpus vectors without network or
-ambient authority. Failures retain a minimized artifact and exact replay information.
+Five distinct fuzz targets call production Kubernetes/Git receipt inspection, Kubernetes/Git grant
+verification and service-document parsing. Canonical valid and deliberately invalid seeds cover
+legacy and snapshot purposes, signed inconsistent results, record shapes, UTF-8, lengths, byte
+limits and service array counts. The deterministic corpus check asserts seed acceptance
+independently of coverage discovery. Existing owner tables, exact vectors, compatibility and unique
+composition tests remain required.
+
+Targets receive explicit trust, evaluation times and limits. They never discover credentials or
+perform filesystem, network or receiver I/O. The service path is an inert operator-supplied fixture.
+Targets check trailing rejection, narrowed limits, external key/purpose/time appointments and
+canonical authenticated grants. Bounded fixture re-signing additionally reaches statement
+validation; it supplies no production execution authority. Git's independent acknowledgement/result
+assertion must reject a signed `SUCCEEDED` statement with `unknown` acknowledgement.
+
+The retained runner records target-specific starting corpus bytes, commands, source and executable
+identity, compiler/fuzzer identity and failure artifacts. Artifacts are not automatically minimized.
+[Build](BUILD.md#robustness-lanes) owns explicit minimization/replay and isolated negative-control
+procedures. Baseline must pass, controls must fail for the intended property, and minimized replay
+must preserve that property. Byte coverage, a smoke pass or negative-control detection does not
+establish semantic completeness, authority proof or receiver qualification.
 
 Long simulations generate bounded lifecycle schedules, crash windows, transient target-read errors,
 and reopen operations from an explicit seed. Each shard uses independent fixture journals with at

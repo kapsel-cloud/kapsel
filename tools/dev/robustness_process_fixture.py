@@ -128,6 +128,16 @@ def spawn_delayed_writer(marker: str) -> int:
     return 0
 
 
+def fail_after_marker(marker: str) -> int:
+    deadline = time.monotonic() + 5
+    while not Path(marker).exists():
+        if time.monotonic() >= deadline:
+            return 99
+        time.sleep(0.01)
+    print("peer failure after successful retirement", flush=True)
+    return 7
+
+
 def spawn_sleeping_descendant() -> int:
     subprocess.Popen(sleeping_command())
     return 0
@@ -155,6 +165,7 @@ SCENARIOS = {
     "delayed-write": delayed_write,
     "spawn-delayed-writer": spawn_delayed_writer,
     "spawn-sleeping-descendant": spawn_sleeping_descendant,
+    "fail-after-marker": fail_after_marker,
     "fuzz-signal": fuzz_signal,
 }
 

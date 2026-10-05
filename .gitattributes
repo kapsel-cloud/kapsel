@@ -1,2 +1,3 @@
 *.cbor binary
 *.cose binary
+fuzz/corpus/** binary

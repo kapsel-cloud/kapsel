@@ -779,7 +779,9 @@ dependencies = [
 name = "kapsel-fuzz"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "kapsel",
+ "kapsel-authority",
  "libfuzzer-sys",
 ]
 
