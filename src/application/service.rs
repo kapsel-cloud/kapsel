@@ -1,6 +1,8 @@
-//! Bounded service approval selection and externally authorized retained-history access.
+//! Resolves caller-selected IDs against retained history before consulting operator approvals.
 //!
-//! This is one application over the sole gateway journal, not one application per approval.
+//! Retained operations keep their original grant bytes and require separately appointed trust.
+//! Replacing or removing a catalog entry cannot refresh that authority. One application serves
+//! all approvals and retained operations through the same gateway journal.
 
 mod disposition;
 mod document;
@@ -232,8 +234,9 @@ impl ServiceApplication {
 
     /// Validates a complete cold replacement without creating or modifying journal artifacts.
     ///
-    /// The caller must exclude service lifetimes and retain the private storage root. No receiver,
-    /// admission, signing or recovery work occurs; validation handles close before this returns.
+    /// The caller must exclude service lifetimes and retain the private storage root throughout
+    /// validation. This method performs no receiver, admission, signing or recovery work.
+    /// All validation handles close before it returns.
     ///
     /// # Errors
     ///
@@ -331,13 +334,16 @@ impl ServiceApplication {
         Ok(approvals)
     }
 
-    /// Selects original authority, durably admits, and requests one bounded advancement pass.
+    /// Selects an ID under its original authority and admits or resumes one bounded execution pass.
     ///
-    /// The acknowledgement runs only after definite admission or refusal. The journal worker lease
-    /// spans the commit, callback and advancement. Terminal reselection only reads.
+    /// Retained grant bytes take precedence over the current catalog. Only an absent operation uses
+    /// a catalog approval. For advancing work, the journal worker lease spans the admission commit,
+    /// acknowledgement callback and advancement. The callback reports only confirmed admission or
+    /// definite refusal. Terminal reselection only reads.
+    ///
     /// Known execution blockages return [`ServiceStop::Blocked`], not a receiver result.
-    /// Missing execution material leaves admitted work unfinished. A successful return is not
-    /// proof of completion; read authenticated status for durable evidence.
+    /// Missing execution material leaves admitted work unfinished. A successful return does not
+    /// prove completion. Read authenticated status for durable evidence.
     ///
     /// # Errors
     ///
@@ -405,8 +411,9 @@ impl ServiceApplication {
     /// Reads confirmed admission for a selectable or retained snapshot identity
     /// without advancing it.
     ///
-    /// A missing row is only this read snapshot. It cannot prove non-admission while another task's
-    /// commit is unsettled. The runtime must separately retain that task's identity and exclusion.
+    /// A missing row establishes absence only in this read snapshot. Another task's pending commit
+    /// can still admit the operation. The runtime must retain that task's identity and execution
+    /// permit separately before deciding whether to report refusal.
     ///
     /// # Errors
     ///
@@ -422,6 +429,8 @@ impl ServiceApplication {
             })
     }
 
+    // History wins over the catalog, including when original trust is unavailable. Falling back
+    // after an access error would let a replacement approval stand in for retained authority.
     fn retained_for_selection(&self, operation_id: &str) -> Result<Selection, ServiceError> {
         if let Some(retained) = self
             .gateway
@@ -635,7 +644,7 @@ pub enum ServiceError {
     StorageMissing,
     /// Retained storage is malformed, corrupt or unsupported by this binary.
     StorageInvalid,
-    /// Storage access or a required write failed; commitment may be indeterminate.
+    /// Storage access or a required write failed. A commit may still have taken effect.
     StorageUnavailable,
     /// Durable history or its original authority binding is inconsistent or inaccessible.
     OperationFailure,

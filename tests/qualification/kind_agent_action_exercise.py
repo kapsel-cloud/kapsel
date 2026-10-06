@@ -61,7 +61,7 @@ def retained_row(journal: pathlib.Path, operation_id: str) -> tuple[object, ...]
 
 
 def install_binaries(artifact: pathlib.Path) -> None:
-    """Cold binary replacement leaves authority and retained history untouched."""
+    """Replace fixture executables without changing authority or history. Stop the service first."""
     for source, destination in (
         ("bin/kapsel", "/usr/bin/kapsel"),
         ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
@@ -217,7 +217,7 @@ def main() -> None:
     token = config["users"][0]["user"]["token"]
 
     # The fixture operator explicitly owns these disposable Deployments. No GitOps reconciler is
-    # disabled. B is independently assessed; conflicting intent is never provisioned to the caller.
+    # disabled. Each approval is independently assessed. Conflicting intent is not provisioned.
     prepare = [
         "/usr/bin/kapsel",
         "prepare-service-config",
@@ -337,7 +337,8 @@ def main() -> None:
                 state = read("status", case)
                 assert state["status"] == "IN_PROGRESS", state
                 assert state["execution"]["disposition"] == "resume_required", state
-                # Startup has not selected B or resumed A. The caller explicitly reselects original A.
+                # Startup has not resumed this operation or selected "independent".
+                # The caller explicitly reselects the same ID.
                 assert read("status", "independent")["status"] == "NOT_FOUND"
                 assert read("submit", case)["status"] == "ADMITTED"
             terminal = wait(
@@ -409,7 +410,7 @@ def main() -> None:
                 assert frozen == retained[1], "receipt loss must not cause re-signing"
                 assert finalized_evidence(journal, case) == retained
                 assert retained_row(journal, case) == finalized_row
-                # Restore only current fixture material; retained history is never rewritten.
+                # Restore current fixture material only. Do not rewrite retained history.
                 stop()
                 shutil.copyfile("receipt.seed", "/etc/kapsel/receipt.seed")
                 publish(document)

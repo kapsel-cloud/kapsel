@@ -19,14 +19,21 @@ pub enum Error {
     Connection,
     /// The request or reply exchange did not complete.
     Exchange,
-    /// The reply violated the bounded framing or version.
+    /// The reply violated its framing bound, protocol version or status grammar.
     Response,
 }
 
-/// Send one bounded version-1 service request. A failure never establishes non-admission.
+/// Exchanges one nonempty request of at most 16 KiB with the caller-supplied local socket.
+///
+/// The socket path belongs to application composition, not tool input. The response is bounded to
+/// 40 KiB before allocation. This function checks framing, not JSON content or protocol version.
+/// Call [`validate_response_version`] before using the response. A failure never establishes
+/// non-admission.
 ///
 /// # Errors
-/// Returns a bounded local transport error on connection, exchange or framing failure.
+///
+/// Returns a bounded local transport error for invalid request size, connection, exchange or
+/// response framing failure.
 pub fn exchange(socket: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
     if request.is_empty() || request.len() > 16 * 1024 {
         return Err(Error::Exchange);
@@ -65,10 +72,15 @@ pub fn exchange(socket: &str, request: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(response)
 }
 
-/// Return the validated status token; no untrusted response can appoint a protocol version.
+/// Checks a bounded JSON response header and returns its recognized version-1 status token.
+///
+/// This check does not validate command-specific fields or establish an operation result.
+/// The caller must validate the payload for its selected command.
 ///
 /// # Errors
-/// Returns `Response` when the framing, version or status token is invalid.
+///
+/// Returns [`Error::Response`] for oversized or malformed JSON, a non-object response,
+/// an unsupported version or an unrecognized status token.
 pub fn validate_response_version(bytes: &[u8]) -> Result<String, Error> {
     #[derive(serde::Deserialize)]
     struct Header {

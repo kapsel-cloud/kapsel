@@ -1,13 +1,13 @@
-//! Kapsel effect gateway for one authorized Kubernetes Deployment image change.
+//! Kapsel execution boundary for approved Kubernetes image changes and local Git ref transitions.
 //!
-//! [`ServiceApplication`] separates caller action IDs from operator-owned approval, receiver
-//! authority, signing material, and paths. The private deep gateway owns
-//! the effect-gateway request, exact authorization, durable lifecycle, Kubernetes interaction,
-//! recovery, and bounded receipt. This crate exposes no generic capability or provider contract.
+//! [`ServiceApplication`] separates caller-selected IDs from operator-owned approvals, receiver
+//! authority, signing material and paths. The private gateway records attempts before mutation,
+//! recovers without resending, and retains original signed receipts. Each effect defines its own
+//! receiver-result rules. This crate exposes no generic capability or provider contract.
 //!
-//! The current `v0.1.1` artifact and adopted v0.2 beta expose no supported external Rust API. They
-//! make no production-readiness, exactly-once, causation, Kubernetes-truth, complete-capture, or
-//! witnessing claim.
+//! These interfaces serve the resident service and operator tools. They are not a stable public
+//! Rust API. Kapsel makes no production-readiness, exactly-once, causation, receiver-truth,
+//! complete-capture or witnessing claim.
 
 mod application;
 mod gateway;

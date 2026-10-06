@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box smoke tests for the assembled Kapsel release artifact."""
+"""Offline verifier regressions and Linux smoke tests for assembled release artifacts."""
 
 from __future__ import annotations
 

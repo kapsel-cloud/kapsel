@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Project-owned, fail-closed supervision for simulation and receipt fuzz lanes."""
+"""Supervise lifecycle simulations and authority/receipt fuzzing.
+
+Incomplete runs retain their evidence and never count as passes.
+"""
 
 import argparse
 import fcntl

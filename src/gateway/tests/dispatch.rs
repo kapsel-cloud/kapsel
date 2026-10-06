@@ -188,8 +188,8 @@ async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
     }
 }
 
-// Poll the real sequential driver to an async boundary, then drop its continuation. This is not
-// another event machine: target/attempt/recovery decisions remain in Gateway and Journal.
+// Alter retained grant bytes during adapter I/O. The driver must recheck original authority before
+// recording the returned facts, even while it holds the worker lock.
 #[tokio::test]
 async fn changed_grant_during_apply_stops_before_receiver_observation() {
     struct ChangedCustody(FakeAdapter, bool);
@@ -256,6 +256,8 @@ async fn changed_grant_during_apply_stops_before_receiver_observation() {
     }
 }
 
+// Poll the real driver until the adapter pauses, then drop the future to model cancellation.
+// Target, attempt and recovery decisions still belong to Gateway and Journal.
 #[tokio::test]
 async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
     struct PausingAdapter {

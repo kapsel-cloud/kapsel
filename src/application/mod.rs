@@ -81,8 +81,9 @@ pub fn provision_exact_grant(
 
 /// Signs an exact Git transition after checking the operator's fixed receiver and objects.
 ///
-/// This performs read-only preflight, not a push or journal admission. The later exact lease owns
-/// rejection if the ref changes after provisioning.
+/// Preflight reads the prepared repositories without pushing or admitting an operation.
+/// The grant fixes the expected old commit. A later push must still use an exact lease so a ref
+/// change after provisioning cannot authorize overwriting that change.
 ///
 /// # Errors
 ///
@@ -104,8 +105,10 @@ pub async fn provision_git_ref_grant(
 
 /// Acquires the operator-selected Deployment version and signs one snapshot grant.
 ///
-/// No snapshot fields are accepted in the proposal. Kubernetes authority is an explicit bounded
-/// kubeconfig, never ambient configuration. This does not mutate Kubernetes or create a journal.
+/// The proposal must leave `approved_target` absent. This function reads the Deployment UID and
+/// resource version and includes them in the signed approval. The caller supplies a kubeconfig of
+/// at most 16 KiB instead of relying on ambient configuration. No Kubernetes mutation or journal
+/// creation occurs.
 ///
 /// # Errors
 ///
@@ -238,7 +241,10 @@ pub enum SetDeploymentImageReceipt {
     },
 }
 
-/// Read-only service disposition; each effect owns its success and failure predicates.
+/// Read-only stored status for either effect, separate from current worker activity.
+///
+/// Each effect defines its own success and failure predicates. `Unknown` is terminal evidence that
+/// neither predicate was established, not permission to retry the mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetDeploymentImageStatus {
     /// No durable operation exists for the supplied identity.

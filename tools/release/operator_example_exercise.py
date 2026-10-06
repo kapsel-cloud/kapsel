@@ -17,7 +17,7 @@ from types import ModuleType
 
 @dataclass(frozen=True)
 class OperatorExample:
-    """Bind public example inputs; main owns service lifetime and recovery ordering."""
+    """Hold public example inputs. main owns service lifetime and recovery ordering."""
 
     fixture: ModuleType
     guide: str

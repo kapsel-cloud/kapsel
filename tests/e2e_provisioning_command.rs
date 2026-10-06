@@ -1,4 +1,4 @@
-//! Operator provisioning survives retirement of direct caller execution.
+//! The operator command provisions exact grants without overwriting files or accepting bad seeds.
 
 #![allow(
     clippy::unwrap_used,

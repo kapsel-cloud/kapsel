@@ -1,4 +1,4 @@
-//! Bounded blocking-job ownership and retirement while the runtime remains driven.
+//! Retains job permits until both the supervisor and blocking work have retired.
 
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +12,8 @@ use super::{Selection, CONNECTIONS_MAX};
 struct Lease {
     _connection: Arc<OwnedSemaphorePermit>,
     _execution: Option<Arc<Selection>>,
-    // Dropped last, after permits. The receiver proves final shared ownership release.
+    // Fields drop in declaration order. Closing this channel after the permits tells the registry
+    // that the last shared lease has retired, even if its supervisor was aborted.
     _retirement: oneshot::Sender<()>,
 }
 
@@ -28,7 +29,10 @@ impl Jobs {
         Self(Mutex::new(Vec::with_capacity(CONNECTIONS_MAX)))
     }
 
-    /// Registers before starting work. Both supervisor and blocking closure retain the lease.
+    /// Registers the job before starting work, so shutdown cannot miss a surviving closure.
+    ///
+    /// The supervisor and blocking closure share the permit lease. Aborting the supervisor does
+    /// not release permits while the closure is still running.
     pub(super) fn spawn(
         &self,
         connection: Arc<OwnedSemaphorePermit>,

@@ -1,4 +1,8 @@
-"""Read bounded receipt bytes without following caller-controlled links."""
+"""Accept a caller-owned regular receipt file of at most 64 KiB.
+
+Read one extra byte to detect growth beyond the bound. Refuse a symlink at the final
+path component. Parent directories are not checked here.
+"""
 
 import os
 import stat

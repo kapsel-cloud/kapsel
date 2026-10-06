@@ -1,9 +1,9 @@
 //! Fixed-purpose Kapsel authority formats and validation.
 //!
-//! This unpublished package owns the exact authorization-grant and receipt-trust codecs needed by
-//! the root Kapsel package, plus request grammar shared with the service. It is not a generic
-//! authorization library, policy
-//! interface, runtime package, or supported SDK.
+//! This unpublished package encodes and authenticates exact authorization grants, parses receipt
+//! trust, and supplies request grammar shared with the service. Callers appoint keys and trust.
+//! Parsing signed bytes does not appoint authority or establish receiver facts.
+//! This package is not a generic authorization library or supported SDK.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -34,7 +34,10 @@ const _: () = assert!(GRANT_TEXT_BYTES_MAX <= GRANT_STATEMENT_BYTES_MAX);
 const _: () = assert!(GRANT_STATEMENT_BYTES_MAX < SIGNED_GRANT_BYTES_MAX);
 const _: () = assert!(RECEIPT_TEXT_BYTES_MAX <= RECEIPT_TRUST_BYTES_MAX);
 
-/// Exact owner-controlled statement embedded in a signed authorization grant.
+/// Exact operator-selected Kubernetes statement to encode in an authorization grant.
+///
+/// Constructing this value does not authenticate it. Signing and verification enforce its field
+/// grammar. `approved_target` selects snapshot-bound v2 semantics rather than legacy name-bound v1.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactAuthorization {
     /// Operator-approved object version. None retains legacy name-bound grant semantics.
@@ -140,7 +143,7 @@ pub struct ValidatedServiceOperatorInputs {
     pub authorization: ExactAuthorization,
     /// Signing-key identity authenticated inside the exact authorization grant.
     pub authorization_signing_key_id: String,
-    /// Receipt-signing key identity appointed by evaluator trust.
+    /// Receipt-signing key identity appointed by separately supplied receipt trust.
     pub receipt_signing_key_id: String,
 }
 
@@ -269,6 +272,10 @@ pub fn validate_authorization_trust(
 }
 
 /// Verifies one grant under an explicitly configured signer identity and key.
+///
+/// Accepts at most 4 KiB of canonical grant bytes. A valid signature authenticates the exact
+/// approval, not the target's current state or permission to dispatch an attempted operation.
+/// This function performs no receiver or durable-state access.
 ///
 /// # Errors
 ///
@@ -479,14 +486,17 @@ fn receipt_signing_key_id(
     Ok(trust.key_id)
 }
 
-/// Validates the grant, authorization key, receipt seed, and evaluator trust together.
+/// Checks a Kubernetes grant and its authorization key alongside receipt-signing material.
 ///
-/// The returned value contains only public identity and the function performs no filesystem,
-/// network, environment, clock, or durable-state access.
+/// Receipt trust must name the key derived from the supplied receipt seed and accept the purpose
+/// for this grant version. The returned value contains only public identities. This function does
+/// not check the trust interval against a clock or establish receiver readiness. It performs no
+/// filesystem, network, environment or durable-state access.
 ///
 /// # Errors
 ///
-/// Returns a bounded class when the four inputs do not appoint one consistent authority.
+/// Rejects a malformed or unauthenticated grant, invalid receipt trust, or a receipt key or purpose
+/// that does not match the supplied signing material and grant version.
 pub fn validate_service_operator_inputs(
     signed_authorization_grant: &[u8],
     authorization_public_key: &[u8; 32],

@@ -1,4 +1,4 @@
-//! Connection admission, task ownership and bounded authenticated socket I/O.
+//! Authenticates socket callers and keeps physical work owned after a response stops waiting.
 
 mod jobs;
 #[cfg(all(test, target_os = "linux"))]
@@ -54,7 +54,8 @@ struct Selection {
     _permit: OwnedSemaphorePermit,
 }
 
-// Unlike contention probes, only the scheduled/physical execution closure owns this marker.
+// A contention probe can retain the selection's permit after execution ends. Only the execution
+// closure owns this marker, so retaining a permit does not by itself report active execution.
 struct ExecutionLifetime(Arc<AtomicBool>);
 
 impl Drop for ExecutionLifetime {
@@ -250,7 +251,8 @@ async fn serve<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>
     if failed_handler && result.is_ok() {
         result = Err(io::Error::other("connection task failed"));
     }
-    // Keep the current-thread reactor driven until physical storage ownership is gone.
+    // A response supervisor can finish before its blocking storage work. Keep driving the reactor
+    // until both retire, because surviving work can still need receiver I/O and timers.
     state.jobs.drain().await;
     result
 }
@@ -435,8 +437,9 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
     deadline: Instant,
 ) -> SubmissionAdmission {
     let (response, received) = oneshot::channel();
-    // Hold publication exclusion while acquiring or pinning the current generation. A probe's
-    // strong reference retains its permit, so completion cannot replace that generation mid-read.
+    // Acquire execution or pin the current selection while holding the publication lock. The pin
+    // keeps the original permit held through the probe's decision, even if execution ends mid-read.
+    // Without it, an absence read followed by no current worker could hide a completed admission.
     let selection = {
         let Ok(mut selected) = state.selected.lock() else {
             return SubmissionAdmission::Error(ServiceError::OperationFailure);
@@ -504,8 +507,9 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
                         SubmissionAdmission::Decided(ServiceAdmission::Admitted(phase))
                     },
                     (Err(error), _) => SubmissionAdmission::Error(error),
-                    // Final physical retirement can race failed acquisition and weak upgrade.
-                    // Without an original pin, a matching successor may have come and gone.
+                    // The original job can retire between failed acquisition and weak upgrade.
+                    // A matching successor can then admit and retire during this absence read.
+                    // Without an original pin, absence cannot establish a definite refusal.
                     (Ok(None), _) if pinned.is_none() => SubmissionAdmission::Indeterminate,
                     (Ok(None), Ok(current)) => {
                         if pinned

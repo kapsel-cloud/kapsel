@@ -1,7 +1,8 @@
 //! Compile-time-gated process checkpoints for the release-owned crash demonstration.
 //!
-//! This module is absent from ordinary builds. It is not an agent, command, or public Rust
-//! interface and accepts only the two effect-gateway demonstration seams.
+//! This module is absent from ordinary builds. The demonstration can pause after dispatch, before
+//! receipt commit or after receipt commit. These checkpoints are test controls, not caller input
+//! or a public Rust interface.
 
 use std::path::PathBuf;
 

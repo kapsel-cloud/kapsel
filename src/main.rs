@@ -1,4 +1,4 @@
-//! Local evaluator command for the Kapsel effect-gateway developer beta.
+//! Operator provisioning and offline inspection executable for Kapsel.
 
 mod command;
 mod transport_support;

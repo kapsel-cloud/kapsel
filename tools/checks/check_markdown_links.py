@@ -289,7 +289,7 @@ def check_target(
 
 
 def main() -> int:
-    """Check all tracked Markdown and return a process status."""
+    """Check tracked and untracked Markdown and return a process status."""
 
     failures: list[str] = []
     markdown = repository_markdown()

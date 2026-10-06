@@ -3,13 +3,16 @@
 //! Charges are reconstructed from retained identities, never released by phase changes. This is
 //! configured SQLite capacity, not filesystem-space reservation or a guarantee against I/O failure.
 //!
-//! The bound depends on the owned SQL, not just these constants. Inserts add one table record and
-//! one index record; updates replace one table record without changing its rowid or indexed ID.
-//! Fresh-prepared statements with dedicated record registers preserve OP_MakeRecord's size check;
-//! reusable record buffers are not covered. In pinned SQLite, sqlite3BtreeInsert creates at most
-//! one replacement chain before freeing the old chain, then balances once. Exact schema excludes
-//! triggers, foreign keys, extra indexes and autoincrement tables. The write-plan regression in
-//! tests/storage.rs checks the owner's SQL for extra mutation passes, not SQLite's allocation peak.
+//! The bound depends on the owned SQL, not just these constants. Each insert adds one table record
+//! and one index record. Each update replaces one table record without changing its rowid or
+//! indexed ID. Fresh statement preparation with dedicated record registers preserves the
+//! OP_MakeRecord size check. Reusable record buffers are not covered.
+//!
+//! In pinned SQLite, sqlite3BtreeInsert creates at most one replacement chain before freeing
+//! the old chain, then balances once. The exact schema excludes triggers, foreign keys,
+//! extra indexes and autoincrement tables. These restrictions keep temporary allocation within
+//! the completion headroom. The write-plan regression in tests/storage.rs detects extra mutation
+//! passes in the owned SQL. It does not measure SQLite's allocation peak.
 //!
 //! Revalidate these premises when changing SQLite, schema, SQL or preparation. The cross-module
 //! layout, transient-page and rollback-file argument is in docs/contributing/storage_capacity.md.

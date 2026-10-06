@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def install_binaries(artifact: Path) -> None:
-    """Replace only executable bytes while the fixture service is cold."""
+    """Replace fixture executables only. The caller must stop the service first."""
     for source, destination in (
         ("bin/kapsel", "/usr/bin/kapsel"),
         ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan one exact release SBOM with the frozen fresh Trivy policy."""
+"""Scan a release SBOM with pinned Trivy and a database no older than 24 hours."""
 
 from __future__ import annotations
 

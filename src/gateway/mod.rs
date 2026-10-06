@@ -1,7 +1,7 @@
-//! Concrete Kubernetes and Git effects with shared authority, admission and journal custody.
+//! Coordinates approved Kubernetes and Git effects through one durable journal.
 //!
-//! This module owns orchestration and its private test seams. The crate root remains a compact map
-//! of the caller-visible interface and concrete internal owners.
+//! Admission retains original authority before receiver work. Advancement keeps attempt recording,
+//! receiver observation and receipt completion separate so recovery cannot authorize another send.
 
 mod authorization;
 #[cfg(feature = "demo-harness")]
@@ -300,9 +300,9 @@ pub(crate) enum FaultPoint {
     FinalizedCommitted,
 }
 
-/// Signing and output settings supplied by application composition.
+/// Receipt signing material supplied by the application.
 pub(crate) struct ReceiptSettings<'a> {
-    /// Fixed prototype signing seed owned by the application.
+    /// Operator-owned seed used to sign frozen receiver facts.
     pub(crate) signing_seed: &'a [u8; 32],
     /// External trust key identifier for the signing key.
     pub(crate) key_id: &'a str,
@@ -333,7 +333,7 @@ impl ReceiptToPrepare {
     }
 }
 
-/// SQLite-backed entry point for the one operation.
+/// SQLite-backed admission and advancement for Kubernetes and Git operations.
 pub(crate) struct Gateway {
     journal: Journal,
     authorization_trust: Vec<AuthorizationTrust>,
@@ -582,9 +582,11 @@ impl Gateway {
         AuthorizedRequest::bind(ValidatedRequest::try_from(request)?, verified)
     }
 
-    /// Acknowledges only confirmed admission/refusal, retaining exclusion through the callback.
-    /// The caller supplies an authenticated snapshot and rechecks identity in `admit` under the
-    /// worker lease. `None` means terminal reselection or capacity refusal: neither advances.
+    /// Reports confirmed admission or definite refusal while retaining the worker lease, if held.
+    ///
+    /// The caller supplies an authenticated snapshot. For nonterminal work, `admit` rechecks
+    /// identity under the lease before inserting a new operation. Terminal reselection and capacity
+    /// refusal return `None`, so neither reaches advancement.
     fn admit_service_operation(
         &self,
         existing: Option<OperationState>,
@@ -654,9 +656,9 @@ impl Gateway {
     /// Advances an existing exact-authorized operation to a blocked or terminal snapshot.
     ///
     /// Authority, client and signing settings are operator-owned. Each iteration rechecks the
-    /// original request and grant. Execution reloads under worker exclusion and holds it through
-    /// provider and receiver I/O; receipt completion acquires its own lock. Contention returns a
-    /// fresh snapshot without waiting. An absent operation is not submitted here.
+    /// original request and grant. The worker lease spans reloads, receiver I/O and completion.
+    /// Receipt completion also uses a conditional write transaction. On worker contention, this
+    /// method returns a fresh snapshot without waiting. It does not submit an absent operation.
     ///
     /// Cancellation leaves the last committed phase intact. Attempted history is observation-only,
     /// and frozen observations are completed without further Kubernetes access. Export is separate.

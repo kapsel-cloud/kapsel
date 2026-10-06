@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the extracted Kapsel release artifact in a clean Linux environment."""
+"""Check and extract Kapsel release files, or run Linux smoke qualification."""
 
 from __future__ import annotations
 
@@ -1007,7 +1007,7 @@ def exercise_journald_failure() -> None:
 def prepare_service_candidate(
     binary: pathlib.Path, evaluation: pathlib.Path, server_port: int
 ) -> bytes:
-    """Provision the snapshot, then validate the exact candidate without receiver work."""
+    """Read the receiver once for snapshot approval, then prepare and validate the candidate offline."""
     paths = prepare_inputs(evaluation, ("127.0.0.1", server_port))
     grant = evaluation / "snapshot.grant"
     provision = run_binary(

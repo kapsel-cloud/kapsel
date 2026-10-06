@@ -342,7 +342,7 @@ phase 10 "measuring per-pass observation through the service application"
 KAPSEL_KIND_TEST=1 cargo test --locked -p kapsel \
   kind_tests::observation_experiment::kind_service_observation_policy \
   -- --ignored --exact --nocapture | tee "$workspace/observation.log"
-# Independent API-server receipt counts, not inferred from adapter calls.
+# Count requests recorded by the API server, independently of adapter counters.
 # The policy records only the observation cases' Deployment requests.
 docker exec "${cluster_name}-control-plane" \
   cat /var/log/kubernetes/kapsel-audit.log >"$workspace/audit.jsonl"

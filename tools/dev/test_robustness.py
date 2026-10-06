@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tiny process fixtures for the robustness supervisor; no exploration or host changes."""
+"""Disposable process fixtures for the robustness supervisor, without simulation or fuzz exploration."""
 
 import errno
 import io

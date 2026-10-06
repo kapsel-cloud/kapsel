@@ -1,4 +1,4 @@
-//! Fixed parser and composition for the evaluator command evaluator commands.
+//! Parses operator provisioning commands and offline receipt inspection commands.
 
 mod service;
 

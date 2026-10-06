@@ -1,4 +1,4 @@
-//! Process shell for the unpublished Kapsel service.
+//! Process entry point for the operator-owned Linux service.
 
 mod diagnostics;
 mod server;

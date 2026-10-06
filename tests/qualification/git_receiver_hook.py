@@ -11,7 +11,7 @@ from pathlib import Path
 
 def main() -> None:
     hook_name = Path(sys.argv[0]).name
-    # Installed hooks live in receiver.git/hooks; control is a sibling of receiver.git.
+    # Installed hooks live in receiver.git/hooks. Read controls from receiver.git's sibling directory.
     control = Path(__file__).resolve().parents[2] / "fixture-control"
     case = json.loads((control / "hook-settings.json").read_text())["case"]
     with (control / hook_name).open("a") as output:

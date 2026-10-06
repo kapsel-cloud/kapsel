@@ -331,7 +331,8 @@ fn duplicate_nested_json_is_rejected_before_socket_access() {
 fn transport_failure_is_not_non_admission() {
     let mut lines = handshake();
     lines.push(tool(2, "kapsel.submit", json!({"operation_id":"op-1"})));
-    // An unbound socket models a lost admission response, not a definite refusal.
+    // An unbound socket exercises the bridge's uncertain delivery result. It does not model
+    // actual admission or prove that a request reached the service.
     let root = std::env::temp_dir().join(format!("kapsel-mcp-absent-{}", std::process::id()));
     let output = Command::new(BIN)
         .env("KAPSELD_TEST_CLIENT_SOCKET", &root)

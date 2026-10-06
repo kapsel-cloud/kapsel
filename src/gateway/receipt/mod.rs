@@ -42,7 +42,10 @@ const _: () = assert!(TEXT_BYTES_MAX <= TRUST_BYTES_MAX);
 const _: () = assert!(TEXT_BYTES_MAX <= STATEMENT_BYTES_MAX);
 const _: () = assert!(STATEMENT_BYTES_MAX < RECEIPT_BYTES_MAX);
 
-/// Read-only classifier inputs authenticated by a successfully parsed receipt.
+/// Read-only Kubernetes statement containing the facts used to classify a receiver observation.
+///
+/// Parsing checks field consistency and recomputes the result. Authentication and trust acceptance
+/// are separate checks reported by [`InspectionReport::status`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptStatement {
     pub(in crate::gateway) approved_target: Option<super::ApprovedTarget>,
@@ -505,12 +508,14 @@ pub struct ReceiptTrust {
 }
 
 impl ReceiptTrust {
-    /// Encodes separate trust as bounded prototype trust-document bytes.
+    /// Encodes the caller's trust appointment as canonical bytes, at most 1 KiB.
+    ///
+    /// Encoding does not validate the public key, authenticate a receipt or check the current time.
     ///
     /// # Errors
     ///
-    /// Returns a bounded receipt error when the key identity, public key, purpose, time interval,
-    /// or encoded trust document violates the prototype contract.
+    /// Rejects an invalid key identity, purpose text or time interval,
+    /// or output that exceeds the trust-document bound.
     pub fn encode(&self) -> Result<Vec<u8>, ReceiptError> {
         kapsel_authority::encode_receipt_trust(&kapsel_authority::ReceiptTrustDocument {
             key_id: self.key_id.clone(),
@@ -709,7 +714,10 @@ impl Default for InspectionLimits {
     }
 }
 
-/// Bounded offline inspection report; status is the single acceptance source of truth.
+/// Bounded offline inspection report. Use its status to decide whether trust accepted the receipt.
+///
+/// A statement can be present even when the signer is untrusted. Its presence alone does not mean
+/// inspection succeeded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InspectionReport {
     status: InspectionStatus,
@@ -735,9 +743,13 @@ impl InspectionReport {
 
 /// Inspects bounded receipt bytes offline under separate trust and explicit evaluation time.
 ///
-/// This function performs no network, filesystem, environment, or ambient-clock access. An
-/// `Inspected` result authenticates disclosed bytes only; it does not verify Kubernetes truth,
-/// causation, completeness, witnessing, policy authorization, or production safety.
+/// The caller supplies receipt bytes, trust bytes, evaluation time and inspection limits.
+/// This function performs no network, filesystem, environment or ambient-clock access.
+/// Invalid limits or rejected structure produce [`InspectionStatus::StructureRejected`].
+///
+/// [`InspectionStatus::Inspected`] authenticates the disclosed bytes under the supplied trust.
+/// It does not verify Kubernetes truth, causation, completeness, witnessing, policy authorization
+/// or production safety.
 pub fn inspect_receipt(
     receipt: &[u8],
     trust: &[u8],

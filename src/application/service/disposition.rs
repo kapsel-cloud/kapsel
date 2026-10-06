@@ -41,7 +41,9 @@ pub enum ExecutionObservation {
     Unknown,
     /// This process still owns the selected physical job, possibly blocked on storage.
     Active,
-    /// This process owns a different selected physical job.
+    /// A local selection holds the worker permit, but this ID has no active execution.
+    ///
+    /// The permit can belong to another operation or a probe retaining a completed selection.
     OtherWorker,
     /// A pass stopped in this process. A new selection invalidates the old explanation.
     Stopped(ExecutionCondition),
@@ -56,7 +58,7 @@ pub enum ExecutionDisposition {
     AdmissionUnconfirmed,
     /// A physical job is owned, not necessarily making progress.
     Active,
-    /// Another worker must retire before explicit same-ID selection.
+    /// Local worker exclusion remains held. Wait before explicit same-ID selection.
     WaitingForWorker,
     /// Explicitly select the same ID. The cause is unknown when absent.
     ResumeRequired(Option<ExecutionCondition>),

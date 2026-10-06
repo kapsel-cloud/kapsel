@@ -1,7 +1,7 @@
-//! Contributor command routing; tooling implementations retain their direct owners.
+//! Route contributor commands to the scripts that implement their checks.
 //!
-//! This crate does not own release verification or live qualification. It invokes
-//! the existing shell commands from the checkout root without interpreting argv.
+//! This crate accepts a fixed set of commands and modes, then runs their shell scripts
+//! from the checkout root. The scripts own the checks, not this routing layer.
 
 use std::{
     env,

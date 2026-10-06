@@ -40,7 +40,7 @@ class OperationReference(TypedDict):
 
 
 def service_response(value: object) -> ServiceResponse:
-    """Validate the response fields this caller consumes; retain other protocol fields."""
+    """Check types for fields this caller uses. Preserve other protocol fields."""
     if not isinstance(value, dict) or not isinstance(value.get("status"), str):
         raise ValueError("invalid service response")
     if "version" in value and type(value["version"]) is not int:
@@ -125,7 +125,7 @@ def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
 
 
 def reference(path: str, service: str, operation_id: str | None = None) -> OperationReference:
-    """Create before submission; never overwrite a reference after an uncertain response."""
+    """Create or read the caller's reference without replacing an existing file."""
     if not service or len(service) > 128 or not IDENTITY.fullmatch(service):
         raise ValueError("invalid operator-provisioned service label")
 
@@ -143,7 +143,7 @@ def reference(path: str, service: str, operation_id: str | None = None) -> Opera
             raise ValueError("invalid operation ID")
         data: OperationReference = {"version": 1, "service": service, "operation_id": operation_id}
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        # Leave a partial reference visible after failure; retry must not replace the pinned ID.
+        # A failed write leaves the partial file in place. A retry must not replace the pinned ID.
         with os.fdopen(descriptor, "w") as output:
             json.dump(data, output, separators=(",", ":"))
             output.write("\n")

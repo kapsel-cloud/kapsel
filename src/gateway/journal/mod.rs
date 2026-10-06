@@ -1,8 +1,9 @@
-//! Private durable representation for effect-gateway operations.
+//! Stores operation history and guards each durable transition.
 //!
-//! This deep module owns row decoding, capacity enforcement, worker locking, snapshots, and guarded
-//! transitions. Private children concentrate exact schema/migration and owner-private opening,
-//! backup, and rollback-file behavior without creating a selectable storage interface.
+//! Row decoding checks that retained facts agree with their lifecycle phase. Conditional writes
+//! prevent stale snapshots from advancing history. The worker lock excludes overlapping execution,
+//! while capacity checks leave configured SQLite headroom for admitted operations to complete.
+//! Private children own the exact schema, file custody, backups and rollback-file recovery.
 
 pub(in crate::gateway) mod capacity;
 pub(in crate::gateway) mod git;
@@ -39,8 +40,8 @@ pub(crate) struct WorkerLock {
     slot: Arc<Mutex<Option<File>>>,
 }
 
-// Dispatch permission is private and one-use, issued after a successful fresh attempt commit.
-// Durable attempt history records that dispatch may have happened, not permission to dispatch.
+// Only confirmation of a fresh attempt commit creates this one-use permission.
+// Loading an attempt cannot recreate it, even when the original send never reached the receiver.
 pub(crate) struct DispatchPermission {
     request: ValidatedRequest,
     target: ValidatedTargetIdentity,
@@ -52,8 +53,8 @@ impl DispatchPermission {
         self.request.to_adapter_request()
     }
 
-    // Consuming extraction belongs at the adapter's request boundary. The I/O implementation still
-    // owes one mutation request, including no hidden transport retries.
+    // The adapter consumes permission when building its mutation request. Consumption alone cannot
+    // prevent transport retries. The I/O implementation must send at most one mutation request.
     pub(crate) fn into_payload(self) -> (SetDeploymentImageRequest, TargetIdentity) {
         (
             self.request.to_adapter_request(),
@@ -1003,8 +1004,8 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
-        // A phase-typed snapshot can originate in another journal. Bind it to the current frozen
-        // row while excluding concurrent writes, then compare the encoded candidate as well.
+        // The phase type does not prove which journal supplied the snapshot. Compare all frozen
+        // facts with this journal's row under write exclusion, then check the candidate bytes.
         if loaded_operation_on(&transaction, operation.operation_id())?
             != Some(LoadedOperation::ReceiverObserved(operation.clone()))
         {
@@ -1093,8 +1094,8 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
-        // A phase-typed snapshot may come from another journal. Bind the whole frozen action,
-        // not just the same operation ID, while excluding concurrent changes through commit.
+        // A snapshot from another journal can have the same operation ID but different authority
+        // or request facts. Compare the complete authorized snapshot under write exclusion.
         if loaded_operation_on(&transaction, operation.request().operation_id())?
             != Some(LoadedOperation::Authorized(operation.clone()))
         {

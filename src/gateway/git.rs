@@ -1,7 +1,9 @@
-//! Fixed local Git receiver. Acknowledgement and present state never imply the same fact.
+//! Sends exact Git ref transitions to an operator-owned local receiver.
 //!
-//! Paths, executable and repositories belong to the operator. This module does not own replay
-//! policy: the journal must authorize a fresh dispatch, and attempted recovery only observes.
+//! A push acknowledgement records the original attempt's outcome. A later ref read records present
+//! state and cannot replace a missing acknowledgement. Paths, executable and repositories belong
+//! to the operator. Only confirmation of a fresh attempt commit grants dispatch permission.
+//! Recovery only observes.
 
 use std::{
     ffi::OsString,
@@ -40,7 +42,7 @@ pub enum Acknowledgement {
     Updated,
     /// Git definitely rejected the ref before sending its update command.
     RejectedBeforeSend,
-    /// The receiver rejected the ref transition; hooks may already have run.
+    /// The receiver rejected the ref transition. Hooks may already have run.
     ReceiverRejected,
     /// No qualifying per-ref acknowledgement was retained.
     Unknown,
@@ -149,7 +151,7 @@ pub(super) struct GitReceiver {
     packet_trace: Option<PathBuf>,
 }
 
-/// Preflight is not dispatch permission; it only binds the checked statement to this receiver.
+/// Binds a preflight-checked approval to this receiver without granting dispatch permission.
 pub(super) struct PreparedTransition<'receiver> {
     receiver: &'receiver GitReceiver,
     authorization: GitRefAuthorization,
@@ -305,8 +307,9 @@ impl GitReceiver {
     }
 
     async fn require_configuration(&self, repository: &Path) -> Result<(), GitError> {
-        // No includes, remotes, helpers, alternate object stores, shallow boundaries or replacement
-        // objects. Preparation must be complete and local; Git must not fetch missing objects.
+        // Exclude includes, remotes, helpers, alternate object stores, shallow boundaries and
+        // replacement objects. Preparation must be complete and local so Git never fetches missing
+        // objects during execution.
         for relative in [
             "objects/info/alternates",
             "objects/info/http-alternates",

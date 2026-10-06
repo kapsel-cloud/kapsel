@@ -76,7 +76,9 @@ pub struct ValidatedGitRefGrant {
 }
 
 impl ValidatedGitRefGrant {
-    /// Returns the exact authenticated statement and provenance, without appointing trust.
+    /// Consumes the grant into its approval, signer key ID and lowercase SHA-256 grant digest.
+    ///
+    /// These facts retain the original trust appointment. They do not appoint a new one.
     pub fn into_parts(self) -> (GitRefAuthorization, String, String) {
         (self.authorization, self.signer_key_id, self.grant_digest)
     }
@@ -109,12 +111,15 @@ pub fn sign_git_ref_grant(
     sign_grant_statement(&statement, GRANT_MAGIC, PURPOSE, signing_seed, key_id)
 }
 
-/// Verifies canonical Git authority against one external identity/key appointment.
+/// Verifies at most 4 KiB of canonical Git grant bytes under a separately appointed signer and key.
+///
+/// A valid signature authenticates the exact approval, not commit contents, ancestry, repository
+/// custody or execution. Receiver checks remain separate. This function performs no repository I/O.
 ///
 /// # Errors
 ///
-/// Rejects oversized, malformed, noncanonical, wrong-purpose and unauthenticated bytes. A valid
-/// signature establishes the exact approval, not commit contents, repository custody or execution.
+/// Rejects oversized, malformed, noncanonical, wrong-purpose or unauthenticated bytes, and invalid
+/// trust appointments.
 pub fn verify_git_ref_grant(
     bytes: &[u8],
     trust: &AuthorizationTrust,

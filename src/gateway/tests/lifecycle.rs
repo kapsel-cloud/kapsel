@@ -403,7 +403,7 @@ async fn transient_target_error_stays_authorized_and_retries_only_the_safe_get()
     gateway
         .submit_exact_for_test(&request, &authorization(&request))
         .unwrap();
-    // Existing format-4 retry storage is inert, including a nonzero historical value.
+    // The retained target_read_failures column is inert, even with a nonzero historical value.
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute(

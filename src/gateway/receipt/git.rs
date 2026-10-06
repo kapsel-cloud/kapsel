@@ -21,7 +21,10 @@ const NON_CLAIMS: &str = concat!(
     "no-complete-capture;no-witnessing;not-production",
 );
 
-/// Read-only Git approval, acknowledgement and observation facts authenticated by inspection.
+/// Read-only Git statement containing approval, acknowledgement and observation facts.
+///
+/// The result follows the retained acknowledgement, not the observed ref. Use
+/// [`GitInspectionReport::status`] to check authentication and trust acceptance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitStatement {
     pub(in crate::gateway) authorization: GitRefAuthorization,
@@ -205,6 +208,9 @@ pub(in crate::gateway) fn decode(bytes: &[u8]) -> Result<(String, GitStatement),
 }
 
 /// Bounded offline inspection result for Git transition evidence.
+///
+/// An authenticated statement can be present even when trust rejects the signer. Use
+/// [`Self::status`] rather than statement presence to decide whether inspection succeeded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitInspectionReport {
     status: InspectionStatus,
@@ -225,8 +231,11 @@ impl GitInspectionReport {
 
 /// Inspects bounded Git receipt bytes under explicit trust, time and limits without I/O.
 ///
+/// The caller supplies receipt bytes, trust bytes, evaluation time in Unix seconds and limits.
+/// Invalid limits or rejected structure produce [`InspectionStatus::StructureRejected`].
+///
 /// Authentication establishes the signed account, not receiver truth, hook delivery, CI,
-/// deployment or causation of a later observed ref. Kubernetes receipts use their original parser.
+/// deployment or causation of a later observed ref. Kubernetes receipts use their own parser.
 pub fn inspect_git_receipt(
     bytes: &[u8],
     trust: &[u8],

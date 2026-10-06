@@ -16,8 +16,8 @@ class GitServiceFixtureTests(unittest.TestCase):
         selected = shutil.which("git")
         self.assertIsNotNone(selected)
         assert selected is not None
-        # Only the version appointment is doubled. All repository operations and hooks execute
-        # through the copied local Git; this does not qualify the required Git 2.55.0 binary.
+        # Only Git's version response is mocked. Repository operations and hooks run through
+        # the copied local Git. This test does not qualify the required Git 2.55.0 binary.
         original_run = JOURNEY.run
 
         def run(*arguments: str, **kwargs) -> bytes:

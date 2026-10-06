@@ -1,8 +1,8 @@
-//! Owner-private journal opening, backup verification, and rollback-file recovery.
+//! Opens private journal files and handles interrupted rollback transactions on Unix.
 //!
-//! This implementation is Unix-specific and private to the journal. It creates no selectable
-//! storage interface and exposes no backup, restore, migration, or filesystem sequencing to gateway
-//! callers.
+//! Surviving history artifacts prevent treating a missing database as a fresh installation.
+//! Normal opening can recover a supported rollback journal. Replacement validation is read-only
+//! and refuses sidecars instead of recovering them. Older journal formats are rejected unchanged.
 
 use std::{
     fs::{self, File},

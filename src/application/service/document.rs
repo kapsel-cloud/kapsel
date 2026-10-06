@@ -44,7 +44,9 @@ struct Approval {
 
 /// Parses only the versioned service document, with no file or receiver access.
 ///
-/// The caller supplies the already confined journal path. Bytes never select a private path.
+/// Accepts at most 160 KiB, 128 key appointments and 32 approvals. The caller supplies the already
+/// confined journal path. Document bytes cannot select it, and this function does not validate it.
+/// Parsing checks structure and field grammar, not grant signatures or retained history.
 ///
 /// # Errors
 ///
@@ -130,7 +132,8 @@ fn decode_hex(text: &str, maximum: usize) -> Result<Vec<u8>, ServiceError> {
         .collect()
 }
 
-// Derived structs also accept positional sequences. Only maps may reach those decoders here.
+// Serde's derived struct decoders also accept positional arrays. Require an object here so input
+// cannot bypass the document's named-field grammar.
 struct MapOnly<T>(T);
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for MapOnly<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -148,7 +151,8 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MapOnly<T> {
     }
 }
 
-// Two bounded arrays share this private decoder. It never parses or allocates an extra element.
+// Stop before deserializing an element beyond the array limit. RejectExtra fails immediately,
+// even when that element contains malformed or deeply nested input.
 struct BoundedVec<T, const MAX: usize>(Vec<T>);
 impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedVec<T, MAX> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
