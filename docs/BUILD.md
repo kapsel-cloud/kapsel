@@ -195,9 +195,12 @@ The cases cover a healthy action, deliberately stale snapshot, service SIGKILL a
 change followed by explicit same-ID resumption, and caller loss before acknowledgement during a
 rollout that exceeds the observation window. Independent B remains selectable after A's frozen
 `UNKNOWN`. A conflicting follow-on ID was never provisioned and must remain unavailable to a hostile
-caller before and after cold replacement. Original receipts remain retrievable after catalog
-withdrawal. API-server audit independently counts product PATCH requests, excluding explicitly
-identified fixture writes used to prepare the faults.
+caller before and after cold replacement. The service-loss case also kills the service after
+terminal status but before the caller's first receipt export. It compares independently read
+format-6 grant/receipt/signer bytes through cold signing-key rotation, original-byte export and
+repeated same-ID selection. Original receipts remain retrievable after catalog withdrawal.
+API-server audit independently counts product PATCH requests, excluding explicitly identified
+fixture writes used to prepare the faults.
 
 The runner probes private-file and executable custody under the caller identity before submission.
 Private fixture credentials and evidence are copied into container-owned directories, not exposed

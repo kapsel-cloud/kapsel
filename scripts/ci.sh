@@ -27,6 +27,7 @@ run_static_checks() {
   python3 tests/qualification/test_storage_enospc.py
   python3 tests/qualification/test_git_artifact.py
   python3 tests/qualification/test_git_service.py
+  python3 tests/qualification/test_kind_agent_action_exercise.py
   python3 tools/release/test_artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
 
   printf '%s\n' "==> Rust line width"

@@ -7,11 +7,13 @@ import os
 import pathlib
 import re
 import shutil
+import sqlite3
 import ssl
 import subprocess
 import sys
 import time
 import urllib.request
+from contextlib import closing
 from typing import TypedDict
 
 
@@ -19,6 +21,30 @@ class CallerIdentity(TypedDict):
     user: int
     group: int
     extra_groups: list[int]
+
+
+def finalized_evidence(journal: pathlib.Path, operation_id: str) -> tuple[bytes, bytes, str]:
+    """Read bounded original evidence independently of the service's receipt projection."""
+    assert journal.is_file() and not journal.is_symlink()
+    assert journal.stat().st_size <= 64 * 1024 * 1024
+    with closing(sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        row = connection.execute(
+            """
+            SELECT signed_authorization_grant, receipt_bytes, receipt_key_id
+            FROM kubernetes_image_operations
+            WHERE operation_id = ? AND state = 'finalized'
+              AND length(signed_authorization_grant) BETWEEN 1 AND 4096
+              AND length(receipt_bytes) BETWEEN 1 AND 16384
+              AND length(receipt_key_id) BETWEEN 1 AND 128
+            """,
+            (operation_id,),
+        ).fetchone()
+    assert row is not None, "missing bounded finalized evidence"
+    grant, receipt_bytes, signer = row
+    assert isinstance(grant, bytes) and isinstance(receipt_bytes, bytes)
+    assert isinstance(signer, str) and len(signer.encode()) <= 128
+    return grant, receipt_bytes, signer
 
 
 def main() -> None:
@@ -300,6 +326,39 @@ def main() -> None:
                 expected = "SUCCEEDED"
             assert terminal["status"] == expected, (case, terminal)
 
+            retained: tuple[bytes, bytes, str] | None = None
+            journal = pathlib.Path("/var/lib/kapsel/journal.sqlite3")
+            if case == "service-loss":
+                # A terminal status establishes receipt commit, but no receipt has reached the
+                # caller. Kill before its first export, then change signing material while cold.
+                retained = finalized_evidence(journal, case)
+                assert retained[0] == pathlib.Path(case + ".grant").read_bytes()
+                assert retained[2] == "receipt-key-1"
+                pathlib.Path("/evidence/service-loss.grant").write_bytes(retained[0])
+                pathlib.Path("/evidence/service-loss.receipt").write_bytes(retained[1])
+                pathlib.Path("/evidence/service-loss.retained.json").write_text(
+                    json.dumps(
+                        {
+                            "journal_format": 6,
+                            "operation_id": case,
+                            "receipt_signer": retained[2],
+                            "grant_sha256": hashlib.sha256(retained[0]).hexdigest(),
+                            "receipt_sha256": hashlib.sha256(retained[1]).hexdigest(),
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                stop(crash=True)
+                rotated_seed = pathlib.Path("/etc/kapsel/receipt.seed")
+                rotated_seed.write_bytes(bytes([113]) * 32)
+                changed = json.loads(document)
+                changed["receipt_signing_key_id"] = "rotated-receipt-key"
+                publish(json.dumps(changed).encode())
+                start()
+                assert read("status", case) == terminal
+                assert finalized_evidence(journal, case) == retained
+
             frozen: bytes | None = None
             if case == "stale":
                 assert terminal["target_rejection"] == "STALE_APPROVAL", terminal
@@ -313,6 +372,17 @@ def main() -> None:
                     "phase": "finalized",
                 }
                 assert receipt(case, "duplicate") == frozen
+
+            if retained is not None:
+                assert frozen == retained[1], "receipt loss must not cause re-signing"
+                assert finalized_evidence(journal, case) == retained
+                # Restore only current fixture material; retained history is never rewritten.
+                stop()
+                shutil.copyfile("receipt.seed", "/etc/kapsel/receipt.seed")
+                publish(document)
+                start()
+                assert read("status", case) == terminal
+                assert receipt(case, "restored") == frozen
 
             if case == "caller-loss":
                 # A conflicting follow-on approval was deliberately never provisioned. Hostile ID
@@ -337,6 +407,7 @@ def main() -> None:
                     "status": expected,
                     "seconds": round(time.monotonic() - started, 3),
                     "receipt_sha256": digest,
+                    "receipt_commit_loss": retained is not None,
                 }
             )
             print(json.dumps(reports[-1]), flush=True)

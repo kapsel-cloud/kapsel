@@ -15,6 +15,7 @@
     "tests/qualification/test_git_service.py",
     "tests/qualification/run_kind_agent_action_workflow.py",
     "tests/qualification/kind_agent_action_exercise.py",
+    "tests/qualification/test_kind_agent_action_exercise.py",
     "tests/qualification/caller_custody_probe.py",
     "tests/qualification/retire_callers.py",
     "tests/qualification/snapshot_receipt.py",

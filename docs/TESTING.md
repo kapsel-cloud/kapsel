@@ -225,6 +225,33 @@ selection isolation, not a crash window. Gateway fault tests retain targeted fin
 A live `kind` lane is explicit, environment-owning evidence. It complements but never replaces
 fault-injection around every journal window.
 
+## Direct-execution retirement evidence
+
+[ADR 0012](decisions/0012-v04-beta-quality-bar.md#approved-execution-scope-and-compatibility)
+approves service-only HEAD execution. Approval does not retire existing checks. The direct adapters
+and demo controls remain until equivalent retained service checks pass.
+
+| Existing direct-demo assertion                               | Retained service owner                                                                                                  | Required evidence                                                                                                                                  |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kill after mutation; recover the same ID with one PATCH      | Linux `ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration`; packaged Kubernetes `service-loss` | Both kill/recovery traces, plus independent HTTP/API-server mutation counts                                                                        |
+| Kill after receipt commit but before caller export           | The same Linux test; packaged Kubernetes `service-loss` receipt-commit-loss trace                                       | A terminal status followed by SIGKILL before the first receipt export; this is not graceful restart                                                |
+| Changed signing material cannot replace the original receipt | The same Linux test; packaged receipt-commit-loss trace                                                                 | Compare independent format-6 grant/receipt/signer snapshots before loss and after cold key rotation, then compare caller exports to original bytes |
+| Repeated selection and reads add no mutation or observation  | Linux HTTP fixture; packaged API-server audit                                                                           | Linux GET/PATCH counts and packaged PATCH counts after same-ID selection and repeated original-byte retrieval                                      |
+| Detached inspection needs no receiver authority              | Linux inspection and packaged `kapsel inspect`                                                                          | Original receipt inspected under its original explicit purpose, key and evaluation time                                                            |
+| Receipt export failure does not change history               | Linux fixed-client export checks                                                                                        | Missing destination and existing-file refusal, then identical successful exports                                                                   |
+
+The packaged fixture reads format-6 evidence through a separate read-only SQLite connection. It
+requires bounded finalized grant/receipt bytes and the original signer, not a reconstructed receipt.
+`test_kind_agent_action_exercise.py` checks this reader offline; it does not establish that the
+packaged crash journey ran. The fixture retains the original bounded grant/receipt bytes and their
+digests in private evidence. It restores only current signing material, never history.
+
+Before removal, run the full Linux process lane and both packaged receiver journeys from
+[Build](BUILD.md#packaged-service-live-workflow) on the selected candidate. Keep source/executable
+and archive identities with the private evidence. A clean-source artifact is required; a dirty
+assembly or an earlier artifact cannot establish candidate acceptance. Keep the direct demo when
+these checks are missing. Historical published releases retain their own commands and bytes.
+
 ## Evidence classes
 
 ### Deterministic suite

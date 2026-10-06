@@ -1,10 +1,27 @@
 # Define the v0.4 beta quality bar
 
-Status: proposed. Date: 2026-10-04.
+Status: scope and compatibility accepted; qualification targets proposed. Date: 2026-10-04. Scope
+approval: 2026-10-06.
 
 This review recommends the scope, assurance work, and resource targets for a v0.4 beta. It does not
-change current contracts or establish beta readiness. Product-surface changes require maintainer
-approval. Implementation and candidate qualification remain separate work.
+change current contracts or establish beta readiness. The maintainer approved service-only HEAD
+execution and the v0.4.x compatibility boundary below on 2026-10-06. Implementation and candidate
+qualification remain separate work.
+
+## Approved execution scope and compatibility
+
+Retire direct `operate` and direct `mcp` execution from HEAD. The resident service and fixed ID-only
+client/MCP bridge become the sole maintained execution surface for both effects. Preserve operator
+provisioning, offline inspection and caller receipt export. This loses direct execution and macOS
+source execution; it is not transparent migration. Published tags and bytes are unchanged.
+
+Across v0.4.x, retain the service version-1 request grammar, existing grant/receipt/trust purposes,
+same-ID format-6 history and original grant/receipt bytes. Projection changes require explicit
+compatibility review. Incompatible formats require new identifiers and a retention decision. There
+is no migration, downgrade or stable public Rust API promise.
+
+Retire demo controls only after equivalent retained service/process/packaged attempt and
+receipt-loss checks pass. Approval does not establish implementation completion or beta readiness.
 
 ## Recommendation
 
@@ -316,9 +333,9 @@ the open scope or compatibility decisions.
 | Native resource baseline: qualification owners and `BUILD`/`TESTING`                                         | Reproducible released-binary workloads and accounting above, including physical layout, refusal and Git children. Obtain disposable native host access and explicit qualification authority first. Functional KAP-96 cases inform storage-pressure measurements; other resource workloads can proceed independently.                                                                                               |
 | Candidate integration: `SCOPE`, `RELEASE`, artifact/lifecycle/caller lanes                                   | Requires accepted scope, completed owning slices and native resources. Identify exact source/artifact bytes and pass all retained gates. Any changed bytes requalify affected evidence. Publication/signing/deployment remain separately authorized actions.                                                                                                                                                       |
 
-Open decisions are the service-only scope, beta compatibility promise, final native budgets, and
-whether generation/minimization merits a test dependency. No evidence here supports weakening the
-completion guarantee or observation-only recovery. Missing qualification includes the new model and
-negative controls, expanded fuzz targets, KAP-96 acceptance, and native resource/candidate lanes.
-Completing this review means an actionable proposal exists; it does not mean those implementations
-or v0.4 beta acceptance are complete.
+Service-only scope and the v0.4.x compatibility boundary are approved above. Open decisions are
+final native budgets and whether generation/minimization merits a test dependency. No evidence here
+supports weakening the completion guarantee or observation-only recovery. Missing qualification
+includes the new model and negative controls, expanded fuzz targets, KAP-96 acceptance, and native
+resource/candidate lanes. Completing this review means an actionable proposal exists; it does not
+mean those implementations or v0.4 beta acceptance are complete.
