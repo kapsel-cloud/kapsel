@@ -352,7 +352,8 @@ pub(crate) struct RetainedOperation {
 }
 
 impl Gateway {
-    /// Opens or creates the prototype journal.
+    /// Opens a single-trust legacy history for compatibility tests.
+    #[cfg(test)]
     pub(crate) fn open(
         path: impl AsRef<Path>,
         authorization_trust: AuthorizationTrust,
@@ -659,6 +660,7 @@ impl Gateway {
     ///
     /// Cancellation leaves the last committed phase intact. Attempted history is observation-only,
     /// and frozen observations are completed without further Kubernetes access. Export is separate.
+    #[cfg(test)]
     pub(crate) async fn reconcile(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -1224,6 +1226,6 @@ fn authorization_matches(authorization: &ExactAuthorization, request: &Validated
 
 #[cfg(test)]
 mod tests;
-pub(crate) use receipt::publication::{publish_receipt, receipt_filename};
+
 #[cfg(test)]
 pub(crate) use tests::dispatch_permission_for_test;

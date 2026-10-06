@@ -1,7 +1,6 @@
 //! Local evaluator command for the Kapsel effect-gateway developer beta.
 
 mod command;
-mod mcp;
 mod transport_support;
 
 use std::{io::Write as _, process::ExitCode};
@@ -9,9 +8,6 @@ use std::{io::Write as _, process::ExitCode};
 fn main() -> ExitCode {
     let mut arguments = std::env::args_os().skip(1);
     let subcommand = arguments.next();
-    if subcommand.as_deref() == Some(std::ffi::OsStr::new("mcp")) {
-        return mcp::run(arguments);
-    }
     match command::run(subcommand.into_iter().chain(arguments)) {
         Ok(output) => {
             if writeln!(std::io::stdout().lock(), "{output}").is_err() {

@@ -6,10 +6,38 @@ import os
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import time
 from collections.abc import Callable, Mapping
+from contextlib import closing
 from pathlib import Path
+
+
+def install_binaries(artifact: Path) -> None:
+    """Replace only executable bytes while the fixture service is cold."""
+    for source, destination in (
+        ("bin/kapsel", "/usr/bin/kapsel"),
+        ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
+        ("bin/kapsel-service-mcp", "/usr/bin/kapsel-service-mcp"),
+        ("libexec/kapsel/kapseld", "/usr/libexec/kapsel/kapseld"),
+    ):
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(artifact / source, destination)
+        os.chmod(destination, 0o755)
+
+
+def retained_row(journal: Path) -> tuple[object, ...]:
+    """Snapshot the bounded fixture row independently of the service projection."""
+    assert journal.is_file() and not journal.is_symlink()
+    assert journal.stat().st_size <= 64 * 1024 * 1024
+    with closing(sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        row = connection.execute(
+            "SELECT * FROM git_ref_operations WHERE operation_id = 'git-example'"
+        ).fetchone()
+    assert row is not None
+    return row
 
 
 def main() -> None:
@@ -130,15 +158,8 @@ def main() -> None:
         directory.mkdir(mode=0o755, exist_ok=True)
         directory.chmod(0o755)
 
-    for source, destination in (
-        ("bin/kapsel", "/usr/bin/kapsel"),
-        ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
-        ("bin/kapsel-service-mcp", "/usr/bin/kapsel-service-mcp"),
-        ("libexec/kapsel/kapseld", "/usr/libexec/kapsel/kapseld"),
-    ):
-        Path(destination).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile("/artifact/" + source, destination)
-        os.chmod(destination, 0o755)
+    retained_artifact = Path("/retained-artifact")
+    install_binaries(retained_artifact if retained_artifact.is_dir() else Path("/artifact"))
 
     git_binary = state / "git-bin/git"
     shutil.copyfile("/inputs/git", git_binary)
@@ -287,7 +308,10 @@ def main() -> None:
             write(control / "release", b"release receiver hook\n")
             wait(lambda: (control / "finished").exists())
             wait(lambda: not active_git())
+            attempted = retained_row(state / "journal.sqlite3")
+            install_binaries(Path("/artifact"))
             start()
+            assert retained_row(state / "journal.sqlite3") == attempted
             assert call("status", "git-example")["status"] == "IN_PROGRESS"
             assert call("submit", "git-example")["status"] == "ADMITTED"
 
@@ -316,6 +340,9 @@ def main() -> None:
         first_bytes = Path("/caller/first.bin").read_bytes()
         assert hashlib.sha256(first_bytes).hexdigest() == first["receipt_sha256"]
         stop()
+        original_row = retained_row(state / "journal.sqlite3")
+        install_binaries(Path("/artifact"))
+        assert retained_row(state / "journal.sqlite3") == original_row
         hook_inputs = {
             hook: (control / hook).read_text().splitlines() if (control / hook).exists() else []
             for hook in ("pre-receive", "post-receive")
@@ -332,6 +359,7 @@ def main() -> None:
         write(config / "operator.json", operator)
         shutil.rmtree(receiver)
         start()
+        assert retained_row(state / "journal.sqlite3") == original_row
         reopened = call("status", "git-example")
         assert reopened["status"] == expected and reopened["git"] == expected_evidence, reopened
         assert call("list")["entries"] == []
@@ -389,6 +417,7 @@ def main() -> None:
             "receipt_sha256": first["receipt_sha256"],
             "inspection": report["status"],
             "identical_retained_receipt": True,
+            "retained_format6_replacement": retained_artifact.is_dir(),
             "caller_private_access_denied": True,
         }
         Path("/evidence/summary.json").write_text(json.dumps(summary, indent=2) + "\n")

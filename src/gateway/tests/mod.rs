@@ -373,6 +373,7 @@ fn kill_child(child: &mut Child) {
 
 mod validation;
 
+mod legacy_service;
 mod lifecycle;
 
 #[allow(

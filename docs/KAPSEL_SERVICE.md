@@ -47,11 +47,11 @@ preview from current source and production support.
 ## Multi-action application boundary
 
 `kapsel::ServiceApplication` owns one bounded catalog over one gateway journal. It is not a map of
-single-action `Application` instances. The operator supplies at most 32 signed snapshot approvals,
-at most 4 KiB each, with printable ASCII labels of at most 128 bytes. Decoded grant/label data and
-the eventual encoded operator document each have a 160-KiB ceiling. Labels are display-only. Up to
-128 unique, separately appointed historical grant keys are accepted. Malformed global appointments
-or duplicate selectable IDs fail before journal opening. Operator provisioning, not target-name
+single-action execution adapters. The operator supplies at most 32 signed snapshot approvals, at
+most 4 KiB each, with printable ASCII labels of at most 128 bytes. Decoded grant/label data and the
+eventual encoded operator document each have a 160-KiB ceiling. Labels are display-only. Up to 128
+unique, separately appointed historical grant keys are accepted. Malformed global appointments or
+duplicate selectable IDs fail before journal opening. Operator provisioning, not target-name
 comparison or caller cooperation, determines action independence.
 
 Catalog listing returns at most eight handles after an exact optional identity cursor. It neither
@@ -97,7 +97,7 @@ already admitted. There is no dependency engine or automatic conflict-resolution
 The multi-action application parser accepts one UTF-8 JSON document of at most 160 KiB. Its required
 fields are `service_configuration_version` (integer `1`), `authorization_keys`, `approvals`, and
 `receipt_signing_key_id`. Unknown, duplicate, missing or wrong-typed fields fail closed. This
-grammar is separate from the legacy CLI/MCP operator document and is the fixed startup input.
+grammar is the sole execution startup document. The legacy direct CLI/MCP document is retired.
 
 `authorization_keys` contains at most 128 objects with exactly `key_id` and `public_key_hex`. Public
 keys are exactly 64 lowercase hexadecimal characters. `approvals` contains at most 32 objects with
@@ -208,8 +208,8 @@ present. Credentials and signing material never enter caller input or service re
 
 Startup opens `/etc/kapsel`, `/var/lib/kapsel`, and `/run/kapsel` descriptor-relatively and
 validates owners, modes, types, link counts, path components and stable consumed bytes. It retains
-those roots. `/var/lib/kapsel/receipts` is not opened or required. The separate legacy CLI/MCP
-operator document may still configure `receipt_directory`; the service document has no such field.
+those roots. `/var/lib/kapsel/receipts` is not opened or required. The service document has no
+`receipt_directory` field; the fixed client owns caller-selected export.
 
 Journal/SQLite sidecar access and socket preparation/bind resolve through Linux `/proc/self/fd/<fd>`
 paths for retained handles. Each procfs path must resolve to the same device, inode, owner, group,

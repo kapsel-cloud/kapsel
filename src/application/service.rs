@@ -11,7 +11,7 @@ pub use disposition::{
 };
 pub use document::{parse_service_operator_document, ServiceOperatorDocument};
 
-use super::{AgentRequest, Application, SetDeploymentImageReceipt, SetDeploymentImageStatus};
+use super::{AgentRequest, SetDeploymentImageReceipt, SetDeploymentImageStatus};
 use crate::{
     gateway::{AuthorizationTrust, Gateway, GatewayError, OperationState},
     OperationTargets,
@@ -531,9 +531,8 @@ impl ServiceApplication {
             .retained_git(operation_id)
             .map_err(map_gateway_error)?
         {
-            let status =
-                Application::status_of(retained.state, retained.rejection, retained.result)
-                    .map_err(|_| ServiceError::OperationFailure)?;
+            let status = super::status_of(retained.state, retained.rejection, retained.result)
+                .map_err(|_| ServiceError::OperationFailure)?;
             return Ok((
                 status,
                 OperationTargets {
@@ -552,7 +551,7 @@ impl ServiceApplication {
                 OperationTargets::default(),
             ));
         };
-        let status = Application::status_of(
+        let status = super::status_of(
             retained.operation.state(),
             retained.operation.target_rejection(),
             retained.operation.result(),
@@ -736,7 +735,10 @@ fn classify_stop(error: crate::gateway::ReconciliationError) -> Result<ServiceSt
 fn map_gateway_error(error: GatewayError) -> ServiceError {
     match error {
         GatewayError::UntrustedAuthorizationGrant => ServiceError::AuthorityUnavailable,
-        GatewayError::InvalidInput(_) => ServiceError::InvalidRequest,
+        GatewayError::InvalidInput(field) => {
+            let _ = field;
+            ServiceError::InvalidRequest
+        },
         GatewayError::MissingJournalHistory => ServiceError::StorageMissing,
         GatewayError::InvalidPersistedState
         | GatewayError::UnsupportedJournalVersion

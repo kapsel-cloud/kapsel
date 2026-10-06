@@ -21,9 +21,9 @@ Run these from the checkout. Ordinary Cargo builds need only Rust and a C compil
 
 The
 [one-command disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
-uses authenticated release binaries on a fresh native Linux/systemd VM. The older kind crash demo
-below is not the resident service. Live, native and artifact gates are separate from the everyday
-loop.
+uses authenticated release binaries on a fresh native Linux/systemd VM. HEAD execution requires the
+resident service; direct/macOS-source execution and the source-only crash demo are retired. Live,
+native and artifact gates are separate from the everyday loop.
 
 ## Prerequisites
 
@@ -44,8 +44,8 @@ target/debug/kapsel --version
 ```
 
 This builds repository HEAD, not the published v0.2.0 artifact. See [Commands](COMMANDS.md) for the
-CLI's fixed forms and operator-owned inputs. For an end-to-end source demonstration, use the
-[crash-recovery demo](#public-crash-recovery-demonstration).
+CLI's retained provisioning/inspection forms and operator-owned inputs. For execution, use the
+[service operator guide](KAPSEL_SERVICE_OPERATOR.md).
 
 ## Deterministic gate and formatting
 
@@ -131,21 +131,19 @@ starts Docker. See [the hooks](../.githooks/) for exact refusal and caching beha
 Choose the smallest check that owns the changed behavior. Run the complete local gate before handoff
 when practical. Additional environment requirements are listed in the sections below.
 
-| Change                             | Command                                                                           |
-| ---------------------------------- | --------------------------------------------------------------------------------- |
-| Python tooling                     | `cargo xtask ci static`                                                           |
-| Formatting pipeline                | `python3 tools/dev/test_format.py`                                                |
-| Effect gateway                     | `cargo test --locked -p kapsel`                                                   |
-| Service and private harness        | `cargo test --locked -p kapsel-daemon --features test-harness`                    |
-| Shared operator authority          | `cargo test --locked -p kapsel-authority`                                         |
-| Service installed assets           | `cargo test --locked -p kapsel-daemon --test install_assets`                      |
-| Direct MCP adapter                 | `cargo test --locked --test e2e_mcp_adapter`                                      |
-| Service MCP bridge                 | `cargo test --locked -p kapsel-daemon --features test-harness --test service_mcp` |
-| Fresh-session caller fixture       | `python3 examples/test_fresh_session_caller.py`                                   |
-| Crash-demo harness, without Docker | `./examples/test-demo-harness.sh`                                                 |
-| Seeded lifecycle simulation        | `./tests/qualification/run-simulation.sh`                                         |
-| Hostile-input fuzz smoke           | `./fuzz/smoke.sh --fuzz-target inspect_receipt`                                   |
-| Live Kubernetes behavior           | `./tests/qualification/run-kind-effect-gateway.sh`                                |
+| Change                       | Command                                                                           |
+| ---------------------------- | --------------------------------------------------------------------------------- |
+| Python tooling               | `cargo xtask ci static`                                                           |
+| Formatting pipeline          | `python3 tools/dev/test_format.py`                                                |
+| Effect gateway               | `cargo test --locked -p kapsel`                                                   |
+| Service and private harness  | `cargo test --locked -p kapsel-daemon --features test-harness`                    |
+| Shared operator authority    | `cargo test --locked -p kapsel-authority`                                         |
+| Service installed assets     | `cargo test --locked -p kapsel-daemon --test install_assets`                      |
+| Service MCP bridge           | `cargo test --locked -p kapsel-daemon --features test-harness --test service_mcp` |
+| Fresh-session caller fixture | `python3 examples/test_fresh_session_caller.py`                                   |
+| Seeded lifecycle simulation  | `./tests/qualification/run-simulation.sh`                                         |
+| Hostile-input fuzz smoke     | `./fuzz/smoke.sh --fuzz-target inspect_receipt`                                   |
+| Live Kubernetes behavior     | `./tests/qualification/run-kind-effect-gateway.sh`                                |
 
 To run the fresh-session caller fixture against the real MCP bridge and a scripted socket (not
 Kubernetes), build the test-harness binary first:
@@ -264,15 +262,10 @@ not run broad Docker or kind cleanup. The native example separately retains its 
 
 ## Public crash-recovery demonstration
 
-Requires Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
-
-```sh
-./examples/demo-kind-crash-recovery.sh
-```
-
-The source demo builds its Rust harness, refuses pre-existing kind clusters, and cleans up its owned
-cluster and workspace. To run the published artifact without a Rust toolchain, follow the
-[v0.2.0 evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md#fastest-path).
+The direct source demo is retired from HEAD. Use the
+[v0.2.0 evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md#fastest-path)
+only with that release's original binaries and history. Current crash qualification uses the
+[packaged service workflow](#packaged-service-live-workflow) and retained Linux process tests.
 
 ## Receiver-recovery regressions
 
@@ -354,7 +347,13 @@ service-crash windows; no product test hook is used. The cases check exact ref a
 observation-only same-ID recovery, original receipt retrieval after catalog/material withdrawal, and
 detached inspection. Hook inputs are not packet counts or proof of complete hook delivery.
 Containers are removed; the printed private evidence workspace is retained. This is not native
-systemd, power-loss, or live-repository qualification.
+systemd, power-loss, or live-repository qualification. To qualify retained format-6 history from a
+prior producer, add
+`--retained-archive /absolute/prior.tar.gz --retained-revision "$prior_revision"` to this command
+and the Kubernetes packaged workflow command. Both archives must be clean-source and bound to their
+exact revisions; the evidence records both identities. See
+[retirement evidence](TESTING.md#direct-execution-retirement-evidence) for the cold-replacement
+trace.
 
 See the [Git service example](GIT_REF_TRANSITION.md) for material, semantics and evidence limits.
 The owning deterministic gate remains `cargo xtask ci`; the Linux process gate below is also
@@ -695,14 +694,9 @@ source scan does not replace the exact-artifact SBOM scan in the candidate workf
 
 ## MCP adapter
 
-After building the local executable, start the fixed stdio process with operator-owned
-configuration:
-
-```sh
-target/debug/kapsel mcp --operator-config /absolute/operator.json
-```
-
-See [MCP](MCP.md) for protocol details. The focused-gate table lists its black-box test.
+The fixed service bridge takes no operator document or arguments. The caller identity launches
+`/usr/bin/kapsel-service-mcp` against the resident service. See [MCP](MCP.md) for framing and
+ID-only tools; the focused-gate table owns source checks. There is no direct `kapsel mcp` form.
 
 ## Release artifact
 
@@ -785,7 +779,7 @@ pins as local development. Optional qualification tools keep their pins in their
 | `tools/checks/`         | Source checks and their regression tests                           |
 | `tools/release/`        | Assembly, standalone verification, SBOM scanning and their tests   |
 | `tests/qualification/`  | Environment-specific and long-running evidence lanes               |
-| `examples/`             | Maintained caller and crash demonstration, with their tests        |
+| `examples/`             | Maintained fresh-session caller and its tests                      |
 | `fuzz/`                 | Fuzz workspace and bounded smoke runner                            |
 
 Rust owns product semantics; Python and shell retain external orchestration and independent checks.

@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from kind_agent_action_exercise import finalized_evidence
+from kind_agent_action_exercise import finalized_evidence, retained_row
 
 
 class RetainedEvidenceTests(unittest.TestCase):
@@ -34,15 +34,22 @@ class RetainedEvidenceTests(unittest.TestCase):
             finalized_evidence(self.journal, "original"),
             (b"original grant", b"original receipt", "original-key"),
         )
+        self.assertEqual(
+            retained_row(self.journal, "original"),
+            ("original", "finalized", b"original grant", b"original receipt", "original-key"),
+        )
         self.assertEqual(self.journal.read_bytes(), self.original_bytes)
 
     def test_missing_identity_and_unfinalized_history_are_not_evidence(self) -> None:
         with self.assertRaises(AssertionError):
             finalized_evidence(self.journal, "other")
+        with self.assertRaises(AssertionError):
+            retained_row(self.journal, "other")
         with sqlite3.connect(self.journal) as connection:
             connection.execute("UPDATE kubernetes_image_operations SET state = 'receiver_observed'")
         with self.assertRaises(AssertionError):
             finalized_evidence(self.journal, "original")
+        self.assertEqual(retained_row(self.journal, "original")[1], "receiver_observed")
 
     def test_old_format_is_rejected_unchanged(self) -> None:
         with sqlite3.connect(self.journal) as connection:
@@ -50,6 +57,8 @@ class RetainedEvidenceTests(unittest.TestCase):
         original = self.journal.read_bytes()
         with self.assertRaises(AssertionError):
             finalized_evidence(self.journal, "original")
+        with self.assertRaises(AssertionError):
+            retained_row(self.journal, "original")
         self.assertEqual(self.journal.read_bytes(), original)
 
     def test_oversized_or_wrong_type_evidence_is_rejected(self) -> None:

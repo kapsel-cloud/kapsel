@@ -1,21 +1,16 @@
-//! Application-owned composition for the one effect-gateway operation.
-//!
-//! This module separates request-only agent intent from operator-owned authorization, Kubernetes
-//! authority, receipt signing material, and durable paths. It owns the one shared operator-document
-//! grammar but is not a command adapter.
+//! Operator provisioning and resident-service composition for the two concrete effects.
 
 mod service;
+
 use std::{
     error::Error,
     fmt, fs, io,
     os::unix::fs::{MetadataExt, PermissionsExt},
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
-use ed25519_dalek::SigningKey;
 use http_body_util::Limited;
 use kube::{config::KubeConfigOptions, Config};
-use serde::Deserialize;
 pub use service::{
     parse_service_operator_document, ApprovedAction, ExecutionCondition, ExecutionDisposition,
     ExecutionObservation, HistoryEntry, HistoryPage, ServiceAdmission, ServiceApplication,
@@ -25,200 +20,138 @@ pub use service::{
 use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::gateway::{
-    sign_authorization_grant, validate_key_id, validate_private_directory,
-    verify_authorization_grant, AuthorizationTrust, ExactAuthorization, Gateway, GatewayError,
-    LoadedOperation, OperationResult, OperationState, ReceiptReference, ReceiptSettings,
-    ReconciliationError, SetDeploymentImageRequest, SubmissionResult, TargetRejection,
+    sign_authorization_grant, ExactAuthorization, OperationResult, OperationState, TargetRejection,
 };
 
-/// Request-only caller input for the sole supported operation.
-pub type AgentRequest = SetDeploymentImageRequest;
+/// Exact Kubernetes operation tuple retained by operator approval and service history.
+pub type AgentRequest = crate::gateway::SetDeploymentImageRequest;
 
-/// Inputs controlled by the operator before an application instance opens durable state.
+pub use kapsel_authority::ValidatedServiceOperatorInputs;
+
+/// Validates the service grant, authorization key, receipt seed, and evaluator trust together.
 ///
-/// The signed grant, trust, Kubernetes client, signing seed, and paths must come from application
-/// composition rather than agent request fields. This type deliberately does not implement
-/// `Debug`, preventing accidental diagnostics from printing its secret-bearing fields.
-pub struct OperatorConfiguration {
-    /// Journal location owned by the operator.
-    pub journal_path: PathBuf,
-    /// Optional owner-private destination used only by explicit receipt export.
-    pub receipt_output_directory: Option<PathBuf>,
-    /// Out-of-band trust for the exact authorization-grant signer.
-    pub authorization_trust: AuthorizationTrust,
-    /// One owner-signed exact grant used for request submission.
-    pub signed_authorization_grant: Vec<u8>,
-    /// Kubernetes authority constructed outside agent input.
-    ///
-    /// Custom clients must not retry mutation requests after transmission. The operator-document
-    /// constructor disables kube-client's server-response retry layer for this reason.
-    pub kubernetes_client: kube::Client,
-    /// Receipt-signing seed controlled by the operator.
-    pub receipt_signing_seed: [u8; 32],
-    /// Public identity for the receipt-signing key.
-    pub receipt_signing_key_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OperatorDocument {
-    signed_authorization_grant: PathBuf,
-    authorization_key_id: String,
-    authorization_public_key: PathBuf,
-    kubeconfig: PathBuf,
-    journal: PathBuf,
-    receipt_directory: Option<PathBuf>,
-    receipt_signing_seed: PathBuf,
-    receipt_signing_key_id: String,
-}
-
-/// Opens the application from the existing operator document and caller-owned file reader.
-///
-/// The supplied reader owns file-opening policy and must return bytes from the opened file. This
-/// prototype-scoped composition seam exists only to keep the CLI, MCP, and Kapsel service on one
-/// operator grammar.
+/// The returned value contains only public identity. This function performs no filesystem,
+/// network, environment, clock, or durable-state access.
 ///
 /// # Errors
 ///
-/// Returns a typed application configuration error when the document exceeds 16 KiB, one input
-/// is invalid, or application composition fails.
-pub async fn open_application_from_operator_document(
-    document: &[u8],
-    read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
-) -> Result<Application, ApplicationError> {
-    let operator = parse_operator_document(document)?;
-    open_operator_document(operator, None, read_file).await
-}
-
-/// Opens the application only when the operator document uses the supplied fixed state paths.
-///
-/// The journal access path must resolve through a retained handle for the same state root.
-/// The supplied reader owns file-opening policy and must return bytes from the validated opened
-/// inode. Kapsel service startup uses this form to retain the existing grammar without allowing
-/// another journal root. The unused receipt export setting may be absent.
-///
-/// # Errors
-///
-/// Returns [`ApplicationError::InvalidOperatorConfiguration`] when the document is malformed or
-/// exceeds 16 KiB, its state paths differ, or the supplied reader rejects an input. Other typed
-/// application configuration errors are preserved.
-pub async fn open_application_from_fixed_operator_document(
-    document: &[u8],
-    fixed_journal_path: &Path,
-    journal_access_path: &Path,
-    read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
-) -> Result<Application, ApplicationError> {
-    let operator = parse_operator_document(document)?;
-    let fixed_paths = FixedStatePaths {
-        journal: fixed_journal_path,
-        journal_access: journal_access_path,
-    };
-    open_operator_document(operator, Some(fixed_paths), read_file).await
-}
-
-#[derive(Clone, Copy)]
-struct FixedStatePaths<'a> {
-    journal: &'a Path,
-    journal_access: &'a Path,
-}
-
-fn parse_operator_document(document: &[u8]) -> Result<OperatorDocument, ApplicationError> {
-    if document.is_empty() || document.len() > 16 * 1024 {
-        return Err(ApplicationError::InvalidOperatorConfiguration);
-    }
-    serde_json::from_slice(document).map_err(|_| ApplicationError::InvalidOperatorConfiguration)
-}
-
-async fn open_operator_document(
-    operator: OperatorDocument,
-    fixed_state_paths: Option<FixedStatePaths<'_>>,
-    mut read_file: impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
-) -> Result<Application, ApplicationError> {
-    for path in [
-        &operator.signed_authorization_grant,
-        &operator.authorization_public_key,
-        &operator.kubeconfig,
-        &operator.journal,
-        &operator.receipt_signing_seed,
-    ] {
-        if !path.is_absolute() {
-            return Err(ApplicationError::InvalidOperatorConfiguration);
-        }
-    }
-    if let Some(paths) = fixed_state_paths {
-        if operator.journal != paths.journal {
-            return Err(ApplicationError::InvalidOperatorConfiguration);
-        }
-    }
-    let journal_path = fixed_state_paths.map_or_else(
-        || operator.journal.clone(),
-        |paths| paths.journal_access.to_owned(),
-    );
-    let receipt_output_directory = operator.receipt_directory.clone();
-    let signed_authorization_grant = read_operator_file(
-        &mut read_file,
-        &operator.signed_authorization_grant,
-        4 * 1024,
-    )?;
-    let authorization_public_key =
-        read_operator_exact_32(&mut read_file, &operator.authorization_public_key)?;
-    let receipt_signing_seed =
-        read_operator_exact_32(&mut read_file, &operator.receipt_signing_seed)?;
-    if fixed_state_paths.is_some() {
-        let grant = verify_authorization_grant(
-            &signed_authorization_grant,
-            &AuthorizationTrust {
-                key_id: operator.authorization_key_id.clone(),
-                public_key: authorization_public_key,
-            },
-        )
-        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
-        if grant.authorization.approved_target.is_none() {
-            return Err(ApplicationError::InvalidOperatorConfiguration);
-        }
-    }
-    let kubeconfig = read_operator_file(&mut read_file, &operator.kubeconfig, 16 * 1024)?;
-    let kubernetes_client = load_operator_kubernetes_client(&kubeconfig).await?;
-
-    let application = Application::open(OperatorConfiguration {
-        journal_path,
-        receipt_output_directory,
-        authorization_trust: AuthorizationTrust {
-            key_id: operator.authorization_key_id,
-            public_key: authorization_public_key,
-        },
+/// Returns [`ApplicationError::InvalidOperatorConfiguration`] for malformed or inconsistent input.
+pub fn validate_service_operator_inputs(
+    signed_authorization_grant: &[u8],
+    authorization_public_key: &[u8; 32],
+    receipt_signing_seed: &[u8; 32],
+    receipt_trust: &[u8],
+) -> Result<ValidatedServiceOperatorInputs, ApplicationError> {
+    kapsel_authority::validate_service_operator_inputs(
         signed_authorization_grant,
-        kubernetes_client,
+        authorization_public_key,
         receipt_signing_seed,
-        receipt_signing_key_id: operator.receipt_signing_key_id,
-    })?;
-    Ok(application)
+        receipt_trust,
+    )
+    .map_err(|_| ApplicationError::InvalidOperatorConfiguration)
 }
 
-fn read_operator_file(
-    read_file: &mut impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
-    path: &Path,
-    maximum: usize,
+/// Operator-only inputs for provisioning one exact authorization grant.
+///
+/// This type deliberately does not implement `Debug` because it contains signing material.
+pub struct GrantProvisioning<'a> {
+    /// Exact operation tuple the owner is authorizing.
+    pub authorization: &'a ExactAuthorization,
+    /// Owner-controlled Ed25519 signing seed.
+    pub signing_seed: &'a [u8; 32],
+    /// Public identity for the authorization signing key.
+    pub signing_key_id: &'a str,
+}
+
+/// Produces a canonical fixed-purpose grant from explicit operator authority.
+///
+/// # Errors
+///
+/// Returns [`ApplicationError::InvalidGrantProvisioning`] for an invalid tuple or key identity.
+pub fn provision_exact_grant(
+    provisioning: &GrantProvisioning<'_>,
 ) -> Result<Vec<u8>, ApplicationError> {
-    let bytes = read_file(path, maximum)?;
-    if bytes.len() > maximum {
-        return Err(ApplicationError::InvalidOperatorConfiguration);
-    }
-    Ok(bytes)
+    sign_authorization_grant(
+        provisioning.authorization,
+        provisioning.signing_seed,
+        provisioning.signing_key_id,
+    )
+    .map_err(|_| ApplicationError::InvalidGrantProvisioning)
 }
 
-fn read_operator_exact_32(
-    read_file: &mut impl FnMut(&Path, usize) -> Result<Vec<u8>, ApplicationError>,
-    path: &Path,
-) -> Result<[u8; 32], ApplicationError> {
-    read_operator_file(read_file, path, 32)?
-        .try_into()
-        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)
+/// Signs an exact Git transition after checking the operator's fixed receiver and objects.
+///
+/// This performs read-only preflight, not a push or journal admission. The later exact lease owns
+/// rejection if the ref changes after provisioning.
+///
+/// # Errors
+///
+/// Returns [`ApplicationError::InvalidGrantProvisioning`] for invalid inputs or failed preflight.
+pub async fn provision_git_ref_grant(
+    authorization: &kapsel_authority::GitRefAuthorization,
+    receiver: &crate::GitReceiverConfiguration,
+    signing_seed: &[u8; 32],
+    signing_key_id: &str,
+) -> Result<Vec<u8>, ApplicationError> {
+    let grant = kapsel_authority::sign_git_ref_grant(authorization, signing_seed, signing_key_id)
+        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+    receiver
+        .validate_preparation(authorization)
+        .await
+        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+    Ok(grant)
+}
+
+/// Acquires the operator-selected Deployment version and signs one snapshot grant.
+///
+/// No snapshot fields are accepted in the proposal. Kubernetes authority is an explicit bounded
+/// kubeconfig, never ambient configuration. This does not mutate Kubernetes or create a journal.
+///
+/// # Errors
+///
+/// Returns a bounded configuration or provisioning failure for invalid input or failed acquisition.
+pub async fn provision_snapshot_grant(
+    provisioning: &GrantProvisioning<'_>,
+    kubeconfig: &[u8],
+) -> Result<Vec<u8>, ApplicationError> {
+    use crate::gateway::{
+        ApprovedTarget, DeploymentImageAdapter, KubernetesDeploymentImageAdapter,
+    };
+    if kubeconfig.len() > 16 * 1024 || provisioning.authorization.approved_target.is_some() {
+        return Err(ApplicationError::InvalidGrantProvisioning);
+    }
+    provision_exact_grant(provisioning)?;
+    let client = load_operator_kubernetes_client(kubeconfig).await?;
+    let mut adapter = KubernetesDeploymentImageAdapter::new(client);
+    let proposal = provisioning.authorization;
+    let request = AgentRequest {
+        operation_id: proposal.operation_id.clone(),
+        namespace: proposal.namespace.clone(),
+        deployment: proposal.deployment.clone(),
+        container: proposal.container.clone(),
+        immutable_image_digest: proposal.immutable_image_digest.clone(),
+    };
+    let observed = adapter
+        .identify(&request)
+        .await
+        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+    let mut authorization = proposal.clone();
+    authorization.approved_target = Some(ApprovedTarget {
+        uid: observed.deployment_uid,
+        resource_version: observed.resource_version,
+    });
+    provision_exact_grant(&GrantProvisioning {
+        authorization: &authorization,
+        signing_seed: provisioning.signing_seed,
+        signing_key_id: provisioning.signing_key_id,
+    })
 }
 
 async fn load_operator_kubernetes_client(bytes: &[u8]) -> Result<kube::Client, ApplicationError> {
     const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
-
+    if bytes.is_empty() || bytes.len() > 16 * 1024 {
+        return Err(ApplicationError::InvalidOperatorConfiguration);
+    }
     let text =
         std::str::from_utf8(bytes).map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
     let mut kubeconfig = kube::config::Kubeconfig::from_yaml(text)
@@ -231,8 +164,7 @@ async fn load_operator_kubernetes_client(bytes: &[u8]) -> Result<kube::Client, A
     if proxy_placeholder_was_added {
         client_config.proxy_url = None;
     }
-    // kube-client retries PATCH on 429/503/504 by default. One gateway dispatch must remain one
-    // mutation request, even when an error response follows a receiver-side effect.
+    // A receiver-side effect followed by 429/503/504 must remain one mutation request.
     client_config.default_retry = false;
     let response_limit =
         MapResponseBodyLayer::new(|body| Limited::new(body, KUBERNETES_RESPONSE_BYTES_MAX));
@@ -290,174 +222,28 @@ fn configure_explicit_kubeconfig(
     }
 }
 
-pub use kapsel_authority::ValidatedServiceOperatorInputs;
-
-/// Validates the service grant, authorization key, receipt seed, and evaluator trust together.
-///
-/// The returned value contains only public identity. This function performs no filesystem,
-/// network, environment, clock, or durable-state access.
-///
-/// # Errors
-///
-/// Returns [`ApplicationError::InvalidOperatorConfiguration`] when any input is malformed or the
-/// grant, public key, receipt seed, and trust do not appoint one consistent authority.
-pub fn validate_service_operator_inputs(
-    signed_authorization_grant: &[u8],
-    authorization_public_key: &[u8; 32],
-    receipt_signing_seed: &[u8; 32],
-    receipt_trust: &[u8],
-) -> Result<ValidatedServiceOperatorInputs, ApplicationError> {
-    kapsel_authority::validate_service_operator_inputs(
-        signed_authorization_grant,
-        authorization_public_key,
-        receipt_signing_seed,
-        receipt_trust,
-    )
-    .map_err(|_| ApplicationError::InvalidOperatorConfiguration)
-}
-
-/// Operator-only inputs for provisioning one exact authorization grant.
-///
-/// This type deliberately does not implement `Debug` because it contains signing material.
-pub struct GrantProvisioning<'a> {
-    /// Exact operation tuple the owner is authorizing.
-    pub authorization: &'a ExactAuthorization,
-    /// Owner-controlled Ed25519 signing seed.
-    pub signing_seed: &'a [u8; 32],
-    /// Public identity for the authorization signing key.
-    pub signing_key_id: &'a str,
-}
-
-/// Produces the canonical fixed-purpose grant supplied later through operator configuration.
-///
-/// # Errors
-///
-/// Returns [`ApplicationError::InvalidGrantProvisioning`] when the authorization tuple or signing
-/// key identity violates the bounded grant grammar.
-pub fn provision_exact_grant(
-    provisioning: &GrantProvisioning<'_>,
-) -> Result<Vec<u8>, ApplicationError> {
-    sign_authorization_grant(
-        provisioning.authorization,
-        provisioning.signing_seed,
-        provisioning.signing_key_id,
-    )
-    .map_err(|_| ApplicationError::InvalidGrantProvisioning)
-}
-
-/// Signs an exact Git transition only after checking the operator's fixed receiver and objects.
-///
-/// This performs read-only preflight, not a push or journal admission. Submission repeats the
-/// check; the later exact lease still owns rejection if the ref changes after provisioning.
-///
-/// # Errors
-///
-/// Returns [`ApplicationError::InvalidGrantProvisioning`] for invalid authority or failed
-/// preflight.
-pub async fn provision_git_ref_grant(
-    authorization: &kapsel_authority::GitRefAuthorization,
-    receiver: &crate::GitReceiverConfiguration,
-    signing_seed: &[u8; 32],
-    signing_key_id: &str,
-) -> Result<Vec<u8>, ApplicationError> {
-    let grant = kapsel_authority::sign_git_ref_grant(authorization, signing_seed, signing_key_id)
-        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
-    receiver
-        .validate_preparation(authorization)
-        .await
-        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
-    Ok(grant)
-}
-
-/// Acquires the operator-selected Deployment version and signs one snapshot grant.
-///
-/// No snapshot fields are accepted in the proposal. Kubernetes authority is an explicit bounded
-/// kubeconfig, never ambient configuration. The production adapter owns target validation and GET
-/// deadline. This function does not mutate Kubernetes or create a journal.
-///
-/// # Errors
-///
-/// Returns a bounded configuration or provisioning failure for invalid input or failed acquisition.
-pub async fn provision_snapshot_grant(
-    provisioning: &GrantProvisioning<'_>,
-    kubeconfig: &[u8],
-) -> Result<Vec<u8>, ApplicationError> {
-    use crate::gateway::{
-        ApprovedTarget, DeploymentImageAdapter, KubernetesDeploymentImageAdapter,
-    };
-    if kubeconfig.len() > 16 * 1024 || provisioning.authorization.approved_target.is_some() {
-        return Err(ApplicationError::InvalidGrantProvisioning);
-    }
-    // Validate the entire proposal and signer before network access. These bytes are not published.
-    provision_exact_grant(provisioning)?;
-    let client = load_operator_kubernetes_client(kubeconfig).await?;
-    let mut adapter = KubernetesDeploymentImageAdapter::new(client);
-    let proposal = provisioning.authorization;
-    let request = AgentRequest {
-        operation_id: proposal.operation_id.clone(),
-        namespace: proposal.namespace.clone(),
-        deployment: proposal.deployment.clone(),
-        container: proposal.container.clone(),
-        immutable_image_digest: proposal.immutable_image_digest.clone(),
-    };
-    let observed = adapter
-        .identify(&request)
-        .await
-        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
-    let mut authorization = proposal.clone();
-    authorization.approved_target = Some(ApprovedTarget {
-        uid: observed.deployment_uid,
-        resource_version: observed.resource_version,
-    });
-    provision_exact_grant(&GrantProvisioning {
-        authorization: &authorization,
-        signing_seed: provisioning.signing_seed,
-        signing_key_id: provisioning.signing_key_id,
-    })
-}
-
-/// Application-level report shared by the local CLI and fixed MCP adapters.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OperationReport {
-    /// Stable operation identity fixed by the configured authorization grant.
-    pub operation_id: String,
-    /// Current durable lifecycle state.
-    pub state: OperationState,
-    /// Receiver result, present only after receiver observation.
-    pub result: Option<OperationResult>,
-    /// Pre-attempt target rejection, distinct from a receiver result.
-    pub target_rejection: Option<TargetRejection>,
-    /// Frozen receipt reference, present only after finalization.
-    pub receipt: Option<ReceiptReference>,
-    /// Distinct durable approval, observation and mutation-precondition facts.
-    pub targets: crate::OperationTargets,
-}
-
-/// Read-only exact receipt projection for the configured Deployment image operation.
+/// Read-only exact receipt projection for either service effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SetDeploymentImageReceipt {
     /// No durable operation exists for the supplied identity.
     NotFound,
     /// The operation exists but has no finalized receipt.
     NotReady,
-    /// Exact frozen receipt bytes and their expected lowercase SHA-256 digest.
+    /// Original canonical receipt bytes and their frozen lowercase SHA-256 digest.
     Ready {
-        /// Exact canonical receipt bytes read from validated private storage.
+        /// Exact bytes read from validated private storage.
         bytes: Vec<u8>,
         /// Expected SHA-256 digest frozen in the lifecycle journal.
         sha256: String,
     },
 }
 
-/// Read-only operation status, also used by the multi-effect service.
-///
-/// The historical type name remains for the direct Kubernetes API; each service effect owns its
-/// success and failure predicates.
+/// Read-only service disposition; each effect owns its success and failure predicates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetDeploymentImageStatus {
     /// No durable operation exists for the supplied identity.
     NotFound,
-    /// The operation exists but has not reached a terminal disposition.
+    /// The operation has not reached a terminal disposition.
     InProgress,
     /// The exact target was rejected before a mutation attempt.
     NotAttempted(TargetRejection),
@@ -469,289 +255,25 @@ pub enum SetDeploymentImageStatus {
     Unknown,
 }
 
-/// Compile-time composition root for the evaluator application.
-pub struct Application {
-    gateway: Gateway,
-    kubernetes_client: kube::Client,
-    signed_authorization_grant: Vec<u8>,
-    authorized_request: AgentRequest,
-    receipt_signing_key: SigningKey,
-    receipt_signing_key_id: String,
-    receipt_output_directory: Option<PathBuf>,
-}
-
-impl Application {
-    /// Validates operator configuration before opening or creating the journal.
-    ///
-    /// Grant trust, canonical grant bytes, receipt key identity, and journal safety are
-    /// checked before durable state is opened. Constructing the Kubernetes client and protecting
-    /// its credentials remain operator responsibilities.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed configuration error when grant trust, receipt authority, or paths are
-    /// unsafe. Journal open, durability, migration, and filesystem failures are returned as
-    /// [`ApplicationError::OperationFailure`].
-    pub fn open(configuration: OperatorConfiguration) -> Result<Self, ApplicationError> {
-        let verified_grant = verify_authorization_grant(
-            &configuration.signed_authorization_grant,
-            &configuration.authorization_trust,
-        )
-        .map_err(|_| ApplicationError::InvalidAuthorizationConfiguration)?;
-        validate_key_id(&configuration.receipt_signing_key_id)
-            .map_err(|_| ApplicationError::InvalidReceiptConfiguration)?;
-        validate_journal_path(&configuration.journal_path)?;
-
-        let authorized_request = AgentRequest {
-            operation_id: verified_grant.authorization.operation_id,
-            namespace: verified_grant.authorization.namespace,
-            deployment: verified_grant.authorization.deployment,
-            container: verified_grant.authorization.container,
-            immutable_image_digest: verified_grant.authorization.immutable_image_digest,
-        };
-        let gateway = Gateway::open(
-            &configuration.journal_path,
-            configuration.authorization_trust,
-        )
-        .map_err(|_| ApplicationError::OperationFailure)?;
-        Ok(Self {
-            gateway,
-            kubernetes_client: configuration.kubernetes_client,
-            signed_authorization_grant: configuration.signed_authorization_grant,
-            authorized_request,
-            receipt_signing_key: SigningKey::from_bytes(&configuration.receipt_signing_seed),
-            receipt_signing_key_id: configuration.receipt_signing_key_id,
-            receipt_output_directory: configuration.receipt_output_directory,
-        })
-    }
-
-    /// Reports only whether request-only intent matches the grant verified during [`Self::open`].
-    ///
-    /// This non-mutating check exposes no grant facts, trust input, or durable lifecycle state.
-    #[must_use]
-    pub fn request_matches_authorized_grant(&self, request: &AgentRequest) -> bool {
-        request == &self.authorized_request
-    }
-
-    /// Projects the durable status of the configured Deployment image operation.
-    ///
-    /// A different operation identity is indistinguishable from an absent operation. This method
-    /// performs no Kubernetes access and advances no lifecycle state.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError::OperationFailure`] when durable state is unreadable or
-    /// internally inconsistent.
-    pub fn read_set_deployment_image_status(
-        &self,
-        operation_id: &str,
-    ) -> Result<SetDeploymentImageStatus, ApplicationError> {
-        self.read_set_deployment_image_status_with_targets(operation_id)
-            .map(|(status, _)| status)
-    }
-
-    /// Reads disposition and target facts from one authority-checked SQLite snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns a bounded operation failure for inconsistent or inaccessible durable state.
-    pub fn read_set_deployment_image_status_with_targets(
-        &self,
-        operation_id: &str,
-    ) -> Result<(SetDeploymentImageStatus, crate::OperationTargets), ApplicationError> {
-        if operation_id != self.authorized_request.operation_id {
-            return Ok((
-                SetDeploymentImageStatus::NotFound,
-                crate::OperationTargets::default(),
-            ));
-        }
-        let Some(report) = self.report()? else {
-            return Ok((
-                SetDeploymentImageStatus::NotFound,
-                crate::OperationTargets::default(),
-            ));
-        };
-        let status = Self::status_of(report.state, report.target_rejection, report.result)?;
-        Ok((status, report.targets))
-    }
-
-    fn status_of(
-        state: OperationState,
-        target_rejection: Option<TargetRejection>,
-        result: Option<OperationResult>,
-    ) -> Result<SetDeploymentImageStatus, ApplicationError> {
-        match state {
-            OperationState::Requested
-            | OperationState::Authorized
-            | OperationState::ApplyStarted
-            | OperationState::ReceiverObserved => Ok(SetDeploymentImageStatus::InProgress),
-            OperationState::NotAttempted => target_rejection
-                .map(SetDeploymentImageStatus::NotAttempted)
-                .ok_or(ApplicationError::OperationFailure),
-            OperationState::Finalized => match result {
-                Some(OperationResult::Succeeded) => Ok(SetDeploymentImageStatus::Succeeded),
-                Some(OperationResult::Failed) => Ok(SetDeploymentImageStatus::Failed),
-                Some(OperationResult::Unknown) => Ok(SetDeploymentImageStatus::Unknown),
-                None => Err(ApplicationError::OperationFailure),
-            },
-        }
-    }
-
-    /// Reads the exact finalized receipt for the configured Deployment image operation.
-    ///
-    /// A different operation identity is indistinguishable from an absent operation. This method
-    /// performs no Kubernetes access and advances no lifecycle state. Private storage paths never
-    /// cross this interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError::OperationFailure`] when durable facts or receipt storage are
-    /// unreadable, unsafe, inconsistent, or digest-mismatched.
-    pub fn read_set_deployment_image_receipt(
-        &self,
-        operation_id: &str,
-    ) -> Result<SetDeploymentImageReceipt, ApplicationError> {
-        if operation_id != self.authorized_request.operation_id {
-            return Ok(SetDeploymentImageReceipt::NotFound);
-        }
-        let Some(snapshot) = self
-            .gateway
-            .authorized_operation(&self.authorized_request, &self.signed_authorization_grant)
-            .map_err(|_| ApplicationError::OperationFailure)?
-        else {
-            return Ok(SetDeploymentImageReceipt::NotFound);
-        };
-        if snapshot.state() != OperationState::Finalized {
-            return Ok(SetDeploymentImageReceipt::NotReady);
-        }
-        let (bytes, sha256) = Gateway::read_loaded_receipt(snapshot)
-            .map_err(|_| ApplicationError::OperationFailure)?;
-        Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 })
-    }
-
-    /// Submits request-only intent under the operator-configured exact grant.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError::RequestRejected`] when intent is malformed or differs from the
-    /// configured exact grant. Durable conflicts and persistence failures return
-    /// [`ApplicationError::OperationFailure`].
-    fn submit(&self, request: &AgentRequest) -> Result<SubmissionResult, ApplicationError> {
-        self.gateway
-            .submit_authorized(request, &self.signed_authorization_grant)
-            .map_err(|error| map_operation_error(&error))
-    }
-
-    /// Submits request-only intent and delegates complete reconciliation to the gateway.
-    ///
-    /// # Errors
-    ///
-    /// Returns a submission or reconciliation error, including bounded Kubernetes ambiguity,
-    /// durable-state failure, or receipt-commit failure.
-    ///
-    /// # Cancellation safety
-    ///
-    /// Cancellation may occur after request persistence or the durable mutation marker. It does not
-    /// establish that Kubernetes was untouched. Reopen the application with the same operator
-    /// configuration and call [`Application::reconcile`] to resume without a blind second mutation.
-    pub async fn execute(
-        &mut self,
-        request: &AgentRequest,
-    ) -> Result<OperationReport, ApplicationError> {
-        self.submit(request)?;
-        self.reconcile()
-            .await?
-            .ok_or(ApplicationError::OperationFailure)
-    }
-
-    /// Recovers and advances the configured operation to its next externally blocked or terminal
-    /// report without allowing an adapter to sequence durable states.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ApplicationError::OperationFailure`] when recovery cannot read or advance durable
-    /// state, perform bounded Kubernetes interaction, or commit the frozen receipt.
-    ///
-    /// # Cancellation safety
-    ///
-    /// Cancellation preserves the last committed lifecycle state. A later call with the same
-    /// operator configuration resumes that exact operation; after `apply_started`, recovery
-    /// observes rather than blindly issuing another mutation.
-    pub async fn reconcile(&mut self) -> Result<Option<OperationReport>, ApplicationError> {
-        let receipt_settings = ReceiptSettings {
-            signing_seed: self.receipt_signing_key.as_bytes(),
-            key_id: &self.receipt_signing_key_id,
-        };
-        self.gateway
-            .reconcile(
-                &self.authorized_request,
-                &self.signed_authorization_grant,
-                self.kubernetes_client.clone(),
-                &receipt_settings,
-            )
-            .await
-            .map(|operation| operation.map(|snapshot| self.project_report(&snapshot)))
-            .map_err(|error| match error {
-                ReconciliationError::Submission(error) => map_operation_error(&error),
-                ReconciliationError::Advancement(_)
-                | ReconciliationError::Completion
-                | ReconciliationError::Blocked(_) => ApplicationError::OperationFailure,
-            })
-    }
-
-    /// Reports the configured operation without provider or network access.
-    fn report(&self) -> Result<Option<OperationReport>, ApplicationError> {
-        self.gateway
-            .authorized_operation(&self.authorized_request, &self.signed_authorization_grant)
-            .map(|operation| operation.map(|snapshot| self.project_report(&snapshot)))
-            .map_err(|_| ApplicationError::OperationFailure)
-    }
-
-    fn project_report(&self, snapshot: &LoadedOperation) -> OperationReport {
-        OperationReport {
-            operation_id: self.authorized_request.operation_id.clone(),
-            state: snapshot.state(),
-            result: snapshot.result(),
-            target_rejection: snapshot.target_rejection(),
-            receipt: snapshot.receipt_reference(),
-            targets: snapshot.targets(),
-        }
-    }
-
-    /// Exports committed receipt bytes for the legacy CLI/MCP filename response.
-    ///
-    /// This does not advance execution or change the terminal result. The destination comes only
-    /// from operator configuration. Repeated export accepts identical bytes and rejects collisions.
-    ///
-    /// # Errors
-    ///
-    /// Returns an operation failure if retrieval or safe publication fails.
-    pub fn export_receipt(&self) -> Result<(), ApplicationError> {
-        if let SetDeploymentImageReceipt::Ready { bytes, sha256 } =
-            self.read_set_deployment_image_receipt(&self.authorized_request.operation_id)?
-        {
-            let name =
-                crate::gateway::receipt_filename(&self.authorized_request.operation_id, &sha256);
-            let output = self
-                .receipt_output_directory
-                .as_deref()
-                .filter(|output| output.is_absolute())
-                .ok_or(ApplicationError::InvalidReceiptOutputDirectory)?;
-            crate::gateway::publish_receipt(&output.join(name), &bytes)
-                .map_err(|_| ApplicationError::OperationFailure)?;
-        }
-        Ok(())
-    }
-}
-
-fn map_operation_error(error: &GatewayError) -> ApplicationError {
-    match error {
-        GatewayError::InvalidInput(field) => {
-            let _ = field;
-            ApplicationError::RequestRejected
+fn status_of(
+    state: OperationState,
+    target_rejection: Option<TargetRejection>,
+    result: Option<OperationResult>,
+) -> Result<SetDeploymentImageStatus, ServiceError> {
+    match state {
+        OperationState::Requested
+        | OperationState::Authorized
+        | OperationState::ApplyStarted
+        | OperationState::ReceiverObserved => Ok(SetDeploymentImageStatus::InProgress),
+        OperationState::NotAttempted => target_rejection
+            .map(SetDeploymentImageStatus::NotAttempted)
+            .ok_or(ServiceError::OperationFailure),
+        OperationState::Finalized => match result {
+            Some(OperationResult::Succeeded) => Ok(SetDeploymentImageStatus::Succeeded),
+            Some(OperationResult::Failed) => Ok(SetDeploymentImageStatus::Failed),
+            Some(OperationResult::Unknown) => Ok(SetDeploymentImageStatus::Unknown),
+            None => Err(ServiceError::OperationFailure),
         },
-        GatewayError::AuthorizationMismatch => ApplicationError::RequestRejected,
-        _ => ApplicationError::OperationFailure,
     }
 }
 
@@ -760,9 +282,9 @@ fn validate_journal_path(path: &Path) -> Result<(), ApplicationError> {
         return Err(ApplicationError::InvalidJournalPath);
     }
     let parent = path.parent().ok_or(ApplicationError::InvalidJournalPath)?;
-    validate_private_directory(parent).map_err(|_| ApplicationError::InvalidJournalPath)?;
+    crate::gateway::validate_private_directory(parent)
+        .map_err(|_| ApplicationError::InvalidJournalPath)?;
     validate_private_file_or_missing(path)?;
-
     let mut worker_lock_path = path.as_os_str().to_os_string();
     worker_lock_path.push(".kap0038-worker.lock");
     validate_private_file_or_missing(Path::new(&worker_lock_path))
@@ -782,25 +304,19 @@ fn validate_private_file_or_missing(path: &Path) -> Result<(), ApplicationError>
     }
 }
 
-/// Bounded application composition or operation failure.
+/// Bounded operator provisioning or service composition failure.
 #[derive(Debug)]
+#[allow(
+    clippy::enum_variant_names,
+    reason = "retain existing typed operator failure identities"
+)]
 pub enum ApplicationError {
-    /// The shared operator document or one of its fixed files was invalid.
+    /// An explicit operator input was malformed or inconsistent.
     InvalidOperatorConfiguration,
-    /// Operator grant-signing inputs were invalid.
+    /// Operator grant-signing inputs or receiver preflight were invalid.
     InvalidGrantProvisioning,
-    /// Configured grant bytes or trust were invalid.
-    InvalidAuthorizationConfiguration,
-    /// Receipt signing-key identity was invalid.
-    InvalidReceiptConfiguration,
-    /// Journal path was relative, unsafe, symlinked, or outside an owner-private directory.
+    /// Journal path is not absolute, private, regular or safely named.
     InvalidJournalPath,
-    /// Receipt output was absent, unsafe, or not owner-private.
-    InvalidReceiptOutputDirectory,
-    /// Request intent was malformed or did not match the operator-configured exact grant.
-    RequestRejected,
-    /// Durable state, provider interaction, signing, or explicit export could not complete.
-    OperationFailure,
 }
 
 impl fmt::Display for ApplicationError {
@@ -808,206 +324,13 @@ impl fmt::Display for ApplicationError {
         let class = match self {
             Self::InvalidOperatorConfiguration => "invalid_operator_configuration",
             Self::InvalidGrantProvisioning => "invalid_grant_provisioning",
-            Self::InvalidAuthorizationConfiguration => "invalid_authorization_configuration",
-            Self::InvalidReceiptConfiguration => "invalid_receipt_configuration",
             Self::InvalidJournalPath => "invalid_journal_path",
-            Self::InvalidReceiptOutputDirectory => "invalid_receipt_output_directory",
-            Self::RequestRejected => "request_rejected",
-            Self::OperationFailure => "operation_failure",
         };
         write!(formatter, "Kapsel application failure: {class}")
     }
 }
 
-impl Error for ApplicationError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        None
-    }
-}
+impl Error for ApplicationError {}
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "controlled fixture failures must fail the response-bound test immediately"
-)]
-mod operator_tests {
-    use std::{
-        io::{Read as _, Write as _},
-        net::{SocketAddr, TcpListener},
-        thread,
-    };
-
-    use k8s_openapi::api::apps::v1::Deployment;
-    use kube::Api;
-
-    use super::*;
-
-    const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
-
-    #[tokio::test]
-    async fn operator_document_limit_is_enforced_before_composition() {
-        let mut document = br#"{
-            "signed_authorization_grant":"/grant", "authorization_key_id":"owner",
-            "authorization_public_key":"/key", "kubeconfig":"/kubeconfig",
-            "journal":"/journal", "receipt_signing_seed":"/seed",
-            "receipt_signing_key_id":"receipt"
-        }"#
-        .to_vec();
-        document.resize(16 * 1024, b' ');
-        assert!(parse_operator_document(&document).is_ok());
-        document.push(b' ');
-        assert!(matches!(
-            parse_operator_document(&document),
-            Err(ApplicationError::InvalidOperatorConfiguration)
-        ));
-        let mut reads = 0;
-        let result = open_application_from_operator_document(&document, |_, _| {
-            reads += 1;
-            Err(ApplicationError::InvalidOperatorConfiguration)
-        })
-        .await;
-        assert!(matches!(
-            result,
-            Err(ApplicationError::InvalidOperatorConfiguration)
-        ));
-        let result = open_application_from_fixed_operator_document(
-            &document,
-            Path::new("/journal"),
-            Path::new("/journal"),
-            |_, _| {
-                reads += 1;
-                Err(ApplicationError::InvalidOperatorConfiguration)
-            },
-        )
-        .await;
-        assert!(matches!(
-            result,
-            Err(ApplicationError::InvalidOperatorConfiguration)
-        ));
-        assert_eq!(reads, 0);
-        assert!(parse_operator_document(b"").is_err());
-    }
-
-    enum ResponseFraming {
-        ContentLength,
-        Chunked,
-        CloseDelimited,
-    }
-
-    fn response_body(bytes: usize) -> Vec<u8> {
-        let prefix = concat!(
-            r#"{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"#,
-            r#""name":"bounded","namespace":"demo","uid":"uid-1","resourceVersion":"1"}}"#
-        );
-        assert!(bytes >= prefix.len());
-        let mut body = Vec::with_capacity(bytes);
-        body.extend_from_slice(prefix.as_bytes());
-        body.resize(bytes, b' ');
-        body
-    }
-
-    fn response_server(
-        body: Vec<u8>,
-        framing: ResponseFraming,
-    ) -> (SocketAddr, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request).unwrap();
-            match framing {
-                ResponseFraming::ContentLength => {
-                    write!(
-                        stream,
-                        concat!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
-                            "content-length: {}\r\nconnection: close\r\n\r\n"
-                        ),
-                        body.len()
-                    )
-                    .unwrap();
-                    let _ = stream.write_all(&body);
-                },
-                ResponseFraming::Chunked => {
-                    stream
-                        .write_all(
-                            concat!(
-                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
-                                "transfer-encoding: chunked\r\nconnection: close\r\n\r\n"
-                            )
-                            .as_bytes(),
-                        )
-                        .unwrap();
-                    let _ = write!(stream, "{:x}\r\n", body.len());
-                    let _ = stream.write_all(&body);
-                    let _ = stream.write_all(b"\r\n0\r\n\r\n");
-                },
-                ResponseFraming::CloseDelimited => {
-                    stream
-                        .write_all(
-                            concat!(
-                                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
-                                "connection: close\r\n\r\n"
-                            )
-                            .as_bytes(),
-                        )
-                        .unwrap();
-                    let _ = stream.write_all(&body);
-                },
-            }
-        });
-        (address, server)
-    }
-
-    async fn request_deployment(body_bytes: usize, framing: ResponseFraming) -> bool {
-        let body = response_body(body_bytes);
-        let (address, server) = response_server(body, framing);
-        let kubeconfig = format!(
-            concat!(
-                "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n",
-                "  cluster:\n    server: http://{}\ncontexts:\n- name: fixture\n",
-                "  context:\n    cluster: fixture\n    user: fixture\n",
-                "current-context: fixture\nusers:\n- name: fixture\n  user: {{}}\n"
-            ),
-            address
-        );
-        let client = load_operator_kubernetes_client(kubeconfig.as_bytes())
-            .await
-            .unwrap();
-        let result = Api::<Deployment>::namespaced(client, "demo")
-            .get("bounded")
-            .await
-            .is_ok();
-        server.join().unwrap();
-        result
-    }
-
-    #[tokio::test]
-    async fn kubernetes_response_limit_accepts_exact_and_rejects_every_oversized_framing() {
-        assert!(
-            request_deployment(
-                KUBERNETES_RESPONSE_BYTES_MAX,
-                ResponseFraming::ContentLength
-            )
-            .await
-        );
-        assert!(
-            !request_deployment(
-                KUBERNETES_RESPONSE_BYTES_MAX + 1,
-                ResponseFraming::ContentLength
-            )
-            .await
-        );
-        assert!(
-            !request_deployment(KUBERNETES_RESPONSE_BYTES_MAX + 1, ResponseFraming::Chunked).await
-        );
-        assert!(
-            !request_deployment(
-                KUBERNETES_RESPONSE_BYTES_MAX + 1,
-                ResponseFraming::CloseDelimited
-            )
-            .await
-        );
-    }
-}
+mod operator_tests;

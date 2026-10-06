@@ -12,14 +12,14 @@ use std::{
 };
 
 use kapsel::{
-    inspect_receipt, provision_exact_grant, provision_snapshot_grant, AgentRequest,
-    ExactAuthorization, GrantProvisioning, InspectionLimits, InspectionReport, InspectionStatus,
-    OperationReport, OperationResult, ReceiptStatement,
+    inspect_receipt, provision_exact_grant, provision_snapshot_grant, ExactAuthorization,
+    GrantProvisioning, InspectionLimits, InspectionReport, InspectionStatus, OperationResult,
+    ReceiptStatement,
 };
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use serde::Deserialize;
 
-use crate::transport_support::{self, FailureClass};
+use crate::transport_support;
 
 const JSON_BYTES_MAX: usize = 16 * 1024;
 const MACHINE_OUTPUT_BYTES_MAX: usize = 64 * 1024;
@@ -50,7 +50,6 @@ pub(crate) fn run(arguments: impl Iterator<Item = OsString>) -> CommandResult {
         "provision-snapshot-grant" => {
             provision(parse_options("provision-snapshot-grant", arguments)?, true)
         },
-        "operate" => operate(parse_options("operate", arguments)?),
         "inspect" => inspect(parse_options("inspect", arguments)?),
         _ => Err(CommandError::input("kapsel")),
     }
@@ -72,11 +71,10 @@ fn help(mut arguments: impl Iterator<Item = OsString>) -> CommandResult {
         "    [--approval <label> <signed-grant-file>]...\n",
         "    --receipt-signing-key-id <id> --output <new-file>\n",
         "  kapsel validate-service-config --operator-config <file>\n",
-        "  kapsel operate --request <file> --operator-config <file>\n",
         "  kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>\n",
         "    [--receipt-bytes-max <usize>] [--statement-bytes-max <usize>]\n",
         "    [--trust-bytes-max <usize>] [--text-bytes-max <usize>]\n",
-        "  kapsel mcp --operator-config <file>\n",
+        "Execution uses kapseld and the fixed ID-only service client/MCP bridge.\n",
         "Service configuration validation is static, not execution readiness or publication.\n",
         "Exit 2: input, 3: configuration, 4: operation/output failure.\n",
         "Exit 0 alone does not establish a receiver outcome. Inspect the response."
@@ -152,16 +150,6 @@ fn finish_options(
 #[serde(deny_unknown_fields)]
 struct AuthorizationDocument {
     authorization_id: String,
-    operation_id: String,
-    namespace: String,
-    deployment: String,
-    container: String,
-    immutable_image_digest: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RequestDocument {
     operation_id: String,
     namespace: String,
     deployment: String,
@@ -283,39 +271,6 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
     Ok(format!(
         "{{\"command\":\"{COMMAND}\",\"status\":\"PROVISIONED\"}}"
     ))
-}
-
-fn operate(mut options: BTreeMap<String, OsString>) -> CommandResult {
-    let request_path = take_path(&mut options, "--request", "operate")?;
-    let operator_path = take_path(&mut options, "--operator-config", "operate")?;
-    finish_options(&options, "operate")?;
-
-    let request: RequestDocument = read_json(&request_path, "operate")?;
-    let request = AgentRequest {
-        operation_id: request.operation_id,
-        namespace: request.namespace,
-        deployment: request.deployment,
-        container: request.container,
-        immutable_image_digest: request.immutable_image_digest,
-    };
-
-    let runtime = transport_support::runtime().map_err(|class| map_failure("operate", class))?;
-    let report = runtime.block_on(async {
-        let mut application = transport_support::open_application(&operator_path)
-            .await
-            .map_err(|class| map_failure("operate", class))?;
-        let report = application.execute(&request).await.map_err(|error| {
-            map_failure(
-                "operate",
-                transport_support::classify_application_operation(&error),
-            )
-        })?;
-        application
-            .export_receipt()
-            .map_err(|_| map_failure("operate", FailureClass::OperationFailure))?;
-        Ok(report)
-    })?;
-    Ok(render_operation(&report))
 }
 
 fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
@@ -536,33 +491,6 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn render_operation(report: &OperationReport) -> String {
-    let projection = transport_support::project_operation(report);
-    let operation_id_json = json_string(projection.operation_id);
-    let result_json = optional_json(projection.result);
-    let target_rejection_json = optional_json(projection.target_rejection);
-    let receipt_file_json = optional_json(projection.receipt_file.as_deref());
-    let receipt_digest_json = optional_json(projection.receipt_sha256);
-    let fields = transport_support::target_fields(&report.targets);
-    let target_fields = &fields[1..fields.len() - 1];
-    format!(
-        concat!(
-            "{{\"command\":\"operate\",\"operation_id\":{operation_id_json},",
-            "\"state\":\"{state}\",\"result\":{result_json},",
-            "\"target_rejection\":{target_rejection_json},",
-            "\"receipt_file\":{receipt_file_json},",
-            "\"receipt_sha256\":{receipt_digest_json},{target_fields}}}"
-        ),
-        operation_id_json = operation_id_json,
-        state = projection.state,
-        result_json = result_json,
-        target_rejection_json = target_rejection_json,
-        receipt_file_json = receipt_file_json,
-        target_fields = target_fields,
-        receipt_digest_json = receipt_digest_json
-    )
-}
-
 fn structure_rejected_output() -> String {
     render_inspection_fields("STRUCTURE_REJECTED", None)
 }
@@ -771,14 +699,6 @@ const fn inspection_status(value: InspectionStatus) -> &'static str {
         InspectionStatus::SignatureRejected => "SIGNATURE_REJECTED",
         InspectionStatus::UntrustedSigner => "UNTRUSTED_SIGNER",
         InspectionStatus::Inspected => "INSPECTED",
-    }
-}
-
-fn map_failure(command: &'static str, class: FailureClass) -> CommandError {
-    match class {
-        FailureClass::OperatorConfiguration => CommandError::configuration(command),
-        FailureClass::RequestRejected => CommandError::input(command),
-        FailureClass::OperationFailure => CommandError::operation(command),
     }
 }
 

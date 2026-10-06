@@ -40,7 +40,9 @@ Current source supports two effects:
 - `git.transition_ref`: move one fixed repository's branch from commit A to prepared descendant B.
 
 The caller selects an operator-approved action ID. The resident Linux service retains the action and
-its original signed receipt if the caller disconnects.
+its original signed receipt if the caller disconnects. HEAD execution uses only this service and its
+fixed ID-only client/MCP bridge; direct `operate`/`mcp` and macOS-source execution are retired.
+Provisioning and detached inspection remain available.
 
 Each effect has its own result rules. Git acknowledgement establishes ref acceptance, not hook
 delivery, CI completion, or deployment completion. A missing acknowledgement remains `UNKNOWN`.

@@ -47,6 +47,32 @@ def finalized_evidence(journal: pathlib.Path, operation_id: str) -> tuple[bytes,
     return grant, receipt_bytes, signer
 
 
+def retained_row(journal: pathlib.Path, operation_id: str) -> tuple[object, ...]:
+    """Independently snapshot every column of one bounded format-6 fixture row."""
+    assert journal.is_file() and not journal.is_symlink()
+    assert journal.stat().st_size <= 64 * 1024 * 1024
+    with closing(sqlite3.connect(journal.as_uri() + "?mode=ro", uri=True, timeout=1)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        row = connection.execute(
+            "SELECT * FROM kubernetes_image_operations WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+    assert row is not None
+    return row
+
+
+def install_binaries(artifact: pathlib.Path) -> None:
+    """Cold binary replacement leaves authority and retained history untouched."""
+    for source, destination in (
+        ("bin/kapsel", "/usr/bin/kapsel"),
+        ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
+        ("bin/kapsel-service-mcp", "/usr/bin/kapsel-service-mcp"),
+        ("libexec/kapsel/kapseld", "/usr/libexec/kapsel/kapseld"),
+    ):
+        pathlib.Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(artifact / source, destination)
+        pathlib.Path(destination).chmod(0o755)
+
+
 def main() -> None:
     def receiver(name, patch=None):
         data = None if patch is None else json.dumps(patch).encode()
@@ -176,15 +202,8 @@ def main() -> None:
     for directory in ("/usr/libexec", "/usr/libexec/kapsel"):
         pathlib.Path(directory).mkdir(mode=0o755, exist_ok=True)
         pathlib.Path(directory).chmod(0o755)
-    for source, destination in (
-        ("bin/kapsel", "/usr/bin/kapsel"),
-        ("bin/kapsel-service-client", "/usr/bin/kapsel-service-client"),
-        ("bin/kapsel-service-mcp", "/usr/bin/kapsel-service-mcp"),
-        ("libexec/kapsel/kapseld", "/usr/libexec/kapsel/kapseld"),
-    ):
-        pathlib.Path(destination).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile("/artifact/" + source, destination)
-        pathlib.Path(destination).chmod(0o755)
+    retained_artifact = pathlib.Path("/retained-artifact")
+    install_binaries(retained_artifact if retained_artifact.is_dir() else pathlib.Path("/artifact"))
     for path, mode in (("/etc/kapsel", 0o700), ("/var/lib/kapsel", 0o700), ("/run/kapsel", 0o750)):
         pathlib.Path(path).mkdir(mode=mode)
         pathlib.Path(path).chmod(mode)
@@ -252,6 +271,9 @@ def main() -> None:
     receiver("agent-stale", {"metadata": {"annotations": {"journey-fixture/stale": "true"}}})
     process: subprocess.Popen[bytes] | None = None
     reports = []
+    original_receipts: dict[str, bytes] = {}
+    original_rows: dict[str, tuple[object, ...]] = {}
+    journal = pathlib.Path("/var/lib/kapsel/journal.sqlite3")
 
     try:
         start()
@@ -308,7 +330,10 @@ def main() -> None:
                     time.sleep(0.02)
 
                 stop(crash=True)
+                attempted_row = retained_row(journal, case)
+                install_binaries(pathlib.Path("/artifact"))
                 start()
+                assert retained_row(journal, case) == attempted_row
                 state = read("status", case)
                 assert state["status"] == "IN_PROGRESS", state
                 assert state["execution"]["disposition"] == "resume_required", state
@@ -327,11 +352,12 @@ def main() -> None:
             assert terminal["status"] == expected, (case, terminal)
 
             retained: tuple[bytes, bytes, str] | None = None
-            journal = pathlib.Path("/var/lib/kapsel/journal.sqlite3")
+            finalized_row: tuple[object, ...] | None = None
             if case == "service-loss":
                 # A terminal status establishes receipt commit, but no receipt has reached the
                 # caller. Kill before its first export, then change signing material while cold.
                 retained = finalized_evidence(journal, case)
+                finalized_row = retained_row(journal, case)
                 assert retained[0] == pathlib.Path(case + ".grant").read_bytes()
                 assert retained[2] == "receipt-key-1"
                 pathlib.Path("/evidence/service-loss.grant").write_bytes(retained[0])
@@ -350,6 +376,7 @@ def main() -> None:
                     + "\n"
                 )
                 stop(crash=True)
+                install_binaries(pathlib.Path("/artifact"))
                 rotated_seed = pathlib.Path("/etc/kapsel/receipt.seed")
                 rotated_seed.write_bytes(bytes([113]) * 32)
                 changed = json.loads(document)
@@ -358,6 +385,9 @@ def main() -> None:
                 start()
                 assert read("status", case) == terminal
                 assert finalized_evidence(journal, case) == retained
+                assert retained_row(journal, case) == finalized_row
+                assert receipt("healthy", "rotated-old") == original_receipts["healthy"]
+                assert retained_row(journal, "healthy") == original_rows["healthy"]
 
             frozen: bytes | None = None
             if case == "stale":
@@ -366,6 +396,8 @@ def main() -> None:
             else:
                 frozen = receipt(case, "first")
                 digest = hashlib.sha256(frozen).hexdigest()
+                original_receipts[case] = frozen
+                original_rows[case] = retained_row(journal, case)
                 assert read("submit", case) == {
                     "version": 1,
                     "status": "ADMITTED",
@@ -376,6 +408,7 @@ def main() -> None:
             if retained is not None:
                 assert frozen == retained[1], "receipt loss must not cause re-signing"
                 assert finalized_evidence(journal, case) == retained
+                assert retained_row(journal, case) == finalized_row
                 # Restore only current fixture material; retained history is never rewritten.
                 stop()
                 shutil.copyfile("receipt.seed", "/etc/kapsel/receipt.seed")
@@ -399,7 +432,8 @@ def main() -> None:
                 assert read("status", "conflicting-b")["status"] == "NOT_FOUND"
                 assert read("status", case) == terminal
                 assert receipt(case, "restart") == frozen
-                assert receipt("healthy", "old-result")
+                assert receipt("healthy", "old-result") == original_receipts["healthy"]
+                assert retained_row(journal, "healthy") == original_rows["healthy"]
 
             reports.append(
                 {
@@ -408,6 +442,12 @@ def main() -> None:
                     "seconds": round(time.monotonic() - started, 3),
                     "receipt_sha256": digest,
                     "receipt_commit_loss": retained is not None,
+                    "retained_format6_replacement": retained is not None
+                    and retained_artifact.is_dir(),
+                    "retained_attempted_recovery": case == "service-loss"
+                    and retained_artifact.is_dir(),
+                    "original_healthy_receipt_preserved": case == "caller-loss"
+                    and retained_artifact.is_dir(),
                 }
             )
             print(json.dumps(reports[-1]), flush=True)

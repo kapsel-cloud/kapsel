@@ -642,29 +642,12 @@ def run_binary(binary: pathlib.Path, arguments: list[str]) -> subprocess.Complet
 
 
 def prepare_inputs(root: pathlib.Path, server_address: tuple[str, int]) -> dict[str, pathlib.Path]:
-    receipts = root / "receipts"
-    receipts.mkdir(mode=0o700)
     authorization = root / "authorization.json"
-    request = root / "request.json"
-    operator = root / "operator.json"
     write_private(
         authorization,
         json.dumps(
             {
                 "authorization_id": "artifact-auth-1",
-                "operation_id": OPERATION,
-                "namespace": "demo",
-                "deployment": "agent-api",
-                "container": "api",
-                "immutable_image_digest": IMAGE,
-            },
-            separators=(",", ":"),
-        ).encode(),
-    )
-    write_private(
-        request,
-        json.dumps(
-            {
                 "operation_id": OPERATION,
                 "namespace": "demo",
                 "deployment": "agent-api",
@@ -688,93 +671,7 @@ def prepare_inputs(root: pathlib.Path, server_address: tuple[str, int]) -> dict[
             "users:\n- name: fixture\n  user: {}\n"
         ).encode(),
     )
-    return {
-        "authorization": authorization,
-        "request": request,
-        "operator": operator,
-        "receipts": receipts,
-    }
-
-
-def write_operator(
-    root: pathlib.Path,
-    grant: pathlib.Path,
-    receipts: pathlib.Path,
-    receipt_seed: pathlib.Path,
-    receipt_key_id: str,
-    output: pathlib.Path,
-) -> None:
-    write_private(
-        output,
-        json.dumps(
-            {
-                "signed_authorization_grant": str(grant),
-                "authorization_key_id": "artifact-authorization-key",
-                "authorization_public_key": str(root / "authorization.pub"),
-                "kubeconfig": str(root / "kubeconfig.yaml"),
-                "journal": str(root / "journal.sqlite3"),
-                "receipt_directory": str(receipts),
-                "receipt_signing_seed": str(receipt_seed),
-                "receipt_signing_key_id": receipt_key_id,
-            },
-            separators=(",", ":"),
-        ).encode(),
-    )
-
-
-def provision_and_write_operator(
-    binary: pathlib.Path,
-    root: pathlib.Path,
-    paths: dict[str, pathlib.Path],
-) -> None:
-    grant = root / "grant.bin"
-    provision = run_binary(
-        binary,
-        [
-            "provision-grant",
-            "--authorization",
-            str(paths["authorization"]),
-            "--signing-seed",
-            str(root / "authorization.seed"),
-            "--signing-key-id",
-            "artifact-authorization-key",
-            "--output",
-            str(grant),
-        ],
-    )
-    if provision.returncode != 0 or b'"status":"PROVISIONED"' not in provision.stdout:
-        raise RuntimeError("installed grant provisioning failed")
-    write_operator(
-        root,
-        grant,
-        paths["receipts"],
-        root / "receipt.seed",
-        "kap0038-test-key",
-        paths["operator"],
-    )
-
-
-def execute_and_restart(binary: pathlib.Path, paths: dict[str, pathlib.Path]) -> pathlib.Path:
-    arguments = [
-        "operate",
-        "--request",
-        str(paths["request"]),
-        "--operator-config",
-        str(paths["operator"]),
-    ]
-    first = run_binary(binary, arguments)
-    if first.returncode != 0:
-        raise RuntimeError("installed operation failed")
-    report = json.loads(first.stdout)
-    if report["state"] != "FINALIZED" or report["result"] != "SUCCEEDED":
-        raise RuntimeError("installed operation returned the wrong outcome")
-    restarted = run_binary(binary, arguments)
-    if restarted.returncode != 0 or json.loads(restarted.stdout) != report:
-        raise RuntimeError("installed ordinary restart changed the report")
-    receipts = list(paths["receipts"].glob("*.receipt"))
-    if len(receipts) != 1:
-        raise RuntimeError("installed operation did not publish exactly one receipt")
-    return receipts[0]
+    return {"authorization": authorization}
 
 
 def inspect_receipt(binary: pathlib.Path, receipt: pathlib.Path, trust: pathlib.Path) -> None:
@@ -799,7 +696,8 @@ def inspect_receipt(binary: pathlib.Path, receipt: pathlib.Path, trust: pathlib.
         raise RuntimeError("installed offline inspection emitted forbidden vocabulary")
 
 
-def exercise_mcp(binary: pathlib.Path, operator: pathlib.Path, version: str) -> None:
+def exercise_mcp(binary: pathlib.Path, version: str, caller_uid: int, caller_gid: int) -> None:
+    """Cross the installed ID-only bridge without acquiring new receiver facts."""
     messages = [
         {
             "jsonrpc": "2.0",
@@ -818,50 +716,55 @@ def exercise_mcp(binary: pathlib.Path, operator: pathlib.Path, version: str) -> 
             "id": "call",
             "method": "tools/call",
             "params": {
-                "name": "kubernetes.set_deployment_image",
-                "arguments": {
-                    "operation_id": OPERATION,
-                    "namespace": "demo",
-                    "deployment": "agent-api",
-                    "container": "api",
-                    "immutable_image_digest": IMAGE,
-                },
+                "name": "kapsel.get_status",
+                "arguments": {"operation_id": OPERATION},
             },
         },
     ]
-    input_bytes = b"".join(
-        json.dumps(message, separators=(",", ":")).encode() + b"\n" for message in messages
-    )
     process = subprocess.run(
-        [str(binary), "mcp", "--operator-config", str(operator)],
-        input=input_bytes,
+        [str(binary)],
+        input=b"".join(
+            json.dumps(message, separators=(",", ":")).encode() + b"\n" for message in messages
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
         timeout=30,
+        user=caller_uid,
+        group=caller_gid,
+        extra_groups=[],
         env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
     )
-    if process.returncode != 0 or process.stderr:
-        raise RuntimeError("installed MCP lifecycle failed")
+    if process.returncode or process.stderr or len(process.stdout) > 3 * 96 * 1024:
+        raise RuntimeError("installed service MCP lifecycle failed")
     responses = [json.loads(line) for line in process.stdout.splitlines()]
-    if responses[0]["result"]["serverInfo"] != {"name": "kapsel", "version": version}:
-        raise RuntimeError("installed MCP version disagrees with artifact metadata")
+    if len(responses) != 3 or responses[0]["result"]["serverInfo"] != {
+        "name": "kapsel-service",
+        "version": version,
+    }:
+        raise RuntimeError("installed bridge version disagrees with artifact metadata")
     tools = responses[1]["result"]["tools"]
-    if len(tools) != 1 or tools[0]["name"] != "kubernetes.set_deployment_image":
-        raise RuntimeError("installed MCP tool list is not fixed")
-    properties = set(tools[0]["inputSchema"]["properties"])
     expected = {
-        "operation_id",
-        "namespace",
-        "deployment",
-        "container",
-        "immutable_image_digest",
+        "kapsel.list_approved_actions",
+        "kapsel.list_operation_history",
+        "kapsel.get_status",
+        "kapsel.get_receipt",
+        "kapsel.submit",
     }
-    if properties != expected:
-        raise RuntimeError("installed MCP tool schema exposed the wrong fields")
+    if len(tools) != 5 or {tool["name"] for tool in tools} != expected:
+        raise RuntimeError("installed bridge tool list is not fixed")
+    for tool in tools:
+        properties = set(tool["inputSchema"]["properties"])
+        if properties != (
+            {"after"} if tool["name"].startswith("kapsel.list_") else {"operation_id"}
+        ):
+            raise RuntimeError("installed bridge schema exposed authority fields")
     call = responses[2]["result"]
-    if call["isError"] or json.loads(call["content"][0]["text"])["result"] != "SUCCEEDED":
-        raise RuntimeError("installed MCP call changed the application outcome")
+    if (
+        call["isError"]
+        or json.loads(call["content"][0]["text"])["service"]["status"] != "SUCCEEDED"
+    ):
+        raise RuntimeError("installed bridge changed the stored outcome")
 
 
 def exercise_version(binary: pathlib.Path, expected_version: object) -> None:
@@ -933,29 +836,19 @@ def smoke(
                 raise RuntimeError("extracted binary digest mismatch")
         exercise_version(binary, metadata["package_version"])
 
-        reset_kubernetes_fixture()
-        fixture = http.server.ThreadingHTTPServer(("127.0.0.1", 0), KubernetesFixture)
-        thread = threading.Thread(target=fixture.serve_forever, daemon=True)
-        thread.start()
-        evaluation = pathlib.Path(temporary) / "evaluation"
-        evaluation.mkdir(mode=0o700)
-        try:
-            paths = prepare_inputs(evaluation, ("127.0.0.1", fixture.server_port))
-            provision_and_write_operator(binary, evaluation, paths)
-            receipt = execute_and_restart(binary, paths)
-            if KubernetesFixture.requests != 3:
-                raise RuntimeError("installed ordinary restart repeated provider activity")
-            trust = evaluation / "receipt.trust"
-            write_private(trust, fixture_receipt_trust())
-            inspect_receipt(binary, receipt, trust)
-            exercise_mcp(binary, paths["operator"], metadata["package_version"])
-        finally:
-            fixture.shutdown()
-            fixture.server_close()
-            thread.join(timeout=5)
-        shutil.rmtree(evaluation)
-        if evaluation.exists():
-            raise RuntimeError("artifact smoke did not clean its evaluation directory")
+        help_result = run_binary(binary, ["--help"])
+        if (
+            help_result.returncode
+            or b"kapsel operate" in help_result.stdout
+            or b"kapsel mcp --" in help_result.stdout
+        ):
+            raise RuntimeError("artifact help advertises retired execution")
+        for command in ("operate", "mcp"):
+            retired = run_binary(
+                binary, [command, "--operator-config", "/unavailable/operator.json"]
+            )
+            if retired.returncode != 2:
+                raise RuntimeError("artifact still accepts direct execution")
 
         if service_container or service_systemd:
             exercise_service(root, pathlib.Path(temporary), service_systemd)
@@ -1197,6 +1090,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
     if any(os.path.lexists(path) for path in fresh_paths):
         raise RuntimeError("service smoke refuses existing installation or state")
 
+    metadata = json.loads(read_bounded_regular(root / "RELEASE-METADATA.json", 16 * 1024))
     service_uid, caller_uid, caller_gid = (
         install_systemd_assets(root) if native else (61000, 61001, 61000)
     )
@@ -1357,6 +1251,12 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                     raise RuntimeError("artifact selection failed to complete")
                 time.sleep(0.02)
             print("Stored status:", json.dumps(status, sort_keys=True))
+            before_bridge = KubernetesFixture.requests
+            exercise_mcp(
+                destinations["mcp_bridge"], metadata["package_version"], caller_uid, caller_gid
+            )
+            if KubernetesFixture.requests != before_bridge:
+                raise RuntimeError("installed bridge stored read contacted the receiver")
 
             receipt = pathlib.Path(f"/tmp/kapsel-artifact-receipt-{restart}")
             exported = service_client(

@@ -1,33 +1,30 @@
 # Evaluator commands
 
-This contract defines the current local `kapsel` commands, operator files, output, bounds, and exit
-classes. The [effect-gateway contract](EFFECT_GATEWAY.md) owns execution and receipt semantics.
-[MCP](MCP.md) owns the separate stdio protocol; [Release artifacts](RELEASE.md) owns packaging.
+This contract defines HEAD's operator provisioning and offline inspection CLI. Execution uses the
+resident service and its fixed ID-only client/MCP bridge, not `kapsel operate` or `kapsel mcp`.
+[Service](KAPSEL_SERVICE.md), [MCP](MCP.md) and [effect gateway](EFFECT_GATEWAY.md) own those
+interfaces and their semantics. [Release](RELEASE.md) owns packaging.
 
 ## Receipt completion
 
-`operate` commits terminal receipt evidence in SQLite before optional filesystem export. It
-preserves filename output by exporting the committed bytes after execution. Export errors fail the
-command without reopening the terminal action. Repeating the command exports the same bytes under
-current output configuration, without dispatch or re-signing. The export directory need not exist
-during application startup or execution. Journal formats older than format 6 are rejected, not
-upgraded.
+SQLite commits original signed receipt bytes and terminal state together. The fixed service client
+exports retrieved bytes to a caller-selected new file. Export failure never changes the action,
+reopens execution or permits another mutation.
+[Service export](KAPSEL_SERVICE.md#fixed-service-client) owns destination custody and collision
+refusal. Older journal formats remain rejected unchanged.
 
 ## Compatibility posture
 
-This page describes the current preview command surface. The older v0.2.x compatibility promise
-belongs to its
-[tagged command contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/COMMANDS.md).
-Current preview commands do not imply a public Rust package, source-layout, crates.io, docs.rs,
-`cargo install`, additional-platform, or production-support promise.
-
-Canonical grant v1 and receipt/trust v2 continuity are owned only by
-[effect-gateway](EFFECT_GATEWAY.md). This command contract adopts their bytes and result vocabulary
-without defining another vector format.
+HEAD retires the direct execution commands and their operator document. This loses direct and
+macOS-source execution, not provisioning or detached inspection. It is not transparent migration.
+Published releases retain their original contracts and bytes, including the
+[v0.2.0 command contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/COMMANDS.md).
+[Scope](SCOPE.md#head-execution-and-v04x-compatibility) owns the v0.4.x compatibility boundary.
+There is no public Rust API, crates.io, docs.rs, `cargo install` or additional-platform promise.
 
 ## Command grammar
 
-The Unix executable accepts exactly these local evaluator forms:
+The Unix executable accepts exactly:
 
 ```text
 kapsel --help
@@ -35,53 +32,37 @@ kapsel --version
 kapsel provision-grant --authorization <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel provision-snapshot-grant --authorization <file> --kubeconfig <file> --signing-seed <file> --signing-key-id <id> --output <file>
 kapsel provision-git-grant --authorization <file> --git-receiver <file> --signing-seed <file> --signing-key-id <id> --output <file>
-kapsel operate --request <file> --operator-config <file>
 kapsel inspect --receipt <file> --trust <file> --evaluation-time-unix-s <i64>
                [--receipt-bytes-max <usize>] [--statement-bytes-max <usize>]
                [--trust-bytes-max <usize>] [--text-bytes-max <usize>]
 ```
 
-`provision-snapshot-grant` uses the same authorization JSON and output-file custody as
-`provision-grant`, but reads the target UID/resourceVersion through the explicit kubeconfig before
-signing grant v2. It never mutates the receiver. Kubernetes service approval requires this form. A
-changed target requires a new operator decision and identity, not hidden refresh. See the
-[service operator path](KAPSEL_SERVICE_OPERATOR.md#provision-authority-and-an-exact-approval).
+`provision-grant` retains legacy canonical grant provisioning; it does not authorize legacy service
+execution. `provision-snapshot-grant` reads target UID/resourceVersion through the explicit
+kubeconfig before signing grant v2. It does not mutate the receiver. Kubernetes service approval
+requires a snapshot grant. Changed intent or target requires another operator decision and identity,
+not hidden refresh. See
+[operator preparation](KAPSEL_SERVICE_OPERATOR.md#provision-authority-and-an-exact-approval).
 
-`provision-git-grant` accepts the six-field Git authorization JSON and bounded receiver material
-specified in the [Git guide](GIT_REF_TRANSITION.md#operator-preparation). It checks the fixed
-receiver, commit objects and ancestry before returning a separately purposed grant, without pushing
-or admitting work. `inspect` recognizes Git envelopes and reports their acknowledgement,
-observation, attribution and derived result under explicit Git-purpose trust. The older `operate`
-command and direct-execution MCP adapter remain Kubernetes-only. Git execution uses the resident
-service's ID-only surface. These additions describe current source, not the published preview
-artifact.
+`provision-git-grant` accepts the six-field Git authorization and bounded receiver material from
+[Git preparation](GIT_REF_TRANSITION.md#operator-preparation). It checks fixed objects and ancestry
+before signing, without pushing or admitting work. Git and Kubernetes use separate purposes.
 
-The same executable also has one separately owned MCP process form,
-`kapsel mcp --operator-config <file>`. [MCP adapter](MCP.md) owns its protocol, lifecycle, tool,
-responses, and bounds; this document continues to own the shared operator-file grammar.
+Help and version accept no additional arguments, read no configuration and contact no service.
+Version prints `kapsel <Cargo package version>` and one newline, with no diagnostic, and exits zero.
+It identifies the binary, not its qualification or production readiness.
 
-`kapsel --help` accepts no additional argument and prints the fixed command map without opening
-configuration or contacting a service. Invalid usage retains the bounded command-input failure.
-
-`kapsel --version` accepts no additional argument and reads no configuration or environment. It
-prints `kapsel <Cargo package version>` and one newline to stdout, writes no diagnostic, and exits
-zero. The version identifies the binary, not platform support, a registry artifact, or production
-support.
-
-Options may appear in any order, exactly once. Unknown options, duplicate options, positional
-values, missing values, and additional arguments are command-input failures. There are no
-environment or ambient defaults.
-
-All named files must be regular, non-symlink files. Every command rejects a file larger than its
-owned limit before reading it: legacy command JSON inputs are at most 16 KiB (service configuration
-validation accepts at most 160 KiB), signing seeds and public keys are exactly 32 raw bytes, signed
-grants are at most 4 KiB, receipts are at most 16 KiB, and receipt trust is at most 1 KiB. Output
-grant files are created owner-only and never replace an existing path.
+Options appear in any order, exactly once. Unknown or duplicate options, positional values, missing
+values and additional arguments are input failures. No environment or ambient defaults are used.
+Named inputs must be regular non-symlink files. Their owned limits are checked before reading:
+operator intent and kubeconfig at most 16 KiB, service document at most 160 KiB, seeds/public keys
+exactly 32 raw bytes, grants at most 4 KiB, receipts at most 16 KiB and trust at most 1 KiB. Output
+grants are created owner-only and never replace an existing path.
 
 ## Prepare and validate service configuration
 
-These operator-only commands write the existing version-1 service document. They do not appoint
-trust from a grant, provision credentials, publish configuration or access the journal.
+These operator-only commands write or validate the existing version-1 service document. They do not
+appoint trust from a grant, provision credentials, publish configuration or open history.
 
 ```text
 kapsel prepare-service-config --authorization-key <id> <raw-public-key-file>
@@ -89,28 +70,21 @@ kapsel prepare-service-config --authorization-key <id> <raw-public-key-file>
 kapsel validate-service-config --operator-config <file>
 ```
 
-Repeat `--authorization-key` for up to 128 separately appointed keys and `--approval` for up to 32
-snapshot grants. Both may be omitted for an empty catalog. The receipt signer and output options are
-required exactly once. Public keys are exactly 32 raw bytes and grants at most 4 KiB. Input files
-use the same bounded regular/non-symlink reads as other operator commands. Output is a new private
-file, never a replacement. Labels follow the existing printable ASCII/128-byte grammar.
+Repeat `--authorization-key` for up to 128 appointed keys and `--approval` for up to 32 snapshot
+grants. Both may be omitted for an empty catalog. Signer and output options are required once.
+Labels use printable ASCII with a 128-byte bound. Preparation authenticates the complete document
+before writing a new private file. Validation applies the same parser/approval/trust checks.
 
-Preparation authenticates the complete document before writing it. Validation reads at most 160 KiB
-and uses the same parser and approval/trust checks, without creating or opening history. Success is
-JSON with `command` and `status: "PREPARED"` or `"VALIDATED_STATIC"`. Static validation does not
-establish filesystem custody, retained-identity compatibility, credentials, receiver availability or
-execution readiness. Explicit cold publication still performs its existing read-only history and
-custody checks under lifecycle exclusion. The [service contract](KAPSEL_SERVICE.md) owns those
-checks. Failed preparation can leave an incomplete new output file after an I/O failure. Inspect and
-choose a new destination, never assume publication or automatically replace a path.
+Success reports `PREPARED` or `VALIDATED_STATIC`. Static validation is not filesystem custody,
+retained-identity compatibility, credentials, receiver availability or execution readiness. Cold
+publication still performs read-only history/custody checks under lifecycle exclusion. An I/O
+failure can leave an incomplete new preparation output; inspect it and choose a new destination.
 
 ## Fixed JSON inputs
 
-JSON documents are UTF-8 objects with exactly the fields listed below. Unknown, duplicate, missing,
-non-string, and trailing content is rejected. String values remain subject to the effect-gateway
-field grammars.
-
-The authorization file contains operator intent:
+Intent is a UTF-8 object with exactly these string fields. Unknown, duplicate, missing, wrong-type
+and trailing content is rejected. The [gateway grammar](EFFECT_GATEWAY.md#one-capability) bounds
+values.
 
 ```json
 {
@@ -123,146 +97,46 @@ The authorization file contains operator intent:
 }
 ```
 
-The agent request contains no authority or configuration:
-
-```json
-{
-  "operation_id": "op-001",
-  "namespace": "demo",
-  "deployment": "agent-api",
-  "container": "api",
-  "immutable_image_digest": "registry.example/agent-api@sha256:<64-lowercase-hex>"
-}
-```
-
-The operator configuration contains paths to separately provisioned authority and exact public key
-identities:
-
-```json
-{
-  "signed_authorization_grant": "/absolute/grant.bin",
-  "authorization_key_id": "owner-key",
-  "authorization_public_key": "/absolute/owner.pub",
-  "kubeconfig": "/absolute/kubeconfig.yaml",
-  "journal": "/absolute/journal.sqlite3",
-  "receipt_directory": "/absolute/receipts",
-  "receipt_signing_seed": "/absolute/receipt.seed",
-  "receipt_signing_key_id": "receipt-key"
-}
-```
-
-Every operator path is absolute. Kapsel reads only the named kubeconfig and its selected
-`current-context`; it does not infer a kubeconfig, context, credentials, proxy, or authority from
-the environment. Certificate authority, client certificate, client key, and token data must be
-embedded in that bounded kubeconfig. Path-based credential references, auth-provider plugins, and
-exec plugins are rejected. The shared root composition limits each Kubernetes HTTP response body to
-2 MiB before collection or deserialization, independent of content-length, chunked, or
-close-delimited framing. Kubernetes authority and both signing seeds remain operator-owned and never
-enter the agent request, journal, receipt, report, stdout, or stderr.
-
-## Startup and restart
-
-`operate` opens the configured `Application`, submits the exact request idempotently, and invokes
-application-owned reconciliation. Starting the same command again with the same request and operator
-configuration is ordinary restart. The configured grant selects the operation even when unrelated
-journal rows exist. No command field selects a lifecycle state, transition, fault point, receipt
-bytes, or provider action.
+Kubeconfig must name its selected current context and embed credentials and certificate data.
+Credential-file references, auth-provider and exec plugins are rejected. No environment lookup
+supplies kubeconfig, context, credentials or proxy. The shared provisioning/service client disables
+server-response mutation retries and bounds HTTP bodies to 2 MiB before collection or parsing,
+including content-length, chunked and close-delimited responses. Authority and seeds never enter
+caller input, history, receipts or diagnostics.
 
 ## Output and diagnostics
 
-Each invocation writes exactly one newline-terminated JSON object to stdout and at most one
-newline-terminated diagnostic to stderr. Provisioning and operation stdout and every stderr are at
-most 4 KiB; classifier-complete inspection stdout is at most 64 KiB. JSON keys have the exact order
-shown here; optional values use JSON `null`. No output contains input bytes, key material,
-Kubernetes response bodies, or ambient values.
+Each invocation writes one newline-terminated JSON object and at most one bounded diagnostic.
+Provisioning stdout and stderr are at most 4 KiB; classifier-complete inspection stdout is at most
+64 KiB. There are no input bytes, credentials, seeds, provider bodies or ambient values in errors.
 
-Successful grant provisioning:
+Provisioning success is `{"command":"provision-grant","status":"PROVISIONED"}` (with the selected
+provisioning command name). Inspection retains its existing purpose-specific projection: operation
+and authorization identities, signer and grant digest, approved tuple, attempt/observed targets,
+receiver facts, classifier result and non-claims. Kubernetes retains UID/resourceVersion,
+image/marker, generations, replicas and rollout-condition fields. Git retains commits, ref,
+acknowledgement, observed ref and attribution. Optional values remain JSON null.
 
-```json
-{ "command": "provision-grant", "status": "PROVISIONED" }
+`STRUCTURE_REJECTED` and `SIGNATURE_REJECTED` expose no statement. `UNTRUSTED_SIGNER` exposes
+authenticated statement facts without appointing trust. `INSPECTED` is not `VERIFIED`. Inspection
+uses named bytes, explicit purpose-separated trust, evaluation time and limits. It constructs no
+receiver client and performs no discovery or network I/O.
+
+A failed invocation reports the selected command, or `kapsel` for an unidentified/retired command:
+
+```text
+{"command":"inspect","status":"ERROR","error_class":"command_input"}
+Kapsel command failure: command_input
 ```
-
-Successful operation/reconciliation:
-
-```json
-{
-  "command": "operate",
-  "operation_id": "op-001",
-  "state": "FINALIZED",
-  "result": "SUCCEEDED",
-  "target_rejection": null,
-  "receipt_file": "kap0038-op-001-<sha256>.receipt",
-  "receipt_sha256": "<sha256>"
-}
-```
-
-States and values use the effect-gateway vocabulary. A pre-attempt rejection reports
-`NOT_ATTEMPTED`, a null result, and one of `DEPLOYMENT_NOT_FOUND`, `CONTAINER_NOT_FOUND`,
-`INVALID_TARGET`, or `STALE_APPROVAL`. `SUCCEEDED`, `FAILED`, and `UNKNOWN` are receiver outcomes
-and all are successful command execution.
-
-Offline inspection reports the classifier-complete signed statement in fixed field order:
-
-```json
-{
-  "command": "inspect",
-  "status": "INSPECTED",
-  "operation_id": "op-001",
-  "authorization_id": "auth-001",
-  "authorization_signer_key_id": "owner-key",
-  "authorization_grant_digest": "<sha256>",
-  "namespace": "demo",
-  "deployment": "agent-api",
-  "container": "api",
-  "immutable_image_digest": "registry.example/agent-api@sha256:<sha256>",
-  "write_strategy": "conditional-strategic-merge-patch",
-  "target_uid": "deployment-uid-1",
-  "target_resource_version": "resource-version-0",
-  "receiver_uid": "deployment-uid-1",
-  "observed_image": "registry.example/agent-api@sha256:<sha256>",
-  "observed_operation_marker": "op-001",
-  "current_generation": 2,
-  "requested_generation": 2,
-  "observed_generation": 2,
-  "observed_resource_version": "resource-version-2",
-  "desired_replicas": 1,
-  "updated_replicas": 0,
-  "available_replicas": 0,
-  "unavailable_replicas": 1,
-  "rollout_condition_type": "Progressing",
-  "rollout_condition_status": "False",
-  "rollout_condition_reason": "ProgressDeadlineExceeded",
-  "result": "FAILED",
-  "non_claims": "no-exactly-once;no-causation;no-kubernetes-truth;no-complete-capture;no-witnessing;not-production"
-}
-```
-
-For `STRUCTURE_REJECTED` and `SIGNATURE_REJECTED`, every statement and non-claims value is null. For
-`UNTRUSTED_SIGNER`, authenticated statement fields and non-claims are present. The complete
-maximum-sized escaped line remains within the 64 KiB inspection stdout bound. Inspection calls the
-library inspector directly with the named bytes, explicit evaluation time, and explicit limits. It
-constructs no Kubernetes client and performs no network, filesystem discovery, trust lookup,
-environment lookup, or ambient clock read. It never emits `VERIFIED`.
-
-A failed command emits this bounded stdout shape and a matching human diagnostic containing only the
-class:
-
-```json
-{"command":"operate","status":"ERROR","error_class":"operator_configuration"}
-Kapsel command failure: operator_configuration
-```
-
-The `command` value is the parsed subcommand, or `kapsel` when parsing did not identify one.
 
 ## Exit classes
 
-| Exit | Class                    | Meaning                                                                   |
-| ---- | ------------------------ | ------------------------------------------------------------------------- |
-| 0    | completed                | Provisioning, operation outcome, or any bounded inspection status.        |
-| 2    | `command_input`          | Invalid grammar, JSON, numeric value, bound, or agent/authorization data. |
-| 3    | `operator_configuration` | Unsafe/missing operator file, authority, kubeconfig, signing, or path.    |
-| 4    | `operation_failure`      | Durable, Kubernetes, reconciliation, or publication failure.              |
+| Exit | Class                    | Meaning                                                              |
+| ---- | ------------------------ | -------------------------------------------------------------------- |
+| 0    | completed                | Provisioning, static validation or any bounded inspection status.    |
+| 2    | `command_input`          | Invalid grammar, JSON, numeric value, bound or authorization intent. |
+| 3    | `operator_configuration` | Missing/unsafe operator input, signing material or output path.      |
+| 4    | `operation_failure`      | Inspection/output serialization failure.                             |
 
-These fields describe the current preview. The [security policy](../SECURITY.md) owns maintenance
-and reporting posture; the exact release owns artifact availability and qualification. This command
-contract supplies no response-time, remediation, availability, platform, or production-support SLA.
+An exit status is not receiver evidence. Exact releases own availability and qualification. No
+response-time, remediation, platform or production-support SLA is provided.

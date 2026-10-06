@@ -22,9 +22,9 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use kapsel::{
-    open_application_from_operator_document, provision_exact_grant, AgentRequest, Application,
-    ApprovedTarget, ExactAuthorization, GrantProvisioning, OperationResult, OperationState,
-    SetDeploymentImageReceipt,
+    provision_exact_grant, AgentRequest, ApprovedTarget, AuthorizationTrust, ExactAuthorization,
+    GrantProvisioning, OperationState, ServiceApplication, ServiceApproval, ServiceConfiguration,
+    ServiceExecution, SetDeploymentImageReceipt, SetDeploymentImageStatus,
 };
 use serde_json::{json, Value};
 
@@ -93,11 +93,7 @@ impl Fixture {
         }
     }
 
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        reason = "exclusive fixture borrow keeps this future Send despite its non-Sync receiver"
-    )]
-    async fn application(&mut self) -> Application {
+    fn application(&self) -> ServiceApplication {
         let request = request();
         let seed = [41; 32];
         let public_key = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
@@ -118,31 +114,26 @@ impl Fixture {
             signing_key_id: "retry-authority",
         })
         .unwrap();
-        let document = json!({
-            "signed_authorization_grant": self.root.join("grant"),
-            "authorization_key_id": "retry-authority",
-            "authorization_public_key": self.root.join("public-key"),
-            "kubeconfig": self.root.join("kubeconfig"),
-            "journal": self.root.join("journal.sqlite3"),
-            "receipt_signing_seed": self.root.join("receipt-seed"),
-            "receipt_signing_key_id": "retry-receipt"
-        });
-        open_application_from_operator_document(
-            &serde_json::to_vec(&document).unwrap(),
-            |path: &Path, _| {
-                // Operator-owned fixture reader. No ambient files, trust, or caller authority.
-                let bytes = match path.file_name().unwrap().to_str().unwrap() {
-                    "grant" => grant.clone(),
-                    "public-key" => public_key.to_vec(),
-                    "kubeconfig" => self.kubeconfig.clone(),
-                    "receipt-seed" => vec![42; 32],
-                    unexpected => panic!("unexpected operator read: {unexpected}"),
-                };
-                Ok(bytes)
-            },
-        )
-        .await
+        ServiceApplication::open(ServiceConfiguration {
+            journal_path: self.root.join("journal.sqlite3"),
+            authorization_trust: vec![AuthorizationTrust {
+                key_id: "retry-authority".into(),
+                public_key,
+            }],
+            approvals: vec![ServiceApproval {
+                label: "Retry fixture".into(),
+                signed_grant: grant,
+            }],
+        })
         .unwrap()
+    }
+
+    fn execution(&self) -> impl std::future::Future<Output = ServiceExecution> + Send + '_ {
+        ServiceExecution::from_operator_snapshots(
+            Some(&self.kubeconfig),
+            Some(&[42; 32]),
+            "retry-receipt",
+        )
     }
 
     fn finish(&mut self) -> Vec<WireRequest> {
@@ -307,23 +298,27 @@ fn read_request(stream: &mut TcpStream) -> WireRequest {
 #[tokio::test]
 async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt() {
     let mut fixture = Fixture::new(200);
-    let mut application = fixture.application().await;
-    assert_eq!(application.reconcile().await.unwrap(), None);
-    let report = application.execute(&request()).await.unwrap();
-    assert_eq!(report.result, Some(OperationResult::Succeeded));
-    let original = application
-        .read_set_deployment_image_receipt("retry-op")
+    let mut application = fixture.application();
+    assert_eq!(application.admitted_state("retry-op").unwrap(), None);
+    application
+        .select("retry-op", fixture.execution().await, |_| {})
+        .await
         .unwrap();
-    drop(application);
-    let mut application = fixture.application().await;
-    assert_eq!(application.reconcile().await.unwrap(), Some(report.clone()));
-    assert_eq!(application.execute(&request()).await.unwrap(), report);
     assert_eq!(
-        application
-            .read_set_deployment_image_receipt("retry-op")
-            .unwrap(),
-        original
+        application.status("retry-op").unwrap().0,
+        SetDeploymentImageStatus::Succeeded
     );
+    let original = application.receipt("retry-op").unwrap();
+    let report = application.status("retry-op").unwrap();
+    drop(application);
+    let mut application = fixture.application();
+    assert_eq!(application.status("retry-op").unwrap(), report);
+    application
+        .select("retry-op", fixture.execution().await, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(application.status("retry-op").unwrap(), report);
+    assert_eq!(application.receipt("retry-op").unwrap(), original);
     drop(application);
     let requests = fixture.finish();
     assert_eq!(
@@ -345,9 +340,8 @@ async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_rec
 #[tokio::test]
 async fn cancelled_application_dispatch_recovers_without_resending_to_available_receiver() {
     let mut fixture = Fixture::with_pause(0, true);
-    let mut application = fixture.application().await;
-    let requested = request();
-    let mut execution = Box::pin(application.execute(&requested));
+    let mut application = fixture.application();
+    let mut execution = Box::pin(application.select("retry-op", fixture.execution().await, |_| {}));
     tokio::select! {
         result = &mut execution => panic!("response must still be pending: {result:?}"),
         () = async {
@@ -359,27 +353,41 @@ async fn cancelled_application_dispatch_recovers_without_resending_to_available_
         } => {}
     }
     // The original worker still owns exclusion while its PATCH response is pending.
-    let mut contender = fixture.application().await;
-    let blocked = contender.execute(&requested).await.unwrap();
-    assert_eq!(blocked.state, OperationState::ApplyStarted);
-    assert_eq!(blocked.result, None);
+    let mut contender = fixture.application();
+    contender
+        .select("retry-op", fixture.execution().await, |decision| {
+            assert_eq!(
+                decision,
+                kapsel::ServiceAdmission::Admitted(OperationState::ApplyStarted)
+            );
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        contender.admitted_state("retry-op").unwrap(),
+        Some(OperationState::ApplyStarted)
+    );
     drop(contender);
     drop(execution);
     drop(application);
     fixture.resume.send(()).unwrap();
-    let mut application = fixture.application().await;
-    let report = application.reconcile().await.unwrap().unwrap();
-    assert_eq!(report.result, Some(OperationResult::Succeeded));
-    let original = application
-        .read_set_deployment_image_receipt("retry-op")
+    let mut application = fixture.application();
+    application
+        .select("retry-op", fixture.execution().await, |_| {})
+        .await
         .unwrap();
-    assert_eq!(application.execute(&request()).await.unwrap(), report);
     assert_eq!(
-        application
-            .read_set_deployment_image_receipt("retry-op")
-            .unwrap(),
-        original
+        application.status("retry-op").unwrap().0,
+        SetDeploymentImageStatus::Succeeded
     );
+    let original = application.receipt("retry-op").unwrap();
+    let report = application.status("retry-op").unwrap();
+    application
+        .select("retry-op", fixture.execution().await, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(application.status("retry-op").unwrap(), report);
+    assert_eq!(application.receipt("retry-op").unwrap(), original);
     drop(application);
     let requests = fixture.finish();
     assert_eq!(
@@ -403,28 +411,35 @@ async fn ambiguous_patch_responses_never_trigger_hidden_client_retries() {
     let mut counts = Vec::new();
     for status in [429, 503, 504, 0] {
         let mut fixture = Fixture::new(status);
-        let mut application = fixture.application().await;
-        assert!(application.execute(&request()).await.is_err());
-        drop(application);
-        let mut application = fixture.application().await;
-        let report = application.reconcile().await.unwrap().unwrap();
-        assert_eq!(report.state, OperationState::Finalized);
-        assert_eq!(report.result, Some(OperationResult::Succeeded));
-        assert_eq!(
-            report.targets.attempt_target,
-            report.targets.approved_target
-        );
-        let original = application
-            .read_set_deployment_image_receipt("retry-op")
-            .unwrap();
-        assert!(matches!(original, SetDeploymentImageReceipt::Ready { .. }));
-        assert_eq!(application.execute(&request()).await.unwrap(), report);
+        let mut application = fixture.application();
         assert_eq!(
             application
-                .read_set_deployment_image_receipt("retry-op")
+                .select("retry-op", fixture.execution().await, |_| {})
+                .await
                 .unwrap(),
-            original
+            kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::ReceiverUnavailable)
         );
+        drop(application);
+        let mut application = fixture.application();
+        application
+            .select("retry-op", fixture.execution().await, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            application.admitted_state("retry-op").unwrap(),
+            Some(OperationState::Finalized)
+        );
+        let report = application.status("retry-op").unwrap();
+        assert_eq!(report.0, SetDeploymentImageStatus::Succeeded);
+        assert_eq!(report.1.attempt_target, report.1.approved_target);
+        let original = application.receipt("retry-op").unwrap();
+        assert!(matches!(original, SetDeploymentImageReceipt::Ready { .. }));
+        application
+            .select("retry-op", fixture.execution().await, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(application.status("retry-op").unwrap(), report);
+        assert_eq!(application.receipt("retry-op").unwrap(), original);
         drop(application);
         let requests = fixture.finish();
         let patches: Vec<_> = requests

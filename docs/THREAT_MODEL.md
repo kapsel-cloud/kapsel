@@ -14,9 +14,9 @@ and an observed outcome, bounded offline inspection, and visible unresolved cras
 
 The relevant seams are:
 
-- request-only caller intent and the `Application` composition boundary;
+- caller-selected IDs and the `ServiceApplication` authority boundary;
 - a separately provisioned owner-signed exact grant and operator-configured grant trust;
-- the private journal, receipt directory, and signing key;
+- the private journal, original receipt bytes and signing key;
 - Kubernetes credentials, API, controller, and observed rollout state;
 - receipt transport and the offline inspector; and
 - externally supplied inspection trust, time, and limits.
@@ -71,23 +71,24 @@ every cluster change.
 
 A local MCP client can send malformed, duplicated, oversized, out-of-order, unknown, or wrong-tool
 messages and can try to place operator authority in arguments. The fixed stdio adapter bounds frames
-before JSON allocation, rejects duplicate and extra fields, exposes one five-field tool, loads
-operator configuration at startup, and returns bounded protocol or typed application vocabulary.
+before JSON allocation, rejects duplicate/extra fields and exposes five ID-only tools. The bridge
+cannot load operator configuration or accept caller authority. The service returns bounded facts.
 Standard output is protocol-only.
 
 Cancellation, disconnect, late messages, or transport completion cannot establish that an operation
-was unattempted, failed, rolled back, or safe. Restart uses ordinary application reconciliation.
+was unattempted, failed, rolled back, or safe. Reconnection reads the original ID before explicit
+same-ID service resumption.
 
 ### Demonstration control misuse
 
-The source-only demonstration harness stops a process at two fixed crash windows without adding
-lifecycle control to caller input. Ordinary builds contain no pause behavior. The separately built
-executable accepts only fixed environment-selected seams and an owner-private control directory;
-malformed, symlinked, partial, or repeated controls fail closed.
+The service process test harness stops at fixed crash windows without adding caller lifecycle
+control. The source-only direct demo is retired. Ordinary builds contain no pause behavior. The
+separately built executable accepts only fixed environment-selected seams and an owner-private
+control directory; malformed, symlinked, partial, or repeated controls fail closed.
 
-The harness is evaluator tooling, not a production binary or authorization boundary. Anyone able to
-replace its executable or process environment already controls that local process. Markers and its
-apply counter do not prove Kubernetes truth or exactly-once real-world effects.
+The harness is source/process test tooling, not a production binary or authorization boundary.
+Anyone able to replace its executable or process environment already controls that local process.
+Markers and its apply counter do not prove Kubernetes truth or exactly-once real-world effects.
 
 ### False or changing receiver state
 

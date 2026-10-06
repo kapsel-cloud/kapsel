@@ -1,9 +1,9 @@
 # Effect-gateway contract
 
 This contract owns authorization, durable state, recovery, receiver results, and signed receipts.
-The Kubernetes sections define the direct-execution path. The
-[Git boundary](#git-transition-boundary) defines the second effect exposed through the resident
-service. [Technical scope](SCOPE.md) separates current source from published releases.
+Both effects execute through the resident service. The Kubernetes sections define its image-change
+boundary; the [Git boundary](#git-transition-boundary) defines the second effect.
+[Technical scope](SCOPE.md) separates current source from published releases.
 
 It does not define a generic agent runtime, provider interface, MCP protocol, stable package format,
 external witnessing, or production assurance.
@@ -27,11 +27,11 @@ under the matching binary. A fresh journal is not continuity or permission to re
 Receipt v2/v3, grant v1/v2, trust, exact approval, and observation-only recovery semantics remain
 unchanged.
 
-Filesystem export is separate from execution. CLI and MCP adapters export committed bytes to their
-configured directory for their existing filename response. Export failure cannot reopen the
-finalized action or prevent later application/service retrieval. The service does not require an
-installed receipt copy. Supplementary observations, if separately implemented, must bind the
-operation identity and original receipt SHA-256 without modifying the original receipt or result.
+Filesystem export is separate from execution. The fixed service client exports original bytes to a
+caller-selected new file. Export failure cannot reopen the finalized action or prevent later service
+retrieval. The service does not require an installed receipt copy. Supplementary observations, if
+separately implemented, must bind the operation identity and original receipt SHA-256 without
+modifying the original receipt or result.
 
 Receipt retrieval depends on database availability. Consistent operator-owned backups must preserve
 receipt bytes and action history together. Exported copies may survive database loss, but execution
@@ -62,7 +62,7 @@ does not prove receiver truth, complete capture, compliance, or decision quality
 
 ## One capability
 
-The direct-execution path accepts only `kubernetes.set_deployment_image` with:
+The Kubernetes approval authorizes only `kubernetes.set_deployment_image` with:
 
 - Kubernetes namespace;
 - deployment name;
@@ -92,25 +92,24 @@ identities. An existing identical identity remains readable and idempotent at ei
 owner-signed grant carries one bounded authorization identity and an exact copy of the operation
 identity, namespace, deployment, container, and image. It has no wildcards, policy rules, ambient
 lookup, or expiry semantics. Each application-configured grant trust appointment contains one exact
-signing-key identity and Ed25519 verifying key. CLI/MCP retain one appointment. The service
-application accepts at most 128 appointments with unique key IDs. An empty set permits opening safe
-storage but cannot authenticate retained actions. The gateway accepts only the fixed effect-gateway
-grant purpose, persists the signer identity and SHA-256 digest of the exact signed grant bytes, and
-does not accept trust from the request or grant.
+signing-key identity and Ed25519 verifying key. The service application accepts at most 128
+appointments with unique key IDs. An empty set permits opening safe storage but cannot authenticate
+retained actions. The gateway accepts only the fixed effect-gateway grant purpose, persists the
+signer identity and SHA-256 digest of the exact signed grant bytes, and does not accept trust from
+the request or grant.
 
-The release-owned demonstration uses a local `kind` cluster. It does not require a cloud account,
-hosted Kapsel service, or production credentials.
+Packaged receiver qualification uses disposable local fixtures, not existing clusters or real
+operator credentials.
 
 ## Git transition boundary
 
 Current source exposes `git.transition_ref` through the service's existing ID-only approval,
 submission, status, history and receipt flow. `kapsel provision-git-grant` performs read-only
-preflight before signing; `kapsel inspect` recognizes purpose-separated Git receipts. The older
-five-field direct CLI/MCP execution path remains Kubernetes-only. Git uses operator-owned, complete
-local bare sender and receiver repositories, one `refs/heads/approved` branch, and pinned Git
-2.55.0. Preparation and content review belong to the operator. The receiver requires deletion and
-non-fast-forward refusal, and a matching `kapsel.repositoryId`. Paths, executable, local transport
-and configuration never come from the signed grant or caller.
+preflight before signing; `kapsel inspect` recognizes purpose-separated Git receipts. Git uses
+operator-owned, complete local bare sender and receiver repositories, one `refs/heads/approved`
+branch, and pinned Git 2.55.0. Preparation and content review belong to the operator. The receiver
+requires deletion and non-fast-forward refusal, and a matching `kapsel.repositoryId`. Paths,
+executable, local transport and configuration never come from the signed grant or caller.
 
 The authenticated Git grant binds authorization ID, operation ID, repository ID, exact full branch,
 and distinct nonzero lowercase 40-byte SHA-1 commit IDs A and B. Its magic prefixes are
@@ -180,10 +179,10 @@ record ordering, and existing identity/trust bounds remain. Mixed envelope/state
 closed.
 
 Resident service execution requires v2. Read-first startup may authenticate retained v1 history
-without allowing v1 selection or advancement. Legacy CLI/MCP paths still accept v1 with its original
-late-bound meaning. Every path accepting v2 enforces the snapshot. Neither existing grant bytes nor
-existing operation handles can acquire snapshot authority. Reapproval needs an operator-created
-grant and a new handle. It is not an automatic retry after `UNKNOWN`.
+without allowing v1 selection or advancement. Legacy history keeps its original late-bound meaning
+for inspection, not fresh execution permission. Every v2 execution enforces the snapshot. Neither
+existing grant bytes nor existing operation handles can acquire snapshot authority. Reapproval needs
+an operator-created grant and a new handle. It is not an automatic retry after `UNKNOWN`.
 
 `kapsel provision-snapshot-grant` uses the existing operator authorization JSON (no UID or version
 fields), signing seed, key ID and output arguments, plus an explicit private `--kubeconfig`. It
@@ -248,8 +247,8 @@ advancement pass. It cannot be reacquired through the same journal handle while 
 Identical existing identities resolve before slot/capacity refusal. Terminal selection is read-only.
 An unfinished identical selection with a busy worker acknowledges its existing responsibility and
 starts no new work. Missing execution material leaves admitted work unfinished. Receipt completion
-needs signing material, but stored reads and original receipt retrieval do not. Legacy CLI/MCP
-submission and requested-phase authorization behavior remain separate and unchanged.
+needs signing material, but stored reads and original receipt retrieval do not. Requested-phase
+authorization still uses original retained grant bytes, not refreshed catalog authority.
 
 The socket runtime must preserve task and resource ownership until blocking storage actually stops,
 even if a response deadline or disconnect occurs. The application callback alone does not prove that
@@ -639,9 +638,9 @@ conflict is never forced or blindly retried and does not by itself establish a f
 versions, operation markers, and condition reasons retained from Kubernetes are ASCII and at most
 128 bytes each. Generations and replica counts must be nonnegative. The requested and observed image
 remains subject to the 512-byte immutable-image grammar above. Target observation and the
-conditional strategic merge patch each have a ten-second request deadline. The root CLI/MCP
-composition rejects any single Kubernetes HTTP response body above 2 MiB while it is streamed,
-before kube-client can collect or deserialize it; this applies with content-length, chunked, or
+conditional strategic merge patch each have a ten-second request deadline. The shared explicit
+operator Kubernetes client rejects any HTTP response body above 2 MiB while it is streamed, before
+kube-client can collect or deserialize it; this applies with content-length, chunked, or
 close-delimited framing. An oversized target read is transient and cannot create a mutation marker.
 An oversized patch response may leave the already marked provider attempt ambiguous, so restart
 observes without another patch. An oversized receiver response contributes no facts and therefore
@@ -836,75 +835,34 @@ bytes were signed by a supplied trusted key for this purpose at the explicit eva
 does not mean the Kubernetes facts were true, causal, complete, witnessed, policy-authorized, or
 safe.
 
-Receipt filenames are derived by the application from the operation identity and the SHA-256 digest
-of the final receipt bytes: `kap0038-<operation-id>-<64-lowercase-hex-receipt-sha256>.receipt`. The
-operation identity is already path-component safe by the request grammar. Publication requires a
-pre-existing owner-private output directory and installs owner-private immutable bytes without
-following symlinks or replacing different existing bytes. This descriptor-relative publication
-implementation supports Unix platforms only. The stored receipt digest is the SHA-256 of the exact
-SQLite-committed receipt bytes, whether exported or not, rather than decoded facts or report text.
+The fixed client exports to an explicit caller-selected new file and rejects an existing path. The
+[service contract](KAPSEL_SERVICE.md#fixed-service-client) owns export custody. The service MCP
+bridge returns original bytes without choosing or exporting a filename. The stored receipt digest is
+the SHA-256 of the exact SQLite-committed receipt bytes, whether exported or not, rather than
+decoded facts or report text.
 
 ## Required release demonstration
 
-The sequence below describes the source-only Kubernetes crash harness. The published v0.2.0 demo
-retains its historical filesystem-publication seam and archive layout. It does not establish the
-current SQLite completion behavior. The resident-service preview does not include that demo.
+HEAD qualification uses the [packaged service journeys](BUILD.md#packaged-service-live-workflow) and
+[Git artifact journey](BUILD.md#git-transition-service), not the retired direct crash demo. They
+consume extracted production binaries with separate operator/service/caller identities and
+independent receiver mutation counts. Kubernetes exercises service loss after mutation, same-ID
+observation-only recovery, receipt-commit loss before first export, cold key rotation and original
+receipt retrieval. Git separately exercises acknowledgement loss and receiver-driven service loss.
+Graceful restart alone is not crash qualification.
 
-The Unix harness runs from one repository command against a uniquely named disposable `kind`
-cluster. Source mode and explicit artifact overrides support repository and packaging checks. It
-uses `kapsel provision-grant`, `kapsel operate`, and `kapsel inspect` with fixed operator-owned
-files.
+The [retirement evidence map](TESTING.md#direct-execution-retirement-evidence) retains each unique
+old obligation and its service/process owner. Failed-rollout and untargeted-container assertions
+remain in the independent receiver/live Kubernetes lane. Exact legacy vectors and offline inspection
+retain their original purposes. Published v0.2.0 keeps its historical direct demo and bytes.
 
-Before creating a workspace or inspecting clusters, the harness reports the detected prerequisite
-versions and refuses an unavailable Docker daemon, `kind` older than 0.32, unavailable or pre-1.30
-`kubectl`, Python older than 3.11, an unparsable tool version, or unsafe artifact inputs with a
-concrete corrective action. It refuses any pre-existing `kind` cluster or colliding harness
-directory before creating or mutating resources. A kind node-preparation failure remains a failed
-demonstration and identifies the Docker/kind compatibility check to perform; it cannot weaken an
-ownership check or continue to mutation.
-
-Every phase reports elapsed time. The final evidence summary distinguishes the durable attempt, both
-exact process terminations, restart-only reconciliation, the exactly-one harness apply count,
-receiver disposition and its owned condition, frozen receipt identity, offline inspection path, and
-the explicit `UNKNOWN` boundary. It does not promote a phase, process exit, timeout, or provider
-response into a receiver outcome. The harness removes only the cluster and host directory it
-created, reports successful cleanup, and gives an exact owner-scoped retry action if cleanup fails.
-Signal and failure cleanup remain ownership-safe; captured command and cluster logs are individually
-capped at 64 KiB and contain no configured seeds, credentials, grant bytes, or provider bodies.
-
-The harness demonstrates:
-
-1. an agent submits an authorized request for one immutable image digest and a healthy fixture
-   reaches `SUCCEEDED` without changing the untargeted container;
-2. a second authorized request uses one unavailable immutable image and Kapsel durably records
-   `apply_started` before crossing the Kubernetes mutation seam;
-3. the exact `kapsel operate` process is killed after the mutation returns but before its outcome is
-   recorded;
-4. restart reconciles rather than blindly patching again, the harness-owned apply counter remains
-   exactly one, and the unavailable image reaches `FAILED` only from `ProgressDeadlineExceeded`
-   receiver facts;
-5. exact receipt bytes and terminal state commit together, then the exact `kapsel operate` process
-   is killed before export;
-6. restart under a rotated receipt key and changed output directory retrieves the original signed
-   bytes and exports them to the new directory without re-signing or reopening the action; and
-7. `kapsel inspect` runs with unavailable network and ambient Kubernetes configuration and reports
-   `INSPECTED`, `FAILED`, the signed classifier inputs exposed by the inspector, and the fixed
-   non-claims without `VERIFIED` vocabulary.
-
-Fault control is not part of the agent request, operator JSON, ordinary command grammar, public Rust
-interface, journal, or receipt. The harness builds the same `kapsel` binary with the private
-`demo-harness` compile-time feature and supplies an owner-private control directory plus exactly one
-of two fixed process-environment values: `after_apply` or `after_receipt_commit`. At the selected
-internal seam Kapsel creates one owner-private readiness marker, syncs it, and waits to be
-terminated. The mutation seam also creates a no-replace `provider-apply-count` file containing `1`;
-encountering it again fails closed. Builds without `demo-harness` do not read these variables or
-contain the pause behavior. The harness never accepts a lifecycle state, arbitrary fault point,
-marker path, shell, manifest, patch, credential, or receipt byte from agent input.
-
-Deterministic black-box tests run the feature-built production executable against a local HTTP
-fixture and kill it at both fixed seams. Existing internal tests still exercise every durable
-transition. The visual demo runs against `kind`; no live cluster behavior is presented as
-deterministic test evidence.
+The Linux service process lane retains internal checkpoints through `kapsel-daemon`'s private
+`test-harness` feature and the root's transitive `demo-harness` feature. Checkpoints are absent from
+ordinary builds and production artifacts. They cannot be selected through caller requests, operator
+JSON, public interfaces, journal values or receipt bytes. The retained no-replace markers and worker
+exclusion remain; removing the direct adapter does not remove service crash seams. These
+source/process checks do not replace production-artifact receiver journeys or prove power loss,
+receiver causation or native installation.
 
 ## Explicit exclusions
 

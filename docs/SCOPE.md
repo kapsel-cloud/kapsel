@@ -22,12 +22,25 @@ Resumption is explicit and uses the same action ID. The surrounding workflow own
 waiting. There is no queue or automatic scheduler. [Service contracts](KAPSEL_SERVICE.md) own the
 protocol and limits.
 
-Current source also includes an ID-only stdio MCP bridge to this service. It is separate from the
-older five-field direct-execution MCP adapter. It ships in v0.3.0, not the older published preview.
+The fixed ID-only client and stdio MCP bridge are the sole maintained HEAD execution adapters. The
+service bridge ships in v0.3.0, not the older published preview. HEAD no longer provides
+`kapsel operate` or direct `kapsel mcp` execution.
 
 Neither effect coordinates independent journals or hosts. There is no fleet ordering, distributed
 transaction, or system-wide invariant guarantee. Git also has no hook-delivery guarantee. Neither
 effect exposes a generic command or provider interface.
+
+## HEAD execution and v0.4.x compatibility
+
+Service-only execution loses direct/local and macOS-source execution. This is not transparent
+migration. Operator provisioning, offline inspection, service reads and caller export remain.
+Published releases keep their original bytes and contracts.
+
+Across v0.4.x retain the service version-1 request grammar, grant/receipt/trust purposes, same-ID
+format-6 history and original evidence bytes. Projection changes require explicit compatibility
+review. Incompatible formats require new identifiers and a retention decision. There is no
+migration, downgrade or stable public Rust API promise. A fresh journal never permits repeating an
+old attempt. [Journal retention](UPGRADE.md) owns replacement precautions.
 
 ## Concrete capabilities
 
@@ -37,10 +50,10 @@ effect exposes a generic command or provider interface.
 kubernetes.set_deployment_image(namespace, deployment, container, immutable_image_digest)
 ```
 
-The caller supplies a stable operation identity. Direct CLI/MCP requests also name the namespace,
-Deployment, container, and immutable image. A service caller selects an operator-prepared action ID.
-Caller input cannot supply credentials, trust, grants, shell commands, `kubectl`, manifests,
-arbitrary patches, tags, wildcards, paths, or lifecycle controls.
+The caller selects an operator-prepared stable action ID. The operator approval fixes namespace,
+Deployment, container and immutable image. Caller input cannot supply credentials, trust, grants,
+shell commands, `kubectl`, manifests, arbitrary patches, tags, wildcards, paths, or lifecycle
+controls.
 
 ### Git branch transition
 
@@ -79,10 +92,10 @@ safety, or permission to retry.
 A permanently missing or invalid target can finish as `NOT_ATTEMPTED` before the mutation marker. A
 changed approved UID or resourceVersion produces `NOT_ATTEMPTED / STALE_APPROVAL`. These local
 dispositions have no receiver result or effect receipt. The service requires snapshot approval.
-Legacy CLI/MCP grants retain their late-bound meaning. An existing action cannot acquire refreshed
-approval.
+Retained legacy grants remain readable under their original meaning but cannot authorize service
+selection or advancement. An existing action cannot acquire refreshed approval.
 
-SQLite commits signed receipts with terminal state. Offline inspection, CLI/MCP export, and service
+SQLite commits signed receipts with terminal state. Offline inspection, caller export and service
 retrieval use those frozen bytes. Status and receipt reads neither acquire new observations nor
 revise a terminal result.
 

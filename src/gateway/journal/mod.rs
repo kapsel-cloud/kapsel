@@ -17,12 +17,14 @@ use std::{
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+#[cfg(test)]
+use super::ReceiptReference;
 use super::{
     kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity, ValidatedTargetIdentity},
     receipt::{decode_frozen_receipt, publication, ReceiptStatement, RECEIPT_BYTES_MAX},
     validate_identity, AuthorizedRequest, FrozenReceipt, GatewayError, InputField, OperationResult,
-    OperationState, ReceiptReference, ReceiptToPrepare, SetDeploymentImageRequest, TargetRejection,
-    ValidatedRequest, WRITE_STRATEGY,
+    OperationState, ReceiptToPrepare, SetDeploymentImageRequest, TargetRejection, ValidatedRequest,
+    WRITE_STRATEGY,
 };
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
@@ -307,6 +309,7 @@ impl LoadedOperation {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn receipt_reference(&self) -> Option<ReceiptReference> {
         match self {
             Self::Finalized(value) => Some(ReceiptReference {

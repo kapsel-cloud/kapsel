@@ -21,20 +21,20 @@ kubernetes.set_deployment_image(
 )
 ```
 
-The direct CLI/MCP caller supplies these fields and a stable operation identity. The service caller
-selects an operator-prepared action ID instead. Neither can supply credentials, a kubeconfig, trust,
-a signing key, a manifest, a patch, a tag, a shell command, or retry and recovery instructions.
+The operator approval fixes this tuple and a stable operation identity. The caller selects the
+approved action ID. Caller input cannot supply credentials, kubeconfig, trust, signing keys,
+manifests, patches, tags, shell commands or retry/recovery instructions.
 
 The operator supplies authority and private material separately:
 
 ```text
 caller
-  -> operation identity + exact bounded target
+  -> approved operation identity
 
 operator
   -> exact signed grant + trusted grant key
   -> Kubernetes credentials
-  -> private journal and optional export destination
+  -> private journal; caller export is separate
   -> receipt signing key
 ```
 

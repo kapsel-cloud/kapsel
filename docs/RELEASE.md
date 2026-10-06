@@ -15,6 +15,18 @@ The
 identifies its exact bytes and qualification. New candidates need their own qualification. The
 v0.2.0 archive remains reproducible from its tagged source, not the current assembler.
 
+## HEAD execution boundary
+
+HEAD retires direct `operate`/`mcp` execution and its legacy operator document. The resident service
+and fixed ID-only client/MCP bridge are the sole maintained execution surface for both effects.
+Provisioning, offline inspection and caller export remain. Direct/macOS-source execution is lost;
+this is not transparent migration. Published v0.3.0 and older tags retain their original bytes.
+
+[Scope](SCOPE.md#head-execution-and-v04x-compatibility) owns the approved v0.4.x grammar, purpose,
+format-6 and original-evidence boundary. Candidate replacement must demonstrate prior format-6
+history readability, not infer compatibility from a version number. Existing admission/attempt
+history cannot become fresh permission through a new journal.
+
 ## Path to v0.3.0
 
 The release target is `v0.3.0`, a **pre-beta, non-production developer release**. The version does
@@ -107,9 +119,10 @@ python3 tools/release/assemble_artifact.py --output-directory dist
 
 Assembly refuses a dirty worktree, a non-`x86_64-unknown-linux-gnu` target, missing Docker, or
 source metadata it cannot validate. It builds the `kapsel` and `kapsel-daemon` packages together
-without test/demo features. The four current-source executables use `--release`, `--locked`, the
-explicit target, fixed container path `/workspace`, and source-prefix remapping. Packaging copies
-those bytes and never rebuilds them.
+without test/demo features. HEAD's ordinary CLI cannot execute callers; its service bridge owns MCP.
+The four current-source executables use `--release`, `--locked`, the explicit target, fixed
+container path `/workspace`, and source-prefix remapping. Packaging copies those bytes and never
+rebuilds them.
 
 `--allow-dirty` exists only for local script tests. Such metadata records `source_dirty: true`; its
 outputs are not publishable and cannot satisfy candidate evidence.
@@ -362,19 +375,20 @@ python3 tools/release/verify_artifact.py \
 ```
 
 `tools/release/test_artifact.py --archive <A>` validates one already assembled A and then runs only
-extracted files in the pinned clean container. It proves safe extraction, installed identity, grant
-provisioning, ordinary operation/restart, offline inspection, MCP initialization/list/call/EOF,
-bounded output and ordinary-binary removal. Its explicit `--service-container` lane uses fresh fixed
-paths and separate numeric service/caller identities inside a disposable root Docker container. It
-exercises exact-snapshot provisioning, cold publication, ID selection, caller disconnect, read-first
-restart and identical receipt retrieval, with independent receiver mutation counts. It retains
-private state until container destruction. This is not a systemd or native-host qualification lane.
-It proves successful completion followed by graceful restart, not interrupted execution, crash
-ambiguity or recovery from an unfinished attempt. The complete operator/agent journey must exercise
-those failures against the packaged service and independently count mutations. Final
-combined-candidate qualification consumes that journey and its exact rebuilt bytes. Removing the old
-demo from this archive does not discharge those recovery requirements. Its synthetic hostile-archive
-matrix remains independent of the producer.
+extracted files in the pinned clean container. It proves safe extraction, installed identity,
+retired-direct-command refusal and bounded output. The separate service-container lane owns snapshot
+provisioning, operation/restart, offline inspection and installed ID-only MCP
+initialization/list/call/EOF. Hostile extraction and ordinary-binary removal remain independent. Its
+explicit `--service-container` lane uses fresh fixed paths and separate numeric service/caller
+identities inside a disposable root Docker container. It exercises exact-snapshot provisioning, cold
+publication, ID selection, caller disconnect, read-first restart and identical receipt retrieval,
+with independent receiver mutation counts. It retains private state until container destruction.
+This is not a systemd or native-host qualification lane. It proves successful completion followed by
+graceful restart, not interrupted execution, crash ambiguity or recovery from an unfinished attempt.
+The complete operator/agent journey must exercise those failures against the packaged service and
+independently count mutations. Final combined-candidate qualification consumes that journey and its
+exact rebuilt bytes. Removing the old demo from this archive does not discharge those recovery
+requirements. Its synthetic hostile-archive matrix remains independent of the producer.
 `tools/release/test_reproducibility.py --reference-archive <A>` performs the one independent strict
 assembly B and compares all five deterministic outputs byte-for-byte. Neither verifier hides another
 A assembly.

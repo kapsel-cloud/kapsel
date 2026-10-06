@@ -86,13 +86,12 @@ reference or grant permission to select an operation.
 
 ## Surface and version ownership
 
-| Surface                         | Concrete use                                                                                       |
-| ------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `kapsel-service-client`         | Fixed ID-only socket commands and exclusive receipt-file export for shell callers.                 |
-| `kapsel-service-mcp`            | The same resident lifecycle for stdio tool callers, with no caller paths or credentials.           |
-| `fresh_session_caller.py`       | Read-first process example retaining an ID before submission; no second lifecycle store.           |
-| `kapsel operate` / `kapsel mcp` | Local operator-configured Kubernetes execution without a Linux resident service; not Git adapters. |
-| `kapsel inspect`                | Offline inspection of original Kubernetes and Git receipts under independently supplied trust.     |
+| Surface                   | Concrete use                                                                                   |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `kapsel-service-client`   | Fixed ID-only socket commands and exclusive receipt-file export for shell callers.             |
+| `kapsel-service-mcp`      | The same resident lifecycle for stdio tool callers, with no caller paths or credentials.       |
+| `fresh_session_caller.py` | Read-first process example retaining an ID before submission; no second lifecycle store.       |
+| `kapsel inspect`          | Offline inspection of original Kubernetes and Git receipts under independently supplied trust. |
 
 The service application owns admission, status, history, execution guidance, and receipt retrieval.
 Each effect retains its own receiver facts. The

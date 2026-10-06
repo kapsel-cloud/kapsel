@@ -307,7 +307,6 @@ class ReleaseVerifierTests(unittest.TestCase):
             JOURNEY.LOST_ACK_SOURCE,
             ROOT / "tests/qualification/git_receiver_hook.py",
             ROOT / "examples/mcp_bridge_fixture.py",
-            ROOT / "examples/demo_journal_fixture.py",
             pathlib.Path(__file__).with_name("trivy_fixture.py"),
         )
         with tempfile.TemporaryDirectory() as temporary:

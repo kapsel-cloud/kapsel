@@ -13,7 +13,7 @@ assertion rather than repeat an implementation matrix.
 | Location                              | Owns                                                                                             |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Implementation-local `#[cfg(test)]`   | Pure parsing, classification, SQL and filesystem invariants, and private adapter or fault seams. |
-| Root package `tests/application_*.rs` | Exported `Application` behavior with the product compiled without `cfg(test)`.                   |
+| Root package `tests/application_*.rs` | Service composition and receiver request counts with production interfaces.                      |
 | Root package `tests/e2e_*.rs`         | Production binaries, machine output, exit classes, restart, and operator workflows.              |
 | `crates/<crate>/tests/`               | Exported interfaces of independently meaningful workspace packages.                              |
 | `fuzz/`                               | Hostile bytes entering only through production interfaces.                                       |
@@ -41,10 +41,10 @@ facts matter.
 
 Receipt tests cross the application/service retrieval path, not just SQL. `gateway::tests::receipt`
 covers signing failure, commit-acknowledgement loss, process exit before and after commitment and
-frozen observation/signer bytes. `e2e_demo_recovery` covers real executable restart and export under
-changed settings. The Linux service process lane retrieves and inspects original bytes while the
-export destination is unavailable. The application client retry and snapshot regressions retain
-independent request counts. Process exits do not prove power loss.
+frozen observation/signer bytes. The Linux service process lane covers both process-loss seams,
+changed signing settings, and original-byte retrieval while the export destination is unavailable.
+The application client retry and snapshot regressions retain independent request counts. Process
+exits do not prove power loss.
 
 ## Git receiver and service checks
 
@@ -146,29 +146,28 @@ remain operator responsibilities. The audit found no public receipt-injection pa
 completion now checks the private candidate against the current row instead of relying on its
 builder's call convention.
 
-| Boundary                     | Exact owner                                                                                                                                              | Enforced limit and placement                                                                                                                                                                                                                                                                   |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Kubernetes grant             | `crates/kapsel-authority/src/lib.rs::verify_authorization_grant`                                                                                         | 4 KiB envelope before decoding; 2 KiB statement before parsing; 512-byte ASCII text before copying.                                                                                                                                                                                            |
-| Git grant                    | `crates/kapsel-authority/src/git.rs::verify_git_ref_grant`                                                                                               | 4 KiB envelope, 2 KiB statement; bounded identities, one fixed ref and 40-byte commit IDs.                                                                                                                                                                                                     |
-| Ordered binary records       | `crates/kapsel-authority/src/record.rs::Records`, `src/gateway/receipt/mod.rs::Records`                                                                  | Checked header/end/tag arithmetic; exact order and exhaustion; borrowed values before bounded text allocation.                                                                                                                                                                                 |
-| Receipt and trust inspection | `src/gateway/receipt/mod.rs::parse_envelope`, `InspectionLimits::validate`, `crates/kapsel-authority/src/lib.rs::parse_receipt_trust`                    | Both effect receipts: 16 KiB envelope, 8 KiB statement, 1 KiB trust, 512-byte text; supplied limits can only narrow maxima. No ambient trust, clock or I/O.                                                                                                                                    |
-| Service operator document    | `src/application/service/document.rs::parse_service_operator_document`, `BoundedVec`                                                                     | 160 KiB before JSON parsing; 128 keys and 32 approvals; reject an extra array element before decoding it. Hex conversion checks length before output allocation: 32-byte keys, 4 KiB grants.                                                                                                   |
-| Direct operator document     | `src/application/mod.rs::parse_operator_document`                                                                                                        | 16 KiB before JSON parsing, including both public application constructors; oversize refusal performs no file reads.                                                                                                                                                                           |
-| Receiver configuration       | `src/gateway/git.rs::GitReceiverConfiguration::from_document`, `src/application/mod.rs::read_operator_file`, `ServiceExecution::from_operator_snapshots` | Git JSON 4 KiB; kubeconfig 16 KiB; seeds/public keys exactly 32 bytes. JSON/YAML work is bounded by the input ceiling; service strings also remain within the document ceiling before field validation.                                                                                        |
-| Operator file reads          | `src/transport_support.rs::read_bounded`, `crates/kapsel-daemon/src/startup.rs::read_private_file`                                                       | Metadata size/type checks before allocation/read; capped maximum-plus-one reads catch growth. Nonblocking no-follow opens reject special files without waiting for a FIFO peer. Service inputs additionally enforce owner/group, mode and single-link custody.                                 |
-| Production Kubernetes HTTP   | `src/application/mod.rs::load_operator_kubernetes_client`, `src/gateway/kubernetes/adapter.rs`                                                           | Response body limited to 2 MiB before aggregate collection/JSON decoding; 10-second request deadline, 180 reads/180 seconds per observation pass; one PATCH with transport retries disabled. Custom operator clients retain their own no-retry/body-bound obligations.                         |
-| Socket framing               | `crates/kapsel-daemon/src/server/protocol.rs::request_length`, `server/runtime.rs::read_request_frame`                                                   | Nonzero 16 KiB request length before frame allocation; reject trailing bytes. Eight connection permits; two-second whole-frame read/write deadlines. Ordinary/receipt responses are 16/40 KiB; bounded projections precede output validation.                                                  |
-| Fixed client replies         | `crates/kapsel-daemon/src/client_transport.rs::exchange`                                                                                                 | 40 KiB checked prefix before allocation; reject trailing bytes; two-second per-socket-operation timeouts, not a cumulative exchange deadline.                                                                                                                                                  |
-| Stdio MCP                    | `src/mcp.rs::serve`, `crates/kapsel-daemon/src/bin/kapsel-service-mcp.rs::main`                                                                          | 16 KiB line plus one sentinel byte before JSON parsing; duplicate-key rejection; direct/bridge output ceilings 8/96 KiB. Stdio waiting has no elapsed deadline.                                                                                                                                |
-| Receipt files                | `src/gateway/receipt/publication.rs::read_bounded`                                                                                                       | 16 KiB metadata ceiling before allocation; maximum-plus-one read; no-follow, nonblocking regular-file reads.                                                                                                                                                                                   |
-| Journal opening              | `src/gateway/journal/opening.rs`, `journal/schema.rs`, `journal/capacity.rs`                                                                             | 64 MiB database and 65 MiB main rollback checks before SQLite recovery; fixed 100-byte header read; 64 KiB SQLite value/row allocation limit; physical encoded payload/depth validation before row loading. No-follow, nonblocking opens then check regular-file/private/single-link identity. |
-| Retained journal work        | `src/gateway/journal/capacity.rs::require_retained_bounds`                                                                                               | 504 retained/32 unfinished identities; 16,384 pages, 20-level accepted trees, 16 KiB individual persisted values and 4 KiB retained grants. Integrity work is physically bounded, not subject to an elapsed deadline.                                                                          |
-| Git subprocess               | `src/gateway/git.rs::run`, `run_bounded`, `read_bounded`                                                                                                 | Explicit executable, cleared environment, fixed arguments/protocol restrictions; 15 seconds per command; each stdout/stderr at most 16 KiB before buffer extension. Failure/cancellation retires the owned process group; escaping operator hooks remain outside the boundary.                 |
-| Git custody walk             | `src/gateway/git.rs::private_tree`, `trusted_ancestors`                                                                                                  | At most 100,000 entries and depth 32; check pending count before enqueueing; reject links, foreign ownership and writable custody. Paths are operator-owned; filesystem calls have no elapsed deadline.                                                                                        |
+| Boundary                     | Exact owner                                                                                                                                                           | Enforced limit and placement                                                                                                                                                                                                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Kubernetes grant             | `crates/kapsel-authority/src/lib.rs::verify_authorization_grant`                                                                                                      | 4 KiB envelope before decoding; 2 KiB statement before parsing; 512-byte ASCII text before copying.                                                                                                                                                                                            |
+| Git grant                    | `crates/kapsel-authority/src/git.rs::verify_git_ref_grant`                                                                                                            | 4 KiB envelope, 2 KiB statement; bounded identities, one fixed ref and 40-byte commit IDs.                                                                                                                                                                                                     |
+| Ordered binary records       | `crates/kapsel-authority/src/record.rs::Records`, `src/gateway/receipt/mod.rs::Records`                                                                               | Checked header/end/tag arithmetic; exact order and exhaustion; borrowed values before bounded text allocation.                                                                                                                                                                                 |
+| Receipt and trust inspection | `src/gateway/receipt/mod.rs::parse_envelope`, `InspectionLimits::validate`, `crates/kapsel-authority/src/lib.rs::parse_receipt_trust`                                 | Both effect receipts: 16 KiB envelope, 8 KiB statement, 1 KiB trust, 512-byte text; supplied limits can only narrow maxima. No ambient trust, clock or I/O.                                                                                                                                    |
+| Service operator document    | `src/application/service/document.rs::parse_service_operator_document`, `BoundedVec`                                                                                  | 160 KiB before JSON parsing; 128 keys and 32 approvals; reject an extra array element before decoding it. Hex conversion checks length before output allocation: 32-byte keys, 4 KiB grants.                                                                                                   |
+| Receiver configuration       | `src/gateway/git.rs::GitReceiverConfiguration::from_document`, `src/application/mod.rs::load_operator_kubernetes_client`, `ServiceExecution::from_operator_snapshots` | Git JSON 4 KiB; kubeconfig 16 KiB; seeds/public keys exactly 32 bytes. JSON/YAML work is bounded by the input ceiling; service strings also remain within the document ceiling before field validation.                                                                                        |
+| Operator file reads          | `src/command/mod.rs::read_bounded`, `crates/kapsel-daemon/src/startup.rs::read_private_file`                                                                          | Metadata size/type checks before allocation/read; capped maximum-plus-one reads catch growth. Nonblocking no-follow opens reject special files without waiting for a FIFO peer. Service inputs additionally enforce owner/group, mode and single-link custody.                                 |
+| Production Kubernetes HTTP   | `src/application/mod.rs::load_operator_kubernetes_client`, `src/gateway/kubernetes/adapter.rs`                                                                        | Response body limited to 2 MiB before aggregate collection/JSON decoding; 10-second request deadline, 180 reads/180 seconds per observation pass; one PATCH with transport retries disabled. Custom operator clients retain their own no-retry/body-bound obligations.                         |
+| Socket framing               | `crates/kapsel-daemon/src/server/protocol.rs::request_length`, `server/runtime.rs::read_request_frame`                                                                | Nonzero 16 KiB request length before frame allocation; reject trailing bytes. Eight connection permits; two-second whole-frame read/write deadlines. Ordinary/receipt responses are 16/40 KiB; bounded projections precede output validation.                                                  |
+| Fixed client replies         | `crates/kapsel-daemon/src/client_transport.rs::exchange`                                                                                                              | 40 KiB checked prefix before allocation; reject trailing bytes; two-second per-socket-operation timeouts, not a cumulative exchange deadline.                                                                                                                                                  |
+| Stdio MCP                    | `crates/kapsel-daemon/src/bin/kapsel-service-mcp.rs::main`                                                                                                            | 16 KiB line plus one sentinel byte before JSON parsing; duplicate-key rejection; 96 KiB output ceiling. Stdio waiting has no elapsed deadline.                                                                                                                                                 |
+| Receipt files                | `src/command/mod.rs::read_bounded`                                                                                                                                    | 16 KiB metadata ceiling before allocation; maximum-plus-one read; no-follow, nonblocking regular-file reads.                                                                                                                                                                                   |
+| Journal opening              | `src/gateway/journal/opening.rs`, `journal/schema.rs`, `journal/capacity.rs`                                                                                          | 64 MiB database and 65 MiB main rollback checks before SQLite recovery; fixed 100-byte header read; 64 KiB SQLite value/row allocation limit; physical encoded payload/depth validation before row loading. No-follow, nonblocking opens then check regular-file/private/single-link identity. |
+| Retained journal work        | `src/gateway/journal/capacity.rs::require_retained_bounds`                                                                                                            | 504 retained/32 unfinished identities; 16,384 pages, 20-level accepted trees, 16 KiB individual persisted values and 4 KiB retained grants. Integrity work is physically bounded, not subject to an elapsed deadline.                                                                          |
+| Git subprocess               | `src/gateway/git.rs::run`, `run_bounded`, `read_bounded`                                                                                                              | Explicit executable, cleared environment, fixed arguments/protocol restrictions; 15 seconds per command; each stdout/stderr at most 16 KiB before buffer extension. Failure/cancellation retires the owned process group; escaping operator hooks remain outside the boundary.                 |
+| Git custody walk             | `src/gateway/git.rs::private_tree`, `trusted_ancestors`                                                                                                               | At most 100,000 entries and depth 32; check pending count before enqueueing; reject links, foreign ownership and writable custody. Paths are operator-owned; filesystem calls have no elapsed deadline.                                                                                        |
 
-The application-level direct-document cap closes a library-entry gap previously covered only by CLI
-file reading. Journal read-only and rollback-file opening also reject FIFOs without blocking at
-`open`. The FIFO regression uses real special files with no peer, not simulated metadata.
+The retired direct operator document is not an execution entry point. Journal read-only and
+rollback-file opening reject FIFOs without blocking at `open`. The FIFO regression uses real special
+files with no peer, not simulated metadata.
 
 The Kubernetes completion regression supplies a correct current snapshot with a same-ID receipt for
 different facts, then supplies the foreign snapshot with its matching candidate. Both fail without
@@ -207,7 +206,7 @@ in-memory deadline tests. Process fixtures should acknowledge admission or handl
 instead of using fixed sleeps as readiness evidence.
 
 Fault tests, simulations, process recovery, and compile-time demonstration controls cross the same
-private operation-selected provider and receipt-completion implementations used by `Application`.
+private operation-selected provider and receipt-completion implementations used by the service.
 Tests explicitly select an operation identity and do not claim queue fairness. Process-kill proof
 crosses the ambiguous mutation and receipt-commit seams, establishes no second mutation request, and
 preserves committed bytes without re-signing. Export may use a new destination without changing the
@@ -215,12 +214,10 @@ durable action or signing identity.
 
 The transient-target gateway regression checks no journal update, no PATCH, safe GET repetition on
 reopen, and preservation of an existing inert `target_read_failures` value. Format-6 schema
-validation still requires that column. `application_contract` tests actual `Application` selection
-with another authorized or receiver-observed operation in the same journal, preserving every value
-in that other row while the configured operation completes. The receiver-observed fixture removes
-completion from real application-produced facts to expose a signing candidate. That setup tests
-selection isolation, not a crash window. Gateway fault tests retain targeted finalization and
-`target_read_crash_stays_authorized_and_repeats_only_the_safe_get` evidence.
+validation still requires that column. `application_retry` service A/B tests preserve another
+unfinished row's frozen grant/facts while the selected operation advances. These tests use actual
+service selection and independently count receiver requests. Gateway fault tests retain targeted
+finalization and `target_read_crash_stays_authorized_and_repeats_only_the_safe_get` evidence.
 
 A live `kind` lane is explicit, environment-owning evidence. It complements but never replaces
 fault-injection around every journal window.
@@ -228,8 +225,9 @@ fault-injection around every journal window.
 ## Direct-execution retirement evidence
 
 [ADR 0012](decisions/0012-v04-beta-quality-bar.md#approved-execution-scope-and-compatibility)
-approves service-only HEAD execution. Approval does not retire existing checks. The direct adapters
-and demo controls remain until equivalent retained service checks pass.
+approves service-only HEAD execution. HEAD retires the direct adapters and source-only demo after
+passing equivalent retained service/process/packaged checks. Shared service checkpoint controls
+remain because the Linux process lane consumes them.
 
 | Existing direct-demo assertion                               | Retained service owner                                                                                                  | Required evidence                                                                                                                                  |
 | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -249,8 +247,17 @@ digests in private evidence. It restores only current signing material, never hi
 Before removal, run the full Linux process lane and both packaged receiver journeys from
 [Build](BUILD.md#packaged-service-live-workflow) on the selected candidate. Keep source/executable
 and archive identities with the private evidence. A clean-source artifact is required; a dirty
-assembly or an earlier artifact cannot establish candidate acceptance. Keep the direct demo when
-these checks are missing. Historical published releases retain their own commands and bytes.
+assembly or an earlier artifact cannot establish candidate acceptance. Missing checks block
+candidate acceptance. Historical published releases retain their own commands and bytes.
+
+For retained-history compatibility, pass an exact prior format-6 archive and revision through
+`--retained-archive` and `--retained-revision` to both packaged receiver runners. Fixtures first run
+the prior producer, then replace only the cold executables with the candidate. Git compares an
+independent full-row snapshot across attempted recovery and finalized history reads. Kubernetes
+compares full rows across attempted startup and finalized receipt-commit loss. It also compares a
+prior producer's original receipt under the rotated candidate key and after catalog withdrawal. Both
+preserve the original grant, receipt and signer, inspect original receipts and retain the two
+archive identities. This is not a journal migration or downgrade test.
 
 ## Evidence classes
 
@@ -261,14 +268,12 @@ needing no external service, and documentation tests. It owns repeatable semanti
 proof. Source coverage is an informational review aid only; no percentage establishes crash safety,
 Kubernetes semantics, release integrity, or production readiness.
 
-The MCP subprocess lane proves bounded newline-delimited framing, one five-field tool, operator
-configuration outside caller input, typed `SUCCEEDED`, `FAILED`, `UNKNOWN`, and `NOT_ATTEMPTED`
-vocabulary, restart, protocol-only standard output, bounded hostile input, and secret-free failures.
-Cancellation, EOF, or transport completion never determines receiver outcome. CLI/MCP `UNKNOWN`
-report parity uses a retained outcome produced by the real application under paused Tokio time;
-production binaries replay that history rather than spending another observation budget. Fresh
-binary execution still covers success, failure and target rejection. Service MCP socket fixtures
-assert exact request bodies and exchange counts, including zero requests for rejected caller input.
+The service MCP lane proves bounded newline-delimited framing, five ID-only tools, operator
+authority outside caller input, protocol-only output and bounded secret-free errors. Socket fixtures
+assert exact requests/exchange counts and zero requests for invalid input. Linux process tests
+retain `UNKNOWN` and original bytes through real bridge loss and reconnect. Cancellation, EOF or
+transport completion never determines receiver outcome. The retired direct CLI/MCP parity check is
+not a second classifier oracle; owner tables and service transport projections remain.
 
 The current format-6 version-rejection test proves older journals, including format 5, remain
 untouched without migration. [Build and test](BUILD.md#journal-version-rejection) owns the current
@@ -322,11 +327,10 @@ without a PATCH, and a changed receiver version between preflight and the gatewa
 conflict remains `apply_started`, not a pre-attempt conclusion; deterministic fault tests own the
 exhaustive restart and receipt-projection matrix around it.
 
-The public demonstration adds an observable evaluator path through healthy,
-`ProgressDeadlineExceeded`, mutation-loss, and receipt-commit-loss cases in current source. The
-published v0.2.0 artifact instead uses its historical publication seam. Compile-time harness
-controls remain outside caller input and the ordinary executable. A visual demonstration is finite
-evidence, not exhaustive recovery proof.
+The packaged service journey covers mutation-loss and receipt-commit-loss through production
+binaries. Live receiver checks retain healthy/failed rollout and untargeted-container assertions.
+Published v0.2.0 keeps its historical direct demo. Shared service process checkpoints remain outside
+caller input and production executables. Finite traces are not exhaustive recovery proof.
 
 ### Release artifact
 

@@ -1,7 +1,7 @@
 //! Kapsel effect gateway for one authorized Kubernetes Deployment image change.
 //!
-//! The [`Application`] composition root separates request-only [`AgentRequest`] from operator-owned
-//! authorization, Kubernetes authority, signing material, and paths. The private deep gateway owns
+//! [`ServiceApplication`] separates caller action IDs from operator-owned approval, receiver
+//! authority, signing material, and paths. The private deep gateway owns
 //! the effect-gateway request, exact authorization, durable lifecycle, Kubernetes interaction,
 //! recovery, and bounded receipt. This crate exposes no generic capability or provider contract.
 //!
@@ -19,14 +19,13 @@ mod recovery_policy_tests;
 mod simulation_tests;
 
 pub use application::{
-    open_application_from_fixed_operator_document, open_application_from_operator_document,
     parse_service_operator_document, provision_exact_grant, provision_git_ref_grant,
-    provision_snapshot_grant, validate_service_operator_inputs, AgentRequest, Application,
-    ApplicationError, ApprovedAction, ExecutionCondition, ExecutionDisposition,
-    ExecutionObservation, GrantProvisioning, HistoryEntry, HistoryPage, OperationReport,
-    OperatorConfiguration, ServiceAdmission, ServiceApplication, ServiceApproval,
-    ServiceConfiguration, ServiceError, ServiceExecution, ServiceOperatorDocument, ServiceStop,
-    SetDeploymentImageReceipt, SetDeploymentImageStatus, ValidatedServiceOperatorInputs,
+    provision_snapshot_grant, validate_service_operator_inputs, AgentRequest, ApplicationError,
+    ApprovedAction, ExecutionCondition, ExecutionDisposition, ExecutionObservation,
+    GrantProvisioning, HistoryEntry, HistoryPage, ServiceAdmission, ServiceApplication,
+    ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution, ServiceOperatorDocument,
+    ServiceStop, SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    ValidatedServiceOperatorInputs,
 };
 pub use gateway::{
     inspect_git_receipt, inspect_receipt, ApprovedTarget, AuthorizationTrust, ExactAuthorization,

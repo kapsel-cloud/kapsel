@@ -5,6 +5,7 @@ import ast
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import git_artifact_exercise as EXERCISE
 import run_git_artifact as JOURNEY
 
 
@@ -22,6 +24,28 @@ class GitArtifactTests(unittest.TestCase):
         self.assertNotIn(b"KAPSELD_TEST", source)
         self.assertNotIn(b"KAPSEL_DEMO", source)
         self.assertEqual(JOURNEY.CASES, ("healthy", "pre-receive", "post-receive", "service-loss"))
+
+    def test_retained_snapshot_is_read_only_and_requires_format6(self):
+        for version in (5, 6):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
+                journal = Path(temporary) / "journal.sqlite3"
+                connection = sqlite3.connect(journal)
+                connection.execute(f"PRAGMA user_version = {version}")
+                connection.execute(
+                    "CREATE TABLE git_ref_operations (operation_id TEXT PRIMARY KEY, grant BLOB)"
+                )
+                connection.execute(
+                    "INSERT INTO git_ref_operations VALUES ('git-example', ?)", (b"original",)
+                )
+                connection.commit()
+                connection.close()
+                before = journal.read_bytes()
+                if version == 6:
+                    self.assertEqual(EXERCISE.retained_row(journal), ("git-example", b"original"))
+                else:
+                    with self.assertRaises(AssertionError):
+                        EXERCISE.retained_row(journal)
+                self.assertEqual(journal.read_bytes(), before)
 
     def test_fixture_subcommands_use_the_selected_git(self):
         tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
@@ -168,9 +192,21 @@ class GitArtifactTests(unittest.TestCase):
                     JOURNEY.subprocess, "run", return_value=SimpleNamespace(returncode=0)
                 ) as execution,
             ):
-                self.assertEqual(JOURNEY.qualify(archive, "a" * 40, git), workspace)
+                self.assertEqual(
+                    JOURNEY.qualify(archive, "a" * 40, git, archive, "b" * 40), workspace
+                )
                 summary = json.loads((workspace / "summary.json").read_bytes())
                 self.assertEqual(summary["source_revision"], "a" * 40)
+                self.assertEqual(summary["retained_source_revision"], "b" * 40)
+                self.assertEqual(module.extract_release.call_args.args[2], "b" * 40)
+                self.assertIn(
+                    f"{module.extract_release.return_value}:/retained-artifact:ro",
+                    docker.call_args_list[0].args[0],
+                )
+                self.assertEqual(
+                    summary["retained_archive_sha256"],
+                    hashlib.sha256(archive.read_bytes()).hexdigest(),
+                )
                 self.assertEqual(
                     summary["archive_sha256"], hashlib.sha256(archive.read_bytes()).hexdigest()
                 )

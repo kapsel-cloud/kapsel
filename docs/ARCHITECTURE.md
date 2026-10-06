@@ -1,198 +1,142 @@
 # Architecture
 
-This page maps code responsibilities and compile-time dependencies. The
-[effect-gateway contract](EFFECT_GATEWAY.md) owns authorization, lifecycle, recovery, results, and
-receipts. [Technical scope](SCOPE.md) owns capability and release limits.
+This page maps code responsibilities and compile-time dependencies.
+[Effect gateway](EFFECT_GATEWAY.md) owns authority, lifecycle, recovery, results and receipts.
+[Scope](SCOPE.md) owns capability and release boundaries.
 
 ## Root product package
 
-The repository root is the `kapsel` product package and workspace root. Its direct CLI and MCP paths
-support one Kubernetes Deployment image change:
+The root is the `kapsel` product package and workspace root. Its executable provisions operator
+approval and inspects detached receipts. It does not execute caller requests. Both maintained
+effects execute through the resident service:
 
 ```text
-local operate command or fixed stdio MCP adapter
-  -> Application
-       -> private Gateway
-            -> exact grant authorization
-            -> SQLite journal
-            -> concrete Kubernetes adapter
-            -> receiver-fact classification
-            -> receipt signing and terminal completion in SQLite
-            -> optional filesystem export
+fixed ID-only service client or MCP bridge
+  -> authenticated Linux Unix socket
+       -> kapseld
+            -> ServiceApplication
+                 -> private Gateway
+                      -> purpose-specific exact grant authorization
+                      -> SQLite journal and worker lease
+                      -> concrete Kubernetes or Git receiver
+                      -> effect-specific classification
+                      -> original signed receipt and terminal state
 
 kapsel inspect
-  -> offline receipt inspector
+  -> offline inspector
        <- receipt bytes + explicit trust + evaluation time + limits
 ```
 
-`Application` separates caller requests from operator configuration. `OperatorConfiguration`
-supplies the signed grant, grant trust, Kubernetes client, receipt-signing material, journal path,
-and optional export directory. The caller supplies only `AgentRequest`, an alias for
-`SetDeploymentImageRequest`. It cannot select authority, trust, credentials, paths, signing
-material, or lifecycle controls.
+`ServiceApplication` resolves catalog or retained original authority. Caller action IDs cannot
+choose trust, credentials, paths, signing material or lifecycle controls. The gateway owns
+admission, advancement and bounded blocked outcomes. The journal owns conditional rows, snapshots,
+capacity, worker exclusion and receipt commitment. Transport does not sequence those phases.
 
-`Application::execute` submits a request, then calls `Gateway::reconcile`. `Application::reconcile`
-uses that same gateway entry point for an existing operation. Both project public reports and errors
-without interpreting durable phases. Submission and snapshot helpers remain private so callers
-cannot sequence those phases themselves.
-
-The private `Gateway` owns validation, authorization, journaling, conditional mutation,
-observation-only recovery, classification, and receipt construction. SQLite commits the signed
-receipt and terminal state together. Filesystem export is separate. The offline inspector opens
-neither an application, a journal, nor a receiver client.
-
-The journal owns rows, snapshots, worker locking, capacity, and guarded transitions. Its private
-children have distinct responsibilities:
-
-- `schema`: format-6 layout and version rejection.
-- `opening`: safe SQLite access and private pathname identity.
-- `capacity`: fixed completion accounting.
+The journal's private children separate `schema` (format-6 layout/version rejection), `opening`
+(SQLite/pathname custody) and `capacity` (completion accounting). SQLite commits signed receipt
+bytes and terminal state atomically. Caller export is separate. Inspection opens neither a journal
+nor a receiver client.
 
 ### Reconciliation and locking
 
-`Gateway::reconcile` advances an existing configured operation until it is blocked or terminal. It
-rechecks original authority, completes authorization, executes or recovers, and commits receipts
-from frozen observations. It does not submit an absent operation. There is no queue or scheduler.
+The gateway reloads original authority under the worker lease before choosing fresh dispatch or
+observation-only recovery. It holds exclusion through target reads, mutation, observations, signing
+and completion. Admission and stored reads use journal transactions without waiting for that worker.
+There is one worker, no scheduler and no implicit startup reconciliation.
 
-The execution helper reloads state under the worker lock before choosing fresh dispatch or
-observation-only recovery. It holds that lock through target, mutation, and receiver I/O. Receipt
-completion separately holds the lock through signing and the conditional SQLite commit. Submission
-and report reads use journal transactions without worker exclusion. Private execution and receipt
-helpers provide test points for crash windows.
-
-A contending worker returns the latest authorized snapshot without waiting or calling Kubernetes. An
-absent operation produces no report. A blocked operation produces its current report. Terminal
-retrieval neither observes nor re-signs. Submission rejection is distinct from advancement failure.
-Cancellation releases the worker lock and preserves the last committed state. Recovery after the
-attempt marker never resends. Export is independent of completion.
+Only a fresh confirmed attempt commit issues private one-use dispatch permission. Loading attempted
+history never reconstructs permission. Recovery after the attempt marker only observes. Terminal
+retrieval neither observes nor re-signs. Cancellation preserves committed state; the daemon retains
+physical job ownership until the work actually retires. Export cannot change completion.
 
 ### Git service composition
 
-The service resolves retained original authority before selecting the effect. Git uses a concrete
-receiver, a typed journal table, and a receipt codec with a separate signing purpose.
+Git and Kubernetes share `Gateway::admit_service_operation` for terminal reselection, worker
+contention, capacity refusal and durable acknowledgement. Each effect rechecks original identity
+under the returned lease. Kubernetes initially records `requested`; Git records `authorized`.
 
-Git advancement and Kubernetes share `Gateway::admit_service_operation`. This helper owns terminal
-reselection, worker contention, capacity refusal, and post-commit acknowledgement. It returns the
-held lease for advancement. Each effect rechecks original identity under worker exclusion and
-commits its initial state: Kubernetes `requested`, Git `authorized`.
-
-Receiver transitions, journal rows, and evidence remain effect-specific. Only a fresh Git attempt
-commit can produce dispatch permission. Loaded attempts observe without sending. Frozen evidence can
-finalize without receiver material. Service reads expose the Git tuple, acknowledgement, and
-observation without reinterpreting Kubernetes columns. The
-[Git contract](EFFECT_GATEWAY.md#git-transition-boundary) owns exact semantics.
+Receiver transitions, journal rows, result rules and receipt purposes remain effect-specific. Git
+uses exact-lease receiver semantics, not Kubernetes classifiers. Frozen evidence can complete
+without receiver material. Service reads expose Git tuple, acknowledgement and observation without
+reinterpreting Kubernetes columns. [Git contract](EFFECT_GATEWAY.md#git-transition-boundary) owns
+exact semantics.
 
 ## Kubernetes adapter
 
-The adapter performs safe target reads, one conditional strategic merge patch, and bounded rollout
-observation. It keeps receiver facts separate from transport and request-acceptance facts.
+The adapter performs safe reads, one conditional strategic merge patch and bounded rollout
+observation. `Journal::begin_attempt` supplies receiver-bound one-use permission only after its
+fresh transaction commits. The adapter consumes that permission. The shared explicit-kubeconfig
+client disables server-response mutation retries and caps responses before collection/parsing.
+[Fresh dispatch](EFFECT_GATEWAY.md#fresh-dispatch-permission) owns retry obligations and limits.
 
-`Journal::begin_attempt` issues private one-use dispatch permission only after a fresh transaction
-commits. The adapter consumes the permission's bound request and target. Loading an attempted row
-cannot restore permission. The
-[fresh dispatch contract](EFFECT_GATEWAY.md#fresh-dispatch-permission) owns client-retry obligations
-and limits.
-
-A private adapter interface supports deterministic call-count and crash-recovery tests. It is not a
-public provider interface or a general Kubernetes abstraction.
+Private adapter/fault seams support deterministic checks. They are not a public provider interface
+or generic Kubernetes framework. Service process checkpoint controls remain feature-gated because
+the Linux recovery lane consumes them; production artifacts do not contain them.
 
 ## CLI and MCP adapters
 
-`src/lib.rs` maps workspace-visible interfaces. The executable layers have these responsibilities:
+`src/lib.rs` maps service, operator provisioning and offline inspection interfaces. There is no
+direct `Application` execution composition or legacy execution operator document.
 
-- `transport_support`: load bounded operator files and project application reports and errors.
-- `command`: decode fixed CLI input and produce deterministic envelopes and exit classes.
-- `mcp`: enforce bounded stdio framing and protocol lifecycle.
-- `main.rs`: handle process arguments, streams, and exits.
+- `command`: fixed provisioning/inspection grammar, envelopes and exit classes.
+- `transport_support`: purpose-specific offline target projection, with no runtime or authority.
+- `main.rs`: process arguments, streams and exits.
+- `kapsel-service-client`: fixed socket requests and collision-refusing caller export.
+- `kapsel-service-mcp`: bounded stdio lifecycle and ID-only socket composition.
 
-The direct CLI and fixed-schema MCP adapter call `Application`. Neither sequences private durable
-states. MCP exposes request fields; operator configuration stays separate. [Commands](COMMANDS.md)
-and [MCP](MCP.md) own the external contracts. The ID-only service MCP bridge uses the resident
-service instead of this direct-execution path.
+[Commands](COMMANDS.md), [MCP](MCP.md) and [service](KAPSEL_SERVICE.md) own these external
+contracts.
 
 ## Receipts and export
 
-The receipt module owns canonical bytes, signatures, bounded parsing, and classifier recomputation.
-Trust, evaluation time, and limits are explicit inputs. Git and Kubernetes share private envelope
-signing, framing, and signature/trust checks. Statement parsing, version checks, and classifiers
-remain separate. Authentication uses original statement bytes, not a re-encoded statement.
+Receipt codecs own canonical bytes, signatures, bounded parsing and classifier recomputation. Git
+and Kubernetes share envelope/signature mechanisms but retain their own statements and purposes.
+Authentication uses original bytes, not re-encoding. Trust, evaluation time and limits are explicit.
 
-Inspection is offline. SQLite atomically commits receipt bytes, digest, signer identity, and
-terminal state. The export module installs frozen bytes through Unix descriptor-relative operations.
-It requires owner-private custody and refuses collisions. Neither module supplies ambient trust or
-proves receiver truth, causation, or complete capture.
+The service retrieves original committed bytes. The fixed client owns caller export and refuses an
+existing destination. It cannot reopen the action on export failure. No exporter supplies ambient
+trust or proves receiver truth, causation or complete capture. Legacy purposes remain inspectable.
 
 ## Workspace and release
 
 ```text
-kapsel (root product)
+kapsel (product library and operator/inspection CLI)
   -> kapsel-authority
 
-kapseld (resident service)
+kapsel-daemon (resident service, fixed client and MCP bridge)
   -> kapsel
   -> kapsel-authority
 ```
 
-`kapsel-authority` owns grant and receipt-trust codecs, their combined consistency check, and the
-bounded [request grammar](EFFECT_GATEWAY.md#one-capability). Gateway and service share pure grammar
-checks but retain their own error projection and rejection-before-effect boundaries. `Application`
-also exposes the combined operator-input check, covered by its contract tests.
+`kapsel-authority` owns grant/trust codecs, their combined consistency check and bounded tuple
+validation. The root retains operator provisioning and service composition, not a supported public
+SDK. The excluded fuzz workspace enters maintained hostile decoders through production interfaces.
 
-This package is not an installed process, public SDK, generic validation library, or supported Rust
-interface. The excluded `fuzz` package contains hostile-input test targets.
-
-Release assembly packages the product for one target. The preview's `kapsel`, `kapseld`, and
-`kapsel-service-client` binaries have no optional features enabled. Source-only and older-beta demos
-are separate from this archive. Checksums, metadata, SBOM, and smoke automation add no runtime
-plugins, trust sources, or result vocabulary. [Release artifacts](RELEASE.md) owns the archive.
+Release assembly packages four executables and operating assets for one target, without test/demo
+features. No source-only crash demo is assembled or maintained at HEAD. Published tags retain their
+old bytes and contracts. [Release](RELEASE.md) owns archive and exact-byte qualification.
 
 ## Resident service
 
-```text
-bounded local service client
-  -> authenticated Linux Unix socket
-       -> kapseld
-            -> ServiceApplication
-                 -> sole SQLite effect journal
-```
+`kapseld` survives caller loss and exposes catalog, history, status and original receipt retrieval
+across separate OS identities. Startup is read-first. Fixed operator/socket arguments and retained
+directory handles keep journal/socket I/O under verified roots through Linux `/proc/self/fd`.
+Missing or inconsistent procfs stops startup before effects. A moved database refuses later writes;
+startup removes only an exact inactive owned socket. Systemd owns process lifecycle and diagnostics.
 
-`kapseld` keeps execution alive independently of the caller. Across a separate OS identity, it
-provides an authenticated catalog, history, status, and original receipt retrieval. Startup is
-read-first: it does not reconcile operations automatically.
+Private daemon owners remain:
 
-The process accepts fixed operator and socket arguments. It validates roots descriptor-relatively
-and retains their directory handles. Journal and socket I/O use verified Linux `/proc/self/fd` paths
-beneath those handles. Missing or inconsistent procfs stops startup before journal or socket
-effects. If the database moves, SQLite refuses later writes instead of reopening a replaced root.
-Startup removes only an exact inactive service-owned stale socket.
+- `server/protocol.rs`: bounded JSON grammar and response projection without I/O.
+- `server/runtime.rs`: peer checks, frames, deadlines, admission, physical jobs and shutdown.
+- `server.rs`: service application reads and selection.
+- `server/harness.rs`: feature-gated checks of that same runtime.
 
-Systemd owns process lifecycle, runtime-directory cleanup, health, and diagnostics. Static assets
-define the service identity and namespaced Kubernetes RBAC.
-
-The `kapsel-daemon` package produces the `kapseld` binary. Private modules in
-`crates/kapsel-daemon/src` separate the mechanisms:
-
-- `server/protocol.rs`: JSON decoding, shared request validation, response rendering, and byte
-  limits. It performs no I/O or ambient-authority lookup.
-- `server/runtime.rs`: peer checks, framing, deadlines, connection and submission admission, locks,
-  task lifetime, and shutdown. It does not interpret durable states or receiver results.
-- `server.rs`: startup and the bridge to `ServiceApplication` reads and selection.
-- `server/harness.rs`: feature-gated tests of the same runtime, without a public harness interface.
-
-The adapter calls `ServiceApplication::select` and authenticated catalog, history, status, and
-receipt reads. It does not query SQLite directly, sequence lifecycle states, duplicate export rules,
-or add a store or queue. [Kapsel service](KAPSEL_SERVICE.md) owns protocol and installation rules.
-
-`ServiceApplication` resolves selectable or retained original authority. The gateway owns admission,
-reconciliation, and blocked outcomes. The journal owns conditional rows, capacity, and receipt
-commitment. These responsibilities stay below the transport, without a generic registry or
-scheduler.
+The daemon never interprets journal phases, queries SQLite directly, fabricates receiver results or
+adds a store/queue. [Service](KAPSEL_SERVICE.md) owns installation and protocol rules.
 
 ## Dependency rule
 
-Transport adapters depend on application interfaces. Those interfaces depend on the private gateway
-and concrete implementations. Share authority codecs only through the fixed-purpose package.
-
-Add a package or public interface only for a demonstrated deployment or dependency boundary with
-real consumers. [Architecture decisions](decisions/README.md) explain rationale; they do not
-override current contracts.
+Transport depends on application interfaces; application depends on the private gateway and concrete
+effects. Share authority codecs through their fixed-purpose package. Add a package or public
+interface only for a demonstrated boundary with real consumers. [Decisions](decisions/README.md)
+explain rationale; they do not override contracts.
