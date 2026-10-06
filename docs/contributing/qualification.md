@@ -1,105 +1,30 @@
-# Build and test Kapsel
+# Qualification commands
 
-This page covers source setup, commands, and validation gates. [Testing](TESTING.md) explains what
-each test proves. To run the published release instead, use the
-[service operator guide](KAPSEL_SERVICE_OPERATOR.md).
+Use these lanes when a change needs evidence beyond the everyday deterministic gate. Run commands
+from the checkout root after [contributor setup](build.md#prepare-contributor-tools). Each section
+states its additional prerequisites and environment ownership. [Testing](testing.md) explains
+evidence classes. The [evidence map](evidence.md) connects guarantees to maintained checks.
 
-## Everyday commands
+## Choose a lane
 
-Run these from the checkout. Ordinary Cargo builds need only Rust and a C compiler/linker.
+- Service startup or runtime: [Linux process tests](#kapsel-service-candidate).
+- Receiver rules: [Kubernetes](#live-kubernetes-gate) or [Git](#git-transition-service).
+- Storage: [accepted layouts](#accepted-journal-layouts),
+  [ENOSPC](#bounded-storage-failure-qualification), and
+  [version rejection](#journal-version-rejection).
+- Hostile input and lifecycle exploration: [robustness](#robustness-lanes).
+- Release candidate: [source scan](#source-privacy-and-security), [artifact](#release-artifact), and
+  [packaged receiver workflow](#packaged-service-live-workflow), under the
+  [release process](release_process.md).
 
-| Task                                      | Command                                                                             |
-| ----------------------------------------- | ----------------------------------------------------------------------------------- |
-| Prepare contributor tools                 | `cargo xtask setup`                                                                 |
-| Diagnose prerequisites without installing | `cargo xtask doctor`                                                                |
-| Build debug executables                   | `cargo build --locked --workspace`                                                  |
-| Fast compile check                        | `cargo check --locked --workspace`                                                  |
-| Focused test                              | `cargo test --locked -p kapsel --test service_application_contract cold_validation` |
-| Format                                    | `cargo xtask fmt`                                                                   |
-| Check formatting                          | `cargo xtask fmt-check`                                                             |
-| Full deterministic gate                   | `cargo xtask ci`                                                                    |
+A source, container, live-receiver, and native-installation pass establish different facts. Preserve
+those distinctions when recording results. Do not run a privileged lane against existing resources.
 
-The
-[one-command disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
-uses authenticated release binaries on a fresh native Linux/systemd VM. HEAD execution requires the
-resident service; direct/macOS-source execution and the source-only crash demo are retired. Live,
-native and artifact gates are separate from the everyday loop.
-
-## Prerequisites
-
-Use a macOS or Linux development host with Git and a C compiler/linker. Install
-[Rust through rustup](https://rust-lang.org/tools/install/), which also supplies Cargo.
-`rust-toolchain.toml` selects Rust 1.98.0, Clippy, and rustfmt for this checkout.
-
-Run all commands below from the repository root. The first build downloads the pinned toolchain and
-Cargo dependencies. Building the ordinary executable does not require Python, Node.js, or Docker.
-
-## Evaluator CLI
-
-Build and check the local executable:
-
-```sh
-cargo build --locked --bin kapsel
-target/debug/kapsel --version
-```
-
-This builds repository HEAD, not the published v0.2.0 artifact. See [Commands](COMMANDS.md) for the
-CLI's retained provisioning/inspection forms and operator-owned inputs. For execution, use the
-[service operator guide](KAPSEL_SERVICE_OPERATOR.md).
-
-## Deterministic gate and formatting
-
-For contributor checks, also install [Python](https://www.python.org/downloads/) 3.11+ with `venv`
-and `ensurepip`, and [Node.js](https://nodejs.org/en/download) 24+ with npm. Then run:
-
-```sh
-cargo xtask setup
-```
-
-Setup installs the selected Rust toolchain and pinned nightly rustfmt. It installs Prettier, Ruff,
-Pyright, Taplo, shfmt, and ShellCheck beneath `$HOME/.local/share/kapsel/dev-tools`. Taplo is built
-from its locked crate. Scripts invoke isolated tools directly: no global installation, shell-profile
-change, or virtualenv activation is needed. Repeated setup reuses matching tools; missing tools need
-network access. Hooks are a separate opt-in.
-
-`cargo xtask doctor` checks prerequisites and installed tools without installing or rewriting
-source. Cargo may first build xtask or prepare its compiler. On an unprepared host, use
-`./scripts/setup.sh --check` to bypass that bootstrap.
-
-[`tools/dev/dev-tools.sh`](../tools/dev/dev-tools.sh) owns contributor tool versions for local setup
-and CI. [`xtask`](../xtask/src/main.rs) routes contributor commands; it does not define release or
-qualification semantics. Commands resolve the checkout root even when invoked from a subdirectory.
-The three files in `scripts/` implement setup, formatting and the deterministic gate; setup can also
-be invoked directly before the selected Rust toolchain is installed. Python installation ignores
-ambient pip configuration and destination overrides. Formatting explicitly selects the pinned
-Rustfmt executable rather than an ambient `RUSTFMT` override. Nightly rustfmt enforces
-`StdExternalCrate` import grouping and `Crate` import granularity through `rustfmt-nightly.toml`.
-Ordinary compilation still uses the stable toolchain.
-
-The everyday loop is:
-
-```sh
-cargo xtask fmt
-cargo xtask ci
-```
-
-Formatting runs **Markdown, Rust, then Python**, including the fuzz workspace and Python fixtures.
-It checks tool availability before rewriting files and does not apply lint fixes. To check layout
-without changing source, run `cargo xtask fmt-check`.
-
-The local gate checks formatting, Python lint and types, Markdown links, tooling regressions, Rust
-line width, Clippy, rustdoc, deterministic Rust tests, and doctests. It does not start Docker or a
-cluster. For a smaller check:
-
-```sh
-cargo xtask ci static  # formatting, lint, types, links, and tooling regressions
-cargo xtask ci rust    # Clippy, rustdoc, and deterministic Rust tests
-cargo xtask ci doc     # Rust doctests
-```
+## Contributor tooling details
 
 ### Python type checking
 
-[`pyrightconfig.json`](../pyrightconfig.json) selects Python 3.11, standard checking, and script
+[`pyrightconfig.json`](../../pyrightconfig.json) selects Python 3.11, standard checking, and script
 directory import roots. The static gate runs the pinned Pyright on Linux and macOS targets,
 independent of the host interpreter. `tools/checks/check_source_privacy.py` uses strict checking.
 The checked scope includes source checks, release tooling and fixtures, developer tooling, the
@@ -111,42 +36,10 @@ containers rather than importing repository modules there. The Git and Kubernete
 exact executed source and its digest with their private qualification evidence. The distributed
 release verifier remains independent of repository imports and retains its 64-KiB limit.
 
-### Git hooks
+## Fresh-session caller checks
 
-Inspect any existing custom hook path before enabling the repository hooks:
-
-```sh
-git config --get core.hooksPath
-git config core.hooksPath .githooks
-```
-
-Pre-commit runs only `git diff --cached --check`. It checks staged whitespace errors, not
-formatting, lint or tests, and permits partial commits and unrelated unstaged/untracked files.
-Pre-push requires a clean checkout matching the pushed tree and runs the complete local gate,
-reusing a previous passing result for the same tree. CI independently runs that gate. Neither hook
-starts Docker. See [the hooks](../.githooks/) for exact refusal and caching behavior.
-
-## Focused gates
-
-Choose the smallest check that owns the changed behavior. Run the complete local gate before handoff
-when practical. Additional environment requirements are listed in the sections below.
-
-| Change                       | Command                                                                           |
-| ---------------------------- | --------------------------------------------------------------------------------- |
-| Python tooling               | `cargo xtask ci static`                                                           |
-| Formatting pipeline          | `python3 tools/dev/test_format.py`                                                |
-| Effect gateway               | `cargo test --locked -p kapsel`                                                   |
-| Service and private harness  | `cargo test --locked -p kapsel-daemon --features test-harness`                    |
-| Shared operator authority    | `cargo test --locked -p kapsel-authority`                                         |
-| Service installed assets     | `cargo test --locked -p kapsel-daemon --test install_assets`                      |
-| Service MCP bridge           | `cargo test --locked -p kapsel-daemon --features test-harness --test service_mcp` |
-| Fresh-session caller fixture | `python3 examples/test_fresh_session_caller.py`                                   |
-| Seeded lifecycle simulation  | `./tests/qualification/run-simulation.sh`                                         |
-| Hostile-input fuzz smoke     | `./fuzz/smoke.sh --fuzz-target inspect_receipt`                                   |
-| Live Kubernetes behavior     | `./tests/qualification/run-kind-effect-gateway.sh`                                |
-
-To run the fresh-session caller fixture against the real MCP bridge and a scripted socket (not
-Kubernetes), build the test-harness binary first:
+To run the caller fixture against the real MCP bridge and a scripted socket (not Kubernetes), build
+the test-harness binary first:
 
 ```sh
 cargo build --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp
@@ -167,19 +60,29 @@ Requires Docker, kind 0.32+, kubectl 1.30+, Python 3.11+, and OpenSSL:
 The script creates and removes its own uniquely named cluster and exports failure logs. It records
 the base revision and working-tree diff digest, and refuses untracked files that cannot be included
 in that evidence. This lane is separate from deterministic CI. See
-[Live Kubernetes and demonstration](TESTING.md#live-kubernetes-and-demonstration) for the gateway,
+[Live Kubernetes and demonstration](evidence.md#live-kubernetes-and-demonstration) for the gateway,
 strategic-patch admission, exact-snapshot and service observation cases.
 
 ## Packaged-service live workflow
 
-The separate extracted-artifact lane requires Docker, kind 0.32+, kubectl 1.30+ and Python 3.11+.
-Use an exact accepted clean release archive and its matching sidecars. This is a privileged
-**disposable test environment**, not permission to use an existing cluster:
+Use this lane to check production binaries against a real Kubernetes receiver, including caller
+loss, service loss and same-ID recovery. The model-driven healthy action is an optional addition.
+
+1. Prepare Docker, kind 0.32+, kubectl 1.30+ and Python 3.11+.
+2. Select an exact accepted clean release archive, matching sidecars and source revision. Set
+   `archive` and `revision` to those identities.
+3. Run the scripted workflow below, or add the [model lane](#model-driven-healthy-action).
+4. Check the retained results against [expected evidence](#packaged-workflow-evidence).
+5. Check [cleanup and retained private state](#packaged-workflow-cleanup), including on failure.
+
+This is a privileged **disposable test environment**, not permission to use an existing cluster:
 
 ```sh
 python3 tests/qualification/run_kind_agent_action_workflow.py \
   --archive "$archive" --revision "$revision"
 ```
+
+### Packaged workflow evidence
 
 The runner creates one uniquely named, pinned kind cluster and an isolated Linux service container.
 It transfers only extracted production binaries, their public key-generation procedure and scoped
@@ -206,23 +109,20 @@ through host bind mounts whose permission behavior can differ across Docker envi
 extracted public artifact is the only host bind. These probes are finite process-level evidence, not
 a general host-security certification.
 
-To additionally exercise the representative agent integration, supply an independently accepted
-Linux x86-64 Codex 0.155.1 executable, its matching `codex-code-mode-host` sibling, and existing
-model authentication. The runner does not install or update Codex:
+### Model-driven healthy action
 
-```sh
-python3 tests/qualification/run_kind_agent_action_workflow.py \
-  --archive "$archive" --revision "$revision" \
-  --agent --codex-binary /absolute/path/to/verified/codex
-```
+Supply an independently accepted Linux x86-64 Codex 0.155.1 executable, its matching
+`codex-code-mode-host` sibling, and existing model authentication. The runner does not install or
+update Codex. The default scripted lane requires no model account or call.
 
-The default lane requires no model account or call. The optional lane copies only the model's
-`~/.codex/auth.json` into a private caller-owned directory inside the disposable container. An
-operator can select another private model-auth file with `--codex-auth`. No host home directory,
-agent configuration, Kubernetes authority or Docker socket is exposed to the model. The source auth
-file must be private, owned, regular and single-link. It is not modified or synchronized back. The
-container copy is removed after the call, and container cleanup removes any remaining local model
-state.
+Read the custody and supervision requirements below before running the model lane.
+
+The optional lane copies only the model's `~/.codex/auth.json` into a private caller-owned directory
+inside the disposable container. An operator can select another private model-auth file with
+`--codex-auth`. No host home directory, agent configuration, Kubernetes authority or Docker socket
+is exposed to the model. The source auth file must be private, owned, regular and single-link. It is
+not modified or synchronized back. The container copy is removed after the call, and container
+cleanup removes any remaining local model state.
 
 Codex runs as UID 61001, distinct from both root preparation and the Kapsel service identity. It
 uses the packaged `/usr/bin/kapsel-service-mcp` through its caller-owned Codex configuration to list
@@ -242,6 +142,14 @@ rules are not loaded, and session persistence is disabled. This tests specific p
 boundaries, not comprehensive hostile-code containment. The model can read its own model
 authentication and has network access.
 
+Run with the same accepted artifact identity:
+
+```sh
+python3 tests/qualification/run_kind_agent_action_workflow.py \
+  --archive "$archive" --revision "$revision" \
+  --agent --codex-binary /absolute/path/to/verified/codex
+```
+
 The driver checks product state independently of model prose and refuses success if another fixture
 action was admitted. Status comes from the installed native client with its fixed socket. Python
 supervision and receipt readers use isolated mode to exclude model-writable imports. The driver
@@ -255,17 +163,12 @@ caller programs, not model-driven troubleshooting or evidence of useful action s
 mode qualifies native systemd installation, application quality, publication, or a cumulative
 observation deadline across interruptions.
 
+### Packaged workflow cleanup
+
 The printed private workspace retains result summaries, bounded output, and fixture inputs. It also
 contains a cluster-admin kubeconfig and an expiring scoped token. **Do not publish that directory.**
-The runner removes its container and cluster. If cleanup fails, inspect those named resources; do
+The runner removes its container and cluster. If cleanup fails, inspect those named resources. Do
 not run broad Docker or kind cleanup. The native example separately retains its stopped host state.
-
-## Public crash-recovery demonstration
-
-The direct source demo is retired from HEAD. Use the
-[v0.2.0 evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md#fastest-path)
-only with that release's original binaries and history. Current crash qualification uses the
-[packaged service workflow](#packaged-service-live-workflow) and retained Linux process tests.
 
 ## Receiver-recovery regressions
 
@@ -286,7 +189,7 @@ KAPSEL_RECEIVER_ONLY=pre-send cargo test --locked -p kapsel --lib \
 
 Kapsel runs against an independent HTTP service fixture with exact PATCH assertions, real process
 exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. These
-regressions prove current Kapsel behavior; they do not establish equivalence with another tool.
+regressions check current Kapsel behavior. They do not show equivalence with another tool.
 
 ### Initial observation policy
 
@@ -311,12 +214,14 @@ cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests::receiver_r
 Paused-clock tests distinguish the read ceiling (180 instantaneous reads over 179 one-second waits)
 from the elapsed ceiling (180 seconds including stalled reads). Real I/O can exhaust elapsed time
 before all reads occur. Per-pass bounds do not promise a cumulative ceiling across interrupted
-explicit resumptions. The [gateway contract](EFFECT_GATEWAY.md#result-meaning) owns that policy.
+explicit resumptions. The [gateway contract](../reference/kubernetes_effect.md#result-meaning)
+defines that policy.
 
 ## Git transition service
 
 The Git lane requires an explicitly selected Git 2.55.0. Receiver fixtures copy it into private
-custody; it is not discovered through ambient PATH. Run the core recovery matrix on macOS or Linux:
+custody rather than discovering it through ambient PATH. Run the core recovery matrix on macOS or
+Linux:
 
 ```sh
 (umask 077; KAPSEL_TEST_GIT=/absolute/path/to/git \
@@ -343,21 +248,16 @@ python3 tests/qualification/run_git_artifact.py \
 This lane creates one isolated, network-disabled container per case. Only extracted production
 binaries and the selected Git executable enter the operating environment. Separate service and
 caller identities enforce private-material custody. Receiver hooks supply acknowledgement-loss and
-service-crash windows; no product test hook is used. The cases check exact ref and hook inputs,
+service-crash windows without a product test hook. The cases check exact ref and hook inputs,
 observation-only same-ID recovery, original receipt retrieval after catalog/material withdrawal, and
-detached inspection. Hook inputs are not packet counts or proof of complete hook delivery.
-Containers are removed; the printed private evidence workspace is retained. This is not native
-systemd, power-loss, or live-repository qualification. To qualify retained format-6 history from a
-prior producer, add
-`--retained-archive /absolute/prior.tar.gz --retained-revision "$prior_revision"` to this command
-and the Kubernetes packaged workflow command. Both archives must be clean-source and bound to their
-exact revisions; the evidence records both identities. See
-[retirement evidence](TESTING.md#direct-execution-retirement-evidence) for the cold-replacement
-trace.
+detached inspection. Hook inputs are not packet counts or proof of complete hook delivery. The
+runner removes the containers and retains the printed private evidence workspace. This is not native
+systemd, power-loss, or live-repository qualification. Current-release restart/reconnect evidence is
+required. A prior-artifact replacement matrix is not a release gate.
 
-See the [Git service example](GIT_REF_TRANSITION.md) for material, semantics and evidence limits.
-The owning deterministic gate remains `cargo xtask ci`; the Linux process gate below is also
-required when service startup or protocol composition changes.
+See the [Git service example](../guides/git_transition.md) for material, semantics and evidence
+limits. Run `cargo xtask ci` as the deterministic gate. Service startup or protocol composition
+changes also require the Linux process gate below.
 
 ## Kapsel service candidate
 
@@ -397,13 +297,13 @@ cargo test --locked -p kapsel-daemon --features test-harness
 
 Linux startup/publication tests cover private lock custody, owned temporary cleanup and publication
 fault outcomes. Per-instance barriers cover startup termination, blocked storage retirement,
-receiver waiting and lifecycle contention; process tests preserve original history/receipt bytes
+receiver waiting and lifecycle contention. Process tests preserve original history/receipt bytes
 through catalog and key removal. These are deterministic source/process checks, not disk-full,
 power-loss, native-host or live-Kubernetes qualification. Never mutate source during a
 read-only-mounted container gate, and archive untracked source files alongside its diff.
 
-See [Kapsel service](KAPSEL_SERVICE.md) for the current boundary and
-[service testing](TESTING.md#kapsel-service) for evidence coverage.
+See [Kapsel service](../reference/service.md) for the current boundary and
+[service testing](evidence.md#kapsel-service) for evidence coverage.
 
 ## Accepted journal layouts
 
@@ -415,7 +315,7 @@ cargo test --locked -p kapsel --lib gateway::journal::capacity
 ```
 
 These use bundled SQLite records, long retained keys, padded schema SQL and bounded sparse-tree
-fixtures to check [completion accounting](EFFECT_GATEWAY.md#completion-accounting). They prove
+fixtures to check [completion accounting](../reference/storage.md#completion-accounting). They prove
 encoded-payload rejection and legitimate completion/reopen, not transient-allocation peaks,
 filesystem reservation, ENOSPC, power-loss or native/live qualification. The owning broader gate is
 `cargo test --locked -p kapsel`.
@@ -444,8 +344,8 @@ python3 tests/qualification/run_storage_enospc.py
 
 The runner creates a disposable pinned Linux container with a read-only source bind, no additional
 capabilities, a 2-GiB memory ceiling, a 96-MiB tmpfs and an 1,800-second command timeout. Build
-output and controls stay outside the full mount, inside the container; logs and a complete
-dirty-source snapshot are saved in the printed host temporary directory. It changes no host
+output and controls stay outside the full mount, inside the container. The runner saves logs and a
+complete dirty-source snapshot in the printed host temporary directory. It changes no host
 configuration and fills no host filesystem. The fixture verifies the exact tmpfs mount/type/size and
 caps actual filler writes at 128 MiB even if its mount precondition is wrong. It explicitly runs the
 otherwise ignored test and requires evidence that all three cases executed, rather than accepting an
@@ -463,24 +363,22 @@ facts/earlier receipts, and complete without another mutation or observation. Th
 length observed before commit is finite evidence, not a sampled universal peak measurement.
 
 Default deterministic gates never start this container. Process-kill tests cover before receipt SQL,
-SQL-executed/precommit and after commit; none is an observed kill inside SQLite commit. This lane
-uses real tmpfs exhaustion, not disk-backed durability, power loss, a native installation or live
-Kubernetes. See [completion accounting](EFFECT_GATEWAY.md#completion-accounting) for the separate
-source-backed page and main-rollback arguments.
+SQL-executed/precommit and after commit. None observes a kill inside SQLite commit. This lane uses
+real tmpfs exhaustion, not disk-backed durability, power loss, a native installation or live
+Kubernetes. See [completion accounting](../reference/storage.md#completion-accounting) for the
+separate source-backed page and main-rollback arguments.
 
 ## Journal version rejection
 
-Repository HEAD uses journal format 6 and rejects older versions, including format 5, without
-migration. Run the rejection proof:
+Journal format 6 rejects older versions without migration. Run the rejection proof:
 
 ```sh
 cargo test --locked -p kapsel --lib \
   gateway::tests::v011_upgrade::older_journal_versions_are_rejected_without_touching_rows -- --exact
 ```
 
-Historical migration and rollback tests are not HEAD qualification or candidate requirements. Use
-[the v0.2.0 tagged upgrade guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md)
-for that separate evidence. Rejection coverage does not replace historical migration coverage.
+See [journal retention](../guides/journal_retention.md) before replacing a binary or moving existing
+history.
 
 ## Robustness lanes
 
@@ -508,7 +406,7 @@ Receipt targets evaluate at time 150, trust-window boundaries and extreme times.
 lower legal byte, statement and text limits. Grant targets appoint `owner` and the public key from
 fixture seed `[7; 32]` externally. Drivers never open the supplied journal path or contact
 receivers. They inspect raw signatures and separately re-sign bounded mutated statements with the
-fixture key. Re-signing reaches semantic parser branches; it does not authenticate hostile input for
+fixture key. Re-signing reaches semantic parser branches without authenticating hostile input for
 execution. `seed_corpus` regenerates maintained valid/invalid seeds only when invoked without
 `--check`. The deterministic gate checks their exact bytes and acceptance through production entry
 points.
@@ -528,7 +426,7 @@ export KAPSEL_SCRATCH_ROOT=/absolute/owned/robustness-scratch
 ```
 
 Smoke defaults to 10,000 fuzz iterations and an ephemeral corpus. It removes scratch only on
-success; failed scratch and libFuzzer artifacts remain available. `KAPSEL_FUZZ_RUNS` selects the
+success. Failed scratch and libFuzzer artifacts remain available. `KAPSEL_FUZZ_RUNS` selects the
 smoke iteration maximum. `KAPSEL_FUZZ_MAX_TIME` or `--fuzz-seconds` selects its time maximum. A time
 maximum is not a promise to run for that duration.
 
@@ -538,7 +436,7 @@ For persistent exploration, queue this separate lane instead of extending smoke:
 python3 tools/dev/run_robustness.py fuzz --seed 2118243591 --fuzz-seconds 1800 --timeout 3600
 ```
 
-Select another decoder with `--fuzz-target`; the default remains `inspect_receipt`. Run all five
+Select another decoder with `--fuzz-target`. The default remains `inspect_receipt`. Run all five
 smokes or explorations explicitly, rather than treating one decoder's pass as coverage of the
 others:
 
@@ -550,40 +448,40 @@ for target in inspect_receipt inspect_git_receipt verify_kubernetes_grant verify
 done
 ```
 
-Exploration uses `-runs=-1`. Kubernetes keeps the existing `state/corpus`; other targets retain
+Exploration uses `-runs=-1`. Kubernetes keeps the existing `state/corpus`. Other targets retain
 `state/corpus-TARGET`. Maintained seeds are added without replacing discoveries. Each invocation
 preserves its exact starting corpus, hashes, seed, command, and failure artifacts. It records the
-selected nightly compiler and cargo-fuzz versions. Fuzz compilation is a setup step; the runner then
-launches the built libFuzzer executable directly, with its digest recorded. This avoids cargo-fuzz's
-default artifact-directory creation in the source checkout. Build output stays in the owned scratch
-root. Each target has a maximum input length at its production ceiling plus one sentinel byte (and
-receipt split framing). LibFuzzer uses a ten-second per-input timeout and a 2-GiB sampled RSS limit;
-these do not replace host isolation or storage supervision. The overall timeout includes
-compilation. Simulation explicitly selects `scratch/run-*/simulation-build` as its Cargo target
-directory, overriding ambient `CARGO_TARGET_DIR`. It builds once and directly invokes the resulting
-libtest executable per shard. A pass requires each shard's expected case-count marker and one passed
-test, not merely a zero process exit.
+selected nightly compiler and cargo-fuzz versions. After compilation, the runner launches the built
+libFuzzer executable directly and records its digest. This avoids cargo-fuzz's default
+artifact-directory creation in the source checkout. Build output stays in the owned scratch root.
+Each target has a maximum input length at its production ceiling plus one sentinel byte (and receipt
+split framing). LibFuzzer uses a ten-second per-input timeout and a 2-GiB sampled RSS limit. These
+do not replace host isolation or storage supervision. The overall timeout includes compilation.
+Simulation explicitly selects `scratch/run-*/simulation-build` as its Cargo target directory,
+overriding ambient `CARGO_TARGET_DIR`. It builds once and directly invokes the resulting libtest
+executable per shard. A pass requires each shard's expected case-count marker and one passed test,
+not merely a zero process exit.
 
 ### Background sweep and retained evidence
 
-[The soak runner](../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random seeds,
-1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout including
-compilation. Repeat `--seed` to select an exact sweep; each shard consumes the same generated case
-sequence and runs its assigned cases.
+[The soak runner](../../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random
+seeds, 1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout
+including compilation. Repeat `--seed` to select an exact sweep. Each shard consumes the same
+generated case sequence and runs its assigned cases.
 
 ```sh
 ./tools/dev/run-nightly-soak.sh --timeout 3600 --cases 1000 --shards 2
 ```
 
-[The Python owner](../tools/dev/run_robustness.py) holds one nonblocking OS advisory lock in the
-state root. It never unlinks that lock or uses a PID file as identity. Launched commands inherit the
-lock descriptor. Each command owns a process group, which the runner kills on failure, timeout,
+[The runner](../../tools/dev/run_robustness.py) holds one nonblocking OS advisory lock in the state
+root. It never unlinks that lock or uses a PID file as identity. Launched commands inherit the lock
+descriptor. Each command owns a process group, which the runner kills on failure, timeout,
 cancellation, or command completion to retire leftover descendants. Host isolation must prevent
 process-group escape and supervise the entire job on supervisor SIGKILL or reboot. These process
-groups are not a hostile-code sandbox. Signal handlers request cancellation; safe checkpoints handle
-it after child registration and complete retirement. Cancellation during final scratch cleanup is
-classified, but cleanup already in progress can finish. The terminal-decision boundary follows
-cleanup; later signals do not change the selected outcome.
+groups are not a hostile-code sandbox. Signal handlers request cancellation. Safe checkpoints handle
+it after child registration and retire the commands completely. Cancellation during final scratch
+cleanup is classified, but cleanup already in progress can finish. The runner chooses its terminal
+result after cleanup. Later signals do not change that result.
 
 The printed `state/run-*/` directory contains:
 
@@ -601,7 +499,7 @@ supply bounded scratch and evidence storage, CPU/memory ceilings, credential-fre
 whole-job supervision. Keep source read-only during execution and provide writable Cargo caches and
 simulation build output outside source. Use a credential-free home, with no personal home mounts,
 SSH agents, signing material, service state, or Docker socket. The provisional sweep budget is two
-logical CPUs and approximately 4 GiB host memory; useful throughput and compilation peaks still need
+logical CPUs and approximately 4 GiB host memory. Useful throughput and compilation peaks still need
 measurement.
 
 | Runner status | Exit | Meaning                                                                 |
@@ -613,7 +511,7 @@ measurement.
 | `RUNNING`     | none | No terminal result; treat an abandoned run as interrupted, never passed |
 
 A preflight failure exits 2 and may have no run directory. An interrupted write may leave temporary
-JSON files; they are not terminal results. No previous scratch directory is automatically removed.
+JSON files. They are not terminal results. No previous scratch directory is automatically removed.
 Failures stop the affected lane. An unclassified run directory without a result stops both lanes.
 There is no automatic replay, failure deduplication, or evidence pruning. A failure artifact is not
 a minimized input. In the same credential-free, bounded environment, select the retained executable
@@ -626,9 +524,10 @@ ASAN_OPTIONS=detect_odr_violation=0 "$executable" "$minimized" -runs=1
 ```
 
 Keep the original, minimized bytes, hashes, both commands and bounded diagnostics. Require the same
-property failure on replay; a setup failure or different panic does not demonstrate preservation.
-Minimization may find no smaller input. Retain that result rather than claiming every crash was
-already minimal. Do not overwrite an existing artifact path or mutate the baseline checkout.
+property failure on replay. A setup failure or different panic does not show that the failure was
+preserved. Minimization may find no smaller input. Retain that result rather than claiming every
+crash was already minimal. Do not overwrite an existing artifact path or mutate the baseline
+checkout.
 
 For detection-strength checks, apply one negative control at a time in disposable source copies. The
 deterministic corpus driver must pass on baseline and fail for the named property on each copy:
@@ -641,7 +540,7 @@ deterministic corpus driver must pass on baseline and fail for the named propert
 Record each exact mutation diff, source/executable/compiler identity, input and failing command.
 Minimize and replay at least one failure with its mutated executable, then replay the same bytes
 against baseline. These are isolated test faults, not changes to maintained production semantics. A
-surviving required control blocks coverage retirement; no mutation-score threshold replaces owner,
+surviving required control blocks coverage retirement. No mutation-score threshold replaces owner,
 compatibility, transport or receiver checks.
 
 Before resuming a failed lane, reproduce the finding, commit a regression, and run its owning check.
@@ -655,14 +554,14 @@ python3 tools/dev/run_robustness.py triage --run run-EXAMPLE \
 Triage changes the result to `TRIAGED` and preserves the previous status and evidence. The reference
 is an operator attestation, not an automated proof that a regression exists. For interrupted or
 incomplete execution, record the diagnosed cause and recovery check in the same field. Triage never
-replays the old run or deletes retained scratch. Archive resolved evidence explicitly when needed;
-never discard the first unresolved replay example to make space.
+replays the old run or deletes retained scratch. Archive resolved evidence explicitly when needed.
+Never discard the first unresolved replay example to make space.
 
 Infrastructure should alert on nonzero exits, new findings, missing/stuck scheduled jobs, stale
-`RUNNING` records, and incomplete evidence. Passing runs need no alert. The old notification URL
-variables are no longer used. The infrastructure owner controls schedules, alert delivery, and
-activation; this runner neither installs a resident service nor qualifies native systemd behavior.
-Public-PR execution remains on hosted CI unless a separately reviewed isolation design is approved.
+`RUNNING` records, and incomplete evidence. Passing runs need no alert. The infrastructure owner
+controls schedules, alert delivery, and activation. This runner neither installs a resident service
+nor qualifies native systemd behavior. Public-PR execution remains on hosted CI unless a separately
+reviewed isolation design is approved.
 
 Run the small, offline harness regressions with `python3 tools/dev/test_robustness.py`. They cover
 exclusion, retained failures, interrupted runs, bounded output, unsafe paths, empty selection,
@@ -678,9 +577,9 @@ python3 tools/checks/check_source_privacy.py
 python3 tools/checks/test_source_checks.py
 ```
 
-[Privacy](PRIVACY.md#source-check) owns its scope and limitations. The separate source security scan
-requires cargo-audit 0.22.2 and Trivy 0.72.0, network access to refresh their databases, and a clean
-committed checkout:
+[Privacy](../reference/privacy.md#source-check) describes its scope and limitations. The separate
+source security scan requires cargo-audit 0.22.2 and Trivy 0.72.0, network access to refresh their
+databases, and a clean committed checkout:
 
 ```sh
 python3 tools/checks/scan_source_security.py --output /tmp/kapsel-source-security.json
@@ -689,23 +588,22 @@ python3 tools/checks/scan_source_security.py --output /tmp/kapsel-source-securit
 It rejects RustSec vulnerabilities or warnings, Trivy HIGH/CRITICAL vulnerabilities and secrets, and
 stale or changing Trivy databases. Lower-severity Trivy findings remain in the output for review.
 RustSec database identity is captured after a successful refresh and checked again after the scan.
-Trivy scans the complete Git archive of HEAD, not ignored build output or uncommitted files. This
+Trivy scans the complete committed Git tree, not ignored build output or uncommitted files. This
 source scan does not replace the exact-artifact SBOM scan in the candidate workflow.
 
 ## MCP adapter
 
 The fixed service bridge takes no operator document or arguments. The caller identity launches
-`/usr/bin/kapsel-service-mcp` against the resident service. See [MCP](MCP.md) for framing and
-ID-only tools; the focused-gate table owns source checks. There is no direct `kapsel mcp` form.
+`/usr/bin/kapsel-service-mcp` against the resident service. See [MCP](../reference/mcp.md) for
+framing and ID-only tools. Use the [focused-gate table](build.md#focused-gates) for source checks.
 
 ## Release artifact
 
 Requires a clean checkout, Python 3.11+, and Docker with `linux/amd64` support. The sole release
-target is `x86_64-unknown-linux-gnu`. HEAD assembles a service artifact containing `kapsel`,
-`kapseld`, the fixed service client and existing operating assets. It is not the published v0.2 demo
-archive. The checksum-bound verifier companion supplies the
-[extraction-only route](RELEASE.md#authenticate-and-extract-the-release) without repository source.
-Assemble the archive and sidecars under `dist/`:
+target is `x86_64-unknown-linux-gnu`. The archive contains four executables and operating assets.
+Its checksum-bound verifier companion supplies the
+[extraction-only route](../reference/release.md#authenticate-and-extract-the-release) without
+repository source. Assemble the archive and sidecars under `dist/`:
 
 ```sh
 python3 tools/release/assemble_artifact.py --output-directory dist
@@ -725,12 +623,12 @@ including refusal of an existing/symlink destination and wrong revision. It then
 disposable-container service exercise with fixed installed paths, separate numeric identities, cold
 publication, selection and read-first restart. It is deliberately not a systemd test. On an ARM
 host, `linux/amd64` is emulated and cannot qualify the native target. The
-[extracted operator path](KAPSEL_SERVICE_OPERATOR.md) must separately run on native x86-64
-Linux/systemd without repository source. Interrupted execution, ambiguity and recovery against the
-packaged service belong to the full operator/agent journey and final combined-candidate
-qualification. Successful completion followed by graceful restart is not a replacement for those
-tests. Live receiver qualification remains separate. Do not dispatch the signing/publication-effect
-workflow merely to obtain missing test evidence.
+[extracted operator path](../guides/operator.md) must separately run on native x86-64 Linux/systemd
+without repository source. Interrupted execution, ambiguity and recovery against the packaged
+service belong to the full operator/agent journey and final combined-candidate qualification.
+Successful completion followed by graceful restart is not a replacement for those tests. Live
+receiver qualification remains separate. Do not dispatch the signing/publication-effect workflow
+merely to obtain missing test evidence.
 
 For a quick hostile-layout and dependency-graph regression without building:
 
@@ -738,16 +636,38 @@ For a quick hostile-layout and dependency-graph regression without building:
 python3 tools/release/test_artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
 ```
 
-Remove `"$a_dir"` when its evidence is no longer needed. [Release artifacts](RELEASE.md) owns
-layout, authentication, publication, and reproducibility requirements. The
-[tagged evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md) owns
-downloading, authenticating, and running the older beta.
+Remove `"$a_dir"` when its evidence is no longer needed.
+[Release artifacts](../reference/release.md) defines layout, authentication, publication, and
+reproducibility requirements.
+
+### Documented operator example
+
+The artifact test extracts the marked blocks in the [operator guide](../guides/operator.md) and
+checks their actual responses. Run against the accepted artifact and its independently recorded
+revision:
+
+```sh
+python3 tools/release/test_artifact.py --archive "$archive" \
+  --example-revision "$revision" \
+  ReleaseArtifactTests.test_documented_operator_example
+```
+
+The test uses a disposable container and loopback receiver, with separate numeric service/caller
+identities. Direct process start/stop replaces systemd/sudo. It withholds the receipt signer,
+restores it after graceful retirement, and checks same-ID completion and original receipt retention.
+It also exercises missing receiver material, a stopped HTTP listener, withdrawn historical trust,
+and an unsupported journal-version fixture. Restoration must preserve original authority and
+history. No recovery step edits a database. A version edit is test preparation only.
+
+These adaptations check the executable preparation and response blocks, not the native installation
+commands. They do not replace packaged interrupted-execution, live receiver, genuine ENOSPC, native
+systemd, or power-loss evidence.
 
 ### Native installed-systemd qualification
 
-The checksum-bound verifier also owns the explicit fresh-host `--service-systemd` qualification
+The checksum-bound verifier also provides the explicit fresh-host `--service-systemd` qualification
 mode. Its
-[command, prerequisites and retained-host footprint](RELEASE.md#native-installed-systemd-qualification)
+[command, prerequisites and retained-host footprint](../reference/release.md#native-installed-systemd-qualification)
 ship inside the archive's release guide. It uses the actual unit, identities, socket custody,
 journald and cold replacement, but only a loopback receiver fixture. It requires a clean-source
 artifact and separate operator authorization. It is not an installer or live/crash qualification.
@@ -766,9 +686,9 @@ Coverage is informational and non-blocking, not correctness evidence.
 
 Cargo manifests and `Cargo.lock` own Rust dependencies. `rust-toolchain.toml` selects the compiler;
 `rustfmt.toml`, `rustfmt-nightly.toml`, `clippy.toml`, and `ruff.toml` own style settings.
-[`scripts/fmt.sh`](../scripts/fmt.sh), [`scripts/ci.sh`](../scripts/ci.sh), and
-[CI](../.github/workflows/ci.yml) own tool invocation. CI consumes the same setup implementation and
-pins as local development. Optional qualification tools keep their pins in their owning lanes.
+[`scripts/fmt.sh`](../../scripts/fmt.sh), [`scripts/ci.sh`](../../scripts/ci.sh), and
+[CI](../../.github/workflows/ci.yml) own tool invocation. CI consumes the same setup implementation
+and pins as local development. Optional qualification tools keep their pins in their owning lanes.
 
 ### Tooling ownership
 

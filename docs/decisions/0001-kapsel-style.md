@@ -72,5 +72,5 @@ documents and tests, not the style guide.
 
 Explicit code makes state and authority transitions auditable. Add custom lint rules only when
 repeated objective drift justifies them. The
-[contributor complexity review](../../CONTRIBUTING.md#complexity-review) supports design
+[contributor complexity review](../../CONTRIBUTING.md#types-and-interfaces) supports design
 comparisons.

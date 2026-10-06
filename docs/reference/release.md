@@ -1,96 +1,58 @@
 # Release artifacts
 
-This contract defines the release target, archive layout, assembly, SBOM, publisher authentication,
-extraction, and artifact checks. Execution, commands, and receipt bytes have separate contracts.
-This page does not authorize publication or establish production support.
+For a downloaded release, start with
+[authentication and extraction](#authenticate-and-extract-the-release), then
+[Getting started](../getting_started.md) or [service preparation](../guides/operator.md). This
+reference defines the target, archive layout, assembly, SBOM, authentication, and artifact checks.
+Maintainers use the [release process](../contributing/release_process.md) for acceptance gates and
+publication. Neither page promises production support or authorizes publication.
 
-The [published v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) is the pre-beta,
-non-production developer release for source `64e204f0b5bdca9c31cc617d5d822cbfb3541597`. Its archive
-SHA-256 is `b6958a802e7c320e5c8ed5efe59cf2bceb130a2210b37c8e61e7aaa4e50d0c36`. The release page
-records exact-byte qualification and publication; the requirements below remain separate from that
-evidence.
+## Authenticate and extract the release
 
-The
-[published v0.3.0-preview.1](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
-identifies its exact bytes and qualification. New candidates need their own qualification. The
-v0.2.0 archive remains reproducible from its tagged source, not the current assembler.
+Use Python 3.11 or newer, Cosign 3.1.2, and GNU `sha256sum` on the selected Linux host. Obtain the
+exact archive and all five sidecars, including the Sigstore bundle, from the
+[published v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0). Its source revision
+is `64e204f0b5bdca9c31cc617d5d822cbfb3541597`. For a local candidate, transfer the locally recorded
+exact bytes through your trusted operator channel. An unsigned local candidate has no publisher
+authentication.
 
-## HEAD execution boundary
+The `.verify.py` companion is a byte-for-byte copy of the existing
+`tools/release/verify_artifact.py` verification owner, at most 64 KiB. It is covered by the signed
+digest manifest. Authenticate the manifest using the exact issuer, identity and source revision
+[below](#publisher-authentication-and-provenance), then check its files **before executing this
+Python file**. Do not substitute a script from another revision or a moving branch.
 
-HEAD retires direct `operate`/`mcp` execution and its legacy operator document. The resident service
-and fixed ID-only client/MCP bridge are the sole maintained execution surface for both effects.
-Provisioning, offline inspection and caller export remain. Direct/macOS-source execution is lost;
-this is not transparent migration. Published v0.3.0 and older tags retain their original bytes.
+In a private, caller-owned download directory containing only those files:
 
-[Scope](SCOPE.md#head-execution-and-v04x-compatibility) owns the approved v0.4.x grammar, purpose,
-format-6 and original-evidence boundary. Candidate replacement must demonstrate prior format-6
-history readability, not infer compatibility from a version number. Existing admission/attempt
-history cannot become fresh permission through a new journal.
+```sh
+archive=kapsel-0.3.0-x86_64-unknown-linux-gnu.tar.gz
+revision=64e204f0b5bdca9c31cc617d5d822cbfb3541597
+cosign verify-blob \
+  --bundle "$archive.SHA256SUMS.sigstore.json" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity \
+    https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master \
+  --certificate-github-workflow-repository kapsel-cloud/kapsel \
+  --certificate-github-workflow-ref refs/heads/master \
+  --certificate-github-workflow-sha "$revision" \
+  --certificate-github-workflow-trigger workflow_dispatch \
+  "$archive.SHA256SUMS" &&
+sha256sum --check --strict "$archive.SHA256SUMS" &&
+python3 "$archive.verify.py" --archive "$archive" \
+  --expected-revision "$revision" --extract-to ./extracted
+```
 
-## Path to v0.3.0
+The command validates the exact bounded archive, checksum, SBOM, manifest and revision before
+creating `./extracted` mode `0700`. That destination must not already exist, even as a symlink. Use
+a parent directory controlled only by the operator. Extraction does not run a bundled binary,
+contact Kubernetes, create system identities or touch private service state. It creates only the
+verified archive tree and prints its path. On an I/O failure, a partial new destination may remain.
+Inspect it and use a new empty destination. Never merge with or overwrite an existing tree.
 
-The release target is `v0.3.0`, a **pre-beta, non-production developer release**. The version does
-not establish production readiness or a general compatibility promise. Use `0.3.0` directly during
-qualification; no prerelease sequence is required. This section defines the required checks, not
-work status or completed qualification.
-
-### Selected scope
-
-Freeze the candidate scope at the current resident service, fixed ID-only client, service MCP
-bridge, and fresh-session caller continuity. Include both `kubernetes.set_deployment_image` and
-`git.transition_ref` under their existing [effect contracts](EFFECT_GATEWAY.md). The sole release
-target remains `x86_64-unknown-linux-gnu`.
-
-Do not add another effect, target, scheduler, provider interface, installer, or production-support
-promise to this release. Fixes needed to satisfy the selected contracts remain in scope. The
-[technical scope](SCOPE.md) owns capability limits; this release does not relax them.
-
-### Compatibility boundary
-
-Select a fresh-install boundary for users of `v0.3.0-preview.1`, not a format-5 migration. The
-candidate uses journal format 6 and must reject older journals unchanged. Keep preview history,
-sidecars, original authority, and matching binaries together. A separate installation does not
-continue an attempted preview action or authorize its repetition.
-
-Existing format-6 history must retain its action identities and original receipt bytes under the
-candidate. Follow [journal retention](UPGRADE.md) for binary replacement. Do not advertise
-migration, downgrade, stale-backup restoration, or host-loss continuity.
-
-### Graduation gates
-
-A maintainer must accept one exact clean source revision and its exact artifact bytes. All required
-lanes must pass; missing evidence blocks release. Record commands, environment identities, outcomes,
-and source/artifact digests without publishing private fixture material.
-
-| Gate             | Required evidence                                                                                                                                                                                                   | Owner                                                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Source           | Full deterministic gate, fresh source security scan, Linux service process tests, receiver-recovery matrix, seeded simulation, receipt fuzz smoke, and bounded storage ENOSPC qualification                         | [Build and test](BUILD.md)                                                                                                                         |
-| Artifact         | Two isolated assemblies with identical deterministic files, hostile-archive checks, extracted-binary smoke, and exact-artifact SBOM scan                                                                            | [Assembly](#deterministic-assembly), [artifact proof](#install-upgrade-and-artifact-only-proof), and [SBOM](#spdx-sbom)                            |
-| Native service   | Authenticated extraction and the shipped systemd unit on a fresh native x86-64 Linux host                                                                                                                           | [Native qualification](#native-installed-systemd-qualification)                                                                                    |
-| Kubernetes       | Live receiver gate and packaged-service workflow covering caller loss, service crash, same-ID recovery, frozen uncertainty, and independent mutation counts                                                         | [Live gate](BUILD.md#live-kubernetes-gate) and [packaged workflow](BUILD.md#packaged-service-live-workflow)                                        |
-| Git              | Core recovery matrix, Linux service-process recovery, and an extracted production-artifact journey covering acknowledgement loss, same-ID recovery, receiver ref/hook observations, and identical retained receipts | [Git service](BUILD.md#git-transition-service) and [Git example](GIT_REF_TRANSITION.md)                                                            |
-| Caller           | Fresh-session identity retention through the real Linux MCP bridge and one representative model-driven packaged healthy action                                                                                      | [Caller fixture](BUILD.md#kapsel-service-candidate) and [agent workflow](BUILD.md#packaged-service-live-workflow)                                  |
-| Release identity | Version agreement across binaries, MCP, archive, metadata and SBOM; explicit compatibility notes; publisher authentication and downloaded-byte verification                                                         | [Metadata](#release-metadata), [authentication](#publisher-authentication-and-provenance), and [extraction](#authenticate-and-extract-the-release) |
-
-The [packaged Git journey](BUILD.md#git-transition-service) must run separately from the source Git
-harness. Source tests alone cannot discharge that gate. The candidate-signing workflow also does not
-run all native, live, Git, or agent lanes. A successful workflow run is not complete release
-acceptance.
-
-### Qualification and publication sequence
-
-1. Set the package version to `0.3.0` and prepare its release notes. Preserve existing published
-   tags and bytes.
-2. Run the required checks. Identify internal builds by their exact source revision and artifact
-   digests, with separate output directories. Fix failures without incrementing the unpublished
-   version. Re-run the affected checks; the shipped bytes must match the qualified revision.
-3. Authenticate and publish those exact artifacts as `v0.3.0`. Download them through the public
-   release route and verify their identity, signature, and extraction. Update the README and scope
-   to describe the published release.
-
-Prerelease publication is not part of this process. Source revisions and artifact digests
-distinguish internal qualification attempts; they are not published releases. Preserve useful
-evidence, and never overwrite an existing published tag or artifact.
+The result is `./extracted/kapsel-0.3.0-x86_64-unknown-linux-gnu/`. Use that absolute path as
+`artifact` in the [operator guide](../guides/operator.md#prepare-your-own-extracted-artifact). Keep
+the archive, sidecars, source revision and digests as the artifact identity. Installation is a
+separate, explicit operator step.
 
 ## Supported target and inputs
 
@@ -119,12 +81,11 @@ python3 tools/release/assemble_artifact.py --output-directory dist
 
 Assembly refuses a dirty worktree, a non-`x86_64-unknown-linux-gnu` target, missing Docker, or
 source metadata it cannot validate. It builds the `kapsel` and `kapsel-daemon` packages together
-without test/demo features. HEAD's ordinary CLI cannot execute callers; its service bridge owns MCP.
-The four current-source executables use `--release`, `--locked`, the explicit target, fixed
-container path `/workspace`, and source-prefix remapping. Packaging copies those bytes and never
-rebuilds them.
+without test/demo features. The four executables use `--release`, `--locked`, the explicit target,
+fixed container path `/workspace`, and source-prefix remapping. Packaging copies those bytes and
+never rebuilds them.
 
-`--allow-dirty` exists only for local script tests. Such metadata records `source_dirty: true`; its
+`--allow-dirty` exists only for local script tests. Its metadata records `source_dirty: true`. Those
 outputs are not publishable and cannot satisfy candidate evidence.
 
 One assembly emits exactly these deterministic files:
@@ -139,7 +100,7 @@ dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz.verify.py
 
 The adjacent checksum is one lowercase SHA-256 digest, two spaces, the archive basename, and a
 newline. `SHA256SUMS` contains lexically ordered, basename-only SHA-256 lines for the archive,
-adjacent checksum, SBOM, and extraction verifier. A checksum proves byte identity only; publisher
+adjacent checksum, SBOM, and extraction verifier. A checksum proves byte identity only. Publisher
 authentication starts with the separately signed `SHA256SUMS` manifest.
 
 The gzip header has timestamp zero and no source filename. The USTAR stream has stable lexical
@@ -162,9 +123,7 @@ reviewed-source, or builder-integrity guarantee.
 
 ## Exact archive
 
-This is the current-source assembly layout. The published `v0.3.0-preview.1` archive predates the
-service MCP bridge and retains its original three binaries and authenticated release bytes. The
-archive has one top-level directory and exactly this layout:
+The archive has one top-level directory and exactly this layout:
 
 ```text
 kapsel-<version>-x86_64-unknown-linux-gnu/
@@ -187,7 +146,11 @@ kapsel-<version>-x86_64-unknown-linux-gnu/
   RELEASE-METADATA.json
 ```
 
-Directories and executables use mode `0755`; other files use `0644`. Bundled Markdown retains the
+`UPGRADE.md` is the fixed archive name for the
+[operation-history guide](../guides/journal_retention.md), not an upgrade or cross-version support
+promise. Archive names are independent of source paths.
+
+Directories and executables use mode `0755`. Other files use `0644`. Bundled Markdown retains the
 source prose. Links to other bundled Markdown remain local. Other repository-local `.md` links
 become absolute URLs at the exact source revision, so extracted documents do not contain broken
 checkout-relative links. The operator path and service contract are available without a checkout.
@@ -210,8 +173,8 @@ Schema `kapsel.release-artifact.v3` binds:
 - Cargo lockfile SHA-256 plus canonical reachable-package/relationship graph digest and counts;
 - license identifier and digest;
 - exact build and smoke image identities;
-- CLI, service and client binary byte lengths and SHA-256 digests; and
-- fixed service-preview non-claims.
+- CLI, service, client and MCP bridge binary byte lengths and SHA-256 digests; and
+- fixed non-claims.
 
 Metadata is an input to the authenticated digest manifest through the archive. It does not
 self-authenticate, witness a build, prove review, or establish trusted existence time.
@@ -224,7 +187,7 @@ digest, bundled binary paths and digests, package version, source revision and t
 image, Cargo lockfile digest, and the complete locked Rust package graph reachable from the root and
 service packages, including build and target-conditioned dependencies. Presence in that conservative
 graph is dependency identity evidence, not a runtime-reachability claim. The archive package sets
-SPDX `filesAnalyzed` to false and relates only the four digest-bound binary records explicitly; it
+SPDX `filesAnalyzed` to false and explicitly relates only the four digest-bound binary records. It
 does not claim that every bundled document or asset received file analysis. Metadata independently
 binds the canonical reachable package/relationship graph digest and counts, and artifact smoke
 rejects a deleted or changed graph.
@@ -232,7 +195,7 @@ rejects a deleted or changed graph.
 The SPDX document namespace includes the exact source revision and archive digest. Its `created`
 field is normalized to the source commit time so isolated assemblies serialize identically. The
 document comment states this normalization and the source/build identities. Packages without
-owner-supplied license or download facts use SPDX `NOASSERTION`; the generator does not invent
+owner-supplied license or download facts use SPDX `NOASSERTION`. The generator does not invent
 license conclusions.
 
 The SBOM is not a vulnerability result, dependency-safety proof, malicious-package detector, or
@@ -293,7 +256,7 @@ verification must pass `--trusted-root <captured-trusted-root.json>` and records
 digest. The bundle supplies authenticated signing-time evidence so an expired short-lived leaf
 certificate can remain historically valid. Rekor time is not a general release-approval timestamp.
 Offline verification cannot discover later root rotation, compromise, candidate withdrawal, or
-replacement; connected verification is therefore repeated before publication.
+replacement. Repeat connected verification before publication for that reason.
 
 There is no long-lived Kapsel signing key to rotate. Workflow path or branch changes require a new
 explicit identity rule and candidate. Suspected repository, workflow, GitHub OIDC, Fulcio, Rekor, or
@@ -306,65 +269,17 @@ Publisher authentication proves that the appointed workflow signed exact manifes
 prove source review, workflow safety, builder integrity, dependency safety, reproducibility,
 operational fitness, production support, or universal existence time.
 
-## Authenticate and extract the release
-
-Use Python 3.11 or newer, Cosign 3.1.2, and GNU `sha256sum` on the selected Linux host. Obtain the
-exact archive and all five sidecars, including the Sigstore bundle, from the
-[published v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0). Its source revision
-is `64e204f0b5bdca9c31cc617d5d822cbfb3541597`. For a local candidate, transfer the locally recorded
-exact bytes through your trusted operator channel. An unsigned local candidate has no publisher
-authentication.
-
-The `.verify.py` companion is a byte-for-byte copy of the existing
-`tools/release/verify_artifact.py` verification owner, at most 64 KiB. It is covered by the signed
-digest manifest. Authenticate the manifest using the exact issuer, identity and source revision
-[above](#publisher-authentication-and-provenance), then check its files **before executing this
-Python file**. Do not fetch a script from a moving branch or use the published-beta evaluator's
-old-layout extractor.
-
-In a private, caller-owned download directory containing only those files:
-
-```sh
-archive=kapsel-0.3.0-x86_64-unknown-linux-gnu.tar.gz
-revision=64e204f0b5bdca9c31cc617d5d822cbfb3541597
-cosign verify-blob \
-  --bundle "$archive.SHA256SUMS.sigstore.json" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity \
-    https://github.com/kapsel-cloud/kapsel/.github/workflows/release-candidate.yml@refs/heads/master \
-  --certificate-github-workflow-repository kapsel-cloud/kapsel \
-  --certificate-github-workflow-ref refs/heads/master \
-  --certificate-github-workflow-sha "$revision" \
-  --certificate-github-workflow-trigger workflow_dispatch \
-  "$archive.SHA256SUMS" &&
-sha256sum --check --strict "$archive.SHA256SUMS" &&
-python3 "$archive.verify.py" --archive "$archive" \
-  --expected-revision "$revision" --extract-to ./extracted
-```
-
-The command validates the exact bounded archive, checksum, SBOM, manifest and revision before
-creating `./extracted` mode `0700`. That destination must not already exist, even as a symlink. Use
-a parent directory controlled only by the operator. Extraction does not run a bundled binary,
-contact Kubernetes, create system identities or touch private service state. It creates only the
-verified archive tree and prints its path. On an I/O failure, a partial new destination may remain;
-inspect it and use a new empty destination, never merge with or overwrite an existing tree.
-
-The result is `./extracted/kapsel-0.3.0-x86_64-unknown-linux-gnu/`. Use that absolute path as
-`artifact` in the [operator guide](KAPSEL_SERVICE_OPERATOR.md#prepare-your-own-extracted-artifact).
-Keep the archive, sidecars, source revision and digests as the artifact identity. Installation is a
-separate, explicit operator step.
-
-## Install, upgrade, and artifact-only proof
+## Artifact-only checks
 
 After publisher verification and digest-manifest verification, an evaluator safely extracts the one
 archive and may install `bin/kapsel` to `$HOME/.local/bin/kapsel`. Installation creates no
 authority, trust, journal, or receipt. `kapsel --version`, MCP `serverInfo.version`, archive
 identity, metadata, and SBOM must all report the same package version.
 
-The release's operator path is [service preparation and operation](KAPSEL_SERVICE_OPERATOR.md). The
-CLI prepares snapshot grants and inspects receipts. The daemon owns private execution and history.
-The client supplies the caller's fixed ID-only interface. The systemd unit owns process lifecycle.
-No custom installer is supplied.
+The release's operator path is [service preparation and operation](../guides/operator.md). The CLI
+prepares snapshot grants and inspects receipts. The daemon executes operations and retains private
+history. The client supplies the caller's fixed ID-only interface. The systemd unit manages process
+lifecycle. No custom installer is supplied.
 
 From the repository, deterministic artifact-only smoke is:
 
@@ -376,8 +291,8 @@ python3 tools/release/verify_artifact.py \
 
 `tools/release/test_artifact.py --archive <A>` validates one already assembled A and then runs only
 extracted files in the pinned clean container. It proves safe extraction, installed identity,
-retired-direct-command refusal and bounded output. The separate service-container lane owns snapshot
-provisioning, operation/restart, offline inspection and installed ID-only MCP
+retired-direct-command refusal and bounded output. The separate service-container lane checks
+snapshot provisioning, operation/restart, offline inspection and installed ID-only MCP
 initialization/list/call/EOF. Hostile extraction and ordinary-binary removal remain independent. Its
 explicit `--service-container` lane uses fresh fixed paths and separate numeric service/caller
 identities inside a disposable root Docker container. It exercises exact-snapshot provisioning, cold
@@ -385,33 +300,23 @@ publication, ID selection, caller disconnect, read-first restart and identical r
 with independent receiver mutation counts. It retains private state until container destruction.
 This is not a systemd or native-host qualification lane. It proves successful completion followed by
 graceful restart, not interrupted execution, crash ambiguity or recovery from an unfinished attempt.
-The complete operator/agent journey must exercise those failures against the packaged service and
-independently count mutations. Final combined-candidate qualification consumes that journey and its
-exact rebuilt bytes. Removing the old demo from this archive does not discharge those recovery
-requirements. Its synthetic hostile-archive matrix remains independent of the producer.
+The packaged receiver journeys must separately exercise interrupted execution and independently
+count mutations. The synthetic hostile-archive matrix remains independent of the producer.
 `tools/release/test_reproducibility.py --reference-archive <A>` performs the one independent strict
 assembly B and compares all five deterministic outputs byte-for-byte. Neither verifier hides another
 A assembly.
 
-HEAD qualification and candidate acceptance do not require historical migration, rollback, or
-downgrade. Current format 6 rejects older journals unchanged. The published v0.1.1-to-v0.2.0
-artifact and source proofs remain separate
-[tagged v0.2.0 evidence](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/UPGRADE.md), not
-compatibility obligations for a newly assembled HEAD candidate.
-
-The published-beta live demo remains at the v0.2.0 tag. It is not the preview service journey.
-Native installed-systemd and live receiver exercises must consume the extracted preview bytes. An
-emulated container smoke test does not establish either qualification.
+Native installed-systemd and live receiver exercises must consume the exact extracted candidate
+bytes. Emulated container smoke does not establish either qualification.
 
 ## Native installed-systemd qualification
 
 On an explicitly authorized fresh native x86-64 Debian host with systemd as PID 1, the same
-checksum-bound verifier companion runs the
-[canonical disposable service example](KAPSEL_SERVICE_OPERATOR.md#one-command-disposable-example)
-and exercises the shipped unit. This is a **privileged test**, not an installer or production setup
+checksum-bound verifier companion runs the [disposable service example](../getting_started.md) and
+exercises the shipped unit. This is a **privileged test**, not an installer or production setup
 command. It uses only a loopback HTTP receiver and deterministic disposable test keys. It never
 consumes real cluster credentials or applies the example RBAC to a cluster. The build baseline
-remains Debian 12; record the actual native host's OS and systemd version separately, including when
+remains Debian 12. Record the actual native host's OS and systemd version separately, including when
 qualifying on a newer Debian host.
 
 Prerequisites are Python 3.11+, root operator access, systemd/systemd-sysusers, systemd-analyze,
@@ -419,8 +324,8 @@ journalctl, useradd, GNU coreutils, and a fresh host with no Kapsel accounts, gr
 overrides, enablement references, static destinations or private state. Existing dangling enablement
 links are refused unchanged. First follow the
 [authenticated preparation route](#authenticate-and-extract-the-release). For an unsigned local
-candidate, use separately recorded exact digests and a trusted transfer; this does not establish
-publisher authentication. Dirty-source artifacts are refused for this mode.
+candidate, use separately recorded exact digests and a trusted transfer. This does not authenticate
+the publisher. Dirty-source artifacts are refused for this mode.
 
 From the private directory holding the already authenticated and checksum-verified artifact files:
 
@@ -456,14 +361,14 @@ packaged-service exercises.
 ## Result and security limits
 
 Installation, SBOM creation, checksum agreement, signature success, process exit, MCP completion, or
-demo completion cannot change receiver meaning. `NOT_ATTEMPTED` remains pre-attempt; `SUCCEEDED`,
+demo completion cannot change receiver meaning. `NOT_ATTEMPTED` remains pre-attempt. `SUCCEEDED`,
 `FAILED`, and `UNKNOWN` remain bounded receiver outcomes. Inspection remains `INSPECTED`, never
 `VERIFIED`.
 
 The release does not claim exactly-once effects, Kubernetes truth, causation, complete capture,
 compliance, trusted builders, vulnerability absence, production readiness, another capability, or
 another platform. Receipts and reports remain sensitive operational metadata under
-[Privacy](PRIVACY.md).
+[Privacy](privacy.md).
 
 ## Official basis
 

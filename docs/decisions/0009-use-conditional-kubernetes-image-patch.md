@@ -5,8 +5,8 @@ Status: accepted.
 Kind: decision. Date: 2026-07-15.
 
 This decision explains the UID/resource-version-guarded strategic merge patch. The
-[effect-gateway contract](../EFFECT_GATEWAY.md) owns current preconditions, lifecycle, results, and
-receipt bytes.
+[effect-gateway contract](../reference/effect_gateway.md) owns current preconditions, lifecycle,
+results, and receipt bytes.
 
 ## Context
 

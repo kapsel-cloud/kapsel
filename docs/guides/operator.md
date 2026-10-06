@@ -1,182 +1,29 @@
 # Kapsel service operator guide
 
-Use this guide to prepare approvals, run the resident service, and retrieve original evidence. The
-operator supplies authority and private execution material. A separate caller selects approved
-action IDs; it cannot change authority or control the service.
+Use this guide to install the Linux service, prepare Kubernetes approvals, publish configuration,
+and repair blocked work. The operator supplies authority and private execution material. The caller
+selects approved IDs.
 
-Use exact authenticated artifacts. The published v0.3.0 is pre-beta and non-production; later source
-changes do not alter its bytes. The [service contract](KAPSEL_SERVICE.md) owns paths, identities,
-and lifecycle.
+## Choose a procedure
+
+- First fixture operation: [Getting started](../getting_started.md).
+- Your own installation: [Prepare the extracted artifact](#prepare-your-own-extracted-artifact).
+- Kubernetes authority: [Provision an approval](#provision-authority-and-an-exact-approval).
+- Git authority: [Git preparation](git_transition.md#operator-preparation).
+- Configuration or binary replacement: [Stop and replace](#stop-replace-or-remove-executables).
+- Blocked work: [Diagnose and resume](#diagnose-and-resume).
+- Caller integration: [Caller guide](caller.md).
+
+Use a fresh disposable host and authenticated artifacts. Kapsel is a non-production developer
+release. The [service reference](../reference/service.md) defines exact paths, identities, and
+lifecycle.
 
 ## Artifact requirements
 
-The published [v0.3.0](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) uses source
-revision `64e204f0b5bdca9c31cc617d5d822cbfb3541597` and archive SHA-256
-`b6958a802e7c320e5c8ed5efe59cf2bceb130a2210b37c8e61e7aaa4e50d0c36`. Its release page identifies
-qualification and publisher evidence. Bundled documentation was frozen before publication; the
-release page establishes availability of those exact bytes.
-
-Identify every archive by source revision and SHA-256, not the package version alone. Do not mix an
-archive with a newer verifier companion. Accept the complete matching archive and sidecars. A local
-build is a separate internal attempt and does not inherit qualification from a published release.
-The older published preview retains its own bytes, format-5 history, and matching documentation.
-
-## One-command disposable example
-
-This is the shortest path from an extracted release's production binaries to an inspected receipt.
-It runs the real systemd service with separate operator, service and caller identities. A bounded
-loopback HTTP fixture supplies Kubernetes observations, so no cluster or cloud credentials are
-needed. It demonstrates the mechanism, not a live Deployment rollout or production readiness.
-
-Use a **fresh disposable native x86-64 Debian 12 VM** with systemd as PID 1, Python 3.11+,
-sudo/root, `systemd-sysusers`, `systemd-analyze`, `journalctl`, `useradd` and GNU coreutils. It must
-have no existing Kapsel identities, installation or state. Do not clear existing state to make the
-example run. Docker and ARM emulation do not satisfy this native example's prerequisites.
-
-Obtain the archive and its five companions, including the Sigstore bundle, using the
-[authenticated preparation route](RELEASE.md#authenticate-and-extract-the-release). Keep all six
-files together. For an unsigned local build, independently record its exact source and archive
-digests and transfer it through a trusted channel. That is not publisher authentication.
-
-Set `archive` to that local archive and `revision` to the independently accepted 40-character source
-revision. Then one command extracts, prepares, starts, submits, inspects and stops the example:
-
-```sh
-sudo python3 "$archive.verify.py" --archive "$archive" --expected-revision "$revision" --service-systemd
-```
-
-This explicitly authorizes installation and activation **inside the disposable VM only**. The
-existing artifact verifier owns the example and its checks. There is no separate demo executable or
-source checkout to install.
-
-The command shows each meaningful action:
-
-1. Install the extracted binaries and shipped unit under distinct service/caller identities.
-2. Deliberately start without an operator document. Confirm the service fails closed and journald
-   reports `provisioning_unavailable`. Show the supported diagnosis commands.
-3. Prepare a real signed snapshot grant from the fixture's target, then prepare and cold-publish the
-   operator document. All keys and approval inputs are disposable fixture authority, never defaults
-   for a real deployment.
-4. Start with systemd, read stored history, and submit `artifact-op-1` through the packaged client.
-   `ADMITTED` confirms durable admission, not receiver success.
-5. Read `SUCCEEDED`, export the receipt and inspect it with the packaged `kapsel inspect` command.
-   `INSPECTED` authenticates the frozen evidence under separately appointed fixture trust.
-6. Stop, replace the cold catalog, restart read-first and retrieve the byte-identical receipt. The
-   fixture must count exactly one PATCH. Finish with the unit stopped and disabled.
-
-After a successful run you can inspect the retained receipt again:
-
-```sh
-sudo /usr/bin/kapsel inspect --receipt /tmp/kapsel-artifact-receipt-0 \
-  --trust /etc/kapsel/example-receipt.trust --evaluation-time-unix-s 150
-```
-
-The time `150` belongs only to the deliberately artificial fixture trust window. It is not a current
-trust evaluation for a real receipt. The fixture is gone when the command returns. Do not restart
-this installation as a real service.
-
-Success retains private state, fixture authority, installed assets, identities and both receipt
-exports for inspection. Failure may leave partial installation or incomplete retirement. Do not
-rerun by deleting history. Preserve the VM until the evidence has been collected, then retire the
-whole disposable VM rather than deleting individual journal files. The
-[native qualification contract](RELEASE.md#native-installed-systemd-qualification) owns the exact
-host footprint and evidence requirements.
-
-## Captured first action and same-ID recovery
-
-Follow the [canonical input](#canonical-deployment-image-example),
-[key generation](#generate-disposable-keys-and-inspection-trust) and
-[preparation commands](#read-the-snapshot-sign-and-assemble-configuration) below. This captured
-fixture example shows the operator repairing missing receipt-signing material and the caller
-resuming the original ID. It is not a live Kubernetes rollout. Do not withhold material from a
-service that owns real work just to reproduce this failure.
-
-Preparation printed these three JSON lines:
-
-```text
-{"command":"provision-snapshot-grant","status":"PROVISIONED"}
-{"command":"prepare-service-config","status":"PREPARED"}
-{"command":"validate-service-config","status":"VALIDATED_STATIC"}
-```
-
-The prepared document was checked against the freshly generated public key and exact signed grant.
-Its structure is shown with those variable values redacted, **not as a loadable configuration**:
-
-```json
-{
-  "service_configuration_version": 1,
-  "authorization_keys": [
-    { "key_id": "approval-key-1", "public_key_hex": "<generated approval.pub encoded as hex>" }
-  ],
-  "approvals": [
-    {
-      "label": "Approved image for agent-api",
-      "signed_grant_hex": "<generated approval.grant encoded as hex>"
-    }
-  ],
-  "receipt_signing_key_id": "receipt-key-1"
-}
-```
-
-The captured run returned:
-
-- Cold publication: `PUBLISHED`.
-- `list`: `artifact-op-1`, its approved image, and snapshot `artifact-deployment-uid` /
-  resourceVersion `1`.
-- Initial `history`: empty.
-
-Neither read contacted the receiver. After `submit artifact-op-1`, the admission response was:
-
-<!-- example-admitted -->
-
-```json
-{ "version": 1, "status": "ADMITTED", "phase": "requested" }
-```
-
-`status artifact-op-1` then returned `IN_PROGRESS` after one PATCH and frozen rollout observations.
-Its execution field was:
-
-<!-- example-signing -->
-
-```json
-{
-  "action_owner": "operator",
-  "condition": "signing_unavailable",
-  "disposition": "operator_required",
-  "next_action": "contact_operator"
-}
-```
-
-The operator stopped gracefully, restored the intended `receipt.seed` under its original custody and
-restarted. Reading the **same ID before submission** still returned `IN_PROGRESS`, now with:
-
-<!-- example-resume -->
-
-```json
-{
-  "action_owner": "caller",
-  "condition": null,
-  "disposition": "resume_required",
-  "next_action": "select_same_id"
-}
-```
-
-The restart did not contact the receiver. `submit artifact-op-1` then returned:
-
-<!-- example-readmitted -->
-
-```json
-{ "version": 1, "status": "ADMITTED", "phase": "receiver_observed" }
-```
-
-Subsequent status was `SUCCEEDED`, with `execution.next_action: "inspect_result"`. Receipt export
-returned `READY` with a SHA-256 and the new caller-owned path. Inspection under the independently
-appointed `receipt.trust` returned `INSPECTED`, `operation_id: "artifact-op-1"` and
-`result: "SUCCEEDED"`. Random keys make the grant and receipt digests differ between runs.
-
-The fixture counted one PATCH. Restoring the intended signer completed the already frozen evidence,
-so same-ID resumption sent no new receiver requests. See [validation](#validation) for reproduction
-and the limits of this evidence.
+[Authenticate and extract the release](../reference/release.md#authenticate-and-extract-the-release)
+before running it. Keep the complete matching archive and sidecars. Never substitute a verifier from
+another build. Identify artifacts by source revision and SHA-256, not package version alone. Local
+builds need their own qualification.
 
 ## Prepare your own extracted artifact
 
@@ -185,21 +32,22 @@ above.
 
 Use one fresh, disposable native x86-64 Debian 12 host with systemd, Python 3.11, OpenSSL, sudo and
 standard account tools. Artifact preparation additionally requires Cosign 3.1.2 and GNU `sha256sum`.
-Follow [Authenticate and extract the release](RELEASE.md#authenticate-and-extract-the-release) using
-its checksum-bound verifier companion and Python 3.11 or newer. An unsigned local test archive is
-not authenticated publication. No Rust toolchain or repository checkout is needed on the operating
-host.
+Follow
+[Authenticate and extract the release](../reference/release.md#authenticate-and-extract-the-release)
+using its checksum-bound verifier companion and Python 3.11 or newer. An unsigned local test archive
+is not authenticated publication. No Rust toolchain or repository checkout is needed on the
+operating host.
 
 Do not use these fresh-host commands on a machine with experimental service identities, private
 roots, installer records, an existing unit or installed Kapsel binaries. Inventory those first under
-[experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts). A matching name is
-not permission to adopt, overwrite, chown or remove an object.
+[existing-host precautions](../reference/service.md#existing-host-state). A matching name is not
+permission to adopt, overwrite, chown or remove an object.
 
 In a trusted root operator shell, set `artifact` to the absolute extracted directory. Confirm the
 identities and destinations below are absent, including dangling symlinks, before proceeding:
 
 ```sh
-artifact=/absolute/path/to/kapsel-0.3.0-preview.1-x86_64-unknown-linux-gnu
+artifact=/absolute/path/to/kapsel-0.3.0-x86_64-unknown-linux-gnu
 # Inspect first. Unexpected existing entries mean stop, not automatic reuse.
 getent passwd kapsel kapsel-service-caller
 getent group kapsel kapsel-service-callers
@@ -243,10 +91,10 @@ RBAC. Do not use cluster-admin credentials. Resolve desired-state ownership with
 reconciler before approving direct mutation. This is not a GitOps integration.
 
 Before preparing or publishing approvals, apply the service's
-[action-independence rule](KAPSEL_SERVICE.md#action-independence) against selectable actions and
-unresolved history. Keep conflicting follow-on approvals unavailable; a free worker or terminal
-`UNKNOWN` is not clearance. The service validates authority and lifecycle mechanics but does not
-infer whether two application changes are independent.
+[action-independence rule](../reference/service.md#action-independence) against selectable actions
+and unresolved history. Keep conflicting follow-on approvals unavailable. A free worker or terminal
+`UNKNOWN` does not clear a conflict. The service validates authority and lifecycle mechanics but
+does not infer whether two application changes are independent.
 
 In a private operator workspace, provision these inputs using your cluster and key-management tools:
 
@@ -378,8 +226,9 @@ PY
 ```
 
 The recorded time is an explicit trust-evaluation input, not a receipt timestamp or proof of when
-Kubernetes changed. The [receipt contract](EFFECT_GATEWAY.md#receipt-and-inspection) owns trust
-framing and time meaning. The fixture's separate fixed-time trust is not the appointment above.
+Kubernetes changed. The [receipt contract](../reference/evidence_formats.md#receipt-and-inspection)
+defines trust framing and explains how evaluation time is used. The fixture's separate fixed-time
+trust is not the appointment above.
 
 ### Read the snapshot, sign and assemble configuration
 
@@ -413,9 +262,9 @@ Its `service_configuration_version` is `1`. `authorization_keys` appoints `appro
 `approval.grant` encoded as hex. `receipt_signing_key_id` is `receipt-key-1`, a public identity, not
 the receipt seed. Hex is transport encoding, not something to edit or copy from this guide. The
 readable intent above explains what the grant authorizes. The document contains no configurable
-paths or cluster credentials. The [exact schema](KAPSEL_SERVICE.md#versioned-operator-document) owns
-its bounds. Keep the actual generated document private instead of publishing reusable approval
-bytes.
+paths or cluster credentials. The
+[exact schema](../reference/service.md#versioned-operator-document) defines its bounds. Keep the
+actual generated document private instead of publishing reusable approval bytes.
 
 After successful preparation, install execution material and cold-publish the candidate:
 
@@ -441,9 +290,9 @@ For a configuration you edited or received from elsewhere, validate it independe
 check credentials or prove host readiness.
 
 Proceed only after `PUBLISHED` and exit `0`. A missing or uncertain response requires inspection,
-not automatic replay. No token or key is bundled in the archive. The published preview rejects
-legacy grants and journals older than format 5 unchanged. Current source requires format 6. Keep
-older journals with matching binaries as described in [journal retention](UPGRADE.md).
+not automatic replay. No token or key is bundled in the archive. The service requires snapshot
+grants and journal format 6. Preserve refused history unchanged. See
+[preserve operation history](journal_retention.md).
 
 Start explicitly, then read before selecting anything:
 
@@ -462,11 +311,10 @@ material under the same custody, and start to reload it. Read the original ID be
 resumption. Expired credentials do not justify reapproval, a new ID or a receiver outcome.
 
 The fixed `/etc/kapsel/operator.json` uses the
-[versioned service document](KAPSEL_SERVICE.md#versioned-operator-document), not the legacy CLI/MCP
-document. It supplies bounded snapshot approvals and external historical public-key appointments.
-Each approved ID and tuple is immutable. Reapproval requires an operator decision, a new grant, and
-a new action ID. Restart must not refresh an existing action's authority. Source completion-capacity
-tests do not qualify an installed service or native host.
+[versioned service document](../reference/service.md#versioned-operator-document). It supplies
+bounded snapshot approvals and external public-key appointments. Each approved ID and tuple is
+immutable. Reapproval requires an operator decision, a new grant, and a new action ID. Restart must
+not refresh an existing action's authority.
 
 ## Stop, replace or remove executables
 
@@ -475,12 +323,13 @@ credentials or executables. Confirm `ActiveState=inactive` and `MainPID=0` with 
 timeout, lost shell or forced kill is not successful retirement. Preserve the history and follow the
 uncertainty guidance below.
 
-For a separately accepted compatible executable replacement, authenticate and verify the new archive
-first. While stopped, replace only the installed binaries/unit/docs with their exact new bytes,
-retaining the service UID/GID, roots, journal, sidecars, lifecycle lock, original grants and
-historical trust. Reload the unit, start, and read history first. This is not authorization to use
-an older binary or migrate a refused journal. Format 4 is refused unchanged. A fresh installation
-cannot recover continuity for an old or lost journal.
+Kapsel supplies no cross-version replacement procedure. For an independently assessed executable
+replacement, authenticate and verify the new archive first. While stopped, replace only the
+installed binaries/unit/docs with their exact new bytes, retaining the service UID/GID, roots,
+journal, sidecars, lifecycle lock, original grants and historical trust. Reload the unit, start, and
+read history first. This is not authorization to use an older binary or migrate a refused journal.
+Older formats are refused unchanged. A fresh installation cannot recover continuity for an old or
+lost journal.
 
 For removal, stop and disable the unit. An operator may remove only the installed executables and
 static assets whose provenance they have verified, then run `systemctl daemon-reload`. Retain
@@ -493,28 +342,33 @@ to revive execution: the host may already have sent a mutation absent from that 
 
 Stop the daemon gracefully, then run exactly `/usr/libexec/kapsel/kapseld --replace-operator-config`
 under the existing service UID/effective GID, feeding the complete candidate on stdin (at most 160
-KiB). This is trusted operator provisioning, not a caller command; it changes only fixed
-`/etc/kapsel/operator.json`, never starts the daemon and never advances an action. The daemon and
+KiB). This is trusted operator provisioning, not a caller command. It changes only fixed
+`/etc/kapsel/operator.json`. It never starts the daemon or advances an action. The daemon and
 publisher share a nonwaiting lifecycle lock. Do not delete that lock to bypass contention. Do not
 replace private roots or launch old binaries ignoring it.
 
-The [canonical publication contract](KAPSEL_SERVICE.md#cold-publication-and-graceful-retirement)
-owns validation, custody and outcomes. `PUBLISHED` with exit `0` confirms rename and directory sync;
-`NOT_PUBLISHED` with exit `4` proves refusal before rename; `INDETERMINATE` with exit `5` requires
-inspection. Stdout contains just that bounded status line. A rename error, failed output, lost
-response or crash is not proof of non-publication. Never automatically roll back or replay after an
-uncertain result. Inspect the fixed document and journal before deciding the next operator action.
+The
+[canonical publication contract](../reference/service.md#cold-publication-and-graceful-retirement)
+defines validation, custody and outcomes:
+
+- `PUBLISHED` with exit `0` confirms rename and directory sync.
+- `NOT_PUBLISHED` with exit `4` proves refusal before rename.
+- `INDETERMINATE` with exit `5` requires inspection.
+
+Stdout contains just that bounded status line. A rename error, failed output, lost response or crash
+is not proof of non-publication. Never automatically roll back or replay after an uncertain result.
+Inspect the fixed document and journal before deciding the next operator action.
 
 Validation is strictly read-only/no-create against retained history, including schema and capacity.
 Recovery-required journals must first undergo ordinary recovery, not publication-side repair. Lost
 journal history plus leftover sidecars or a worker lock is rejected rather than treated as fresh.
 Catalog removal does not erase history or change original receipts. Omitting an original historical
-key makes that ID inaccessible until its external trust is restored; it does not replace authority.
+key makes that ID inaccessible until its external trust is restored. It does not replace authority.
 
 SIGTERM stops acceptance and drains surviving work. Systemd has `TimeoutStopSec=infinity`: hung
 storage can leave stop incomplete and publication excluded indefinitely. Manual SIGKILL is a crash,
 not successful retirement. After a completed publication, start normally and read history/status
-first; startup does not reconcile automatically.
+first. Startup does not reconcile automatically.
 
 ## Submit and inspect
 
@@ -534,17 +388,16 @@ sudo -u kapsel-service-caller -g kapsel-service-callers -- \
 ```
 
 For an agent that speaks MCP, provision the
-[ID-only stdio bridge](MCP.md#resident-service-bridge-current-source-only) with
+[ID-only stdio bridge](../reference/mcp.md#resident-service-bridge) with
 `command: "/usr/bin/kapsel-service-mcp"` and `args: []` in its trusted launch configuration. Launch
 the bridge as the same confined caller UID/effective GID. Do not put the operator document, socket
-path, credentials or receipt export path into tool input. This bridge is current source, not a
-binary in the published preview archive.
+path, credentials or receipt export path into tool input.
 
 The caller account's primary group is `kapsel-service-callers`. The explicit `-g` supplies the
 required effective GID without a supplementary membership entry. Every response has integer
 `version: 1`. `ADMITTED` includes the confirmed durable phase, not worker liveness or receiver
 success. `NOT_ADMITTED` with `BUSY` or `CAPACITY` is a definite refusal of new work.
-`INDETERMINATE`, an error, timeout or disconnect is not proof of non-admission. Read the same ID; do
+`INDETERMINATE`, an error, timeout or disconnect is not proof of non-admission. Read the same ID. Do
 not invent a replacement action. `list` and `history` accept an optional `after-id` cursor.
 
 | Status          | Next interpretation                                                                                                                               |
@@ -576,85 +429,11 @@ The trust file and evaluation time are operator-selected. Inspection reports `IN
 existing file fails export without changing the action. Use a new writable destination for a later
 export. The service needs no receipt directory and the caller never opens its private journal.
 
-## Fresh-session caller (current source)
-
-The [shared caller guide](CALLER_GUIDE.md) runs both capabilities and inventories the maintained
-surfaces and their independent versions.
-
-`python3 examples/fresh_session_caller.py` is a small read-first caller of the fixed MCP bridge, not
-a daemon or a second action store. Run it under the confined caller identity on the service host
-after provisioning the source `kapsel-service-mcp` binary. The published preview lacks that binary.
-The operator gives the caller a stable, nonsecret label for this host's _retained journal_ (for
-example `host-a-journal-a`). Keep that label with the same journal across service restart; change it
-when replacing or losing the journal. This is a local custody convention, not a cryptographic
-service identity. The fixed socket alone cannot prove which history is behind it. The operator must
-verify journal custody before authorizing resumed work after host/storage change.
-
-The caller owns a private reference file, not grants, credentials, signing material or trust. Run
-these commands under the confined caller UID and effective group. The caller creates the private
-directory before the example starts; the operator supplies the journal label out of band. The
-approved catalog may span pages; `approved [after-id]` reads one page at a time. The read-only
-`history [after-id]` command similarly lists retained IDs, including operations withdrawn from the
-catalog and per-ID authority errors. Neither listing creates or changes the reference file.
-
-```sh
-caller='python3 examples/fresh_session_caller.py'
-mkdir -m 700 -p ./caller-state  # use a caller-owned private directory
-$caller --service host-a-journal-a --reference ./caller-state/operation.ref approved
-# Choose an approved ID, then explicitly select it once. Use a new reference file.
-$caller --service host-a-journal-a --reference ./caller-state/operation.ref start artifact-op-1
-# A new process, with no conversational state, only reads the original identity:
-$caller --service host-a-journal-a --reference ./caller-state/operation.ref read
-# Only after reading execution.next_action, explicitly request same-ID advancement if permitted:
-$caller --service host-a-journal-a --reference ./caller-state/operation.ref resume
-```
-
-The caller commands have distinct responsibilities:
-
-- `start` saves and syncs the exclusive reference **before** submitting. The service checks
-  approval. Once the reference exists, `start` cannot run again, even after a lost response or local
-  refusal. The example retains the reference after definite `NOT_ADMITTED` as well as uncertainty.
-- `read` starts a new MCP process and reads stored facts only. An uncertain submission requires
-  further reads of the original ID. `NOT_FOUND` does not prove that the first selection never
-  occurred. A crash between reference creation and submission can leave an unsent action; the
-  example stops instead of silently resubmitting. Investigate with the operator.
-- `resume` reads status first. It selects **the same ID** only for caller-owned
-  `IN_PROGRESS / resume_required / select_same_id`. It refuses `NOT_FOUND`, exchange errors, `wait`,
-  `wait_then_select_same_id`, operator-required work, and terminal classifications. For
-  `wait_then_select_same_id`, wait and re-read before deciding to resume.
-
-Admitted work can outlive the caller. Service restart loses transient worker explanations, not
-history. A read after restart never advances recovery; selection is a separate decision. A missing
-or mismatched journal label stops the example. An unavailable journal or missing historical trust
-requires operator investigation, not a fresh reference.
-
-`NOT_ATTEMPTED` is local rejection without an effect receipt. `IN_PROGRESS` is unfinished, not
-receiver success. `SUCCEEDED`, `FAILED` and `UNKNOWN` are terminal receiver classifications;
-`UNKNOWN` blocks dependent mutations, replacement IDs, automatic approval refresh and rollback.
-Later green receiver state cannot rewrite the original receipt. These decisions remain with the
-caller and operator, not a scheduler inside this example.
-
-A separate new process can run `receipt` against the same private reference. Its `service` JSON
-contains `receipt_hex` and `receipt_sha256` when ready. For detached inspection, write the decoded
-hex to a private **new** caller-owned file and run
-`/usr/bin/kapsel inspect --receipt FILE --trust TRUST --evaluation-time-unix-s TIME` in an operator
-inspection workspace. Supply `TRUST` and `TIME` separately, never through the MCP tool. Compare
-repeated SHA-256 and bytes, not merely the status token. Receipt retrieval does not query
-Kubernetes. The existing [export and inspection steps](#submit-and-inspect) show the exact
-inspection command.
-
-Run `python3 examples/test_fresh_session_caller.py` for fresh-process deterministic transcripts and
-separately counted selection calls. These fixture tests do not measure receiver mutations or claim
-native service or Kubernetes qualification. The
-[Linux bridge/service process test](BUILD.md#kapsel-service-candidate) counts one receiver HTTP
-patch across lost acknowledgement, observation, reconnect and restart. The existing service journey
-owns broader live Kubernetes qualification. No model is needed for deterministic replay.
-
 ## Diagnose and resume
 
 An absent row is `NOT_FOUND` with `execution.disposition: "admission_unconfirmed"`. This read cannot
 prove non-admission while a commit may still finish. Only a submission response of `NOT_ADMITTED`
-establishes definite refusal. Continue reading the same ID after uncertainty.
+confirms definite refusal. Continue reading the same ID after uncertainty.
 
 For unfinished history, use `execution`, not internal phase names:
 
@@ -711,9 +490,8 @@ no-resend boundary.
 
 ### Storage refusal and repair
 
-These diagnostics describe current source. Published artifacts keep their original diagnostics. The
-catalog accepts at most 32 selectable approvals. An oversized catalog is invalid configuration, not
-journal exhaustion. Catalog withdrawal never removes retained history or releases its capacity.
+The catalog accepts at most 32 selectable approvals. An oversized catalog is invalid configuration,
+not journal exhaustion. Catalog withdrawal never removes retained history or releases its capacity.
 `NOT_ADMITTED / CAPACITY` refuses new work at 504 retained or 32 unfinished identities. Reads and
 identical-ID selection remain available wherever stored state permits. Completing unfinished work
 releases only an unfinished slot. Exporting receipts releases neither limit.
@@ -729,11 +507,11 @@ df -i /var/lib/kapsel
 
 Free bytes do not prove writable storage: inode exhaustion, custody failures and I/O errors remain
 possible. Private-root checks can report `provisioning_unavailable` before the journal opens. Do not
-paste private files or raw errors into caller output. No diagnostic establishes a receiver result or
-proves that a possibly committed admission failed.
+paste private files or raw errors into caller output. No diagnostic proves a receiver result or
+shows that a possibly committed admission failed.
 
 1. Request `systemctl stop kapseld.service`. Wait for `ActiveState=inactive` and `MainPID=0` before
-   changing storage or material. A blocked stop is incomplete; do not bypass lifecycle exclusion.
+   changing storage or material. A blocked stop is incomplete. Do not bypass lifecycle exclusion.
 2. Repair only the diagnosed availability problem under operator authorization. For exhaustion,
    release unrelated storage, never Kapsel history, locks, SQLite sidecars or original authority.
 3. Start the service. Read `history` and `status` for the original ID with the
@@ -743,17 +521,16 @@ proves that a possibly committed admission failed.
    byte-identical. An absent row after uncertain admission still requires operator investigation.
 
 **Stop repair** if history is missing, invalid, unsupported or cannot be authenticated. Preserve the
-journal and sidecars together; do not discard a rollback journal to make opening succeed. A receipt
+journal and sidecars together. Do not discard a rollback journal to make opening succeed. A receipt
 export cannot restore no-resend history. Never restore stale state, edit rows or format markers,
 create replacement history, raise limits or mint another ID to make uncertain work runnable. If all
-artifacts were lost, the service cannot distinguish that loss from a fresh install. Operator
-custody, not a successful empty startup, establishes continuity.
+artifacts were lost, the service cannot distinguish that loss from a fresh install. Operator custody
+must preserve continuity. A successful empty startup cannot confirm it.
 
-The [commit-alternative table](EFFECT_GATEWAY.md#storage-failure-and-commit-alternatives) separates
-unconfirmed admission, unfinished completion and original receipt retrieval. The
-[storage lane](BUILD.md#bounded-storage-failure-qualification) exercises genuine bounded ENOSPC and
-same-ID recovery. Application and Linux process tests check fixed damaged-history diagnostics and
-refusal without database creation. These are not disk-backed power-loss or host-loss guarantees.
+The [commit-alternative table](../reference/storage.md#storage-failure-and-commit-alternatives)
+separates unconfirmed admission, unfinished completion, and original receipt retrieval. A successful
+repair of storage availability does not establish disk-backed power-loss durability or host-loss
+continuity.
 
 ### Recover access to original evidence
 
@@ -807,7 +584,7 @@ service that owns real work merely to follow the example.
 
 Caller disconnect does not cancel surviving selected work. Service startup exposes authenticated
 stored reads without reconciliation, Kubernetes availability, receipt seeds or export access.
-Missing, invalid or unsafe execution files disable that material without disabling reads; they do
+Missing, invalid or unsafe execution files disable that material without disabling reads. They do
 not trigger ambient configuration or replacement keys. Read status/history first after restart.
 Explicit reselection of the same unfinished ID requests one bounded advancement pass. After a
 durable attempt, recovery observes without another PATCH, even when loss may have preceded the
@@ -820,49 +597,61 @@ unavailable. Already exported receipts remain inspectable offline. Database loss
 retrieval, and losing or rolling back action history defeats continuity assumptions. No automatic
 backup, HA, credential renewal, installer recovery or destructive cleanup is supplied by this guide.
 
-## Validation
+## Example: restore a missing receipt signer
 
-The executable guide blocks are checked by the existing artifact test owner. Run against the exact
-accepted artifact and its independently recorded source revision:
+This captured fixture transcript shows completion after signing material is restored. It is not a
+live Kubernetes rollout. Do not withhold material or kill a service that owns real work merely to
+reproduce a failure. The
+[qualification procedure](../contributing/qualification.md#documented-operator-example) checks these
+blocks against the production binaries.
 
-```sh
-python3 tools/release/test_artifact.py --archive "$archive" \
-  --example-revision "$revision" \
-  ReleaseArtifactTests.test_documented_operator_example
+After the preparation steps above, `list` shows `artifact-op-1` and initial `history` is empty.
+Submission returns:
+
+<!-- example-admitted -->
+
+```json
+{ "version": 1, "status": "ADMITTED", "phase": "requested" }
 ```
 
-The test uses a disposable container and loopback receiver, with separate numeric service/caller
-identities. Direct process start/stop replaces systemd/sudo. It withholds `receipt.seed` on the
-first start and restores it after graceful retirement, then checks admission, same-ID recovery, and
-exact receipt retention against actual responses. These are test adaptations, not execution of the
-native installation commands. Graceful signing recovery does not replace
-[packaged interrupted-execution qualification](RELEASE.md#install-upgrade-and-artifact-only-proof).
+After one PATCH and frozen rollout observations, status remains `IN_PROGRESS` with:
 
-The same artifact test also exercises explicit fixture faults through the production binaries:
+<!-- example-signing -->
 
-- Start without receiver material. Admission remains readable with `receiver_unavailable`, with no
-  mutation. Restore the intended kubeconfig and restart read-first.
-- With valid receiver material but the actual HTTP listener stopped, explicit selection leaves
-  `preflight_unavailable`, not a receiver outcome. Restore the listener and explicitly select the
-  same ID, without refreshing approval. Only the subsequent healthy attempt sends a PATCH.
-- After receipt completion, cold-publish a catalog without the original external trust appointment.
-  Check caller `authority_unavailable`, operator `original_authority_unavailable`, refused export
-  and unchanged journal bytes. Restore the original appointment through cold publication. The
-  original receipt is byte-identical even with receiver and signing material absent, with zero new
-  HTTP.
-- Mark the disposable journal's version unsupported as test fault preparation. Startup must refuse
-  it without changing journal bytes or contacting the receiver. The procedure stops there. It never
-  repairs a database version, deletes history or restores an older database.
+```json
+{
+  "action_owner": "operator",
+  "condition": "signing_unavailable",
+  "disposition": "operator_required",
+  "next_action": "contact_operator"
+}
+```
 
-These are fixture fault checks, not live receiver unavailability, a genuine historical format-4
-journal, storage exhaustion, agent confinement or native installation evidence. The test's private
-version edit prepares only the unsupported-input fixture. No recovery step uses database edits.
+The operator stops gracefully, restores the intended `receipt.seed` under its original custody, and
+restarts. Reading the same ID before submission returns `IN_PROGRESS` with:
 
-### Native artifact qualification
+<!-- example-resume -->
 
-The separate [native example](#one-command-disposable-example) uses systemd and retains its host
-footprint. The
-[published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1) records a
-fresh native x86-64 Debian 12 systemd exercise for its exact artifact, with one PATCH, read-first
-restart, identical receipt retrieval, and retained state. This qualifies that finite fixture run,
-not live Kubernetes behavior, disk-backed power-loss durability, or later candidates.
+```json
+{
+  "action_owner": "caller",
+  "condition": null,
+  "disposition": "resume_required",
+  "next_action": "select_same_id"
+}
+```
+
+Restart does not contact the receiver. `submit artifact-op-1` returns:
+
+<!-- example-readmitted -->
+
+```json
+{ "version": 1, "status": "ADMITTED", "phase": "receiver_observed" }
+```
+
+Status then becomes `SUCCEEDED`, with `execution.next_action: "inspect_result"`. Export returns
+`READY` with a SHA-256 and new caller-owned path. Inspection under separately appointed fixture
+trust returns `INSPECTED` for `artifact-op-1` with `result: "SUCCEEDED"`.
+
+The fixture counts one PATCH. Restoring the signer completes already frozen evidence without new
+receiver requests. Random keys make grant and receipt digests differ between runs.

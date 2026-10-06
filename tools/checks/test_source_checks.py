@@ -39,7 +39,7 @@ class SourcePrivacyTests(unittest.TestCase):
                 "src/lib.rs",
                 "tests/test.rs",
                 "vectors/example.hex",
-                "docs/PRIVACY.md",
+                "docs/reference/privacy.md",
                 "fuzz/fuzz_targets/inspect_receipt.rs",
             ]
             for name in [*names, "target/generated", "dist/generated"]:

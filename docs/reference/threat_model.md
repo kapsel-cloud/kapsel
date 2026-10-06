@@ -1,8 +1,9 @@
 # Threat model
 
 This page describes threats, controls, assumptions, and security limits for the Kubernetes gateway
-and resident service. The [effect-gateway contract](EFFECT_GATEWAY.md) owns exact semantics,
-including the separate Git boundary. [Technical scope](SCOPE.md) owns maturity and support limits.
+and resident service. The [effect-gateway contract](effect_gateway.md) owns exact semantics,
+including the separate Git boundary. [Technical scope](../scope.md) owns maturity and support
+limits.
 
 A durable record narrows crash ambiguity. It does not establish exactly-once effects, receiver
 truth, or absence of gateway bypass.
@@ -44,7 +45,7 @@ independence. Receipts must not imply otherwise.
 
 Permanent missing or invalid targets become terminal `NOT_ATTEMPTED` before the mutation marker.
 Transient read errors leave the selected operation authorized without a PATCH. Neither becomes a
-receiver result. The [gateway contract](EFFECT_GATEWAY.md#durable-facts-and-recovery) owns retry and
+receiver result. The [gateway contract](effect_gateway.md#durable-facts-and-recovery) owns retry and
 operation-selection semantics.
 
 The process can fail after Kubernetes receives a request but before Kapsel records the response.
@@ -82,9 +83,9 @@ same-ID service resumption.
 ### Demonstration control misuse
 
 The service process test harness stops at fixed crash windows without adding caller lifecycle
-control. The source-only direct demo is retired. Ordinary builds contain no pause behavior. The
-separately built executable accepts only fixed environment-selected seams and an owner-private
-control directory; malformed, symlinked, partial, or repeated controls fail closed.
+control. Ordinary builds contain no pause behavior. The separately built executable accepts only
+fixed environment-selected seams and an owner-private control directory; malformed, symlinked,
+partial, or repeated controls fail closed.
 
 The harness is source/process test tooling, not a production binary or authorization boundary.
 Anyone able to replace its executable or process environment already controls that local process.
@@ -113,7 +114,7 @@ separate copy without becoming part of completion. Neither supplies automatic ba
 Caller input, SQLite, reports, receipts, errors, and logs must not contain Kubernetes credentials,
 signing keys, private trust decisions, or unbounded provider response bodies. Private paths are
 validated before use. Receipts still disclose identifiers, image digests, timing, receiver facts,
-key identities, and operational relationships. [Privacy](PRIVACY.md) owns the disclosure checklist.
+key identities, and operational relationships. [Privacy](privacy.md) owns the disclosure checklist.
 
 ### Release substitution and provenance overclaim
 
@@ -124,7 +125,7 @@ manifest and named bytes.
 
 Checksums alone do not authenticate a publisher. Reproducibility and Sigstore identity do not prove
 source review, workflow or builder integrity, dependency safety, current non-withdrawal, production
-fitness, or another platform. [Release artifacts](RELEASE.md) owns exact controls and limits.
+fitness, or another platform. [Release artifacts](release.md) owns exact controls and limits.
 
 ## Resident-service boundary
 
@@ -149,15 +150,9 @@ changes would not revoke credentials cached by an existing process, so revocatio
 waits for client and connection closure, and removes the socket before any operator-owned resource
 removal. No service uninstall command is supplied.
 
-The [published preview](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0-preview.1)
-records finite qualification for its exact source and artifact digests. Native systemd evidence uses
-a loopback receiver; live Kubernetes evidence is a separate lane. Neither establishes production
-safety, disk-backed power-loss durability, or support for another environment.
-
-[Experimental-host precautions](KAPSEL_SERVICE.md#experimental-installer-hosts) cover identities and
-state that staged installer builds may have left behind. The exact service authority, filesystem,
-recovery, qualification, and unsupported boundaries are owned by
-[Kapsel service](KAPSEL_SERVICE.md).
+[Existing-host precautions](service.md#existing-host-state) cover identities and state that staged
+installer builds may have left behind. The exact service authority, filesystem, recovery,
+qualification, and unsupported boundaries are owned by [Kapsel service](service.md).
 
 ## Non-claims
 

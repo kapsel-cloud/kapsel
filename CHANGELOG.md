@@ -1,6 +1,13 @@
 # Changelog
 
-All notable public Kapsel experiment releases are recorded here.
+Notable changes are recorded here. Release tags retain their matching documentation and artifacts.
+
+## Unreleased
+
+- Execution now uses only the resident service and fixed ID-only client/MCP bridge. Direct
+  `kapsel operate`, direct `kapsel mcp`, and macOS-source execution are removed. This is not a
+  transparent migration; operator provisioning, offline inspection, and caller export remain.
+- Retained format-6 history and original grant/receipt bytes remain readable without migration.
 
 ## 0.3.0 - 2026-10-02
 
@@ -16,9 +23,9 @@ All notable public Kapsel experiment releases are recorded here.
   observation-only same-ID recovery, private-material custody checks, and retained receipt
   comparison.
 
-This pre-beta release remains non-production. The [release path](docs/RELEASE.md#path-to-v030) owns
-scope and required qualification. Published preview artifacts retain their original version,
-contracts, and evidence.
+This pre-beta release remains non-production. Its
+[release page](https://github.com/kapsel-cloud/kapsel/releases/tag/v0.3.0) records exact bytes and
+qualification.
 
 ## 0.3.0-preview.1 - 2026-09-22
 

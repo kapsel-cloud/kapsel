@@ -292,23 +292,24 @@ def stage_release(
             staging / "share" / "kapsel" / "kapseld-rbac.yaml",
             0o644,
         ),
-        ROOT / "docs" / "COMMANDS.md": (
+        # Source navigation can change; installed documentation names remain fixed.
+        ROOT / "docs" / "reference" / "commands.md": (
             staging / "share" / "doc" / "kapsel" / "COMMANDS.md",
             0o644,
         ),
-        ROOT / "docs" / "KAPSEL_SERVICE_OPERATOR.md": (
+        ROOT / "docs" / "guides" / "operator.md": (
             staging / "share" / "doc" / "kapsel" / "KAPSEL_SERVICE_OPERATOR.md",
             0o644,
         ),
-        ROOT / "docs" / "KAPSEL_SERVICE.md": (
+        ROOT / "docs" / "reference" / "service.md": (
             staging / "share" / "doc" / "kapsel" / "KAPSEL_SERVICE.md",
             0o644,
         ),
-        ROOT / "docs" / "PRIVACY.md": (
+        ROOT / "docs" / "reference" / "privacy.md": (
             staging / "share" / "doc" / "kapsel" / "PRIVACY.md",
             0o644,
         ),
-        ROOT / "docs" / "RELEASE.md": (
+        ROOT / "docs" / "reference" / "release.md": (
             staging / "share" / "doc" / "kapsel" / "RELEASE.md",
             0o644,
         ),
@@ -316,7 +317,7 @@ def stage_release(
             staging / "share" / "doc" / "kapsel" / "SECURITY.md",
             0o644,
         ),
-        ROOT / "docs" / "UPGRADE.md": (
+        ROOT / "docs" / "guides" / "journal_retention.md": (
             staging / "share" / "doc" / "kapsel" / "UPGRADE.md",
             0o644,
         ),

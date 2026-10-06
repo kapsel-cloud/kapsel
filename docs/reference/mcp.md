@@ -1,19 +1,11 @@
 # MCP adapter
 
 This contract defines the fixed ID-only resident-service stdio bridge. The
-[service contract](KAPSEL_SERVICE.md#version-1-socket-adoption-contract) owns socket requests and
-projections. The [effect gateway](EFFECT_GATEWAY.md) owns authority, recovery, results and receipts.
-The bridge is not a generic MCP host or a remote service.
+[service contract](service.md#version-1-socket-contract) defines socket requests and projections.
+The [effect gateway](effect_gateway.md) defines authority, recovery, results and receipts. The
+bridge is not a generic MCP host or a remote service.
 
-## Compatibility posture
-
-HEAD removes direct `kapsel mcp` execution. The older
-[v0.2.0 MCP contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/MCP.md) and published
-v0.3.0 retain their original binaries and contracts. Direct/macOS-source execution is lost; this is
-not transparent migration. [Scope](SCOPE.md#head-execution-and-v04x-compatibility) owns the approved
-v0.4.x boundary. `serverInfo.version` identifies the running package, not production readiness.
-
-## Resident-service bridge (current source only)
+## Resident-service bridge
 
 `/usr/bin/kapsel-service-mcp` takes no arguments or operator document. The operator launches it
 under the confined `kapsel-service-caller` identity and `kapsel-service-callers` effective group. It
@@ -43,9 +35,9 @@ args = []
 ```
 
 The bridge supports exactly MCP `2025-11-25` over line-delimited UTF-8 JSON-RPC 2.0 stdio.
-`serverInfo.name` is `kapsel-service`; its version is the running package version. Only `tools` is
+`serverInfo.name` is `kapsel-service`. Its version is the running package version. Only `tools` is
 advertised. There are no server-originated messages, batches, embedded newlines, HTTP, SSE or
-`Content-Length` framing. Input is at most 16 KiB including LF; output is at most 96 KiB including
+`Content-Length` framing. Input is at most 16 KiB including LF. Output is at most 96 KiB including
 LF to carry bounded original receipt hex. Invalid or incomplete frames cannot create an action.
 
 ## Lifecycle
@@ -54,7 +46,7 @@ The first request is `initialize`. Request IDs are numeric non-null values or no
 most 128 UTF-8 bytes. Invalid IDs receive `Invalid Request` with `id: null`. Initialization returns
 the sole supported protocol version when the client proposes another version. A client that does not
 support that version must disconnect. The bridge becomes ready only after
-`notifications/initialized`; tools before that notification and a second initialization are invalid.
+`notifications/initialized`. Tools before that notification and a second initialization are invalid.
 
 The bridge processes one request at a time. Notifications receive no response. Unknown notifications
 and late or unknown cancellation notifications are ignored. Initialization cannot be cancelled. The
@@ -63,8 +55,8 @@ service's retained job. A missing response is not evidence of non-admission or a
 
 There is no `shutdown` or `exit` method. Closing stdin requests graceful shutdown after the current
 complete request and its response. An incomplete final frame is rejected without a response. Process
-termination does not alter retained service history. Read the original action ID after loss;
-explicitly select that same ID only when the service disposition permits.
+termination does not alter retained service history. Read the original action ID after loss.
+Explicitly select that same ID only when the service disposition permits.
 
 ## Fixed tools
 
@@ -91,9 +83,9 @@ service facts, not JSON-RPC errors. Local exchange failure returns
 `{"status":"ERROR","error_class":"service_exchange_uncertain"}`. Invalid response or receipt digest
 returns `response_invalid`. Neither means that the service did not admit the action.
 
-The service owns admission phase, rejection, execution disposition, receiver classification and
+The service reports admission phase, rejection, execution disposition, receiver classification and
 original signed receipt bytes/digest. The bridge does not export files, verify signatures or infer a
-receiver outcome from a successful exchange. The fixed service client owns caller export.
+receiver outcome from a successful exchange. The fixed service client exports receipts to files.
 
 | Code     | Message            | Use                                                             |
 | -------- | ------------------ | --------------------------------------------------------------- |
@@ -111,15 +103,14 @@ contain no request bytes, operator values, provider bodies or secrets.
 ## Support limits
 
 There is no SDK, plugin host, arbitrary endpoint, public Rust API or production-support promise.
-[Security](../SECURITY.md) owns reporting posture. Exact published releases own their bytes and
-qualification. See [operator recovery](KAPSEL_SERVICE_OPERATOR.md#diagnose-and-resume) for same-ID
-reconnection.
+[Security](../../SECURITY.md) owns reporting posture. See
+[operator recovery](../guides/operator.md#diagnose-and-resume) for same-ID reconnection.
 
 ## Official protocol basis
 
-The unchanged wire contract follows the MCP `2025-11-25` [versioning], [lifecycle], [stdio
-transport], [messages], [tools] and [cancellation] specifications and their [canonical schema]. No
-MCP SDK is used; the implementation retains its own fixed framing and authority bounds.
+The wire contract follows the MCP `2025-11-25` [versioning], [lifecycle], [stdio transport],
+[messages], [tools] and [cancellation] specifications and their [canonical schema]. No MCP SDK is
+used; the implementation retains its own fixed framing and authority bounds.
 
 [versioning]: https://modelcontextprotocol.io/specification/2025-11-25/basic/versioning
 [lifecycle]: https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle

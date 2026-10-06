@@ -9,14 +9,10 @@ packages or interfaces.
 
 ## Context
 
-The root `kapsel` package owns exact authorization, durable lifecycle, provider attempts,
-observation-only recovery, receiver-bounded results, and receipts. The removed hosted sandbox showed
-that remote admission, scheduling, authority staging, cleanup, and a second state store form a
-separate system rather than a natural extension of that module.
-
-Direct CLI and stdio MCP execution preserve root semantics but depend on the invoking process's
-lifetime. They do not provide read-only reconnection or original receipt retrieval across a separate
-OS identity.
+Effect execution needs a lifetime independent of the invoking process. Callers must be able to
+reconnect and retrieve original evidence across a separate OS identity without acquiring provider
+credentials. Remote scheduling, authority staging, and a second state store would add a separate
+system rather than solve that local lifetime boundary.
 
 ## Decision
 
@@ -39,7 +35,6 @@ Conceptual genericity alone is insufficient.
 
 ## Consequences
 
-- The hosted sandbox topology is not a production template.
 - `kapsel-daemon` produces the `kapseld` binary and depends on `kapsel`; the root package does not
   depend on the Kapsel service adapter.
 - The Kapsel service interface remains local and capability-specific.

@@ -44,10 +44,11 @@ from the private-artifact suffix check.
 
 These are finite patterns, not a general secret detector or a semantic review of public claims. The
 disclosure checklist still requires human review. The separate
-[source security scan](BUILD.md#source-privacy-and-security) checks a complete committed Git archive
-with Trivy's secret scanner. [Release verification](RELEASE.md) independently constrains artifact
-contents. None of these checks certifies that arbitrary logs or generated artifacts are publishable.
+[source security scan](../contributing/qualification.md#source-privacy-and-security) checks a
+complete committed Git archive with Trivy's secret scanner. [Release verification](release.md)
+independently constrains artifact contents. None of these checks certifies that arbitrary logs or
+generated artifacts are publishable.
 
 Kapsel does not guarantee anonymity, unlinkability, legal compliance, production retention safety,
-or absence of sensitive inference. See the [threat model](THREAT_MODEL.md) for the wider security
+or absence of sensitive inference. See the [threat model](threat_model.md) for the wider security
 boundary.

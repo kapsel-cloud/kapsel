@@ -29,7 +29,7 @@ Kubernetes mutation opportunity, bounded receiver observation or `UNKNOWN`, and 
 operation-scoped receipt.
 
 Kubernetes is the first concrete receiver. The choice established a working starting point, not a
-permanent capability limit. The current implemented boundary lives in [scope](../SCOPE.md).
+permanent capability limit. The current implemented boundary lives in [scope](../scope.md).
 
 ## Consequences
 

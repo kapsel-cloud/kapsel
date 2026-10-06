@@ -2,6 +2,17 @@
 //!
 //! Charges are reconstructed from retained identities, never released by phase changes. This is
 //! configured SQLite capacity, not filesystem-space reservation or a guarantee against I/O failure.
+//!
+//! The bound depends on the owned SQL, not just these constants. Inserts add one table record and
+//! one index record; updates replace one table record without changing its rowid or indexed ID.
+//! Fresh-prepared statements with dedicated record registers preserve OP_MakeRecord's size check;
+//! reusable record buffers are not covered. In pinned SQLite, sqlite3BtreeInsert creates at most
+//! one replacement chain before freeing the old chain, then balances once. Exact schema excludes
+//! triggers, foreign keys, extra indexes and autoincrement tables. The write-plan regression in
+//! tests/storage.rs checks the owner's SQL for extra mutation passes, not SQLite's allocation peak.
+//!
+//! Revalidate these premises when changing SQLite, schema, SQL or preparation. The cross-module
+//! layout, transient-page and rollback-file argument is in docs/contributing/storage_capacity.md.
 
 use rusqlite::Connection;
 
@@ -195,7 +206,7 @@ mod tests {
 
     #[test]
     fn owned_statement_transient_and_main_rollback_bounds_fit_fixed_limits() {
-        // At most19 original non-root groups plus the child created by root deepening.
+        // At most 19 original non-root groups plus the child created by root deepening.
         // Quick balancing costs one destination; five bounds either balancing choice.
         let tree_allocations = i64::try_from(TREE_DEPTH_MAX).unwrap() * 5 + 1;
         let transient = 2 * tree_allocations + 2 * 17;

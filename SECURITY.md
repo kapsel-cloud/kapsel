@@ -1,9 +1,8 @@
 # Security policy
 
-Kapsel v0.3.0-preview.1 is a published non-production service preview. The earlier v0.2.0 developer
-beta is a separate release. Do not use either for consequential production actions. Only the latest
-v0.2.x patch has the beta's existing best-effort security and correctness maintenance posture. The
-preview introduces no response-time, remediation, availability, platform, or production-support SLA.
+Kapsel is non-production software. Do not use it for consequential production actions. There is no
+response-time, remediation, availability, platform, or production-support SLA. For release-specific
+maintenance commitments, consult the security policy shipped with the affected release.
 
 ## Report a vulnerability
 
@@ -18,10 +17,9 @@ Include the affected revision, reproduction steps, impact, and whether disclosur
 
 These documents own the current security claims and limits:
 
-- [Technical scope](docs/SCOPE.md) — supported surface, maturity, and non-goals.
-- [Effect-gateway contract](docs/EFFECT_GATEWAY.md) — authorization, lifecycle, recovery, results,
-  receipts, and inspection.
-- [Threat model](docs/THREAT_MODEL.md) — adversaries, assumptions, surviving claims, and non-claims.
-- [Privacy](docs/PRIVACY.md) — sensitive fields and disclosure rules.
-
-Preview publication does not extend the v0.2.0 maintenance posture or establish production support.
+- [Technical scope](docs/scope.md) — supported surface, maturity, and non-goals.
+- [Effect-gateway contract](docs/reference/effect_gateway.md) — authorization, lifecycle, recovery,
+  results, receipts, and inspection.
+- [Threat model](docs/reference/threat_model.md) — adversaries, assumptions, surviving claims, and
+  non-claims.
+- [Privacy](docs/reference/privacy.md) — sensitive fields and disclosure rules.

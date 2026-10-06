@@ -5,11 +5,13 @@ Kapsel is an open-source execution boundary for automated workflows and AI agent
 
 ## Repository owners
 
-- [docs/INDEX.md](docs/INDEX.md): documentation map.
+- [docs/index.md](docs/index.md): documentation map.
 - [CONTRIBUTING.md](CONTRIBUTING.md): engineering and public writing conventions.
-- [docs/BUILD.md](docs/BUILD.md): commands, prerequisites, and validation gates.
-- [docs/SCOPE.md](docs/SCOPE.md): current capability and release limits.
-- [docs/EFFECT_GATEWAY.md](docs/EFFECT_GATEWAY.md): authority, lifecycle, recovery, and evidence.
+- [docs/contributing/build.md](docs/contributing/build.md): commands, prerequisites, and validation
+  gates.
+- [docs/scope.md](docs/scope.md): current capability and release limits.
+- [docs/reference/effect_gateway.md](docs/reference/effect_gateway.md): authority, lifecycle,
+  recovery, and evidence.
 
 Read the contract, code, and tests for the changed behavior. Check Git status and preserve unrelated
 work. Decisions explain rationale; they do not override current contracts.
@@ -33,5 +35,6 @@ work. Decisions explain rationale; they do not override current contracts.
 
 Run `cargo xtask fmt`. Documentation changes need local link and anchor checks, terminology review,
 and `git diff --check`. Follow the [public writing policy](CONTRIBUTING.md#technical-writing). Code
-changes also need the relevant behavior checks and broader gate from [docs/BUILD.md](docs/BUILD.md).
-Name any missing prerequisite when a required check cannot run.
+changes also need the relevant behavior checks and broader gate from
+[docs/contributing/build.md](docs/contributing/build.md). Name any missing prerequisite when a
+required check cannot run.

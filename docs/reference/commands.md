@@ -1,26 +1,9 @@
-# Evaluator commands
+# Operator and inspection commands
 
-This contract defines HEAD's operator provisioning and offline inspection CLI. Execution uses the
-resident service and its fixed ID-only client/MCP bridge, not `kapsel operate` or `kapsel mcp`.
-[Service](KAPSEL_SERVICE.md), [MCP](MCP.md) and [effect gateway](EFFECT_GATEWAY.md) own those
-interfaces and their semantics. [Release](RELEASE.md) owns packaging.
-
-## Receipt completion
-
-SQLite commits original signed receipt bytes and terminal state together. The fixed service client
-exports retrieved bytes to a caller-selected new file. Export failure never changes the action,
-reopens execution or permits another mutation.
-[Service export](KAPSEL_SERVICE.md#fixed-service-client) owns destination custody and collision
-refusal. Older journal formats remain rejected unchanged.
-
-## Compatibility posture
-
-HEAD retires the direct execution commands and their operator document. This loses direct and
-macOS-source execution, not provisioning or detached inspection. It is not transparent migration.
-Published releases retain their original contracts and bytes, including the
-[v0.2.0 command contract](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/COMMANDS.md).
-[Scope](SCOPE.md#head-execution-and-v04x-compatibility) owns the v0.4.x compatibility boundary.
-There is no public Rust API, crates.io, docs.rs, `cargo install` or additional-platform promise.
+This contract defines the operator provisioning and offline inspection CLI. Execution uses the
+resident service and its fixed ID-only client/MCP bridge. [Service](service.md), [MCP](mcp.md) and
+[effect gateway](effect_gateway.md) own those interfaces and their semantics. [Release](release.md)
+owns packaging.
 
 ## Command grammar
 
@@ -42,11 +25,12 @@ execution. `provision-snapshot-grant` reads target UID/resourceVersion through t
 kubeconfig before signing grant v2. It does not mutate the receiver. Kubernetes service approval
 requires a snapshot grant. Changed intent or target requires another operator decision and identity,
 not hidden refresh. See
-[operator preparation](KAPSEL_SERVICE_OPERATOR.md#provision-authority-and-an-exact-approval).
+[operator preparation](../guides/operator.md#provision-authority-and-an-exact-approval).
 
 `provision-git-grant` accepts the six-field Git authorization and bounded receiver material from
-[Git preparation](GIT_REF_TRANSITION.md#operator-preparation). It checks fixed objects and ancestry
-before signing, without pushing or admitting work. Git and Kubernetes use separate purposes.
+[Git preparation](../guides/git_transition.md#operator-preparation). It checks fixed objects and
+ancestry before signing, without pushing or admitting work. Git and Kubernetes use separate
+purposes.
 
 Help and version accept no additional arguments, read no configuration and contact no service.
 Version prints `kapsel <Cargo package version>` and one newline, with no diagnostic, and exits zero.
@@ -83,8 +67,8 @@ failure can leave an incomplete new preparation output; inspect it and choose a 
 ## Fixed JSON inputs
 
 Intent is a UTF-8 object with exactly these string fields. Unknown, duplicate, missing, wrong-type
-and trailing content is rejected. The [gateway grammar](EFFECT_GATEWAY.md#one-capability) bounds
-values.
+and trailing content is rejected. The [gateway grammar](kubernetes_effect.md#authorized-input)
+bounds values.
 
 ```json
 {
@@ -138,5 +122,4 @@ Kapsel command failure: command_input
 | 3    | `operator_configuration` | Missing/unsafe operator input, signing material or output path.      |
 | 4    | `operation_failure`      | Inspection/output serialization failure.                             |
 
-An exit status is not receiver evidence. Exact releases own availability and qualification. No
-response-time, remediation, platform or production-support SLA is provided.
+An exit status is not receiver evidence. [Scope](../scope.md) defines support limits.

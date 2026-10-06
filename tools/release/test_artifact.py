@@ -649,8 +649,68 @@ class ReleaseVerifierTests(unittest.TestCase):
                 SMOKE.exercise_service(pathlib.Path("/unused"), pathlib.Path("/unused"), True)
             command.assert_not_called()
 
+    def test_staged_document_names_and_links_survive_source_reorganisation(self) -> None:
+        """Exercise real assembly mappings without compiling or running product binaries."""
+        sources = {
+            "COMMANDS.md": "docs/reference/commands.md",
+            "KAPSEL_SERVICE_OPERATOR.md": "docs/guides/operator.md",
+            "KAPSEL_SERVICE.md": "docs/reference/service.md",
+            "PRIVACY.md": "docs/reference/privacy.md",
+            "RELEASE.md": "docs/reference/release.md",
+            "SECURITY.md": "SECURITY.md",
+            "UPGRADE.md": "docs/guides/journal_retention.md",
+        }
+
+        def fake_build(directory: pathlib.Path):
+            binaries = {}
+            for name in ("ordinary", "service", "client", "mcp_bridge"):
+                binary = directory / name
+                binary.write_bytes(b"not an executable")
+                binaries[name] = binary
+            metadata = directory / "metadata.json"
+            metadata.write_text("{}")
+            return binaries, metadata
+
+        revision = "1" * 40
+        with (
+            tempfile.TemporaryDirectory(prefix="kapsel-doc-staging-") as temporary,
+            mock.patch.object(ASSEMBLY, "build_binaries", side_effect=fake_build),
+            mock.patch.object(ASSEMBLY, "cargo_graph", return_value=([], [], "unused")),
+        ):
+            staging = pathlib.Path(temporary)
+            ASSEMBLY.stage_release(staging, revision, "2" * 40, False)
+            documents = staging / "share/doc/kapsel"
+            self.assertEqual({path.name for path in documents.iterdir()}, set(sources))
+            for name, source in sources.items():
+                with self.subTest(document=name):
+                    text = (documents / name).read_text()
+                    self.assertEqual(
+                        text.splitlines()[0], ROOT.joinpath(source).read_text().splitlines()[0]
+                    )
+                    for target in re.findall(r"]\(([^)\s]+[.]md(?:#[^)]+)?)\)", text):
+                        if target.startswith(("https://", "http://")):
+                            continue
+                        self.assertTrue((documents / target.split("#", 1)[0]).is_file(), target)
+            operator = documents.joinpath("KAPSEL_SERVICE_OPERATOR.md").read_text()
+            self.assertIn("](RELEASE.md#authenticate-and-extract-the-release)", operator)
+            self.assertIn("](KAPSEL_SERVICE.md#action-independence)", operator)
+            self.assertIn(
+                f"](https://github.com/kapsel-cloud/kapsel/blob/{revision}/"
+                "docs/contributing/qualification.md#documented-operator-example)",
+                operator,
+            )
+            self.assertIn(
+                f"](https://github.com/kapsel-cloud/kapsel/blob/{revision}/"
+                "docs/getting_started.md)",
+                operator,
+            )
+            release = documents.joinpath("RELEASE.md").read_text()
+            self.assertIn(
+                "](KAPSEL_SERVICE_OPERATOR.md#prepare-your-own-extracted-artifact)", release
+            )
+
     def test_documented_bootstrap_never_executes_after_authentication_failure(self) -> None:
-        document = ROOT.joinpath("docs/RELEASE.md").read_text()
+        document = ROOT.joinpath("docs/reference/release.md").read_text()
         _, heading, section = document.partition("## Authenticate and extract the release\n")
         self.assertTrue(heading, "release authentication section is missing")
         section = section.split("\n## ", 1)[0]
@@ -841,7 +901,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                     "--volume",
                     f"{archive}.verify.py:/fixture.py:ro",
                     "--volume",
-                    f"{ROOT / 'docs/KAPSEL_SERVICE_OPERATOR.md'}:/guide.md:ro",
+                    f"{ROOT / 'docs/guides/operator.md'}:/guide.md:ro",
                     SMOKE_IMAGE,
                     "python3",
                     "-I",

@@ -1,7 +1,7 @@
 # Decisions
 
 These accepted decisions explain design choices. Current contracts define behavior; decisions do not
-override them. See the [documentation map](../INDEX.md) for each subject's owner.
+override them. See the [documentation map](../index.md) for each subject's owner.
 
 - [0001 — Adapt Tiger Style to Kapsel](0001-kapsel-style.md)
 - [0006 — Use Rust for the implementation](0006-use-rust-for-the-implementation.md)
