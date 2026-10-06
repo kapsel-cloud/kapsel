@@ -63,44 +63,20 @@ The private umask matches the service unit and keeps newly created repository co
 Disposable fixtures copy the selected executable into private custody and invoke the same receiver
 code. They cover a fresh transition, stale competitor, transfer to another receiver, loss before and
 after the ref update, dropped dispatch permission with A→B→A, onward movement, and reopening
-unchanged signed evidence without receiver or signing material. Receiver packet traces and hook
-invocations are counted separately; fixture-owned intervening writes are explicit. Hook counts
-establish invocation, not downstream completion. The service-application case additionally proves
-selection and signing-only resumption after receiver/material removal. The process fixture below
-owns detached inspection and byte-identical receipt retrieval after material removal.
+unchanged signed evidence without receiver or signing material. An explicit unsent-present-B case
+drops dispatch permission, lets another sender establish B, then requires `UNKNOWN` with zero
+original update packets across recovery. Seeing B does not establish original causation. Receiver
+packet traces and hook invocations are counted separately; fixture-owned intervening writes are
+explicit. Hook counts establish invocation, not downstream completion. The service-application case
+additionally proves selection and signing-only resumption after receiver/material removal. The
+process fixture below owns detached inspection and byte-identical receipt retrieval after material
+removal.
 
 On Linux, the [runnable Git service fixture](GIT_REF_TRANSITION.md#runnable-source-example)
 exercises CLI provisioning, startup material, real service-process loss, the maintained
 fresh-session caller, MCP bridge and detached inspection. It covers send/receipt-commit loss and
 pre/post-receive loss, then reopens the same history without selectable catalog or execution
 material. This is source-level process evidence, not power-loss or installed-systemd qualification.
-
-## Git ref receiver probe (not a product capability)
-
-Run `python3 tests/probes/probe_git_ref_receiver.py` with Git 2.55.0. The disposable bare `file://`
-receiver has one `refs/heads/approved` branch, rejects non-fast-forwards and deletions, and has
-installed pre/post-receive hooks. The fixture isolates HOME, global and system Git config, disables
-credential prompting, fixes commit dates and uses an explicit
-`--force-with-lease=refs/heads/approved:<A>` and one full-ref refspec. The operator prepares A, B, C
-and D and performs fixture-only resets with `update-ref`. Git's
-[push reference](https://git-scm.com/docs/git-push) defines the explicit expected-value lease and
-notes that a remote failure may mean the receiver did not report an otherwise successful update.
-
-The probe compares fixture-owned operation ID, receiver label, ref and A/B exactly, then checks B's
-commit type and ancestry; changed payload, receiver label, non-commit and non-descendant probes
-fail. This unsigned fixture check is **not** Kapsel authority or repository custody verification. It
-checks receiver-side packet traces for update commands, counts hook invocations, reads the bare ref
-separately and reports sender acknowledgements. A rejected stale lease sends no update in this
-fixture. A current lease for a non-fast-forward B-to-C transition sends an update request that the
-receiver rejects. An exact lease does not itself enforce ancestry. A ref later at B can come from
-another sender after an unsent attempt. Resetting D to A lets the same A-to-B request succeed a
-second time, with a second hook invocation. The lease is not a safe replay policy. For actual
-transport failures, the fixture's pre/post-receive hook kills its parent `receive-pack` process
-before or after the ref update. The sender gets a failed push in both cases, while receiver ref and
-hook counts differ. This local process failure is not network-partition or power-loss evidence. The
-hook counts show invocation, not completed downstream side effects. Nor does the probe establish
-Kapsel restart safety or attribution from ref observation alone. It adds no authorization, journal,
-adapter, supported receiver, or new public command.
 
 ## Receiver-recovery evidence
 
@@ -132,9 +108,13 @@ Related behavior is proved at its owning interface rather than repeated in every
 | Immutable snapshot approval               | `gateway::tests::snapshot_approval` checks original authority across crash seams and rejects changed UID/version before and after receipt completion, preserving original bytes.                                                                                                                                                   |
 | Worker exclusion                          | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity` checks zero identify/apply/observe calls; `application_retry` also checks a contender while a real HTTP PATCH is pending.                                                                                                                           |
 
-Current Kapsel regressions do not establish equivalence with an unsigned tool, equal multi-user
-isolation, or hostile-input hardening. Use [Build and test](BUILD.md#receiver-recovery-regressions)
-for current commands. The deterministic gate does not qualify live or platform-specific lanes.
+Image acceptance is not rollout completion. A fresh name or revision lookup can describe an
+intervening writer or a recreated Deployment, not the original action. The receiver matrix checks
+replacement UID and changed image; owner classifier tables additionally check generation and pending
+rollout facts. Current Kapsel regressions do not establish equivalence with an unsigned tool, equal
+multi-user isolation, or hostile-input hardening. Use
+[Build and test](BUILD.md#receiver-recovery-regressions) for current commands. The deterministic
+gate does not qualify live or platform-specific lanes.
 
 ## Core effect-gateway proof matrix
 
@@ -320,117 +300,6 @@ The public demonstration adds an observable evaluator path through healthy,
 published v0.2.0 artifact instead uses its historical publication seam. Compile-time harness
 controls remain outside caller input and the ordinary executable. A visual demonstration is finite
 evidence, not exhaustive recovery proof.
-
-#### Frozen JSON PATCH receiver comparison
-
-JSON Patch can reject stale values before mutating admission. It does not make replay safe. This
-comparison retains the production strategic adapter and observation-only recovery. Both arms use the
-same current sequential dispatch and receipt implementation. Experimental requests bypass fresh
-dispatch permission only inside the test module. No production replay path is added.
-
-The JSON document freezes the original independently read UID, opaque resourceVersion, and container
-index. It tests UID, version, and the name at that index before replacing the image. Both strategies
-set the same operation annotation and preserve unrelated annotations and the untargeted container.
-No later observation refreshes either document. The JSON pointer escapes `/` as `~1`, and an absent
-annotations map requires adding the parent map rather than just its member.
-
-The boundary follows the pinned receiver source:
-
-- [RFC 6902 sections 4.6 and 5](https://www.rfc-editor.org/rfc/rfc6902#section-4.6) define ordered
-  tests and patch failure.
-- The
-  [v1.33.12 PATCH handler](https://github.com/kubernetes/kubernetes/blob/v1.33.12/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L388-L425)
-  returns `422` when JSON Patch application fails. Its transformer sequence applies the patch before
-  mutating admission. Strategic metadata preconditions are checked later by
-  [registry update](https://github.com/kubernetes/kubernetes/blob/v1.33.12/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L649-L733).
-- [GuaranteedUpdate](https://github.com/kubernetes/kubernetes/blob/v1.33.12/staging/src/k8s.io/apiserver/pkg/storage/etcd3/store.go#L436-L520)
-  may start with a cached object and re-evaluate the transformers. A cached original can pass JSON
-  tests even after a writer has persisted. Earlier tests therefore do not guarantee zero admission
-  for every request sent after a writer. One strategic request can invoke admission repeatedly.
-
-`kind_tests::patch_experiment` compares the production strategic document builder with a test-only
-JSON builder. The HTTP client disables automatic server-response retries. Dispatch counters are
-cross-checked against independent API-server `RequestReceived` audit events, identified by a fixed
-experimental user-agent. The webhook records AdmissionReview UIDs in a ledger and flushes one
-out-of-band log effect for each invocation. Tests cross-check that ledger against pod logs.
-
-GETs establish desired spec, annotation, UID, version, and generation changes separately. ReplicaSet
-counts and controller-observed generation and replicas provide bounded controller evidence. HTTP
-statuses are reported separately as `not-classified`, never promoted into rollout results. The
-existing gateway cases retain responsibility for recovery, classification, and receipt evidence.
-
-The overlap case holds both requests in admission after their log effects. Both futures remain
-pending while a GET proves the original version and spec remain unchanged. The test releases the
-first request, awaits its response, then releases the second. The unpersisted case allows admission
-but returns a webhook mutation setting `replicas: -1`. Built-in validation rejects the candidate.
-After the response and an unchanged-version/spec check, the fixture allows an exact replay. This
-exercises failure after mutating admission, not an injected etcd outage. Barriers establish
-ordering. Polling only retrieves facts. Limits are 20 seconds per barrier, 32 configured cases, 16
-invocations per case, and 240 seconds for the matrix.
-
-A complete run on arm64 macOS with Docker 29.4.0, kind 0.32.0, kubectl 1.33.9, and the pinned
-Kubernetes v1.33.12 node image measured these counts. Each admission produced one log effect. Counts
-are observations of this run, not universal admission cardinalities. A second complete run with
-stronger rollout-readiness and full-spec/annotation-preservation assertions measured one rather than
-two strategic admissions in the preflight-writer row. Other counts below matched. The server
-reported gitCommit `1f348c8e82cf0f170df4ac2b1e859ea0d398ff09`.
-
-| Scenario or checkpoint                              | PATCHes per strategy | Strategic admissions / logs | JSON admissions / logs | Experimental persisted updates / new ReplicaSets |
-| --------------------------------------------------- | -------------------- | --------------------------- | ---------------------- | ------------------------------------------------ |
-| Persisted response discarded, then exact replay     | 2                    | 2 / 2                       | 1 / 1                  | 1 / 1                                            |
-| Writer between preflight and PATCH                  | 1                    | 2 / 2                       | 0 / 0                  | 0 / 0                                            |
-| Same-name recreation before PATCH                   | 1                    | 1 / 1                       | 0 / 0                  | 0 / 0                                            |
-| Container reordering before PATCH                   | 1                    | 1 / 1                       | 0 / 0                  | 0 / 0                                            |
-| Both overlapping requests held in admission         | 2                    | 2 / 2                       | 2 / 2                  | 0 / not sampled at barrier                       |
-| Overlapping requests after ordered release          | 2                    | 3 / 3                       | 2 / 2                  | 1 / 1                                            |
-| Admitted but invalid first candidate, then replay   | 2                    | 2 / 2                       | 2 / 2                  | 1 / 1                                            |
-| Before-send fault and journal reopen, before replay | 0                    | 0 / 0                       | 0 / 0                  | 0 / not sampled before replay                    |
-| Counterfactual replay after the unsent fault        | 1                    | 1 / 1                       | 1 / 1                  | 1 / 1                                            |
-
-Audit confirmed 20 experimental PATCHes across 14 cases. Stale strategic requests returned `409`,
-while stale JSON requests returned `422`. Both invalid first candidates returned `422` without
-changing the original version. Exact replay then returned `200` with a second admission effect. Both
-overlapping JSON requests also reached admission before either persisted. These are live
-counterexamples to treating JSON tests as receiver-wide deduplication.
-
-Successful image changes advanced generation and ReplicaSet count from 1 to 2, with controller
-observed generation 2 and one available and updated replica. The annotation writer created no
-ReplicaSet. The reorder writer created its own ReplicaSet, not attributed to the rejected PATCH.
-Recreation changed UID. The matrix records before/after controller counts, not an exhaustive history
-of controller actions or workload correctness.
-
-Fault placement matters. The before-send case injects an error at `ApplyStartedCommitted`, closes
-and reopens the real journal, and proves attempted state with no caller result and zero applies.
-This is not SIGKILL or power loss. Its subsequent raw replay is counterfactual, not gateway
-recovery. The response-discard case receives a successful response in the harness before discarding
-it for comparison purposes. It is not TCP loss. Existing process and loopback transport tests remain
-separate evidence, not an executed JSON adapter integration.
-
-Recommendation: retain strategic merge and no-replay. JSON tests reduced stale admission exposure in
-these traces but did not eliminate pending or unpersisted ambiguity. Replacement adds original index
-binding, annotation-parent handling, and write-strategy compatibility work without removing recovery
-machinery. Earlier rejection may still justify future adoption on its own merits. This experiment
-adopts nothing and adds no production dependency. Arbitrary webhook behavior, proxies, other
-Kubernetes versions, actual storage failure, and power-loss durability remain unproved.
-
-The measured baseline is `59b4f04f513f1dfd4131f722b6c44b210d73b453`. The test-only changes and this
-report are preserved at `430e7f20aed71ef8daec81b681625a641d98ee18`. Obtain a checkout containing
-that revision and run:
-
-```sh
-cargo test --locked -p kapsel --lib \
-  kind_tests::patch_experiment::frozen_json_document -- --nocapture
-cargo xtask fmt
-cargo xtask ci
-TMPDIR=/tmp ./tests/qualification/run-kind-effect-gateway.sh
-```
-
-The launcher records the base revision and binary working-tree diff SHA-256. Untracked source is
-refused rather than omitted from evidence. The pinned node image is
-`kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4`. The
-audit policy and unauthenticated webhook control port are disposable test infrastructure only. The
-launcher creates a uniquely named cluster and removes only its owned cluster, image, and workspace.
-The local evidence commit is not a published release or proof of remote availability.
 
 ### Release artifact
 

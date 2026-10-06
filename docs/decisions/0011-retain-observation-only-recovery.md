@@ -92,6 +92,111 @@ side effects through `sideEffects: NoneOnDryRun`. The frozen operation annotatio
 receiver-enforced idempotency key, so Kapsel cannot assume every admission component deduplicates
 it.
 
+### Concluded receiver research
+
+Current source retires the PostgreSQL transaction-boundary probe and SQL fixture, independent
+kubectl corpus/report, unsigned Git receiver probe, and frozen JSON Patch builder/live comparison.
+Git history retains their implementations and reports. These experiments introduced no product
+capability or dependency. Current contracts and [Testing](../TESTING.md) own maintained guarantees
+and qualification; historical comparisons do not qualify current source.
+
+The PostgreSQL experiment established database-local atomic visibility, not atomicity with external
+effects. A function result before commit was visible within its transaction but was not durable
+admission. Rolling back SQL left a separately written external file intact. Its privilege,
+serialization and database-crash cases were unsigned research, not a product guarantee. The
+[PostgreSQL transaction tutorial](https://www.postgresql.org/docs/17/tutorial-transactions.html)
+explains database-local all-or-nothing visibility, not external-effect rollback. SQLite admission,
+completion and storage-failure checks remain at their existing owners.
+
+The kubectl experiment distinguished image-update acceptance from rollout completion. Fresh name- or
+revision-based status could describe an intervening writer or a recreated Deployment, not the
+original action. The continuing kubectl comparison and equivalence claim are withdrawn, not Kapsel's
+receiver guarantees. Current receiver and classifier tests retain original identity and intent
+without claiming causation.
+
+The unsigned Git probe explored exact leases, ancestry and receiver binding, ABA, present-ref
+uncertainty, and pre/post-receive acknowledgement loss. Maintained real-Git tests cover these
+boundaries, with service and artifact journeys owning process and custody composition. An explicit
+unsent-present-B case drops permission, lets another sender establish B, and still requires
+`UNKNOWN` with zero original update packets. An exact lease is neither ancestry proof nor replay
+permission; seeing B does not establish original causation.
+
+#### Frozen JSON Patch evidence
+
+The later comparison at `430e7f20aed71ef8daec81b681625a641d98ee18` used baseline
+`59b4f04f513f1dfd4131f722b6c44b210d73b453`. It did not adopt JSON Patch. Current source retires its
+experimental builder and two-arm matrix; Git history retains their code and report. Production
+strategic merge, observation-only recovery and required live receiver checks remain.
+
+The experimental JSON document tested the original UID, opaque resourceVersion and container name at
+the original index before replacing the image. It preserved unrelated annotations, escaped `/` as
+`~1`, and added the annotations parent when absent. No later read refreshed either strategy. HTTP
+response retries were disabled. Raw comparison requests bypassed dispatch permission only in the
+experiment; they were not a production recovery path.
+
+The pinned primary sources explain both earlier rejection and its limits:
+
+- [RFC 6902 sections 4.6 and 5](https://www.rfc-editor.org/rfc/rfc6902#section-4.6) define ordered
+  tests and patch failure.
+- The
+  [v1.33.12 PATCH handler](https://github.com/kubernetes/kubernetes/blob/v1.33.12/staging/src/k8s.io/apiserver/pkg/endpoints/handlers/patch.go#L388-L425)
+  returns `422` for failed JSON Patch application, before mutating admission in that transformer.
+- [Registry update](https://github.com/kubernetes/kubernetes/blob/v1.33.12/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L649-L733)
+  checks strategic metadata preconditions later.
+- [GuaranteedUpdate](https://github.com/kubernetes/kubernetes/blob/v1.33.12/staging/src/k8s.io/apiserver/pkg/storage/etcd3/store.go#L436-L520)
+  can start with a cached object and re-evaluate transformers. Cached original values can pass JSON
+  tests after another writer persists. One strategic request can invoke admission repeatedly.
+
+The live run used arm64 macOS, Docker 29.4.0, kind 0.32.0, kubectl 1.33.9 and Kubernetes v1.33.12
+(server commit `1f348c8e82cf0f170df4ac2b1e859ea0d398ff09`). The node image was
+`kindest/node:v1.33.12@sha256:3f5c8443c620245e4d355cfe09e96a91ead32ceaa569d3f1ca9edf0cb2fe2ff4`.
+Independent API-server audit counted 20 experimental PATCH requests across 14 cases. Each admission
+flushed one out-of-band log effect; a separate AdmissionReview UID ledger cross-checked pod logs.
+
+| Scenario or checkpoint                          | PATCHes per strategy | Strategic admissions / logs | JSON admissions / logs | Persisted updates / new ReplicaSets |
+| ----------------------------------------------- | -------------------- | --------------------------- | ---------------------- | ----------------------------------- |
+| Persisted response discarded, then exact replay | 2                    | 2 / 2                       | 1 / 1                  | 1 / 1                               |
+| Writer between preflight and PATCH              | 1                    | 2 / 2                       | 0 / 0                  | 0 / 0                               |
+| Same-name recreation before PATCH               | 1                    | 1 / 1                       | 0 / 0                  | 0 / 0                               |
+| Container reordering before PATCH               | 1                    | 1 / 1                       | 0 / 0                  | 0 / 0                               |
+| Both overlapping requests held in admission     | 2                    | 2 / 2                       | 2 / 2                  | 0 / not sampled at barrier          |
+| Overlap after ordered release                   | 2                    | 3 / 3                       | 2 / 2                  | 1 / 1                               |
+| Admitted-invalid first candidate, then replay   | 2                    | 2 / 2                       | 2 / 2                  | 1 / 1                               |
+| Before-send fault and reopen, before replay     | 0                    | 0 / 0                       | 0 / 0                  | 0 / not sampled before replay       |
+| Counterfactual replay after unsent fault        | 1                    | 1 / 1                       | 1 / 1                  | 1 / 1                               |
+
+These are observed counts, not universal cardinalities. A second complete run with stronger
+readiness and spec/annotation assertions measured one strategic admission in the preflight-writer
+row; the other counts matched. Stale strategic requests returned `409`, stale JSON requests `422`.
+
+The pending counterexample held both requests after their admission log effects. Both futures stayed
+pending while a GET showed the original version and spec unchanged. Ordered release produced one
+persisted update. Both JSON requests reached admission before either persisted.
+
+The unpersisted counterexample admitted the first candidate, then a webhook mutation set
+`replicas: -1`. Built-in validation returned `422`; a GET confirmed unchanged version and spec.
+Allowing an exact replay returned `200` with a second admission effect. This is failure after
+mutating admission, not an injected etcd outage. Barriers established ordering; polling retrieved
+facts. Bounds were 20 seconds per barrier, 32 configured cases, 16 invocations per case and 240
+seconds for the matrix.
+
+Successful changes advanced generation and ReplicaSet count from 1 to 2, with observed generation 2
+and one available/updated replica. The annotation writer created no ReplicaSet. The reorder writer
+created its own ReplicaSet, not attributable to the rejected PATCH. Recreation changed UID. These
+are bounded controller observations, not workload correctness or exhaustive controller history.
+
+The before-send fault returned at `ApplyStartedCommitted` and reopened the real journal with zero
+applies; it was not SIGKILL or power loss. Raw replay afterward was counterfactual. The
+response-discard case received success in the harness before discarding it; it was not TCP loss.
+Product process and transport-loss checks remain separate evidence.
+
+JSON tests reduced stale admission exposure in these traces but did not remove pending or
+unpersisted ambiguity. Index binding, annotation-parent handling and strategy compatibility would
+add work without removing recovery machinery. Earlier rejection could justify a future decision, but
+this experiment adds no product dependency. Other receivers, arbitrary webhooks/proxies, actual
+storage failure and power-loss durability remain unproved. Historical reproduction requires the
+experiment revision above, not the current live gate.
+
 ## Workflow baseline
 
 Temporal provides durable Workflow Event History, Activity timeouts, and retry scheduling. Its

@@ -24,7 +24,6 @@ disallowed-names = ["foo", "bar", "baz", "tmp", "temp", "test", "data"]
 
 # Documentation requirements
 doc-valid-idents = [
-  "PostgreSQL",
   "WebSocket",
   "OAuth",
   "OpenTelemetry",

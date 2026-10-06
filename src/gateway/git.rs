@@ -873,6 +873,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::gateway::OperationResult;
 
     fn approval() -> GitRefAuthorization {
         GitRefAuthorization {
@@ -1196,6 +1197,7 @@ while read -r line; do :; done
             "pre-receive",
             "post-receive",
             "unsent-aba",
+            "unsent-present-b",
             "onward",
         ] {
             let (fixture, mut receiver, approval, _) = receiver_fixture();
@@ -1207,27 +1209,29 @@ while read -r line; do :; done
             let worker = journal.try_lock_worker().unwrap().unwrap();
             journal.insert_git(&binding, &worker).unwrap();
             let mut expected_observed = approval.new_commit.clone();
-            if matches!(case, "unsent-aba" | "onward") {
+            if matches!(case, "unsent-aba" | "unsent-present-b" | "onward") {
                 let prepared = receiver.prepare(&approval).await.unwrap();
                 let permission = journal
                     .begin_git_attempt(&binding, prepared, &worker)
                     .unwrap();
-                if case == "unsent-aba" {
+                if matches!(case, "unsent-aba" | "unsent-present-b") {
                     drop(permission);
                     operator_push(&receiver, &approval.new_commit);
-                    git(
-                        &receiver.executable,
-                        &fixture.0,
-                        &[
-                            "--git-dir",
-                            receiver.receiver.to_str().unwrap(),
-                            "update-ref",
-                            APPROVED_GIT_REF,
-                            &approval.old_commit,
-                            &approval.new_commit,
-                        ],
-                    );
-                    expected_observed.clone_from(&approval.old_commit);
+                    if case == "unsent-aba" {
+                        git(
+                            &receiver.executable,
+                            &fixture.0,
+                            &[
+                                "--git-dir",
+                                receiver.receiver.to_str().unwrap(),
+                                "update-ref",
+                                APPROVED_GIT_REF,
+                                &approval.old_commit,
+                                &approval.new_commit,
+                            ],
+                        );
+                        expected_observed.clone_from(&approval.old_commit);
+                    }
                 } else {
                     let ack = receiver.send(permission).await;
                     journal
@@ -1288,13 +1292,22 @@ while read -r line; do :; done
                 Acknowledgement::Unknown
             };
             assert_eq!(statement.acknowledgement, expected_ack, "{case}");
+            assert_eq!(
+                statement.result(),
+                if expected_ack == Acknowledgement::Updated {
+                    OperationResult::Succeeded
+                } else {
+                    OperationResult::Unknown
+                },
+                "{case}"
+            );
             let counts = receiver_counts(&fixture, &approval);
             assert_eq!(
                 counts,
                 match case {
                     "healthy" | "post-receive" => (1, 1, 1),
                     "pre-receive" => (1, 1, 0),
-                    "unsent-aba" => (0, 1, 1),
+                    "unsent-aba" | "unsent-present-b" => (0, 1, 1),
                     "onward" => (1, 2, 2),
                     _ => unreachable!(),
                 },

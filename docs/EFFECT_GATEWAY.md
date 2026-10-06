@@ -136,7 +136,11 @@ invalid-object refusal is `NOT_ATTEMPTED`. A fresh per-ref fast-forward acknowle
 `SUCCEEDED` for that ref transition. Local pre-send rejection or receiver rejection means `FAILED`
 for the transition, not absence of hook side effects. Up-to-date, transport failure, missing
 acknowledgement and malformed output mean `UNKNOWN`. The present ref is a separate
-commit/missing/unknown observation. Seeing B cannot attribute an uncertain attempt.
+commit/missing/unknown observation. Seeing B cannot attribute an uncertain attempt: another sender
+can establish B after Kapsel drops an unsent permission. An exact lease only checks the expected
+current value; it does not establish ancestry or a safe replay policy. Separate preflight ancestry
+checks and observation-only recovery remain necessary. Pre/post-receive loss can leave the ref at A
+or B while both sender outcomes lack acknowledgement. Neither outcome proves hook completion.
 
 Git evidence is frozen before signing and committed with terminal state in the same SQLite journal.
 The statement and envelope prefixes are `KAPSEL-GIT-REF-STATEMENT-V1\0` and
@@ -625,14 +629,17 @@ For operations that reached `apply_started`, the receiver result is exactly one 
 | `UNKNOWN`   | Kapsel could not establish either defined observed outcome within its bounded reconciliation procedure.                                                                  | That the request failed, was not received, or was later harmless.               |
 
 `not_attempted` is a local pre-attempt disposition, not a receiver result. An accepted Kubernetes
-request is not a rollout result. A healthy rollout does not prove that no other change occurred. A
-conditional patch conflict is never forced or blindly retried and does not by itself establish a
-failed rollout. `ReplicaFailure=True` may be retained as an observed condition but does not by
-itself classify `FAILED`. A local observation timeout always classifies `UNKNOWN`. Deployment UIDs,
-resource versions, operation markers, and condition reasons retained from Kubernetes are ASCII and
-at most 128 bytes each. Generations and replica counts must be nonnegative. The requested and
-observed image remains subject to the 512-byte immutable-image grammar above. Target observation and
-the conditional strategic merge patch each have a ten-second request deadline. The root CLI/MCP
+request is not a rollout result. A fresh lookup by Deployment name or revision number is not an
+original-action handle: it can describe a replacement UID or an intervening writer's rollout.
+Original UID, image, operation marker and generation checks remain necessary, and they do not prove
+causation. A healthy rollout does not prove that no other change occurred. A conditional patch
+conflict is never forced or blindly retried and does not by itself establish a failed rollout.
+`ReplicaFailure=True` may be retained as an observed condition but does not by itself classify
+`FAILED`. A local observation timeout always classifies `UNKNOWN`. Deployment UIDs, resource
+versions, operation markers, and condition reasons retained from Kubernetes are ASCII and at most
+128 bytes each. Generations and replica counts must be nonnegative. The requested and observed image
+remains subject to the 512-byte immutable-image grammar above. Target observation and the
+conditional strategic merge patch each have a ten-second request deadline. The root CLI/MCP
 composition rejects any single Kubernetes HTTP response body above 2 MiB while it is streamed,
 before kube-client can collect or deserialize it; this applies with content-length, chunked, or
 close-delimited framing. An oversized target read is transient and cannot create a mutation marker.

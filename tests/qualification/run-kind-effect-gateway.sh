@@ -131,13 +131,6 @@ rules:
       - group: apps
         resources: ["deployments"]
     omitStages: ["ResponseStarted", "ResponseComplete"]
-  - level: Metadata
-    verbs: ["patch"]
-    namespaces: ["kapsel-patch-experiment"]
-    resources:
-      - group: apps
-        resources: ["deployments"]
-    omitStages: ["ResponseStarted", "ResponseComplete"]
   - level: None
 EOF
 cat >"$workspace/kind.yaml" <<EOF
@@ -251,9 +244,6 @@ spec:
     - name: admission
       port: 443
       targetPort: 8443
-    - name: control
-      port: 8080
-      targetPort: 8080
 EOF
 kubectl -n kapsel-recovery-policy-webhook rollout status \
   deployment/recovery-policy-webhook \
@@ -348,44 +338,14 @@ scenario_finished=$(monotonic_ns)
 printf '[kind timing] snapshot_approval_ms=%s\n' \
   "$(elapsed_ms "$scenario_started" "$scenario_finished")"
 
-phase 10 "comparing frozen strategic and JSON PATCH receiver boundaries"
-scenario_started=$(monotonic_ns)
-KAPSEL_KIND_TEST=1 cargo test --locked -p kapsel \
-  kind_tests::patch_experiment::kind_frozen_patch_receiver_matrix \
-  -- --ignored --exact --nocapture | tee "$workspace/patch-comparison.log"
-scenario_finished=$(monotonic_ns)
-printf '[kind timing] patch_comparison_ms=%s\n' \
-  "$(elapsed_ms "$scenario_started" "$scenario_finished")"
 phase 10 "measuring per-pass observation through the service application"
 KAPSEL_KIND_TEST=1 cargo test --locked -p kapsel \
   kind_tests::observation_experiment::kind_service_observation_policy \
   -- --ignored --exact --nocapture | tee "$workspace/observation.log"
 # Independent API-server receipt counts, not inferred from adapter calls.
-# The policy records only the named experiments' Deployment requests.
+# The policy records only the observation cases' Deployment requests.
 docker exec "${cluster_name}-control-plane" \
   cat /var/log/kubernetes/kapsel-audit.log >"$workspace/audit.jsonl"
-python3 - "$workspace/audit.jsonl" "$workspace/patch-comparison.log" <<'PY'
-import collections
-import json
-import re
-import sys
-
-received = collections.Counter()
-for line in open(sys.argv[1]):
-    event = json.loads(line)
-    if (event["stage"] == "RequestReceived"
-            and event.get("userAgent") == "kapsel-frozen-patch-experiment"):
-        received[event["objectRef"]["name"]] += 1
-        print("[patch comparison audit event] " + json.dumps(event, separators=(",", ":")))
-sent = {}
-for line in open(sys.argv[2]):
-    match = re.search(r"\[patch comparison\] (\S+) strategy=\S+ dispatch_calls=(\d+)", line)
-    if match:
-        sent[match[1]] = int(match[2])
-assert sent and dict(received) == sent, (received, sent)
-for name, count in sorted(received.items()):
-    print(f"[patch comparison audit] {name} received_patch_requests={count}")
-PY
 python3 - "$workspace/audit.jsonl" "$workspace/observation.log" <<'PY'
 import datetime
 import json

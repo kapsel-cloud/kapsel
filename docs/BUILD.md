@@ -170,7 +170,7 @@ The script creates and removes its own uniquely named cluster and exports failur
 the base revision and working-tree diff digest, and refuses untracked files that cannot be included
 in that evidence. This lane is separate from deterministic CI. See
 [Live Kubernetes and demonstration](TESTING.md#live-kubernetes-and-demonstration) for the gateway,
-admission, and frozen JSON Patch comparison cases.
+strategic-patch admission, exact-snapshot and service observation cases.
 
 ## Packaged-service live workflow
 
@@ -270,17 +270,6 @@ Requires Docker, kind 0.32+, kubectl 1.30+, and Python 3.11+:
 The source demo builds its Rust harness, refuses pre-existing kind clusters, and cleans up its owned
 cluster and workspace. To run the published artifact without a Rust toolchain, follow the
 [v0.2.0 evaluation guide](https://github.com/kapsel-cloud/kapsel/blob/v0.2.0/docs/EVALUATOR.md#fastest-path).
-
-## Independent client experiment
-
-With the pinned kubectl v1.33.9 build and Python 3.11+, run:
-
-```sh
-python3 tests/qualification/run_independent_kubectl.py
-```
-
-The [kubectl failure corpus](INDEPENDENT_TOOL_CORPUS.md) uses a loopback fixture, not a cluster or
-Kapsel runtime. It is separate from the default gate.
 
 ## Receiver-recovery regressions
 
@@ -793,7 +782,6 @@ pins as local development. Optional qualification tools keep their pins in their
 | `tools/checks/`         | Source checks and their regression tests                           |
 | `tools/release/`        | Assembly, standalone verification, SBOM scanning and their tests   |
 | `tests/qualification/`  | Environment-specific and long-running evidence lanes               |
-| `tests/probes/`         | Independent receiver experiments                                   |
 | `examples/`             | Maintained caller and crash demonstration, with their tests        |
 | `fuzz/`                 | Fuzz workspace and bounded smoke runner                            |
 
