@@ -314,12 +314,8 @@ fn call(id: Value, params: Option<Value>) -> Value {
     let socket = client_transport::SOCKET;
     let operation_id = request.get("operation_id").cloned().unwrap_or(Value::Null);
     let bytes = serde_json::to_vec(&request).unwrap_or_default();
-    let response = client_transport::exchange(socket, &bytes).and_then(|bytes| {
-        client_transport::validate_response_version(&bytes)?;
-        Ok(bytes)
-    });
-    let bytes = match response {
-        Ok(bytes) => bytes,
+    let bytes = match client_transport::exchange(socket, &bytes) {
+        Ok((bytes, _status)) => bytes,
         Err(error) => {
             let class = if matches!(error, client_transport::Error::Response) {
                 "response_invalid"

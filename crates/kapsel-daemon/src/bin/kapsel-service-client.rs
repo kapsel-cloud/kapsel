@@ -125,8 +125,7 @@ fn run(arguments: &[String]) -> Result<(), ClientError> {
     let socket = test_socket.as_deref().unwrap_or(SOCKET);
     #[cfg(not(feature = "test-harness"))]
     let socket = SOCKET;
-    let response = client_transport::exchange(socket, &request)?;
-    let status = client_transport::validate_response_version(&response)?;
+    let (response, status) = client_transport::exchange(socket, &request)?;
     match output {
         None => {
             std::io::stdout()
@@ -311,25 +310,6 @@ mod tests {
         assert!(request(&[]).is_err());
         assert!(request(&["receipt".into(), "op-1".into()]).is_err());
         assert!(request(&["unknown".into(), "op-1".into()]).is_err());
-    }
-
-    #[test]
-    fn response_requires_integer_version_one_and_an_object() {
-        assert!(client_transport::validate_response_version(
-            br#"{"version":1,"status":"INDETERMINATE"}"#
-        )
-        .is_ok());
-        for invalid in [
-            r#"{"status":"ADMITTED"}"#,
-            r#"{"version":2,"status":"ADMITTED"}"#,
-            r#"{"version":1.0,"status":"ADMITTED"}"#,
-            r#"{"version":"1","status":"ADMITTED"}"#,
-            r#"{"version":1,"version":1,"status":"ADMITTED"}"#,
-            r#"[1,"ADMITTED"]"#,
-            r#"{"version":1,"status":"ACCEPTED"}"#,
-        ] {
-            assert!(client_transport::validate_response_version(invalid.as_bytes()).is_err());
-        }
     }
 
     #[test]

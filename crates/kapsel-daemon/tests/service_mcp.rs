@@ -307,6 +307,35 @@ fn incomplete_admission_facts_are_not_relayed_as_decisions() {
 }
 
 #[test]
+fn invalid_service_envelopes_remain_response_errors() {
+    let mut lines = handshake();
+    let exchanges: Vec<_> = [
+        json!({"status":"ADMITTED","phase":"authorized"}),
+        json!({"version":2,"status":"ADMITTED","phase":"authorized"}),
+        json!({"version":1.0,"status":"ADMITTED","phase":"authorized"}),
+        json!({"version":1,"status":"ACCEPTED","phase":"authorized"}),
+    ]
+    .into_iter()
+    .zip(2..)
+    .map(|(response, id)| {
+        lines.push(tool(id, "kapsel.submit", json!({"operation_id":"op-1"})));
+        (
+            operation_request("submit_set_deployment_image", "op-1"),
+            response,
+        )
+    })
+    .collect();
+    let responses = run(&lines, &exchanges);
+    for response in &responses[1..] {
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("response_invalid"));
+        assert!(!text.contains("NOT_ADMITTED"));
+        assert!(!text.contains("service_exchange_uncertain"));
+        assert_eq!(response["result"]["isError"], true);
+    }
+}
+
+#[test]
 fn duplicate_nested_json_is_rejected_before_socket_access() {
     let mut input = Vec::new();
     for message in handshake() {
