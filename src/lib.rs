@@ -22,10 +22,9 @@ pub use application::{
     parse_service_operator_document, provision_exact_grant, provision_git_ref_grant,
     provision_snapshot_grant, validate_service_operator_inputs, AgentRequest, ApplicationError,
     ApprovedAction, ExecutionCondition, ExecutionDisposition, ExecutionObservation,
-    GrantProvisioning, HistoryEntry, HistoryPage, ServiceAdmission, ServiceApplication,
-    ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution, ServiceOperatorDocument,
-    ServiceStop, SetDeploymentImageReceipt, SetDeploymentImageStatus,
-    ValidatedServiceOperatorInputs,
+    GrantProvisioning, HistoryEntry, HistoryPage, OperationReceipt, OperationStatus,
+    ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError,
+    ServiceExecution, ServiceOperatorDocument, ServiceStop, ValidatedServiceOperatorInputs,
 };
 pub use gateway::{
     inspect_git_receipt, inspect_receipt, ApprovedTarget, AuthorizationTrust, ExactAuthorization,

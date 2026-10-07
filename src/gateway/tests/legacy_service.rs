@@ -1,9 +1,7 @@
 //! Retained legacy authority stays readable but never grants service execution permission.
 
 use super::*;
-use crate::{
-    ServiceApplication, ServiceConfiguration, ServiceExecution, SetDeploymentImageReceipt,
-};
+use crate::{OperationReceipt, ServiceApplication, ServiceConfiguration, ServiceExecution};
 
 #[tokio::test]
 #[allow(
@@ -38,11 +36,11 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
     let mut service = ServiceApplication::open(configuration()).unwrap();
     assert_eq!(
         service.receipt(&request.operation_id).unwrap(),
-        SetDeploymentImageReceipt::NotReady
+        OperationReceipt::NotReady
     );
     assert_eq!(
         service.status(&request.operation_id).unwrap().0,
-        crate::SetDeploymentImageStatus::InProgress
+        crate::OperationStatus::InProgress
     );
     let connection = Connection::open(&path).unwrap();
     let read_row = || {
@@ -100,7 +98,7 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
     .unwrap();
     assert_eq!(
         service.receipt(&request.operation_id).unwrap(),
-        SetDeploymentImageReceipt::Ready { bytes, sha256 }
+        OperationReceipt::Ready { bytes, sha256 }
     );
     let terminal = read_row();
     drop(service);

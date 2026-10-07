@@ -54,7 +54,7 @@ async fn mixed_catalog_admits_git_and_reconnects_by_original_identity_without_ma
     assert!(targets.observed_ref.is_none());
     assert_eq!(
         application.receipt("a").unwrap(),
-        SetDeploymentImageReceipt::NotReady
+        OperationReceipt::NotReady
     );
     drop(application);
 

@@ -1,7 +1,7 @@
 //! Caller-safe execution guidance. Process observations never become historical evidence.
 
 use super::ServiceError;
-use crate::SetDeploymentImageStatus;
+use crate::OperationStatus;
 
 /// Why a bounded execution pass stopped, not a receiver result or durable fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,17 +67,14 @@ pub enum ExecutionDisposition {
 }
 
 impl ExecutionDisposition {
-    pub(super) fn project(
-        status: SetDeploymentImageStatus,
-        observation: ExecutionObservation,
-    ) -> Self {
+    pub(super) fn project(status: OperationStatus, observation: ExecutionObservation) -> Self {
         match status {
-            SetDeploymentImageStatus::NotFound => Self::AdmissionUnconfirmed,
-            SetDeploymentImageStatus::NotAttempted(_)
-            | SetDeploymentImageStatus::Succeeded
-            | SetDeploymentImageStatus::Failed
-            | SetDeploymentImageStatus::Unknown => Self::Complete,
-            SetDeploymentImageStatus::InProgress => match observation {
+            OperationStatus::NotFound => Self::AdmissionUnconfirmed,
+            OperationStatus::NotAttempted(_)
+            | OperationStatus::Succeeded
+            | OperationStatus::Failed
+            | OperationStatus::Unknown => Self::Complete,
+            OperationStatus::InProgress => match observation {
                 ExecutionObservation::Unknown => Self::ResumeRequired(None),
                 ExecutionObservation::Active => Self::Active,
                 ExecutionObservation::OtherWorker => Self::WaitingForWorker,
@@ -169,10 +166,10 @@ mod tests {
         ];
         for observation in observations {
             for status in [
-                SetDeploymentImageStatus::Succeeded,
-                SetDeploymentImageStatus::Failed,
-                SetDeploymentImageStatus::Unknown,
-                SetDeploymentImageStatus::NotAttempted(TargetRejection::StaleApproval),
+                OperationStatus::Succeeded,
+                OperationStatus::Failed,
+                OperationStatus::Unknown,
+                OperationStatus::NotAttempted(TargetRejection::StaleApproval),
             ] {
                 assert_eq!(
                     ExecutionDisposition::project(status, observation),
@@ -180,7 +177,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                ExecutionDisposition::project(SetDeploymentImageStatus::NotFound, observation),
+                ExecutionDisposition::project(OperationStatus::NotFound, observation),
                 ExecutionDisposition::AdmissionUnconfirmed
             );
         }
@@ -188,7 +185,7 @@ mod tests {
 
     #[test]
     fn unfinished_history_explains_who_can_act_without_inventing_a_cause() {
-        let status = SetDeploymentImageStatus::InProgress;
+        let status = OperationStatus::InProgress;
         for (observation, disposition, action, owner) in [
             (
                 ExecutionObservation::Unknown,
@@ -297,10 +294,7 @@ mod tests {
         );
         let entry = super::super::HistoryEntry {
             operation_id: "unfinished".into(),
-            status: Ok((
-                SetDeploymentImageStatus::InProgress,
-                OperationTargets::default(),
-            )),
+            status: Ok((OperationStatus::InProgress, OperationTargets::default())),
         };
         assert_eq!(
             entry

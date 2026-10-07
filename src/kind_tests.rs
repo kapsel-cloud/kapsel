@@ -1188,9 +1188,9 @@ mod observation_experiment {
 
     use super::*;
     use crate::{
-        provision_exact_grant, AuthorizationTrust, GrantProvisioning, ServiceAdmission,
-        ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceExecution,
-        SetDeploymentImageReceipt, SetDeploymentImageStatus,
+        provision_exact_grant, AuthorizationTrust, GrantProvisioning, OperationReceipt,
+        OperationStatus, ServiceAdmission, ServiceApplication, ServiceApproval,
+        ServiceConfiguration, ServiceExecution,
     };
 
     const NAMESPACE: &str = "kapsel-observation-experiment";
@@ -1275,10 +1275,7 @@ mod observation_experiment {
             drop(worker);
             interrupted_unix_ms = Some(unix_ms());
             worker = ServiceApplication::open(configuration(&directory, &target)).unwrap();
-            assert_eq!(
-                worker.status("a").unwrap().0,
-                SetDeploymentImageStatus::InProgress
-            );
+            assert_eq!(worker.status("a").unwrap().0, OperationStatus::InProgress);
         }
         let worker_started = Instant::now();
         let mut pass = Box::pin(worker.select("a", execution(client), |admission| {
@@ -1293,12 +1290,9 @@ mod observation_experiment {
         let read_started = Instant::now();
         assert_eq!(
             connected.status("a").unwrap().0,
-            SetDeploymentImageStatus::InProgress
+            OperationStatus::InProgress
         );
-        assert_eq!(
-            connected.receipt("a").unwrap(),
-            SetDeploymentImageReceipt::NotReady
-        );
+        assert_eq!(connected.receipt("a").unwrap(), OperationReceipt::NotReady);
         let stored_read_ms = read_started.elapsed().as_millis();
         connected
             .select("b", execution(client), |admission| {
@@ -1311,13 +1305,13 @@ mod observation_experiment {
         let worker_ms = worker_started.elapsed().as_millis();
         let finished_unix_ms = unix_ms();
         let expected = if ready_seconds == 60 {
-            SetDeploymentImageStatus::Succeeded
+            OperationStatus::Succeeded
         } else {
-            SetDeploymentImageStatus::Unknown
+            OperationStatus::Unknown
         };
         assert_eq!(connected.status("a").unwrap().0, expected);
         let frozen = connected.receipt("a").unwrap();
-        assert!(matches!(frozen, SetDeploymentImageReceipt::Ready { .. }));
+        assert!(matches!(frozen, OperationReceipt::Ready { .. }));
         connected
             .select("a", execution(client), |_| {})
             .await
@@ -1339,10 +1333,7 @@ mod observation_experiment {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             assert!(started.elapsed() > Duration::from_secs(180));
-            assert_eq!(
-                connected.status("a").unwrap().0,
-                SetDeploymentImageStatus::Unknown
-            );
+            assert_eq!(connected.status("a").unwrap().0, OperationStatus::Unknown);
             assert_eq!(connected.receipt("a").unwrap(), frozen);
         }
         println!(

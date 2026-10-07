@@ -11,8 +11,8 @@ use std::{
 };
 
 use kapsel::{
-    ServiceAdmission, ServiceApplication, ServiceError, ServiceExecution,
-    SetDeploymentImageReceipt, SetDeploymentImageStatus, TargetRejection,
+    OperationReceipt, OperationStatus, ServiceAdmission, ServiceApplication, ServiceError,
+    ServiceExecution, TargetRejection,
 };
 use tokio::net::UnixListener;
 
@@ -197,9 +197,9 @@ struct HarnessReads {
     status_reads: AtomicU8,
 }
 impl HarnessReads {
-    fn status(&self, id: &str) -> Result<SetDeploymentImageStatus, ServiceError> {
+    fn status(&self, id: &str) -> Result<OperationStatus, ServiceError> {
         if id != "process-op" {
-            return Ok(SetDeploymentImageStatus::NotFound);
+            return Ok(OperationStatus::NotFound);
         }
         let first_read = self.status_reads.fetch_add(1, Ordering::AcqRel) == 0;
         if !first_read {
@@ -208,9 +208,9 @@ impl HarnessReads {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match (first_read, self.status.load(Ordering::Acquire)) {
-                (true, 1) => return Ok(SetDeploymentImageStatus::InProgress),
+                (true, 1) => return Ok(OperationStatus::InProgress),
                 (false, 2) => {
-                    return Ok(SetDeploymentImageStatus::NotAttempted(
+                    return Ok(OperationStatus::NotAttempted(
                         TargetRejection::DeploymentNotFound,
                     ))
                 },
@@ -233,7 +233,7 @@ impl ApplicationReads for HarnessReads {
                 ResponseClass::Ordinary,
             ),
             ReadRequest::Receipt(_) => (
-                protocol::render_receipt(Ok(SetDeploymentImageReceipt::NotFound)),
+                protocol::render_receipt(Ok(OperationReceipt::NotFound)),
                 ResponseClass::Receipt,
             ),
             _ => (protocol::invalid_request(), ResponseClass::Ordinary),

@@ -16,9 +16,8 @@ use std::{
 
 use kapsel::{
     provision_exact_grant, ApprovedTarget, AuthorizationTrust, ExactAuthorization,
-    GrantProvisioning, OperationState, ServiceAdmission, ServiceApplication, ServiceApproval,
-    ServiceConfiguration, ServiceError, ServiceExecution, SetDeploymentImageReceipt,
-    SetDeploymentImageStatus,
+    GrantProvisioning, OperationReceipt, OperationState, OperationStatus, ServiceAdmission,
+    ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
 };
 
 fn root(name: &str) -> PathBuf {
@@ -302,10 +301,7 @@ async fn assert_admission_commit_and_exclusion(git: bool) {
             // Independent connection sees the complete committed identity before acknowledgement.
             let reader = projection;
             assert_eq!(reader.admitted_state("a").unwrap(), Some(phase));
-            assert_eq!(
-                reader.status("a").unwrap().0,
-                SetDeploymentImageStatus::InProgress
-            );
+            assert_eq!(reader.status("a").unwrap().0, OperationStatus::InProgress);
             let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
             let grant: Vec<u8> = connection
                 .query_row(
@@ -352,7 +348,7 @@ async fn assert_admission_commit_and_exclusion(git: bool) {
         .unwrap();
     assert_eq!(
         application.status("b").unwrap().0,
-        SetDeploymentImageStatus::InProgress
+        OperationStatus::InProgress
     );
     drop(application);
     fs::remove_dir_all(root).unwrap();
@@ -369,7 +365,7 @@ async fn catalog_removal_and_missing_trust_do_not_hide_healthy_history() {
     );
     assert_eq!(
         application.status("a").unwrap().0,
-        SetDeploymentImageStatus::NotFound
+        OperationStatus::NotFound
     );
     assert!(matches!(
         application.select("absent", offline(), |_| {}).await,
@@ -402,11 +398,11 @@ async fn catalog_removal_and_missing_trust_do_not_hide_healthy_history() {
     );
     assert_eq!(
         application.status("b").unwrap().0,
-        SetDeploymentImageStatus::InProgress
+        OperationStatus::InProgress
     );
     assert_eq!(
         application.receipt("b").unwrap(),
-        SetDeploymentImageReceipt::NotReady
+        OperationReceipt::NotReady
     );
     application
         .select("b", offline(), |decision| {
@@ -463,7 +459,7 @@ async fn history_is_bounded_ordered_and_keeps_inaccessible_ids_visible() {
     );
     assert_eq!(
         first.entries[1].status.as_ref().unwrap().0,
-        SetDeploymentImageStatus::InProgress
+        OperationStatus::InProgress
     );
     assert_eq!(first.next_cursor.as_deref(), Some("operation-07"));
     let second = application.history(first.next_cursor.as_deref()).unwrap();
@@ -522,7 +518,7 @@ async fn assert_contention_admission(git: bool) {
         .unwrap();
     assert_eq!(
         application.status("b").unwrap().0,
-        SetDeploymentImageStatus::NotFound
+        OperationStatus::NotFound
     );
     lock.unlock().unwrap();
     drop(application);

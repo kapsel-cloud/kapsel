@@ -785,9 +785,9 @@ mod admission_tests {
                 return (invalid_request(), ResponseClass::Ordinary);
             };
             let status = if self.committed.load(Ordering::SeqCst) {
-                kapsel::SetDeploymentImageStatus::InProgress
+                kapsel::OperationStatus::InProgress
             } else {
-                kapsel::SetDeploymentImageStatus::NotFound
+                kapsel::OperationStatus::NotFound
             };
             let entry = kapsel::HistoryEntry {
                 operation_id: id.clone(),

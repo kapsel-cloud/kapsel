@@ -13,7 +13,7 @@ pub use disposition::{
 };
 pub use document::{parse_service_operator_document, ServiceOperatorDocument};
 
-use super::{AgentRequest, SetDeploymentImageReceipt, SetDeploymentImageStatus};
+use super::{AgentRequest, OperationReceipt, OperationStatus};
 use crate::{
     gateway::{AuthorizationTrust, Gateway, GatewayError, OperationState},
     OperationTargets,
@@ -86,7 +86,7 @@ pub struct HistoryEntry {
     /// Retained identity. Its presence is not authentication or action authority.
     pub operation_id: String,
     /// Authenticated stored status and targets, or no action facts when access fails.
-    pub status: Result<(SetDeploymentImageStatus, OperationTargets), ServiceError>,
+    pub status: Result<(OperationStatus, OperationTargets), ServiceError>,
 }
 
 impl HistoryEntry {
@@ -98,14 +98,7 @@ impl HistoryEntry {
     pub fn execution_status(
         self,
         observation: ExecutionObservation,
-    ) -> Result<
-        (
-            SetDeploymentImageStatus,
-            OperationTargets,
-            ExecutionDisposition,
-        ),
-        ServiceError,
-    > {
+    ) -> Result<(OperationStatus, OperationTargets, ExecutionDisposition), ServiceError> {
         self.status.map(|(status, targets)| {
             (
                 status,
@@ -534,7 +527,7 @@ impl ServiceApplication {
     pub fn status(
         &self,
         operation_id: &str,
-    ) -> Result<(SetDeploymentImageStatus, OperationTargets), ServiceError> {
+    ) -> Result<(OperationStatus, OperationTargets), ServiceError> {
         if let Some(retained) = self
             .gateway
             .retained_git(operation_id)
@@ -555,10 +548,7 @@ impl ServiceApplication {
             .retained_operation(operation_id)
             .map_err(map_gateway_error)?
         else {
-            return Ok((
-                SetDeploymentImageStatus::NotFound,
-                OperationTargets::default(),
-            ));
+            return Ok((OperationStatus::NotFound, OperationTargets::default()));
         };
         let status = super::status_of(
             retained.operation.state(),
@@ -581,14 +571,7 @@ impl ServiceApplication {
         &self,
         operation_id: &str,
         observation: ExecutionObservation,
-    ) -> Result<
-        (
-            SetDeploymentImageStatus,
-            OperationTargets,
-            ExecutionDisposition,
-        ),
-        ServiceError,
-    > {
+    ) -> Result<(OperationStatus, OperationTargets, ExecutionDisposition), ServiceError> {
         let (status, targets) = self.status(operation_id)?;
         Ok((
             status,
@@ -603,7 +586,7 @@ impl ServiceApplication {
     ///
     /// Missing original grant trust or malformed retained evidence fails closed
     /// with a bounded error.
-    pub fn receipt(&self, operation_id: &str) -> Result<SetDeploymentImageReceipt, ServiceError> {
+    pub fn receipt(&self, operation_id: &str) -> Result<OperationReceipt, ServiceError> {
         if let Some(retained) = self
             .gateway
             .retained_git(operation_id)
@@ -611,8 +594,8 @@ impl ServiceApplication {
         {
             return Ok(retained
                 .receipt
-                .map_or(SetDeploymentImageReceipt::NotReady, |(bytes, sha256)| {
-                    SetDeploymentImageReceipt::Ready { bytes, sha256 }
+                .map_or(OperationReceipt::NotReady, |(bytes, sha256)| {
+                    OperationReceipt::Ready { bytes, sha256 }
                 }));
         }
         let Some(retained) = self
@@ -620,14 +603,14 @@ impl ServiceApplication {
             .retained_operation(operation_id)
             .map_err(map_gateway_error)?
         else {
-            return Ok(SetDeploymentImageReceipt::NotFound);
+            return Ok(OperationReceipt::NotFound);
         };
         if retained.operation.state() != OperationState::Finalized {
-            return Ok(SetDeploymentImageReceipt::NotReady);
+            return Ok(OperationReceipt::NotReady);
         }
         let (bytes, sha256) =
             Gateway::read_loaded_receipt(retained.operation).map_err(map_gateway_error)?;
-        Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 })
+        Ok(OperationReceipt::Ready { bytes, sha256 })
     }
 }
 

@@ -23,8 +23,8 @@ use std::{
 use ed25519_dalek::SigningKey;
 use kapsel::{
     provision_exact_grant, AgentRequest, ApprovedTarget, AuthorizationTrust, ExactAuthorization,
-    GrantProvisioning, OperationState, ServiceApplication, ServiceApproval, ServiceConfiguration,
-    ServiceExecution, SetDeploymentImageReceipt, SetDeploymentImageStatus,
+    GrantProvisioning, OperationReceipt, OperationState, OperationStatus, ServiceApplication,
+    ServiceApproval, ServiceConfiguration, ServiceExecution,
 };
 use serde_json::{json, Value};
 
@@ -306,7 +306,7 @@ async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_rec
         .unwrap();
     assert_eq!(
         application.status("retry-op").unwrap().0,
-        SetDeploymentImageStatus::Succeeded
+        OperationStatus::Succeeded
     );
     let original = application.receipt("retry-op").unwrap();
     let report = application.status("retry-op").unwrap();
@@ -378,7 +378,7 @@ async fn cancelled_application_dispatch_recovers_without_resending_to_available_
         .unwrap();
     assert_eq!(
         application.status("retry-op").unwrap().0,
-        SetDeploymentImageStatus::Succeeded
+        OperationStatus::Succeeded
     );
     let original = application.receipt("retry-op").unwrap();
     let report = application.status("retry-op").unwrap();
@@ -430,10 +430,10 @@ async fn ambiguous_patch_responses_never_trigger_hidden_client_retries() {
             Some(OperationState::Finalized)
         );
         let report = application.status("retry-op").unwrap();
-        assert_eq!(report.0, SetDeploymentImageStatus::Succeeded);
+        assert_eq!(report.0, OperationStatus::Succeeded);
         assert_eq!(report.1.attempt_target, report.1.approved_target);
         let original = application.receipt("retry-op").unwrap();
-        assert!(matches!(original, SetDeploymentImageReceipt::Ready { .. }));
+        assert!(matches!(original, OperationReceipt::Ready { .. }));
         application
             .select("retry-op", fixture.execution().await, |_| {})
             .await

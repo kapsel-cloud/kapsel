@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use kapsel::{
-    AuthorizationTrust, ServiceAdmission, ServiceApplication, ServiceApproval,
-    ServiceConfiguration, ServiceExecution, SetDeploymentImageStatus, TargetRejection,
+    AuthorizationTrust, OperationStatus, ServiceAdmission, ServiceApplication, ServiceApproval,
+    ServiceConfiguration, ServiceExecution, TargetRejection,
 };
 
 use super::*;
@@ -96,12 +96,9 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
         for _ in 0..3 {
             assert_eq!(
                 connected.status("a").unwrap().0,
-                SetDeploymentImageStatus::InProgress
+                OperationStatus::InProgress
             );
-            assert_eq!(
-                connected.receipt("a").unwrap(),
-                SetDeploymentImageReceipt::NotReady
-            );
+            assert_eq!(connected.receipt("a").unwrap(), OperationReceipt::NotReady);
         }
         connected
             .select(
@@ -123,9 +120,9 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             assert!(start.elapsed() > Duration::from_secs(180));
         }
         let expected = if settle_after == 60 {
-            SetDeploymentImageStatus::Succeeded
+            OperationStatus::Succeeded
         } else {
-            SetDeploymentImageStatus::Unknown
+            OperationStatus::Unknown
         };
         assert_eq!(connected.status("a").unwrap().0, expected);
         let frozen = connected.receipt("a").unwrap();
@@ -197,7 +194,7 @@ async fn interrupt_service_observation(
     );
     assert_eq!(
         read_first.status("a").unwrap().0,
-        SetDeploymentImageStatus::InProgress
+        OperationStatus::InProgress
     );
     let before = evidence.lock().unwrap().len();
     tokio::time::sleep(Duration::from_secs(20)).await;
@@ -292,9 +289,9 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
         assert_eq!(
             status.0,
             if unknown {
-                SetDeploymentImageStatus::Unknown
+                OperationStatus::Unknown
             } else {
-                SetDeploymentImageStatus::InProgress
+                OperationStatus::InProgress
             }
         );
         let before = evidence.lock().unwrap().clone();
@@ -307,7 +304,7 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
         application.select("b", execution(), |_| {}).await.unwrap();
         assert_eq!(
             application.status("b").unwrap().0,
-            SetDeploymentImageStatus::Succeeded
+            OperationStatus::Succeeded
         );
         assert_eq!(retained_row(&root, "a"), original);
         assert_eq!(application.receipt("a").unwrap(), receipt);
@@ -321,7 +318,7 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
         } else {
             assert_eq!(
                 application.status("a").unwrap().0,
-                SetDeploymentImageStatus::Succeeded
+                OperationStatus::Succeeded
             );
         }
         assert_eq!(application.receipt("b").unwrap(), b_receipt);
@@ -602,7 +599,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     .await
     .unwrap();
     assert_eq!(b.admitted_state("b").unwrap(), None);
-    assert_eq!(b.status("b").unwrap().0, SetDeploymentImageStatus::NotFound);
+    assert_eq!(b.status("b").unwrap().0, OperationStatus::NotFound);
     assert_eq!(b.history(None).unwrap().entries.len(), 1);
     assert_eq!(receiver.requests(), before_busy);
     receiver.fixture.resume.send(()).unwrap();
@@ -621,11 +618,8 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
         a.admitted_state("a").unwrap(),
         Some(OperationState::ReceiverObserved)
     );
-    assert_eq!(
-        a.status("a").unwrap().0,
-        SetDeploymentImageStatus::InProgress
-    );
-    assert_eq!(a.receipt("a").unwrap(), SetDeploymentImageReceipt::NotReady);
+    assert_eq!(a.status("a").unwrap().0, OperationStatus::InProgress);
+    assert_eq!(a.receipt("a").unwrap(), OperationReceipt::NotReady);
     let frozen_a = retained_row(root, "a");
     assert!(frozen_a.contains(&rusqlite::types::Value::Blob(original_grant)));
     let before_b = receiver.requests();
@@ -651,7 +645,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     if same_target {
         assert_eq!(
             b_status.0,
-            SetDeploymentImageStatus::NotAttempted(TargetRejection::StaleApproval)
+            OperationStatus::NotAttempted(TargetRejection::StaleApproval)
         );
         assert_eq!(
             b.admitted_state("b").unwrap(),
@@ -668,16 +662,16 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
                 .as_deref(),
             Some("2")
         );
-        assert_eq!(b.receipt("b").unwrap(), SetDeploymentImageReceipt::NotReady);
+        assert_eq!(b.receipt("b").unwrap(), OperationReceipt::NotReady);
     } else {
-        assert_eq!(b_status.0, SetDeploymentImageStatus::Succeeded);
+        assert_eq!(b_status.0, OperationStatus::Succeeded);
         assert_eq!(
             b.admitted_state("b").unwrap(),
             Some(OperationState::Finalized)
         );
         assert!(matches!(
             b.receipt("b").unwrap(),
-            SetDeploymentImageReceipt::Ready { .. }
+            OperationReceipt::Ready { .. }
         ));
     }
     assert_eq!(retained_row(root, "a"), frozen_a);
@@ -710,10 +704,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     })
     .await
     .unwrap();
-    assert_eq!(
-        a.status("a").unwrap().0,
-        SetDeploymentImageStatus::Succeeded
-    );
+    assert_eq!(a.status("a").unwrap().0, OperationStatus::Succeeded);
     assert_eq!(
         a.execution_status("a", kapsel::ServiceStop::observation(Ok(stopped)))
             .unwrap()
@@ -721,10 +712,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
         kapsel::ExecutionDisposition::Complete
     );
     let original_receipt = a.receipt("a").unwrap();
-    assert!(matches!(
-        original_receipt,
-        SetDeploymentImageReceipt::Ready { .. }
-    ));
+    assert!(matches!(original_receipt, OperationReceipt::Ready { .. }));
     let b_receipt = a.receipt("b").unwrap();
     assert_eq!(receiver.requests(), after_b);
     drop(a);

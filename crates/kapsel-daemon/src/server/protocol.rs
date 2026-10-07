@@ -1,9 +1,6 @@
 //! Pure fixed service grammar, validation projection, response bytes and frame limits.
 
-use kapsel::{
-    ServiceAdmission, ServiceError, SetDeploymentImageReceipt, SetDeploymentImageStatus,
-    TargetRejection,
-};
+use kapsel::{OperationReceipt, OperationStatus, ServiceAdmission, ServiceError, TargetRejection};
 use kapsel_authority::identity_is_valid;
 use serde::Deserialize;
 
@@ -160,18 +157,14 @@ const fn phase_name(phase: kapsel::OperationState) -> &'static str {
     }
 }
 
-fn render_status(result: Result<SetDeploymentImageStatus, ServiceError>) -> Vec<u8> {
+fn render_status(result: Result<OperationStatus, ServiceError>) -> Vec<u8> {
     match result {
-        Ok(SetDeploymentImageStatus::NotFound) => br#"{"version":1,"status":"NOT_FOUND"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::InProgress) => {
-            br#"{"version":1,"status":"IN_PROGRESS"}"#.to_vec()
-        },
-        Ok(SetDeploymentImageStatus::Succeeded) => {
-            br#"{"version":1,"status":"SUCCEEDED"}"#.to_vec()
-        },
-        Ok(SetDeploymentImageStatus::Failed) => br#"{"version":1,"status":"FAILED"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::Unknown) => br#"{"version":1,"status":"UNKNOWN"}"#.to_vec(),
-        Ok(SetDeploymentImageStatus::NotAttempted(rejection)) => format!(
+        Ok(OperationStatus::NotFound) => br#"{"version":1,"status":"NOT_FOUND"}"#.to_vec(),
+        Ok(OperationStatus::InProgress) => br#"{"version":1,"status":"IN_PROGRESS"}"#.to_vec(),
+        Ok(OperationStatus::Succeeded) => br#"{"version":1,"status":"SUCCEEDED"}"#.to_vec(),
+        Ok(OperationStatus::Failed) => br#"{"version":1,"status":"FAILED"}"#.to_vec(),
+        Ok(OperationStatus::Unknown) => br#"{"version":1,"status":"UNKNOWN"}"#.to_vec(),
+        Ok(OperationStatus::NotAttempted(rejection)) => format!(
             "{{\"version\":1,\"status\":\"NOT_ATTEMPTED\",\"target_rejection\":\"{}\"}}",
             target_rejection(rejection)
         )
@@ -181,14 +174,14 @@ fn render_status(result: Result<SetDeploymentImageStatus, ServiceError>) -> Vec<
 }
 
 pub(super) fn render_status_with_targets(
-    result: Result<(SetDeploymentImageStatus, kapsel::OperationTargets), ServiceError>,
+    result: Result<(OperationStatus, kapsel::OperationTargets), ServiceError>,
 ) -> Vec<u8> {
     let (status, targets) = match result {
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
     let mut output = render_status(Ok(status));
-    if status == SetDeploymentImageStatus::NotFound {
+    if status == OperationStatus::NotFound {
         return output;
     }
     let exact = |target: Option<kapsel::ApprovedTarget>| {
@@ -219,7 +212,7 @@ pub(super) fn render_status_with_targets(
 pub(super) fn render_execution_status(
     result: Result<
         (
-            SetDeploymentImageStatus,
+            OperationStatus,
             kapsel::OperationTargets,
             kapsel::ExecutionDisposition,
         ),
@@ -246,15 +239,11 @@ pub(super) fn render_execution_status(
     output
 }
 
-pub(super) fn render_receipt(result: Result<SetDeploymentImageReceipt, ServiceError>) -> Vec<u8> {
+pub(super) fn render_receipt(result: Result<OperationReceipt, ServiceError>) -> Vec<u8> {
     match result {
-        Ok(SetDeploymentImageReceipt::NotFound) => {
-            br#"{"version":1,"status":"NOT_FOUND"}"#.to_vec()
-        },
-        Ok(SetDeploymentImageReceipt::NotReady) => {
-            br#"{"version":1,"status":"NOT_READY"}"#.to_vec()
-        },
-        Ok(SetDeploymentImageReceipt::Ready { bytes, sha256 }) => {
+        Ok(OperationReceipt::NotFound) => br#"{"version":1,"status":"NOT_FOUND"}"#.to_vec(),
+        Ok(OperationReceipt::NotReady) => br#"{"version":1,"status":"NOT_READY"}"#.to_vec(),
+        Ok(OperationReceipt::Ready { bytes, sha256 }) => {
             // The fixed wrapper includes the 64-byte digest, but not the doubled receipt bytes.
             const WRAPPER_BYTES: usize =
                 br#"{"version":1,"status":"READY","receipt_hex":"","receipt_sha256":""}"#.len()
@@ -486,34 +475,25 @@ mod tests {
     #[test]
     fn every_status_and_receipt_projection_uses_only_the_fixed_vocabulary() {
         for (status, expected) in [
+            (OperationStatus::NotFound, r#"{"status":"NOT_FOUND"}"#),
+            (OperationStatus::InProgress, r#"{"status":"IN_PROGRESS"}"#),
+            (OperationStatus::Succeeded, r#"{"status":"SUCCEEDED"}"#),
+            (OperationStatus::Failed, r#"{"status":"FAILED"}"#),
+            (OperationStatus::Unknown, r#"{"status":"UNKNOWN"}"#),
             (
-                SetDeploymentImageStatus::NotFound,
-                r#"{"status":"NOT_FOUND"}"#,
-            ),
-            (
-                SetDeploymentImageStatus::InProgress,
-                r#"{"status":"IN_PROGRESS"}"#,
-            ),
-            (
-                SetDeploymentImageStatus::Succeeded,
-                r#"{"status":"SUCCEEDED"}"#,
-            ),
-            (SetDeploymentImageStatus::Failed, r#"{"status":"FAILED"}"#),
-            (SetDeploymentImageStatus::Unknown, r#"{"status":"UNKNOWN"}"#),
-            (
-                SetDeploymentImageStatus::NotAttempted(TargetRejection::DeploymentNotFound),
+                OperationStatus::NotAttempted(TargetRejection::DeploymentNotFound),
                 r#"{"status":"NOT_ATTEMPTED","target_rejection":"DEPLOYMENT_NOT_FOUND"}"#,
             ),
             (
-                SetDeploymentImageStatus::NotAttempted(TargetRejection::ContainerNotFound),
+                OperationStatus::NotAttempted(TargetRejection::ContainerNotFound),
                 r#"{"status":"NOT_ATTEMPTED","target_rejection":"CONTAINER_NOT_FOUND"}"#,
             ),
             (
-                SetDeploymentImageStatus::NotAttempted(TargetRejection::InvalidTarget),
+                OperationStatus::NotAttempted(TargetRejection::InvalidTarget),
                 r#"{"status":"NOT_ATTEMPTED","target_rejection":"INVALID_TARGET"}"#,
             ),
             (
-                SetDeploymentImageStatus::NotAttempted(TargetRejection::StaleApproval),
+                OperationStatus::NotAttempted(TargetRejection::StaleApproval),
                 r#"{"status":"NOT_ATTEMPTED","target_rejection":"STALE_APPROVAL"}"#,
             ),
         ] {
@@ -523,14 +503,14 @@ mod tests {
             );
         }
         assert_eq!(
-            render_receipt(Ok(SetDeploymentImageReceipt::NotFound)),
+            render_receipt(Ok(OperationReceipt::NotFound)),
             br#"{"version":1,"status":"NOT_FOUND"}"#
         );
         assert_eq!(
-            render_receipt(Ok(SetDeploymentImageReceipt::NotReady)),
+            render_receipt(Ok(OperationReceipt::NotReady)),
             br#"{"version":1,"status":"NOT_READY"}"#
         );
-        let ready = render_receipt(Ok(SetDeploymentImageReceipt::Ready {
+        let ready = render_receipt(Ok(OperationReceipt::Ready {
             bytes: vec![0x00, 0xab, 0xff],
             sha256: concat!(
                 "0123456789abcdef0123456789abcdef",
@@ -639,12 +619,12 @@ mod tests {
             entries: vec![
                 kapsel::HistoryEntry {
                     operation_id: "git-op".into(),
-                    status: Ok((SetDeploymentImageStatus::Unknown, targets.clone())),
+                    status: Ok((OperationStatus::Unknown, targets.clone())),
                 },
                 kapsel::HistoryEntry {
                     operation_id: "k8s-op".into(),
                     status: Ok((
-                        SetDeploymentImageStatus::InProgress,
+                        OperationStatus::InProgress,
                         kapsel::OperationTargets::default(),
                     )),
                 },
@@ -665,7 +645,7 @@ mod tests {
             "kubernetes.set_deployment_image"
         );
         assert!(page["entries"][1].get("git").is_none());
-        let absent = render_status_with_targets(Ok((SetDeploymentImageStatus::NotFound, targets)));
+        let absent = render_status_with_targets(Ok((OperationStatus::NotFound, targets)));
         assert_eq!(absent, br#"{"version":1,"status":"NOT_FOUND"}"#);
     }
 
@@ -682,7 +662,7 @@ mod tests {
             Disposition::OperatorRequired(Condition::CompletionBlocked),
         ] {
             let bytes = render_execution_status(Ok((
-                SetDeploymentImageStatus::InProgress,
+                OperationStatus::InProgress,
                 kapsel::OperationTargets::default(),
                 disposition,
             )));
@@ -722,7 +702,7 @@ mod tests {
                 kapsel::HistoryEntry {
                     operation_id: "readable".into(),
                     status: Ok((
-                        SetDeploymentImageStatus::InProgress,
+                        OperationStatus::InProgress,
                         kapsel::OperationTargets {
                             approved_target: Some(kapsel::ApprovedTarget {
                                 uid: "original-uid".into(),
@@ -783,12 +763,12 @@ mod tests {
 
     #[test]
     fn receipt_limit_is_checked_before_hex_expansion() {
-        let empty = render_receipt(Ok(SetDeploymentImageReceipt::Ready {
+        let empty = render_receipt(Ok(OperationReceipt::Ready {
             bytes: vec![],
             sha256: "0".repeat(64),
         }));
         let maximum = (RECEIPT_RESPONSE_BYTES_MAX - empty.len()) / 2;
-        let at_limit = render_receipt(Ok(SetDeploymentImageReceipt::Ready {
+        let at_limit = render_receipt(Ok(OperationReceipt::Ready {
             bytes: vec![0xab; maximum],
             sha256: "0".repeat(64),
         }));
@@ -797,7 +777,7 @@ mod tests {
             ResponseClass::Receipt
         ));
         assert_eq!(at_limit.len(), empty.len() + maximum * 2);
-        let over_limit = render_receipt(Ok(SetDeploymentImageReceipt::Ready {
+        let over_limit = render_receipt(Ok(OperationReceipt::Ready {
             bytes: vec![0xab; maximum + 1],
             sha256: "0".repeat(64),
         }));

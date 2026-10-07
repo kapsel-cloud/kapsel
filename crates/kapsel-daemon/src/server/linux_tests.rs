@@ -18,9 +18,8 @@ use std::{
 use ed25519_dalek::SigningKey;
 use kapsel::{
     provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
-    ServiceApplication as Application, ServiceApproval, ServiceConfiguration,
-    ServiceError as ApplicationError, ServiceExecution, SetDeploymentImageReceipt,
-    SetDeploymentImageStatus, TargetRejection,
+    OperationReceipt, OperationStatus, ServiceApplication as Application, ServiceApproval,
+    ServiceConfiguration, ServiceError as ApplicationError, ServiceExecution, TargetRejection,
 };
 use tokio::{net::UnixStream, runtime::Builder};
 use tower_test::mock;
@@ -28,8 +27,8 @@ use tower_test::mock;
 use super::{super::protocol::REQUEST_BYTES_MAX, *};
 
 trait FixtureReads: Send {
-    fn status(&self, id: &str) -> Result<SetDeploymentImageStatus, ApplicationError>;
-    fn receipt(&self, id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError>;
+    fn status(&self, id: &str) -> Result<OperationStatus, ApplicationError>;
+    fn receipt(&self, id: &str) -> Result<OperationReceipt, ApplicationError>;
 }
 
 impl<T: FixtureReads> ApplicationReads for T {
@@ -86,39 +85,39 @@ struct TestReads {
 }
 
 impl FixtureReads for TestReads {
-    fn status(&self, operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
+    fn status(&self, operation_id: &str) -> Result<OperationStatus, ApplicationError> {
         self.status_calls.fetch_add(1, Ordering::Relaxed);
         match operation_id {
-            "in-progress" => Ok(SetDeploymentImageStatus::InProgress),
-            "deployment-rejection" => Ok(SetDeploymentImageStatus::NotAttempted(
+            "in-progress" => Ok(OperationStatus::InProgress),
+            "deployment-rejection" => Ok(OperationStatus::NotAttempted(
                 TargetRejection::DeploymentNotFound,
             )),
-            "container-rejection" => Ok(SetDeploymentImageStatus::NotAttempted(
+            "container-rejection" => Ok(OperationStatus::NotAttempted(
                 TargetRejection::ContainerNotFound,
             )),
-            "invalid-rejection" => Ok(SetDeploymentImageStatus::NotAttempted(
+            "invalid-rejection" => Ok(OperationStatus::NotAttempted(
                 TargetRejection::InvalidTarget,
             )),
-            "succeeded" => Ok(SetDeploymentImageStatus::Succeeded),
-            "failed" => Ok(SetDeploymentImageStatus::Failed),
-            "unknown" => Ok(SetDeploymentImageStatus::Unknown),
+            "succeeded" => Ok(OperationStatus::Succeeded),
+            "failed" => Ok(OperationStatus::Failed),
+            "unknown" => Ok(OperationStatus::Unknown),
             "operation-error" => Err(ApplicationError::OperationFailure),
-            _ => Ok(SetDeploymentImageStatus::NotFound),
+            _ => Ok(OperationStatus::NotFound),
         }
     }
 
-    fn receipt(&self, operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
+    fn receipt(&self, operation_id: &str) -> Result<OperationReceipt, ApplicationError> {
         self.receipt_calls.fetch_add(1, Ordering::Relaxed);
         match operation_id {
-            "not-ready" => Ok(SetDeploymentImageReceipt::NotReady),
-            "ready" => Ok(SetDeploymentImageReceipt::Ready {
+            "not-ready" => Ok(OperationReceipt::NotReady),
+            "ready" => Ok(OperationReceipt::Ready {
                 bytes: vec![0x00, 0xab, 0xff],
                 sha256: String::from(
                     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 ),
             }),
             "operation-error" => Err(ApplicationError::OperationFailure),
-            _ => Ok(SetDeploymentImageReceipt::NotFound),
+            _ => Ok(OperationReceipt::NotFound),
         }
     }
 }
@@ -129,12 +128,12 @@ struct ReadyReads {
 }
 
 impl FixtureReads for ReadyReads {
-    fn status(&self, _operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
-        Ok(SetDeploymentImageStatus::NotFound)
+    fn status(&self, _operation_id: &str) -> Result<OperationStatus, ApplicationError> {
+        Ok(OperationStatus::NotFound)
     }
 
-    fn receipt(&self, _operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
-        Ok(SetDeploymentImageReceipt::Ready {
+    fn receipt(&self, _operation_id: &str) -> Result<OperationReceipt, ApplicationError> {
+        Ok(OperationReceipt::Ready {
             bytes: self.bytes.clone(),
             sha256: self.sha256.clone(),
         })
@@ -153,7 +152,7 @@ struct BlockingReads {
 }
 
 impl FixtureReads for BlockingReads {
-    fn status(&self, _operation_id: &str) -> Result<SetDeploymentImageStatus, ApplicationError> {
+    fn status(&self, _operation_id: &str) -> Result<OperationStatus, ApplicationError> {
         self.status_calls.fetch_add(1, Ordering::Relaxed);
         let (lock, condition) = &*self.gate;
         let mut state = lock.lock().unwrap();
@@ -163,11 +162,11 @@ impl FixtureReads for BlockingReads {
             state = condition.wait(state).unwrap();
         }
         drop(state);
-        Ok(SetDeploymentImageStatus::NotFound)
+        Ok(OperationStatus::NotFound)
     }
 
-    fn receipt(&self, _operation_id: &str) -> Result<SetDeploymentImageReceipt, ApplicationError> {
-        Ok(SetDeploymentImageReceipt::NotFound)
+    fn receipt(&self, _operation_id: &str) -> Result<OperationReceipt, ApplicationError> {
+        Ok(OperationReceipt::NotFound)
     }
 }
 

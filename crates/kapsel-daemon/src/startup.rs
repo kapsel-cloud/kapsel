@@ -604,7 +604,7 @@ pub(crate) mod tests {
             .status("service-op")
             .unwrap()
             .0
-            .eq(&kapsel::SetDeploymentImageStatus::NotFound));
+            .eq(&kapsel::OperationStatus::NotFound));
         drop(application);
         fs::remove_dir_all(root).unwrap();
     }
@@ -688,11 +688,11 @@ pub(crate) mod tests {
 
             assert_eq!(
                 application.status(&request().operation_id).unwrap().0,
-                kapsel::SetDeploymentImageStatus::Succeeded
+                kapsel::OperationStatus::Succeeded
             );
             assert!(matches!(
                 application.receipt(&request().operation_id).unwrap(),
-                kapsel::SetDeploymentImageReceipt::Ready { .. }
+                kapsel::OperationReceipt::Ready { .. }
             ));
             assert_eq!(fs::read_dir(&retained).unwrap().count(), 0);
             if replacement {
@@ -876,7 +876,7 @@ pub(crate) mod tests {
                 let listener = inputs.bind_listener().unwrap();
                 assert_eq!(
                     reads.status("service-op").unwrap().0,
-                    kapsel::SetDeploymentImageStatus::NotFound
+                    kapsel::OperationStatus::NotFound
                 );
                 let mut execution = inputs.open_execution().unwrap();
                 let mut admitted = false;
@@ -891,11 +891,11 @@ pub(crate) mod tests {
                 drop(listener);
                 assert_eq!(
                     reads.status("service-op").unwrap().0,
-                    kapsel::SetDeploymentImageStatus::InProgress
+                    kapsel::OperationStatus::InProgress
                 );
                 assert!(matches!(
                     reads.receipt("service-op").unwrap(),
-                    kapsel::SetDeploymentImageReceipt::NotReady
+                    kapsel::OperationReceipt::NotReady
                 ));
             });
             drop(inputs);

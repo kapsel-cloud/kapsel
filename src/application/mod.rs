@@ -227,7 +227,7 @@ fn configure_explicit_kubeconfig(
 
 /// Read-only exact receipt projection for either service effect.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SetDeploymentImageReceipt {
+pub enum OperationReceipt {
     /// No durable operation exists for the supplied identity.
     NotFound,
     /// The operation exists but has no finalized receipt.
@@ -246,7 +246,7 @@ pub enum SetDeploymentImageReceipt {
 /// Each effect defines its own success and failure predicates. `Unknown` is terminal evidence that
 /// neither predicate was established, not permission to retry the mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SetDeploymentImageStatus {
+pub enum OperationStatus {
     /// No durable operation exists for the supplied identity.
     NotFound,
     /// The operation has not reached a terminal disposition.
@@ -265,19 +265,19 @@ fn status_of(
     state: OperationState,
     target_rejection: Option<TargetRejection>,
     result: Option<OperationResult>,
-) -> Result<SetDeploymentImageStatus, ServiceError> {
+) -> Result<OperationStatus, ServiceError> {
     match state {
         OperationState::Requested
         | OperationState::Authorized
         | OperationState::ApplyStarted
-        | OperationState::ReceiverObserved => Ok(SetDeploymentImageStatus::InProgress),
+        | OperationState::ReceiverObserved => Ok(OperationStatus::InProgress),
         OperationState::NotAttempted => target_rejection
-            .map(SetDeploymentImageStatus::NotAttempted)
+            .map(OperationStatus::NotAttempted)
             .ok_or(ServiceError::OperationFailure),
         OperationState::Finalized => match result {
-            Some(OperationResult::Succeeded) => Ok(SetDeploymentImageStatus::Succeeded),
-            Some(OperationResult::Failed) => Ok(SetDeploymentImageStatus::Failed),
-            Some(OperationResult::Unknown) => Ok(SetDeploymentImageStatus::Unknown),
+            Some(OperationResult::Succeeded) => Ok(OperationStatus::Succeeded),
+            Some(OperationResult::Failed) => Ok(OperationStatus::Failed),
+            Some(OperationResult::Unknown) => Ok(OperationStatus::Unknown),
             None => Err(ServiceError::OperationFailure),
         },
     }

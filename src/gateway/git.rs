@@ -1342,8 +1342,8 @@ while read -r line; do :; done
     )]
     async fn real_git_service_reconnects_and_signs_frozen_evidence_without_receiver() {
         use crate::{
-            ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceExecution,
-            SetDeploymentImageReceipt, SetDeploymentImageStatus,
+            OperationReceipt, OperationStatus, ServiceApplication, ServiceApproval,
+            ServiceConfiguration, ServiceExecution,
         };
         for case in ["healthy", "post-receive"] {
             let (fixture, receiver, approval, _) = receiver_fixture();
@@ -1396,7 +1396,7 @@ while read -r line; do :; done
             );
             assert_eq!(
                 service.status(&approval.operation_id).unwrap().0,
-                SetDeploymentImageStatus::InProgress
+                OperationStatus::InProgress
             );
             assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
             drop(service);
@@ -1420,14 +1420,14 @@ while read -r line; do :; done
                 crate::ServiceStop::Finished
             );
             let expected = if case == "healthy" {
-                SetDeploymentImageStatus::Succeeded
+                OperationStatus::Succeeded
             } else {
-                SetDeploymentImageStatus::Unknown
+                OperationStatus::Unknown
             };
             assert_eq!(service.status(&approval.operation_id).unwrap().0, expected);
             assert!(matches!(
                 service.receipt(&approval.operation_id).unwrap(),
-                SetDeploymentImageReceipt::Ready { .. }
+                OperationReceipt::Ready { .. }
             ));
             assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
         }

@@ -43,7 +43,7 @@ async fn preflight_failure_requires_explicit_selection_and_never_patches() {
         );
         assert_eq!(
             application.receipt("a").unwrap(),
-            SetDeploymentImageReceipt::NotReady
+            OperationReceipt::NotReady
         );
     }
     assert_eq!(
@@ -90,11 +90,11 @@ async fn unavailable_material_is_admitted_readable_and_not_a_historical_crash_ca
     for _ in 0..3 {
         assert_eq!(
             application.execution_status("a", observation).unwrap().0,
-            SetDeploymentImageStatus::InProgress
+            OperationStatus::InProgress
         );
         assert_eq!(
             application.receipt("a").unwrap(),
-            SetDeploymentImageReceipt::NotReady
+            OperationReceipt::NotReady
         );
         assert_eq!(application.history(None).unwrap().entries.len(), 1);
     }
