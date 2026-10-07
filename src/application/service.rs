@@ -190,6 +190,13 @@ pub struct ServiceApplication {
 }
 
 impl ServiceApplication {
+    #[cfg(test)]
+    pub(crate) fn exploration_write_failure(&self, fail: bool) -> Result<(), ServiceError> {
+        self.gateway
+            .exploration_write_failure(fail)
+            .map_err(map_gateway_error)
+    }
+
     /// Validates operator approval and external trust before opening the journal.
     ///
     /// Reads need no Kubernetes client, receipt seed, export directory or current catalog entry.

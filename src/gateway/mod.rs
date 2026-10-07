@@ -20,6 +20,11 @@ pub(crate) use authorization::{
     sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
 pub use authorization::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
+#[cfg(test)]
+pub(crate) use git::exploration::{
+    approval as exploration_git_approval, Barrier as ExplorationGitBarrier,
+    Script as ExplorationGitScript,
+};
 pub use git::{
     Acknowledgement as GitAcknowledgement, GitReceiverConfiguration, ObservedRef as GitObservedRef,
 };
@@ -536,7 +541,7 @@ impl Gateway {
     }
 
     #[cfg(test)]
-    fn submit_exact_with_fault_for_test(
+    pub(crate) fn submit_exact_with_fault_for_test(
         &self,
         request: &SetDeploymentImageRequest,
         authorization: &ExactAuthorization,
@@ -554,6 +559,14 @@ impl Gateway {
     #[cfg(test)]
     pub(crate) fn get(&self, operation_id: &str) -> Result<Option<OperationState>, GatewayError> {
         self.journal.state(operation_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exploration_write_failure(&self, fail: bool) -> Result<(), GatewayError> {
+        self.journal
+            .connection
+            .pragma_update(None, "query_only", fail)
+            .map_err(GatewayError::Database)
     }
 
     #[cfg(test)]

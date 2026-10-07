@@ -1,6 +1,8 @@
 //! Authenticates socket callers and keeps physical work owned after a response stops waiting.
 
 mod jobs;
+#[cfg(test)]
+mod lifecycle_exploration_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod retirement_tests;
 

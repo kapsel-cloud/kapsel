@@ -464,6 +464,22 @@ not merely a zero process exit.
 
 ### Background sweep and retained evidence
 
+For the bounded lifecycle explorer, use the same existing private state and scratch roots:
+
+```sh
+python3 tools/dev/run_robustness.py exploration \
+  --seed 21182435931731969 --cases 1000 --shards 2 --timeout 1800
+```
+
+This mode shares the simulation lane's custody lock and unresolved-finding stop rule. It builds once
+in owned scratch, runs explicit Kubernetes/Git/application traces with 48 generated steps per
+identity, and retains every full trace before execution. It checks each shard's completion count,
+trace identities, and content hashes, then directly deserializes and replays every retained document
+through the owning Rust implementation. Missing documents, failed replay, or missing replay markers
+do not pass. The 1,800-second overall limit includes compilation and replay; completion need not
+take 30 minutes. Infrastructure must enforce the two-CPU/4-GiB ceilings described below. The
+unchanged clean-committed-source requirement also applies to this mode.
+
 [The soak runner](../../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random
 seeds, 1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout
 including compilation. Repeat `--seed` to select an exact sweep. Each shard consumes the same
@@ -490,6 +506,8 @@ The printed `state/run-*/` directory contains:
 - `commands.json` and `command-*.log`: exact argument vectors, lane environment, process exit
   statuses, and output (at most 8 MiB per command);
 - `simulation.json`: seed list, shard and case counts, and executable digest; or
+- `exploration.json`, `traces-SEED-SHARD/`, and `traces-SEED-SHARD.json`: workload and executable
+  identity, full/minimized event documents, and full-trace content hashes; or
 - `fuzz.json`, `corpus-before/`, `corpus-after.json`, and `artifacts/`: fuzz replay evidence.
 
 The runner stops rather than silently truncating and passing. It refuses new runs near its 1 GiB

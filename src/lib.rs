@@ -14,6 +14,8 @@ mod gateway;
 #[cfg(test)]
 mod kind_tests;
 #[cfg(test)]
+mod lifecycle_exploration_tests;
+#[cfg(test)]
 mod recovery_policy_tests;
 #[cfg(test)]
 mod simulation_tests;

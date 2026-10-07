@@ -30,6 +30,9 @@ use super::{
     GatewayError, ReceiptSettings,
 };
 
+#[cfg(test)]
+pub(super) mod exploration;
+
 const VERSION: &[u8] = b"git version 2.55.0\n";
 const OUTPUT_MAX: usize = 16 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -149,6 +152,8 @@ pub(super) struct GitReceiver {
     repository_id: String,
     #[cfg(test)]
     packet_trace: Option<PathBuf>,
+    #[cfg(test)]
+    script: Option<std::sync::Arc<std::sync::Mutex<exploration::State>>>,
 }
 
 /// Binds a preflight-checked approval to this receiver without granting dispatch permission.
@@ -160,6 +165,12 @@ pub(super) struct PreparedTransition<'receiver> {
 impl PreparedTransition<'_> {
     pub(super) fn authorization(&self) -> &GitRefAuthorization {
         &self.authorization
+    }
+
+    #[cfg(test)]
+    pub(in crate::gateway) fn exploration_attempt_acknowledgement_lost(&self) -> bool {
+        self.receiver
+            .exploration_fault(super::FaultPoint::AttemptCommitAcknowledgementLost)
     }
 }
 
@@ -226,6 +237,8 @@ impl GitReceiver {
             repository_id,
             #[cfg(test)]
             packet_trace: None,
+            #[cfg(test)]
+            script: None,
         };
         result.require_custody()?;
         Ok(result)
@@ -253,6 +266,10 @@ impl GitReceiver {
     ) -> Result<PreparedTransition<'_>, GitError> {
         if !authorization.is_valid() || authorization.repository_id != self.repository_id {
             return Err(GitError::InvalidApproval);
+        }
+        #[cfg(test)]
+        if let Some(script) = &self.script {
+            return self.scripted_prepare(script, authorization).await;
         }
         self.require_custody()?;
         if self.run(None, &["--version".into()]).await?.stdout != VERSION {
@@ -390,6 +407,10 @@ impl GitReceiver {
             return Acknowledgement::Unknown;
         }
         let authorization = prepared.authorization;
+        #[cfg(test)]
+        if let Some(script) = &self.script {
+            return self.scripted_send(script, &authorization).await;
+        }
         if self.require_custody().is_err()
             || self.require_configuration(&self.sender).await.is_err()
             || self.require_configuration(&self.receiver).await.is_err()
@@ -420,6 +441,10 @@ impl GitReceiver {
     }
 
     pub(super) async fn observe(&self) -> ObservedRef {
+        #[cfg(test)]
+        if let Some(script) = &self.script {
+            return self.scripted_observe(script).await;
+        }
         if self.require_custody().is_err()
             || !self
                 .run(None, &["--version".into()])
@@ -647,16 +672,26 @@ pub(super) async fn advance(
     {
         return Err(GatewayError::GitReceiverUnavailable);
     }
+    #[cfg(test)]
+    let fresh = phase == GitPhase::Authorized;
     if phase == GitPhase::Authorized {
         let receiver = receiver.ok_or(GatewayError::GitReceiverUnavailable)?;
         match receiver.prepare(binding.authorization()).await {
             Ok(prepared) => {
+                #[cfg(test)]
+                exploration_checkpoint(Some(receiver), super::FaultPoint::TargetObserved)?;
                 let permission = journal.begin_git_attempt(binding, prepared, worker)?;
+                #[cfg(test)]
+                exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyStartedCommitted)?;
                 let acknowledgement = receiver.send(permission).await;
+                #[cfg(test)]
+                exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyReturned)?;
                 #[cfg(feature = "demo-harness")]
                 super::demo_control::checkpoint_after_apply()
                     .map_err(|()| GatewayError::GitReceiverUnavailable)?;
                 journal.record_git_acknowledgement(binding, acknowledgement, worker)?;
+                #[cfg(test)]
+                exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyOutcomeCommitted)?;
             },
             Err(GitError::StaleRef) => {
                 journal.reject_git(binding, GitRejection::StaleRef, worker)?;
@@ -678,7 +713,13 @@ pub(super) async fn advance(
     if matches!(phase, GitPhase::Attempted(_)) {
         let receiver = receiver.ok_or(GatewayError::GitReceiverUnavailable)?;
         let observed = receiver.observe().await;
+        #[cfg(test)]
+        if fresh {
+            exploration_checkpoint(Some(receiver), super::FaultPoint::ReceiverRead)?;
+        }
         journal.freeze_git_observation(binding, &observed, worker)?;
+        #[cfg(test)]
+        exploration_checkpoint(Some(receiver), super::FaultPoint::ReceiverObservedCommitted)?;
         phase = journal
             .git_operation(binding)?
             .ok_or(GatewayError::InvalidTransition)?;
@@ -693,7 +734,14 @@ pub(super) async fn advance(
             #[cfg(feature = "demo-harness")]
             super::demo_control::checkpoint_before_receipt_commit()
                 .map_err(|()| GatewayError::InvalidTransition)?;
+            #[cfg(test)]
+            exploration_checkpoint(receiver, super::FaultPoint::BeforeReceiptCommit)?;
             journal.commit_git_receipt(binding, &bytes, worker)?;
+            #[cfg(test)]
+            exploration_checkpoint(
+                receiver,
+                super::FaultPoint::ReceiptCommitAcknowledgementLost,
+            )?;
             #[cfg(feature = "demo-harness")]
             super::demo_control::checkpoint_after_receipt_commit()
                 .map_err(|()| GatewayError::InvalidTransition)?;
@@ -703,6 +751,18 @@ pub(super) async fn advance(
         }
     }
     Ok(phase)
+}
+
+#[cfg(test)]
+fn exploration_checkpoint(
+    receiver: Option<&GitReceiver>,
+    point: super::FaultPoint,
+) -> Result<(), GatewayError> {
+    if receiver.is_some_and(|receiver| receiver.exploration_fault(point)) {
+        Err(GatewayError::InjectedFault)
+    } else {
+        Ok(())
+    }
 }
 
 async fn run_bounded(mut command: Command, deadline: Duration) -> Result<CommandOutput, GitError> {

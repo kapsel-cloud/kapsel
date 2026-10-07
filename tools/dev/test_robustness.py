@@ -321,6 +321,118 @@ class RobustnessTests(unittest.TestCase):
             with self.assertRaises(runner.Incomplete):
                 runner.simulation(self.supervisor, [1], 2, 1)
 
+    def test_exploration_retains_full_traces_and_requires_each_shard_marker(self):
+        executable = self.scratch / "test-binary"
+        executable.write_bytes(b"exploration fixture")
+        digest = runner.hashlib.sha256(executable.read_bytes()).hexdigest()
+        message = {
+            "reason": "compiler-artifact",
+            "executable": str(executable),
+            "target": {"name": "kapsel"},
+            "profile": {"test": True},
+        }
+
+        def commands(selected, environments=None, finding=False):
+            if environments is None:
+                return [json.dumps(message)]
+            outputs = []
+            for index, environment in enumerate(environments):
+                if "KAPSEL_LIFECYCLE_REPLAY_DIRECTORY" in environment:
+                    traces = Path(environment["KAPSEL_LIFECYCLE_REPLAY_DIRECTORY"])
+                    count = len(list(traces.iterdir()))
+                    outputs.append(
+                        f"KAPSEL_LIFECYCLE_REPLAYED cases={count}\n"
+                        "test result: ok. 1 passed; 0 failed; 0 ignored;"
+                    )
+                    continue
+                self.assertEqual(selected[index][1], runner.EXPLORATION_TEST)
+                traces = Path(environment["KAPSEL_LIFECYCLE_EVIDENCE"])
+                count = 0
+                for case in range(index, 3, 2):
+                    runner.atomic_json(
+                        traces / f"case-{case}.json",
+                        {
+                            "seed": 7 + case,
+                            "executable_sha256": digest,
+                            "source_sha256": "a" * 64,
+                            "version": 1,
+                            "initial_state": "fresh_trusted_healthy",
+                            "identities": ["a", "b"],
+                            "effects": ["kubernetes", "git"],
+                            "require_progress": False,
+                            "events": [{"actor": "caller_submit", "id": 0, "competing": False}],
+                        },
+                    )
+                    count += 1
+                outputs.append(
+                    f"KAPSEL_LIFECYCLE_COMPLETED seed=7 shard={index}/2 cases={count} steps=48\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored;"
+                )
+            self.assertTrue(finding)
+            return outputs
+
+        with patch.object(self.supervisor, "run", side_effect=commands):
+            runner.simulation(self.supervisor, [7], 3, 2, explore=True)
+        self.assertEqual(len(json.loads((self.evidence / "traces-7-0.json").read_text())), 2)
+        self.assertEqual(len(json.loads((self.evidence / "traces-7-1.json").read_text())), 1)
+        self.assertTrue((self.evidence / "exploration.json").is_file())
+
+    def test_exploration_marker_without_trace_cannot_pass(self):
+        executable = self.scratch / "test-binary"
+        executable.write_bytes(b"exploration fixture")
+        message = {
+            "reason": "compiler-artifact",
+            "executable": str(executable),
+            "target": {"name": "kapsel"},
+            "profile": {"test": True},
+        }
+        output = (
+            "KAPSEL_LIFECYCLE_COMPLETED seed=7 shard=0/1 cases=2 steps=48\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored;"
+        )
+        with patch.object(self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]):
+            with self.assertRaisesRegex(runner.Incomplete, "missing or unexpected"):
+                runner.simulation(self.supervisor, [7], 2, 1, explore=True)
+
+    def test_exploration_requires_the_owning_rust_replay_marker(self):
+        executable = self.scratch / "test-binary"
+        executable.write_bytes(b"exploration fixture")
+        message = {
+            "reason": "compiler-artifact",
+            "executable": str(executable),
+            "target": {"name": "kapsel"},
+            "profile": {"test": True},
+        }
+        output = (
+            "KAPSEL_LIFECYCLE_COMPLETED seed=7 shard=0/1 cases=2 steps=48\n"
+            "test result: ok. 1 passed; 0 failed; 0 ignored;"
+        )
+        with (
+            patch.object(runner, "retained_exploration"),
+            patch.object(
+                self.supervisor, "run", side_effect=[[json.dumps(message)], [output], ["empty"]]
+            ),
+        ):
+            with self.assertRaisesRegex(runner.Incomplete, "retained-trace replay"):
+                runner.simulation(self.supervisor, [7], 2, 1, explore=True)
+
+    def test_exploration_trace_identity_is_checked(self):
+        traces = self.evidence / "traces-7-0"
+        traces.mkdir(mode=0o700)
+        path = traces / "case-0.json"
+        for wrong in ({"seed": 8}, {"executable_sha256": "b" * 64}, {"source_sha256": "bad"}):
+            runner.atomic_json(
+                path,
+                {
+                    "seed": 7,
+                    "executable_sha256": "a" * 64,
+                    "source_sha256": "a" * 64,
+                    **wrong,
+                },
+            )
+            with self.assertRaisesRegex(runner.Incomplete, "identity mismatch"):
+                runner.retained_exploration(traces, 7, 1, 1, 0, "a" * 64)
+
     def fuzz_binary(self):
         executable = self.scratch / "fuzz-build/fixture-host/debug/inspect_receipt"
         executable.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

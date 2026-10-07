@@ -228,6 +228,10 @@ impl Journal {
                 .map_err(GatewayError::Database)?,
         )?;
         transaction.commit().map_err(GatewayError::Database)?;
+        #[cfg(test)]
+        if prepared.exploration_attempt_acknowledgement_lost() {
+            return Err(GatewayError::InjectedFault);
+        }
         // No permission is ever reconstructed from the stored apply_started phase.
         Ok(GitDispatchPermission { prepared })
     }
