@@ -104,17 +104,17 @@ execution, then writes and replays its minimized finding. Trace records include 
 identities, source-content digest, and executable digest. The source digest describes the checkout
 at invocation; it is not a build attestation.
 
-This is not yet a replacement for `src/simulation_tests.rs`. Coverage retirement requires the full
-seeded-defect matrix, supervised exploration, and an explicit mapping of the old obligations. Keep
-the existing HTTP, SQLite, Git, Linux process, live-receiver, ENOSPC, and artifact checks.
+This replaces the prescribed fixed-failure simulation after seeded-defect detection, minimized
+replay, and supervised exploration evidence passed. The mapping below preserves the old obligations.
+Keep the existing HTTP, SQLite, Git, Linux process, live-receiver, ENOSPC, and artifact checks.
 
 ### Old simulation obligations
 
-Retirement must preserve these obligations, not merely replace the old test name:
+The replacement preserves these obligations, not merely the old test name:
 
 | Old obligation                                                                                                     | Replacement or retained owner                                                                                                                                                  |
 | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Repeated transient target deferral leaves authority unchanged and sends nothing                                    | `ReceiverChange::Unavailable` / `WorkerAdvance`, followed by restored-receiver progress; bounded observation/read-budget adapter tests remain                                  |
+| Repeated transient target deferral leaves authority unchanged and sends nothing                                    | `Receiver::Unavailable` / `WorkerAdvance`, followed by restored-receiver progress; bounded observation/read-budget adapter tests remain                                        |
 | Seven fresh attempt/response/observation interruption points recover without resend                                | Explicit `Stop` events, independently counted receivers, and preflight/mutation/observation cancellation schedules                                                             |
 | Dropped permission and lost attempt acknowledgement send nothing                                                   | Unsent and acknowledgement-loss traces; journal dispatch regressions remain. The old adapter's preloaded failed observation is not evidence of a sent mutation                 |
 | Frozen observation survives repeated reopen without receiver I/O                                                   | Frozen-result oracle checks every identity after every event; real process/recovery tests remain                                                                               |

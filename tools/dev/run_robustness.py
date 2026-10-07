@@ -65,7 +65,6 @@ class ResultRecord(TypedDict):
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEST = "simulation_tests::seeded_lifecycle_crash_simulation_preserves_invariants"
 EXPLORATION_TEST = "lifecycle_exploration_tests::lifecycle_trace_exploration_or_replay"
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
@@ -293,9 +292,7 @@ class Supervisor:
                 self.counter += 1
                 name = f"command-{self.counter:03}"
                 selected_environment = dict(environments[index]) if environments else {}
-                selected_environment.update(
-                    TMPDIR=str(self.scratch), KAPSEL_SIMULATION_SCRATCH_ROOT=str(self.scratch)
-                )
+                selected_environment.update(TMPDIR=str(self.scratch))
                 record: CommandRecord = {
                     "command": command,
                     "cwd": str(ROOT),
@@ -447,9 +444,7 @@ def retained_exploration(
     atomic_json(traces.parent / (traces.name + ".json"), manifest)
 
 
-def simulation(
-    supervisor: Supervisor, seeds: list[int], cases: int, shards: int, *, explore: bool = False
-) -> None:
+def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int) -> None:
     output = supervisor.run(
         [
             [
@@ -485,7 +480,7 @@ def simulation(
     executable = executables[0]
     digest = hashlib.sha256(Path(executable).read_bytes()).hexdigest()
     atomic_json(
-        supervisor.evidence / ("exploration.json" if explore else "simulation.json"),
+        supervisor.evidence / "exploration.json",
         {
             "seeds": seeds,
             "cases": cases,
@@ -495,36 +490,25 @@ def simulation(
         },
     )
     for seed in seeds:
-        if explore:
-            environments = []
-            for index in range(shards):
-                traces = supervisor.evidence / f"traces-{seed}-{index}"
-                traces.mkdir(mode=0o700)
-                environments.append(
-                    {
-                        "KAPSEL_LIFECYCLE_SEED": str(seed),
-                        "KAPSEL_LIFECYCLE_CASES": str(cases),
-                        "KAPSEL_LIFECYCLE_SHARDS": str(shards),
-                        "KAPSEL_LIFECYCLE_SHARD_INDEX": str(index),
-                        "KAPSEL_LIFECYCLE_STEPS": "48",
-                        "KAPSEL_LIFECYCLE_EVIDENCE": str(traces),
-                    }
-                )
-        else:
-            environments = [
+        environments = []
+        for index in range(shards):
+            traces = supervisor.evidence / f"traces-{seed}-{index}"
+            traces.mkdir(mode=0o700)
+            environments.append(
                 {
-                    "KAPSEL_SIMULATION_SEED": str(seed),
-                    "KAPSEL_SIMULATION_CASES": str(cases),
-                    "KAPSEL_SIMULATION_SHARDS": str(shards),
-                    "KAPSEL_SIMULATION_SHARD_INDEX": str(index),
+                    "KAPSEL_LIFECYCLE_SEED": str(seed),
+                    "KAPSEL_LIFECYCLE_CASES": str(cases),
+                    "KAPSEL_LIFECYCLE_SHARDS": str(shards),
+                    "KAPSEL_LIFECYCLE_SHARD_INDEX": str(index),
+                    "KAPSEL_LIFECYCLE_STEPS": "48",
+                    "KAPSEL_LIFECYCLE_EVIDENCE": str(traces),
                 }
-                for index in range(shards)
-            ]
+            )
         outputs = supervisor.run(
             [
                 [
                     executable,
-                    EXPLORATION_TEST if explore else TEST,
+                    EXPLORATION_TEST,
                     "--ignored",
                     "--exact",
                     "--nocapture",
@@ -536,52 +520,45 @@ def simulation(
         )
         for index, output in enumerate(outputs):
             count = len(range(index, cases, shards))
-            if explore:
-                marker = (
-                    f"KAPSEL_LIFECYCLE_COMPLETED seed={seed} shard={index}/{shards} "
-                    f"cases={count} steps=48"
-                )
-            else:
-                marker = (
-                    f"KAPSEL_SIMULATION_COMPLETED seed={seed} shard={index}/{shards} cases={count}"
-                )
+            marker = (
+                f"KAPSEL_LIFECYCLE_COMPLETED seed={seed} shard={index}/{shards} "
+                f"cases={count} steps=48"
+            )
             if output.splitlines().count(marker) != 1 or not re.search(
                 r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
             ):
                 raise Incomplete(f"missing execution evidence for seed={seed} shard={index}")
-            if explore:
-                retained_exploration(
-                    supervisor.evidence / f"traces-{seed}-{index}",
-                    seed,
-                    cases,
-                    shards,
-                    index,
-                    digest,
-                )
-        if explore:
-            # The owning Rust parser and oracle must accept every retained document. Header hashes
-            # and a generation marker alone cannot establish that a trace is replayable.
-            replayed = supervisor.run(
-                [
-                    [executable, EXPLORATION_TEST, "--ignored", "--exact", "--nocapture"]
-                    for _ in range(shards)
-                ],
-                [
-                    {
-                        "KAPSEL_LIFECYCLE_REPLAY_DIRECTORY": str(
-                            supervisor.evidence / f"traces-{seed}-{index}"
-                        )
-                    }
-                    for index in range(shards)
-                ],
-                finding=True,
+            retained_exploration(
+                supervisor.evidence / f"traces-{seed}-{index}",
+                seed,
+                cases,
+                shards,
+                index,
+                digest,
             )
-            for index, output in enumerate(replayed):
-                marker = f"KAPSEL_LIFECYCLE_REPLAYED cases={len(range(index, cases, shards))}"
-                if output.splitlines().count(marker) != 1 or not re.search(
-                    r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
-                ):
-                    raise Incomplete("missing retained-trace replay evidence")
+        # The owning Rust parser and oracle must accept every retained document. Header hashes
+        # and a generation marker alone cannot establish that a trace is replayable.
+        replayed = supervisor.run(
+            [
+                [executable, EXPLORATION_TEST, "--ignored", "--exact", "--nocapture"]
+                for _ in range(shards)
+            ],
+            [
+                {
+                    "KAPSEL_LIFECYCLE_REPLAY_DIRECTORY": str(
+                        supervisor.evidence / f"traces-{seed}-{index}"
+                    )
+                }
+                for index in range(shards)
+            ],
+            finding=True,
+        )
+        for index, output in enumerate(replayed):
+            marker = f"KAPSEL_LIFECYCLE_REPLAYED cases={len(range(index, cases, shards))}"
+            if output.splitlines().count(marker) != 1 or not re.search(
+                r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
+            ):
+                raise Incomplete("missing retained-trace replay evidence")
 
 
 def corpus_identity(path: Path) -> dict[str, str]:
@@ -846,7 +823,7 @@ def main() -> int:
         if state == scratch_root or state in scratch_root.parents or scratch_root in state.parents:
             raise Incomplete("state and scratch roots must be disjoint")
         lane: Lane = "simulation" if args.mode in ("simulation", "exploration", "soak") else "fuzz"
-        if args.mode == "exploration" and args.cases > 10_000:
+        if lane == "simulation" and args.cases > 10_000:
             raise Incomplete("exploration requires at most 10000 cases per seed")
         blocked = unresolved(state, lane)
         if blocked:
@@ -882,10 +859,7 @@ def main() -> int:
             )
             atomic_json(evidence / "result.json", result)
             if lane == "simulation":
-                if args.mode == "exploration":
-                    simulation(supervisor, seeds, args.cases, args.shards, explore=True)
-                else:
-                    simulation(supervisor, seeds, args.cases, args.shards)
+                simulation(supervisor, seeds, args.cases, args.shards)
             else:
                 fuzz(
                     supervisor,

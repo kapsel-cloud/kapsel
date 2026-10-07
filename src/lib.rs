@@ -17,8 +17,6 @@ mod kind_tests;
 mod lifecycle_exploration_tests;
 #[cfg(test)]
 mod recovery_policy_tests;
-#[cfg(test)]
-mod simulation_tests;
 
 pub use application::{
     parse_service_operator_document, provision_exact_grant, provision_git_ref_grant,

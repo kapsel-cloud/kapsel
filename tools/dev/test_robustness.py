@@ -276,20 +276,29 @@ class RobustnessTests(unittest.TestCase):
             "profile": {"test": True},
         }
         output = (
-            "KAPSEL_SIMULATION_COMPLETED seed=1 shard=0/1 cases=2\n"
+            "KAPSEL_LIFECYCLE_COMPLETED seed=1 shard=0/1 cases=2 steps=48\n"
             "test result: ok. 1 passed; 0 failed; 0 ignored;"
         )
         with (
             patch.dict(os.environ, {"CARGO_TARGET_DIR": str(runner.ROOT / "target")}),
+            patch.object(runner, "retained_exploration"),
             patch.object(
-                self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]
+                self.supervisor,
+                "run",
+                side_effect=[
+                    [json.dumps(message)],
+                    [output],
+                    [
+                        "KAPSEL_LIFECYCLE_REPLAYED cases=2\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
+                    ],
+                ],
             ) as run,
         ):
             runner.simulation(self.supervisor, [1], 2, 1)
         build_command = run.call_args_list[0].args[0][0]
         target_index = build_command.index("--target-dir")
         self.assertEqual(build_command[target_index + 1], str(executable.parent))
-        evidence = json.loads((self.evidence / "simulation.json").read_text())
+        evidence = json.loads((self.evidence / "exploration.json").read_text())
         self.assertEqual(evidence["executable"], str(executable))
         self.assertEqual(evidence["seeds"], [1])
 
@@ -316,7 +325,7 @@ class RobustnessTests(unittest.TestCase):
             "target": {"name": "kapsel"},
             "profile": {"test": True},
         }
-        output = "KAPSEL_SIMULATION_COMPLETED seed=1 shard=0/1 cases=20\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
+        output = "KAPSEL_LIFECYCLE_COMPLETED seed=1 shard=0/1 cases=20 steps=48\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
         with patch.object(self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]):
             with self.assertRaises(runner.Incomplete):
                 runner.simulation(self.supervisor, [1], 2, 1)
@@ -372,7 +381,7 @@ class RobustnessTests(unittest.TestCase):
             return outputs
 
         with patch.object(self.supervisor, "run", side_effect=commands):
-            runner.simulation(self.supervisor, [7], 3, 2, explore=True)
+            runner.simulation(self.supervisor, [7], 3, 2)
         self.assertEqual(len(json.loads((self.evidence / "traces-7-0.json").read_text())), 2)
         self.assertEqual(len(json.loads((self.evidence / "traces-7-1.json").read_text())), 1)
         self.assertTrue((self.evidence / "exploration.json").is_file())
@@ -392,7 +401,7 @@ class RobustnessTests(unittest.TestCase):
         )
         with patch.object(self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]):
             with self.assertRaisesRegex(runner.Incomplete, "missing or unexpected"):
-                runner.simulation(self.supervisor, [7], 2, 1, explore=True)
+                runner.simulation(self.supervisor, [7], 2, 1)
 
     def test_exploration_requires_the_owning_rust_replay_marker(self):
         executable = self.scratch / "test-binary"
@@ -414,7 +423,7 @@ class RobustnessTests(unittest.TestCase):
             ),
         ):
             with self.assertRaisesRegex(runner.Incomplete, "retained-trace replay"):
-                runner.simulation(self.supervisor, [7], 2, 1, explore=True)
+                runner.simulation(self.supervisor, [7], 2, 1)
 
     def test_exploration_trace_identity_is_checked(self):
         traces = self.evidence / "traces-7-0"
