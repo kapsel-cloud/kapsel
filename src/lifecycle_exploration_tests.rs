@@ -366,6 +366,41 @@ struct Finding {
 
 type RunResult = Result<(), Finding>;
 
+#[derive(Default, Debug)]
+struct ProductiveSummary {
+    checkpoints: Vec<String>,
+    ineligible_stops: usize,
+    attempts: [usize; 2],
+    freezes: [usize; 2],
+    receipts: [usize; 2],
+    barriers: Vec<String>,
+    recoveries: Vec<String>,
+}
+
+fn effect_index(effect: Effect) -> usize {
+    match effect {
+        Effect::Kubernetes => 0,
+        Effect::Git => 1,
+    }
+}
+
+fn recovery_phase(expected: &Expectation) -> &'static str {
+    if expected.frozen.is_some() {
+        "frozen"
+    } else if expected.attempted {
+        "attempted"
+    } else {
+        "before_attempt"
+    }
+}
+
+struct Withdrawal {
+    id: usize,
+    kind: &'static str,
+    phase: &'static str,
+    restored: bool,
+}
+
 fn check(condition: bool, invariant: &'static str, event: usize) -> RunResult {
     if condition {
         Ok(())
@@ -619,11 +654,15 @@ fn authorization(request: &SetDeploymentImageRequest) -> ExactAuthorization {
     }
 }
 
+async fn replay(trace: &Trace) -> RunResult {
+    replay_summary(trace).await.map(|_| ())
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "keep the event oracle and its production transition adjacent for review"
 )]
-async fn replay(trace: &Trace) -> RunResult {
+async fn replay_summary(trace: &Trace) -> Result<ProductiveSummary, Finding> {
     check(trace.version == 1, "trace_version", 0)?;
     check(
         (2..=4).contains(&trace.identities.len()),
@@ -670,9 +709,77 @@ async fn replay(trace: &Trace) -> RunResult {
         })
         .collect();
 
+    let mut summary = ProductiveSummary::default();
+    let mut frozen_history = vec![None; trace.identities.len()];
+    let mut withdrawals: Vec<Withdrawal> = Vec::new();
     for (index, event) in trace.events.iter().enumerate() {
         if let Some(id) = event.identity() {
             check(id < expected.len(), "event_identity", index)?;
+        }
+        let before: Vec<_> = expected
+            .iter()
+            .map(|facts| {
+                (
+                    facts.attempted,
+                    facts.frozen.is_some(),
+                    facts.receipt.is_some(),
+                )
+            })
+            .collect();
+        for (id, facts) in expected.iter().enumerate() {
+            if !facts.admitted || facts.rejected || facts.receipt.is_some() {
+                continue;
+            }
+            let authority_withdrawal = match *event {
+                Event::OperatorReopen { trusted: false } => Some("trust"),
+                Event::ApplicationSelect {
+                    id: selected,
+                    catalog: Catalog::Removed,
+                    ..
+                } if selected == id && trusted => Some("catalog"),
+                _ => None,
+            };
+            let signing_withdrawal = match *event {
+                Event::ApplicationSelect {
+                    id: selected,
+                    signing_key: None,
+                    catalog: Catalog::Original | Catalog::Removed,
+                } if selected == id && trusted && facts.frozen.is_some() => Some("signing"),
+                _ => None,
+            };
+            for kind in [authority_withdrawal, signing_withdrawal]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(item) = withdrawals
+                    .iter_mut()
+                    .find(|item| item.id == id && item.kind == kind)
+                {
+                    item.phase = recovery_phase(facts);
+                    item.restored = false;
+                } else {
+                    withdrawals.push(Withdrawal {
+                        id,
+                        kind,
+                        phase: recovery_phase(facts),
+                        restored: false,
+                    });
+                }
+            }
+        }
+        for withdrawal in &mut withdrawals {
+            withdrawal.restored |= match *event {
+                Event::OperatorReopen { trusted: true } => withdrawal.kind == "trust",
+                Event::ApplicationSelect {
+                    id,
+                    catalog,
+                    signing_key,
+                } if id == withdrawal.id && trusted && !matches!(catalog, Catalog::Replaced) => {
+                    (withdrawal.kind == "catalog" && matches!(catalog, Catalog::Original))
+                        || (withdrawal.kind == "signing" && signing_key.is_some())
+                },
+                _ => false,
+            };
         }
         match *event {
             Event::AdmissionLoss { id, boundary } => {
@@ -865,6 +972,11 @@ async fn replay(trace: &Trace) -> RunResult {
                     index,
                 )
                 .await?;
+                summary.barriers.push(format!(
+                    "{barrier:?}:owner={id}:{:?}:contender={contender}:{:?}",
+                    trace.effect(id),
+                    trace.effect(contender),
+                ));
                 if !matches!(barrier, Barrier::Preflight) {
                     expected[id].attempted = true;
                     expected[id].mutations = 1;
@@ -996,6 +1108,11 @@ async fn replay(trace: &Trace) -> RunResult {
                             "interruption_checkpoint",
                             index,
                         )?;
+                        summary
+                            .checkpoints
+                            .push(format!("{:?}:{stop:?}", trace.effect(id)));
+                    } else if !matches!(stop, Stop::None) {
+                        summary.ineligible_stops += 1;
                     }
                     if writing
                         && available
@@ -1088,6 +1205,9 @@ async fn replay(trace: &Trace) -> RunResult {
                         index,
                     )?;
                 }
+                if (!trusted || already_frozen) && !matches!(stop, Stop::None) {
+                    summary.ineligible_stops += 1;
+                }
                 if !trusted || already_frozen {
                     check(
                         receivers[id].reads == old_reads,
@@ -1167,6 +1287,47 @@ async fn replay(trace: &Trace) -> RunResult {
             },
         }
         check_all_identities(&gateway, trace, &expected, &receivers, trusted, index)?;
+        for (id, facts) in expected.iter_mut().enumerate() {
+            // Count only first validated durable transitions, never selections or terminal reads.
+            let slot = effect_index(trace.effect(id));
+            let attempted = !before[id].0 && facts.attempted;
+            let frozen = !before[id].1 && facts.frozen.is_some();
+            let receipt = !before[id].2 && facts.receipt.is_some();
+            summary.attempts[slot] += usize::from(attempted);
+            summary.freezes[slot] += usize::from(frozen);
+            summary.receipts[slot] += usize::from(receipt);
+            if trusted
+                && matches!(trace.effect(id), Effect::Kubernetes)
+                && facts.frozen.is_some()
+                && facts.receipt.is_none()
+            {
+                let loaded = stored_fact(gateway.loaded_for_test(&trace.identities[id]), index)?;
+                if let Some(original) = &frozen_history[id] {
+                    check(
+                        loaded.as_ref() == Some(original),
+                        "immutable_frozen_facts",
+                        index,
+                    )?;
+                } else {
+                    frozen_history[id] = loaded;
+                }
+            }
+            if attempted || frozen || receipt {
+                withdrawals.retain(|item| {
+                    if item.id == id && item.restored && trusted {
+                        summary.recoveries.push(format!(
+                            "{:?}:id={id}:{}:{}",
+                            trace.effect(id),
+                            item.kind,
+                            item.phase,
+                        ));
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
     }
     if trace.require_progress {
         check(
@@ -1177,7 +1338,7 @@ async fn replay(trace: &Trace) -> RunResult {
             trace.events.len(),
         )?;
     }
-    Ok(())
+    Ok(summary)
 }
 
 // Every event checks all identities, including those not selected by the current actor.
@@ -1874,43 +2035,306 @@ async fn enumerated_two_identity_barrier_schedules() {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the eight named joins and their shared explicit event sequence together"
+)]
+fn deliberate_interactions() -> Vec<(&'static str, Trace)> {
+    let cases = [
+        (
+            "safe_retry_then_failure",
+            Stop::BeforeAttempt,
+            Receiver::Failed,
+            Barrier::Preflight,
+        ),
+        (
+            "unsent_present_b",
+            Stop::UnsentAttempt,
+            Receiver::Pending,
+            Barrier::Mutation,
+        ),
+        (
+            "ambiguous_attempt_replaced",
+            Stop::AttemptAcknowledgementLost,
+            Receiver::Replaced,
+            Barrier::Observation,
+        ),
+        (
+            "lost_response_unavailable",
+            Stop::ResponseLost,
+            Receiver::Unavailable,
+            Barrier::Preflight,
+        ),
+        (
+            "recorded_response_wrong_generation",
+            Stop::ResponseRecorded,
+            Receiver::WrongGeneration,
+            Barrier::Mutation,
+        ),
+        (
+            "lost_observation_pending",
+            Stop::ObservationLost,
+            Receiver::Pending,
+            Barrier::Observation,
+        ),
+        (
+            "frozen_before_replacement",
+            Stop::ObservationRecorded,
+            Receiver::Replaced,
+            Barrier::Preflight,
+        ),
+        (
+            "terminal_before_stale_version",
+            Stop::None,
+            Receiver::StaleVersion,
+            Barrier::Mutation,
+        ),
+    ];
+    cases
+        .into_iter()
+        .map(|(name, stop, receiver, barrier)| {
+            let mut input = trace(DEFAULT_SEED, Stop::None, Receiver::Healthy, 2);
+            input.events.truncate(2);
+            input.events.extend([
+                // Identity 1 owns the contested worker; identity 0 is still fresh at its stop.
+                Event::CallerCancelAtBarrier {
+                    id: 1,
+                    contender: 0,
+                    barrier,
+                },
+                Event::CallerSubmit {
+                    id: 0,
+                    competing: true,
+                },
+                Event::ReceiverChange {
+                    id: 0,
+                    receiver: Receiver::Unavailable,
+                },
+                Event::WorkerAdvance {
+                    id: 0,
+                    stop: Stop::None,
+                },
+                Event::ReceiverChange {
+                    id: 0,
+                    receiver: Receiver::Healthy,
+                },
+                Event::WorkerAdvance { id: 0, stop },
+                Event::OperatorReopen { trusted: false },
+                Event::WorkerAdvance {
+                    id: 0,
+                    stop: Stop::None,
+                },
+                Event::OperatorReopen { trusted: true },
+                Event::ApplicationSelect {
+                    id: 0,
+                    catalog: Catalog::Replaced,
+                    signing_key: None,
+                },
+                Event::ApplicationSelect {
+                    id: 0,
+                    catalog: Catalog::Removed,
+                    signing_key: None,
+                },
+                Event::ApplicationSelect {
+                    id: 0,
+                    catalog: Catalog::Original,
+                    signing_key: None,
+                },
+                Event::ReceiverChange { id: 0, receiver },
+                // ReceiverRead is fresh-only: recovery must not stop at this boundary again.
+                Event::WorkerAdvance {
+                    id: 0,
+                    stop: Stop::ObservationLost,
+                },
+                Event::WorkerAdvance {
+                    id: 0,
+                    stop: Stop::None,
+                },
+                Event::ReceiverChange {
+                    id: 0,
+                    receiver: Receiver::Healthy,
+                },
+                Event::WorkerAdvance {
+                    id: 0,
+                    stop: Stop::None,
+                },
+                // Once frozen, changed receiver facts and missing signing material add no I/O.
+                Event::ReceiverChange {
+                    id: 0,
+                    receiver: Receiver::Failed,
+                },
+                Event::WorkerAdvance {
+                    id: 0,
+                    stop: Stop::ObservationRecorded,
+                },
+                Event::WorkerComplete {
+                    id: 0,
+                    key: 13,
+                    stop: CompletionStop::BeforeCommit,
+                },
+                Event::ApplicationSelect {
+                    id: 0,
+                    catalog: Catalog::Removed,
+                    signing_key: None,
+                },
+                Event::ApplicationSelect {
+                    id: 0,
+                    catalog: if matches!(stop, Stop::ObservationRecorded) {
+                        Catalog::Removed
+                    } else {
+                        Catalog::Original
+                    },
+                    signing_key: Some(31),
+                },
+                Event::WorkerComplete {
+                    id: 0,
+                    key: 99,
+                    stop: CompletionStop::BeforeCommit,
+                },
+            ]);
+            input.events.extend(healthy_suffix(2));
+            (name, input)
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn bounded_lifecycle_exploration() {
-    let stops = [
-        Stop::None,
-        Stop::BeforeAttempt,
-        Stop::UnsentAttempt,
-        Stop::AttemptAcknowledgementLost,
-        Stop::ResponseLost,
-        Stop::ResponseRecorded,
-        Stop::ObservationLost,
-        Stop::ObservationRecorded,
-    ];
-    let receivers = [
-        Receiver::Healthy,
-        Receiver::Failed,
-        Receiver::Pending,
-        Receiver::Replaced,
-        Receiver::StaleVersion,
-        Receiver::WrongGeneration,
-        Receiver::Unavailable,
-    ];
-    for (stop_index, stop) in stops.into_iter().enumerate() {
-        for (receiver_index, receiver) in receivers.into_iter().enumerate() {
-            let seed = DEFAULT_SEED
-                + u64::try_from(stop_index * receivers.len() + receiver_index).unwrap();
-            let mut input = trace(seed, stop, receiver, 2);
-            for assignment in 0..3 {
-                assign_effects(&mut input, assignment);
-                let result = replay(&input).await;
-                assert!(result.is_ok(), "input={input:?} result={result:?}");
+    for (name, mut input) in deliberate_interactions() {
+        for assignment in 0..3 {
+            assign_effects(&mut input, assignment);
+            let result = replay_summary(&input).await;
+            assert!(result.is_ok(), "{name}: input={input:?} result={result:?}");
+            let summary = result.unwrap();
+            assert_eq!(summary.attempts.iter().sum::<usize>(), 2, "{name}");
+            assert_eq!(summary.freezes.iter().sum::<usize>(), 2, "{name}");
+            assert_eq!(summary.receipts.iter().sum::<usize>(), 2, "{name}");
+            assert_eq!(summary.barriers.len(), 1, "{name}");
+            for kind in ["trust", "catalog", "signing"] {
+                // One frozen trace deliberately completes without restoring the catalog.
+                let restored = kind != "catalog" || name != "frozen_before_replacement";
+                assert_eq!(
+                    summary.recoveries.iter().any(|item| item.contains(kind)),
+                    restored,
+                    "{name}:{kind}"
+                );
             }
+            println!("KAPSEL_INTERACTION {name} assignment={assignment} {summary:?}");
         }
     }
 }
 
 #[tokio::test]
+async fn renewed_withdrawal_invalidates_previous_restoration() {
+    let mut input = trace(DEFAULT_SEED, Stop::None, Receiver::Healthy, 2);
+    input.events.truncate(2);
+    input.require_progress = false;
+    input.events.extend([
+        Event::WorkerAdvance {
+            id: 0,
+            stop: Stop::None,
+        },
+        Event::GatewayWrites { enabled: false },
+        Event::ApplicationSelect {
+            id: 0,
+            catalog: Catalog::Original,
+            signing_key: None,
+        },
+        Event::ApplicationSelect {
+            id: 0,
+            catalog: Catalog::Original,
+            signing_key: Some(31),
+        },
+        Event::ApplicationSelect {
+            id: 0,
+            catalog: Catalog::Removed,
+            signing_key: None,
+        },
+        Event::GatewayWrites { enabled: true },
+        Event::WorkerComplete {
+            id: 0,
+            key: 13,
+            stop: CompletionStop::None,
+        },
+    ]);
+    let summary = replay_summary(&input).await.unwrap();
+    assert_eq!(summary.receipts, [1, 0]);
+    assert!(summary.recoveries.is_empty());
+    // A productive peer transition after renewed trust withdrawal cannot be credited either.
+    input.events.extend([
+        Event::OperatorReopen { trusted: false },
+        Event::OperatorReopen { trusted: true },
+        Event::OperatorReopen { trusted: false },
+        Event::WorkerAdvance {
+            id: 1,
+            stop: Stop::None,
+        },
+    ]);
+    assert!(replay_summary(&input).await.unwrap().recoveries.is_empty());
+    input.events.extend([
+        Event::OperatorReopen { trusted: true },
+        Event::WorkerAdvance {
+            id: 1,
+            stop: Stop::None,
+        },
+    ]);
+    let summary = replay_summary(&input).await.unwrap();
+    assert_eq!(summary.recoveries, ["Kubernetes:id=1:trust:before_attempt"]);
+}
+
+#[tokio::test]
+async fn rejected_catalog_selection_does_not_restore_signing_material() {
+    for assignment in 0..3 {
+        let mut input = trace(DEFAULT_SEED, Stop::None, Receiver::Healthy, 2);
+        assign_effects(&mut input, assignment);
+        input.events.truncate(2);
+        input.require_progress = false;
+        input.events.extend([
+            Event::WorkerAdvance {
+                id: 0,
+                stop: Stop::None,
+            },
+            Event::ApplicationSelect {
+                id: 0,
+                catalog: Catalog::Original,
+                signing_key: None,
+            },
+            Event::ApplicationSelect {
+                id: 0,
+                catalog: Catalog::Replaced,
+                signing_key: Some(31),
+            },
+            Event::WorkerComplete {
+                id: 0,
+                key: 13,
+                stop: CompletionStop::None,
+            },
+        ]);
+        let summary = replay_summary(&input).await.unwrap();
+        assert_eq!(summary.receipts.iter().sum::<usize>(), 1);
+        assert!(summary.recoveries.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn terminal_events_do_not_inflate_productive_transitions() {
+    let (_, mut input) = deliberate_interactions().remove(0);
+    assign_effects(&mut input, 2);
+    let original = replay_summary(&input).await.unwrap();
+    input.events.extend(healthy_suffix(2));
+    let repeated = replay_summary(&input).await.unwrap();
+    assert_eq!(original.attempts, repeated.attempts);
+    assert_eq!(original.freezes, repeated.freezes);
+    assert_eq!(original.receipts, repeated.receipts);
+    assert_eq!(original.recoveries, repeated.recoveries);
+    assert_eq!(original.checkpoints, repeated.checkpoints);
+    assert_eq!(original.barriers, repeated.barriers);
+}
+
+#[tokio::test]
 async fn enumerated_fresh_lifecycle_boundaries() {
+    let mut checkpoints = std::collections::BTreeSet::new();
+    let mut ineligible_stops = 0;
     for stop in [
         Stop::None,
         Stop::BeforeAttempt,
@@ -1941,11 +2365,28 @@ async fn enumerated_fresh_lifecycle_boundaries() {
             input.events.extend(healthy_suffix(2));
             for assignment in 0..3 {
                 assign_effects(&mut input, assignment);
-                let result = replay(&input).await;
+                let result = replay_summary(&input).await;
                 assert!(result.is_ok(), "input={input:?} result={result:?}");
+                let summary = result.unwrap();
+                checkpoints.extend(summary.checkpoints);
+                ineligible_stops += summary.ineligible_stops;
             }
         }
     }
+    for effect in [Effect::Kubernetes, Effect::Git] {
+        for stop in [
+            Stop::BeforeAttempt,
+            Stop::UnsentAttempt,
+            Stop::AttemptAcknowledgementLost,
+            Stop::ResponseLost,
+            Stop::ResponseRecorded,
+            Stop::ObservationLost,
+            Stop::ObservationRecorded,
+        ] {
+            assert!(checkpoints.contains(&format!("{effect:?}:{stop:?}")));
+        }
+    }
+    println!("KAPSEL_CHECKPOINTS reached={checkpoints:?} ineligible_stops={ineligible_stops}");
 }
 
 #[test]
@@ -2279,6 +2720,10 @@ async fn lifecycle_trace_round_trip_replays_events_not_generator_state() {
     clippy::panic,
     reason = "fail the test after preserving and replaying the minimized finding"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "retain explicit replay and generated/deliberate evidence custody in one entry point"
+)]
 async fn lifecycle_trace_exploration_or_replay() {
     if let Some(directory) = std::env::var_os("KAPSEL_LIFECYCLE_REPLAY_DIRECTORY") {
         let mut paths: Vec<_> = fs::read_dir(directory)
@@ -2299,13 +2744,49 @@ async fn lifecycle_trace_exploration_or_replay() {
         let path = PathBuf::from(path);
         assert!(fs::metadata(&path).unwrap().len() <= u64::try_from(TRACE_LIMIT).unwrap());
         let trace: Trace = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        replay(&trace).await.unwrap();
+        let summary = replay_summary(&trace).await.unwrap();
+        println!("KAPSEL_LIFECYCLE_REPLAYED {summary:?}");
         return;
     }
     let root = PathBuf::from(std::env::var_os("KAPSEL_LIFECYCLE_EVIDENCE").unwrap());
     let metadata = fs::symlink_metadata(&root).unwrap();
     assert!(root.is_absolute() && metadata.is_dir() && !metadata.file_type().is_symlink());
     assert_eq!(metadata.permissions().mode() & 0o077, 0);
+    if std::env::var_os("KAPSEL_LIFECYCLE_DELIBERATE").is_some() {
+        let executable_sha256 = hex(&Sha256::digest(
+            fs::read(std::env::current_exe().unwrap()).unwrap(),
+        ));
+        let source_sha256 = source_identity();
+        for (name, mut input) in deliberate_interactions() {
+            for assignment in 0..3 {
+                assign_effects(&mut input, assignment);
+                input.executable_sha256.clone_from(&executable_sha256);
+                input.source_sha256.clone_from(&source_sha256);
+                persist(&root.join(format!("{name}-{assignment}.json")), &input);
+                let result = replay_summary(&input).await;
+                if let Err(finding) = result {
+                    let minimized = minimize(input, finding.invariant).await;
+                    persist(
+                        &root.join(format!("finding-{name}-{assignment}.json")),
+                        &minimized,
+                    );
+                    assert_eq!(
+                        replay(&minimized).await.unwrap_err().invariant,
+                        finding.invariant
+                    );
+                    panic!(
+                        "{} at event {}; minimized trace replayed",
+                        finding.invariant, finding.event
+                    );
+                }
+                println!(
+                    "KAPSEL_INTERACTION {name} assignment={assignment} {:?}",
+                    result.unwrap()
+                );
+            }
+        }
+        return;
+    }
     let executable = fs::read(std::env::current_exe().unwrap()).unwrap();
     let executable_sha256 = hex(&Sha256::digest(executable));
     let source_sha256 = source_identity();

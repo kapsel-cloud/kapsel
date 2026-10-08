@@ -86,6 +86,35 @@ entries and optional signing material. Real SQLite write refusal checks previous
 repair; admission commit-loss events retain the committed responsibility. These seams enumerate
 understood alternatives, not arbitrary SQLite I/O failures.
 
+The deterministic interaction owner, `bounded_lifecycle_exploration`, runs eight deliberate traces
+under Kubernetes-only, Git-only, and mixed assignments. It replaces the generated outer stop ×
+receiver × effect matrix, not the fresh-boundary enumeration or contention schedules. Each trace
+includes transient preflight deferral, competing submission, a reached contention barrier, trust
+withdrawal, catalog removal/replacement, missing signing material, and same-ID continuation. The
+independent oracle checks every peer throughout these interactions.
+
+| Deliberate trace                     | Distinct join                                                                                                                    |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `safe_retry_then_failure`            | Before-attempt interruption permits safe retry; later failed observation freezes                                                 |
+| `unsent_present_b`                   | Committed unsent permission stays observation-only; present Git B is not acknowledgement                                         |
+| `ambiguous_attempt_replaced`         | Lost attempt acknowledgement sends nothing; replacement cannot create success                                                    |
+| `lost_response_unavailable`          | Sent mutation loses response; Kubernetes waits for observation availability, while Git freezes `UNKNOWN` acknowledgement and ref |
+| `recorded_response_wrong_generation` | Retained response does not excuse mismatched observed generation                                                                 |
+| `lost_observation_pending`           | Read-but-uncommitted observation is replaced by recovery's current observation                                                   |
+| `frozen_before_replacement`          | Frozen success survives replacement and trust withdrawal; signing completes without catalog restoration or receiver I/O          |
+| `terminal_before_stale_version`      | Frozen evidence survives later version changes and terminal signer rotation                                                      |
+
+`ProductiveSummary` reports reached interruption checkpoints by effect and boundary, and counts
+ineligible selected stops separately. It counts first attempts, observation freezes, and receipt
+commits only after the durable-state oracle validates a transition from prior facts. Repeated
+terminal events do not increase these counts. Barrier records identify the owner and contender's
+identities and effects. Withdrawal records identify trust, catalog, or signing material, the phase
+at withdrawal, and a productive same-ID transition after restoration. Catalog removal does not
+revoke retained authority; these records do not imply that restoring the catalog is required. A
+missing signer can defer receipt completion without preventing an earlier observation freeze. Run
+with `--nocapture` to see the bounded summaries. They describe these traces, not universal coverage,
+throughput, or a coverage score.
+
 Safety checks run after each event. Progress requires an explicit healthy suffix with restored
 trust, writes, receiver availability, authorization, and completion opportunities. Shrinking
 preserves that suffix for progress findings. Longer development traces use 48 generated steps per
@@ -107,6 +136,35 @@ at invocation; it is not a build attestation.
 This replaces the prescribed fixed-failure simulation after seeded-defect detection, minimized
 replay, and supervised exploration evidence passed. The mapping below preserves the old obligations.
 Keep the existing HTTP, SQLite, Git, Linux process, live-receiver, ENOSPC, and artifact checks.
+
+### Consolidated crash-matrix obligations
+
+Fresh enumeration and deliberate interactions jointly own the retired
+`every_apply_window_recovers_without_a_second_mutation` matrix. Enumeration alone establishes
+checkpoint reach, not interaction equivalence.
+
+| Retired window                            | Consolidated obligation and owner                                                                                                                                                  |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TargetObserved`                          | `BeforeAttempt` enumeration and `safe_retry_then_failure`: no first send, safe retry under original authority                                                                      |
+| `ApplyStartedCommitted`                   | `UnsentAttempt` enumeration and `unsent_present_b`: zero original sends, observation-only recovery, `UNKNOWN` without acknowledgement                                              |
+| `ApplyReturned` / `ApplyOutcomeCommitted` | Response-loss/recorded-response enumeration and deliberate unavailable/wrong-generation recovery                                                                                   |
+| `ReceiverRead`                            | `ObservationLost` enumeration and `lost_observation_pending`; retained `receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observation` checks fresh-only interruption |
+| `ReceiverObservedCommitted`               | `ObservationRecorded` enumeration and `frozen_before_replacement`: zero-I/O continuation, unchanged frozen history, original receipt bytes                                         |
+
+The retired matrix's preloaded failed observation in its zero-send window was not receiver evidence.
+The explorer leaves an unsent Kubernetes receiver unchanged and preserves `UNKNOWN`. Legacy grants
+remain covered by `service_reads_but_cannot_advance_retained_legacy_authority` and snapshot/binding
+tests. The inert format-6 `target_read_failures` checks remain in gateway lifecycle/storage tests.
+
+The generated outer matrix's other obligations retain direct owners: fresh receiver/result variants
+in `enumerated_fresh_lifecycle_boundaries`, assignment/order/barrier joins in
+`enumerated_two_identity_barrier_schedules`, SQLite refusal in
+`sqlite_write_refusal_preserves_previous_facts_and_same_id_repair`, and admission ambiguity in
+`admission_commit_loss_retains_original_responsibility`. Deliberate interactions preserve catalog
+conflicts, withdrawn trust, changed receivers, receipt precommit loss, and original signer/byte
+retention. Their healthy suffix includes receipt acknowledgement loss and rotated-key continuation.
+Random longer traces remain available for exploration and minimization; they are not a second
+maintained outer matrix.
 
 ### Old simulation obligations
 
@@ -143,7 +201,12 @@ KAPSEL_LIFECYCLE_CASES=100 cargo test --locked -p kapsel --lib \
   lifecycle_exploration_tests::lifecycle_trace_exploration_or_replay -- --ignored --exact
 ```
 
-Each case creates `case-N.json` exclusively; existing evidence is never overwritten. A safety
+To retain the deliberate interaction inputs instead of generated cases, set
+`KAPSEL_LIFECYCLE_DELIBERATE=1` with the same evidence-directory command. It writes one named trace
+per assignment and uses the same oracle, minimizer, and direct replay entry point. This mode also
+supports isolated negative controls against those exact inputs.
+
+Each case creates its JSON input exclusively; existing evidence is never overwritten. A safety
 finding can reduce to a trace that ends before completion. Its `require_progress` flag is false;
 progress findings retain their recovery preconditions. Replay the recorded events directly, without
 regenerating earlier cases:

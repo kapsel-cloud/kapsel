@@ -103,16 +103,27 @@ can describe an intervening writer or recreated Deployment.
 Use the [gateway contract](../reference/effect_gateway.md) for the definitions in this table. Names
 below identify suites, not separate release gates.
 
-| Boundary                         | Maintained checks                                                | Obligation                                                                                                |
-| -------------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`          | Bounds and exact signed authority; reject before persistence                                              |
-| Journal transitions and dispatch | Gateway `lifecycle`, `dispatch`, `recovery`, `snapshot_approval` | Fault every durable window; permission only from a confirmed fresh attempt commit                         |
-| Target disposition               | Snapshot/target-read tests; adapter/classifier tables            | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                   |
-| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                  | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`          |
-| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                 | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust |
-| Export                           | Fixed-client and command-interface tests                         | Exclusive copy of committed bytes; export failure cannot reopen completion                                |
-| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)  | Older journals remain untouched, without migration                                                        |
-| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                   | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                   |
+| Boundary                         | Maintained checks                                                                                                                | Obligation                                                                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                          | Bounds and exact signed authority; reject before persistence                                                                |
+| Journal transitions and dispatch | Gateway `lifecycle`, `dispatch`, `recovery`, `snapshot_approval`; [lifecycle explorer](../../src/lifecycle_exploration_tests.rs) | Enumerate fresh durable windows and deliberate recovery interactions; permission only from a confirmed fresh attempt commit |
+| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                            | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                     |
+| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                                  | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                            |
+| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                                 | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                   |
+| Export                           | Fixed-client and command-interface tests                                                                                         | Exclusive copy of committed bytes; export failure cannot reopen completion                                                  |
+| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                                  | Older journals remain untouched, without migration                                                                          |
+| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                                   | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                     |
+
+The lifecycle explorer owns fresh interruption enumeration, deliberate interaction traces, and
+scheduled gateway contention. Its
+[retirement mapping](testing.md#consolidated-crash-matrix-obligations) connects the removed crash
+matrix to safe pre-attempt retry, unsent and ambiguous attempts, response/observation loss, and
+frozen zero-I/O continuation. Test-local summaries report first validated durable transitions,
+reached checkpoints, contention assignments, and same-ID recovery after material restoration. Exact
+retained Git acknowledgement/ref facts remain independently checked; Kubernetes frozen history is
+compared across unsigned continuations. Original signed bytes remain immutable under later receiver
+and signing changes. Legacy-format, HTTP, storage, process, live-receiver, and artifact checks
+retain their existing owners.
 
 `INSPECTED` means the bytes authenticated and the classifier result matched under supplied trust. It
 does not prove receiver truth, causation, complete capture or compliance. It is not `VERIFIED`.
@@ -237,11 +248,13 @@ replay failures and run isolated negative controls. Baseline must pass. Each con
 its intended property, and minimized replay must preserve that failure. Coverage, smoke and control
 detection do not establish semantic completeness or receiver qualification.
 
-Seeded simulations explore lifecycle schedules, crash windows, transient target-read errors and
-reopening. Each shard uses independent journals with at most 100 identities, retaining history until
-successful fixture cleanup. It never prunes or resets attempted work to bypass capacity. Separate
-storage tests check full-capacity behaviour. Each step checks durable state, provider counts,
-terminal state and frozen evidence. Wall-clock duration changes case count, not case semantics.
+Seeded lifecycle exploration uses two to four identities per real SQLite journal. It explores
+interleaved selections, receiver changes, interruption windows, authority/material withdrawal, and
+reopening. Each event checks every identity's durable facts, independent receiver counts, and
+original evidence. It never prunes or resets attempted work to bypass capacity. Separate storage
+tests check full-capacity behaviour. The same explicit trace format supports generated schedules,
+deliberate interaction inputs, minimized findings, and direct replay. Wall-clock duration changes
+case count, not case semantics.
 
 ### Live Kubernetes and demonstration
 
