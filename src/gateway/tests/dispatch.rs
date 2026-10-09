@@ -43,7 +43,16 @@ fn competing_fresh_transitions_issue_one_bound_permission() {
                 .journal
                 .begin_attempt(&operation, observed_target(), None)
             {
-                Ok(Some(permission)) => Some(permission.into_payload()),
+                Ok(Some(permission)) => {
+                    // Even the winner cannot reuse its pre-commit Authorized snapshot.
+                    assert!(matches!(
+                        gateway
+                            .journal
+                            .begin_attempt(&operation, observed_target(), None),
+                        Err(GatewayError::InvalidTransition)
+                    ));
+                    Some(permission.into_payload())
+                },
                 Err(GatewayError::InvalidTransition) => None,
                 result => panic!("unexpected claim result: {}", result.is_ok()),
             }
@@ -101,91 +110,6 @@ fn a_snapshot_from_another_journal_cannot_authorize_a_different_frozen_action() 
     drop(second);
     fs::remove_dir_all(first_path.parent().unwrap()).unwrap();
     fs::remove_dir_all(second_path.parent().unwrap()).unwrap();
-}
-
-#[tokio::test]
-async fn lost_acknowledgement_and_dropped_permission_strand_unsent_actions() {
-    for fault in [None, Some(FaultPoint::AttemptCommitAcknowledgementLost)] {
-        let path = database_path(&format!("dispatch-unsent-{fault:?}"));
-        let request = request();
-        let gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .submit_exact_for_test(&request, &authorization(&request))
-            .unwrap();
-        let authorized = load_authorized(&gateway);
-        let result = gateway
-            .journal
-            .begin_attempt(&authorized, observed_target(), fault);
-        if fault.is_some() {
-            assert!(matches!(result, Err(GatewayError::InjectedFault)));
-        } else {
-            // Cancellation after acknowledged commitment drops an unused live permission.
-            drop(result.unwrap().unwrap());
-        }
-        // A previously loaded Authorized snapshot is not another chance to send.
-        assert!(matches!(
-            gateway
-                .journal
-                .begin_attempt(&authorized, observed_target(), None),
-            Err(GatewayError::InvalidTransition)
-        ));
-        assert_eq!(
-            gateway.get("op-001").unwrap(),
-            Some(OperationState::ApplyStarted)
-        );
-        assert_eq!(gateway.result("op-001").unwrap(), None);
-        assert_eq!(gateway.target_rejection("op-001").unwrap(), None);
-        drop(gateway);
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        let mut adapter = failed_adapter(&path, &request);
-        // This unsent action has no receiver evidence establishing a rollout result.
-        adapter.observation = ReceiverObservation::unknown();
-        gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
-            .await
-            .unwrap();
-        assert_eq!(
-            (
-                adapter.identify_calls,
-                adapter.apply_calls,
-                adapter.observe_calls
-            ),
-            (0, 0, 1)
-        );
-        assert_eq!(
-            gateway.result("op-001").unwrap(),
-            Some(OperationResult::Unknown)
-        );
-        gateway
-            .finalize_operation_receipt_once(
-                &request.operation_id,
-                &ReceiptSettings {
-                    signing_seed: &[13; 32],
-                    key_id: "dispatch-receipt",
-                },
-            )
-            .unwrap();
-        let original =
-            Gateway::read_loaded_receipt(gateway.loaded_for_test("op-001").unwrap().unwrap())
-                .unwrap();
-        drop(gateway);
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(
-            gateway
-                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            Gateway::read_loaded_receipt(gateway.loaded_for_test("op-001").unwrap().unwrap())
-                .unwrap(),
-            original
-        );
-        assert_eq!(adapter.apply_calls, 0);
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
 }
 
 // Alter retained grant bytes during adapter I/O. The driver must recheck original authority before

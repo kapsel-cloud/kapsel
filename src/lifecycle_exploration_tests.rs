@@ -1629,7 +1629,7 @@ fn configure_git(script: &ExplorationGitScript, receiver: Receiver, attempted: b
     };
 }
 
-fn source_identity() -> String {
+pub(crate) fn source_identity() -> String {
     use std::process::Command;
     let output = Command::new("git")
         .args([
@@ -1664,7 +1664,7 @@ fn source_identity() -> String {
     hex(&hash.finalize())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes.iter().fold(String::new(), |mut output, byte| {
         write!(output, "{byte:02x}").unwrap();

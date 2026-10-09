@@ -66,6 +66,64 @@ Process exit does not prove disk-backed power-loss durability. Emulated containe
 native installation. A fuzz smoke pass does not replace canonical vectors or explicit failure cases.
 Record exact source/artifact identities and missing lanes when reporting a result.
 
+## Atomic record-I/O simulation
+
+`src/kernel_simulation_tests.rs` drives Kubernetes selection through the real service application.
+Production journal policy validates authority, transitions and frozen facts. Its private record-I/O
+owner reads complete bounded rows and conditionally commits against the original row. SQLite updates
+only changed columns. The test-only virtual store implements atomic records, not lifecycle policy.
+Neither backend selection nor fault controls are caller inputs.
+
+The slice checks original intent, confirmed dispatch provenance, initial classification, complete
+receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt
+bytes and healthy eligible progress. It injects no-commit and commit-with-lost-acknowledgement
+histories with the same returned error. Receiver response loss is separate. Both virtual records and
+real SQLite run the delivery laws; named physical columns and executed write plans provide
+independent SQLite evidence.
+
+Seeded remint, wrong-initial-result, no-op, wrong-signer, physical replica-field-swap,
+receipt-decoder field-swap and unconditional-write controls must violate their intended law and
+report the reached faulty branch. An unrelated error does not qualify as detection. Generated
+schedules record their actions and retain an explicit healthy suffix. Progress requires a restored
+receiver, healthy storage and an available signer. Minimized safety witnesses need not finish the
+operation; correct code must pass those same prefixes on both stores.
+
+Run the deterministic slice:
+
+```sh
+cargo test --locked -p kapsel --lib kernel_simulation_tests
+cargo test --locked -p kapsel --lib atomic_record_binding
+```
+
+The atomic-delivery workload and remint control replace the procedural unsent-attempt recovery
+scenario in `gateway::tests::dispatch`: acknowledgement loss or a dropped fresh permission adds no
+send, recovery freezes honest `UNKNOWN`, and later selection retains original bytes with no I/O. The
+competing-claimants check still owns stale Authorized-snapshot refusal; foreign snapshots, authority
+changes during I/O and actual cancellation retain their local owners.
+
+For retained local exploration, select a new private directory outside the checkout:
+
+```sh
+export KAPSEL_KERNEL_EVIDENCE="$(mktemp -d)"
+cargo test --locked -p kapsel --lib \
+  kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
+```
+
+Set `KAPSEL_KERNEL_DEFECTS=1` to retain the six lifecycle defect inputs and their minimized
+findings. The atomic-record binding control has its separate deterministic owner. Each document is
+created exclusively before execution and records source-content and executable digests. These
+digests are not build attestations. Replay a retained document without regenerating its schedule:
+
+```sh
+KAPSEL_KERNEL_REPLAY=/absolute/retained/finding-0.json cargo test --locked -p kapsel --lib \
+  kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
+```
+
+Use the retained executable for original-binary reproduction. Rebuilding runs the same actions
+against new code. This local route does not replace supervised exploration custody, physical worker
+lifetime, capacity/ENOSPC, configured-client HTTP, Git, live-receiver or installed-artifact
+evidence. Those owners remain separate.
+
 ## Lifecycle exploration
 
 `src/lifecycle_exploration_tests.rs` explores private Kubernetes and Git gateway continuation

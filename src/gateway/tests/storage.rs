@@ -699,7 +699,14 @@ async fn qualify_admission_enospc() {
     fill_owned_tmpfs(&filler);
     let mut acknowledged = false;
     let result = gateway
-        .admit_and_reconcile(&selected, &signed, None, None, |_| acknowledged = true)
+        .admit_and_reconcile::<FakeAdapter>(
+            &selected,
+            &signed,
+            None,
+            None,
+            |_| acknowledged = true,
+            None,
+        )
         .await;
     assert!(
         !acknowledged,
@@ -714,12 +721,19 @@ async fn qualify_admission_enospc() {
     let mut gateway = Gateway::open_for_test(&path).unwrap();
     assert_eq!(stored_rows(&gateway.journal.connection), original);
     let result = gateway
-        .admit_and_reconcile(&selected, &signed, None, None, |decision| {
-            assert!(matches!(
-                decision,
-                AdmissionDecision::Admitted(OperationState::Requested)
-            ));
-        })
+        .admit_and_reconcile::<FakeAdapter>(
+            &selected,
+            &signed,
+            None,
+            None,
+            |decision| {
+                assert!(matches!(
+                    decision,
+                    AdmissionDecision::Admitted(OperationState::Requested)
+                ));
+            },
+            None,
+        )
         .await;
     assert!(matches!(
         result,
@@ -836,33 +850,36 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
     eprintln!("KAPSEL_REAL_ENOSPC_CASES_PASSED");
 }
 
-#[test]
-fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
+#[tokio::test]
+async fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
     let path = database_path("owned-write-plans");
     let gateway = Gateway::open_for_test(&path).unwrap();
     assert_eq!(rusqlite::version(), "3.53.2");
-    // Test the actual owner's plain SQL literals, not separately maintained example queries.
-    // A new write or changed source form must deliberately revalidate this qualification.
-    let statements = [
-        include_str!("../journal/mod.rs"),
-        include_str!("../journal/git.rs"),
-    ]
-    .into_iter()
-    .flat_map(|owner| {
-        owner
-            .split("\n#[cfg(test)]\nmod tests {")
-            .next()
-            .unwrap()
-            .split('"')
-    })
-    .filter(|sql| {
-        sql.starts_with("INSERT INTO kubernetes_image_operations")
-            || sql.starts_with("UPDATE kubernetes_image_operations")
-            || sql.starts_with("INSERT INTO git_ref_operations")
-            || sql.starts_with("UPDATE git_ref_operations")
-    })
-    .collect::<Vec<_>>();
-    assert_eq!(statements.len(), 14);
+    // Git owns fixed literals. Kubernetes supplies the statements actually executed by the
+    // service slice, including rejection and independently distinguishable receiver facts.
+    let mut statements = std::iter::once(include_str!("../journal/git.rs"))
+        .flat_map(|owner| {
+            owner
+                .split("\n#[cfg(test)]\nmod tests {")
+                .next()
+                .unwrap()
+                .split('"')
+        })
+        .filter(|sql| {
+            sql.starts_with("INSERT INTO kubernetes_image_operations")
+                || sql.starts_with("UPDATE kubernetes_image_operations")
+                || sql.starts_with("INSERT INTO git_ref_operations")
+                || sql.starts_with("UPDATE git_ref_operations")
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(statements.len(), 6);
+    statements.extend(
+        crate::kernel_simulation_tests::executed_write_statements()
+            .await
+            .into_iter()
+            .map(|(_, sql)| sql),
+    );
     for sql in statements {
         let insert = sql.starts_with("INSERT");
         let mut statement = gateway

@@ -191,6 +191,14 @@ pub struct ServiceApplication {
 
 impl ServiceApplication {
     #[cfg(test)]
+    pub(crate) fn open_simulated(
+        configuration: ServiceConfiguration,
+        control: crate::gateway::StorageControl,
+    ) -> Result<Self, ServiceError> {
+        Self::open_with_storage(configuration, Some(control))
+    }
+
+    #[cfg(test)]
     pub(crate) fn exploration_write_failure(&self, fail: bool) -> Result<(), ServiceError> {
         self.gateway
             .exploration_write_failure(fail)
@@ -207,6 +215,16 @@ impl ServiceApplication {
     /// Returns a bounded error for invalid configuration, changed configured identities or unsafe
     /// storage. Missing trust for an unselected historical identity does not prevent construction.
     pub fn open(configuration: ServiceConfiguration) -> Result<Self, ServiceError> {
+        #[cfg(test)]
+        return Self::open_with_storage(configuration, None);
+        #[cfg(not(test))]
+        Self::open_with_storage(configuration)
+    }
+
+    fn open_with_storage(
+        configuration: ServiceConfiguration,
+        #[cfg(test)] control: Option<crate::gateway::StorageControl>,
+    ) -> Result<Self, ServiceError> {
         let approvals = Self::validate_configuration(&configuration)?;
         super::validate_journal_path(&configuration.journal_path)
             .map_err(|_| ServiceError::Configuration)?;
@@ -215,6 +233,14 @@ impl ServiceApplication {
             configuration.authorization_trust,
         )
         .map_err(map_gateway_error)?;
+        #[cfg(test)]
+        let gateway = {
+            let mut gateway = gateway;
+            if let Some(control) = control {
+                gateway.control_storage(control);
+            }
+            gateway
+        };
         for approval in &approvals {
             match &approval.handle {
                 ApprovedAction::Kubernetes { request, .. } => {
@@ -360,6 +386,28 @@ impl ServiceApplication {
         execution: ServiceExecution,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
     ) -> Result<ServiceStop, ServiceError> {
+        let mut adapter = execution
+            .kubernetes_client
+            .clone()
+            .map(crate::gateway::KubernetesDeploymentImageAdapter::new);
+        self.select_with_adapter(
+            operation_id,
+            execution,
+            adapter.as_mut(),
+            acknowledged,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn select_with_adapter<A: crate::gateway::DeploymentImageAdapter + Send>(
+        &mut self,
+        operation_id: &str,
+        execution: ServiceExecution,
+        adapter: Option<&mut A>,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+        fault: Option<crate::gateway::FaultPoint>,
+    ) -> Result<ServiceStop, ServiceError> {
         let selected = self.retained_for_selection(operation_id)?;
         if let Some((_, key_id)) = &execution.receipt_signing {
             crate::gateway::validate_key_id(key_id).map_err(|_| ServiceError::Configuration)?;
@@ -385,9 +433,10 @@ impl ServiceApplication {
                     .admit_and_reconcile(
                         &request,
                         &signed_grant,
-                        execution.kubernetes_client,
+                        adapter,
                         receipt.as_ref(),
                         callback,
+                        fault,
                     )
                     .await
             },

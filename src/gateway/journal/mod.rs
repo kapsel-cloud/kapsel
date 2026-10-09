@@ -8,6 +8,7 @@
 pub(in crate::gateway) mod capacity;
 pub(in crate::gateway) mod git;
 mod opening;
+mod records;
 mod schema;
 
 use std::{
@@ -16,7 +17,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use records::Record;
+pub(crate) use records::Write as StorageWrite;
+#[cfg(test)]
+pub(crate) use records::{Control as StorageControl, Defect, Delivery};
+#[cfg(test)]
+use rusqlite::{params, OptionalExtension};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 
 #[cfg(test)]
 use super::ReceiptReference;
@@ -33,6 +40,7 @@ pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
 pub(crate) struct Journal {
     pub(crate) connection: Connection,
     worker_lock: Arc<Mutex<Option<File>>>,
+    records: records::Io,
 }
 
 pub(crate) struct WorkerLock {
@@ -734,6 +742,7 @@ impl Journal {
         Ok(Self {
             connection,
             worker_lock: Arc::new(Mutex::new(Some(worker_lock))),
+            records: records::Io::default(),
         })
     }
 
@@ -789,7 +798,12 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
-        authorized_operation_on(&transaction, authorized, after_ownership_read)
+        authorized_record_on(
+            &transaction,
+            &self.records,
+            authorized,
+            after_ownership_read,
+        )
     }
 
     pub(in crate::gateway) fn history_ids(
@@ -825,22 +839,15 @@ impl Journal {
             .connection
             .unchecked_transaction()
             .map_err(GatewayError::Database)?;
-        let bytes: Option<Option<Vec<u8>>> = transaction
-            .query_row(
-                "SELECT CASE WHEN length(signed_authorization_grant) BETWEEN 1 AND 4096
-                         THEN signed_authorization_grant END
-             FROM kubernetes_image_operations WHERE operation_id = ?1",
-                [operation_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some(bytes) = bytes else {
+        let Some(record) = self.records.read(&transaction, operation_id)? else {
             return Ok(None);
         };
-        let bytes = bytes.ok_or(GatewayError::InvalidPersistedState)?;
+        let bytes: Vec<u8> = record.get("signed_authorization_grant")?;
+        if bytes.is_empty() || bytes.len() > 4096 {
+            return Err(GatewayError::InvalidPersistedState);
+        }
         let authorized = authorize(&bytes)?;
-        let operation = authorized_operation_on(&transaction, &authorized, || {})?
+        let operation = authorized_record_on(&transaction, &self.records, &authorized, || {})?
             .ok_or(GatewayError::InvalidPersistedState)?;
         Ok(Some(super::RetainedOperation {
             request: authorized.request().to_adapter_request(),
@@ -856,45 +863,32 @@ impl Journal {
         let request = authorized.request();
         let authority = authorized.authorization();
         let approved = authority.authorization.approved_target.as_ref();
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(GatewayError::Database)?;
-        let other_capability: bool = transaction
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM git_ref_operations WHERE operation_id = ?1)",
-                [request.operation_id()],
-                |row| row.get(0),
-            )
-            .map_err(GatewayError::Database)?;
-        if other_capability {
-            return Err(GatewayError::OperationIdentityConflict);
-        }
-        capacity::require_admission(&transaction)?;
-        transaction
-            .execute(
-                "INSERT INTO kubernetes_image_operations (
-                    operation_id, namespace, deployment, container,
-                    immutable_image_digest, state, authorization_id,
-                    authorization_signer_key_id, authorization_grant_digest,
-                    approved_uid, approved_resource_version, signed_authorization_grant
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
-                    request.operation_id(),
-                    request.namespace(),
-                    request.deployment(),
-                    request.container(),
-                    request.immutable_image_digest(),
-                    OperationState::Requested.as_sql(),
-                    authority.authorization.authorization_id,
-                    authority.signer_key_id,
-                    authority.grant_digest,
-                    approved.map(|target| target.uid.as_str()),
-                    approved.map(|target| target.resource_version.as_str()),
-                    authority.signed_grant,
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        transaction.commit().map_err(GatewayError::Database)
+        let mut record = Record::empty(request.operation_id());
+        record.set("namespace", request.namespace().to_owned());
+        record.set("deployment", request.deployment().to_owned());
+        record.set("container", request.container().to_owned());
+        record.set(
+            "immutable_image_digest",
+            request.immutable_image_digest().to_owned(),
+        );
+        record.set("state", OperationState::Requested.as_sql().to_owned());
+        record.set(
+            "authorization_id",
+            authority.authorization.authorization_id.clone(),
+        );
+        record.set(
+            "authorization_signer_key_id",
+            authority.signer_key_id.clone(),
+        );
+        record.set("authorization_grant_digest", authority.grant_digest.clone());
+        record.set("signed_authorization_grant", authority.signed_grant.clone());
+        record.set_optional("approved_uid", approved.map(|target| target.uid.clone()));
+        record.set_optional(
+            "approved_resource_version",
+            approved.map(|target| target.resource_version.clone()),
+        );
+        self.records
+            .replace(&self.connection, None, &record, StorageWrite::Admission)
     }
 
     pub(in crate::gateway) fn mark_authorized(
@@ -907,26 +901,31 @@ impl Journal {
         {
             return Err(GatewayError::InvalidTransition);
         }
-        let operation_id = operation.request().operation_id();
+        let expected = self.bound_record(
+            operation.request().operation_id(),
+            &LoadedOperation::Requested(operation.clone()),
+        )?;
+        let mut next = expected.clone();
         let authorization = authorized.authorization();
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET state = ?1, authorization_id = ?2,
-                     authorization_signer_key_id = ?3, authorization_grant_digest = ?4
-                 WHERE operation_id = ?5 AND state = ?6",
-                params![
-                    OperationState::Authorized.as_sql(),
-                    authorization.authorization.authorization_id,
-                    authorization.signer_key_id,
-                    authorization.grant_digest,
-                    operation_id,
-                    OperationState::Requested.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        next.set("state", OperationState::Authorized.as_sql().to_owned());
+        next.set(
+            "authorization_id",
+            authorization.authorization.authorization_id.clone(),
+        );
+        next.set(
+            "authorization_signer_key_id",
+            authorization.signer_key_id.clone(),
+        );
+        next.set(
+            "authorization_grant_digest",
+            authorization.grant_digest.clone(),
+        );
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Authorization,
+        )
     }
 
     #[cfg(test)]
@@ -988,7 +987,15 @@ impl Journal {
         &self,
         operation_id: &str,
     ) -> Result<Option<ReceiptStatement>, GatewayError> {
-        receipt_statement_on(&self.connection, operation_id)
+        Ok(match self.operation(operation_id)? {
+            Some(LoadedOperation::ReceiverObserved(operation)) => {
+                Some(operation.receiver.statement)
+            },
+            Some(LoadedOperation::Finalized(operation)) => {
+                Some(operation.receiver_observed.receiver.statement)
+            },
+            _ => None,
+        })
     }
 
     // Receipt completion commits the original signed evidence in SQLite, independently of export.
@@ -1001,16 +1008,10 @@ impl Journal {
         if receipt.operation_id != operation.operation_id() {
             return Err(GatewayError::InvalidTransition);
         }
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(GatewayError::Database)?;
-        // The phase type does not prove which journal supplied the snapshot. Compare all frozen
-        // facts with this journal's row under write exclusion, then check the candidate bytes.
-        if loaded_operation_on(&transaction, operation.operation_id())?
-            != Some(LoadedOperation::ReceiverObserved(operation.clone()))
-        {
-            return Err(GatewayError::InvalidTransition);
-        }
+        let expected = self.bound_record(
+            operation.operation_id(),
+            &LoadedOperation::ReceiverObserved(operation.clone()),
+        )?;
         let (key_id, statement) =
             decode_frozen_receipt(&receipt.bytes).map_err(GatewayError::Receipt)?;
         if statement != *operation.statement()
@@ -1019,25 +1020,17 @@ impl Journal {
         {
             return Err(GatewayError::InvalidPersistedState);
         }
-        let changed = transaction
-            .execute(
-                "UPDATE kubernetes_image_operations
-             SET state = ?1, receipt_digest = ?2, receipt_bytes = ?3, receipt_key_id = ?4
-             WHERE operation_id = ?5 AND state = ?6",
-                params![
-                    OperationState::Finalized.as_sql(),
-                    receipt.digest,
-                    receipt.bytes,
-                    receipt.key_id,
-                    receipt.operation_id,
-                    OperationState::ReceiverObserved.as_sql()
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)?;
-        #[cfg(test)]
-        crate::gateway::tests::storage::receipt_precommit_checkpoint(&transaction);
-        transaction.commit().map_err(GatewayError::Database)
+        let mut next = expected.clone();
+        next.set("state", OperationState::Finalized.as_sql().to_owned());
+        next.set("receipt_digest", receipt.digest.clone());
+        next.set("receipt_bytes", receipt.bytes.clone());
+        next.set("receipt_key_id", receipt.key_id.clone());
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Receipt,
+        )
     }
 
     #[cfg(test)]
@@ -1057,7 +1050,40 @@ impl Journal {
         let transaction =
             Transaction::new_unchecked(&self.connection, TransactionBehavior::Deferred)
                 .map_err(GatewayError::Database)?;
-        loaded_operation_on(&transaction, operation_id)
+        self.records
+            .read(&transaction, operation_id)?
+            .as_ref()
+            .map(|record| self.records.decode(record))
+            .transpose()
+    }
+
+    fn bound_record(&self, id: &str, operation: &LoadedOperation) -> Result<Record, GatewayError> {
+        let record = self
+            .records
+            .read(&self.connection, id)?
+            .ok_or(GatewayError::InvalidTransition)?;
+        if self.records.decode(&record)? != *operation {
+            return Err(GatewayError::InvalidTransition);
+        }
+        Ok(record)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn control_storage(&mut self, control: StorageControl) {
+        self.records.control = control;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn exercise_defect(&self, defect: Defect) -> bool {
+        self.records.control.exercise(defect)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remint_for_control(operation: &ApplyStartedOperation) -> DispatchPermission {
+        DispatchPermission {
+            request: operation.request().clone(),
+            target: operation.attempt.target.clone(),
+        }
     }
 
     pub(in crate::gateway) fn mark_not_attempted(
@@ -1065,22 +1091,19 @@ impl Journal {
         operation: &AuthorizedOperation,
         rejection: TargetRejection,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request().operation_id();
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET state = ?1, target_rejection = ?2, apply_attempted = 0
-                 WHERE operation_id = ?3 AND state = ?4",
-                params![
-                    OperationState::NotAttempted.as_sql(),
-                    rejection.as_sql(),
-                    operation_id,
-                    OperationState::Authorized.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        let expected = self.bound_record(
+            operation.request().operation_id(),
+            &LoadedOperation::Authorized(operation.clone()),
+        )?;
+        let mut next = expected.clone();
+        next.set("state", OperationState::NotAttempted.as_sql().to_owned());
+        next.set("target_rejection", rejection.as_sql().to_owned());
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Rejection,
+        )
     }
 
     pub(in crate::gateway) fn begin_attempt(
@@ -1091,22 +1114,17 @@ impl Journal {
     ) -> Result<Option<DispatchPermission>, GatewayError> {
         #[cfg(not(test))]
         let _ = fault;
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(GatewayError::Database)?;
-        // A snapshot from another journal can have the same operation ID but different authority
-        // or request facts. Compare the complete authorized snapshot under write exclusion.
-        if loaded_operation_on(&transaction, operation.request().operation_id())?
-            != Some(LoadedOperation::Authorized(operation.clone()))
-        {
-            return Err(GatewayError::InvalidTransition);
-        }
+        // The raw store conditionally commits against the complete original record, not merely
+        // the phase or identity. Only confirmed acknowledgement reaches permission construction.
+        self.bound_record(
+            operation.request().operation_id(),
+            &LoadedOperation::Authorized(operation.clone()),
+        )?;
         let target = if let Some(approved) = operation.approved_target() {
             if observed.deployment_uid() != approved.uid
                 || observed.resource_version() != approved.resource_version
             {
                 self.mark_stale_approval(operation, &observed)?;
-                transaction.commit().map_err(GatewayError::Database)?;
                 return Ok(None);
             }
             ValidatedTargetIdentity::try_from(TargetIdentity {
@@ -1118,7 +1136,6 @@ impl Journal {
             observed
         };
         self.mark_apply_started(operation, &target)?;
-        transaction.commit().map_err(GatewayError::Database)?;
         #[cfg(test)]
         if fault == Some(super::FaultPoint::AttemptCommitAcknowledgementLost) {
             return Err(GatewayError::InjectedFault);
@@ -1134,21 +1151,24 @@ impl Journal {
         operation: &AuthorizedOperation,
         observed: &ValidatedTargetIdentity,
     ) -> Result<(), GatewayError> {
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations SET state = 'not_attempted',
-                target_rejection = 'stale_approval', apply_attempted = 0,
-                preflight_uid = ?1, preflight_resource_version = ?2
-             WHERE operation_id = ?3 AND state = 'authorized'",
-                params![
-                    observed.deployment_uid(),
-                    observed.resource_version(),
-                    operation.request().operation_id()
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        let expected = self.bound_record(
+            operation.request().operation_id(),
+            &LoadedOperation::Authorized(operation.clone()),
+        )?;
+        let mut next = expected.clone();
+        next.set("state", "not_attempted".to_owned());
+        next.set("target_rejection", "stale_approval".to_owned());
+        next.set("preflight_uid", observed.deployment_uid().to_owned());
+        next.set(
+            "preflight_resource_version",
+            observed.resource_version().to_owned(),
+        );
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Rejection,
+        )
     }
 
     fn mark_apply_started(
@@ -1156,26 +1176,26 @@ impl Journal {
         operation: &AuthorizedOperation,
         target: &ValidatedTargetIdentity,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request().operation_id();
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET state = ?1, write_strategy = ?2, apply_attempted = 1,
-                     target_uid = ?3, target_resource_version = ?4,
-                     preflight_uid = ?3, preflight_resource_version = ?4
-                 WHERE operation_id = ?5 AND state = ?6",
-                params![
-                    OperationState::ApplyStarted.as_sql(),
-                    WRITE_STRATEGY,
-                    target.deployment_uid(),
-                    target.resource_version(),
-                    operation_id,
-                    OperationState::Authorized.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        let expected = self.bound_record(
+            operation.request().operation_id(),
+            &LoadedOperation::Authorized(operation.clone()),
+        )?;
+        let mut next = expected.clone();
+        next.set("state", OperationState::ApplyStarted.as_sql().to_owned());
+        next.set("write_strategy", WRITE_STRATEGY.to_owned());
+        next.set("apply_attempted", 1_i64);
+        for field in ["target_uid", "preflight_uid"] {
+            next.set(field, target.deployment_uid().to_owned());
+        }
+        for field in ["target_resource_version", "preflight_resource_version"] {
+            next.set(field, target.resource_version().to_owned());
+        }
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Attempt,
+        )
     }
 
     pub(in crate::gateway) fn record_apply_outcome(
@@ -1183,41 +1203,28 @@ impl Journal {
         operation: &ApplyStartedOperation,
         outcome: &ApplyOutcome,
     ) -> Result<(), GatewayError> {
-        let operation_id = operation.request().operation_id();
         outcome.validate()?;
-        let target_uid = self
-            .connection
-            .query_row(
-                "SELECT target_uid
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1 AND state = ?2 AND apply_attempted = 1",
-                params![operation_id, OperationState::ApplyStarted.as_sql()],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .map_err(GatewayError::Database)?;
+        let expected = self.bound_record(
+            operation.request().operation_id(),
+            &LoadedOperation::ApplyStarted(operation.clone()),
+        )?;
+        let target_uid: Option<String> = expected.get("target_uid")?;
         if target_uid.is_none()
             || outcome.deployment_uid.as_ref() != target_uid.as_ref()
             || outcome.resource_version.is_none()
         {
             return Err(GatewayError::InvalidKubernetesFact);
         }
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET apply_accepted = ?1, requested_generation = ?2,
-                     apply_resource_version = ?3
-                 WHERE operation_id = ?4 AND state = ?5 AND apply_attempted = 1",
-                params![
-                    outcome.accepted,
-                    outcome.requested_generation,
-                    outcome.resource_version,
-                    operation_id,
-                    OperationState::ApplyStarted.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        let mut next = expected.clone();
+        next.set("apply_accepted", i64::from(outcome.accepted));
+        next.set_optional("requested_generation", outcome.requested_generation);
+        next.set_optional("apply_resource_version", outcome.resource_version.clone());
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Response,
+        )
     }
 
     pub(in crate::gateway) fn freeze_observation(
@@ -1229,43 +1236,74 @@ impl Journal {
         let request = operation.request();
         let outcome = operation.classification_outcome();
         let result = observation.classify(request, &outcome);
+        #[cfg(test)]
+        let result = if self.exercise_defect(Defect::InitialUnknown) {
+            OperationResult::Unknown
+        } else {
+            result
+        };
         let requested_generation = observation.requested_generation(request, &outcome);
-        let changed = self
-            .connection
-            .execute(
-                "UPDATE kubernetes_image_operations
-                 SET state = ?1, receiver_uid = ?2, receiver_image = ?3,
-                     receiver_operation_marker = ?4, current_generation = ?5,
-                     observed_generation = ?6, receiver_resource_version = ?7,
-                     desired_replicas = ?8, updated_replicas = ?9,
-                     available_replicas = ?10, unavailable_replicas = ?11,
-                     result = ?12, requested_generation = ?13,
-                     rollout_condition_type = ?14, rollout_condition_status = ?15,
-                     rollout_condition_reason = ?16
-                 WHERE operation_id = ?17 AND state = ?18",
-                params![
-                    OperationState::ReceiverObserved.as_sql(),
-                    observation.deployment_uid,
-                    observation.image,
-                    observation.operation_marker,
-                    observation.current_generation,
-                    observation.observed_generation,
-                    observation.resource_version,
-                    observation.desired_replicas,
-                    observation.updated_replicas,
-                    observation.available_replicas,
-                    observation.unavailable_replicas,
-                    result.as_sql(),
-                    requested_generation,
-                    observation.rollout_condition_type,
-                    observation.rollout_condition_status,
-                    observation.rollout_condition_reason,
-                    request.operation_id(),
-                    OperationState::ApplyStarted.as_sql(),
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        changed_one(changed)
+        let expected = self.bound_record(
+            request.operation_id(),
+            &LoadedOperation::ApplyStarted(operation.clone()),
+        )?;
+        let mut next = expected.clone();
+        next.set(
+            "state",
+            OperationState::ReceiverObserved.as_sql().to_owned(),
+        );
+        next.set_optional("receiver_uid", observation.deployment_uid.clone());
+        next.set_optional("receiver_image", observation.image.clone());
+        next.set_optional(
+            "receiver_operation_marker",
+            observation.operation_marker.clone(),
+        );
+        next.set_optional("current_generation", observation.current_generation);
+        next.set_optional("observed_generation", observation.observed_generation);
+        next.set_optional(
+            "receiver_resource_version",
+            observation.resource_version.clone(),
+        );
+        next.set_optional(
+            "desired_replicas",
+            observation.desired_replicas.map(i64::from),
+        );
+        next.set_optional(
+            "updated_replicas",
+            observation.updated_replicas.map(i64::from),
+        );
+        let available = observation.available_replicas;
+        #[cfg(test)]
+        let available = if self.exercise_defect(Defect::ReplicaSwap) {
+            observation.updated_replicas
+        } else {
+            available
+        };
+        next.set_optional("available_replicas", available.map(i64::from));
+        next.set_optional(
+            "unavailable_replicas",
+            observation.unavailable_replicas.map(i64::from),
+        );
+        next.set("result", result.as_sql().to_owned());
+        next.set_optional("requested_generation", requested_generation);
+        next.set_optional(
+            "rollout_condition_type",
+            observation.rollout_condition_type.clone(),
+        );
+        next.set_optional(
+            "rollout_condition_status",
+            observation.rollout_condition_status.clone(),
+        );
+        next.set_optional(
+            "rollout_condition_reason",
+            observation.rollout_condition_reason.clone(),
+        );
+        self.records.replace(
+            &self.connection,
+            Some(&expected),
+            &next,
+            StorageWrite::Observation,
+        )
     }
 }
 
@@ -1274,32 +1312,39 @@ fn authorized_operation_on(
     authorized: &AuthorizedRequest,
     after_ownership_read: impl FnOnce(),
 ) -> Result<Option<LoadedOperation>, GatewayError> {
+    authorized_record_on(
+        connection,
+        &records::Io::default(),
+        authorized,
+        after_ownership_read,
+    )
+}
+
+fn authorized_record_on(
+    connection: &Connection,
+    io: &records::Io,
+    authorized: &AuthorizedRequest,
+    after_ownership_read: impl FnOnce(),
+) -> Result<Option<LoadedOperation>, GatewayError> {
     let request = authorized.request();
     let authorization = authorized.authorization();
-    let existing = connection
-        .query_row(
-            "SELECT namespace, deployment, container, immutable_image_digest,
-                    authorization_id, authorization_signer_key_id,
-                    authorization_grant_digest, state, signed_authorization_grant
-             FROM kubernetes_image_operations
-             WHERE operation_id = ?1",
-            [request.operation_id()],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
-                    row.get::<_, Option<Vec<u8>>>(8)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(GatewayError::Database)?;
+    let existing_record = io.read(connection, request.operation_id())?;
+    let existing = existing_record
+        .as_ref()
+        .map(|record| -> Result<_, GatewayError> {
+            Ok((
+                record.get::<String>("namespace")?,
+                record.get::<String>("deployment")?,
+                record.get::<String>("container")?,
+                record.get::<String>("immutable_image_digest")?,
+                record.get::<Option<String>>("authorization_id")?,
+                record.get::<Option<String>>("authorization_signer_key_id")?,
+                record.get::<Option<String>>("authorization_grant_digest")?,
+                record.get::<String>("state")?,
+                record.get::<Option<Vec<u8>>>("signed_authorization_grant")?,
+            ))
+        })
+        .transpose()?;
     let Some((
         namespace,
         deployment,
@@ -1350,7 +1395,11 @@ fn authorized_operation_on(
         return Err(GatewayError::OperationIdentityConflict);
     }
     after_ownership_read();
-    let loaded = loaded_operation_on(connection, request.operation_id())?
+    let loaded = io
+        .read(connection, request.operation_id())?
+        .as_ref()
+        .map(|record| io.decode(record))
+        .transpose()?
         .ok_or(GatewayError::InvalidPersistedState)?;
     if loaded.request_facts().approved_target != authorization.authorization.approved_target {
         return Err(GatewayError::OperationIdentityConflict);
@@ -1359,112 +1408,6 @@ fn authorized_operation_on(
         return Err(GatewayError::InvalidPersistedState);
     }
     Ok(Some(loaded))
-}
-
-fn snapshot_row_on(
-    connection: &Connection,
-    operation_id: &str,
-) -> Result<Option<SnapshotRow>, GatewayError> {
-    connection
-        .query_row(
-            "SELECT operation_id, namespace, deployment, container,
-                    immutable_image_digest, state, result, target_rejection,
-                    authorization_id, authorization_signer_key_id,
-                    authorization_grant_digest, write_strategy, apply_attempted,
-                    target_uid, target_resource_version, apply_accepted,
-                    requested_generation, apply_resource_version,
-                    receiver_uid IS NOT NULL OR receiver_image IS NOT NULL
-                        OR receiver_operation_marker IS NOT NULL
-                        OR current_generation IS NOT NULL
-                        OR observed_generation IS NOT NULL
-                        OR receiver_resource_version IS NOT NULL
-                        OR desired_replicas IS NOT NULL
-                        OR updated_replicas IS NOT NULL
-                        OR available_replicas IS NOT NULL
-                        OR unavailable_replicas IS NOT NULL
-                        OR rollout_condition_type IS NOT NULL
-                        OR rollout_condition_status IS NOT NULL
-                        OR rollout_condition_reason IS NOT NULL,
-                    NULL, receipt_digest, receipt_bytes, receipt_key_id,
-                    approved_uid, approved_resource_version,
-                    preflight_uid, preflight_resource_version
-             FROM kubernetes_image_operations
-             WHERE operation_id = ?1",
-            [operation_id],
-            |row| {
-                Ok(SnapshotRow {
-                    approved_uid: row.get(23)?,
-                    approved_resource_version: row.get(24)?,
-                    preflight_uid: row.get(25)?,
-                    preflight_resource_version: row.get(26)?,
-                    operation_id: row.get(0)?,
-                    namespace: row.get(1)?,
-                    deployment: row.get(2)?,
-                    container: row.get(3)?,
-                    immutable_image_digest: row.get(4)?,
-                    state: row.get(5)?,
-                    result: row.get(6)?,
-                    target_rejection: row.get(7)?,
-                    authorization_id: row.get(8)?,
-                    authorization_signer_key_id: row.get(9)?,
-                    authorization_grant_digest: row.get(10)?,
-                    write_strategy: row.get(11)?,
-                    apply_attempted: row.get(12)?,
-                    target_uid: row.get(13)?,
-                    target_resource_version: row.get(14)?,
-                    apply_accepted: row.get(15)?,
-                    requested_generation: row.get(16)?,
-                    apply_resource_version: row.get(17)?,
-                    receiver_facts_present: row.get(18)?,
-                    receipt_digest: row.get(20)?,
-                    receipt_bytes: row.get(21)?,
-                    receipt_key_id: row.get(22)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(GatewayError::Database)
-}
-
-fn receipt_statement_on(
-    connection: &Connection,
-    operation_id: &str,
-) -> Result<Option<ReceiptStatement>, GatewayError> {
-    connection
-        .query_row(
-            "SELECT operation_id, authorization_id, authorization_signer_key_id,
-                    authorization_grant_digest, namespace, deployment, container,
-                    immutable_image_digest, write_strategy, target_uid,
-                    target_resource_version, receiver_uid, receiver_image,
-                    receiver_operation_marker, current_generation, requested_generation,
-                    observed_generation, receiver_resource_version, desired_replicas,
-                    updated_replicas, available_replicas, unavailable_replicas,
-                    rollout_condition_type, rollout_condition_status,
-                    rollout_condition_reason, result, approved_uid, approved_resource_version
-             FROM kubernetes_image_operations
-             WHERE operation_id = ?1 AND state IN (?2, ?3)",
-            params![
-                operation_id,
-                OperationState::ReceiverObserved.as_sql(),
-                OperationState::Finalized.as_sql(),
-            ],
-            ReceiptRow::from_sql,
-        )
-        .optional()
-        .map_err(GatewayError::Database)?
-        .map(ReceiptRow::into_statement)
-        .transpose()
-}
-
-fn loaded_operation_on(
-    connection: &Connection,
-    operation_id: &str,
-) -> Result<Option<LoadedOperation>, GatewayError> {
-    let Some(row) = snapshot_row_on(connection, operation_id)? else {
-        return Ok(None);
-    };
-    let statement = receipt_statement_on(connection, operation_id)?;
-    row.into_operation(statement).map(Some)
 }
 
 fn snapshot_target(
@@ -1588,39 +1531,6 @@ struct ReceiptRow {
 }
 
 impl ReceiptRow {
-    fn from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            approved_uid: row.get(26)?,
-            approved_resource_version: row.get(27)?,
-            operation_id: row.get(0)?,
-            authorization_id: row.get(1)?,
-            authorization_signer_key_id: row.get(2)?,
-            authorization_grant_digest: row.get(3)?,
-            namespace: row.get(4)?,
-            deployment: row.get(5)?,
-            container: row.get(6)?,
-            immutable_image_digest: row.get(7)?,
-            write_strategy: row.get(8)?,
-            target_uid: row.get(9)?,
-            target_resource_version: row.get(10)?,
-            receiver_uid: row.get(11)?,
-            observed_image: row.get(12)?,
-            observed_operation_marker: row.get(13)?,
-            current_generation: row.get(14)?,
-            requested_generation: row.get(15)?,
-            observed_generation: row.get(16)?,
-            observed_resource_version: row.get(17)?,
-            desired_replicas: row.get(18)?,
-            updated_replicas: row.get(19)?,
-            available_replicas: row.get(20)?,
-            unavailable_replicas: row.get(21)?,
-            rollout_condition_type: row.get(22)?,
-            rollout_condition_status: row.get(23)?,
-            rollout_condition_reason: row.get(24)?,
-            result: row.get(25)?,
-        })
-    }
-
     fn into_statement(self) -> Result<ReceiptStatement, GatewayError> {
         let statement = ReceiptStatement {
             approved_target: snapshot_target(self.approved_uid, self.approved_resource_version)?,

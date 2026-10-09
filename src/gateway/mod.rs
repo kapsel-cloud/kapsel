@@ -29,6 +29,8 @@ pub use git::{
     Acknowledgement as GitAcknowledgement, GitReceiverConfiguration, ObservedRef as GitObservedRef,
 };
 use journal::Journal;
+#[cfg(test)]
+pub(crate) use journal::{Defect, Delivery, StorageControl, StorageWrite};
 pub(crate) use journal::{DispatchPermission, LoadedOperation};
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
 #[cfg(test)]
@@ -357,6 +359,11 @@ pub(crate) struct RetainedOperation {
 }
 
 impl Gateway {
+    #[cfg(test)]
+    pub(crate) fn control_storage(&mut self, control: journal::StorageControl) {
+        self.journal.control_storage(control);
+    }
+
     /// Opens a single-trust legacy history for compatibility tests.
     #[cfg(test)]
     pub(crate) fn open(
@@ -632,13 +639,14 @@ impl Gateway {
         Ok(Some((worker, state)))
     }
 
-    pub(crate) async fn admit_and_reconcile(
+    pub(crate) async fn admit_and_reconcile<A: DeploymentImageAdapter + Send>(
         &mut self,
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
-        client: Option<kube::Client>,
+        adapter: Option<&mut A>,
         receipt_settings: Option<&ReceiptSettings<'_>>,
         acknowledged: impl FnOnce(AdmissionDecision) + Send,
+        fault: Option<FaultPoint>,
     ) -> Result<(), ReconciliationError> {
         let authorized = self
             .bind_authorization(request, signed_grant)
@@ -661,9 +669,16 @@ impl Gateway {
         else {
             return Ok(());
         };
-        self.reconcile_locked(request, signed_grant, client, receipt_settings, &worker)
-            .await
-            .map(|_| ())
+        self.reconcile_locked_with_adapter(
+            request,
+            signed_grant,
+            adapter,
+            receipt_settings,
+            &worker,
+            fault,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Advances an existing exact-authorized operation to a blocked or terminal snapshot.
@@ -712,6 +727,7 @@ impl Gateway {
         .await
     }
 
+    #[cfg(test)]
     async fn reconcile_locked(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -719,6 +735,27 @@ impl Gateway {
         client: Option<kube::Client>,
         receipt_settings: Option<&ReceiptSettings<'_>>,
         worker: &journal::WorkerLock,
+    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
+        let mut adapter = client.map(KubernetesDeploymentImageAdapter::new);
+        self.reconcile_locked_with_adapter(
+            request,
+            signed_grant,
+            adapter.as_mut(),
+            receipt_settings,
+            worker,
+            None,
+        )
+        .await
+    }
+
+    async fn reconcile_locked_with_adapter<A: DeploymentImageAdapter + Send>(
+        &mut self,
+        request: &SetDeploymentImageRequest,
+        signed_grant: &[u8],
+        mut adapter: Option<&mut A>,
+        receipt_settings: Option<&ReceiptSettings<'_>>,
+        worker: &journal::WorkerLock,
+        fault: Option<FaultPoint>,
     ) -> Result<Option<LoadedOperation>, ReconciliationError> {
         if !self.journal.owns_worker(worker) {
             return Err(ReconciliationError::Advancement(
@@ -728,6 +765,13 @@ impl Gateway {
         let authorized = self
             .bind_authorization(request, signed_grant)
             .map_err(ReconciliationError::Advancement)?;
+        #[cfg(test)]
+        if self.journal.exercise_defect(Defect::NoOp) {
+            return self
+                .journal
+                .authorized_operation(&authorized)
+                .map_err(ReconciliationError::Advancement);
+        }
         loop {
             let Some(operation) = self
                 .journal
@@ -743,13 +787,12 @@ impl Gateway {
                     true
                 },
                 OperationState::Authorized | OperationState::ApplyStarted => {
-                    let Some(client) = client.clone() else {
+                    let Some(adapter) = adapter.as_deref_mut() else {
                         return Err(ReconciliationError::Blocked(
                             ReconciliationBlockage::ReceiverUnavailable,
                         ));
                     };
-                    let mut adapter = KubernetesDeploymentImageAdapter::new(client);
-                    self.run_locked_operation_once(&authorized, &mut adapter, None, worker)
+                    self.run_locked_operation_once(&authorized, adapter, fault, worker)
                         .await
                         .map_err(ReconciliationError::Advancement)?
                         .is_some()
@@ -763,7 +806,7 @@ impl Gateway {
                     self.finalize_locked_operation_receipt_once(
                         Some(operation.clone()),
                         settings,
-                        None,
+                        fault,
                     )
                     .map_err(|_| ReconciliationError::Completion)?
                     .is_some()
@@ -841,6 +884,17 @@ impl Gateway {
         let _ = fault;
         let Some(journal::LoadedOperation::ReceiverObserved(operation)) = operation else {
             return Ok(None);
+        };
+        #[cfg(test)]
+        let wrong_settings = ReceiptSettings {
+            signing_seed: &[99; 32],
+            key_id: settings.key_id,
+        };
+        #[cfg(test)]
+        let settings = if self.journal.exercise_defect(Defect::WrongSigner) {
+            &wrong_settings
+        } else {
+            settings
         };
         let receipt = Self::build_receipt(&operation, settings)?;
         #[cfg(feature = "demo-harness")]
@@ -1023,6 +1077,14 @@ impl Gateway {
             // Observation-only recovery determines what can be concluded without resending.
             // The durable attempt records that dispatch may have happened, not permission to send.
             journal::LoadedOperation::ApplyStarted(operation) => {
+                #[cfg(test)]
+                if self.journal.exercise_defect(Defect::Remint) {
+                    let permission = Journal::remint_for_control(&operation);
+                    adapter
+                        .apply(permission)
+                        .await
+                        .map_err(|()| GatewayError::KubernetesApply)?;
+                }
                 // ReceiverRead has always interrupted only fresh dispatch, not recovery.
                 let fault = fault.filter(|point| *point != FaultPoint::ReceiverRead);
                 (operation, fault)

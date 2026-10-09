@@ -16,7 +16,7 @@ pub(super) const PERSISTED_ROW_BYTES_MAX: i32 = 64 * 1024;
 const _: () = assert!(RECEIPT_BYTES_MAX <= PERSISTED_VALUE_BYTES_MAX);
 const _: () = assert!(PERSISTED_VALUE_BYTES_MAX < PERSISTED_ROW_BYTES_MAX as usize);
 
-const CURRENT_COLUMNS: &[&str] = &[
+pub(super) const CURRENT_COLUMNS: &[&str] = &[
     "operation_id",
     "namespace",
     "deployment",
