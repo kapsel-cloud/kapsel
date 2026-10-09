@@ -453,6 +453,10 @@ impl Gateway {
         &self,
         operation_id: &str,
     ) -> Result<Option<RetainedOperation>, GatewayError> {
+        #[cfg(test)]
+        let foreign = self.journal.peer_read_for_control(operation_id)?;
+        #[cfg(test)]
+        let operation_id = foreign.as_deref().unwrap_or(operation_id);
         validate_identity(InputField::OperationId, operation_id)?;
         self.journal.retained_operation(operation_id, |bytes| {
             let verified = self.verify_grant(bytes)?;

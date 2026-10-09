@@ -4,6 +4,8 @@ Notable changes are recorded here. Release tags retain their matching documentat
 
 ## Unreleased
 
+- Snapshot grant provisioning output-write failures now report the `provision-snapshot-grant`
+  command label.
 - Execution now uses only the resident service and fixed ID-only client/MCP bridge. Direct
   `kapsel operate`, direct `kapsel mcp`, and macOS-source execution are removed. This is not a
   transparent migration; operator provisioning, offline inspection, and caller export remain.

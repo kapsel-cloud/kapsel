@@ -471,16 +471,30 @@ python3 tools/dev/run_robustness.py exploration \
   --seed 21182435931731969 --cases 1000 --shards 2 --timeout 1800
 ```
 
-`exploration`, `simulation`, and `soak` select the same lifecycle explorer; existing shell commands
-and `KAPSEL_SIMULATION_*` seed/case/shard defaults remain accepted. Cases are bounded to 10,000 per
-seed. These modes share the simulation lane's custody lock and unresolved-finding stop rule. It
-builds once in owned scratch, runs explicit Kubernetes/Git/application traces with 48 generated
-steps per identity, and retains every full trace before execution. It checks each shard's completion
-count, trace identities, and content hashes, then directly deserializes and replays every retained
-document through the owning Rust implementation. Missing documents, failed replay, or missing replay
-markers do not pass. The 1,800-second overall limit includes compilation and replay; completion need
-not take 30 minutes. Infrastructure must enforce the two-CPU/4-GiB ceilings described below. The
-unchanged clean-committed-source requirement also applies to this mode.
+`exploration`, `simulation`, and `soak` default to the same lifecycle explorer; existing shell
+commands and `KAPSEL_SIMULATION_*` seed/case/shard defaults remain accepted. Select the
+atomic-record Kubernetes simulator explicitly with `--simulation-engine kernel`:
+
+```sh
+python3 tools/dev/run_robustness.py exploration --simulation-engine kernel \
+  --seed 21182435931731969 --cases 1000 --shards 2 --timeout 1800
+```
+
+The kernel route uses the same supervisor, source checks, storage budget, lock, command retirement,
+shard accounting and Rust-owned directory replay. It explores three distinct Kubernetes identities
+through real service selection and virtual atomic records. It does not qualify Git, physical jobs,
+SQLite OS failures, live receivers or installed artifacts. The supervisor requests 48 generated
+steps. Lifecycle counts them per identity; kernel interleaves them across three identities. Healthy
+suffixes are additional. Kernel defect-control inputs belong to the separate local detection route,
+not the healthy supervised sweep. Cases are bounded to 10,000 per seed. These modes share the
+simulation lane's custody lock and unresolved-finding stop rule. It builds once in owned scratch and
+retains every full trace before execution. The default engine runs explicit
+Kubernetes/Git/application traces with 48 generated steps per identity. It checks each shard's
+completion count, trace identities, and content hashes, then directly deserializes and replays every
+retained document through the owning Rust implementation. Missing documents, failed replay, or
+missing replay markers do not pass. The 1,800-second overall limit includes compilation and replay;
+completion need not take 30 minutes. Infrastructure must enforce the two-CPU/4-GiB ceilings
+described below. The unchanged clean-committed-source requirement also applies to this mode.
 
 [The soak runner](../../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random
 seeds, 1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout
@@ -507,9 +521,22 @@ The printed `state/run-*/` directory contains:
   timestamps, and runner exit status;
 - `commands.json` and `command-*.log`: exact argument vectors, lane environment, process exit
   statuses, and output (at most 8 MiB per command);
-- `exploration.json`, `traces-SEED-SHARD/`, and `traces-SEED-SHARD.json`: workload and executable
-  identity, full/minimized event documents, and full-trace content hashes; or
+- `exploration.json`, `simulation-tests`, `source.tar`, `traces-SEED-SHARD/`, and
+  `traces-SEED-SHARD.json`: selected engine, retained executed test binary, committed-source
+  archive, their digests, full/minimized event documents, and full-trace content hashes; or
 - `fuzz.json`, `corpus-before/`, `corpus-after.json`, and `artifacts/`: fuzz replay evidence.
+
+Simulation invokes the retained `simulation-tests` binary directly. Successful scratch cleanup does
+not remove that executable or `source.tar`. Replay a kernel shard with that exact executable:
+
+```sh
+KAPSEL_KERNEL_REPLAY_DIRECTORY=/absolute/owned/state/run-EXAMPLE/traces-SEED-SHARD \
+  /absolute/owned/state/run-EXAMPLE/simulation-tests \
+  kernel_simulation_tests::kernel_trace_exploration_or_replay --ignored --exact --nocapture
+```
+
+Check the paths and digests in `exploration.json` first. These identities and a source archive are
+not build attestations. Rebuilding exercises retained inputs against a new binary.
 
 The runner stops rather than silently truncating and passing. It refuses new runs near its 1 GiB
 retained-state budget or below 128 MiB free space, and checks retained storage during command

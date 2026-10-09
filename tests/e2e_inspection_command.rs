@@ -80,6 +80,43 @@ fn canonical_vectors_are_inspected_at_the_explicit_time() {
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        concat!(
+            "{\"command\":\"inspect\",\"status\":\"INSPECTED\",",
+            "\"operation_id\":\"op-001\",\"authorization_id\":\"auth-001\",",
+            "\"authorization_signer_key_id\":\"kap0038-authorization-test-key\",",
+            "\"authorization_grant_digest\":",
+            "\"0000000000000000000000000000000000000000000000000000000000000000\",",
+            "\"namespace\":\"demo\",\"deployment\":\"agent-api\",\"container\":\"api\",",
+            "\"immutable_image_digest\":",
+            "\"registry.example/example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",",
+            "\"write_strategy\":\"conditional-strategic-merge-patch\",",
+            "\"target_uid\":\"deployment-uid-1\",",
+            "\"target_resource_version\":\"resource-version-0\",",
+            "\"receiver_uid\":\"deployment-uid-1\",",
+            "\"observed_image\":",
+            "\"registry.example/example/agent-api@sha256:",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",",
+            "\"observed_operation_marker\":\"op-001\",",
+            "\"current_generation\":2,\"requested_generation\":2,",
+            "\"observed_generation\":2,",
+            "\"observed_resource_version\":\"resource-version-2\",",
+            "\"desired_replicas\":1,\"updated_replicas\":0,",
+            "\"available_replicas\":0,\"unavailable_replicas\":1,",
+            "\"rollout_condition_type\":\"Progressing\",",
+            "\"rollout_condition_status\":\"False\",",
+            "\"rollout_condition_reason\":\"ProgressDeadlineExceeded\",",
+            "\"result\":\"FAILED\",\"approved_target\":null,",
+            "\"attempt_target\":{\"resource_version\":\"resource-version-0\",",
+            "\"uid\":\"deployment-uid-1\"},",
+            "\"observed_target\":{\"resource_version\":\"resource-version-2\",",
+            "\"uid\":\"deployment-uid-1\"},",
+            "\"non_claims\":\"no-exactly-once;no-causation;no-kubernetes-truth;",
+            "no-complete-capture;no-witnessing;not-production\"}\n"
+        )
+    );
     assert!(stdout.starts_with(
         "{\"command\":\"inspect\",\"status\":\"INSPECTED\",\"operation_id\":\"op-001\""
     ));
@@ -118,6 +155,9 @@ fn canonical_vectors_are_inspected_at_the_explicit_time() {
         "rollout_condition_status",
         "rollout_condition_reason",
         "result",
+        "approved_target",
+        "attempt_target",
+        "observed_target",
         "non_claims",
     ] {
         let position = stdout.find(&format!("\"{field}\":")).unwrap();

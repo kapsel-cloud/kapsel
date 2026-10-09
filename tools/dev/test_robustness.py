@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -299,8 +300,12 @@ class RobustnessTests(unittest.TestCase):
         target_index = build_command.index("--target-dir")
         self.assertEqual(build_command[target_index + 1], str(executable.parent))
         evidence = json.loads((self.evidence / "exploration.json").read_text())
-        self.assertEqual(evidence["executable"], str(executable))
+        retained = self.evidence / "simulation-tests"
+        self.assertEqual(evidence["executable"], str(retained))
+        self.assertEqual(retained.read_bytes(), executable.read_bytes())
         self.assertEqual(evidence["seeds"], [1])
+        shutil.rmtree(self.scratch)
+        self.assertTrue(retained.is_file())
 
     def test_missing_shard_completion_is_incomplete(self):
         executable = self.scratch / "fake-test"
@@ -385,6 +390,64 @@ class RobustnessTests(unittest.TestCase):
         self.assertEqual(len(json.loads((self.evidence / "traces-7-0.json").read_text())), 2)
         self.assertEqual(len(json.loads((self.evidence / "traces-7-1.json").read_text())), 1)
         self.assertTrue((self.evidence / "exploration.json").is_file())
+
+    def test_kernel_uses_same_custody_and_owning_directory_replay(self):
+        executable = self.scratch / "test-binary"
+        executable.write_bytes(b"kernel fixture")
+        digest = runner.hashlib.sha256(executable.read_bytes()).hexdigest()
+        message = {
+            "reason": "compiler-artifact",
+            "executable": str(executable),
+            "target": {"name": "kapsel"},
+            "profile": {"test": True},
+        }
+
+        def commands(selected, environments=None, finding=False):
+            if selected[0][0] == "git":
+                archive = Path(selected[0][selected[0].index("--output") + 1])
+                archive.write_bytes(b"committed source fixture")
+                self.assertEqual(selected[0][-1], "a" * 40)
+                return [""]
+            if environments is None:
+                return [json.dumps(message)]
+            outputs = []
+            for index, environment in enumerate(environments):
+                self.assertEqual(selected[index][1], runner.KERNEL_TEST)
+                self.assertEqual(selected[index][0], str(self.evidence / "simulation-tests"))
+                if "KAPSEL_KERNEL_REPLAY_DIRECTORY" in environment:
+                    traces = Path(environment["KAPSEL_KERNEL_REPLAY_DIRECTORY"])
+                    marker = f"KAPSEL_KERNEL_REPLAYED cases={len(list(traces.iterdir()))}"
+                else:
+                    traces = Path(environment["KAPSEL_KERNEL_EVIDENCE"])
+                    self.assertEqual(environment["KAPSEL_KERNEL_STEPS"], "48")
+                    for case in range(index, 3, 2):
+                        runner.atomic_json(
+                            traces / f"case-{case}.json",
+                            {
+                                "seed": 7 + case,
+                                "executable_sha256": digest,
+                                "source_sha256": "b" * 64,
+                                "peers": 3,
+                                "require_progress": True,
+                                "defect": None,
+                                "actions": [],
+                            },
+                        )
+                    marker = f"KAPSEL_KERNEL_COMPLETED seed=7 shard={index}/2 cases={len(range(index, 3, 2))} steps=48"
+                outputs.append(marker + "\ntest result: ok. 1 passed; 0 failed; 0 ignored;")
+            return outputs
+
+        with patch.object(self.supervisor, "run", side_effect=commands):
+            runner.simulation(self.supervisor, [7], 3, 2, "kernel", "a" * 40)
+        evidence = json.loads((self.evidence / "exploration.json").read_text())
+        self.assertEqual(evidence["engine"], "kernel")
+        self.assertEqual(evidence["source_archive"]["path"], str(self.evidence / "source.tar"))
+        self.assertEqual(
+            evidence["source_archive"]["sha256"],
+            runner.hashlib.sha256(b"committed source fixture").hexdigest(),
+        )
+        self.assertEqual(len(json.loads((self.evidence / "traces-7-0.json").read_text())), 2)
+        self.assertEqual(len(json.loads((self.evidence / "traces-7-1.json").read_text())), 1)
 
     def test_exploration_marker_without_trace_cannot_pass(self):
         executable = self.scratch / "test-binary"

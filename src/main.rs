@@ -1,7 +1,6 @@
 //! Operator provisioning and offline inspection executable for Kapsel.
 
 mod command;
-mod transport_support;
 
 use std::{io::Write as _, process::ExitCode};
 

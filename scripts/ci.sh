@@ -22,6 +22,7 @@ run_static_checks() {
   python3 tools/dev/test_format.py
   python3 tools/dev/test_dev_tools.py
   python3 tools/dev/test_robustness.py
+  python3 tools/dev/test_assurance_census.py
 
   printf '%s\n' "==> Qualification runner regressions"
   python3 tests/qualification/test_storage_enospc.py

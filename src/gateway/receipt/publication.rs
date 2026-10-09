@@ -46,6 +46,7 @@ mod checkpoints {
     #[cfg(feature = "demo-harness")]
     pub(in crate::gateway) fn create_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let (directory, name) = open_parent(path)?;
+
         let mode = Mode::RUSR | Mode::WUSR;
         let mut file = File::from(openat(
             &directory,
@@ -53,6 +54,7 @@ mod checkpoints {
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             mode,
         )?);
+
         fchmod(&file, mode)?;
         let metadata = file.metadata()?;
         if metadata.uid() != rustix::process::geteuid().as_raw()
@@ -61,13 +63,16 @@ mod checkpoints {
         {
             return Err(io::Error::other("unsafe checkpoint file"));
         }
+
         file.write_all(bytes)?;
         file.sync_all()?;
+
         let descriptor = fstat(&file)?;
         let named = statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW)?;
         if descriptor.st_dev != named.st_dev || descriptor.st_ino != named.st_ino {
             return Err(io::Error::other("checkpoint identity changed"));
         }
+
         directory.sync_all()
     }
 
@@ -84,6 +89,7 @@ mod checkpoints {
                 },
             }
         }
+
         let destination = names
             .pop()
             .ok_or_else(|| io::Error::other("missing name"))?;
@@ -102,6 +108,7 @@ mod checkpoints {
                 0,
             )
         };
+
         for name in names.into_iter().skip(consumed) {
             directory = File::from(openat(
                 &directory,
@@ -110,6 +117,7 @@ mod checkpoints {
                 Mode::empty(),
             )?);
         }
+
         let metadata = directory.metadata()?;
         if metadata.uid() != rustix::process::geteuid().as_raw()
             || metadata.mode() & 0o7777 != 0o700

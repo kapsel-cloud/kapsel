@@ -5,7 +5,7 @@ use std::{
     collections::BTreeMap,
     fs,
     os::unix::fs::DirBuilderExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -73,8 +73,10 @@ struct Selection {
 #[serde(deny_unknown_fields)]
 enum Action {
     Select(Selection),
+    Peer(usize),
     Receiver(Receiver),
     Reopen { catalog: bool },
+    Trust(bool),
     Restore,
 }
 
@@ -82,6 +84,8 @@ enum Action {
 #[serde(deny_unknown_fields)]
 struct Trace {
     seed: u64,
+    #[serde(default = "single_peer")]
+    peers: usize,
     actions: Vec<Action>,
     defect: Option<Defect>,
     #[serde(default = "default_progress")]
@@ -103,6 +107,10 @@ type Checked = Result<(), Finding>;
 
 fn default_progress() -> bool {
     true
+}
+
+fn single_peer() -> usize {
+    1
 }
 
 pub(crate) struct Scratch(pub(crate) PathBuf);
@@ -131,14 +139,14 @@ struct Store {
     virtualized: bool,
 }
 impl Store {
-    fn raw(&self) -> BTreeMap<String, Value> {
+    fn raw(&self, id: &str) -> BTreeMap<String, Value> {
         if self.virtualized {
             // Named fields are intentionally independent of the production decoder's projection.
             FIELDS
                 .iter()
                 .filter_map(|field| {
                     self.control
-                        .value(ID, field)
+                        .value(id, field)
                         .map(|value| ((*field).to_owned(), value))
                 })
                 .collect()
@@ -152,7 +160,7 @@ impl Store {
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>();
-            let mut rows = statement.query([ID]).unwrap();
+            let mut rows = statement.query([id]).unwrap();
             rows.next().unwrap().map_or_else(BTreeMap::new, |row| {
                 names
                     .into_iter()
@@ -231,6 +239,7 @@ struct Observations {
 }
 
 struct Adapter {
+    intent: Intent,
     store: Store,
     io: Arc<Mutex<Observations>>,
     receiver: Receiver,
@@ -249,7 +258,7 @@ impl DeploymentImageAdapter for Adapter {
     ) -> Result<TargetIdentity, TargetReadError> {
         let mut io = self.io.lock().unwrap();
         io.reads += 1;
-        if selected != &request() {
+        if selected != &self.intent.request {
             io.violation = Some("original_intent");
         }
         drop(io);
@@ -260,15 +269,15 @@ impl DeploymentImageAdapter for Adapter {
             deployment_uid: if matches!(self.receiver, Receiver::Replaced) {
                 "replacement-uid".into()
             } else {
-                UID.into()
+                self.intent.uid.clone()
             },
-            resource_version: VERSION.into(),
+            resource_version: self.intent.version.clone(),
         })
     }
 
     async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
         let payload = permission.into_payload();
-        let raw = self.store.raw();
+        let raw = self.store.raw(&self.intent.request.operation_id);
         let mut io = self.io.lock().unwrap();
         if !self.fresh
             || self.store.control.last_delivery(StorageWrite::Attempt) != Some(Delivery::Confirmed)
@@ -276,9 +285,9 @@ impl DeploymentImageAdapter for Adapter {
         {
             io.violation = Some("dispatch_provenance");
         }
-        if payload.0 != request()
-            || payload.1.deployment_uid != UID
-            || payload.1.resource_version != VERSION
+        if payload.0 != self.intent.request
+            || payload.1.deployment_uid != self.intent.uid
+            || payload.1.resource_version != self.intent.version
         {
             io.violation = Some("original_intent");
         }
@@ -286,7 +295,7 @@ impl DeploymentImageAdapter for Adapter {
         let outcome = ApplyOutcome {
             accepted: true,
             requested_generation: Some(7),
-            deployment_uid: Some(UID.into()),
+            deployment_uid: Some(self.intent.uid.clone()),
             resource_version: Some("after-patch".into()),
         };
         if self.lose_response {
@@ -304,7 +313,9 @@ impl DeploymentImageAdapter for Adapter {
     ) -> Result<ReceiverObservation, ()> {
         let mut io = self.io.lock().unwrap();
         io.reads += 1;
-        if selected != &request() || outcome.deployment_uid.as_deref() != Some(UID) {
+        if selected != &self.intent.request
+            || outcome.deployment_uid.as_deref() != Some(self.intent.uid.as_str())
+        {
             io.violation = Some("original_intent");
         }
         if matches!(self.receiver, Receiver::Unavailable) {
@@ -317,9 +328,16 @@ impl DeploymentImageAdapter for Adapter {
             deployment_uid: Some(if matches!(self.receiver, Receiver::Replaced) {
                 "replacement-uid".into()
             } else {
-                UID.into()
+                self.intent.uid.clone()
             }),
-            resource_version: Some(if sent { "observed-version" } else { VERSION }.into()),
+            resource_version: Some(
+                if sent {
+                    "observed-version"
+                } else {
+                    &self.intent.version
+                }
+                .into(),
+            ),
             current_generation: Some(if sent { 7 } else { 3 }),
             observed_generation: Some(if sent && pending {
                 6
@@ -328,8 +346,8 @@ impl DeploymentImageAdapter for Adapter {
             } else {
                 3
             }),
-            image: sent.then(|| IMAGE.into()),
-            operation_marker: sent.then(|| ID.into()),
+            image: sent.then(|| self.intent.request.immutable_image_digest.clone()),
+            operation_marker: sent.then(|| self.intent.request.operation_id.clone()),
             desired_replicas: Some(if pending { 5 } else { 1 }),
             updated_replicas: Some(if pending { 4 } else { i32::from(!failed) }),
             available_replicas: Some(if pending { 2 } else { i32::from(!failed) }),
@@ -346,13 +364,13 @@ impl DeploymentImageAdapter for Adapter {
 
 // Effect-specific law over original intent and actual I/O. No phase predictor or production
 // classifier/receipt builder is used. Healthy eligible work must succeed, not only stay immutable.
-fn result_from_io(io: &Observations) -> &'static str {
+fn result_from_io(io: &Observations, intent: &Intent) -> &'static str {
     let Some(observed) = &io.returned else {
         return "UNKNOWN";
     };
-    let correlated = observed.deployment_uid.as_deref() == Some(UID)
-        && observed.image.as_deref() == Some(IMAGE)
-        && observed.operation_marker.as_deref() == Some(ID);
+    let correlated = observed.deployment_uid.as_deref() == Some(intent.uid.as_str())
+        && observed.image.as_deref() == Some(intent.request.immutable_image_digest.as_str())
+        && observed.operation_marker.as_deref() == Some(intent.request.operation_id.as_str());
     let generation = io
         .response
         .as_ref()
@@ -384,44 +402,105 @@ fn result_from_io(io: &Observations) -> &'static str {
     }
 }
 
-fn request() -> SetDeploymentImageRequest {
-    SetDeploymentImageRequest {
-        operation_id: ID.into(),
-        namespace: "demo".into(),
-        deployment: "api".into(),
-        container: "api".into(),
-        immutable_image_digest: IMAGE.into(),
-    }
+#[derive(Clone)]
+struct Intent {
+    request: SetDeploymentImageRequest,
+    uid: String,
+    version: String,
+    authorization_id: String,
+    authorization_key: String,
+    authority_seed: [u8; 32],
+    grant: Vec<u8>,
+    receipt_seed: [u8; 32],
+    receipt_key: String,
 }
 
-fn configuration(path: PathBuf) -> ServiceConfiguration {
-    let authorization = ExactAuthorization {
-        authorization_id: "original-authorization".into(),
-        operation_id: ID.into(),
-        namespace: "demo".into(),
-        deployment: "api".into(),
-        container: "api".into(),
-        immutable_image_digest: IMAGE.into(),
-        approved_target: Some(ApprovedTarget {
-            uid: UID.into(),
-            resource_version: VERSION.into(),
-        }),
-    };
-    let signed_grant =
-        crate::gateway::sign_authorization_grant(&authorization, &[17; 32], "original-authority")
-            .unwrap();
-    ServiceConfiguration {
-        journal_path: path,
-        authorization_trust: vec![AuthorizationTrust {
-            key_id: "original-authority".into(),
-            public_key: ed25519_dalek::SigningKey::from_bytes(&[17; 32])
+impl Intent {
+    fn new(peer: usize) -> Self {
+        let distinct = |original: &str| {
+            if peer == 0 {
+                original.to_owned()
+            } else {
+                format!("{original}-{peer}")
+            }
+        };
+        let request = SetDeploymentImageRequest {
+            operation_id: distinct(ID),
+            namespace: distinct("demo"),
+            deployment: distinct("api"),
+            container: distinct("api"),
+            immutable_image_digest: if peer == 0 {
+                IMAGE.into()
+            } else {
+                format!("registry.example/api@sha256:{peer:064x}")
+            },
+        };
+        let uid = distinct(UID);
+        let version = distinct(VERSION);
+        let authorization_id = distinct("original-authorization");
+        let authorization_key = distinct("original-authority");
+        let authority_seed = [17 + u8::try_from(peer).unwrap(); 32];
+        let authorization = ExactAuthorization {
+            authorization_id: authorization_id.clone(),
+            operation_id: request.operation_id.clone(),
+            namespace: request.namespace.clone(),
+            deployment: request.deployment.clone(),
+            container: request.container.clone(),
+            immutable_image_digest: request.immutable_image_digest.clone(),
+            approved_target: Some(ApprovedTarget {
+                uid: uid.clone(),
+                resource_version: version.clone(),
+            }),
+        };
+        let grant = crate::gateway::sign_authorization_grant(
+            &authorization,
+            &authority_seed,
+            &authorization_key,
+        )
+        .unwrap();
+        Self {
+            request,
+            uid,
+            version,
+            authorization_id,
+            authorization_key,
+            authority_seed,
+            grant,
+            receipt_seed: [23 + u8::try_from(peer).unwrap(); 32],
+            receipt_key: distinct("original-receipt"),
+        }
+    }
+
+    fn trust(&self) -> AuthorizationTrust {
+        AuthorizationTrust {
+            key_id: self.authorization_key.clone(),
+            public_key: ed25519_dalek::SigningKey::from_bytes(&self.authority_seed)
                 .verifying_key()
                 .to_bytes(),
-        }],
-        approvals: vec![ServiceApproval {
-            signed_grant,
+        }
+    }
+
+    fn matches_record(&self, raw: &BTreeMap<String, Value>) -> bool {
+        let grant_digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&self.grant));
+        text(raw, "authorization_id") == Some(self.authorization_id.as_str())
+            && text(raw, "authorization_signer_key_id") == Some(self.authorization_key.as_str())
+            && text(raw, "authorization_grant_digest") == Some(grant_digest.as_str())
+            && text(raw, "operation_id") == Some(self.request.operation_id.as_str())
+            && text(raw, "namespace") == Some(self.request.namespace.as_str())
+            && text(raw, "deployment") == Some(self.request.deployment.as_str())
+            && text(raw, "container") == Some(self.request.container.as_str())
+            && text(raw, "immutable_image_digest")
+                == Some(self.request.immutable_image_digest.as_str())
+            && raw.get("signed_authorization_grant") == Some(&Value::Blob(self.grant.clone()))
+            && text(raw, "approved_uid") == Some(self.uid.as_str())
+            && text(raw, "approved_resource_version") == Some(self.version.as_str())
+    }
+
+    fn approval(&self) -> ServiceApproval {
+        ServiceApproval {
+            signed_grant: self.grant.clone(),
             label: "exact snapshot".into(),
-        }],
+        }
     }
 }
 
@@ -440,7 +519,7 @@ impl Checker {
         &mut self,
         store: &Store,
         io: &Observations,
-        original_grant: &[u8],
+        intent: &Intent,
         event: usize,
     ) -> Checked {
         let require = |condition, law| {
@@ -458,30 +537,15 @@ impl Checker {
             require(false, law)?;
         }
         require(io.sends.len() <= 1, "at_most_one_mutation")?;
-        let mut raw = store.raw();
+        let mut raw = store.raw(&intent.request.operation_id);
         if raw.is_empty() {
             return Ok(());
         }
-        let grant_digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(original_grant));
-        require(
-            text(&raw, "authorization_id") == Some("original-authorization")
-                && text(&raw, "authorization_signer_key_id") == Some("original-authority")
-                && text(&raw, "authorization_grant_digest") == Some(grant_digest.as_str())
-                && text(&raw, "operation_id") == Some(ID)
-                && text(&raw, "namespace") == Some("demo")
-                && text(&raw, "deployment") == Some("api")
-                && text(&raw, "container") == Some("api")
-                && text(&raw, "immutable_image_digest") == Some(IMAGE)
-                && raw.get("signed_authorization_grant")
-                    == Some(&Value::Blob(original_grant.to_vec()))
-                && text(&raw, "approved_uid") == Some(UID)
-                && text(&raw, "approved_resource_version") == Some(VERSION),
-            "original_authority",
-        )?;
+        require(intent.matches_record(&raw), "original_authority")?;
         if integer(&raw, "apply_attempted") == Some(1) {
             require(
-                text(&raw, "target_uid") == Some(UID)
-                    && text(&raw, "target_resource_version") == Some(VERSION),
+                text(&raw, "target_uid") == Some(intent.uid.as_str())
+                    && text(&raw, "target_resource_version") == Some(intent.version.as_str()),
                 "attempt_binding",
             )?;
         }
@@ -498,7 +562,7 @@ impl Checker {
         if matches!(text(&raw, "state"), Some("receiver_observed" | "finalized")) {
             if self.frozen.is_none() {
                 require(
-                    text(&raw, "result") == Some(result_from_io(io)),
+                    text(&raw, "result") == Some(result_from_io(io, intent)),
                     "initial_result",
                 )?;
                 let observation = io.returned.as_ref().unwrap();
@@ -554,6 +618,10 @@ async fn replay(trace: &Trace, virtualized: bool) -> Checked {
     replay_with_control(trace, virtualized, control).await
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep schedule execution, all-peer laws and progress prerequisites in one owner"
+)]
 async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageControl) -> Checked {
     let scratch = Scratch::new();
     if let Some(defect) = trace.defect {
@@ -564,42 +632,94 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
         path: scratch.0.join("journal.sqlite3"),
         virtualized,
     };
-    let mut configuration = configuration(store.path.clone());
-    let original_grant = configuration.approvals[0].signed_grant.clone();
-    let mut app = open(configuration.clone(), &control);
-    let io = Arc::new(Mutex::new(Observations::default()));
-    let mut adapter = Adapter {
-        store: store.clone(),
-        io: io.clone(),
-        receiver: Receiver::Healthy,
-        lose_response: false,
-        fresh: true,
+    assert!(
+        (1..=4).contains(&trace.peers),
+        "bounded local replay identities"
+    );
+    let mut peers = (0..trace.peers)
+        .map(|peer| Peer {
+            adapter: Adapter {
+                intent: Intent::new(peer),
+                store: store.clone(),
+                io: Arc::new(Mutex::new(Observations::default())),
+                receiver: Receiver::Healthy,
+                lose_response: false,
+                fresh: true,
+            },
+            checker: Checker::default(),
+            eligible_progress: false,
+        })
+        .collect::<Vec<_>>();
+    let mut configuration = ServiceConfiguration {
+        journal_path: store.path.clone(),
+        authorization_trust: peers
+            .iter()
+            .map(|peer| peer.adapter.intent.trust())
+            .collect(),
+        approvals: peers
+            .iter()
+            .map(|peer| peer.adapter.intent.approval())
+            .collect(),
     };
-    let mut checker = Checker::default();
+    let mut app = open(configuration.clone(), &control);
+    let mut selected = 0;
     let mut restored = false;
-    let mut eligible_progress = false;
+    let mut trusted = true;
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
-                eligible_progress |= restored
+                let before =
+                    (!trusted).then(|| peers.iter().map(Peer::snapshot).collect::<Vec<_>>());
+                let peer = &mut peers[selected];
+                let adapter = &mut peer.adapter;
+                peer.eligible_progress |= restored
+                    && trusted
                     && selection.sign
                     && selection.commit.is_none()
                     && matches!(selection.cut, Cut::None)
                     && !selection.lose_response
                     && matches!(adapter.receiver, Receiver::Healthy)
-                    && (!store.raw().is_empty() || !configuration.approvals.is_empty());
+                    && (!store.raw(&adapter.intent.request.operation_id).is_empty()
+                        || !configuration.approvals.is_empty());
                 selection
-                    .execute(&mut app, &mut adapter, &mut checker, &original_grant, event)
+                    .execute(&mut app, adapter, &mut peer.checker, event)
                     .await?;
+                if before.is_some_and(|originals| {
+                    originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
+                }) {
+                    return Err(Finding {
+                        law: "withdrawn_trust",
+                        event,
+                        defect_reached: control.defect_reached(),
+                    });
+                }
             },
-            Action::Receiver(receiver) => adapter.receiver = receiver,
+            Action::Peer(peer) => {
+                assert!(peer < peers.len(), "bounded local replay peer index");
+                selected = peer;
+            },
+            Action::Receiver(receiver) => peers[selected].adapter.receiver = receiver,
             Action::Reopen { catalog } => {
                 drop(app);
-                configuration.approvals = if catalog {
-                    vec![ServiceApproval {
-                        signed_grant: original_grant.clone(),
-                        label: "original".into(),
-                    }]
+                configuration.approvals = if catalog && trusted {
+                    peers
+                        .iter()
+                        .map(|peer| peer.adapter.intent.approval())
+                        .collect()
+                } else {
+                    vec![]
+                };
+                app = open(configuration.clone(), &control);
+            },
+            Action::Trust(available) => {
+                drop(app);
+                trusted = available;
+                configuration.approvals.clear();
+                configuration.authorization_trust = if available {
+                    peers
+                        .iter()
+                        .map(|peer| peer.adapter.intent.trust())
+                        .collect()
                 } else {
                     vec![]
                 };
@@ -607,27 +727,75 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
             },
             Action::Restore => {
                 restored = true;
-                adapter.receiver = Receiver::Healthy;
-                adapter.lose_response = false;
+                trusted = true;
+                drop(app);
+                for peer in &mut peers {
+                    peer.adapter.receiver = Receiver::Healthy;
+                    peer.adapter.lose_response = false;
+                }
+                configuration.authorization_trust = peers
+                    .iter()
+                    .map(|peer| peer.adapter.intent.trust())
+                    .collect();
+                configuration.approvals = peers
+                    .iter()
+                    .map(|peer| peer.adapter.intent.approval())
+                    .collect();
+                app = open(configuration.clone(), &control);
             },
         }
-        checker.check(&store, &io.lock().unwrap(), &original_grant, event)?;
+        for peer in &mut peers {
+            let adapter = &peer.adapter;
+            peer.checker
+                .check(&store, &adapter.io.lock().unwrap(), &adapter.intent, event)?;
+            check_terminal(
+                &app,
+                &store,
+                &adapter.io.lock().unwrap(),
+                &adapter.intent,
+                event,
+                false,
+            )?;
+        }
     }
-    if trace.require_progress && !eligible_progress {
+    if trace.require_progress && peers.iter().any(|peer| !peer.eligible_progress) {
         return Err(Finding {
             law: "ineligible_progress",
             event: trace.actions.len(),
             defect_reached: control.defect_reached(),
         });
     }
-    let result = check_terminal(
-        &app,
-        &store,
-        &io.lock().unwrap(),
-        trace.actions.len(),
-        trace.require_progress,
-    );
-    result
+    for peer in &peers {
+        let adapter = &peer.adapter;
+        check_terminal(
+            &app,
+            &store,
+            &adapter.io.lock().unwrap(),
+            &adapter.intent,
+            trace.actions.len(),
+            trace.require_progress,
+        )?;
+    }
+    Ok(())
+}
+
+struct Peer {
+    adapter: Adapter,
+    checker: Checker,
+    eligible_progress: bool,
+}
+
+impl Peer {
+    fn snapshot(&self) -> (BTreeMap<String, Value>, usize, usize) {
+        let io = self.adapter.io.lock().unwrap();
+        (
+            self.adapter
+                .store
+                .raw(&self.adapter.intent.request.operation_id),
+            io.reads,
+            io.sends.len(),
+        )
+    }
 }
 
 impl Selection {
@@ -636,7 +804,6 @@ impl Selection {
         app: &mut ServiceApplication,
         adapter: &mut Adapter,
         checker: &mut Checker,
-        original_grant: &[u8],
         event: usize,
     ) -> Checked {
         let control = adapter.store.control.clone();
@@ -644,7 +811,7 @@ impl Selection {
             control.fail_next(write, delivery);
         }
         adapter.lose_response = self.lose_response;
-        let before = adapter.store.raw();
+        let before = adapter.store.raw(&adapter.intent.request.operation_id);
         adapter.fresh = !matches!(
             text(&before, "state"),
             Some("apply_started" | "receiver_observed" | "finalized")
@@ -652,12 +819,17 @@ impl Selection {
         let execution = ServiceExecution {
             kubernetes_client: None,
             git_receiver: None,
-            receipt_signing: self.sign.then(|| ([23; 32], "original-receipt".into())),
+            receipt_signing: self.sign.then(|| {
+                (
+                    adapter.intent.receipt_seed,
+                    adapter.intent.receipt_key.clone(),
+                )
+            }),
         };
         let mut acknowledgements = Vec::new();
         let _result = app
             .select_with_adapter(
-                ID,
+                &adapter.intent.request.operation_id.clone(),
                 execution,
                 Some(&mut *adapter),
                 |admission| acknowledgements.push(admission),
@@ -667,7 +839,7 @@ impl Selection {
         checker.check(
             &adapter.store,
             &adapter.io.lock().unwrap(),
-            original_grant,
+            &adapter.intent,
             event,
         )?;
         if let Some((write, delivery)) = self.commit {
@@ -698,11 +870,12 @@ fn check_terminal(
     app: &ServiceApplication,
     store: &Store,
     io: &Observations,
+    intent: &Intent,
     event: usize,
     require_progress: bool,
 ) -> Checked {
     let control = &store.control;
-    let terminal = store.raw();
+    let terminal = store.raw(&intent.request.operation_id);
     if text(&terminal, "state") == Some("not_attempted") {
         if text(&terminal, "target_rejection") == Some("stale_approval")
             && text(&terminal, "preflight_uid") == Some("replacement-uid")
@@ -716,11 +889,11 @@ fn check_terminal(
             defect_reached: control.defect_reached(),
         });
     }
-    match app.receipt(ID) {
+    match app.receipt(&intent.request.operation_id) {
         Ok(OperationReceipt::Ready { bytes, sha256 }) => {
             let trust = crate::ReceiptTrust {
-                key_id: "original-receipt".into(),
-                public_key: ed25519_dalek::SigningKey::from_bytes(&[23; 32])
+                key_id: intent.receipt_key.clone(),
+                public_key: ed25519_dalek::SigningKey::from_bytes(&intent.receipt_seed)
                     .verifying_key()
                     .to_bytes(),
                 accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
@@ -740,10 +913,17 @@ fn check_terminal(
             }
             if !inspection
                 .statement()
-                .is_some_and(|statement| receipt_matches_columns(statement, &terminal, io))
+                .is_some_and(|statement| receipt_matches_columns(statement, &terminal, io, intent))
             {
                 return Err(Finding {
                     law: "receipt_binding",
+                    event,
+                    defect_reached: control.defect_reached(),
+                });
+            }
+            if terminal.get("receipt_bytes") != Some(&Value::Blob(bytes.clone())) {
+                return Err(Finding {
+                    law: "original_receipt_bytes",
                     event,
                     defect_reached: control.defect_reached(),
                 });
@@ -775,6 +955,7 @@ fn receipt_matches_columns(
     statement: &crate::ReceiptStatement,
     raw: &BTreeMap<String, Value>,
     io: &Observations,
+    intent: &Intent,
 ) -> bool {
     let texts = [
         ("operation_id", Some(statement.operation_id())),
@@ -864,7 +1045,7 @@ fn receipt_matches_columns(
         && integers
             .iter()
             .all(|(column, value)| integer(raw, column) == *value)
-        && result == result_from_io(io)
+        && result == result_from_io(io, intent)
 }
 
 fn select(
@@ -889,12 +1070,30 @@ fn trace(seed: u64, mut prefix: Vec<Action>) -> Trace {
     ]);
     Trace {
         seed,
+        peers: 1,
         actions: prefix,
         defect: None,
         require_progress: true,
         source_sha256: String::new(),
         executable_sha256: String::new(),
     }
+}
+
+fn multi_trace(seed: u64, peers: usize, prefix: Vec<Action>) -> Trace {
+    let mut input = trace(seed, vec![]);
+    input.peers = peers;
+    input.actions = prefix;
+    input.actions.push(Action::Restore);
+    for peer in 0..peers {
+        input.actions.push(Action::Peer(peer));
+        input.actions.push(select(None, Cut::None, false, true));
+    }
+    input.actions.push(Action::Reopen { catalog: false });
+    for peer in (0..peers).rev() {
+        input.actions.push(Action::Peer(peer));
+        input.actions.push(select(None, Cut::None, false, true));
+    }
+    input
 }
 
 async fn minimize(mut input: Trace, law: &'static str) -> Trace {
@@ -1014,6 +1213,49 @@ async fn atomic_delivery_and_receiver_faults_preserve_laws_and_progress() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn all_peers_preserve_original_authority_during_material_withdrawal() {
+    for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
+        let input = multi_trace(
+            4,
+            3,
+            vec![
+                Action::Peer(0),
+                select(None, cut, false, false),
+                Action::Peer(1),
+                Action::Receiver(Receiver::Failed),
+                select(None, Cut::Frozen, false, false),
+                Action::Peer(2),
+                select(
+                    Some((StorageWrite::Attempt, Delivery::LostAcknowledgement)),
+                    Cut::None,
+                    false,
+                    true,
+                ),
+                Action::Reopen { catalog: false },
+                Action::Trust(false),
+                Action::Peer(0),
+                select(None, Cut::None, false, true),
+                Action::Receiver(Receiver::Replaced),
+                Action::Peer(1),
+                select(None, Cut::None, false, true),
+                Action::Peer(2),
+                select(None, Cut::None, false, true),
+                Action::Trust(true),
+                Action::Peer(1),
+                select(None, Cut::None, false, true),
+            ],
+        );
+        for virtualized in [true, false] {
+            assert_eq!(
+                replay(&input, virtualized).await,
+                Ok(()),
+                "{cut:?}/{virtualized}"
+            );
+        }
+    }
+}
+
 fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
     vec![
         (
@@ -1027,6 +1269,15 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
             vec![select(None, Cut::Frozen, false, false)],
         ),
         (Defect::NoOp, "healthy_progress", vec![]),
+        (
+            Defect::WrongPeerRead,
+            "original_intent",
+            vec![
+                select(None, Cut::BeforeAttempt, false, false),
+                Action::Peer(1),
+                select(None, Cut::BeforeAttempt, false, false),
+            ],
+        ),
         (
             Defect::WrongSigner,
             "original_signer",
@@ -1054,7 +1305,7 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
 #[tokio::test(start_paused = true)]
 async fn seeded_defects_fail_intended_laws_and_minimized_replay_reaches_the_branch() {
     for (defect, law, prefix) in defect_cases() {
-        let mut input = trace(3, prefix);
+        let mut input = multi_trace(3, 2, prefix);
         input.defect = Some(defect);
         for virtualized in [true, false] {
             let finding = replay(&input, virtualized).await.unwrap_err();
@@ -1064,9 +1315,11 @@ async fn seeded_defects_fail_intended_laws_and_minimized_replay_reaches_the_bran
         let minimized = minimize(input, law).await;
         let document = serde_json::to_vec(&minimized).unwrap();
         let replayed: Trace = serde_json::from_slice(&document).unwrap();
-        let finding = replay(&replayed, true).await.unwrap_err();
-        assert_eq!(finding.law, law);
-        assert!(finding.defect_reached.contains(&defect));
+        for virtualized in [true, false] {
+            let finding = replay(&replayed, virtualized).await.unwrap_err();
+            assert_eq!(finding.law, law);
+            assert!(finding.defect_reached.contains(&defect));
+        }
         let mut correct = replayed.clone();
         correct.defect = None;
         for virtualized in [true, false] {
@@ -1092,6 +1345,7 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::UnconditionalWrite => "conditional_binding",
         Defect::ReplicaSwap => "frozen_io_binding",
         Defect::WrongSigner => "original_signer",
+        Defect::WrongPeerRead => "original_intent",
         Defect::ReceiptProjectionSwap => "receipt_binding",
     }
 }
@@ -1132,7 +1386,7 @@ async fn unrelated_or_ineligible_progress_does_not_qualify_as_defect_detection()
     }
 }
 
-fn generated(seed: u64) -> Trace {
+fn generated(seed: u64, steps: usize) -> Trace {
     let writes = [
         StorageWrite::Admission,
         StorageWrite::Authorization,
@@ -1152,52 +1406,94 @@ fn generated(seed: u64) -> Trace {
         false,
         true,
     )];
-    let mut random = seed + 1;
-    for _ in 0..12 {
+    let mut random = seed.wrapping_add(1);
+    for _ in 0..steps {
         random ^= random << 13;
         random ^= random >> 7;
         random ^= random << 17;
-        actions.push(match random % 6 {
+        actions.push(Action::Peer(usize::try_from((random / 8) % 3).unwrap()));
+        actions.push(match random % 8 {
             0 => Action::Receiver(Receiver::Unavailable),
             1 => Action::Receiver(Receiver::Pending),
             2 => Action::Receiver(Receiver::Failed),
             3 => Action::Receiver(Receiver::Healthy),
-            4 => Action::Reopen { catalog: true },
+            4 => Action::Reopen {
+                catalog: random & 8 == 0,
+            },
+            5 => Action::Trust(false),
+            6 => Action::Trust(true),
             _ => select(None, Cut::None, false, random & 8 == 0),
         });
     }
-    trace(seed, actions)
+    multi_trace(seed, 3, actions)
 }
 
 #[tokio::test(start_paused = true)]
 async fn generated_io_schedules_have_replayable_healthy_suffixes() {
-    for seed in 0..32 {
-        let input = generated(seed);
-        let document = serde_json::to_vec(&input).unwrap();
-        let replayed = serde_json::from_slice(&document).unwrap();
-        assert_eq!(replay(&replayed, true).await, Ok(()), "seed={seed}");
+    for steps in [12, 48] {
+        for seed in 0..32 {
+            let input = generated(seed, steps);
+            let document = serde_json::to_vec(&input).unwrap();
+            let replayed = serde_json::from_slice(&document).unwrap();
+            assert_eq!(
+                replay(&replayed, true).await,
+                Ok(()),
+                "seed={seed}/steps={steps}"
+            );
+            if seed < 4 {
+                assert_eq!(
+                    replay(&replayed, false).await,
+                    Ok(()),
+                    "SQLite seed={seed}/steps={steps}"
+                );
+            }
+        }
     }
+}
+
+fn read_trace(path: &Path) -> Trace {
+    use std::io::Read;
+    assert!(path.is_absolute() && fs::symlink_metadata(path).unwrap().is_file());
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .unwrap()
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .unwrap();
+    assert!(bytes.len() <= 64 * 1024);
+    let input: Trace = serde_json::from_slice(&bytes).unwrap();
+    assert!(input.actions.len() <= 256 && (1..=4).contains(&input.peers));
+    input
 }
 
 #[tokio::test(start_paused = true)]
 #[ignore = "explicit bounded replay input or private evidence directory required"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "retain generation, bounded replay and minimization custody in one entry point"
+)]
 async fn kernel_trace_exploration_or_replay() {
-    use std::{
-        io::{Read, Write},
-        os::unix::fs::OpenOptionsExt,
-    };
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    if let Ok(directory) = std::env::var("KAPSEL_KERNEL_REPLAY_DIRECTORY") {
+        let directory = PathBuf::from(directory);
+        assert!(directory.is_absolute() && fs::symlink_metadata(&directory).unwrap().is_dir());
+        let mut paths = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert!((1..=10_000).contains(&paths.len()));
+        paths.sort();
+        for path in &paths {
+            let input = read_trace(path);
+            assert!(input.defect.is_none() && input.require_progress);
+            check_replay_result(&input, replay(&input, true).await);
+        }
+        println!("KAPSEL_KERNEL_REPLAYED cases={}", paths.len());
+        return;
+    }
     if let Ok(path) = std::env::var("KAPSEL_KERNEL_REPLAY") {
         let path = PathBuf::from(path);
-        assert!(path.is_absolute());
-        let mut bytes = Vec::new();
-        fs::File::open(path)
-            .unwrap()
-            .take(64 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .unwrap();
-        assert!(bytes.len() <= 64 * 1024);
-        let input: Trace = serde_json::from_slice(&bytes).unwrap();
-        assert!(input.actions.len() <= 256);
+        let input = read_trace(&path);
         check_replay_result(&input, replay(&input, true).await);
         return;
     }
@@ -1208,19 +1504,35 @@ async fn kernel_trace_exploration_or_replay() {
     let source = crate::lifecycle_exploration_tests::source_identity();
     let executable = fs::read(std::env::current_exe().unwrap()).unwrap();
     let executable_digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&executable));
+    let number = |name: &str, default: u64| {
+        std::env::var(name).map_or(default, |value| value.parse::<u64>().unwrap())
+    };
+    let seed = number("KAPSEL_KERNEL_SEED", 0);
+    let cases = usize::try_from(number("KAPSEL_KERNEL_CASES", 32)).unwrap();
+    let steps = usize::try_from(number("KAPSEL_KERNEL_STEPS", 12)).unwrap();
+    let shards = usize::try_from(number("KAPSEL_KERNEL_SHARDS", 1)).unwrap();
+    let shard = usize::try_from(number("KAPSEL_KERNEL_SHARD_INDEX", 0)).unwrap();
+    assert!((1..=10_000).contains(&cases) && (8..=48).contains(&steps));
+    assert!((1..=128).contains(&shards) && shards <= cases && shard < shards);
     let inputs = if std::env::var_os("KAPSEL_KERNEL_DEFECTS").is_some() {
         defect_cases()
             .into_iter()
             .map(|(defect, _, prefix)| {
-                let mut input = trace(3, prefix);
+                let mut input = multi_trace(3, 2, prefix);
                 input.defect = Some(defect);
                 input
             })
             .collect::<Vec<_>>()
     } else {
-        (0..32).map(generated).collect::<Vec<_>>()
+        (0..cases)
+            .map(|case| generated(seed.wrapping_add(u64::try_from(case).unwrap()), steps))
+            .collect::<Vec<_>>()
     };
+    let mut completed = 0;
     for (case, mut input) in inputs.into_iter().enumerate() {
+        if case % shards != shard {
+            continue;
+        }
         input.source_sha256.clone_from(&source);
         input.executable_sha256.clone_from(&executable_digest);
         let persist = |name: &str, trace: &Trace| {
@@ -1235,7 +1547,7 @@ async fn kernel_trace_exploration_or_replay() {
             file.write_all(&bytes).unwrap();
             file.sync_all().unwrap();
         };
-        persist("input", &input);
+        persist("case", &input);
         let result = replay(&input, true).await;
         if let Err(finding) = &result {
             let minimized = minimize(input.clone(), finding.law).await;
@@ -1243,6 +1555,11 @@ async fn kernel_trace_exploration_or_replay() {
             check_replay_result(&minimized, replay(&minimized, true).await);
         }
         check_replay_result(&input, result);
+        completed += 1;
     }
+    println!(
+        "KAPSEL_KERNEL_COMPLETED seed={seed} shard={shard}/{shards} \
+         cases={completed} steps={steps}"
+    );
     println!("KAPSEL_KERNEL_EVIDENCE source={source} executable={executable_digest}");
 }

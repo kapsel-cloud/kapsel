@@ -276,6 +276,31 @@ impl Io {
         read(connection, id)
     }
 
+    #[cfg(test)]
+    pub(super) fn other_identity(
+        &self,
+        connection: &Connection,
+        id: &str,
+    ) -> Result<Option<String>, GatewayError> {
+        if let Some(store) = &self.control.0.lock().unwrap().virtual_store {
+            return Ok(store
+                .lock()
+                .unwrap()
+                .keys()
+                .find(|peer| peer.as_str() != id)
+                .cloned());
+        }
+        connection
+            .query_row(
+                "SELECT operation_id FROM kubernetes_image_operations
+             WHERE operation_id != ?1 ORDER BY operation_id LIMIT 1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(GatewayError::Database)
+    }
+
     // Complete-record comparison binds every conditional write, including frozen facts and grant
     // bytes. SQLite changes only differing fields: inert/history columns are not rewritten.
     pub(super) fn replace(
@@ -493,6 +518,7 @@ pub(crate) enum Defect {
     UnconditionalWrite,
     ReplicaSwap,
     WrongSigner,
+    WrongPeerRead,
     ReceiptProjectionSwap,
 }
 

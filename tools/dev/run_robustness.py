@@ -66,6 +66,8 @@ class ResultRecord(TypedDict):
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPLORATION_TEST = "lifecycle_exploration_tests::lifecycle_trace_exploration_or_replay"
+KERNEL_TEST = "kernel_simulation_tests::kernel_trace_exploration_or_replay"
+SimulationEngine = Literal["lifecycle", "kernel"]
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
 STATE_LIMIT = 1024 * 1024 * 1024
@@ -444,7 +446,26 @@ def retained_exploration(
     atomic_json(traces.parent / (traces.name + ".json"), manifest)
 
 
-def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int) -> None:
+def simulation(
+    supervisor: Supervisor,
+    seeds: list[int],
+    cases: int,
+    shards: int,
+    engine: SimulationEngine = "lifecycle",
+    source_revision: str | None = None,
+) -> None:
+    prefix = "KAPSEL_KERNEL" if engine == "kernel" else "KAPSEL_LIFECYCLE"
+    selected_test = KERNEL_TEST if engine == "kernel" else EXPLORATION_TEST
+    source_archive = None
+    if source_revision is not None:
+        archive = supervisor.evidence / "source.tar"
+        supervisor.run(
+            [["git", "archive", "--format=tar", "--output", str(archive), source_revision]]
+        )
+        source_archive = {
+            "path": str(archive),
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+        }
     output = supervisor.run(
         [
             [
@@ -477,14 +498,22 @@ def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int
             executables.append(message["executable"])
     if len(executables) != 1:
         raise Incomplete("missing or ambiguous simulation test executable")
-    executable = executables[0]
-    digest = hashlib.sha256(Path(executable).read_bytes()).hexdigest()
+    retained = supervisor.evidence / "simulation-tests"
+    with Path(executables[0]).open("rb") as source, retained.open("xb") as destination:
+        shutil.copyfileobj(source, destination)
+        destination.flush()
+        os.fsync(destination.fileno())
+    retained.chmod(0o700)
+    executable = str(retained)
+    digest = hashlib.sha256(retained.read_bytes()).hexdigest()
     atomic_json(
         supervisor.evidence / "exploration.json",
         {
             "seeds": seeds,
             "cases": cases,
             "shards": shards,
+            "engine": engine,
+            "source_archive": source_archive,
             "executable": executable,
             "sha256": digest,
         },
@@ -496,19 +525,19 @@ def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int
             traces.mkdir(mode=0o700)
             environments.append(
                 {
-                    "KAPSEL_LIFECYCLE_SEED": str(seed),
-                    "KAPSEL_LIFECYCLE_CASES": str(cases),
-                    "KAPSEL_LIFECYCLE_SHARDS": str(shards),
-                    "KAPSEL_LIFECYCLE_SHARD_INDEX": str(index),
-                    "KAPSEL_LIFECYCLE_STEPS": "48",
-                    "KAPSEL_LIFECYCLE_EVIDENCE": str(traces),
+                    f"{prefix}_SEED": str(seed),
+                    f"{prefix}_CASES": str(cases),
+                    f"{prefix}_SHARDS": str(shards),
+                    f"{prefix}_SHARD_INDEX": str(index),
+                    f"{prefix}_STEPS": "48",
+                    f"{prefix}_EVIDENCE": str(traces),
                 }
             )
         outputs = supervisor.run(
             [
                 [
                     executable,
-                    EXPLORATION_TEST,
+                    selected_test,
                     "--ignored",
                     "--exact",
                     "--nocapture",
@@ -520,10 +549,7 @@ def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int
         )
         for index, output in enumerate(outputs):
             count = len(range(index, cases, shards))
-            marker = (
-                f"KAPSEL_LIFECYCLE_COMPLETED seed={seed} shard={index}/{shards} "
-                f"cases={count} steps=48"
-            )
+            marker = f"{prefix}_COMPLETED seed={seed} shard={index}/{shards} cases={count} steps=48"
             if output.splitlines().count(marker) != 1 or not re.search(
                 r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
             ):
@@ -540,21 +566,17 @@ def simulation(supervisor: Supervisor, seeds: list[int], cases: int, shards: int
         # and a generation marker alone cannot establish that a trace is replayable.
         replayed = supervisor.run(
             [
-                [executable, EXPLORATION_TEST, "--ignored", "--exact", "--nocapture"]
+                [executable, selected_test, "--ignored", "--exact", "--nocapture"]
                 for _ in range(shards)
             ],
             [
-                {
-                    "KAPSEL_LIFECYCLE_REPLAY_DIRECTORY": str(
-                        supervisor.evidence / f"traces-{seed}-{index}"
-                    )
-                }
+                {f"{prefix}_REPLAY_DIRECTORY": str(supervisor.evidence / f"traces-{seed}-{index}")}
                 for index in range(shards)
             ],
             finding=True,
         )
         for index, output in enumerate(replayed):
-            marker = f"KAPSEL_LIFECYCLE_REPLAYED cases={len(range(index, cases, shards))}"
+            marker = f"{prefix}_REPLAYED cases={len(range(index, cases, shards))}"
             if output.splitlines().count(marker) != 1 or not re.search(
                 r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
             ):
@@ -799,6 +821,7 @@ def main() -> int:
         "--shards", type=positive, default=os.environ.get("KAPSEL_SIMULATION_SHARDS", "2")
     )
     parser.add_argument("--seed", type=int, action="append")
+    parser.add_argument("--simulation-engine", choices=("lifecycle", "kernel"), default="lifecycle")
     parser.add_argument(
         "--fuzz-seconds", type=positive, default=os.environ.get("KAPSEL_FUZZ_MAX_TIME", "1800")
     )
@@ -859,7 +882,14 @@ def main() -> int:
             )
             atomic_json(evidence / "result.json", result)
             if lane == "simulation":
-                simulation(supervisor, seeds, args.cases, args.shards)
+                simulation(
+                    supervisor,
+                    seeds,
+                    args.cases,
+                    args.shards,
+                    args.simulation_engine,
+                    identity["revision"],
+                )
             else:
                 fuzz(
                     supervisor,

@@ -19,8 +19,6 @@ use kapsel::{
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use serde::Deserialize;
 
-use crate::transport_support;
-
 const JSON_BYTES_MAX: usize = 16 * 1024;
 const MACHINE_OUTPUT_BYTES_MAX: usize = 64 * 1024;
 const NON_CLAIMS: &str = concat!(
@@ -206,8 +204,7 @@ fn provision(mut options: BTreeMap<String, OsString>, snapshot: bool) -> Command
         provision_exact_grant(&provisioning)
     }
     .map_err(|_| CommandError::input(command))?;
-    write_new_private(&output_path, &grant)
-        .map_err(|_| CommandError::configuration("provision-grant"))?;
+    write_new_private(&output_path, &grant).map_err(|_| CommandError::configuration(command))?;
     Ok(format!(
         "{{\"command\":\"{command}\",\"status\":\"PROVISIONED\"}}"
     ))
@@ -645,24 +642,55 @@ fn render_inspection_fields(status: &str, statement: Option<&ReceiptStatement>) 
         "result",
         &json_string(operation_result(statement.result())),
     );
-    let targets = kapsel::OperationTargets {
-        git: None,
-        approved_target: statement.approved_target().cloned(),
-        attempt_target: Some(kapsel::ApprovedTarget {
-            uid: statement.target_uid().into(),
-            resource_version: statement.target_resource_version().into(),
+    append_target_field(
+        &mut output,
+        "approved_target",
+        statement.approved_target().map(|target| TargetProjection {
+            uid: Some(target.uid.as_str()),
+            resource_version: Some(target.resource_version.as_str()),
         }),
-        observed_target: Some(kapsel::ObservedTarget {
-            uid: statement.receiver_uid().map(str::to_owned),
-            resource_version: statement.observed_resource_version().map(str::to_owned),
+    );
+    append_target_field(
+        &mut output,
+        "attempt_target",
+        Some(TargetProjection {
+            uid: Some(statement.target_uid()),
+            resource_version: Some(statement.target_resource_version()),
         }),
-    };
-    let fields = transport_support::target_fields(&targets);
-    output.push(',');
-    output.push_str(&fields[1..fields.len() - 1]);
+    );
+    append_target_field(
+        &mut output,
+        "observed_target",
+        Some(TargetProjection {
+            uid: statement.receiver_uid(),
+            resource_version: statement.observed_resource_version(),
+        }),
+    );
     append_json_field(&mut output, "non_claims", &json_string(NON_CLAIMS));
     output.push('}');
     output
+}
+
+struct TargetProjection<'a> {
+    uid: Option<&'a str>,
+    resource_version: Option<&'a str>,
+}
+
+fn append_target_field(output: &mut String, name: &str, value: Option<TargetProjection<'_>>) {
+    append_json_field(output, name, &target_field_json(value));
+}
+
+fn target_field_json(value: Option<TargetProjection<'_>>) -> String {
+    value.map_or_else(
+        || String::from("null"),
+        |target| {
+            format!(
+                "{{\"resource_version\":{},\"uid\":{}}}",
+                optional_json(target.resource_version),
+                optional_json(target.uid)
+            )
+        },
+    )
 }
 
 fn append_json_field(output: &mut String, name: &str, value: &str) {
@@ -699,6 +727,44 @@ const fn inspection_status(value: InspectionStatus) -> &'static str {
         InspectionStatus::SignatureRejected => "SIGNATURE_REJECTED",
         InspectionStatus::UntrustedSigner => "UNTRUSTED_SIGNER",
         InspectionStatus::Inspected => "INSPECTED",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{target_field_json, TargetProjection};
+
+    #[test]
+    fn target_projection_matches_previous_json_shape_for_meaningful_targets() {
+        for (projection, previous) in [
+            (
+                Some(TargetProjection {
+                    uid: Some("approved-uid-\\\""),
+                    resource_version: Some("approved-rv-\\\""),
+                }),
+                serde_json::json!({
+                    "uid": "approved-uid-\\\"",
+                    "resource_version": "approved-rv-\\\"",
+                }),
+            ),
+            (
+                Some(TargetProjection {
+                    uid: None,
+                    resource_version: Some("observed-rv"),
+                }),
+                serde_json::json!({"uid": null, "resource_version": "observed-rv"}),
+            ),
+            (
+                Some(TargetProjection {
+                    uid: Some("observed-uid"),
+                    resource_version: None,
+                }),
+                serde_json::json!({"uid": "observed-uid", "resource_version": null}),
+            ),
+            (None, serde_json::Value::Null),
+        ] {
+            assert_eq!(target_field_json(projection), previous.to_string());
+        }
     }
 }
 

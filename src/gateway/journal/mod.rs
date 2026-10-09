@@ -1079,6 +1079,14 @@ impl Journal {
     }
 
     #[cfg(test)]
+    pub(crate) fn peer_read_for_control(&self, id: &str) -> Result<Option<String>, GatewayError> {
+        Ok(self
+            .records
+            .other_identity(&self.connection, id)?
+            .filter(|_| self.exercise_defect(Defect::WrongPeerRead)))
+    }
+
+    #[cfg(test)]
     pub(crate) fn remint_for_control(operation: &ApplyStartedOperation) -> DispatchPermission {
         DispatchPermission {
             request: operation.request().clone(),

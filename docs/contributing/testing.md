@@ -66,9 +66,52 @@ Process exit does not prove disk-backed power-loss durability. Emulated containe
 native installation. A fuzz smoke pass does not replace canonical vectors or explicit failure cases.
 Record exact source/artifact identities and missing lanes when reporting a result.
 
+## Maintained source accounting
+
+Use the source census before retiring assurance implementations:
+
+```sh
+python3 tools/dev/assurance_census.py > /tmp/kapsel-assurance-census.json
+```
+
+The default comparison is committed `a009071896cf394062d31159ff1e3c5783430efa` against the working
+tree, including untracked, non-ignored source additions. Use `--after <revision>` for a committed
+comparison. The command reads source without checking out either revision. Keep the same classifier
+for both sides; each report records its SHA-256 digest.
+
+The report lists every maintained Rust, Python, shell and SQL source file, its content digest,
+physical line count, and non-overlapping assurance ranges. Counts include blanks and comments. Whole
+test directories, fuzz sources, named test modules and explicitly listed qualification support count
+as assurance. In mixed Rust files, exclusively test- or harness-gated items and statements count as
+assurance. Their physical lines count once, including nested gates. Shared platform gates remain
+product source. The scanner masks comments and literals; it does not expand macros or infer
+conditional compilation. Audit the emitted ranges when adding a new gating form or relocating
+support, and update the explicit support classification for new nonstandard owners.
+
+General setup, formatting, release assembly and standalone artifact-verifier implementations remain
+tooling, not removable assurance. The census and its regressions count as replacement assurance.
+Generated files, binaries, corpus data and documentation are outside this source denominator; moving
+maintained code into data or generated output cannot establish savings.
+
+Charge the after-assurance count plus any positive net product-source increase. A product-source
+decrease earns no deletion credit. This prevents relocated policy from inflating savings. Reports
+include all source ranges, not only changed files. General tooling growth remains visible
+separately; new assurance machinery belongs in assurance regardless of its directory.
+
+Under this classification, the fixed baseline is **36,599 lines**: 27,452 Rust, 8,698 Python, 404
+shell and 45 SQL. This replaces the approximate 36,391-line planning census; the 208-line
+classification difference is not a retirement. At `4925c6d`, assurance is 38,254 lines and the net
+product charge is 258 lines. The charged total is 38,512: **1,913 lines above baseline**, not a
+reduction. Subsequent accounting support is also charged by the working-tree comparison.
+
 ## Atomic record-I/O simulation
 
-`src/kernel_simulation_tests.rs` drives Kubernetes selection through the real service application.
+`src/kernel_simulation_tests.rs` drives one to four Kubernetes identities through one real service
+application and shared journal. Each identity has distinct intent, target, authority and receipt
+signing material. Every event checks every peer's raw facts and independently counted receiver I/O.
+Generated three-identity schedules interleave selections, receiver changes, catalog removal, trust
+withdrawal and restored prerequisites. Withdrawn trust must permit neither I/O nor retained fact
+changes; restoring trust does not substitute current catalog authority for retained history.
 Production journal policy validates authority, transitions and frozen facts. Its private record-I/O
 owner reads complete bounded rows and conditionally commits against the original row. SQLite updates
 only changed columns. The test-only virtual store implements atomic records, not lifecycle policy.
@@ -81,12 +124,16 @@ histories with the same returned error. Receiver response loss is separate. Both
 real SQLite run the delivery laws; named physical columns and executed write plans provide
 independent SQLite evidence.
 
-Seeded remint, wrong-initial-result, no-op, wrong-signer, physical replica-field-swap,
-receipt-decoder field-swap and unconditional-write controls must violate their intended law and
-report the reached faulty branch. An unrelated error does not qualify as detection. Generated
-schedules record their actions and retain an explicit healthy suffix. Progress requires a restored
-receiver, healthy storage and an available signer. Minimized safety witnesses need not finish the
-operation; correct code must pass those same prefixes on both stores.
+Seeded remint, wrong-initial-result, no-op, wrong-signer, wrong-peer lookup, physical
+replica-field-swap, receipt-decoder field-swap and unconditional-write controls must violate their
+intended law and report the reached faulty branch. Wrong-peer lookup deliberately misroutes the
+selected identity before grant binding; a wrong lower-layer row alone is refused by the existing
+identity guard. An unrelated bounded refusal does not qualify as detection. Generated schedules
+record their actions and retain an explicit healthy suffix. Progress requires a restored receiver,
+healthy storage, original trust and an available signer for every identity. Minimized progress
+witnesses must preserve eligibility for every peer, not only the first peer checked. Minimized
+safety witnesses need not finish the operation; correct code must pass those same prefixes on both
+stores.
 
 Run the deterministic slice:
 
@@ -109,7 +156,7 @@ cargo test --locked -p kapsel --lib \
   kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
 ```
 
-Set `KAPSEL_KERNEL_DEFECTS=1` to retain the six lifecycle defect inputs and their minimized
+Set `KAPSEL_KERNEL_DEFECTS=1` to retain the seven lifecycle defect inputs and their minimized
 findings. The atomic-record binding control has its separate deterministic owner. Each document is
 created exclusively before execution and records source-content and executable digests. These
 digests are not build attestations. Replay a retained document without regenerating its schedule:
