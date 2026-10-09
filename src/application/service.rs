@@ -408,6 +408,27 @@ impl ServiceApplication {
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
         fault: Option<crate::gateway::FaultPoint>,
     ) -> Result<ServiceStop, ServiceError> {
+        self.select_with_adapters(
+            operation_id,
+            execution,
+            adapter,
+            #[cfg(test)]
+            None,
+            acknowledged,
+            fault,
+        )
+        .await
+    }
+
+    pub(crate) async fn select_with_adapters<A: crate::gateway::DeploymentImageAdapter + Send>(
+        &mut self,
+        operation_id: &str,
+        execution: ServiceExecution,
+        adapter: Option<&mut A>,
+        #[cfg(test)] git_adapter: Option<&crate::gateway::git::GitReceiver>,
+        acknowledged: impl FnOnce(ServiceAdmission) + Send,
+        fault: Option<crate::gateway::FaultPoint>,
+    ) -> Result<ServiceStop, ServiceError> {
         let selected = self.retained_for_selection(operation_id)?;
         if let Some((_, key_id)) = &execution.receipt_signing {
             crate::gateway::validate_key_id(key_id).map_err(|_| ServiceError::Configuration)?;
@@ -446,6 +467,8 @@ impl ServiceApplication {
                         operation_id,
                         &signed_grant,
                         execution.git_receiver.as_ref(),
+                        #[cfg(test)]
+                        git_adapter,
                         receipt.as_ref(),
                         callback,
                     )

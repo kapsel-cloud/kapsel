@@ -17,6 +17,10 @@ pub(crate) enum Barrier {
     Observation,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent receiver faults and dispatch provenance are not lifecycle phases"
+)]
 pub(crate) struct State {
     pub(crate) reads: usize,
     pub(crate) sends: usize,
@@ -27,6 +31,12 @@ pub(crate) struct State {
     pub(crate) barrier: Option<Barrier>,
     pub(crate) fault: Option<FaultPoint>,
     pub(crate) violation: Option<&'static str>,
+    pub(crate) returned_acknowledgement: Option<Acknowledgement>,
+    pub(crate) returned_observation: Option<ObservedRef>,
+    pub(crate) ref_after_send: Option<ObservedRef>,
+    pub(crate) lose_response: bool,
+    pub(crate) fresh_attempt: bool,
+    kernel: Option<(crate::gateway::StorageControl, GitRefAuthorization)>,
     journal: PathBuf,
     id: String,
 }
@@ -59,6 +69,12 @@ impl Script {
             barrier: None,
             fault: None,
             violation: None,
+            returned_acknowledgement: None,
+            returned_observation: None,
+            ref_after_send: None,
+            lose_response: false,
+            fresh_attempt: false,
+            kernel: None,
             journal,
             id: id.into(),
         }));
@@ -72,6 +88,24 @@ impl Script {
             script: Some(Arc::clone(&state)),
         };
         Self { state, receiver }
+    }
+
+    pub(crate) fn kernel(
+        original: GitRefAuthorization,
+        journal: PathBuf,
+        control: crate::gateway::StorageControl,
+    ) -> Self {
+        let mut script = Self::new(&original.operation_id, journal);
+        script
+            .receiver
+            .repository_id
+            .clone_from(&original.repository_id);
+        script.state.lock().unwrap().kernel = Some((control, original));
+        script
+    }
+
+    pub(crate) fn receiver(&self) -> &GitReceiver {
+        &self.receiver
     }
 
     pub(crate) fn submit(gateway: &Gateway, id: &str, competing: bool) -> Result<(), GatewayError> {
@@ -142,6 +176,13 @@ impl GitReceiver {
         let (barrier, target_stale, unavailable) = {
             let mut state = state.lock().unwrap();
             state.reads += 1;
+            if state
+                .kernel
+                .as_ref()
+                .is_some_and(|(_, original)| original != authorization)
+            {
+                state.violation = Some("original_intent");
+            }
             (state.barrier, state.stale, state.unavailable)
         };
         if matches!(barrier, Some(Barrier::Preflight)) {
@@ -167,15 +208,34 @@ impl GitReceiver {
         let (barrier, acknowledgement) = {
             let mut state = state.lock().unwrap();
             // An independently opened reader must see the marker before any simulated send.
-            let retained = Gateway::open_for_test(&state.journal)
-                .and_then(|gateway| gateway.retained_git(&state.id));
-            if !retained.is_ok_and(|operation| {
-                operation.is_some_and(|operation| {
-                    operation.state == OperationState::ApplyStarted
-                        && operation.targets.attempted
-                        && operation.targets.approval == *authorization
-                })
-            }) {
+            let committed = if let Some((control, original)) = &state.kernel {
+                let phase = control.value(&state.id, "state").or_else(|| {
+                    let connection = rusqlite::Connection::open(&state.journal).ok()?;
+                    connection
+                        .query_row(
+                            "SELECT state FROM git_ref_operations WHERE operation_id = ?1",
+                            [&state.id],
+                            |row| row.get::<_, rusqlite::types::Value>(0),
+                        )
+                        .ok()
+                });
+                state.fresh_attempt
+                    && original == authorization
+                    && phase == Some(rusqlite::types::Value::Text("apply_started".into()))
+                    && control.last_delivery(crate::gateway::StorageWrite::Attempt)
+                        == Some(crate::gateway::Delivery::Confirmed)
+            } else {
+                Gateway::open_for_test(&state.journal)
+                    .and_then(|gateway| gateway.retained_git(&state.id))
+                    .is_ok_and(|operation| {
+                        operation.is_some_and(|operation| {
+                            operation.state == OperationState::ApplyStarted
+                                && operation.targets.attempted
+                                && operation.targets.approval == *authorization
+                        })
+                    })
+            };
+            if !committed {
                 state.violation = Some("dispatch_before_commit");
                 return Acknowledgement::Unknown;
             }
@@ -183,11 +243,18 @@ impl GitReceiver {
             if state.acknowledgement == Acknowledgement::Updated {
                 state.observed = ObservedRef::Commit(authorization.new_commit.clone());
             }
-            (state.barrier, state.acknowledgement)
+            state.ref_after_send = Some(state.observed.clone());
+            let delivered = if state.lose_response {
+                Acknowledgement::Unknown
+            } else {
+                state.acknowledgement
+            };
+            (state.barrier, delivered)
         };
         if matches!(barrier, Some(Barrier::Mutation)) {
             std::future::pending::<()>().await;
         }
+        state.lock().unwrap().returned_acknowledgement = Some(acknowledgement);
         acknowledgement
     }
 
@@ -205,6 +272,7 @@ impl GitReceiver {
         if matches!(barrier, Some(Barrier::Observation)) {
             std::future::pending::<()>().await;
         }
+        state.lock().unwrap().returned_observation = Some(observed.clone());
         observed
     }
 }

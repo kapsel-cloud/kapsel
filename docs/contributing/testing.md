@@ -106,23 +106,29 @@ reduction. Subsequent accounting support is also charged by the working-tree com
 
 ## Atomic record-I/O simulation
 
-`src/kernel_simulation_tests.rs` drives one to four Kubernetes identities through one real service
-application and shared journal. Each identity has distinct intent, target, authority and receipt
-signing material. Every event checks every peer's raw facts and independently counted receiver I/O.
-Generated three-identity schedules interleave selections, receiver changes, catalog removal, trust
-withdrawal and restored prerequisites. Withdrawn trust must permit neither I/O nor retained fact
-changes; restoring trust does not substitute current catalog authority for retained history.
-Production journal policy validates authority, transitions and frozen facts. Its private record-I/O
-owner reads complete bounded rows and conditionally commits against the original row. SQLite updates
-only changed columns. The test-only virtual store implements atomic records, not lifecycle policy.
-Neither backend selection nor fault controls are caller inputs.
+`src/kernel_simulation_tests.rs` drives one to four Kubernetes or Git identities through one real
+service application and shared journal. Each identity has distinct intent, target, authority and
+receipt signing material. Every event checks every peer's raw facts and independently counted
+receiver I/O. Generated three-identity schedules use Kubernetes-only, Git-only and mixed
+assignments. They interleave selections, receiver changes, catalog removal, trust withdrawal and
+restored prerequisites. Withdrawn trust must permit neither I/O nor retained fact changes; restoring
+trust does not substitute current catalog authority for retained history. Production journal policy
+validates authority, transitions and frozen facts. Its private record-I/O owner reads complete
+bounded rows from either typed table and conditionally commits against the original row. SQLite
+updates only changed columns. The test-only virtual store implements atomic records, not lifecycle
+policy. Neither backend selection nor fault controls are caller inputs.
 
 The slice checks original intent, confirmed dispatch provenance, initial classification, complete
 receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt
 bytes and healthy eligible progress. It injects no-commit and commit-with-lost-acknowledgement
-histories with the same returned error. Receiver response loss is separate. Both virtual records and
-real SQLite run the delivery laws; named physical columns and executed write plans provide
-independent SQLite evidence.
+histories with the same returned error. Receiver response loss is separate. Both effects run the
+delivery laws on virtual records and real SQLite; named physical columns and executed write plans
+provide independent SQLite evidence.
+
+Git checks exact original acknowledgement independently of the frozen ref. A seeded control that
+infers an acknowledgement from externally established B must fail `git_acknowledgement_binding`,
+including after an unsent attempt. Its minimized input must fail on both stores and pass without the
+control. The shared stale-record control also runs against Git rows.
 
 Seeded remint, wrong-initial-result, no-op, wrong-signer, wrong-peer lookup, physical
 replica-field-swap, receipt-decoder field-swap and unconditional-write controls must violate their
@@ -156,7 +162,7 @@ cargo test --locked -p kapsel --lib \
   kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
 ```
 
-Set `KAPSEL_KERNEL_DEFECTS=1` to retain the seven lifecycle defect inputs and their minimized
+Set `KAPSEL_KERNEL_DEFECTS=1` to retain the eight lifecycle defect inputs and their minimized
 findings. The atomic-record binding control has its separate deterministic owner. Each document is
 created exclusively before execution and records source-content and executable digests. These
 digests are not build attestations. Replay a retained document without regenerating its schedule:
@@ -168,8 +174,8 @@ KAPSEL_KERNEL_REPLAY=/absolute/retained/finding-0.json cargo test --locked -p ka
 
 Use the retained executable for original-binary reproduction. Rebuilding runs the same actions
 against new code. This local route does not replace supervised exploration custody, physical worker
-lifetime, capacity/ENOSPC, configured-client HTTP, Git, live-receiver or installed-artifact
-evidence. Those owners remain separate.
+lifetime, capacity/ENOSPC, configured-client HTTP, actual Git transport, live-receiver or
+installed-artifact evidence. Those owners remain separate.
 
 ## Lifecycle exploration
 

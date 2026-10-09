@@ -106,7 +106,7 @@ const CREATE_OPERATION_TABLE: &str = "CREATE TABLE kubernetes_image_operations (
     preflight_resource_version TEXT
 ) STRICT;";
 
-const GIT_COLUMNS: &[&str] = &[
+pub(super) const GIT_COLUMNS: &[&str] = &[
     "operation_id",
     "repository_id",
     "ref_name",

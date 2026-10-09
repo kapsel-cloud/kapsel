@@ -1,4 +1,4 @@
-//! Atomic Kubernetes record I/O. This layer knows columns, not lifecycle or authority policy.
+//! Atomic effect record I/O. This layer knows columns, not lifecycle or authority policy.
 
 use std::sync::OnceLock;
 
@@ -9,12 +9,44 @@ use rusqlite::{
 
 use super::{changed_one, schema, GatewayError};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Table {
+    Kubernetes,
+    Git,
+}
+
+impl Table {
+    fn columns(self) -> &'static [&'static str] {
+        match self {
+            Self::Kubernetes => schema::CURRENT_COLUMNS,
+            Self::Git => schema::GIT_COLUMNS,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Kubernetes => "kubernetes_image_operations",
+            Self::Git => "git_ref_operations",
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Kubernetes => Self::Git,
+            Self::Git => Self::Kubernetes,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Record(Vec<Value>);
+pub(super) struct Record(Vec<Value>, Table);
 
 impl Record {
     pub(super) fn empty(id: &str) -> Self {
-        let mut record = Self(vec![Value::Null; schema::CURRENT_COLUMNS.len()]);
+        let mut record = Self(
+            vec![Value::Null; schema::CURRENT_COLUMNS.len()],
+            Table::Kubernetes,
+        );
         record.set("operation_id", id.to_owned());
         for field in ["target_read_failures", "apply_attempted"] {
             record.set(field, 0_i64);
@@ -22,28 +54,37 @@ impl Record {
         record
     }
 
+    pub(super) fn git_empty(id: &str) -> Self {
+        let mut record = Self(vec![Value::Null; schema::GIT_COLUMNS.len()], Table::Git);
+        record.set("operation_id", id.to_owned());
+        record
+    }
+
     #[allow(
         clippy::expect_used,
         reason = "column names are fixed internal code, never input"
     )]
-    fn index(field: &str) -> usize {
-        schema::CURRENT_COLUMNS
+    fn index(&self, field: &str) -> usize {
+        self.1
+            .columns()
             .iter()
             .position(|name| *name == field)
             .expect("record fields are fixed internal schema column names")
     }
 
     pub(super) fn get<T: FromSql>(&self, field: &str) -> Result<T, GatewayError> {
-        T::column_result((&self.0[Self::index(field)]).into())
+        T::column_result((&self.0[self.index(field)]).into())
             .map_err(|_| GatewayError::InvalidPersistedState)
     }
 
     pub(super) fn set(&mut self, field: &str, value: impl Into<Value>) {
-        self.0[Self::index(field)] = value.into();
+        let index = self.index(field);
+        self.0[index] = value.into();
     }
 
     pub(super) fn set_optional<T: Into<Value>>(&mut self, field: &str, value: Option<T>) {
-        self.0[Self::index(field)] = value.map_or(Value::Null, Into::into);
+        let index = self.index(field);
+        self.0[index] = value.map_or(Value::Null, Into::into);
     }
 
     #[cfg(test)]
@@ -61,24 +102,24 @@ impl Record {
             .collect::<Vec<_>>();
         lengths
             .iter()
-            .zip(schema::CURRENT_COLUMNS)
+            .zip(self.1.columns())
             .all(|(length, field)| *length <= field_limit(field))
             && lengths.iter().sum::<usize>()
                 <= usize::try_from(schema::PERSISTED_ROW_BYTES_MAX).unwrap()
     }
 
     pub(super) fn has_value(&self, field: &str) -> bool {
-        self.0[Self::index(field)] != Value::Null
+        self.0[self.index(field)] != Value::Null
     }
 
-    fn from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        if !row.get::<_, bool>(schema::CURRENT_COLUMNS.len())? {
+    fn from_sql(row: &rusqlite::Row<'_>, table: Table) -> rusqlite::Result<Self> {
+        if !row.get::<_, bool>(table.columns().len())? {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        (0..schema::CURRENT_COLUMNS.len())
+        (0..table.columns().len())
             .map(|index| row.get(index))
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map(Self)
+            .map(|values| Self(values, table))
     }
 }
 
@@ -186,32 +227,51 @@ fn field_limit(field: &str) -> usize {
 }
 
 pub(super) fn read(connection: &Connection, id: &str) -> Result<Option<Record>, GatewayError> {
+    read_table(connection, id, Table::Kubernetes)
+}
+
+pub(super) fn read_git(connection: &Connection, id: &str) -> Result<Option<Record>, GatewayError> {
+    read_table(connection, id, Table::Git)
+}
+
+fn read_table(
+    connection: &Connection,
+    id: &str,
+    table: Table,
+) -> Result<Option<Record>, GatewayError> {
     // Opening enforces per-value and aggregate persisted bounds. Keep those same bounds on reads
     // after opening: direct edits are not made safe by possession of the worker lease.
-    static QUERY: OnceLock<String> = OnceLock::new();
-    let query = QUERY.get_or_init(|| {
-        let columns = schema::CURRENT_COLUMNS.join(", ");
-        let lengths = schema::CURRENT_COLUMNS
+    static KUBERNETES_QUERY: OnceLock<String> = OnceLock::new();
+    static GIT_QUERY: OnceLock<String> = OnceLock::new();
+    let query = match table {
+        Table::Kubernetes => &KUBERNETES_QUERY,
+        Table::Git => &GIT_QUERY,
+    }
+    .get_or_init(|| {
+        let columns = table.columns().join(", ");
+        let lengths = table
+            .columns()
             .iter()
             .map(|field| format!("coalesce(length(CAST({field} AS BLOB)), 0)"))
             .collect::<Vec<_>>();
         let bounds = lengths
             .iter()
-            .zip(schema::CURRENT_COLUMNS)
+            .zip(table.columns())
             .map(|(length, field)| format!("{length} <= {}", field_limit(field)))
             .collect::<Vec<_>>()
             .join(" AND ");
         let total = lengths.join(" + ");
         format!(
             "SELECT {columns}, ({bounds} AND ({total}) <= {}) \
-            FROM kubernetes_image_operations WHERE operation_id = ?1",
-            schema::PERSISTED_ROW_BYTES_MAX
+            FROM {} WHERE operation_id = ?1",
+            schema::PERSISTED_ROW_BYTES_MAX,
+            table.name()
         )
     });
     connection
         .prepare_cached(query)
         .map_err(GatewayError::Database)?
-        .query_row([id], Record::from_sql)
+        .query_row([id], |row| Record::from_sql(row, table))
         .optional()
         .map_err(|error| match error {
             rusqlite::Error::InvalidQuery => GatewayError::InvalidPersistedState,
@@ -259,11 +319,33 @@ impl Io {
         connection: &Connection,
         id: &str,
     ) -> Result<Option<Record>, GatewayError> {
+        self.read_table(connection, id, Table::Kubernetes)
+    }
+
+    pub(super) fn read_git(
+        &self,
+        connection: &Connection,
+        id: &str,
+    ) -> Result<Option<Record>, GatewayError> {
+        self.read_table(connection, id, Table::Git)
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "virtual record reads exist only in test builds"
+    )]
+    fn read_table(
+        &self,
+        connection: &Connection,
+        id: &str,
+        table: Table,
+    ) -> Result<Option<Record>, GatewayError> {
         #[cfg(test)]
         if let Some(store) = &self.control.0.lock().unwrap().virtual_store {
             let store = store.lock().unwrap();
             return store
                 .get(id)
+                .filter(|record| record.1 == table)
                 .map(|record| {
                     if record.bounded() {
                         Ok(record.clone())
@@ -273,7 +355,7 @@ impl Io {
                 })
                 .transpose();
         }
-        read(connection, id)
+        read_table(connection, id, table)
     }
 
     #[cfg(test)]
@@ -318,6 +400,9 @@ impl Io {
             let delivery = control.take_delivery(write);
             if let Some(store) = control.virtual_store.clone() {
                 let mut store = store.lock().unwrap();
+                if store.get(&id).is_some_and(|record| record.1 != next.1) {
+                    return Err(GatewayError::OperationIdentityConflict);
+                }
                 let ignore_binding = control.defect == Some(Defect::UnconditionalWrite);
                 if ignore_binding {
                     control.defect_reached.push(Defect::UnconditionalWrite);
@@ -357,14 +442,16 @@ impl Io {
             rusqlite::Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
         let id: String = next.get("operation_id")?;
-        let matches = read(&transaction, &id)?.as_ref() == expected;
+        let matches = read_table(&transaction, &id, next.1)?.as_ref() == expected;
         #[cfg(test)]
         let matches = self.control.exercise(Defect::UnconditionalWrite) || matches;
         if !matches {
             return Err(GatewayError::InvalidTransition);
         }
         if let Some(previous) = expected {
-            let changes = schema::CURRENT_COLUMNS
+            let changes = next
+                .1
+                .columns()
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| previous.0[*index] != next.0[*index])
@@ -384,8 +471,9 @@ impl Io {
                 .collect::<Vec<_>>();
             values.push(Value::Text(id));
             let sql = format!(
-                "UPDATE kubernetes_image_operations SET {assignments} \
+                "UPDATE {} SET {assignments} \
                 WHERE operation_id = ?{}",
+                next.1.name(),
                 values.len()
             );
             #[cfg(test)]
@@ -403,7 +491,10 @@ impl Io {
         } else {
             let collision: bool = transaction
                 .query_row(
-                    "SELECT EXISTS (SELECT 1 FROM git_ref_operations WHERE operation_id = ?1)",
+                    &format!(
+                        "SELECT EXISTS (SELECT 1 FROM {} WHERE operation_id = ?1)",
+                        next.1.other().name()
+                    ),
                     [&id],
                     |row| row.get(0),
                 )
@@ -417,9 +508,10 @@ impl Io {
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
-                "INSERT INTO kubernetes_image_operations ({}) \
+                "INSERT INTO {} ({}) \
                 VALUES ({parameters})",
-                schema::CURRENT_COLUMNS.join(", ")
+                next.1.name(),
+                next.1.columns().join(", ")
             );
             #[cfg(test)]
             self.control
@@ -434,7 +526,7 @@ impl Io {
         }
         #[cfg(test)]
         {
-            if write == Write::Receipt {
+            if write == Write::Receipt && next.1 == Table::Kubernetes {
                 crate::gateway::tests::storage::receipt_precommit_checkpoint(&transaction);
             }
             if delivery == Delivery::NoCommit {
@@ -520,6 +612,7 @@ pub(crate) enum Defect {
     WrongSigner,
     WrongPeerRead,
     ReceiptProjectionSwap,
+    GitInferredAcknowledgement,
 }
 
 #[cfg(test)]
@@ -564,7 +657,7 @@ impl Control {
                 .lock()
                 .unwrap()
                 .get(id)
-                .map(|row| row.0[Record::index(field)].clone())
+                .map(|row| row.0[row.index(field)].clone())
         })
     }
 
@@ -605,7 +698,11 @@ mod tests {
         original
     }
 
-    fn binding_law(virtualized: bool, defect: bool) -> Result<(bool, Vec<Defect>), GatewayError> {
+    fn binding_law(
+        virtualized: bool,
+        defect: bool,
+        git: bool,
+    ) -> Result<(bool, Vec<Defect>), GatewayError> {
         let scratch = crate::kernel_simulation_tests::Scratch::new();
         let mut journal = super::super::Journal::open(scratch.0.join("journal.sqlite3")).unwrap();
         let control = if virtualized {
@@ -614,13 +711,30 @@ mod tests {
             Control::default()
         };
         journal.control_storage(control.clone());
-        let original = record();
+        let original = if git {
+            let mut record = Record::git_empty("atomic-binding");
+            for (field, value) in [
+                ("repository_id", "repository"),
+                ("ref_name", "refs/heads/approved"),
+                ("old_commit", "a"),
+                ("new_commit", "b"),
+                ("state", "authorized"),
+            ] {
+                record.set(field, value.to_owned());
+            }
+            record
+        } else {
+            record()
+        };
         journal
             .records
             .replace(&journal.connection, None, &original, Write::Admission)
             .unwrap();
         let mut foreign = original.clone();
-        foreign.set("container", "different".to_owned());
+        foreign.set(
+            if git { "new_commit" } else { "container" },
+            "different".to_owned(),
+        );
         journal
             .records
             .replace(
@@ -647,7 +761,11 @@ mod tests {
         };
         let retained = journal
             .records
-            .read(&journal.connection, "atomic-binding")
+            .read_table(
+                &journal.connection,
+                "atomic-binding",
+                if git { Table::Git } else { Table::Kubernetes },
+            )
             .unwrap();
         Ok((
             refused && retained.as_ref() == Some(&foreign),
@@ -718,10 +836,12 @@ mod tests {
     #[test]
     fn atomic_record_binding_rejects_stale_foreign_facts_and_detects_unconditional_write() {
         for virtualized in [true, false] {
-            assert!(binding_law(virtualized, false).unwrap().0);
-            let (holds, reached) = binding_law(virtualized, true).unwrap();
-            assert!(!holds, "conditional_binding defect survived");
-            assert!(reached.contains(&Defect::UnconditionalWrite));
+            for git in [false, true] {
+                assert!(binding_law(virtualized, false, git).unwrap().0);
+                let (holds, reached) = binding_law(virtualized, true, git).unwrap();
+                assert!(!holds, "conditional_binding defect survived");
+                assert!(reached.contains(&Defect::UnconditionalWrite));
+            }
         }
     }
 }

@@ -161,7 +161,8 @@ not a peak-space guarantee.
 
 The direct owners are [`capacity.rs`](../../src/gateway/journal/capacity.rs),
 [`schema.rs`](../../src/gateway/journal/schema.rs),
-[`opening.rs`](../../src/gateway/journal/opening.rs), and the write statements in
+[`opening.rs`](../../src/gateway/journal/opening.rs), and the atomic write statements in
+[`records.rs`](../../src/gateway/journal/records.rs). Transition policy remains in
 [`mod.rs`](../../src/gateway/journal/mod.rs) and [`git.rs`](../../src/gateway/journal/git.rs). The
 locked `libsqlite3-sys` 0.38.2 amalgamation supplies SQLite 3.53.2.
 

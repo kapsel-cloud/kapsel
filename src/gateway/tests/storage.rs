@@ -855,31 +855,12 @@ async fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
     let path = database_path("owned-write-plans");
     let gateway = Gateway::open_for_test(&path).unwrap();
     assert_eq!(rusqlite::version(), "3.53.2");
-    // Git owns fixed literals. Kubernetes supplies the statements actually executed by the
-    // service slice, including rejection and independently distinguishable receiver facts.
-    let mut statements = std::iter::once(include_str!("../journal/git.rs"))
-        .flat_map(|owner| {
-            owner
-                .split("\n#[cfg(test)]\nmod tests {")
-                .next()
-                .unwrap()
-                .split('"')
-        })
-        .filter(|sql| {
-            sql.starts_with("INSERT INTO kubernetes_image_operations")
-                || sql.starts_with("UPDATE kubernetes_image_operations")
-                || sql.starts_with("INSERT INTO git_ref_operations")
-                || sql.starts_with("UPDATE git_ref_operations")
-        })
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    assert_eq!(statements.len(), 6);
-    statements.extend(
-        crate::kernel_simulation_tests::executed_write_statements()
-            .await
-            .into_iter()
-            .map(|(_, sql)| sql),
-    );
+    // Both effects supply the statements actually executed through atomic record I/O.
+    // The simulator requires every write kind per table, including nullable observation layouts.
+    let statements = crate::kernel_simulation_tests::executed_write_statements()
+        .await
+        .into_iter()
+        .map(|(_, sql)| sql);
     for sql in statements {
         let insert = sql.starts_with("INSERT");
         let mut statement = gateway

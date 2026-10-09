@@ -6,7 +6,7 @@
 mod authorization;
 #[cfg(feature = "demo-harness")]
 mod demo_control;
-mod git;
+pub(crate) mod git;
 mod journal;
 mod kubernetes;
 mod receipt;

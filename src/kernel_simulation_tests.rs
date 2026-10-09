@@ -1,4 +1,4 @@
-//! Invariant-first Kubernetes slice through the real service, shared policy and atomic record I/O.
+//! Invariant-first mixed effects through the real service, shared policy and atomic record I/O.
 //! Receiver and commit delivery are independent facts; the checker never predicts lifecycle phases.
 
 use std::{
@@ -75,9 +75,16 @@ enum Action {
     Select(Selection),
     Peer(usize),
     Receiver(Receiver),
+    GitRef { new: bool },
     Reopen { catalog: bool },
     Trust(bool),
     Restore,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+enum Effect {
+    Kubernetes,
+    Git,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -86,6 +93,8 @@ struct Trace {
     seed: u64,
     #[serde(default = "single_peer")]
     peers: usize,
+    #[serde(default)]
+    effects: Vec<Effect>,
     actions: Vec<Action>,
     defect: Option<Defect>,
     #[serde(default = "default_progress")]
@@ -140,9 +149,19 @@ struct Store {
 }
 impl Store {
     fn raw(&self, id: &str) -> BTreeMap<String, Value> {
+        self.raw_effect(id, false)
+    }
+
+    fn raw_effect(&self, id: &str, git: bool) -> BTreeMap<String, Value> {
+        let fields = if git { GIT_FIELDS } else { FIELDS };
+        let table = if git {
+            "git_ref_operations"
+        } else {
+            "kubernetes_image_operations"
+        };
         if self.virtualized {
             // Named fields are intentionally independent of the production decoder's projection.
-            FIELDS
+            fields
                 .iter()
                 .filter_map(|field| {
                     self.control
@@ -153,7 +172,7 @@ impl Store {
         } else {
             let connection = Connection::open(&self.path).unwrap();
             let mut statement = connection
-                .prepare("SELECT * FROM kubernetes_image_operations WHERE operation_id = ?1")
+                .prepare(&format!("SELECT * FROM {table} WHERE operation_id = ?1"))
                 .unwrap();
             let names = statement
                 .column_names()
@@ -214,6 +233,26 @@ const FIELDS: &[&str] = &[
     "approved_resource_version",
     "preflight_uid",
     "preflight_resource_version",
+];
+
+const GIT_FIELDS: &[&str] = &[
+    "operation_id",
+    "repository_id",
+    "ref_name",
+    "old_commit",
+    "new_commit",
+    "authorization_id",
+    "authorization_signer_key_id",
+    "authorization_grant_digest",
+    "signed_authorization_grant",
+    "state",
+    "target_rejection",
+    "acknowledgement",
+    "observed_ref_kind",
+    "observed_commit",
+    "receipt_digest",
+    "receipt_bytes",
+    "receipt_key_id",
 ];
 
 fn text<'a>(raw: &'a BTreeMap<String, Value>, field: &str) -> Option<&'a str> {
@@ -471,6 +510,26 @@ impl Intent {
         }
     }
 
+    fn git(peer: usize) -> (Self, kapsel_authority::GitRefAuthorization) {
+        let mut intent = Self::new(peer);
+        intent.request.operation_id = format!("kernel-git-{peer}");
+        let approval = kapsel_authority::GitRefAuthorization {
+            authorization_id: intent.authorization_id.clone(),
+            operation_id: intent.request.operation_id.clone(),
+            repository_id: format!("kernel-repository-{peer}"),
+            reference: kapsel_authority::APPROVED_GIT_REF.into(),
+            old_commit: format!("{:040x}", peer + 1),
+            new_commit: format!("{:040x}", peer + 5),
+        };
+        intent.grant = kapsel_authority::sign_git_ref_grant(
+            &approval,
+            &intent.authority_seed,
+            &intent.authorization_key,
+        )
+        .unwrap();
+        (intent, approval)
+    }
+
     fn trust(&self) -> AuthorizationTrust {
         AuthorizationTrust {
             key_id: self.authorization_key.clone(),
@@ -637,17 +696,44 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
         "bounded local replay identities"
     );
     let mut peers = (0..trace.peers)
-        .map(|peer| Peer {
-            adapter: Adapter {
-                intent: Intent::new(peer),
-                store: store.clone(),
-                io: Arc::new(Mutex::new(Observations::default())),
-                receiver: Receiver::Healthy,
-                lose_response: false,
-                fresh: true,
-            },
-            checker: Checker::default(),
-            eligible_progress: false,
+        .map(|peer| {
+            let effect = trace
+                .effects
+                .get(peer)
+                .copied()
+                .unwrap_or(Effect::Kubernetes);
+            let (intent, git) = match effect {
+                Effect::Kubernetes => (Intent::new(peer), None),
+                Effect::Git => {
+                    let (intent, authorization) = Intent::git(peer);
+                    let script = crate::gateway::git::exploration::Script::kernel(
+                        authorization.clone(),
+                        store.path.clone(),
+                        control.clone(),
+                    );
+                    (
+                        intent,
+                        Some(GitPeer {
+                            authorization,
+                            script,
+                            durable_ack: Mutex::new(None),
+                        }),
+                    )
+                },
+            };
+            Peer {
+                adapter: Adapter {
+                    intent,
+                    store: store.clone(),
+                    io: Arc::new(Mutex::new(Observations::default())),
+                    receiver: Receiver::Healthy,
+                    lose_response: false,
+                    fresh: true,
+                },
+                checker: Checker::default(),
+                eligible_progress: false,
+                git,
+            }
         })
         .collect::<Vec<_>>();
     let mut configuration = ServiceConfiguration {
@@ -679,11 +765,17 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     && matches!(selection.cut, Cut::None)
                     && !selection.lose_response
                     && matches!(adapter.receiver, Receiver::Healthy)
-                    && (!store.raw(&adapter.intent.request.operation_id).is_empty()
+                    && (!store
+                        .raw_effect(&adapter.intent.request.operation_id, peer.git.is_some())
+                        .is_empty()
                         || !configuration.approvals.is_empty());
-                selection
-                    .execute(&mut app, adapter, &mut peer.checker, event)
-                    .await?;
+                if let Some(git) = &peer.git {
+                    selection.execute_git(&mut app, adapter, git, event).await?;
+                } else {
+                    selection
+                        .execute(&mut app, adapter, &mut peer.checker, event)
+                        .await?;
+                }
                 if before.is_some_and(|originals| {
                     originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 }) {
@@ -698,7 +790,38 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 assert!(peer < peers.len(), "bounded local replay peer index");
                 selected = peer;
             },
-            Action::Receiver(receiver) => peers[selected].adapter.receiver = receiver,
+            Action::Receiver(receiver) => {
+                peers[selected].adapter.receiver = receiver;
+                if let Some(git) = &peers[selected].git {
+                    let mut state = git.script.state.lock().unwrap();
+                    state.unavailable = matches!(receiver, Receiver::Unavailable);
+                    state.stale = matches!(receiver, Receiver::Replaced);
+                    state.acknowledgement = if matches!(receiver, Receiver::Failed) {
+                        crate::gateway::git::Acknowledgement::ReceiverRejected
+                    } else {
+                        crate::gateway::git::Acknowledgement::Updated
+                    };
+                    state.observed = crate::gateway::git::ObservedRef::Commit(
+                        if matches!(receiver, Receiver::Healthy) && state.sends > 0 {
+                            git.authorization.new_commit.clone()
+                        } else {
+                            git.authorization.old_commit.clone()
+                        },
+                    );
+                }
+            },
+            Action::GitRef { new } => {
+                let git = peers[selected]
+                    .git
+                    .as_ref()
+                    .expect("Git-ref events select a Git peer");
+                git.script.state.lock().unwrap().observed =
+                    crate::gateway::git::ObservedRef::Commit(if new {
+                        git.authorization.new_commit.clone()
+                    } else {
+                        git.authorization.old_commit.clone()
+                    });
+            },
             Action::Reopen { catalog } => {
                 drop(app);
                 configuration.approvals = if catalog && trusted {
@@ -732,6 +855,12 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 for peer in &mut peers {
                     peer.adapter.receiver = Receiver::Healthy;
                     peer.adapter.lose_response = false;
+                    if let Some(git) = &peer.git {
+                        let mut state = git.script.state.lock().unwrap();
+                        state.unavailable = false;
+                        state.stale = false;
+                        state.acknowledgement = crate::gateway::git::Acknowledgement::Updated;
+                    }
                 }
                 configuration.authorization_trust = peers
                     .iter()
@@ -746,6 +875,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
         }
         for peer in &mut peers {
             let adapter = &peer.adapter;
+            if let Some(git) = &peer.git {
+                peer.checker
+                    .check_git(&app, &store, &adapter.intent, git, event, false)?;
+                continue;
+            }
             peer.checker
                 .check(&store, &adapter.io.lock().unwrap(), &adapter.intent, event)?;
             check_terminal(
@@ -765,8 +899,19 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
             defect_reached: control.defect_reached(),
         });
     }
-    for peer in &peers {
+    for peer in &mut peers {
         let adapter = &peer.adapter;
+        if let Some(git) = &peer.git {
+            peer.checker.check_git(
+                &app,
+                &store,
+                &adapter.intent,
+                git,
+                trace.actions.len(),
+                trace.require_progress,
+            )?;
+            continue;
+        }
         check_terminal(
             &app,
             &store,
@@ -783,22 +928,306 @@ struct Peer {
     adapter: Adapter,
     checker: Checker,
     eligible_progress: bool,
+    git: Option<GitPeer>,
+}
+
+struct GitPeer {
+    authorization: kapsel_authority::GitRefAuthorization,
+    script: crate::gateway::git::exploration::Script,
+    durable_ack: Mutex<Option<crate::gateway::git::Acknowledgement>>,
 }
 
 impl Peer {
     fn snapshot(&self) -> (BTreeMap<String, Value>, usize, usize) {
-        let io = self.adapter.io.lock().unwrap();
+        let (reads, sends) = self.git.as_ref().map_or_else(
+            || {
+                let io = self.adapter.io.lock().unwrap();
+                (io.reads, io.sends.len())
+            },
+            |git| {
+                let io = git.script.state.lock().unwrap();
+                (io.reads, io.sends)
+            },
+        );
         (
-            self.adapter
-                .store
-                .raw(&self.adapter.intent.request.operation_id),
-            io.reads,
-            io.sends.len(),
+            self.adapter.store.raw_effect(
+                &self.adapter.intent.request.operation_id,
+                self.git.is_some(),
+            ),
+            reads,
+            sends,
         )
     }
 }
 
+impl Checker {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep Git intent, raw frozen facts and independently returned bytes together"
+    )]
+    fn check_git(
+        &mut self,
+        app: &ServiceApplication,
+        store: &Store,
+        intent: &Intent,
+        git: &GitPeer,
+        event: usize,
+        require_progress: bool,
+    ) -> Checked {
+        use crate::gateway::git::{Acknowledgement, ObservedRef};
+        let require = |condition, law| {
+            if condition {
+                Ok(())
+            } else {
+                Err(Finding {
+                    law,
+                    event,
+                    defect_reached: store.control.defect_reached(),
+                })
+            }
+        };
+        let io = git.script.state.lock().unwrap();
+        if let Some(law) = io.violation {
+            require(false, law)?;
+        }
+        require(io.sends <= 1, "at_most_one_mutation")?;
+        let mut raw = store.raw_effect(&intent.request.operation_id, true);
+        if raw.is_empty() {
+            return require(!require_progress, "healthy_progress");
+        }
+        let approval = &git.authorization;
+        let digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&intent.grant));
+        for (field, expected) in [
+            ("operation_id", &approval.operation_id),
+            ("repository_id", &approval.repository_id),
+            ("ref_name", &approval.reference),
+            ("old_commit", &approval.old_commit),
+            ("new_commit", &approval.new_commit),
+            ("authorization_id", &intent.authorization_id),
+            ("authorization_signer_key_id", &intent.authorization_key),
+            ("authorization_grant_digest", &digest),
+        ] {
+            require(
+                text(&raw, field) == Some(expected.as_str()),
+                "original_authority",
+            )?;
+        }
+        require(
+            raw.get("signed_authorization_grant") == Some(&Value::Blob(intent.grant.clone())),
+            "original_authority",
+        )?;
+        let acknowledgement = git
+            .durable_ack
+            .lock()
+            .unwrap()
+            .unwrap_or(Acknowledgement::Unknown);
+        let expected_result = match acknowledgement {
+            Acknowledgement::Updated => crate::OperationResult::Succeeded,
+            Acknowledgement::RejectedBeforeSend | Acknowledgement::ReceiverRejected => {
+                crate::OperationResult::Failed
+            },
+            Acknowledgement::Unknown => crate::OperationResult::Unknown,
+        };
+        if matches!(text(&raw, "state"), Some("receiver_observed" | "finalized")) {
+            if self.frozen.is_none() {
+                require(
+                    text(&raw, "acknowledgement") == Some(acknowledgement.as_str()),
+                    "git_acknowledgement_binding",
+                )?;
+                let observed = io.returned_observation.as_ref();
+                let bound = match observed {
+                    Some(ObservedRef::Commit(commit)) => {
+                        text(&raw, "observed_ref_kind") == Some("commit")
+                            && text(&raw, "observed_commit") == Some(commit.as_str())
+                    },
+                    Some(ObservedRef::Missing) => {
+                        text(&raw, "observed_ref_kind") == Some("missing")
+                            && raw.get("observed_commit") == Some(&Value::Null)
+                    },
+                    Some(ObservedRef::Unknown) => {
+                        text(&raw, "observed_ref_kind") == Some("unknown")
+                            && raw.get("observed_commit") == Some(&Value::Null)
+                    },
+                    None => false,
+                };
+                require(bound, "frozen_io_binding")?;
+            }
+            if let Ok(OperationReceipt::Ready { bytes, sha256 }) =
+                app.receipt(&approval.operation_id)
+            {
+                let trust = crate::ReceiptTrust {
+                    key_id: intent.receipt_key.clone(),
+                    public_key: ed25519_dalek::SigningKey::from_bytes(&intent.receipt_seed)
+                        .verifying_key()
+                        .to_bytes(),
+                    accepted_purpose: "kapsel.git-ref-transition-receipt.v1".into(),
+                    not_before_unix_s: 0,
+                    not_after_unix_s: 60,
+                }
+                .encode()
+                .unwrap();
+                let inspection = crate::inspect_git_receipt(
+                    &bytes,
+                    &trust,
+                    1,
+                    crate::InspectionLimits::default(),
+                );
+                require(
+                    inspection.status() == crate::InspectionStatus::Inspected,
+                    "original_signer",
+                )?;
+                require(
+                    inspection.statement().is_some_and(|statement| {
+                        statement.authorization() == approval
+                            && statement.authorization_signer_key_id() == intent.authorization_key
+                            && statement.authorization_grant_digest() == digest
+                            && statement.acknowledgement() == acknowledgement
+                            && Some(statement.observed_ref()) == io.returned_observation.as_ref()
+                    }),
+                    "receipt_binding",
+                )?;
+                require(
+                    inspection
+                        .statement()
+                        .is_some_and(|statement| statement.result() == expected_result),
+                    "git_result_classification",
+                )?;
+                require(
+                    raw.get("receipt_bytes") == Some(&Value::Blob(bytes.clone())),
+                    "original_receipt_bytes",
+                )?;
+                require(
+                    crate::lifecycle_exploration_tests::hex(&Sha256::digest(&bytes)) == sha256,
+                    "receipt_digest",
+                )?;
+                let bytes = Value::Blob(bytes);
+                if let Some(original) = &self.original_bytes {
+                    require(original == &bytes, "original_receipt_bytes")?;
+                } else {
+                    self.original_bytes = Some(bytes);
+                }
+            } else {
+                require(!require_progress, "healthy_progress")?;
+            }
+            for field in ["state", "receipt_bytes", "receipt_digest", "receipt_key_id"] {
+                raw.remove(field);
+            }
+            if let Some(original) = &self.frozen {
+                require(
+                    original == &raw && self.frozen_reads == io.reads,
+                    "frozen_no_io",
+                )?;
+            } else {
+                self.frozen = Some(raw);
+                self.frozen_reads = io.reads;
+            }
+        } else if text(&raw, "state") == Some("not_attempted") {
+            require(
+                text(&raw, "target_rejection") == Some("stale_ref") && io.sends == 0,
+                "rejection_binding",
+            )?;
+        } else {
+            require(!require_progress, "healthy_progress")?;
+        }
+        drop(io);
+        Ok(())
+    }
+}
+
 impl Selection {
+    async fn execute_git(
+        &self,
+        app: &mut ServiceApplication,
+        adapter: &Adapter,
+        git: &GitPeer,
+        event: usize,
+    ) -> Checked {
+        let control = &adapter.store.control;
+        let writes_before = control.reached().len();
+        if let Some((write, delivery)) = self.commit {
+            control.fail_next(write, delivery);
+        }
+        let (sends_before, expected_update) = {
+            let mut io = git.script.state.lock().unwrap();
+            io.fault = self.cut.fault();
+            io.lose_response = self.lose_response;
+            let before = adapter
+                .store
+                .raw_effect(&adapter.intent.request.operation_id, true);
+            io.fresh_attempt = before.is_empty() || text(&before, "state") == Some("authorized");
+            (
+                io.sends,
+                io.acknowledgement == crate::gateway::git::Acknowledgement::Updated,
+            )
+        };
+        let mut acknowledgements = Vec::new();
+        let _result = app
+            .select_with_adapters::<Adapter>(
+                &adapter.intent.request.operation_id,
+                ServiceExecution {
+                    kubernetes_client: None,
+                    git_receiver: None,
+                    receipt_signing: self.sign.then(|| {
+                        (
+                            adapter.intent.receipt_seed,
+                            adapter.intent.receipt_key.clone(),
+                        )
+                    }),
+                },
+                None,
+                Some(git.script.receiver()),
+                |admission| acknowledgements.push(admission),
+                self.cut.fault(),
+            )
+            .await;
+        {
+            let io = git.script.state.lock().unwrap();
+            if self.lose_response
+                && expected_update
+                && io.sends > sends_before
+                && io.ref_after_send
+                    != Some(crate::gateway::git::ObservedRef::Commit(
+                        git.authorization.new_commit.clone(),
+                    ))
+            {
+                return Err(Finding {
+                    law: "git_lost_response_preserves_update",
+                    event,
+                    defect_reached: control.defect_reached(),
+                });
+            }
+        }
+        let reached = control.reached();
+        if reached[writes_before..].contains(&StorageWrite::Response)
+            && control.last_delivery(StorageWrite::Response) != Some(Delivery::NoCommit)
+        {
+            *git.durable_ack.lock().unwrap() =
+                git.script.state.lock().unwrap().returned_acknowledgement;
+        }
+        if let Some((write, delivery)) = self.commit {
+            if !reached[writes_before..].contains(&write)
+                || control.last_delivery(write) != Some(delivery)
+            {
+                return Err(Finding {
+                    law: "fault_not_reached",
+                    event,
+                    defect_reached: control.defect_reached(),
+                });
+            }
+            if write == StorageWrite::Admission
+                && delivery != Delivery::Confirmed
+                && !acknowledgements.is_empty()
+            {
+                return Err(Finding {
+                    law: "unconfirmed_admission",
+                    event,
+                    defect_reached: control.defect_reached(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     async fn execute(
         &self,
         app: &mut ServiceApplication,
@@ -1071,6 +1500,7 @@ fn trace(seed: u64, mut prefix: Vec<Action>) -> Trace {
     Trace {
         seed,
         peers: 1,
+        effects: vec![],
         actions: prefix,
         defect: None,
         require_progress: true,
@@ -1142,22 +1572,67 @@ pub(crate) async fn executed_write_statements() -> Vec<(StorageWrite, String)> {
         );
         statements.extend(control.executed_sql());
     }
+    for prefix in [
+        vec![select(None, Cut::None, false, true)],
+        vec![
+            Action::Receiver(Receiver::Failed),
+            select(None, Cut::None, false, true),
+        ],
+        vec![
+            Action::Receiver(Receiver::Replaced),
+            select(None, Cut::None, false, true),
+        ],
+        vec![
+            select(None, Cut::Unsent, false, false),
+            Action::Receiver(Receiver::Unavailable),
+            select(None, Cut::Frozen, false, false),
+        ],
+    ] {
+        let control = StorageControl::default();
+        let mut input = trace(0, prefix);
+        input.effects = vec![Effect::Git];
+        assert_eq!(
+            replay_with_control(&input, false, control.clone()).await,
+            Ok(())
+        );
+        statements.extend(control.executed_sql());
+    }
+    for (table, writes) in [
+        (
+            "kubernetes_image_operations",
+            vec![
+                StorageWrite::Admission,
+                StorageWrite::Authorization,
+                StorageWrite::Rejection,
+                StorageWrite::Attempt,
+                StorageWrite::Response,
+                StorageWrite::Observation,
+                StorageWrite::Receipt,
+            ],
+        ),
+        (
+            "git_ref_operations",
+            vec![
+                StorageWrite::Admission,
+                StorageWrite::Rejection,
+                StorageWrite::Attempt,
+                StorageWrite::Response,
+                StorageWrite::Observation,
+                StorageWrite::Receipt,
+            ],
+        ),
+    ] {
+        for write in writes {
+            assert!(
+                statements
+                    .iter()
+                    .any(|(point, sql)| *point == write && sql.contains(table)),
+                "missing {table}/{write:?} SQL"
+            );
+        }
+    }
     statements.sort_by(|left, right| left.1.cmp(&right.1));
     statements.dedup_by(|left, right| left.1 == right.1);
-    for write in [
-        StorageWrite::Admission,
-        StorageWrite::Authorization,
-        StorageWrite::Rejection,
-        StorageWrite::Attempt,
-        StorageWrite::Response,
-        StorageWrite::Observation,
-        StorageWrite::Receipt,
-    ] {
-        assert!(
-            statements.iter().any(|(point, _)| *point == write),
-            "missing {write:?} SQL"
-        );
-    }
     statements
 }
 
@@ -1214,9 +1689,83 @@ async fn atomic_delivery_and_receiver_faults_preserve_laws_and_progress() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn git_atomic_delivery_and_interruption_preserve_laws_and_progress() {
+    for write in [
+        StorageWrite::Admission,
+        StorageWrite::Attempt,
+        StorageWrite::Response,
+        StorageWrite::Observation,
+        StorageWrite::Receipt,
+    ] {
+        for delivery in [Delivery::NoCommit, Delivery::LostAcknowledgement] {
+            let mut input = trace(
+                0,
+                vec![select(Some((write, delivery)), Cut::None, false, true)],
+            );
+            input.effects = vec![Effect::Git];
+            for virtualized in [true, false] {
+                assert_eq!(
+                    replay(&input, virtualized).await,
+                    Ok(()),
+                    "{write:?}/{delivery:?}"
+                );
+            }
+        }
+    }
+    for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
+        let mut input = trace(
+            1,
+            vec![
+                select(None, cut, false, false),
+                Action::Receiver(Receiver::Failed),
+                Action::Reopen { catalog: false },
+                select(None, Cut::None, false, true),
+            ],
+        );
+        input.effects = vec![Effect::Git];
+        for virtualized in [true, false] {
+            assert_eq!(replay(&input, virtualized).await, Ok(()));
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn git_results_follow_acknowledgement_not_the_present_ref() {
+    for prefix in [
+        vec![select(None, Cut::None, false, true)],
+        vec![
+            Action::Receiver(Receiver::Failed),
+            select(None, Cut::None, false, true),
+        ],
+        vec![select(None, Cut::None, true, true)],
+        vec![
+            select(
+                Some((StorageWrite::Observation, Delivery::NoCommit)),
+                Cut::None,
+                true,
+                true,
+            ),
+            Action::GitRef { new: false },
+            select(None, Cut::None, false, true),
+        ],
+        vec![
+            select(None, Cut::Unsent, false, false),
+            Action::GitRef { new: true },
+            select(None, Cut::None, false, true),
+        ],
+    ] {
+        let mut input = trace(9, prefix);
+        input.effects = vec![Effect::Git];
+        for virtualized in [true, false] {
+            assert_eq!(replay(&input, virtualized).await, Ok(()));
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn all_peers_preserve_original_authority_during_material_withdrawal() {
     for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
-        let input = multi_trace(
+        let mut input = multi_trace(
             4,
             3,
             vec![
@@ -1246,18 +1795,35 @@ async fn all_peers_preserve_original_authority_during_material_withdrawal() {
                 select(None, Cut::None, false, true),
             ],
         );
-        for virtualized in [true, false] {
-            assert_eq!(
-                replay(&input, virtualized).await,
-                Ok(()),
-                "{cut:?}/{virtualized}"
-            );
+        for effects in [
+            vec![Effect::Kubernetes; 3],
+            vec![Effect::Git; 3],
+            vec![Effect::Kubernetes, Effect::Git, Effect::Git],
+        ] {
+            input.effects = effects;
+            for virtualized in [true, false] {
+                assert_eq!(
+                    replay(&input, virtualized).await,
+                    Ok(()),
+                    "{cut:?}/{virtualized}/{:?}",
+                    input.effects
+                );
+            }
         }
     }
 }
 
 fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
     vec![
+        (
+            Defect::GitInferredAcknowledgement,
+            "git_acknowledgement_binding",
+            vec![
+                select(None, Cut::Unsent, false, false),
+                Action::GitRef { new: true },
+                select(None, Cut::Frozen, false, false),
+            ],
+        ),
         (
             Defect::Remint,
             "dispatch_provenance",
@@ -1306,6 +1872,9 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
 async fn seeded_defects_fail_intended_laws_and_minimized_replay_reaches_the_branch() {
     for (defect, law, prefix) in defect_cases() {
         let mut input = multi_trace(3, 2, prefix);
+        if defect == Defect::GitInferredAcknowledgement {
+            input.effects = vec![Effect::Git; 2];
+        }
         input.defect = Some(defect);
         for virtualized in [true, false] {
             let finding = replay(&input, virtualized).await.unwrap_err();
@@ -1347,6 +1916,7 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::WrongSigner => "original_signer",
         Defect::WrongPeerRead => "original_intent",
         Defect::ReceiptProjectionSwap => "receipt_binding",
+        Defect::GitInferredAcknowledgement => "git_acknowledgement_binding",
     }
 }
 
@@ -1400,12 +1970,16 @@ fn generated(seed: u64, steps: usize) -> Trace {
     } else {
         Delivery::LostAcknowledgement
     };
-    let mut actions = vec![select(
-        Some((writes[usize::try_from((seed / 2) % 6).unwrap()], delivery)),
-        Cut::None,
-        false,
-        true,
-    )];
+    let effects = match seed % 3 {
+        0 => vec![Effect::Kubernetes; 3],
+        1 => vec![Effect::Git; 3],
+        _ => vec![Effect::Kubernetes, Effect::Git, Effect::Git],
+    };
+    let mut write = writes[usize::try_from((seed / 2) % 6).unwrap()];
+    if matches!(effects[0], Effect::Git) && write == StorageWrite::Authorization {
+        write = StorageWrite::Admission;
+    }
+    let mut actions = vec![select(Some((write, delivery)), Cut::None, false, true)];
     let mut random = seed.wrapping_add(1);
     for _ in 0..steps {
         random ^= random << 13;
@@ -1425,7 +1999,9 @@ fn generated(seed: u64, steps: usize) -> Trace {
             _ => select(None, Cut::None, false, random & 8 == 0),
         });
     }
-    multi_trace(seed, 3, actions)
+    let mut input = multi_trace(seed, 3, actions);
+    input.effects = effects;
+    input
 }
 
 #[tokio::test(start_paused = true)]
@@ -1463,6 +2039,7 @@ fn read_trace(path: &Path) -> Trace {
     assert!(bytes.len() <= 64 * 1024);
     let input: Trace = serde_json::from_slice(&bytes).unwrap();
     assert!(input.actions.len() <= 256 && (1..=4).contains(&input.peers));
+    assert!(input.effects.is_empty() || input.effects.len() == input.peers);
     input
 }
 
@@ -1519,6 +2096,9 @@ async fn kernel_trace_exploration_or_replay() {
             .into_iter()
             .map(|(defect, _, prefix)| {
                 let mut input = multi_trace(3, 2, prefix);
+                if defect == Defect::GitInferredAcknowledgement {
+                    input.effects = vec![Effect::Git; 2];
+                }
                 input.defect = Some(defect);
                 input
             })

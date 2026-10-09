@@ -3,9 +3,12 @@
 //! A typed table preserves Git facts without interpreting Kubernetes columns as Git evidence.
 
 use kapsel_authority::{verify_git_ref_grant, AuthorizationTrust, GitRefAuthorization};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::Connection;
 
-use super::{capacity, changed_one, GatewayError, Journal, WorkerLock};
+use super::{
+    records::{Record, Write},
+    GatewayError, Journal, WorkerLock,
+};
 use crate::gateway::{
     git::{Acknowledgement, ObservedRef, PreparedTransition},
     receipt::{git as evidence, publication::receipt_digest_hex},
@@ -120,27 +123,15 @@ impl Journal {
         id: &str,
         trust: &[AuthorizationTrust],
     ) -> Result<Option<(GitBinding, GitPhase)>, GatewayError> {
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(GatewayError::Database)?;
-        let bytes: Option<Option<Vec<u8>>> = transaction
-            .query_row(
-                "SELECT CASE WHEN length(signed_authorization_grant) BETWEEN 1 AND 4096
-                 THEN signed_authorization_grant END
-             FROM git_ref_operations WHERE operation_id = ?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(GatewayError::Database)?;
-        let Some(bytes) = bytes else { return Ok(None) };
-        let bytes = bytes.ok_or(GatewayError::InvalidPersistedState)?;
+        let Some(record) = self.records.read_git(&self.connection, id)? else {
+            return Ok(None);
+        };
+        let bytes: Vec<u8> = record.get("signed_authorization_grant")?;
         let binding = GitBinding::verify(&bytes, trust)?;
         if binding.authorization.operation_id != id {
             return Err(GatewayError::OperationIdentityConflict);
         }
-        let phase = load_on(&transaction, &binding)?.ok_or(GatewayError::InvalidPersistedState)?;
+        let phase = decode_record(&record, &binding)?;
         Ok(Some((binding, phase)))
     }
 
@@ -148,11 +139,9 @@ impl Journal {
         &self,
         binding: &GitBinding,
     ) -> Result<Option<GitPhase>, GatewayError> {
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(GatewayError::Database)?;
-        load_on(&transaction, binding)
+        self.git_record(binding)?
+            .map(|record| decode_record(&record, binding))
+            .transpose()
     }
 
     pub(in crate::gateway) fn insert_git(
@@ -163,45 +152,26 @@ impl Journal {
         if !self.owns_worker(worker) {
             return Err(GatewayError::InvalidTransition);
         }
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(GatewayError::Database)?;
-        if let Some(existing) = load_on(&transaction, binding)? {
+        if let Some(existing) = self.git_operation(binding)? {
             return Ok(existing);
         }
-        let other: bool = transaction
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM kubernetes_image_operations WHERE operation_id = ?1)",
-                [&binding.authorization.operation_id],
-                |row| row.get(0),
-            )
-            .map_err(GatewayError::Database)?;
-        if other {
-            return Err(GatewayError::OperationIdentityConflict);
-        }
-        capacity::require_admission(&transaction)?;
         let approval = &binding.authorization;
-        transaction
-            .execute(
-                "INSERT INTO git_ref_operations (
-                operation_id, repository_id, ref_name, old_commit, new_commit, authorization_id,
-                authorization_signer_key_id, authorization_grant_digest, signed_authorization_grant,
-                state
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'authorized')",
-                params![
-                    approval.operation_id,
-                    approval.repository_id,
-                    approval.reference,
-                    approval.old_commit,
-                    approval.new_commit,
-                    approval.authorization_id,
-                    binding.signer,
-                    binding.digest,
-                    binding.grant
-                ],
-            )
-            .map_err(GatewayError::Database)?;
-        transaction.commit().map_err(GatewayError::Database)?;
+        let mut record = Record::git_empty(&approval.operation_id);
+        for (field, value) in [
+            ("repository_id", &approval.repository_id),
+            ("ref_name", &approval.reference),
+            ("old_commit", &approval.old_commit),
+            ("new_commit", &approval.new_commit),
+            ("authorization_id", &approval.authorization_id),
+            ("authorization_signer_key_id", &binding.signer),
+            ("authorization_grant_digest", &binding.digest),
+        ] {
+            record.set(field, value.clone());
+        }
+        record.set("signed_authorization_grant", binding.grant.clone());
+        record.set("state", "authorized".to_owned());
+        self.records
+            .replace(&self.connection, None, &record, Write::Admission)?;
         Ok(GitPhase::Authorized)
     }
 
@@ -214,20 +184,14 @@ impl Journal {
         if !self.owns_worker(worker) || prepared.authorization() != &binding.authorization {
             return Err(GatewayError::InvalidTransition);
         }
-        let (transaction, phase) = self.git_write(binding, worker)?;
+        let (original, phase) = self.git_write(binding, worker)?;
         if phase != GitPhase::Authorized {
             return Err(GatewayError::InvalidTransition);
         }
-        changed_one(
-            transaction
-                .execute(
-                    "UPDATE git_ref_operations SET state = 'apply_started'
-             WHERE operation_id = ?1 AND state = 'authorized'",
-                    [&binding.authorization.operation_id],
-                )
-                .map_err(GatewayError::Database)?,
-        )?;
-        transaction.commit().map_err(GatewayError::Database)?;
+        let mut next = original.clone();
+        next.set("state", "apply_started".to_owned());
+        self.records
+            .replace(&self.connection, Some(&original), &next, Write::Attempt)?;
         #[cfg(test)]
         if prepared.exploration_attempt_acknowledgement_lost() {
             return Err(GatewayError::InjectedFault);
@@ -242,7 +206,7 @@ impl Journal {
         rejection: GitRejection,
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let (transaction, phase) = self.git_write(binding, worker)?;
+        let (original, phase) = self.git_write(binding, worker)?;
         if phase != GitPhase::Authorized {
             return Err(GatewayError::InvalidTransition);
         }
@@ -250,16 +214,11 @@ impl Journal {
             GitRejection::StaleRef => "stale_ref",
             GitRejection::InvalidObjects => "invalid_objects",
         };
-        changed_one(
-            transaction
-                .execute(
-                    "UPDATE git_ref_operations SET state = 'not_attempted', target_rejection = ?2
-             WHERE operation_id = ?1 AND state = 'authorized'",
-                    params![binding.authorization.operation_id, rejection],
-                )
-                .map_err(GatewayError::Database)?,
-        )?;
-        transaction.commit().map_err(GatewayError::Database)
+        let mut next = original.clone();
+        next.set("state", "not_attempted".to_owned());
+        next.set("target_rejection", rejection.to_owned());
+        self.records
+            .replace(&self.connection, Some(&original), &next, Write::Rejection)
     }
 
     pub(in crate::gateway) fn record_git_acknowledgement(
@@ -268,20 +227,14 @@ impl Journal {
         acknowledgement: Acknowledgement,
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let (transaction, phase) = self.git_write(binding, worker)?;
+        let (original, phase) = self.git_write(binding, worker)?;
         if phase != GitPhase::Attempted(None) {
             return Err(GatewayError::InvalidTransition);
         }
-        changed_one(
-            transaction
-                .execute(
-                    "UPDATE git_ref_operations SET acknowledgement = ?2
-             WHERE operation_id = ?1 AND state = 'apply_started' AND acknowledgement IS NULL",
-                    params![binding.authorization.operation_id, acknowledgement.as_str()],
-                )
-                .map_err(GatewayError::Database)?,
-        )?;
-        transaction.commit().map_err(GatewayError::Database)
+        let mut next = original.clone();
+        next.set("acknowledgement", acknowledgement.as_str().to_owned());
+        self.records
+            .replace(&self.connection, Some(&original), &next, Write::Response)
     }
 
     pub(in crate::gateway) fn freeze_git_observation(
@@ -290,7 +243,7 @@ impl Journal {
         observed: &ObservedRef,
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let (transaction, phase) = self.git_write(binding, worker)?;
+        let (original, phase) = self.git_write(binding, worker)?;
         let GitPhase::Attempted(ack) = phase else {
             return Err(GatewayError::InvalidTransition);
         };
@@ -302,14 +255,26 @@ impl Journal {
             ObservedRef::Missing => ("missing", None),
             ObservedRef::Unknown => ("unknown", None),
         };
-        changed_one(transaction.execute(
-            "UPDATE git_ref_operations SET state = 'receiver_observed', acknowledgement = ?2,
-                observed_ref_kind = ?3, observed_commit = ?4
-             WHERE operation_id = ?1 AND state = 'apply_started'",
-            params![binding.authorization.operation_id,
-                ack.unwrap_or(Acknowledgement::Unknown).as_str(), kind, commit],
-        ).map_err(GatewayError::Database)?)?;
-        transaction.commit().map_err(GatewayError::Database)
+        let mut next = original.clone();
+        next.set("state", "receiver_observed".to_owned());
+        let acknowledgement = ack.unwrap_or(Acknowledgement::Unknown);
+        #[cfg(test)]
+        let acknowledgement = if self
+            .records
+            .control
+            .exercise(super::records::Defect::GitInferredAcknowledgement)
+            && matches!(observed, ObservedRef::Commit(commit)
+                if commit == &binding.authorization.new_commit)
+        {
+            Acknowledgement::Updated
+        } else {
+            acknowledgement
+        };
+        next.set("acknowledgement", acknowledgement.as_str().to_owned());
+        next.set("observed_ref_kind", kind.to_owned());
+        next.set_optional("observed_commit", commit.map(str::to_owned));
+        self.records
+            .replace(&self.connection, Some(&original), &next, Write::Observation)
     }
 
     pub(in crate::gateway) fn commit_git_receipt(
@@ -318,7 +283,7 @@ impl Journal {
         bytes: &[u8],
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
-        let (transaction, phase) = self.git_write(binding, worker)?;
+        let (original, phase) = self.git_write(binding, worker)?;
         if !matches!(phase, GitPhase::Observed { .. }) {
             return Err(GatewayError::InvalidTransition);
         }
@@ -327,32 +292,37 @@ impl Journal {
             return Err(GatewayError::InvalidPersistedState);
         }
         let digest = receipt_digest_hex(bytes);
-        changed_one(
-            transaction
-                .execute(
-                    "UPDATE git_ref_operations SET state = 'finalized', receipt_bytes = ?2,
-                receipt_digest = ?3, receipt_key_id = ?4
-             WHERE operation_id = ?1 AND state = 'receiver_observed'",
-                    params![binding.authorization.operation_id, bytes, digest, key_id],
-                )
-                .map_err(GatewayError::Database)?,
-        )?;
-        transaction.commit().map_err(GatewayError::Database)
+        let mut next = original.clone();
+        next.set("state", "finalized".to_owned());
+        next.set("receipt_bytes", bytes.to_vec());
+        next.set("receipt_digest", digest);
+        next.set("receipt_key_id", key_id);
+        self.records
+            .replace(&self.connection, Some(&original), &next, Write::Receipt)
     }
 
     fn git_write(
         &self,
         binding: &GitBinding,
         worker: &WorkerLock,
-    ) -> Result<(Transaction<'_>, GitPhase), GatewayError> {
+    ) -> Result<(Record, GitPhase), GatewayError> {
         if !self.owns_worker(worker) {
             return Err(GatewayError::InvalidTransition);
         }
-        let transaction =
-            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)
-                .map_err(GatewayError::Database)?;
-        let phase = load_on(&transaction, binding)?.ok_or(GatewayError::InvalidTransition)?;
-        Ok((transaction, phase))
+        let record = self
+            .git_record(binding)?
+            .ok_or(GatewayError::InvalidTransition)?;
+        let phase = decode_record(&record, binding)?;
+        Ok((record, phase))
+    }
+
+    fn git_record(&self, binding: &GitBinding) -> Result<Option<Record>, GatewayError> {
+        let id = &binding.authorization.operation_id;
+        let record = self.records.read_git(&self.connection, id)?;
+        if record.is_none() && self.records.read(&self.connection, id)?.is_some() {
+            return Err(GatewayError::OperationIdentityConflict);
+        }
+        Ok(record)
     }
 }
 
@@ -364,78 +334,44 @@ pub(super) fn load_on(
     connection: &Connection,
     binding: &GitBinding,
 ) -> Result<Option<GitPhase>, GatewayError> {
-    let raw = connection
-        .query_row(
-            "SELECT repository_id, ref_name, old_commit, new_commit, authorization_id,
-            authorization_signer_key_id, authorization_grant_digest, signed_authorization_grant,
-            state, target_rejection, acknowledgement, observed_ref_kind, observed_commit,
-            receipt_digest, receipt_bytes, receipt_key_id
-         FROM git_ref_operations WHERE operation_id = ?1",
-            [&binding.authorization.operation_id],
-            |row| {
-                Ok((
-                    [
-                        row.get::<_, String>(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                        row.get(6)?,
-                    ],
-                    row.get::<_, Vec<u8>>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, Option<String>>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                    row.get::<_, Option<String>>(12)?,
-                    row.get::<_, Option<String>>(13)?,
-                    row.get::<_, Option<Vec<u8>>>(14)?,
-                    row.get::<_, Option<String>>(15)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(GatewayError::Database)?;
-    let Some((
-        fields,
-        grant,
-        state,
-        rejection,
-        ack,
-        observed_kind,
-        observed_commit,
-        receipt_digest,
-        receipt_bytes,
-        receipt_key,
-    )) = raw
-    else {
-        let collision: bool = connection
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM kubernetes_image_operations WHERE operation_id = ?1)",
-                [&binding.authorization.operation_id],
-                |row| row.get(0),
-            )
-            .map_err(GatewayError::Database)?;
-        return if collision {
+    let id = &binding.authorization.operation_id;
+    let Some(record) = super::records::read_git(connection, id)? else {
+        return if super::records::read(connection, id)?.is_some() {
             Err(GatewayError::OperationIdentityConflict)
         } else {
             Ok(None)
         };
     };
+    decode_record(&record, binding).map(Some)
+}
+
+fn decode_record(record: &Record, binding: &GitBinding) -> Result<GitPhase, GatewayError> {
     let approval = &binding.authorization;
-    if fields.iter().map(String::as_str).ne([
-        approval.repository_id.as_str(),
-        &approval.reference,
-        &approval.old_commit,
-        &approval.new_commit,
-        &approval.authorization_id,
-        &binding.signer,
-        &binding.digest,
-    ]) || grant != binding.grant
-    {
+    for (field, expected) in [
+        ("operation_id", &approval.operation_id),
+        ("repository_id", &approval.repository_id),
+        ("ref_name", &approval.reference),
+        ("old_commit", &approval.old_commit),
+        ("new_commit", &approval.new_commit),
+        ("authorization_id", &approval.authorization_id),
+        ("authorization_signer_key_id", &binding.signer),
+        ("authorization_grant_digest", &binding.digest),
+    ] {
+        if record.get::<String>(field)? != *expected {
+            return Err(GatewayError::OperationIdentityConflict);
+        }
+    }
+    if record.get::<Vec<u8>>("signed_authorization_grant")? != binding.grant {
         return Err(GatewayError::OperationIdentityConflict);
     }
+    let state: String = record.get("state")?;
+    let rejection: Option<String> = record.get("target_rejection")?;
+    let ack: Option<String> = record.get("acknowledgement")?;
+    let observed_kind: Option<String> = record.get("observed_ref_kind")?;
+    let observed_commit: Option<String> = record.get("observed_commit")?;
+    let receipt_digest: Option<String> = record.get("receipt_digest")?;
+    let receipt_bytes: Option<Vec<u8>> = record.get("receipt_bytes")?;
+    let receipt_key: Option<String> = record.get("receipt_key_id")?;
     let receipt = match (state.as_str(), receipt_digest, receipt_bytes, receipt_key) {
         ("finalized", Some(digest), Some(bytes), Some(key_id))
             if receipt_digest_hex(&bytes) == digest =>
@@ -466,12 +402,12 @@ pub(super) fn load_on(
         if decoded != statement || key_id != receipt.key_id {
             return Err(GatewayError::InvalidPersistedState);
         }
-        Ok(Some(GitPhase::Finalized {
+        Ok(GitPhase::Finalized {
             statement: Box::new(statement),
             receipt,
-        }))
+        })
     } else {
-        Ok(Some(phase))
+        Ok(phase)
     }
 }
 
@@ -523,6 +459,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::gateway::journal::capacity;
 
     struct Fixture(PathBuf);
     impl Fixture {

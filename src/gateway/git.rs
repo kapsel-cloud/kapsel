@@ -31,7 +31,7 @@ use super::{
 };
 
 #[cfg(test)]
-pub(super) mod exploration;
+pub(crate) mod exploration;
 
 const VERSION: &[u8] = b"git version 2.55.0\n";
 const OUTPUT_MAX: usize = 16 * 1024;
@@ -145,7 +145,7 @@ pub(super) enum GitError {
 }
 
 /// All locations are supplied by the operator, not decoded from a grant or caller request.
-pub(super) struct GitReceiver {
+pub(crate) struct GitReceiver {
     executable: PathBuf,
     sender: PathBuf,
     receiver: PathBuf,
@@ -582,6 +582,7 @@ impl super::Gateway {
         id: &str,
         grant: &[u8],
         receiver: Option<&GitReceiverConfiguration>,
+        #[cfg(test)] simulated_receiver: Option<&GitReceiver>,
         signing: Option<&ReceiptSettings<'_>>,
         acknowledged: impl FnOnce(super::AdmissionDecision) + Send,
     ) -> Result<(), super::ReconciliationError> {
@@ -609,10 +610,13 @@ impl super::Gateway {
         else {
             return Ok(());
         };
-        let receiver = if matches!(
+        let needs_receiver = matches!(
             admitted,
             OperationState::Authorized | OperationState::ApplyStarted
-        ) {
+        );
+        #[cfg(test)]
+        let needs_receiver = needs_receiver && simulated_receiver.is_none();
+        let receiver = if needs_receiver {
             Some(
                 receiver
                     .ok_or(ReconciliationError::Blocked(
@@ -626,18 +630,15 @@ impl super::Gateway {
         } else {
             None
         };
-        let phase = advance(
-            &mut self.journal,
-            &binding,
-            receiver.as_ref(),
-            signing,
-            &worker,
-        )
-        .await
-        .map_err(|error| match error {
-            GatewayError::Receipt(_) => ReconciliationError::Completion,
-            error => ReconciliationError::Advancement(error),
-        })?;
+        let receiver = receiver.as_ref();
+        #[cfg(test)]
+        let receiver = simulated_receiver.or(receiver);
+        let phase = advance(&mut self.journal, &binding, receiver, signing, &worker)
+            .await
+            .map_err(|error| match error {
+                GatewayError::Receipt(_) => ReconciliationError::Completion,
+                error => ReconciliationError::Advancement(error),
+            })?;
         if matches!(phase, GitPhase::Observed { .. }) {
             return Err(ReconciliationError::Blocked(
                 ReconciliationBlockage::SigningUnavailable,
