@@ -1462,10 +1462,6 @@ while read -r line; do :; done
 
     #[tokio::test]
     #[ignore = "requires operator-selected Git 2.55.0; KAPSEL_TEST_GIT is an absolute executable"]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one service lifecycle proves signing-only resumption after material removal"
-    )]
     async fn real_git_service_reconnects_and_signs_frozen_evidence_without_receiver() {
         for case in ["healthy", "post-receive"] {
             let (fixture, receiver, approval, _) = receiver_fixture();

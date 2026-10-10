@@ -280,10 +280,6 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "controlled client fixtures must fail immediately"
-)]
 mod tests {
     use super::*;
 

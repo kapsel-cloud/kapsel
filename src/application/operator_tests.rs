@@ -1,10 +1,5 @@
 //! Shared provisioning/service Kubernetes client bounds and ambient-authority exclusion.
 
-#![allow(
-    clippy::unwrap_used,
-    reason = "controlled receiver fixtures fail immediately"
-)]
-
 use std::{
     io::{Read as _, Write as _},
     net::TcpListener,

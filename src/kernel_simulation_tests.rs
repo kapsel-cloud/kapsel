@@ -440,10 +440,6 @@ impl Adapter {
     }
 }
 
-#[allow(
-    clippy::unused_async_trait_impl,
-    reason = "controlled I/O uses the production async seam"
-)]
 impl DeploymentImageAdapter for Adapter {
     async fn identify(
         &mut self,
@@ -3637,10 +3633,6 @@ fn read_trace(path: &Path) -> Trace {
 
 #[tokio::test(start_paused = true)]
 #[ignore = "explicit bounded replay input or private evidence directory required"]
-#[allow(
-    clippy::too_many_lines,
-    reason = "retain generation, bounded replay and minimization custody in one entry point"
-)]
 async fn kernel_trace_exploration_or_replay() {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
     if let Ok(directory) = std::env::var("KAPSEL_KERNEL_REPLAY_DIRECTORY") {

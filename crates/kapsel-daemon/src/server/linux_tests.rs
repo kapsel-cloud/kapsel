@@ -2,7 +2,7 @@
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
-    reason = "controlled Linux fixtures fail the socket contract tests immediately"
+    reason = "compound test/platform gating needs explicit fail-fast socket fixture allowances"
 )]
 
 use std::{

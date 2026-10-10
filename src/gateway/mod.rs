@@ -176,10 +176,6 @@ pub struct ObservedTarget {
 
 /// Distinct approval, observation, and mutation-precondition projections.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "contract names distinguish approval from observations and attempts"
-)]
 pub struct OperationTargets {
     /// Signed object version, absent for legacy authority.
     pub approved_target: Option<ApprovedTarget>,
@@ -1002,10 +998,6 @@ impl Gateway {
 
     // Test drivers acquire the same lease as complete reconciliation.
     #[cfg(test)]
-    #[allow(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the exclusive borrow spans async I/O; SQLite Connection is Send but not Sync"
-    )]
     pub(crate) async fn run_operation_once_with_adapter_and_fault<
         A: DeploymentImageAdapter + Send,
     >(

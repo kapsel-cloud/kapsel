@@ -11,7 +11,10 @@ use std::{
 
 const FIXED_SCRIPTS: [&str; 3] = ["scripts/setup.sh", "scripts/fmt.sh", "scripts/ci.sh"];
 
-#[allow(clippy::print_stderr)]
+#[allow(
+    clippy::print_stderr,
+    reason = "the CLI reports contributor-command failures"
+)]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -120,7 +123,10 @@ fn parse_command(arguments: &[String]) -> Result<(&'static str, Vec<&str>), Stri
     }
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(
+    clippy::print_stdout,
+    reason = "the CLI prints contributor-command help"
+)]
 fn print_help() {
     println!(
         "Contributor commands:\n\

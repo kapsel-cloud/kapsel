@@ -83,7 +83,7 @@ disallowed-methods = [
 ]
 
 # Cargo.toml denies print_stdout, print_stderr and dbg_macro directly.
-# Intentional CLI and controlled-test output uses local exceptions.
+# Test functions and cfg(test) code use the exemptions above; CLI output needs local exceptions.
 
 # Third-party crate behavior
 warn-on-all-wildcard-imports = true

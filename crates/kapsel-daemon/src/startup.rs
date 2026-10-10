@@ -349,10 +349,6 @@ fn read_flags() -> OFlags {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    reason = "controlled fixed-root fixtures must fail the startup test immediately"
-)]
 pub(crate) mod tests {
     use std::{
         fmt::Write as _,
@@ -961,10 +957,6 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     //! Shared lease custody and retained-directory identity checks.
-    #![allow(
-        clippy::used_underscore_binding,
-        reason = "tests inspect the retained lease descriptor identity"
-    )]
     use std::{
         fs,
         os::unix::{fs::PermissionsExt as _, net::UnixListener},
@@ -1043,6 +1035,10 @@ mod lifecycle_tests {
     }
 
     #[test]
+    #[allow(
+        clippy::used_underscore_binding,
+        reason = "this test inspects the retained lease descriptor identity"
+    )]
     fn lifecycle_named_inode_substitution_is_rejected_and_lock_is_never_removed() {
         let root = tests::valid_root("lifecycle-substitution");
         let roots = InstallationRoots::open_at(&root).unwrap();

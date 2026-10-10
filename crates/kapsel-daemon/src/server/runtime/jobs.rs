@@ -111,7 +111,6 @@ impl Jobs {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, reason = "controlled ownership fixtures")]
 mod tests {
     use std::time::Duration;
 

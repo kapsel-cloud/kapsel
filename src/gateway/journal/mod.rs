@@ -574,10 +574,6 @@ impl SnapshotRow {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the arguments are one persisted fact group"
-)]
 fn validate_snapshot_attempt_facts(
     state: OperationState,
     write_strategy: Option<String>,

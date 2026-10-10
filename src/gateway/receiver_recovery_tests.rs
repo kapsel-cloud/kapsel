@@ -1,10 +1,5 @@
 //! Real-adapter recovery and frozen receipts against independent receiver facts.
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    clippy::print_stdout,
-    reason = "regression assertions"
-)]
+#![allow(clippy::panic, reason = "regression assertions")]
 
 mod receiver;
 
@@ -219,10 +214,6 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 // Check frozen facts against receiver-owned evidence, independently of Kapsel's classifier.
-#[allow(
-    clippy::too_many_lines,
-    reason = "keep the independent evidence assertions together"
-)]
 fn assert_retained_facts(case: &str, output: &Value, receiver: &Value) {
     let bytes: Vec<u8> = serde_json::from_value(output["frozen"].clone()).unwrap();
     let request = request();

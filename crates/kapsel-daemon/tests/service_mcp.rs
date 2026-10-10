@@ -2,7 +2,6 @@
 #![cfg(feature = "test-harness")]
 #![allow(
     clippy::unwrap_used,
-    clippy::needless_pass_by_value,
     clippy::panic,
     reason = "test fixture failures must stop the test"
 )]
@@ -132,6 +131,10 @@ fn operation_request(request_name: &str, operation_id: &str) -> Value {
     json!({"version":1,"request":request_name,"operation_id":operation_id})
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "fixture constructors accept owned JSON values to keep guidance tuples inline"
+)]
 fn execution(disposition: &str, condition: Value, next_action: &str, action_owner: &str) -> Value {
     json!({
         "disposition": disposition,
@@ -141,6 +144,10 @@ fn execution(disposition: &str, condition: Value, next_action: &str, action_owne
     })
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "fixture constructors accept owned execution envelopes from inline guidance tuples"
+)]
 fn kubernetes_status(status: &str, execution: Value) -> Value {
     json!({
         "version": 1,
@@ -153,6 +160,10 @@ fn kubernetes_status(status: &str, execution: Value) -> Value {
     })
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "fixture constructors accept owned execution envelopes from inline guidance tuples"
+)]
 fn git_status(status: &str, execution: Value) -> Value {
     json!({
         "version": 1,
@@ -187,6 +198,10 @@ fn handshake() -> Vec<Value> {
     ]
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "fixture requests accept owned arguments so hostile envelopes remain inline"
+)]
 fn tool(id: i32, name: &str, arguments: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
         "params":{"name":name,"arguments":arguments}})

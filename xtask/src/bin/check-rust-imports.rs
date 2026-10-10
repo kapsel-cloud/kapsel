@@ -21,7 +21,10 @@ struct Source {
     syntax: syn::File,
 }
 
-#[allow(clippy::print_stderr)]
+#[allow(
+    clippy::print_stderr,
+    reason = "the checker reports source findings and failures"
+)]
 fn main() -> ExitCode {
     match run() {
         Ok(findings) if findings.is_empty() => ExitCode::SUCCESS,

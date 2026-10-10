@@ -83,11 +83,7 @@ impl ReadFailures {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "controlled socket fixtures"
-)]
+#[allow(clippy::panic, reason = "controlled socket fixtures")]
 mod tests {
     use std::{
         fs::File,

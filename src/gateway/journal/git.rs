@@ -366,10 +366,6 @@ impl Journal {
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one snapshot authenticates binding and all frozen phase fields"
-)]
 pub(super) fn load_on(
     connection: &Connection,
     binding: &GitBinding,

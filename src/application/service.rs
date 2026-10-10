@@ -228,10 +228,11 @@ impl ServiceApplication {
     /// Returns a bounded error for invalid configuration, changed configured identities or unsafe
     /// storage. Missing trust for an unselected historical identity does not prevent construction.
     pub fn open(configuration: ServiceConfiguration) -> Result<Self, ServiceError> {
-        #[cfg(test)]
-        return Self::open_with_storage(configuration, None);
-        #[cfg(not(test))]
-        Self::open_with_storage(configuration)
+        Self::open_with_storage(
+            configuration,
+            #[cfg(test)]
+            None,
+        )
     }
 
     fn open_with_storage(

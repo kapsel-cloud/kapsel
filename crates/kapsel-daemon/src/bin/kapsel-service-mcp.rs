@@ -1,9 +1,4 @@
 //! ID-only MCP stdio bridge to the authenticated local resident service.
-#![allow(
-    clippy::needless_pass_by_value,
-    clippy::option_if_let_else,
-    reason = "fixed JSON-RPC envelopes transfer owned values"
-)]
 
 use std::{
     collections::BTreeSet,
@@ -117,14 +112,26 @@ struct Call {
     metadata: Option<Map<String, Value>>,
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the response constructor accepts the completed request's owned JSON-RPC ID"
+)]
 fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the response constructor accepts owned envelope values from completed dispatch"
+)]
 fn result(id: Value, value: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":value})
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the tool response consumes the completed service exchange's owned JSON value"
+)]
 fn tool_result(id: Value, operation_id: &Value, service: Value, failed: bool) -> Value {
     let text = json!({"operation_id":operation_id,"service":service}).to_string();
     result(
@@ -739,6 +746,10 @@ fn main() -> ExitCode {
                     .filter(|id| valid_id(id))
                     .cloned()
                     .unwrap_or(Value::Null);
+                #[allow(
+                    clippy::option_if_let_else,
+                    reason = "explicit branches separate dispatch from invalid envelopes"
+                )]
                 match serde_json::from_value::<Message>(value) {
                     Ok(message) => dispatch(message, has_request_id, &mut handshake_phase),
                     Err(_) => Some(error(envelope_id, -32600, "Invalid Request")),

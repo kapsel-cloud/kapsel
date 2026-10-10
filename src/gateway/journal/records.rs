@@ -320,10 +320,6 @@ impl Io {
         )
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "virtual record reads exist only in test builds"
-    )]
     pub(super) fn read(
         &self,
         connection: &Connection,
@@ -439,10 +435,6 @@ impl Io {
         }
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "test builds record SQL, delivery and seeded defects"
-    )]
     fn replace_sqlite(
         &self,
         connection: &Connection,

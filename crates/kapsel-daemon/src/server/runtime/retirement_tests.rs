@@ -1,12 +1,5 @@
 //! Ready-stop priority and physical storage/application/root/lease retirement ordering.
-#![allow(
-    clippy::unwrap_used,
-    reason = "barrier fixture failures must fail immediately"
-)]
-#![allow(
-    clippy::significant_drop_tightening,
-    reason = "moved server state spans the complete retirement decision"
-)]
+
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Condvar,
@@ -25,6 +18,10 @@ struct BlockedStorage {
 }
 
 impl ApplicationReads for BlockedStorage {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "fixture coordination must fail on poisoned or missing barrier state"
+    )]
     fn read(&self, _: protocol::ReadRequest) -> (Vec<u8>, ResponseClass) {
         self.started
             .lock()
@@ -47,6 +44,10 @@ impl ApplicationReads for BlockedStorage {
 }
 
 impl Drop for BlockedStorage {
+    #[allow(
+        clippy::unwrap_used,
+        reason = "fixture retirement must fail on poisoned barrier state"
+    )]
     fn drop(&mut self) {
         assert!(*self.release.0.lock().unwrap());
         self.retired.store(true, Ordering::SeqCst);
@@ -54,6 +55,10 @@ impl Drop for BlockedStorage {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "moved server state spans the complete retirement decision"
+)]
 fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
     let root = valid_root("retirement-storage");
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
@@ -126,6 +131,10 @@ fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
 }
 
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "moved server state spans the ready-stop decision and physical retirement"
+)]
 fn ready_stop_wins_over_already_queued_connection() {
     let root = valid_root("retirement-ready-stop");
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();

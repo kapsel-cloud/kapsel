@@ -756,10 +756,6 @@ fn deployment_container_image<'a>(
         .as_deref()
 }
 
-#[allow(
-    clippy::print_stdout,
-    reason = "the live qualification runner retains this independent receiver evidence"
-)]
 fn report_recovery_policy_evidence(
     before_generation: i64,
     after_generation: i64,
@@ -1063,10 +1059,6 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-#[allow(
-    clippy::print_stdout,
-    reason = "the live qualification runner retains bounded rollout diagnostics"
-)]
 async fn wait_for_deployment_rollout(
     deployments: &Api<Deployment>,
     deployment_name: &str,
@@ -1261,11 +1253,6 @@ mod observation_experiment {
             .as_millis()
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        clippy::print_stdout,
-        reason = "ordered live selection, interruption, read and receipt evidence"
-    )]
     async fn prove_pass(client: &Client, ready_seconds: u64) {
         let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
         let name = format!("ready-{ready_seconds}");

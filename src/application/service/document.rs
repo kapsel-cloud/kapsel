@@ -224,7 +224,6 @@ mod tests {
     use super::BoundedVec;
 
     #[test]
-    #[allow(clippy::unwrap_used, reason = "controlled parser regression")]
     fn overflow_is_rejected_before_deserializing_the_extra_element() {
         assert!(serde_json::from_slice::<BoundedVec<u8, 1>>(b"[]").is_ok());
         assert!(serde_json::from_slice::<BoundedVec<u8, 1>>(b"[1]").is_ok());
