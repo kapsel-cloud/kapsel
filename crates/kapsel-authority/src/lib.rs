@@ -5,6 +5,8 @@
 //! Parsing signed bytes does not appoint authority or establish receiver facts.
 //! This package is not a generic authorization library or supported SDK.
 
+use std::fmt::Write as _;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use sha2::{Digest, Sha256};
 
@@ -845,7 +847,6 @@ fn digest_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(64);
     for byte in digest {
-        use std::fmt::Write as _;
         write!(&mut output, "{byte:02x}").unwrap_or_else(|_| unreachable!());
     }
     output
@@ -902,8 +903,6 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-
         let mut output = String::with_capacity(bytes.len() * 2);
         for byte in bytes {
             write!(&mut output, "{byte:02x}").unwrap();

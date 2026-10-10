@@ -1131,6 +1131,8 @@ fn array<const N: usize>(input: &[u8]) -> Result<[u8; N], ReceiptError> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use sha2::{Digest, Sha256};
 
     use super::*;
@@ -1458,8 +1460,6 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-
         let mut output = String::with_capacity(bytes.len() * 2);
         for byte in bytes {
             write!(&mut output, "{byte:02x}").unwrap();

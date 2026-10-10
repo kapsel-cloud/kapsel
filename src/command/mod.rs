@@ -5,6 +5,7 @@ mod service;
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fmt::Write as _,
     fs::{self, File, OpenOptions},
     io::{Read as _, Write as _},
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
@@ -713,8 +714,6 @@ fn target_field_json(value: Option<TargetProjection<'_>>) -> String {
 }
 
 fn append_json_field(output: &mut String, name: &str, value: &str) {
-    use std::fmt::Write as _;
-
     write!(output, ",\"{name}\":{value}")
         .unwrap_or_else(|_| unreachable!("writing into String cannot fail"));
 }

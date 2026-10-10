@@ -1,5 +1,7 @@
 //! Operator-only preparation of the existing service document, with no publication or history I/O.
 
+use std::fmt::Write as _;
+
 use super::{
     finish_options, read_bounded, read_exact_32, take_path, write_new_private, BTreeMap,
     CommandError, CommandResult, ErrorClass, OsString, PathBuf,
@@ -125,8 +127,6 @@ fn validate_document_bytes(bytes: &[u8], command: &'static str) -> Result<(), Co
 }
 
 fn encode_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         write!(output, "{byte:02x}")

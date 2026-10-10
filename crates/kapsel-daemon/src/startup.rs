@@ -355,6 +355,7 @@ fn read_flags() -> OFlags {
 )]
 pub(crate) mod tests {
     use std::{
+        fmt::Write as _,
         fs,
         io::{Read as _, Write as _},
         net::{TcpListener, TcpStream},
@@ -379,7 +380,6 @@ pub(crate) mod tests {
 
     pub(crate) fn hex(bytes: &[u8]) -> String {
         bytes.iter().fold(String::new(), |mut output, byte| {
-            use std::fmt::Write as _;
             write!(output, "{byte:02x}").unwrap();
             output
         })

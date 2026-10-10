@@ -1,7 +1,7 @@
 //! Installed command discovery and non-disclosing local client failure behavior.
 #![allow(clippy::unwrap_used, reason = "controlled command fixtures")]
 
-use std::{ffi::OsString, os::unix::ffi::OsStringExt as _, process::Command};
+use std::{ffi::OsString, fmt::Write as _, os::unix::ffi::OsStringExt as _, process::Command};
 
 const CLIENT: &str = env!("CARGO_BIN_EXE_kapsel-service-client");
 const DAEMON: &str = env!("CARGO_BIN_EXE_kapseld");
@@ -204,7 +204,6 @@ mod client_failures {
             "version": 1, "status": "READY", "receipt_hex": "00abff",
             "receipt_sha256": Sha256::digest([0, 0xab, 0xff]).iter()
                 .fold(String::new(), |mut text, byte| {
-                    use std::fmt::Write as _;
                     write!(text, "{byte:02x}").unwrap();
                     text
                 }),

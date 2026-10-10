@@ -9,6 +9,7 @@ mod git;
 mod storage;
 
 use std::{
+    fmt::Write as _,
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -76,7 +77,6 @@ fn configuration(root: &Path) -> ServiceConfiguration {
 fn document(config: &ServiceConfiguration) -> Value {
     let encode_hex = |bytes: &[u8]| {
         bytes.iter().fold(String::new(), |mut output, byte| {
-            use std::fmt::Write as _;
             write!(output, "{byte:02x}").unwrap();
             output
         })
