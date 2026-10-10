@@ -1,16 +1,16 @@
-# Clippy configuration for Kapsel
-# Enforces strict linting aligned with our style guide
+# Clippy diagnostics support review; contracts and cohesion own design decisions.
+# Thresholds do not require splitting complete decoders or ordered evidence traces.
 
-# Maximum cognitive complexity of a function
+# Review threshold for cognitive complexity
 cognitive-complexity-threshold = 30
 
-# Maximum number of lines in a function
+# Review threshold for function length
 too-many-lines-threshold = 100
 
-# Maximum number of arguments to a function
+# Review threshold for argument count
 too-many-arguments-threshold = 7
 
-# Maximum size of types in bytes
+# Review threshold for type-expression complexity
 type-complexity-threshold = 250
 
 # Maximum number of single char bindings
@@ -64,17 +64,14 @@ enum-variant-size-threshold = 200
 # Avoid common OOP patterns that don't fit Rust
 avoid-breaking-exported-api = false
 
-# Enforce consistent error handling
+# Controlled test assertions may fail immediately. Production denies remain in Cargo.toml.
 allow-expect-in-tests = true
 allow-unwrap-in-tests = true
 allow-dbg-in-tests = true
 allow-print-in-tests = true
 
-# Maximum line length for checking
+# Byte bound for include_str!/include_bytes! payload diagnostics, not source line width.
 max-include-file-size = 1000000
-
-# Encourage good practices
-
 
 # Standard library functions that should be avoided
 disallowed-methods = [
@@ -85,14 +82,8 @@ disallowed-methods = [
   { path = "std::boxed::Box::leak", reason = "Leaking memory is almost never correct" },
 ]
 
-# Macros that should be avoided
-disallowed-macros = [
-  { path = "std::print", reason = "Use tracing instead" },
-  { path = "std::println", reason = "Use tracing instead" },
-  { path = "std::eprint", reason = "Use tracing instead" },
-  { path = "std::eprintln", reason = "Use tracing instead" },
-  { path = "std::dbg", reason = "Use tracing instead" },
-]
+# Cargo.toml denies print_stdout, print_stderr and dbg_macro directly.
+# Intentional CLI and controlled-test output uses local exceptions.
 
 # Third-party crate behavior
 warn-on-all-wildcard-imports = true

@@ -243,9 +243,9 @@ fn finite_server_waits_for_the_final_admitted_execution() {
         ));
 
         write_frame_and_close(&mut client, submit_request().as_bytes()).await;
-        assert_eq!(
-            read_frame(&mut client).await,
-            br#"{"status":"ADMITTED","phase":"requested"}"#
+        assert_payload_eq(
+            &read_frame(&mut client).await,
+            br#"{"status":"ADMITTED","phase":"requested"}"#,
         );
         started.acquire().await.unwrap().forget();
         assert!(timeout(Duration::from_millis(20), &mut server)
@@ -276,7 +276,7 @@ fn authenticated_status_not_found_crosses_one_complete_frame() {
         let handler = tokio::spawn(serve_connection(server, expected_gid, reads));
         let request = br#"{"request":"get_set_deployment_image_status","operation_id":"missing"}"#;
         write_frame_and_close(&mut client, request).await;
-        assert_eq!(read_frame(&mut client).await, br#"{"status":"NOT_FOUND"}"#);
+        assert_payload_eq(&read_frame(&mut client).await, br#"{"status":"NOT_FOUND"}"#);
         handler.await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     });
@@ -426,7 +426,7 @@ fn socket_status_and_receipt_compose_real_application_reads_without_kubernetes()
             let gid = server.peer_cred().unwrap().gid();
             let handler = tokio::spawn(serve_connection(server, gid, reads.clone()));
             write_frame_and_close(&mut client, request).await;
-            assert_eq!(read_frame(&mut client).await, expected);
+            assert_payload_eq(&read_frame(&mut client).await, expected);
             handler.await.unwrap();
         }
         assert!(
@@ -508,9 +508,9 @@ fn authenticated_submit_confirms_one_durable_application_admission() {
         let gid = server.peer_cred().unwrap().gid();
         let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
         write_frame_and_close(&mut client, submit_request().as_bytes()).await;
-        assert_eq!(
-            read_frame(&mut client).await,
-            br#"{"status":"ADMITTED","phase":"requested"}"#
+        assert_payload_eq(
+            &read_frame(&mut client).await,
+            br#"{"status":"ADMITTED","phase":"requested"}"#,
         );
         handler.await.unwrap();
 
@@ -558,9 +558,9 @@ fn overlapping_same_id_is_admitted_without_a_second_application_attempt() {
             state.clone(),
         ));
         write_frame_and_close(&mut first_client, submit_request().as_bytes()).await;
-        assert_eq!(
-            read_frame(&mut first_client).await,
-            br#"{"status":"ADMITTED","phase":"requested"}"#
+        assert_payload_eq(
+            &read_frame(&mut first_client).await,
+            br#"{"status":"ADMITTED","phase":"requested"}"#,
         );
         first_handler.await.unwrap();
         let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
@@ -576,9 +576,9 @@ fn overlapping_same_id_is_admitted_without_a_second_application_attempt() {
             state.clone(),
         ));
         write_frame_and_close(&mut second_client, submit_request().as_bytes()).await;
-        assert_eq!(
-            read_frame(&mut second_client).await,
-            br#"{"status":"ADMITTED","phase":"authorized"}"#
+        assert_payload_eq(
+            &read_frame(&mut second_client).await,
+            br#"{"status":"ADMITTED","phase":"authorized"}"#,
         );
         second_handler.await.unwrap();
         assert_eq!(execute_calls.load(Ordering::SeqCst), 1);
@@ -615,9 +615,9 @@ fn reconnect_status_remains_available_while_execution_waits_on_provider() {
             state.clone(),
         ));
         write_frame_and_close(&mut submit_client, submit_request().as_bytes()).await;
-        assert_eq!(
-            read_frame(&mut submit_client).await,
-            br#"{"status":"ADMITTED","phase":"requested"}"#
+        assert_payload_eq(
+            &read_frame(&mut submit_client).await,
+            br#"{"status":"ADMITTED","phase":"requested"}"#,
         );
         submit_handler.await.unwrap();
         let (_, provider_response) = timeout(Duration::from_secs(1), kubernetes.next_request())
@@ -722,9 +722,9 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
                 .unwrap();
         assert_eq!(observation_request.method(), http::Method::GET);
         let (_, competing_response) = submit_and_read(&state).await;
-        assert_eq!(
-            competing_response,
-            br#"{"status":"ADMITTED","phase":"apply_started"}"#
+        assert_payload_eq(
+            &competing_response,
+            br#"{"status":"ADMITTED","phase":"apply_started"}"#,
         );
         assert!(
             timeout(Duration::from_millis(10), kubernetes.next_request())
@@ -736,9 +736,9 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
         let (_, replay_response) = submit_and_read(&state).await;
-        assert_eq!(
-            replay_response,
-            br#"{"status":"ADMITTED","phase":"finalized"}"#
+        assert_payload_eq(
+            &replay_response,
+            br#"{"status":"ADMITTED","phase":"finalized"}"#,
         );
         while state.submission.available_permits() == 0 {
             assert!(tokio::time::Instant::now() < deadline);
@@ -771,9 +771,9 @@ fn grant_mismatched_submit_is_bounded_without_execution() {
         let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
         let mismatched = submit_request().replace("socket-op-1", "unapproved-id");
         write_frame_and_close(&mut client, mismatched.as_bytes()).await;
-        assert_eq!(
-            read_frame(&mut client).await,
-            br#"{"status":"ERROR","error_class":"invalid_request"}"#
+        assert_payload_eq(
+            &read_frame(&mut client).await,
+            br#"{"status":"ERROR","error_class":"invalid_request"}"#,
         );
         handler.await.unwrap();
         assert!(
@@ -1159,7 +1159,7 @@ fn saturation_closes_ninth_and_new_connection_succeeds_after_permit_recovery() {
             br#"{"request":"get_set_deployment_image_status","operation_id":"cap-op"}"#,
         )
         .await;
-        assert_eq!(read_frame(&mut tenth).await, br#"{"status":"NOT_FOUND"}"#);
+        assert_payload_eq(&read_frame(&mut tenth).await, br#"{"status":"NOT_FOUND"}"#);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
         drop(admitted);
         server.await.unwrap().unwrap();
@@ -1172,7 +1172,7 @@ async fn assert_socket_response(reads: Arc<Mutex<TestReads>>, request: &[u8], ex
     let gid = server.peer_cred().unwrap().gid();
     let handler = tokio::spawn(serve_connection(server, gid, reads));
     write_frame_and_close(&mut client, request).await;
-    assert_eq!(read_frame(&mut client).await, expected);
+    assert_payload_eq(&read_frame(&mut client).await, expected);
     handler.await.unwrap();
 }
 
@@ -1408,12 +1408,39 @@ async fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
     stream.read_exact(&mut prefix).await.unwrap();
     let mut body = vec![0_u8; u32::from_be_bytes(prefix) as usize];
     stream.read_exact(&mut body).await.unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(value["version"], 1);
-    // The shared matrix below compares the payload separately from the mandatory envelope.
-    String::from_utf8(body)
-        .unwrap()
-        .replace("\"version\":1,", "")
-        .replace(",\"version\":1", "")
-        .into_bytes()
+    remove_top_level_version(&body)
+}
+
+fn remove_top_level_version(body: &[u8]) -> Vec<u8> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let object = value.as_object_mut().unwrap();
+    assert_eq!(object.remove("version"), Some(serde_json::json!(1)));
+    serde_json::to_vec(&value).unwrap()
+}
+
+fn assert_payload_eq(actual: &[u8], expected: &[u8]) {
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(actual).unwrap(),
+        serde_json::from_slice::<serde_json::Value>(expected).unwrap()
+    );
+}
+
+#[test]
+fn payload_comparison_preserves_values_without_requiring_member_order() {
+    let payload =
+        remove_top_level_version(br#"{"version":1,"status":"ADMITTED","phase":"apply_started"}"#);
+    assert_payload_eq(
+        &payload,
+        br#"{"status":"ADMITTED","phase":"apply_started"}"#,
+    );
+}
+
+#[test]
+fn read_frame_payload_removes_only_top_level_version() {
+    let payload =
+        remove_top_level_version(br#"{"version":1,"status":"READY","nested":{"version":1}}"#);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+        serde_json::json!({"status":"READY","nested":{"version":1}})
+    );
 }

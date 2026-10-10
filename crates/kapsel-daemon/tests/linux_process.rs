@@ -279,14 +279,24 @@ fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
     stream.read_exact(&mut prefix).unwrap();
     let mut response = vec![0_u8; u32::from_be_bytes(prefix) as usize];
     stream.read_exact(&mut response).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(value["version"], 1);
-    // Every process frame checks its envelope; the existing payload matrix stays separate.
-    String::from_utf8(response)
-        .unwrap()
-        .replace("\"version\":1,", "")
-        .replace(",\"version\":1", "")
-        .into_bytes()
+    remove_top_level_version(&response)
+}
+
+fn remove_top_level_version(body: &[u8]) -> Vec<u8> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let object = value.as_object_mut().unwrap();
+    assert_eq!(object.remove("version"), Some(serde_json::json!(1)));
+    serde_json::to_vec(&value).unwrap()
+}
+
+#[test]
+fn process_read_frame_payload_removes_only_top_level_version() {
+    let payload =
+        remove_top_level_version(br#"{"version":1,"status":"READY","service":{"version":1}}"#);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+        serde_json::json!({"status":"READY","service":{"version":1}})
+    );
 }
 
 fn assert_admission_unconfirmed(stream: &mut UnixStream) {
@@ -1081,10 +1091,12 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         repeated["service"]["receipt_sha256"],
         receipt["service"]["receipt_sha256"]
     );
-    let frozen: Vec<u8> = original_hex
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
+    let (pairs, remainder) = original_hex.as_bytes().as_chunks::<2>();
+    assert!(
+        remainder.is_empty(),
+        "receipt hex has an odd number of nibbles"
+    );
+    let frozen: Vec<u8> = pairs
         .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();

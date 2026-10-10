@@ -986,7 +986,10 @@ impl Gateway {
 
     // Test drivers acquire the same lease as complete reconciliation.
     #[cfg(test)]
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the exclusive borrow spans async I/O; SQLite Connection is Send but not Sync"
+    )]
     pub(crate) async fn run_operation_once_with_adapter_and_fault<
         A: DeploymentImageAdapter + Send,
     >(
@@ -1007,7 +1010,10 @@ impl Gateway {
     }
 
     // The unique caller borrow is held across I/O as part of worker ownership.
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[allow(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the exclusive borrow spans async I/O; SQLite Connection is Send but not Sync"
+    )]
     async fn preflight_target<A: DeploymentImageAdapter + Send>(
         &mut self,
         authorized: &AuthorizedRequest,

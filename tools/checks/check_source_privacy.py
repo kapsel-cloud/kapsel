@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -55,6 +57,8 @@ PATTERN_FIXTURE_FILES = {
     "tools/checks/check_source_privacy.py",
     "tools/checks/test_source_checks.py",
 }
+MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 
 
 def tracked_paths(root: Path) -> list[str]:
@@ -63,12 +67,39 @@ def tracked_paths(root: Path) -> list[str]:
         cwd=root,
         text=True,
     ).splitlines()
-    selected = [
-        path
-        for path in paths
-        if (path in ROOT_FILES or path.startswith(ROOT_PREFIXES)) and (root / path).is_file()
-    ]
+    selected = [path for path in paths if path in ROOT_FILES or path.startswith(ROOT_PREFIXES)]
     return sorted(selected)
+
+
+def read_bounded_regular_file(path: Path, relative: str) -> bytes:
+    flags = os.O_RDONLY | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f"unsupported source file at {relative}") from error
+
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise RuntimeError(f"unsupported source file at {relative}")
+        if status.st_size > MAX_SOURCE_FILE_BYTES:
+            raise RuntimeError(f"source file exceeds size limit at {relative}")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(READ_CHUNK_BYTES, MAX_SOURCE_FILE_BYTES + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_SOURCE_FILE_BYTES:
+                raise RuntimeError(f"source file exceeds size limit at {relative}")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def fail(category: str, path: str, line: int | None = None) -> None:
@@ -83,7 +114,7 @@ def validate(root: Path, paths: list[str]) -> str:
         if relative.endswith(PRIVATE_ARTIFACT_SUFFIXES):
             fail("private artifact", relative)
 
-        data = path.read_bytes()
+        data = read_bounded_regular_file(path, relative)
         digest.update(relative.encode())
         digest.update(b"\0")
         digest.update(data)

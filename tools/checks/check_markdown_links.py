@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import html
+import os
 import re
+import stat
 import subprocess
 import sys
 import unicodedata
@@ -21,6 +23,8 @@ EXPLICIT_ANCHOR = re.compile(r'<(?:a|span)\b[^>]*\b(?:name|id)=["\']([^"\']+)["\
 REFERENCE_DEFINITION = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*(.*)$")
 REFERENCE_LINK = re.compile(r"!?\[([^\]]+)\]\[([^\]]*)\]")
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+MAX_MARKDOWN_FILE_BYTES = 2 * 1024 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -45,7 +49,7 @@ def repository_markdown() -> list[Path]:
         return sorted(
             path for path in ROOT.rglob("*.md") if "target" not in path.relative_to(ROOT).parts
         )
-    paths = [ROOT / line for line in output.splitlines() if line and (ROOT / line).is_file()]
+    paths = [ROOT / line for line in output.splitlines() if line]
     if paths:
         return paths
     return sorted(
@@ -53,10 +57,44 @@ def repository_markdown() -> list[Path]:
     )
 
 
+def read_bounded_regular_markdown(path: Path) -> str:
+    """Read a bounded regular Markdown file without following symlinks."""
+
+    relative = path.relative_to(ROOT)
+    flags = os.O_RDONLY | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f"unsupported Markdown source {relative}") from error
+
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise RuntimeError(f"unsupported Markdown source {relative}")
+        if status.st_size > MAX_MARKDOWN_FILE_BYTES:
+            raise RuntimeError(f"Markdown source exceeds size limit {relative}")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(READ_CHUNK_BYTES, MAX_MARKDOWN_FILE_BYTES + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_MARKDOWN_FILE_BYTES:
+                raise RuntimeError(f"Markdown source exceeds size limit {relative}")
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
+    finally:
+        os.close(descriptor)
+
+
 def markdown_without_fences(path: Path) -> list[str]:
     """Blank fenced content while preserving source line numbers."""
 
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = read_bounded_regular_markdown(path).splitlines()
     visible: list[str] = []
     fence_character: str | None = None
     fence_length = 0
@@ -282,7 +320,10 @@ def check_target(
         return f"missing path {target}"
 
     if fragment and resolved.suffix.lower() == ".md":
-        target_anchors = anchor_cache.setdefault(resolved, anchors(resolved))
+        try:
+            target_anchors = anchor_cache.setdefault(resolved, anchors(resolved))
+        except RuntimeError as error:
+            return str(error)
         if fragment not in target_anchors:
             return f"missing anchor {target}"
     return None
@@ -295,7 +336,11 @@ def main() -> int:
     markdown = repository_markdown()
     anchor_cache: dict[Path, set[str]] = {}
     for source in markdown:
-        lines = markdown_without_fences(source)
+        try:
+            lines = markdown_without_fences(source)
+        except RuntimeError as error:
+            failures.append(str(error))
+            continue
         targets, missing_references = link_targets(lines)
         for line_number, label in missing_references:
             failures.append(

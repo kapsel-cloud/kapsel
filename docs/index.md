@@ -56,6 +56,8 @@ implementation.
 
 - [Engineering conventions](../CONTRIBUTING.md#engineering-conventions): Rust, Python, and interface
   rules.
+- [Code-quality review](contributing/code_quality_review.md): source coverage, lint exceptions, and
+  retained refactor decisions.
 - [Testing](contributing/testing.md): where tests belong and which evidence class a change needs.
 - [Evidence map](contributing/evidence.md): maintained guarantee-to-test mappings and boundary
   limits.

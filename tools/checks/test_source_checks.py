@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -80,6 +82,23 @@ class SourcePrivacyTests(unittest.TestCase):
             (root / "vector.hex").write_text("00010203\n")
             self.assertEqual(len(PRIVACY.validate(root, ["README.md", "vector.hex"])), 64)
 
+    def test_source_reader_rejects_symlink_fifo_and_oversize_without_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            secret = "AKIA0123456789ABCDEF"
+            oversized = root / "oversized.md"
+            oversized.write_bytes(secret.encode() + b"x" * PRIVACY.MAX_SOURCE_FILE_BYTES)
+            symlink = root / "symlink.md"
+            symlink.symlink_to(oversized)
+            fifo = root / "fifo.md"
+            os.mkfifo(fifo)
+
+            for name in ("oversized.md", "symlink.md", "fifo.md"):
+                with self.subTest(name=name), self.assertRaises(RuntimeError) as caught:
+                    PRIVACY.validate(root, [name])
+                self.assertIn(name, str(caught.exception))
+                self.assertNotIn(secret, str(caught.exception))
+
 
 class SourceSecurityTests(unittest.TestCase):
     def test_database_freshness_rejects_old_and_future_timestamps(self) -> None:
@@ -88,6 +107,70 @@ class SourceSecurityTests(unittest.TestCase):
         for delta in (timedelta(days=-2), timedelta(days=1)):
             with self.assertRaises(RuntimeError):
                 SECURITY.utc_timestamp((now + delta).isoformat())
+
+    def test_bounded_run_handles_eof_and_rejects_large_streams_and_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cwd = Path(temporary)
+            ok = SECURITY._bounded_completed_process(
+                [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'ok')"],
+                cwd,
+                SECURITY.CommandLimits(deadline_seconds=5, stream_bytes=16),
+                check=True,
+            )
+            self.assertEqual(ok.stdout, b"ok")
+
+            with self.assertRaises(RuntimeError):
+                SECURITY._bounded_completed_process(
+                    [sys.executable, "-c", "import sys; sys.stdout.write('x' * 64)"],
+                    cwd,
+                    SECURITY.CommandLimits(deadline_seconds=5, stream_bytes=8),
+                    check=True,
+                )
+            with self.assertRaises(RuntimeError):
+                SECURITY._bounded_completed_process(
+                    [sys.executable, "-c", "import sys; sys.stderr.write('x' * 64)"],
+                    cwd,
+                    SECURITY.CommandLimits(deadline_seconds=5, stream_bytes=8),
+                    check=True,
+                )
+            with self.assertRaises(RuntimeError):
+                SECURITY._bounded_completed_process(
+                    [sys.executable, "-c", "import time; time.sleep(5)"],
+                    cwd,
+                    SECURITY.CommandLimits(deadline_seconds=0.1, stream_bytes=8),
+                    check=True,
+                )
+            with self.assertRaises(RuntimeError):
+                SECURITY._bounded_completed_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import os, time; os.close(1); os.close(2); time.sleep(5)",
+                    ],
+                    cwd,
+                    SECURITY.CommandLimits(deadline_seconds=0.1, stream_bytes=8),
+                    check=True,
+                )
+
+    def test_bounded_json_file_rejects_unsafe_or_oversize_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = root / "report.json"
+            report.write_text("{}")
+            self.assertEqual(SECURITY.bounded_json_file(report, 2), {})
+            report.write_text('{"Results":[]}' + "x")
+            with self.assertRaises(RuntimeError):
+                SECURITY.bounded_json_file(report, 2)
+
+            symlink = root / "symlink.json"
+            symlink.symlink_to(report)
+            with self.assertRaises(RuntimeError):
+                SECURITY.bounded_json_file(symlink, 1024)
+
+            fifo = root / "fifo.json"
+            os.mkfifo(fifo)
+            with self.assertRaises(RuntimeError):
+                SECURITY.bounded_json_file(fifo, 1024)
 
     def test_cargo_audit_rejects_vulnerabilities_warnings_and_database_changes(self) -> None:
         for count, warnings, digests, rejected in (
@@ -98,18 +181,20 @@ class SourceSecurityTests(unittest.TestCase):
         ):
             document = {"vulnerabilities": {"count": count}, "warnings": warnings}
 
-            def run(command, _root, document=document):
-                if command[0] == "git":
-                    output = b"commit"
-                elif "--version" in command:
+            def run_scanner(command, _root, document=document):
+                if "--version" in command:
                     output = b"cargo-audit 0.22.2"
                 else:
                     output = json.dumps(document).encode()
                 return subprocess.CompletedProcess(command, 0, output)
 
+            def run_git(command, _root):
+                return subprocess.CompletedProcess(command, 0, b"commit")
+
             with (
                 self.subTest(count=count, warnings=warnings, digests=digests),
-                mock.patch.object(SECURITY, "run", side_effect=run),
+                mock.patch.object(SECURITY, "run_scanner", side_effect=run_scanner),
+                mock.patch.object(SECURITY, "run_git", side_effect=run_git),
                 mock.patch.object(SECURITY, "git_tree_sha256", side_effect=digests),
             ):
                 if rejected:
@@ -124,6 +209,7 @@ class SourceSecurityTests(unittest.TestCase):
         for severity, secrets, changed, rejected in (
             ("LOW", [], False, False),
             ("MEDIUM", [], False, False),
+            ("UNKNOWN", [], False, False),
             ("HIGH", [], False, True),
             ("CRITICAL", [], False, True),
             ("LOW", [{}], False, True),
@@ -138,7 +224,12 @@ class SourceSecurityTests(unittest.TestCase):
                 database.write_bytes(b"database")
                 finding = {"VulnerabilityID": "CVE-TEST", "Severity": severity}
 
-                def run(
+                def run_git(command, cwd):
+                    return SECURITY.subprocess.run(
+                        command, cwd=cwd, capture_output=True, check=True
+                    )
+
+                def run_scanner(
                     command,
                     cwd,
                     changed=changed,
@@ -146,11 +237,6 @@ class SourceSecurityTests(unittest.TestCase):
                     finding=finding,
                     secrets=secrets,
                 ):
-                    if command[0] == "git":
-                        # Real git archive/extraction, with scanner output isolated below.
-                        return SECURITY.subprocess.run(
-                            command, cwd=cwd, capture_output=True, check=True
-                        )
                     if command[1] == "version":
                         document = {
                             "Version": "0.72.0",
@@ -159,13 +245,16 @@ class SourceSecurityTests(unittest.TestCase):
                                 "UpdatedAt": datetime.now(timezone.utc).isoformat(),
                             },
                         }
-                    elif "--skip-db-update" in command:
+                        return subprocess.CompletedProcess(
+                            command, 0, json.dumps(document).encode()
+                        )
+                    if "--skip-db-update" in command:
                         if changed:
                             database.write_bytes(b"changed")
                         document = {"Results": [{"Vulnerabilities": [finding], "Secrets": secrets}]}
-                    else:
-                        document = {}
-                    return subprocess.CompletedProcess(command, 0, json.dumps(document).encode())
+                        report = Path(command[command.index("--output") + 1])
+                        report.write_text(json.dumps(document))
+                    return subprocess.CompletedProcess(command, 0, b"{}")
 
                 subprocess.run(["git", "init", "--quiet", str(root)], check=True)
                 (root / "source").write_text("synthetic\n")
@@ -187,7 +276,8 @@ class SourceSecurityTests(unittest.TestCase):
                 )
 
                 with (
-                    mock.patch.object(SECURITY, "run", side_effect=run),
+                    mock.patch.object(SECURITY, "run_git", side_effect=run_git),
+                    mock.patch.object(SECURITY, "run_scanner", side_effect=run_scanner),
                     mock.patch.object(SECURITY, "trivy_database", return_value=database),
                 ):
                     if rejected:
@@ -198,6 +288,96 @@ class SourceSecurityTests(unittest.TestCase):
                         self.assertEqual(result["findings"][0]["severity"], severity)
                         self.assertEqual(result["secrets"], 0)
                         self.assertEqual(len(tool["database_sha256"]), 64)
+
+    def test_trivy_rejects_malformed_report_shape_and_noncanonical_severity(self) -> None:
+        malformed_reports = [
+            {"Results": {}},
+            {"Results": [None]},
+            {"Results": [{"Vulnerabilities": None}]},
+            {"Results": [{"Vulnerabilities": {}}]},
+            {"Results": [{"Vulnerabilities": [None]}]},
+            {"Results": [{"Vulnerabilities": [{"Severity": "high"}]}]},
+            {"Results": [{"Vulnerabilities": [{"Severity": "IMPORTANT"}]}]},
+            {"Results": [{"Vulnerabilities": [{}]}]},
+            {"Results": [{"Secrets": None}]},
+            {"Results": [{"Secrets": "secret"}]},
+            {"Results": [{"Secrets": [None]}]},
+        ]
+        for report in malformed_reports:
+            with self.subTest(report=report), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self._write_git_fixture(root)
+                database = root / "trivy.db"
+                database.write_bytes(b"database")
+
+                with self._mock_trivy(root, database, report):
+                    with self.assertRaises(RuntimeError):
+                        SECURITY.trivy_result(root, "HEAD")
+
+    def test_trivy_accepts_omitted_and_empty_collections(self) -> None:
+        reports = [
+            {},
+            {"Results": []},
+            {"Results": [{}]},
+            {"Results": [{"Vulnerabilities": [], "Secrets": []}]},
+        ]
+        for report in reports:
+            with self.subTest(report=report), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self._write_git_fixture(root)
+                database = root / "trivy.db"
+                database.write_bytes(b"database")
+
+                with self._mock_trivy(root, database, report):
+                    result, _tool = SECURITY.trivy_result(root, "HEAD")
+                    self.assertEqual(result["findings"], [])
+                    self.assertEqual(result["secrets"], 0)
+
+    def _write_git_fixture(self, root: Path) -> None:
+        subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+        (root / "source").write_text("synthetic\n")
+        subprocess.run(["git", "add", "source"], cwd=root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            cwd=root,
+            check=True,
+        )
+
+    def _mock_trivy(self, root: Path, database: Path, report: object):
+        def run_git(command, cwd):
+            return SECURITY.subprocess.run(command, cwd=cwd, capture_output=True, check=True)
+
+        def run_scanner(command, cwd):
+            if command[1] == "version":
+                document = {
+                    "Version": "0.72.0",
+                    "VulnerabilityDB": {
+                        "Version": 2,
+                        "UpdatedAt": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
+                return subprocess.CompletedProcess(command, 0, json.dumps(document).encode())
+            if "--skip-db-update" in command:
+                output = Path(command[command.index("--output") + 1])
+                output.write_text(json.dumps(report))
+            return subprocess.CompletedProcess(command, 0, b"{}")
+
+        return mock.patch.multiple(
+            SECURITY,
+            run_git=mock.Mock(side_effect=run_git),
+            run_scanner=mock.Mock(side_effect=run_scanner),
+            trivy_database=mock.Mock(return_value=database),
+        )
 
 
 if __name__ == "__main__":

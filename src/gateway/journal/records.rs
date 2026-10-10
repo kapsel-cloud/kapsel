@@ -1,4 +1,4 @@
-//! Atomic effect record I/O. This layer knows columns, not lifecycle or authority policy.
+//! Atomic effect record I/O and projection into lifecycle-owned validated snapshots.
 
 use std::sync::OnceLock;
 

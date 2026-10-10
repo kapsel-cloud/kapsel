@@ -94,6 +94,11 @@ For a consequential design tradeoff, compare what knowledge each design hides, w
 duplicates, and which interfaces or special cases it adds. Record useful rationale in review or the
 owning decision. Remove obsolete machinery when its replacement works.
 
+Numeric lint thresholds are review prompts, not design criteria. Improve cohesion rather than split
+an exhaustive decoder or an ordered recovery trace merely to reduce its length. Keep lint exceptions
+at the narrowest useful scope and explain the preserved interface or invariant in `reason`. A stated
+reason records intent; review must still check whether the exception is needed.
+
 ### Rust documentation and layout
 
 Every externally reachable public Rust item needs rustdoc. State caller-visible inputs, bounds,
@@ -109,6 +114,16 @@ Use applicable rustdoc sections in this order: `# Errors`, `# Panics`, `# Safety
 Prefer a better name, type, state, assertion, or smaller scope over a comment. Comments should
 explain a non-local invariant, security or crash-recovery subtlety, compatibility constraint, or why
 the obvious alternative is wrong.
+
+Use blank lines to separate meaningful phases such as validation, durable transition, receiver I/O,
+and cleanup. Keep a short coherent sequence together; do not separate every statement. A module
+header should identify its responsibility and any important boundary, not repeat its filename or
+claim less responsibility than the implementation owns. Do not add boilerplate headers to thin
+re-exports or generated entry points.
+
+Name tests for the behaviour they establish. Use fixture and helper names that identify their role
+or observation. Keep independent receiver assertions independent of production classifiers. Long
+scenario tests can keep ordered evidence together; separate unrelated scenarios, not causal steps.
 
 Authored Rust has a 100-byte physical-line limit. Reshape expressions rather than shorten precise
 names or add an abstraction solely to satisfy it. Keep embedded SQL readable and multiline. Markdown
@@ -194,7 +209,8 @@ owning checks. Contract edits need semantic review, not just shorter sentences.
 Review the changed boundary: authority, ordering, recovery, result meaning, original bytes, input
 bounds, and disclosure. Confirm that tests cross the interface owning the guarantee. Explain the
 checks performed and any material limitation. Source coverage and model agreement are not proof that
-a workflow works.
+a workflow works. The [code-quality review](docs/contributing/code_quality_review.md) records the
+consistency pass's coverage, exception decisions, and retained design boundaries.
 
 Use a plain domain-oriented imperative subject, for example:
 

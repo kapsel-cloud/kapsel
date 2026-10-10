@@ -9,15 +9,48 @@ import hashlib
 import json
 import os
 import pathlib
+import selectors
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Mapping
+from typing import Any
 
 TRIVY_VERSION = "0.72.0"
 DATABASE_MAX_AGE = datetime.timedelta(hours=24)
+SBOM_BYTES_MAX = 2 * 1024 * 1024
+TRIVY_JSON_BYTES_MAX = 8 * 1024 * 1024
+METADATA_BYTES_MAX = 64 * 1024
 OUTPUT_BYTES_MAX = 1024 * 1024
+VERSION_TIMEOUT_SECONDS = 10
+REFRESH_TIMEOUT_SECONDS = 120
+SCAN_TIMEOUT_SECONDS = 120
+VALID_SEVERITIES = {"UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+
+class ScannerSubprocessError(RuntimeError):
+    """A subprocess failed without exposing tool-controlled output in diagnostics."""
+
+
+class BoundedPipe:
+    def __init__(self, pipe: Any, name: str, maximum: int) -> None:
+        self.pipe = pipe
+        self.name = name
+        self.maximum = maximum
+        self.chunks: list[bytes] = []
+        self.size = 0
+
+    def append(self, chunk: bytes) -> None:
+        self.size += len(chunk)
+        if self.size > self.maximum:
+            raise ScannerSubprocessError(f"Trivy {self.name} exceeded its byte bound")
+        self.chunks.append(chunk)
+
+    def value(self) -> bytes:
+        return b"".join(self.chunks)
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -50,6 +83,139 @@ def write_exclusive(path: pathlib.Path, value: bytes) -> None:
         output.write(value)
 
 
+def run_bounded_capture(
+    command: list[str], *, timeout_seconds: int, output_bytes_maximum: int
+) -> bytes:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+
+    stdout = BoundedPipe(process.stdout, "stdout", output_bytes_maximum)
+    stderr = BoundedPipe(process.stderr, "stderr", output_bytes_maximum)
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        with selectors.DefaultSelector() as selector:
+            os.set_blocking(process.stdout.fileno(), False)
+            os.set_blocking(process.stderr.fileno(), False)
+            selector.register(process.stdout, selectors.EVENT_READ, stdout)
+            selector.register(process.stderr, selectors.EVENT_READ, stderr)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Trivy command timed out")
+                for key, _events in selector.select(remaining):
+                    pipe = key.data
+                    chunk = pipe.pipe.read(8192)
+                    if chunk:
+                        pipe.append(chunk)
+                    else:
+                        selector.unregister(pipe.pipe)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Trivy command timed out")
+        try:
+            return_code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError("Trivy command timed out") from error
+        if return_code != 0:
+            raise ScannerSubprocessError("Trivy command failed")
+        return stdout.value()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+
+
+def run_json_metadata(command: list[str], *, timeout_seconds: int) -> Mapping[str, Any]:
+    raw = run_bounded_capture(
+        command,
+        timeout_seconds=timeout_seconds,
+        output_bytes_maximum=METADATA_BYTES_MAX,
+    )
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("Trivy metadata has an invalid shape")
+    return value
+
+
+def run_quiet(command: list[str], *, timeout_seconds: int) -> None:
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Trivy command timed out") from error
+
+
+def require_optional_string(record: Mapping[str, Any], field: str) -> str | None:
+    value = record.get(field)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise RuntimeError("Trivy report has an invalid vulnerability field")
+    return value
+
+
+def require_string(record: Mapping[str, Any], field: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str):
+        raise RuntimeError("Trivy report has an invalid vulnerability field")
+    return value
+
+
+def validated_findings(report: Any) -> list[dict[str, str | None]]:
+    if not isinstance(report, dict):
+        raise RuntimeError("Trivy report has an invalid shape")
+    results = report.get("Results", [])
+    if not isinstance(results, list):
+        raise RuntimeError("Trivy report has an invalid results shape")
+
+    findings = []
+    for result in results:
+        if not isinstance(result, dict):
+            raise RuntimeError("Trivy report has an invalid result entry")
+        vulnerabilities = result.get("Vulnerabilities", [])
+        if not isinstance(vulnerabilities, list):
+            raise RuntimeError("Trivy report has an invalid vulnerabilities shape")
+        for vulnerability in vulnerabilities:
+            if not isinstance(vulnerability, dict):
+                raise RuntimeError("Trivy report has an invalid vulnerability entry")
+            severity = require_string(vulnerability, "Severity")
+            if severity not in VALID_SEVERITIES:
+                raise RuntimeError("Trivy report has an unsupported vulnerability severity")
+            findings.append(
+                {
+                    "id": require_string(vulnerability, "VulnerabilityID"),
+                    "package": require_optional_string(vulnerability, "PkgName"),
+                    "installed_version": require_optional_string(vulnerability, "InstalledVersion"),
+                    "fixed_version": require_optional_string(vulnerability, "FixedVersion"),
+                    "severity": severity,
+                }
+            )
+    findings.sort(
+        key=lambda finding: (
+            str(finding["severity"]),
+            str(finding["id"]),
+            str(finding["package"]),
+        )
+    )
+    return findings
+
+
 def parse_utc(value: str) -> datetime.datetime:
     parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -60,17 +226,12 @@ def parse_utc(value: str) -> datetime.datetime:
 def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
     if shutil.which("trivy") is None:
         raise RuntimeError("Trivy is required for release SBOM scanning")
-    tool = json.loads(
-        subprocess.run(
-            ["trivy", "--version", "--format", "json"],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        ).stdout
+    tool = run_json_metadata(
+        ["trivy", "--version", "--format", "json"], timeout_seconds=VERSION_TIMEOUT_SECONDS
     )
     if tool.get("Version") != TRIVY_VERSION:
         raise RuntimeError(f"release SBOM scan requires exact Trivy {TRIVY_VERSION}")
-    sbom_bytes = read_bounded_regular(sbom, 2 * 1024 * 1024)
+    sbom_bytes = read_bounded_regular(sbom, SBOM_BYTES_MAX)
 
     with tempfile.TemporaryDirectory(prefix="kapsel-release-sbom-scan-") as temporary:
         private = pathlib.Path(temporary)
@@ -80,7 +241,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
         snapshot.write_bytes(sbom_bytes)
         snapshot.chmod(0o600)
 
-        subprocess.run(
+        run_quiet(
             [
                 "trivy",
                 "filesystem",
@@ -89,17 +250,11 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
                 "--download-db-only",
                 str(private),
             ],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            timeout_seconds=REFRESH_TIMEOUT_SECONDS,
         )
-        version = json.loads(
-            subprocess.run(
-                ["trivy", "--cache-dir", str(cache), "--version", "--format", "json"],
-                check=True,
-                stdout=subprocess.PIPE,
-                text=True,
-            ).stdout
+        version = run_json_metadata(
+            ["trivy", "--cache-dir", str(cache), "--version", "--format", "json"],
+            timeout_seconds=VERSION_TIMEOUT_SECONDS,
         )
 
         database = version.get("VulnerabilityDB")
@@ -117,7 +272,7 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
         database_sha256 = sha256(database_path)
 
         raw = private / "trivy.json"
-        subprocess.run(
+        run_quiet(
             [
                 "trivy",
                 "sbom",
@@ -132,31 +287,13 @@ def scan(sbom: pathlib.Path, output: pathlib.Path) -> None:
                 str(raw),
                 str(snapshot),
             ],
-            check=True,
+            timeout_seconds=SCAN_TIMEOUT_SECONDS,
         )
-        report = json.loads(raw.read_text())
+        report = json.loads(read_bounded_regular(raw, TRIVY_JSON_BYTES_MAX))
         if sha256(database_path) != database_sha256:
             raise RuntimeError("Trivy vulnerability database identity changed during the scan")
 
-        findings = []
-        for result in report.get("Results") or []:
-            for finding in result.get("Vulnerabilities") or []:
-                findings.append(
-                    {
-                        "id": finding.get("VulnerabilityID"),
-                        "package": finding.get("PkgName"),
-                        "installed_version": finding.get("InstalledVersion"),
-                        "fixed_version": finding.get("FixedVersion") or None,
-                        "severity": finding.get("Severity"),
-                    }
-                )
-        findings.sort(
-            key=lambda finding: (
-                str(finding["severity"]),
-                str(finding["id"]),
-                str(finding["package"]),
-            )
-        )
+        findings = validated_findings(report)
 
         blocked = [finding for finding in findings if finding["severity"] in {"HIGH", "CRITICAL"}]
         summary = {

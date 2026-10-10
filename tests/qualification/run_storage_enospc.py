@@ -3,47 +3,187 @@
 
 from __future__ import annotations
 
+import io
 import os
 import re
+import select
+import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 from pathlib import Path
+from typing import NamedTuple
 
 IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 TEST = (
     "gateway::tests::storage::genuine_enospc_during_admission_and_receipt_recovers_without_resend"
 )
 
+# The source snapshot is evidence, not an input transport. Current maintained checkouts are far below
+# these fixed caps; they bound hostile untracked files before allocation or archive copy while allowing
+# ordinary source additions to be preserved byte-for-byte.
+SOURCE_FILE_BYTE_LIMIT = 8 * 1024 * 1024
+SOURCE_TOTAL_BYTE_LIMIT = 64 * 1024 * 1024
+SOURCE_READ_CHUNK = 1024 * 1024
+
+# Git diff is the tracked-source evidence stream and can legitimately include binary patches. This
+# cap is intentionally larger than source snapshot caps while still bounding memory before appending.
+GIT_OUTPUT_BYTE_LIMIT = 128 * 1024 * 1024
+GIT_OUTPUT_READ_CHUNK = 1024 * 1024
+GIT_COMMAND_TIMEOUT_SECONDS = 30.0
+
+
+class SourceFile(NamedTuple):
+    content: bytes
+    mode: int
+
+
+def bounded_command_output(command: list[str]) -> bytes:
+    deadline = time.monotonic() + GIT_COMMAND_TIMEOUT_SECONDS
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    if process.stdout is None:
+        process.kill()
+        process.wait()
+        raise RuntimeError("bounded command stdout pipe was not created")
+
+    chunks: list[bytes] = []
+    bytes_read = 0
+    failed = True
+    try:
+        output_descriptor = process.stdout.fileno()
+        while True:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                raise subprocess.TimeoutExpired(command, GIT_COMMAND_TIMEOUT_SECONDS)
+            readable, _, _ = select.select([output_descriptor], [], [], remaining_seconds)
+            if not readable:
+                raise subprocess.TimeoutExpired(command, GIT_COMMAND_TIMEOUT_SECONDS)
+            chunk = os.read(output_descriptor, GIT_OUTPUT_READ_CHUNK)
+            if not chunk:
+                break
+            if len(chunk) > GIT_OUTPUT_BYTE_LIMIT - bytes_read:
+                raise RuntimeError(
+                    f"command output exceeds {GIT_OUTPUT_BYTE_LIMIT} byte capture cap"
+                )
+            chunks.append(chunk)
+            bytes_read += len(chunk)
+
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise subprocess.TimeoutExpired(command, GIT_COMMAND_TIMEOUT_SECONDS)
+        return_code = process.wait(timeout=remaining_seconds)
+        output = b"".join(chunks)
+        if return_code:
+            raise subprocess.CalledProcessError(return_code, command, output=output)
+        failed = False
+        return output
+    finally:
+        process.stdout.close()
+        if failed and process.poll() is None:
+            process.kill()
+            process.wait()
+
 
 def git(*arguments: str) -> bytes:
-    return subprocess.check_output(["git", "--no-optional-locks", *arguments], timeout=30)
+    return bounded_command_output(["git", "--no-optional-locks", *arguments])
+
+
+def read_source_file(path: str, remaining_total_bytes: int) -> SourceFile:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RuntimeError(f"untracked source {path!r} could not be opened safely") from error
+
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(f"untracked source {path!r} is not a regular file")
+        if metadata.st_size > SOURCE_FILE_BYTE_LIMIT:
+            raise RuntimeError(
+                f"untracked source {path!r} exceeds {SOURCE_FILE_BYTE_LIMIT} byte file cap"
+            )
+        if metadata.st_size > remaining_total_bytes:
+            raise RuntimeError(
+                f"untracked sources exceed {SOURCE_TOTAL_BYTE_LIMIT} byte aggregate cap"
+            )
+
+        chunks: list[bytes] = []
+        bytes_read = 0
+        while True:
+            if bytes_read >= metadata.st_size:
+                chunk = os.read(descriptor, 1)
+                if chunk:
+                    raise RuntimeError(f"untracked source {path!r} grew during capture")
+                break
+            read_size = min(SOURCE_READ_CHUNK, metadata.st_size - bytes_read)
+            chunk = os.read(descriptor, read_size)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            chunks.append(chunk)
+
+        final_metadata = os.fstat(descriptor)
+        if (
+            final_metadata.st_size != metadata.st_size
+            or bytes_read != metadata.st_size
+            or stat.S_IMODE(final_metadata.st_mode) != stat.S_IMODE(metadata.st_mode)
+        ):
+            raise RuntimeError(f"untracked source {path!r} changed during capture")
+        return SourceFile(b"".join(chunks), stat.S_IMODE(metadata.st_mode))
+    finally:
+        os.close(descriptor)
+
+
+def untracked_source_files() -> dict[str, SourceFile]:
+    paths = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
+    sources: dict[str, SourceFile] = {}
+    remaining_total_bytes = SOURCE_TOTAL_BYTE_LIMIT
+    for path_bytes in paths:
+        if not path_bytes:
+            continue
+        path = os.fsdecode(path_bytes)
+        source_file = read_source_file(path, remaining_total_bytes)
+        remaining_total_bytes -= len(source_file.content)
+        sources[path] = source_file
+    return sources
 
 
 def untracked_sources() -> dict[str, bytes]:
-    paths = git("ls-files", "--others", "--exclude-standard", "-z").split(b"\0")
-    return {os.fsdecode(path): Path(os.fsdecode(path)).read_bytes() for path in paths if path}
+    return {path: source_file.content for path, source_file in untracked_source_files().items()}
 
 
-def capture_source(evidence: Path) -> tuple[str, bytes, dict[str, bytes]]:
+def capture_source(evidence: Path) -> tuple[str, bytes, dict[str, SourceFile]]:
     base = git("rev-parse", "HEAD").decode().strip()
     source_diff = git("diff", "--binary", "--no-ext-diff", "--no-textconv", base, "--")
-    sources = untracked_sources()
+    source_files = untracked_source_files()
     (evidence / "base-revision.txt").write_text(base + "\n", encoding="utf-8")
     (evidence / "source.diff").write_bytes(source_diff)
     (evidence / "source-status.txt").write_bytes(git("status", "--porcelain=v1"))
     with tarfile.open(evidence / "new-source.tar", "w") as archive:
-        for path in sources:
-            archive.add(path, arcname=path, recursive=False)
-    return base, source_diff, sources
+        for path, source_file in source_files.items():
+            entry = tarfile.TarInfo(path)
+            entry.size = len(source_file.content)
+            entry.mode = source_file.mode
+            archive.addfile(entry, io.BytesIO(source_file.content))
+    return base, source_diff, source_files
 
 
-def verify_source(snapshot: tuple[str, bytes, dict[str, bytes]]) -> None:
+def verify_source(snapshot: tuple[str, bytes, dict[str, SourceFile]]) -> None:
     base, source_diff, sources = snapshot
     tracked_source_changed = (
         git("diff", "--binary", "--no-ext-diff", "--no-textconv", base, "--") != source_diff
     )
-    if tracked_source_changed or untracked_sources() != sources:
+    if tracked_source_changed or untracked_source_files() != sources:
         raise RuntimeError("source changed during read-only container gate")
 
 

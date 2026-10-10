@@ -8,6 +8,12 @@ Notable changes are recorded here. Release tags retain their matching documentat
   Changed grant bytes during receiver identification fail closed without advancing retained facts.
 - Git journal transitions now use the shared bounded atomic record-I/O owner. Format-6 bytes, phase
   checks, original authority and observation-only recovery remain unchanged.
+- Snapshot grant provisioning classifies malformed operator kubeconfig as `operator_configuration`
+  with exit 3; malformed grant input remains `invalid_input` with exit 2.
+- The service MCP bridge rejects malformed execution guidance and effect-specific target replies
+  without changing valid service values or inferring receiver outcomes.
+- Developer, qualification, and release tools bound subprocess capture and selected file reads
+  before retention, including the child wait after pipe EOF.
 - Snapshot grant provisioning output-write failures now report the `provision-snapshot-grant`
   command label.
 - Execution now uses only the resident service and fixed ID-only client/MCP bridge. Direct

@@ -13,6 +13,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("fresh_session_caller.py")
 
@@ -36,8 +37,8 @@ class FreshSession(unittest.TestCase):
         self.state = root / "state.json"
         self.ref = root / "reference.json"
 
-    def run_caller(self, command, *extra):
-        process = subprocess.run(
+    def run_caller_raw(self, command, *extra):
+        return subprocess.run(
             [
                 sys.executable,
                 str(self.script),
@@ -53,6 +54,9 @@ class FreshSession(unittest.TestCase):
             text=True,
             timeout=10,
         )
+
+    def run_caller(self, command, *extra):
+        process = self.run_caller_raw(command, *extra)
         return process.returncode, json.loads(process.stdout)["service"]
 
     def pin(self):
@@ -88,6 +92,60 @@ class FreshSession(unittest.TestCase):
     def calls(self):
         return json.loads(self.state.read_text())["calls"]
 
+    def test_reference_descriptor_rejects_unsafe_files_and_records(self):
+        namespace = runpy.run_path(str(SCRIPT), run_name="caller_import")
+        reference = namespace["reference"]
+        valid = {"version": 1, "service": "host-a-journal-a", "operation_id": "op-1"}
+
+        self.ref.write_text(json.dumps(valid))
+        self.ref.chmod(0o600)
+        link = Path(self.temp.name) / "reference-link.json"
+        link.symlink_to(self.ref)
+        with self.assertRaises(OSError):
+            reference(str(link), "host-a-journal-a")
+
+        fifo = Path(self.temp.name) / "reference.fifo"
+        os.mkfifo(fifo, 0o600)
+        with self.assertRaises(ValueError):
+            reference(str(fifo), "host-a-journal-a")
+
+        with mock.patch("os.getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(ValueError):
+                reference(str(self.ref), "host-a-journal-a")
+
+        for invalid in [{**valid, "operation_id": "bad\n"}, {**valid, "version": True}]:
+            self.ref.write_text(json.dumps(invalid))
+            self.ref.chmod(0o600)
+            with self.assertRaises(ValueError):
+                reference(str(self.ref), "host-a-journal-a")
+
+    def test_reference_descriptor_rejects_truncate_and_grow_during_read(self):
+        namespace = runpy.run_path(str(SCRIPT), run_name="caller_import")
+        reference = namespace["reference"]
+        saved = {"version": 1, "service": "host-a-journal-a", "operation_id": "op-1"}
+        self.ref.write_text(json.dumps(saved))
+        self.ref.chmod(0o600)
+        real_read = os.read
+
+        def truncate_before_read(descriptor, size):
+            self.ref.write_text("")
+            return real_read(descriptor, size)
+
+        with mock.patch("os.read", side_effect=truncate_before_read):
+            with self.assertRaises(ValueError):
+                reference(str(self.ref), "host-a-journal-a")
+
+        self.ref.write_text(json.dumps(saved))
+        self.ref.chmod(0o600)
+
+        def grow_before_read(descriptor, size):
+            self.ref.write_text("{" + " ".join(["0"] * 600))
+            return real_read(descriptor, size)
+
+        with mock.patch("os.read", side_effect=grow_before_read):
+            with self.assertRaises(ValueError):
+                reference(str(self.ref), "host-a-journal-a")
+
     def test_reference_validation_preserves_accepted_fields(self):
         saved = {
             "version": 1,
@@ -100,6 +158,70 @@ class FreshSession(unittest.TestCase):
         namespace = runpy.run_path(str(SCRIPT), run_name="caller_import")
         self.assertEqual(namespace["reference"](str(self.ref), "host-a-journal-a"), saved)
         self.assertEqual(json.loads(self.ref.read_text()), saved)
+
+    def test_oversized_mcp_response_is_bounded_before_json_parsing(self):
+        self.fixture({"version": 1, "status": "NOT_FOUND"})
+        self.pin()
+        self.bridge.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "sys.stdin.read()\n"
+            "sys.stdout.buffer.write(b'{\\\"jsonrpc\\\":' + b'0' * 100001)\n"
+            "sys.stdout.flush()\n"
+        )
+        process = self.run_caller_raw("read")
+        self.assertEqual(process.returncode, 4)
+        self.assertEqual(
+            json.loads(process.stdout)["service"],
+            {"status": "ERROR", "error_class": "exchange_uncertain"},
+        )
+        self.assertNotIn("0" * 1000, process.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_partial_mcp_response_remains_uncertain(self):
+        self.fixture({"version": 1, "status": "NOT_FOUND"})
+        self.pin()
+        self.bridge.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "sys.stdin.read()\n"
+            'print(json.dumps({"jsonrpc": "2.0", "id": 1, '
+            '"result": {"protocolVersion": "2025-11-25"}}))\n'
+        )
+        self.assertEqual(
+            self.run_caller("read"),
+            (4, {"status": "ERROR", "error_class": "exchange_uncertain"}),
+        )
+        self.assertEqual(self.calls(), [])
+
+    def test_deadline_spans_eof_and_child_wait_with_cleanup(self):
+        self.fixture({"version": 1, "status": "NOT_FOUND"})
+        self.pin()
+        pid_file = Path(self.temp.name) / "bridge.pid"
+        self.bridge.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys, time\n"
+            "sys.stdin.read()\n"
+            f"open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            'print(json.dumps({"jsonrpc": "2.0", "id": 1, '
+            '"result": {"protocolVersion": "2025-11-25"}}))\n'
+            'print(json.dumps({"jsonrpc": "2.0", "id": 2, "result": '
+            '{"content": [{"type": "text", "text": "{}"}]}}))\n'
+            "sys.stdout.flush()\n"
+            "os.close(1)\n"
+            "os.close(2)\n"
+            "time.sleep(30)\n"
+        )
+        process = self.run_caller_raw("read")
+        self.assertEqual(process.returncode, 4)
+        self.assertEqual(
+            json.loads(process.stdout)["service"],
+            {"status": "ERROR", "error_class": "exchange_uncertain"},
+        )
+        pid = int(pid_file.read_text())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+        self.assertEqual(self.calls(), [])
 
     def test_malformed_mcp_envelopes_remain_uncertain(self):
         ready = {"id": 1, "result": {"protocolVersion": "2025-11-25"}}
@@ -398,6 +520,17 @@ class FreshSession(unittest.TestCase):
                 },
             },
         ]
+
+        for response in replies:
+            if response is not None:
+                response.update(
+                    {
+                        "effect": "kubernetes.set_deployment_image",
+                        "approved_target": None,
+                        "attempt_target": None,
+                        "observed_target": None,
+                    }
+                )
 
         def serve():
             for response in replies:

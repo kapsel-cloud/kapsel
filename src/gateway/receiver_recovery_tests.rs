@@ -98,7 +98,7 @@ impl DeploymentImageAdapter for CutAdapter {
     }
 }
 
-async fn run_operation(root: &Path, client: kube::Client, cut: &str) -> Value {
+async fn run_operation(root: &Path, client: kube::Client, case: &str, cut: &str) -> Value {
     let mut gateway = Gateway::open_for_test(root.join("kapsel.sqlite3")).unwrap();
     let request = request();
     gateway
@@ -109,15 +109,18 @@ async fn run_operation(root: &Path, client: kube::Client, cut: &str) -> Value {
         cut: cut.into(),
     };
     // A post-marker conflict is attempted, never a stale-approval rejection.
-    if gateway
+    match gateway
         .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
         .await
-        .is_err()
     {
-        gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
-            .await
-            .unwrap();
+        Ok(_) => {},
+        Err(GatewayError::KubernetesApply) if case == "preflight-race" => {
+            gateway
+                .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
+                .await
+                .unwrap();
+        },
+        Err(error) => panic!("unexpected receiver recovery error for {case}: {error:?}"),
     }
     gateway
         .finalize_operation_receipt_once(
@@ -151,7 +154,7 @@ async fn receiver_recovery_child() {
     let case = std::env::var("KAPSEL_RECEIVER_CASE").unwrap();
     let cut = std::env::var("KAPSEL_RECEIVER_CUT").unwrap();
     let (client, receiver) = receiver::client(root, &case, cut == "lost-response");
-    let report = run_operation(root, client, &cut).await;
+    let report = run_operation(root, client, &case, &cut).await;
     fs::write(
         root.join("caller-output.json"),
         serde_json::to_vec(&report).unwrap(),

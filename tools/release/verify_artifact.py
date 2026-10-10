@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import pwd
+import selectors
 import shutil
 import stat
 import subprocess
@@ -21,7 +22,8 @@ import tarfile
 import tempfile
 import threading
 import time
-from typing import TypedDict, cast
+from collections.abc import Mapping, Sequence
+from typing import BinaryIO, TypedDict, cast
 
 
 class ReleaseMetadata(TypedDict):
@@ -76,6 +78,7 @@ FILE_BYTES_MAX = 32 * 1024 * 1024
 SBOM_BYTES_MAX = 2 * 1024 * 1024
 MANIFEST_BYTES_MAX = 1024
 VERIFIER_BYTES_MAX = 64 * 1024
+SERVICE_DIAGNOSTIC_BYTES_MAX = 4 * 1024
 TAR_STREAM_BYTES_MAX = EXPANDED_BYTES_MAX + 64 * 1024
 AUTHORIZATION_PUBLIC_KEY = bytes.fromhex(
     "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
@@ -87,12 +90,164 @@ FORBIDDEN = [
 ]
 
 
+def run_bounded(
+    arguments: Sequence[str | pathlib.Path],
+    *,
+    input_bytes: bytes | None = None,
+    stdout_max: int,
+    stderr_max: int,
+    timeout: float,
+    check: bool = False,
+    env: Mapping[str, str] | None = None,
+    cwd: pathlib.Path | None = None,
+    user: int | None = None,
+    group: int | None = None,
+    extra_groups: Sequence[int] | None = None,
+    umask: int = -1,
+) -> subprocess.CompletedProcess[bytes]:
+    command = [str(argument) for argument in arguments]
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+        user=user,
+        group=group,
+        extra_groups=extra_groups,
+        umask=umask,
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    output = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    limits = {stdout_fd: stdout_max, stderr_fd: stderr_max}
+    input_view = memoryview(input_bytes or b"")
+    input_offset = 0
+    deadline = time.monotonic() + timeout
+    selector = selectors.DefaultSelector()
+    try:
+        for stream in (process.stdout, process.stderr):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        if process.stdin is not None:
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, mask in events:
+                stream = cast(BinaryIO, key.fileobj)
+                file_descriptor = stream.fileno()
+                if mask & selectors.EVENT_WRITE:
+                    try:
+                        written = os.write(file_descriptor, input_view[input_offset:])
+                    except BrokenPipeError:
+                        written = 0
+                        input_offset = len(input_view)
+                    else:
+                        input_offset += written
+                    if input_offset == len(input_view) or written == 0:
+                        selector.unregister(stream)
+                        stream.close()
+                    continue
+
+                data = output[file_descriptor]
+                allowance = limits[file_descriptor] - len(data) + 1
+                chunk = os.read(file_descriptor, min(8192, max(1, allowance)))
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                if len(data) + len(chunk) > limits[file_descriptor]:
+                    raise RuntimeError("subprocess output exceeded its byte bound")
+                data.extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, timeout)
+        returncode = process.wait(timeout=remaining)
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        selector.close()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
+    result = subprocess.CompletedProcess(
+        command, returncode, bytes(output[stdout_fd]), bytes(output[stderr_fd])
+    )
+    if check and returncode != 0:
+        raise RuntimeError("subprocess command failed")
+    return result
+
+
 def sha256(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+class ServiceStderrDrain:
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
+        assert process.stderr is not None
+        self.process = process
+        self.source = process.stderr
+        self.diagnostic = bytearray()
+        self.overflow = False
+        self.read_failed = False
+        self.stopping = threading.Event()
+        self.thread = threading.Thread(target=self._drain, daemon=True)
+
+    def start(self) -> None:
+        try:
+            self.thread.start()
+        except BaseException:
+            self.source.close()
+            raise
+
+    def _drain(self) -> None:
+        try:
+            os.set_blocking(self.source.fileno(), False)
+            with selectors.DefaultSelector() as selector:
+                selector.register(self.source, selectors.EVENT_READ)
+                while not self.stopping.is_set():
+                    if not selector.select(0.1):
+                        continue
+                    remaining = SERVICE_DIAGNOSTIC_BYTES_MAX - len(self.diagnostic)
+                    chunk = os.read(self.source.fileno(), min(1024, remaining + 1))
+                    if not chunk:
+                        return
+                    self.diagnostic.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        self.overflow = True
+                        self.process.kill()
+                        return
+        except OSError:
+            self.read_failed = True
+        finally:
+            self.source.close()
+
+    def finish(self) -> None:
+        if self.thread.ident is None:
+            return
+        self.thread.join(timeout=1)
+        if self.thread.is_alive():
+            self.read_failed = True
+            self.stopping.set()
+            self.thread.join(timeout=1)
+
+    def failed(self) -> bool:
+        return self.overflow or self.read_failed
 
 
 def read_bounded_regular(path: pathlib.Path, maximum: int) -> bytes:
@@ -624,17 +779,13 @@ def write_private(path: pathlib.Path, data: bytes) -> None:
 
 
 def run_binary(binary: pathlib.Path, arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(
-        [str(binary), *arguments],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    result = run_bounded(
+        [binary, *arguments],
+        stdout_max=64 * 1024,
+        stderr_max=4 * 1024,
         timeout=60,
         env={"PATH": "/usr/local/bin:/usr/bin:/bin", "KUBECONFIG": "KUBECONFIG_AMBIENT_CANARY"},
     )
-    if len(result.stdout) > 64 * 1024 or len(result.stderr) > 4 * 1024:
-        raise RuntimeError("installed binary output exceeded its bound")
     for canary in FORBIDDEN:
         if canary in result.stdout or canary in result.stderr:
             raise RuntimeError("installed binary disclosed a canary")
@@ -721,21 +872,20 @@ def exercise_mcp(binary: pathlib.Path, version: str, caller_uid: int, caller_gid
             },
         },
     ]
-    process = subprocess.run(
-        [str(binary)],
-        input=b"".join(
+    process = run_bounded(
+        [binary],
+        input_bytes=b"".join(
             json.dumps(message, separators=(",", ":")).encode() + b"\n" for message in messages
         ),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+        stdout_max=3 * 96 * 1024,
+        stderr_max=1,
         timeout=30,
         user=caller_uid,
         group=caller_gid,
         extra_groups=[],
         env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
     )
-    if process.returncode or process.stderr or len(process.stdout) > 3 * 96 * 1024:
+    if process.returncode or process.stderr:
         raise RuntimeError("installed service MCP lifecycle failed")
     responses = [json.loads(line) for line in process.stdout.splitlines()]
     if len(responses) != 3 or responses[0]["result"]["serverInfo"] != {
@@ -770,11 +920,12 @@ def exercise_mcp(binary: pathlib.Path, version: str, caller_uid: int, caller_gid
 def exercise_version(binary: pathlib.Path, expected_version: object) -> None:
     if not isinstance(expected_version, str):
         raise RuntimeError("release metadata package version is invalid")
-    result = subprocess.run(
-        [str(binary), "--version"],
+    result = run_bounded(
+        [binary, "--version"],
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout_max=128,
+        stderr_max=1,
+        timeout=10,
         env={},
     )
     if result.stdout != f"kapsel {expected_version}\n".encode() or result.stderr:
@@ -859,13 +1010,17 @@ def smoke(
 
 
 def systemctl(*arguments: str) -> str:
-    return subprocess.run(
-        ["systemctl", *arguments],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
-    ).stdout.strip()
+    return (
+        run_bounded(
+            ["systemctl", *arguments],
+            check=True,
+            stdout_max=64 * 1024,
+            stderr_max=16 * 1024,
+            timeout=60,
+        )
+        .stdout.decode()
+        .strip()
+    )
 
 
 def refuse_systemd_references(parent: pathlib.Path) -> None:
@@ -881,14 +1036,13 @@ def refuse_systemd_references(parent: pathlib.Path) -> None:
 
 
 def require_disabled_unit() -> None:
-    result = subprocess.run(
+    result = run_bounded(
         ["systemctl", "is-enabled", "kapseld.service"],
-        capture_output=True,
-        text=True,
-        check=False,
+        stdout_max=1024,
+        stderr_max=1024,
         timeout=10,
     )
-    if result.returncode != 1 or result.stdout.strip() != "disabled":
+    if result.returncode != 1 or result.stdout.decode().strip() != "disabled":
         raise RuntimeError("qualification unit is not disabled")
 
 
@@ -917,13 +1071,17 @@ def install_systemd_assets(root: pathlib.Path) -> tuple[int, int, int]:
             pass
         else:
             raise RuntimeError("native qualification refuses existing groups")
-    unit_paths = subprocess.run(
-        ["systemd-analyze", "--system", "unit-paths"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    ).stdout.splitlines()
+    unit_paths = (
+        run_bounded(
+            ["systemd-analyze", "--system", "unit-paths"],
+            check=True,
+            stdout_max=64 * 1024,
+            stderr_max=16 * 1024,
+            timeout=10,
+        )
+        .stdout.decode()
+        .splitlines()
+    )
     if not unit_paths or any(not pathlib.Path(path).is_absolute() for path in unit_paths):
         raise RuntimeError("systemd unit search paths are unavailable")
     for parent in unit_paths:
@@ -932,6 +1090,9 @@ def install_systemd_assets(root: pathlib.Path) -> tuple[int, int, int]:
         raise RuntimeError("native qualification refuses a loaded service")
     subprocess.run(
         ["install", "-d", "-m", "0755", "/usr/share/kapsel", "/usr/share/doc/kapsel"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         check=True,
         timeout=10,
     )
@@ -950,7 +1111,14 @@ def install_systemd_assets(root: pathlib.Path) -> tuple[int, int, int]:
         with path.open("xb") as output:
             output.write((root / "share/kapsel" / asset).read_bytes())
         path.chmod(0o644)
-    subprocess.run(["systemd-sysusers", "/usr/lib/sysusers.d/kapseld.conf"], check=True, timeout=30)
+    subprocess.run(
+        ["systemd-sysusers", "/usr/lib/sysusers.d/kapseld.conf"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+        timeout=30,
+    )
     subprocess.run(
         [
             "useradd",
@@ -962,6 +1130,9 @@ def install_systemd_assets(root: pathlib.Path) -> tuple[int, int, int]:
             "/usr/sbin/nologin",
             "kapsel-service-caller",
         ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         check=True,
         timeout=30,
     )
@@ -977,7 +1148,12 @@ def install_systemd_assets(root: pathlib.Path) -> tuple[int, int, int]:
 def exercise_journald_failure() -> None:
     # No operator document exists yet. This must fail closed and emit only the fixed category.
     subprocess.run(
-        ["systemctl", "start", "kapseld.service"], capture_output=True, check=False, timeout=30
+        ["systemctl", "start", "kapseld.service"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=30,
     )
     deadline = time.monotonic() + 10
     while systemctl("show", "kapseld.service", "-p", "ActiveState", "--value") != "failed":
@@ -987,11 +1163,19 @@ def exercise_journald_failure() -> None:
     invocation = systemctl("show", "kapseld.service", "-p", "InvocationID", "--value")
     if len(invocation) != 32 or any(value not in "0123456789abcdef" for value in invocation):
         raise RuntimeError("native service invocation identity is unavailable")
-    subprocess.run(["journalctl", "--sync"], check=True, timeout=30)
-    diagnostic = subprocess.run(
+    subprocess.run(
+        ["journalctl", "--sync"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+        timeout=30,
+    )
+    diagnostic = run_bounded(
         ["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "--output=cat", "--no-pager"],
         check=True,
-        capture_output=True,
+        stdout_max=64 * 1024,
+        stderr_max=16 * 1024,
         timeout=30,
     ).stdout
     if b"provisioning_unavailable" not in diagnostic or any(
@@ -1096,7 +1280,14 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
     )
     if service_uid == caller_uid or service_uid == 0 or caller_uid == 0:
         raise RuntimeError("qualification requires distinct unprivileged identities")
-    subprocess.run(["install", "-d", "-m", "0755", "/usr/libexec/kapsel"], check=True, timeout=10)
+    subprocess.run(
+        ["install", "-d", "-m", "0755", "/usr/libexec/kapsel"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+        timeout=10,
+    )
     for name, destination in destinations.items():
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("xb") as output:
@@ -1124,6 +1315,7 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
     thread = threading.Thread(target=fixture.serve_forever, daemon=True)
     thread.start()
     process: subprocess.Popen[bytes] | None = None
+    service_diagnostic: ServiceStderrDrain | None = None
     frozen: bytes | None = None
     try:
         document = prepare_service_candidate(
@@ -1134,16 +1326,15 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
             write_private(destination, (evaluation / name).read_bytes())
             os.chown(destination, service_uid, caller_gid)
 
-        publication = subprocess.run(
-            [str(destinations["service"]), "--replace-operator-config"],
-            input=document,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        publication = run_bounded(
+            [destinations["service"], "--replace-operator-config"],
+            input_bytes=document,
+            stdout_max=64,
+            stderr_max=4 * 1024,
             user=service_uid,
             group=caller_gid,
             extra_groups=[],
             timeout=30,
-            check=False,
         )
         if (
             publication.returncode != 0
@@ -1182,6 +1373,9 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                     extra_groups=[],
                     umask=0o077,
                 )
+                assert process.stderr is not None
+                service_diagnostic = ServiceStderrDrain(process)
+                service_diagnostic.start()
 
             deadline = time.monotonic() + 20
             # A stale socket pathname is not readiness. Retry only the offline read.
@@ -1216,14 +1410,14 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 caller_gid,
             ):
                 raise RuntimeError("installed service socket custody differs")
-            denied = subprocess.run(
+            denied = run_bounded(
                 [sys.executable, "-c", "open('/etc/kapsel/operator.json', 'rb')"],
                 user=caller_uid,
                 group=caller_gid,
                 extra_groups=[],
-                capture_output=True,
+                stdout_max=1024,
+                stderr_max=4 * 1024,
                 timeout=5,
-                check=False,
             )
             if denied.returncode == 0 or b"PermissionError" not in denied.stderr:
                 raise RuntimeError("caller private-file confinement not established")
@@ -1284,15 +1478,15 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 changed = json.loads(document)
                 changed["approvals"][0]["label"] = "After cold replacement"
                 document = json.dumps(changed).encode()
-                replacement = subprocess.run(
-                    [str(destinations["service"]), "--replace-operator-config"],
-                    input=document,
-                    capture_output=True,
+                replacement = run_bounded(
+                    [destinations["service"], "--replace-operator-config"],
+                    input_bytes=document,
+                    stdout_max=64,
+                    stderr_max=4 * 1024,
                     user=service_uid,
                     group=caller_gid,
                     extra_groups=[],
                     timeout=30,
-                    check=False,
                 )
                 if pathlib.Path("/etc/kapsel/operator.json").read_bytes() != document:
                     raise RuntimeError("native configuration replacement bytes differ")
@@ -1306,10 +1500,17 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
                 if process is None:
                     raise RuntimeError("artifact service process was not started")
                 process.terminate()
-                _, diagnostic = process.communicate(timeout=30)
-                if process.returncode != 0 or len(diagnostic) > 4096:
+                process.wait(timeout=30)
+                if service_diagnostic is not None:
+                    service_diagnostic.finish()
+                if (
+                    process.returncode != 0
+                    or service_diagnostic is None
+                    or service_diagnostic.failed()
+                ):
                     raise RuntimeError("artifact graceful retirement failed")
                 process = None
+                service_diagnostic = None
             if KubernetesFixture.mutations != 1 or KubernetesFixture.requests != 4:
                 raise RuntimeError("artifact repeated receiver work")
         if native:
@@ -1323,25 +1524,25 @@ def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool =
             systemctl("stop", "kapseld.service")
         if process is not None and process.poll() is None:
             process.kill()
-            process.communicate(timeout=5)
+            process.wait(timeout=5)
+        if service_diagnostic is not None:
+            service_diagnostic.finish()
         fixture.shutdown()
         fixture.server_close()
         thread.join(timeout=5)
 
 
 def service_client(binary: pathlib.Path, arguments: list[str], uid: int, gid: int) -> dict:
-    result = subprocess.run(
-        [str(binary), *arguments],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    result = run_bounded(
+        [binary, *arguments],
+        stdout_max=64 * 1024,
+        stderr_max=1,
         user=uid,
         group=gid,
         extra_groups=[],
         timeout=10,
-        check=False,
     )
-    if result.returncode != 0 or result.stderr or len(result.stdout) > 64 * 1024:
+    if result.returncode != 0 or result.stderr:
         raise RuntimeError("artifact service client failed")
     if any(canary in result.stdout for canary in FORBIDDEN):
         raise RuntimeError("artifact service client disclosed private material")

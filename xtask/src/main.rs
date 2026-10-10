@@ -5,9 +5,11 @@
 
 use std::{
     env,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
+
+const FIXED_SCRIPTS: [&str; 3] = ["scripts/setup.sh", "scripts/fmt.sh", "scripts/ci.sh"];
 
 #[allow(clippy::print_stderr)]
 fn main() -> ExitCode {
@@ -27,10 +29,10 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let (script, arguments) = command(&arguments)?;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("xtask must live beneath the checkout root")?;
-    let status = Command::new("sh")
+    let root = checkout_root()?;
+    let mut shell = Command::new("sh");
+    clear_git_environment(&mut shell);
+    let status = shell
         .arg(root.join(script))
         .args(arguments)
         .current_dir(root)
@@ -41,6 +43,61 @@ fn run() -> Result<(), String> {
     } else {
         Err(format!("{script} failed: {status}"))
     }
+}
+
+fn checkout_root() -> Result<PathBuf, String> {
+    let cwd = env::current_dir().map_err(|error| format!("failed to read current dir: {error}"))?;
+    let mut git = Command::new("git");
+    clear_git_environment(&mut git);
+    let output = git
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&cwd)
+        .output()
+        .map_err(|error| format!("failed to locate Git checkout root: {error}"))?;
+    if !output.status.success() {
+        return Err("cargo xtask must run from inside a Git checkout".into());
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("Git checkout root was not valid UTF-8: {error}"))?;
+    let mut lines = stdout.lines();
+    let root = lines
+        .next()
+        .ok_or("Git did not report a checkout root")?
+        .to_owned();
+    if root.is_empty() || lines.next().is_some() {
+        return Err("Git reported an ambiguous checkout root".into());
+    }
+    let root = PathBuf::from(root);
+    validate_checkout_root(&root)?;
+    Ok(root)
+}
+
+fn clear_git_environment(command: &mut Command) {
+    for (key, _) in env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+}
+
+fn validate_checkout_root(root: &Path) -> Result<(), String> {
+    let manifest = root.join("xtask").join("Cargo.toml");
+    if !manifest.is_file() {
+        return Err(format!(
+            "Git checkout root is missing expected xtask manifest: {}",
+            manifest.display()
+        ));
+    }
+    for script in FIXED_SCRIPTS {
+        let path = root.join(script);
+        if !path.is_file() {
+            return Err(format!(
+                "Git checkout root is missing expected fixed script: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn command(arguments: &[String]) -> Result<(&'static str, Vec<&str>), String> {

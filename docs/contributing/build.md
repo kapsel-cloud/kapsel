@@ -32,8 +32,9 @@ access for missing ones. It changes neither shell profiles nor Git hooks. `docto
 installing or rewriting source; Cargo may first prepare xtask. Use `./scripts/setup.sh --check` on
 an unprepared host to bypass that bootstrap.
 
-[`tools/dev/dev-tools.sh`](../../tools/dev/dev-tools.sh) owns tool versions. CI uses the same setup
-and pins. Stock Cargo commands retain their normal meaning; xtask runs the broader contributor
+[`tools/dev/dev-tools.sh`](../../tools/dev/dev-tools.sh) owns contributor-tool versions. CI uses the
+same setup and contributor-tool pins. GitHub Action references are specified separately in each
+workflow. Stock Cargo commands retain their normal meaning; xtask runs the broader contributor
 workflow.
 
 ## Before review
@@ -79,6 +80,11 @@ Missing prerequisites mean missing evidence, not a passing substitute.
 guarantees to checks. [Qualification](qualification.md) contains Linux process, real Git, live
 Kubernetes, ENOSPC, simulation, fuzz, security-scan, and artifact commands with their prerequisites.
 Those lanes are separate from the everyday loop; run the ones required by the changed boundary.
+
+The `fuzz` crate is outside the workspace for cargo-fuzz and does not inherit workspace settings.
+The deterministic Rust gate checks its locked dependency graph, Clippy diagnostics, and maintained
+corpus through explicit fuzz-manifest commands. Formatting includes its source. Exploratory fuzzing
+remains a separate qualification lane.
 
 ## Optional hooks
 

@@ -12,9 +12,9 @@ use std::{
 };
 
 use kapsel::{
-    inspect_receipt, provision_exact_grant, provision_snapshot_grant, ExactAuthorization,
-    GrantProvisioning, InspectionLimits, InspectionReport, InspectionStatus, OperationResult,
-    ReceiptStatement,
+    inspect_receipt, provision_exact_grant, provision_snapshot_grant, ApplicationError,
+    ExactAuthorization, GrantProvisioning, InspectionLimits, InspectionReport, InspectionStatus,
+    OperationResult, ReceiptStatement,
 };
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use serde::Deserialize;
@@ -203,7 +203,7 @@ fn provision(mut options: BTreeMap<String, OsString>, snapshot: bool) -> Command
     } else {
         provision_exact_grant(&provisioning)
     }
-    .map_err(|_| CommandError::input(command))?;
+    .map_err(|error| application_error_to_command(command, &error))?;
     write_new_private(&output_path, &grant).map_err(|_| CommandError::configuration(command))?;
     Ok(format!(
         "{{\"command\":\"{command}\",\"status\":\"PROVISIONED\"}}"
@@ -263,11 +263,20 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
             &seed,
             &key_id,
         ))
-        .map_err(|_| CommandError::input(COMMAND))?;
+        .map_err(|error| application_error_to_command(COMMAND, &error))?;
     write_new_private(&output, &grant).map_err(|_| CommandError::configuration(COMMAND))?;
     Ok(format!(
         "{{\"command\":\"{COMMAND}\",\"status\":\"PROVISIONED\"}}"
     ))
+}
+
+fn application_error_to_command(command: &'static str, error: &ApplicationError) -> CommandError {
+    match error {
+        ApplicationError::InvalidOperatorConfiguration | ApplicationError::InvalidJournalPath => {
+            CommandError::configuration(command)
+        },
+        ApplicationError::InvalidGrantProvisioning => CommandError::input(command),
+    }
 }
 
 fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {

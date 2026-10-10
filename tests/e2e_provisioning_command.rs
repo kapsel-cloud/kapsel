@@ -182,6 +182,19 @@ fn snapshot_kubeconfig(root: &Path) -> SnapshotServer {
     }
 }
 
+fn write_valid_authorization(path: &Path) {
+    fs::write(
+        path,
+        serde_json::to_vec(&serde_json::json!({
+            "authorization_id":"auth-1", "operation_id":"op-1", "namespace":"demo",
+            "deployment":"agent-api", "container":"api",
+            "immutable_image_digest":format!("example/api@sha256:{}", "a".repeat(64)),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 fn serve_snapshot_deployment(listener: &TcpListener) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let (mut stream, _) = loop {
@@ -370,6 +383,78 @@ fn snapshot_grant_output_write_failure_uses_snapshot_command_and_preserves_file(
           \"error_class\":\"operator_configuration\"}\n"
     );
     assert_eq!(fs::read(&grant).unwrap(), original);
+}
+
+#[test]
+fn malformed_snapshot_kubeconfig_is_operator_configuration_failure() {
+    let root = TestRoot::new("snapshot-malformed-kubeconfig");
+    let authorization = root.path().join("authorization.json");
+    let kubeconfig = root.path().join("kubeconfig.yaml");
+    let seed = root.path().join("owner.seed");
+    let grant = root.path().join("grant.bin");
+    write_valid_authorization(&authorization);
+    fs::write(&kubeconfig, b"not: [valid").unwrap();
+    fs::write(&seed, [7; 32]).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .arg("provision-snapshot-grant")
+        .arg("--authorization")
+        .arg(&authorization)
+        .arg("--kubeconfig")
+        .arg(&kubeconfig)
+        .arg("--signing-seed")
+        .arg(&seed)
+        .args(["--signing-key-id", "owner-key"])
+        .arg("--output")
+        .arg(&grant)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(
+        output.stdout,
+        b"{\"command\":\"provision-snapshot-grant\",\"status\":\"ERROR\",\
+          \"error_class\":\"operator_configuration\"}\n"
+    );
+    assert_eq!(
+        output.stderr,
+        b"Kapsel command failure: operator_configuration\n"
+    );
+    assert!(!grant.exists());
+}
+
+#[test]
+fn malformed_snapshot_authorization_remains_command_input_failure() {
+    let root = TestRoot::new("snapshot-malformed-authorization");
+    let authorization = root.path().join("authorization.json");
+    let kubeconfig = root.path().join("kubeconfig.yaml");
+    let seed = root.path().join("owner.seed");
+    let grant = root.path().join("grant.bin");
+    fs::write(&authorization, b"not json").unwrap();
+    fs::write(&kubeconfig, b"not: [valid").unwrap();
+    fs::write(&seed, [7; 32]).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kapsel"))
+        .arg("provision-snapshot-grant")
+        .arg("--authorization")
+        .arg(&authorization)
+        .arg("--kubeconfig")
+        .arg(&kubeconfig)
+        .arg("--signing-seed")
+        .arg(&seed)
+        .args(["--signing-key-id", "owner-key"])
+        .arg("--output")
+        .arg(&grant)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        output.stdout,
+        b"{\"command\":\"provision-snapshot-grant\",\"status\":\"ERROR\",\
+          \"error_class\":\"command_input\"}\n"
+    );
+    assert!(!grant.exists());
 }
 
 #[test]

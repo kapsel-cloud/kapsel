@@ -1,11 +1,16 @@
 """Offline checks for the packaged journey's independent retained-evidence reader."""
 
+import os
 import pathlib
 import sqlite3
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 from kind_agent_action_exercise import finalized_evidence, retained_row
+from run_kind_agent_action_workflow import CODEX_OUTPUT_LIMIT, run, run_bounded_process
 
 
 class RetainedEvidenceTests(unittest.TestCase):
@@ -94,6 +99,82 @@ class RetainedEvidenceTests(unittest.TestCase):
         link.symlink_to(self.journal)
         with self.assertRaises(AssertionError):
             finalized_evidence(link, "original")
+
+
+class BoundedSubprocessTests(unittest.TestCase):
+    def test_valid_stdin_stdout_and_stderr_are_captured_as_bytes(self) -> None:
+        script = (
+            "import sys\n"
+            "data = sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(data[::-1])\n"
+            "sys.stderr.buffer.write(b'diagnostic')\n"
+        )
+        result = run_bounded_process([sys.executable, "-c", script], data=b"abc", timeout=5)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"cba")
+        self.assertEqual(result.stderr, b"diagnostic")
+
+    def test_output_overflow_is_rejected_before_accumulating_more_bytes(self) -> None:
+        for stream in ["stdout", "stderr"]:
+            script = f"import sys; sys.{stream}.buffer.write(b'x' * 17); sys.{stream}.flush()"
+            with self.subTest(stream=stream):
+                with self.assertRaisesRegex(RuntimeError, "confined Codex output exceeded"):
+                    run_bounded_process(
+                        [sys.executable, "-c", script],
+                        timeout=5,
+                        output_limit=16,
+                        overflow_message="confined Codex output exceeded its byte bound",
+                    )
+
+    def test_codex_capture_keeps_256_kib_limit(self) -> None:
+        script = f"import sys; sys.stdout.buffer.write(b'x' * {CODEX_OUTPUT_LIMIT + 1})"
+        with self.assertRaisesRegex(RuntimeError, "confined Codex output exceeded"):
+            run_bounded_process(
+                [sys.executable, "-c", script],
+                timeout=5,
+                output_limit=CODEX_OUTPUT_LIMIT,
+                overflow_message="confined Codex output exceeded its byte bound",
+            )
+
+    def test_deadline_includes_eof_then_child_wait_and_reaps_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            pid_file = pathlib.Path(temporary) / "pid"
+            script = (
+                "import os, pathlib, sys, time\n"
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+                "os.close(1)\n"
+                "os.close(2)\n"
+                "time.sleep(30)\n"
+            )
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run_bounded_process([sys.executable, "-c", script], timeout=0.2)
+            deadline = time.monotonic() + 5
+            while not pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            pid = int(pid_file.read_text())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def test_long_stdin_write_does_not_block_pipe_draining(self) -> None:
+        payload = b"a" * (512 * 1024)
+        script = (
+            "import sys\n"
+            "sys.stdout.buffer.write(b'x' * (512 * 1024))\n"
+            "sys.stdout.flush()\n"
+            "data = sys.stdin.buffer.read()\n"
+            "sys.stdout.buffer.write(str(len(data)).encode())\n"
+        )
+        result = run_bounded_process([sys.executable, "-c", script], data=payload, timeout=5)
+        self.assertEqual(result.stdout, b"x" * len(payload) + str(len(payload)).encode())
+
+    def test_run_failure_diagnostic_omits_secret_argv_and_stderr(self) -> None:
+        script = "import sys; sys.stderr.write('SECRET_STDERR'); raise SystemExit(7)"
+        with self.assertRaises(RuntimeError) as raised:
+            run([sys.executable, "-c", script, "SECRET_ARGV"], timeout=5)
+        message = str(raised.exception)
+        self.assertEqual(message, "command exited 7")
+        self.assertNotIn("SECRET_ARGV", message)
+        self.assertNotIn("SECRET_STDERR", message)
 
 
 if __name__ == "__main__":

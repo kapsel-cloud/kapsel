@@ -7,6 +7,7 @@ import contextlib
 import io
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -74,11 +75,12 @@ class SourceEvidenceTests(unittest.TestCase):
         self.git("rm", "-q", "deleted.txt")
         (self.root / "unstaged.txt").write_text("unstaged change\n")
         (self.root / "loose.txt").write_text("untracked\n")
+        (self.root / "loose.txt").chmod(0o644)
         index = (self.root / ".git/index").read_bytes()
         snapshot = RUNNER.capture_source(self.evidence)
         RUNNER.verify_source(snapshot)
         self.assertEqual((self.root / ".git/index").read_bytes(), index)
-        self.assertEqual(snapshot[2], {"loose.txt": b"untracked\n"})
+        self.assertEqual(snapshot[2], {"loose.txt": RUNNER.SourceFile(b"untracked\n", 0o644)})
         reconstructed = self.temporary / "reconstructed"
         reconstructed.mkdir()
         with tarfile.open(fileobj=io.BytesIO(self.git("archive", snapshot[0]))) as archive:
@@ -98,6 +100,57 @@ class SourceEvidenceTests(unittest.TestCase):
         self.assertEqual({p.name: p.read_bytes() for p in reconstructed.iterdir()}, expected)
         self.assertEqual((self.root / ".git/index").read_bytes(), index)
 
+    def test_executable_untracked_archive_preserves_retained_content_and_mode(self) -> None:
+        executable = self.root / "tool.sh"
+        executable.write_text("#!/bin/sh\necho captured\n")
+        executable.chmod(0o755)
+
+        snapshot = RUNNER.capture_source(self.evidence)
+
+        self.assertEqual(
+            snapshot[2], {"tool.sh": RUNNER.SourceFile(b"#!/bin/sh\necho captured\n", 0o755)}
+        )
+        with tarfile.open(self.evidence / "new-source.tar") as archive:
+            member = archive.getmember("tool.sh")
+            self.assertEqual(member.mode, 0o755)
+            extracted = archive.extractfile(member)
+            self.assertIsNotNone(extracted)
+            self.assertEqual(extracted.read(), b"#!/bin/sh\necho captured\n")
+
+    def test_untracked_archive_uses_retained_bytes_after_path_changes(self) -> None:
+        original = self.root / "loose.txt"
+        original.write_bytes(b"captured bytes\n")
+        original.chmod(0o644)
+        read_sources = RUNNER.untracked_source_files
+
+        def replace_path_after_capture() -> dict[str, RUNNER.SourceFile]:
+            sources = read_sources()
+            original.unlink()
+            os.symlink("private-target", original)
+            return sources
+
+        with mock.patch.object(
+            RUNNER, "untracked_source_files", side_effect=replace_path_after_capture
+        ):
+            snapshot = RUNNER.capture_source(self.evidence)
+
+        self.assertEqual(snapshot[2], {"loose.txt": RUNNER.SourceFile(b"captured bytes\n", 0o644)})
+        with tarfile.open(self.evidence / "new-source.tar") as archive:
+            member = archive.getmember("loose.txt")
+            extracted = archive.extractfile(member)
+            self.assertIsNotNone(extracted)
+            self.assertEqual(extracted.read(), b"captured bytes\n")
+            self.assertEqual(member.mode, 0o644)
+
+    def test_verification_rejects_a_mode_only_change_to_untracked_source(self) -> None:
+        source = self.root / "tool.sh"
+        source.write_bytes(b"#!/bin/sh\nexit 0\n")
+        source.chmod(0o644)
+        snapshot = RUNNER.capture_source(self.evidence)
+        source.chmod(0o755)
+        with self.assertRaisesRegex(RuntimeError, "source changed"):
+            RUNNER.verify_source(snapshot)
+
     def test_verification_detects_staged_edits_and_untracked_inventory_and_bytes(self) -> None:
         (self.root / "loose.txt").write_text("first\n")
         for change in ("staged", "untracked-bytes", "untracked-added", "untracked-removed"):
@@ -115,6 +168,54 @@ class SourceEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "source changed"):
                     RUNNER.verify_source(snapshot)
 
+    def test_untracked_source_snapshot_rejects_non_regular_paths(self) -> None:
+        (self.root / "target.txt").write_text("private target\n")
+        os.symlink("target.txt", self.root / "symlink.txt")
+        (self.root / "directory").mkdir()
+        fifo = self.root / "fifo"
+        os.mkfifo(fifo)
+
+        cases = {
+            "symlink.txt": "could not be opened safely",
+            "directory": "not a regular file",
+            "fifo": "not a regular file",
+        }
+        for path, message in cases.items():
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    RUNNER.read_source_file(path, RUNNER.SOURCE_TOTAL_BYTE_LIMIT)
+
+    def test_untracked_source_snapshot_bounds_file_and_aggregate_bytes(self) -> None:
+        (self.root / "large.txt").write_bytes(b"abcde")
+        with mock.patch.object(RUNNER, "SOURCE_FILE_BYTE_LIMIT", 4):
+            with self.assertRaisesRegex(RuntimeError, "file cap"):
+                RUNNER.untracked_sources()
+
+        (self.root / "large.txt").unlink()
+        (self.root / "first.txt").write_bytes(b"1234")
+        (self.root / "second.txt").write_bytes(b"5678")
+        with (
+            mock.patch.object(RUNNER, "SOURCE_FILE_BYTE_LIMIT", 10),
+            mock.patch.object(RUNNER, "SOURCE_TOTAL_BYTE_LIMIT", 6),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "aggregate cap"):
+                RUNNER.untracked_sources()
+
+    def test_untracked_source_snapshot_detects_growth_over_initial_size(self) -> None:
+        (self.root / "loose.txt").write_bytes(b"a")
+        real_read = RUNNER.os.read
+
+        def growing_read(descriptor: int, size: int) -> bytes:
+            chunk = real_read(descriptor, size)
+            if chunk == b"a":
+                with (self.root / "loose.txt").open("ab") as source:
+                    source.write(b"b")
+            return chunk
+
+        with mock.patch.object(RUNNER.os, "read", side_effect=growing_read):
+            with self.assertRaisesRegex(RuntimeError, "grew during capture"):
+                RUNNER.untracked_sources()
+
     def test_head_is_captured_once_and_comparison_uses_that_exact_base(self) -> None:
         with mock.patch.object(RUNNER, "git", wraps=RUNNER.git) as commands:
             snapshot = RUNNER.capture_source(self.evidence)
@@ -127,6 +228,28 @@ class SourceEvidenceTests(unittest.TestCase):
         diffs = [call.args for call in commands.call_args_list if call.args[0] == "diff"]
         self.assertEqual(len(diffs), 2)
         self.assertTrue(all(args[-2:] == (snapshot[0], "--") for args in diffs))
+
+
+class GitCaptureTests(unittest.TestCase):
+    def test_bounded_command_output_returns_exact_bytes(self) -> None:
+        output = RUNNER.bounded_command_output(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'exact\\x00bytes')"]
+        )
+
+        self.assertEqual(output, b"exact\x00bytes")
+
+    def test_bounded_command_output_rejects_overflow_before_appending(self) -> None:
+        with mock.patch.object(RUNNER, "GIT_OUTPUT_BYTE_LIMIT", 4):
+            with self.assertRaisesRegex(RuntimeError, "capture cap"):
+                RUNNER.bounded_command_output(
+                    [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'12345')"]
+                )
+
+    def test_bounded_command_output_times_out_after_stdout_eof_until_wait(self) -> None:
+        program = "import os, time; os.close(1); time.sleep(2)"
+        with mock.patch.object(RUNNER, "GIT_COMMAND_TIMEOUT_SECONDS", 0.2):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                RUNNER.bounded_command_output([sys.executable, "-c", program])
 
 
 class CleanupTests(unittest.TestCase):

@@ -11,13 +11,18 @@ import json
 import os
 import pathlib
 import re
+import selectors
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import BinaryIO, cast
 
 
 @dataclass(frozen=True)
@@ -122,16 +127,84 @@ MANIFEST_BYTES_MAX = 1024
 VERIFIER_BYTES_MAX = 64 * 1024
 
 
-def run(*arguments: str, cwd: pathlib.Path = ROOT) -> str:
-    result = subprocess.run(
-        arguments,
+def run_bounded(
+    arguments: Sequence[str | pathlib.Path],
+    *,
+    cwd: pathlib.Path = ROOT,
+    timeout: float,
+    stdout_max: int,
+    stderr_max: int,
+) -> subprocess.CompletedProcess[bytes]:
+    command = [str(argument) for argument in arguments]
+    process = subprocess.Popen(
+        command,
         cwd=cwd,
-        check=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
     )
-    return result.stdout.strip()
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    deadline = time.monotonic() + timeout
+    output = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    limits = {stdout_fd: stdout_max, stderr_fd: stderr_max}
+    selector = selectors.DefaultSelector()
+    try:
+        for stream in (process.stdout, process.stderr):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _ in events:
+                stream = cast(BinaryIO, key.fileobj)
+                file_descriptor = stream.fileno()
+                data = output[file_descriptor]
+                allowance = limits[file_descriptor] - len(data) + 1
+                chunk = os.read(file_descriptor, min(8192, max(1, allowance)))
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    continue
+                if len(data) + len(chunk) > limits[file_descriptor]:
+                    raise RuntimeError("release command output exceeded its byte bound")
+                data.extend(chunk)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, timeout)
+        returncode = process.wait(timeout=remaining)
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        selector.close()
+        for stream in (process.stdout, process.stderr):
+            if not stream.closed:
+                stream.close()
+    result = subprocess.CompletedProcess(
+        command,
+        returncode,
+        bytes(output[stdout_fd]),
+        bytes(output[stderr_fd]),
+    )
+    if returncode != 0:
+        raise RuntimeError("release command failed")
+    return result
+
+
+def run(*arguments: str, cwd: pathlib.Path = ROOT) -> str:
+    return (
+        run_bounded(arguments, cwd=cwd, timeout=10, stdout_max=16 * 1024, stderr_max=16 * 1024)
+        .stdout.decode()
+        .strip()
+    )
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -180,8 +253,9 @@ def build_binaries(
     """
     command = [
         "docker",
-        "run",
-        "--rm",
+        "create",
+        "--name",
+        f"kapsel-release-build-{uuid.uuid4().hex}",
         "--platform",
         "linux/amd64",
         "--volume",
@@ -204,7 +278,37 @@ def build_binaries(
         "-c",
         build_script,
     ]
-    subprocess.run(command, cwd=ROOT, check=True)
+    # Creation cannot run the producer. Establish its immutable identity before submitting start.
+    created = run_bounded(
+        command, cwd=ROOT, timeout=10 * 60, stdout_max=1024, stderr_max=4 * 1024 * 1024
+    )
+    container_id = created.stdout.decode("ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        raise RuntimeError("release build container identity is invalid; no start was submitted")
+    try:
+        subprocess.run(
+            ["docker", "start", "--attach", container_id],
+            cwd=ROOT,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30 * 60,
+        )
+    finally:
+        # A client timeout is not container retirement. Remove only the confirmed immutable ID.
+        try:
+            subprocess.run(
+                ["docker", "rm", "--force", container_id],
+                cwd=ROOT,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError("release build container retirement is unconfirmed") from error
     binaries = {
         name: target_directory / TARGET / "release" / pathlib.PurePosixPath(path).name
         for name, path in BINARIES.items()
@@ -273,11 +377,21 @@ def stage_release(
     tree: str,
     dirty: bool,
 ) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="kapsel-release-target-") as temporary:
-        binaries, cargo_metadata_path = build_binaries(pathlib.Path(temporary))
-        cargo_metadata = json.loads(cargo_metadata_path.read_text())
-        for name, source in binaries.items():
-            copy_file(source, staging / BINARIES[name], 0o755)
+    target_directory = pathlib.Path(tempfile.mkdtemp(prefix="kapsel-release-target-"))
+    try:
+        binaries, cargo_metadata_path = build_binaries(target_directory)
+    except Exception as error:
+        # Do not unlink a mount while retirement is unknown, or discard failed build evidence.
+        raise RuntimeError(
+            f"release build failed; target retained at {target_directory}: {error}"
+        ) from error
+    else:
+        try:
+            cargo_metadata = json.loads(cargo_metadata_path.read_text())
+            for name, source in binaries.items():
+                copy_file(source, staging / BINARIES[name], 0o755)
+        finally:
+            shutil.rmtree(target_directory)
 
     assets = {
         ROOT / "crates" / "kapsel-daemon" / "deploy" / "kapseld.service": (
@@ -628,7 +742,15 @@ def assemble(output_directory: pathlib.Path, allow_dirty: bool) -> pathlib.Path:
     revision, tree, source_date, dirty = git_provenance(allow_dirty)
     if shutil.which("docker") is None:
         raise RuntimeError("Docker is required for release assembly")
-    run("docker", "info")
+    subprocess.run(
+        ["docker", "info"],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True,
+        timeout=30,
+    )
 
     version = package_version()
     basename = f"kapsel-{version}-{TARGET}"
@@ -673,7 +795,7 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         archive = assemble(arguments.output_directory.resolve(), arguments.allow_dirty)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Kapsel release assembly failed: {error}", file=sys.stderr)
         return 1
     print(archive)

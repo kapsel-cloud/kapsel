@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import re
+import select
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast
 
@@ -61,6 +63,64 @@ def service_response(value: object) -> ServiceResponse:
 BRIDGE = "/usr/bin/kapsel-service-mcp"
 PROTOCOL = "2025-11-25"
 IDENTITY = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
+MCP_RESPONSE_LIMIT = 100_000
+EXCHANGE_DEADLINE_SECONDS = 8.0
+REFERENCE_LIMIT = 512
+
+
+def exchange_pipes(process: subprocess.Popen[bytes], input_bytes: bytes, deadline: float) -> bytes:
+    output = bytearray()
+    assert process.stdin is not None and process.stdout is not None
+    os.set_blocking(process.stdin.fileno(), False)
+    os.set_blocking(process.stdout.fileno(), False)
+    input_offset = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("MCP exchange timed out")
+        input_streams = [] if process.stdin.closed else [process.stdin]
+        readable, writable, _ = select.select([process.stdout], input_streams, [], remaining)
+        if writable:
+            input_offset += os.write(process.stdin.fileno(), input_bytes[input_offset:])
+            if input_offset == len(input_bytes):
+                process.stdin.close()
+        if not readable:
+            continue
+        chunk = os.read(process.stdout.fileno(), min(8192, MCP_RESPONSE_LIMIT + 1 - len(output)))
+        if not chunk:
+            break
+        if len(output) + len(chunk) > MCP_RESPONSE_LIMIT:
+            raise ValueError("oversized MCP response")
+        output.extend(chunk)
+    return bytes(output)
+
+
+def run_bridge(input_bytes: bytes) -> bytes:
+    process = subprocess.Popen(
+        [BRIDGE],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + EXCHANGE_DEADLINE_SECONDS
+    try:
+        stdout = exchange_pipes(process, input_bytes, deadline)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("MCP exchange timed out")
+        process.wait(timeout=remaining)
+        if process.returncode != 0:
+            raise subprocess.CalledProcessError(process.returncode, [BRIDGE])
+        return stdout
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
@@ -84,18 +144,8 @@ def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
         },
     ]
     try:
-        result = subprocess.run(
-            [BRIDGE],
-            input=b"".join(json.dumps(m).encode() + b"\n" for m in messages),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=8,
-            check=True,
-        )
-        if len(result.stdout) > 100_000:
-            raise ValueError("oversized MCP response")
-
-        lines = result.stdout.splitlines()
+        output = run_bridge(b"".join(json.dumps(m).encode() + b"\n" for m in messages))
+        lines = output.splitlines()
         if len(lines) != 2:
             raise ValueError("unexpected MCP response count")
         init, reply = (json.loads(line) for line in lines)
@@ -120,7 +170,14 @@ def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
         if service.get("version") != 1 and service.get("status") != "ERROR":
             raise ValueError("unexpected service version")
         return service
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, TypeError):
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+    ):
         return {"status": "ERROR", "error_class": "exchange_uncertain"}
 
 
@@ -157,20 +214,36 @@ def reference(path: str, service: str, operation_id: str | None = None) -> Opera
             os.close(directory_fd)
         return data
 
-    info = Path(path).lstat()
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.getuid()
-        or info.st_mode & 0o077
-        or info.st_nlink != 1
-    ):
-        raise ValueError("reference must be a private caller-owned regular file")
-    if info.st_size > 512:
-        raise ValueError("oversized reference")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_nlink != 1
+        ):
+            raise ValueError("reference must be a private caller-owned regular file")
+        if info.st_size > REFERENCE_LIMIT:
+            raise ValueError("oversized reference")
 
-    decoded = json.loads(Path(path).read_text())
+        raw = os.read(descriptor, REFERENCE_LIMIT + 1)
+        after_read = os.fstat(descriptor)
+        if len(raw) > REFERENCE_LIMIT or len(raw) != after_read.st_size:
+            raise ValueError("reference changed while reading")
+        if (
+            after_read.st_mode != info.st_mode
+            or after_read.st_uid != info.st_uid
+            or after_read.st_nlink != info.st_nlink
+            or after_read.st_size != info.st_size
+        ):
+            raise ValueError("reference changed while reading")
+        decoded = json.loads(raw.decode())
+    finally:
+        os.close(descriptor)
     if (
         not isinstance(decoded, dict)
+        or type(decoded.get("version")) is not int
         or decoded.get("version") != 1
         or decoded.get("service") != service
         or not isinstance(decoded.get("operation_id"), str)

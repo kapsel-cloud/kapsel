@@ -3,8 +3,6 @@
 //! This module owns the bounded receipt format used by the current source. It does not define a
 //! package format, generic trust, or a verifier profile.
 
-#![allow(clippy::struct_field_names)]
-
 use std::{error::Error, fmt};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
@@ -214,7 +212,10 @@ impl ReceiptStatement {
     }
 
     /// Returns the fixed signed non-claims.
-    #[allow(clippy::unused_self)]
+    #[allow(
+        clippy::unused_self,
+        reason = "public receipt API exposes fixed signed non-claims beside field accessors"
+    )]
     pub fn non_claims(&self) -> &'static str {
         NON_CLAIMS
     }
@@ -691,6 +692,10 @@ pub enum InspectionStatus {
 }
 
 /// Caller-selected inspection ceilings, each bounded by the receipt-format maximum.
+#[allow(
+    clippy::struct_field_names,
+    reason = "public inspection bounds use receipt-format byte-limit vocabulary"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InspectionLimits {
     /// Maximum accepted receipt bytes.

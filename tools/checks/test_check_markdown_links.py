@@ -104,6 +104,25 @@ Setext Heading
         status, output = run(root)
         assert status == 1 and "path escapes repository" in output, output
 
+        secret = "ghp_" + "x" * 30
+        write(root / "source.md", "[oversized](oversized.md#anchor)\n")
+        (root / "oversized.md").write_text(secret + "x" * checker.MAX_MARKDOWN_FILE_BYTES)
+        subprocess.run(["git", "add", "oversized.md", "source.md"], cwd=root, check=True)
+        status, output = run(root)
+        assert status == 1 and "Markdown source exceeds size limit oversized.md" in output, output
+        assert secret not in output, output
+
+        write(root / "source.md", "[symlink](symlink.md#anchor)\n")
+        (root / "symlink.md").symlink_to(root / "target.md")
+        subprocess.run(["git", "add", "symlink.md", "source.md"], cwd=root, check=True)
+        status, output = run(root)
+        assert status == 1 and "unsupported Markdown source symlink.md" in output, output
+
+        write(root / "source.md", "[fifo](fifo.md#anchor)\n")
+        os.mkfifo(root / "fifo.md")
+        status, output = run(root)
+        assert status == 1 and "unsupported Markdown source fifo.md" in output, output
+
     print("Markdown link checker regressions: ok")
     return 0
 

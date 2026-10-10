@@ -749,7 +749,10 @@ fn deployment_container_image<'a>(
         .as_deref()
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(
+    clippy::print_stdout,
+    reason = "the live qualification runner retains this independent receiver evidence"
+)]
 fn report_recovery_policy_evidence(
     before_generation: i64,
     after_generation: i64,
@@ -1052,7 +1055,10 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-#[allow(clippy::print_stdout)]
+#[allow(
+    clippy::print_stdout,
+    reason = "the live qualification runner retains bounded rollout diagnostics"
+)]
 async fn wait_for_deployment_rollout(
     deployments: &Api<Deployment>,
     deployment_name: &str,

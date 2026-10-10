@@ -181,18 +181,238 @@ fn receipt_valid(value: &Value) -> bool {
     let expected = decode(digest);
     Sha256::digest(bytes).as_slice() == expected
 }
+fn exact(fields: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
+    fields.len() == keys.len() && keys.iter().all(|key| fields.contains_key(*key))
+}
+
+fn string_field(fields: &serde_json::Map<String, Value>, key: &str) -> bool {
+    fields.get(key).is_some_and(Value::is_string)
+}
+
+fn target_object(value: &Value) -> bool {
+    value.as_object().is_some_and(|target| {
+        exact(target, &["uid", "resource_version"])
+            && string_field(target, "uid")
+            && string_field(target, "resource_version")
+    })
+}
+
+fn nullable_target(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| value.is_null() || target_object(value))
+}
+
+fn execution_disposition(
+    fields: &serde_json::Map<String, Value>,
+) -> Option<kapsel::ExecutionDisposition> {
+    use kapsel::{ExecutionCondition as Condition, ExecutionDisposition as Disposition};
+    let condition = fields.get("condition")?;
+    match fields.get("disposition")?.as_str()? {
+        "active" if condition.is_null() => Some(Disposition::Active),
+        "waiting_for_worker" if condition.is_null() => Some(Disposition::WaitingForWorker),
+        "resume_required" => match condition.as_str() {
+            None if condition.is_null() => Some(Disposition::ResumeRequired(None)),
+            Some("preflight_unavailable") => Some(Disposition::ResumeRequired(Some(
+                Condition::PreflightUnavailable,
+            ))),
+            Some("worker_contention") => Some(Disposition::ResumeRequired(Some(
+                Condition::WorkerContention,
+            ))),
+            _ => None,
+        },
+        "operator_required" => match condition.as_str()? {
+            "receiver_unavailable" => Some(Disposition::OperatorRequired(
+                Condition::ReceiverUnavailable,
+            )),
+            "signing_unavailable" => {
+                Some(Disposition::OperatorRequired(Condition::SigningUnavailable))
+            },
+            "completion_blocked" => {
+                Some(Disposition::OperatorRequired(Condition::CompletionBlocked))
+            },
+            "operation_blocked" => Some(Disposition::OperatorRequired(Condition::OperationBlocked)),
+            _ => None,
+        },
+        "complete" if condition.is_null() => Some(Disposition::Complete),
+        "admission_unconfirmed" if condition.is_null() => Some(Disposition::AdmissionUnconfirmed),
+        _ => None,
+    }
+}
+
+fn execution_shape(value: &Value, status: &str) -> bool {
+    let Some(fields) = value.as_object() else {
+        return false;
+    };
+    let Some(disposition) = execution_disposition(fields) else {
+        return false;
+    };
+    exact(
+        fields,
+        &["disposition", "condition", "next_action", "action_owner"],
+    ) && fields.get("disposition").and_then(Value::as_str) == Some(disposition.as_str())
+        && fields.get("next_action").and_then(Value::as_str) == Some(disposition.next_action())
+        && fields.get("action_owner").and_then(Value::as_str) == Some(disposition.action_owner())
+        && match status {
+            "NOT_FOUND" => disposition == kapsel::ExecutionDisposition::AdmissionUnconfirmed,
+            "IN_PROGRESS" => !matches!(
+                disposition,
+                kapsel::ExecutionDisposition::Complete
+                    | kapsel::ExecutionDisposition::AdmissionUnconfirmed
+            ),
+            "NOT_ATTEMPTED" | "SUCCEEDED" | "FAILED" | "UNKNOWN" => {
+                disposition == kapsel::ExecutionDisposition::Complete
+            },
+            _ => false,
+        }
+}
+
+fn target_rejection(effect: &str, value: Option<&Value>) -> bool {
+    matches!(
+        (effect, value.and_then(Value::as_str)),
+        (
+            "kubernetes.set_deployment_image",
+            Some(
+                "DEPLOYMENT_NOT_FOUND"
+                    | "CONTAINER_NOT_FOUND"
+                    | "INVALID_TARGET"
+                    | "STALE_APPROVAL"
+            ),
+        ) | (
+            "git.transition_ref",
+            Some("GIT_STALE_REF" | "GIT_INVALID_OBJECTS")
+        )
+    )
+}
+
+fn git_targets(value: Option<&Value>) -> bool {
+    let Some(fields) = value.and_then(Value::as_object) else {
+        return false;
+    };
+    let acknowledgement = fields.get("acknowledgement").is_some_and(|value| {
+        value.is_null()
+            || matches!(
+                value.as_str(),
+                Some("updated" | "rejected_before_send" | "receiver_rejected" | "unknown")
+            )
+    });
+    let observed_ref = fields.get("observed_ref").is_some_and(|value| {
+        value.is_null()
+            || value.as_object().is_some_and(|fields| {
+                exact(fields, &["kind", "commit"])
+                    && match fields.get("kind").and_then(Value::as_str) {
+                        Some("commit") => fields.get("commit").is_some_and(Value::is_string),
+                        Some("missing" | "unknown") => {
+                            fields.get("commit").is_some_and(Value::is_null)
+                        },
+                        _ => false,
+                    }
+            })
+    });
+    exact(
+        fields,
+        &[
+            "repository_id",
+            "reference",
+            "old_commit",
+            "new_commit",
+            "attempted",
+            "acknowledgement",
+            "observed_ref",
+        ],
+    ) && string_field(fields, "repository_id")
+        && string_field(fields, "reference")
+        && string_field(fields, "old_commit")
+        && string_field(fields, "new_commit")
+        && fields.get("attempted").is_some_and(Value::is_boolean)
+        && acknowledgement
+        && observed_ref
+}
+
+fn status_shape(value: &Value, with_version: bool, with_operation_id: bool) -> bool {
+    let Some(fields) = value.as_object() else {
+        return false;
+    };
+    if with_version && fields.get("version") != Some(&json!(1)) {
+        return false;
+    }
+    if with_operation_id && fields.get("operation_id").and_then(identity).is_none() {
+        return false;
+    }
+    let Some(status) = fields.get("status").and_then(Value::as_str) else {
+        return false;
+    };
+    if status == "ERROR" {
+        let mut keys = vec!["status", "error_class"];
+        if with_version {
+            keys.push("version");
+        }
+        if with_operation_id {
+            keys.push("operation_id");
+        }
+        return exact(fields, &keys)
+            && matches!(
+                fields.get("error_class").and_then(Value::as_str),
+                Some("invalid_request" | "authority_unavailable" | "operation_failure")
+            );
+    }
+    if !execution_shape(fields.get("execution").unwrap_or(&Value::Null), status) {
+        return false;
+    }
+    let mut base = vec!["status", "execution"];
+    if with_version {
+        base.push("version");
+    }
+    if with_operation_id {
+        base.push("operation_id");
+    }
+    match status {
+        "NOT_FOUND" => exact(fields, &base),
+        "IN_PROGRESS" | "NOT_ATTEMPTED" | "SUCCEEDED" | "FAILED" | "UNKNOWN" => {
+            let has_rejection = status == "NOT_ATTEMPTED";
+            if has_rejection {
+                base.push("target_rejection");
+            }
+            let Some(effect) = fields.get("effect").and_then(Value::as_str) else {
+                return false;
+            };
+            if has_rejection && !target_rejection(effect, fields.get("target_rejection")) {
+                return false;
+            }
+            match effect {
+                "kubernetes.set_deployment_image" => {
+                    base.extend([
+                        "effect",
+                        "approved_target",
+                        "attempt_target",
+                        "observed_target",
+                    ]);
+                    exact(fields, &base)
+                        && nullable_target(fields.get("approved_target"))
+                        && nullable_target(fields.get("attempt_target"))
+                        && nullable_target(fields.get("observed_target"))
+                },
+                "git.transition_ref" => {
+                    base.extend(["effect", "git"]);
+                    exact(fields, &base) && git_targets(fields.get("git"))
+                },
+                _ => false,
+            }
+        },
+        _ => false,
+    }
+}
+
 fn response_shape(name: &str, value: &Value) -> bool {
     let Some(fields) = value.as_object() else {
         return false;
     };
+    if fields.get("version") != Some(&json!(1)) {
+        return false;
+    }
     let Some(status) = fields.get("status").and_then(Value::as_str) else {
         return false;
     };
-    let exact = |keys: &[&str]| {
-        fields.len() == keys.len() && keys.iter().all(|key| fields.contains_key(*key))
-    };
     if status == "ERROR" {
-        return exact(&["version", "status", "error_class"])
+        return exact(fields, &["version", "status", "error_class"])
             && matches!(
                 fields.get("error_class").and_then(Value::as_str),
                 Some("invalid_request" | "authority_unavailable" | "operation_failure")
@@ -201,7 +421,7 @@ fn response_shape(name: &str, value: &Value) -> bool {
     match name {
         "kapsel.submit" => match status {
             "ADMITTED" => {
-                exact(&["version", "status", "phase"])
+                exact(fields, &["version", "status", "phase"])
                     && matches!(
                         fields.get("phase").and_then(Value::as_str),
                         Some(
@@ -215,26 +435,28 @@ fn response_shape(name: &str, value: &Value) -> bool {
                     )
             },
             "NOT_ADMITTED" => {
-                exact(&["version", "status", "reason"])
+                exact(fields, &["version", "status", "reason"])
                     && matches!(
                         fields.get("reason").and_then(Value::as_str),
                         Some("BUSY" | "CAPACITY")
                     )
             },
-            "INDETERMINATE" => exact(&["version", "status"]),
+            "INDETERMINATE" => exact(fields, &["version", "status"]),
             _ => false,
         },
         "kapsel.get_receipt" => match status {
             "READY" => {
-                exact(&["version", "status", "receipt_hex", "receipt_sha256"])
-                    && receipt_valid(value)
+                exact(
+                    fields,
+                    &["version", "status", "receipt_hex", "receipt_sha256"],
+                ) && receipt_valid(value)
             },
-            "NOT_FOUND" | "NOT_READY" => exact(&["version", "status"]),
+            "NOT_FOUND" | "NOT_READY" => exact(fields, &["version", "status"]),
             _ => false,
         },
-        "kapsel.list_approved_actions" | "kapsel.list_operation_history" => {
+        "kapsel.list_approved_actions" => {
             status == "READY"
-                && exact(&["version", "status", "entries", "next_cursor"])
+                && exact(fields, &["version", "status", "entries", "next_cursor"])
                 && fields
                     .get("entries")
                     .and_then(Value::as_array)
@@ -248,22 +470,21 @@ fn response_shape(name: &str, value: &Value) -> bool {
                     .get("next_cursor")
                     .is_some_and(|cursor| cursor.is_null() || identity(cursor).is_some())
         },
-        "kapsel.get_status" => {
-            matches!(
-                status,
-                "NOT_FOUND" | "IN_PROGRESS" | "NOT_ATTEMPTED" | "SUCCEEDED" | "FAILED" | "UNKNOWN"
-            ) && fields
-                .get("execution")
-                .and_then(Value::as_object)
-                .is_some_and(|execution| {
-                    execution.get("disposition").is_some_and(Value::is_string)
-                        && execution.get("next_action").is_some_and(Value::is_string)
-                        && execution.get("action_owner").is_some_and(Value::is_string)
-                        && execution.contains_key("condition")
-                })
-                && (status != "NOT_ATTEMPTED"
-                    || fields.get("target_rejection").is_some_and(Value::is_string))
+        "kapsel.list_operation_history" => {
+            status == "READY"
+                && exact(fields, &["version", "status", "entries", "next_cursor"])
+                && fields
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .is_some_and(|entries| {
+                        entries.len() <= 8
+                            && entries.iter().all(|entry| status_shape(entry, false, true))
+                    })
+                && fields
+                    .get("next_cursor")
+                    .is_some_and(|cursor| cursor.is_null() || identity(cursor).is_some())
         },
+        "kapsel.get_status" => status_shape(value, true, false),
         _ => false,
     }
 }

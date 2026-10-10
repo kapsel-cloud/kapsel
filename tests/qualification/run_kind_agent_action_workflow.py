@@ -43,57 +43,115 @@ RECEIPT_SNAPSHOT = SNAPSHOT_SOURCE.read_bytes().decode("utf-8")
 EXERCISE_SOURCE = pathlib.Path(__file__).with_name("kind_agent_action_exercise.py")
 
 
-def run(arguments: list[str], *, data: bytes | None = None, timeout: int = 60) -> bytes:
-    result = subprocess.run(
-        arguments, input=data, capture_output=True, timeout=timeout, check=False
+# Current ordinary tool callers retain an 8 MiB audit head plus small command output/config input.
+ORDINARY_TOOL_OUTPUT_LIMIT = 12 * 1024 * 1024
+ORDINARY_TOOL_STDIN_LIMIT = 1024 * 1024
+CODEX_OUTPUT_LIMIT = 256 * 1024
+
+
+def run_bounded_process(
+    arguments: list[str],
+    *,
+    data: bytes | None = None,
+    timeout: float = 60,
+    output_limit: int = ORDINARY_TOOL_OUTPUT_LIMIT,
+    input_limit: int = ORDINARY_TOOL_STDIN_LIMIT,
+    overflow_message: str = "command output exceeded its byte bound",
+) -> subprocess.CompletedProcess:
+    """Capture subprocess pipes within byte limits and one deadline through EOF and reap."""
+    if data is not None and len(data) > input_limit:
+        raise RuntimeError("command input exceeded its byte bound")
+
+    streams = [bytearray(), bytearray()]
+    deadline = time.monotonic() + timeout
+    stdin_setting = subprocess.PIPE if data is not None else subprocess.DEVNULL
+    input_offset = 0
+    input_pipe = None
+
+    with (
+        subprocess.Popen(
+            arguments, stdin=stdin_setting, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        ) as process,
+        selectors.DefaultSelector() as selector,
+    ):
+        try:
+            if data is not None:
+                if process.stdin is None:
+                    raise RuntimeError("command input pipe was not created")
+                input_pipe = process.stdin
+            for index, stream in enumerate((process.stdout, process.stderr)):
+                if stream is None:
+                    raise RuntimeError("command output pipe was not created")
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, ("output", index))
+            if input_pipe is not None:
+                os.set_blocking(input_pipe.fileno(), False)
+                selector.register(input_pipe, selectors.EVENT_WRITE, ("input", None))
+
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired("subprocess", timeout)
+                for key, _ in selector.select(remaining):
+                    kind, index = key.data
+                    if kind == "input":
+                        assert data is not None
+                        if input_offset < len(data):
+                            try:
+                                input_offset += os.write(key.fd, data[input_offset:])
+                            except BlockingIOError:
+                                continue
+                            except BrokenPipeError:
+                                input_offset = len(data)
+                        if input_offset == len(data):
+                            selector.unregister(key.fileobj)
+                            if input_pipe is not None:
+                                input_pipe.close()
+                        continue
+
+                    chunk = os.read(key.fd, 8192)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    assert index is not None
+                    output = streams[index]
+                    if len(output) + len(chunk) > output_limit:
+                        raise RuntimeError(overflow_message)
+                    output.extend(chunk)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("subprocess", timeout)
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise subprocess.TimeoutExpired("subprocess", timeout) from None
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+    return subprocess.CompletedProcess(
+        arguments, process.returncode, bytes(streams[0]), bytes(streams[1])
     )
+
+
+def run(arguments: list[str], *, data: bytes | None = None, timeout: int = 60) -> bytes:
+    result = run_bounded_process(arguments, data=data, timeout=timeout)
     if result.returncode:
-        # Never render argv or input: some fixture commands provision short-lived credentials.
-        raise RuntimeError(
-            f"{arguments[0]} exited {result.returncode}: {result.stderr[-2048:].decode(errors='replace')}"
-        )
+        # Never render argv, input or captured stderr: fixture commands may carry credentials.
+        raise RuntimeError(f"command exited {result.returncode}")
     return result.stdout
 
 
 def run_agent_process(arguments: list[str], *, timeout: float = 120) -> subprocess.CompletedProcess:
     """Bound both model output streams while draining, before retaining their bytes."""
-    maximum = 256 * 1024
-    streams = [bytearray(), bytearray()]
-    deadline = time.monotonic() + timeout
-    with (
-        subprocess.Popen(
-            arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        ) as process,
-        selectors.DefaultSelector() as selector,
-    ):
-        try:
-            for index, stream in enumerate((process.stdout, process.stderr)):
-                if stream is None:
-                    raise RuntimeError("confined Codex output pipe was not created")
-                selector.register(stream, selectors.EVENT_READ, index)
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(arguments[0], timeout)
-                for key, _ in selector.select(remaining):
-                    chunk = os.read(key.fd, 8192)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    output = streams[key.data]
-                    if len(output) + len(chunk) > maximum:
-                        raise RuntimeError("confined Codex output exceeded its byte bound")
-                    output.extend(chunk)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(arguments[0], timeout)
-            process.wait(timeout=remaining)
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait()
-    return subprocess.CompletedProcess(
-        arguments, process.returncode, bytes(streams[0]), bytes(streams[1])
+    return run_bounded_process(
+        arguments,
+        timeout=timeout,
+        output_limit=CODEX_OUTPUT_LIMIT,
+        overflow_message="confined Codex output exceeded its byte bound",
     )
 
 
@@ -156,7 +214,9 @@ def run_agent(
     while time.monotonic() < deadline:
         ready = subprocess.run(
             ["docker", "exec", name, "test", "-f", "/operator/caller-ready"],
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=10,
             check=False,
         )
@@ -172,13 +232,16 @@ def run_agent(
     run(["docker", "cp", str(code_host), name + ":/usr/local/bin/codex-code-mode-host"])
     run(["docker", "cp", str(auth), name + ":/home/caller/.codex/auth.json"])
     config = b'[mcp_servers.kapsel_service]\ncommand = "/usr/bin/kapsel-service-mcp"\nargs = []\n'
-    subprocess.run(
+    config_result = subprocess.run(
         ["docker", "exec", "-i", name, "tee", "/home/caller/.codex/config.toml"],
         input=config,
-        capture_output=True,
-        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         timeout=10,
+        check=False,
     )
+    if config_result.returncode != 0:
+        raise RuntimeError("Codex config write failed")
     run(["docker", "exec", name, "chown", "-R", "61001:61000", "/home/caller"])
     run(["docker", "exec", name, "chmod", "0700", "/home/caller", "/home/caller/.codex"])
     run(

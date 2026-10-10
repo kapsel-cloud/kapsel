@@ -18,17 +18,25 @@ use kapsel::ReceiptTrust;
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 fn decode_hex(input: &str) -> Vec<u8> {
-    input
-        .trim()
-        .as_bytes()
-        .as_chunks::<2>()
-        .0
+    let trimmed = input.trim();
+    let (pairs, remainder) = trimmed.as_bytes().as_chunks::<2>();
+    assert!(
+        remainder.is_empty(),
+        "hex fixture has an odd number of nibbles"
+    );
+    pairs
         .iter()
         .map(|pair| {
             let text = std::str::from_utf8(pair).unwrap();
             u8::from_str_radix(text, 16).unwrap()
         })
         .collect()
+}
+
+#[test]
+#[should_panic(expected = "hex fixture has an odd number of nibbles")]
+fn hex_fixture_decoder_rejects_odd_nibbles() {
+    let _ = decode_hex("abc");
 }
 
 fn fixture() -> (PathBuf, PathBuf, PathBuf) {
