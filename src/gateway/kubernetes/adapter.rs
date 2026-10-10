@@ -95,12 +95,14 @@ impl KubernetesDeploymentImageAdapter {
         deadline: tokio::time::Instant,
     ) -> ReceiverObservation {
         let mut latest_observation = ReceiverObservation::unknown();
-        for attempt in 0..self.observation_attempts {
+        for read_index in 0..self.observation_attempts {
             if tokio::time::Instant::now() >= deadline {
                 return ReceiverObservation::unknown();
             }
+            let read_deadline =
+                deadline.min(tokio::time::Instant::now() + self.provider_request_timeout);
             let response = tokio::time::timeout_at(
-                deadline.min(tokio::time::Instant::now() + self.provider_request_timeout),
+                read_deadline,
                 self.deployments(&request.namespace)
                     .get(&request.deployment),
             )
@@ -108,15 +110,18 @@ impl KubernetesDeploymentImageAdapter {
             if tokio::time::Instant::now() >= deadline {
                 return ReceiverObservation::unknown();
             }
+
             latest_observation = match response {
                 Ok(Ok(deployment)) => receiver_observation(request, &deployment),
                 Ok(Err(_)) | Err(_) => ReceiverObservation::unknown(),
             };
+
             if latest_observation.observation_is_complete(request, outcome)
-                || attempt + 1 == self.observation_attempts
+                || read_index + 1 == self.observation_attempts
             {
                 break;
             }
+
             tokio::time::sleep(self.observation_interval).await;
         }
         latest_observation
@@ -274,12 +279,14 @@ fn receiver_observation(
                 .find(|container| container.name == request.container)
         })
         .and_then(|container| container.image.clone());
+
     let operation_marker = deployment
         .metadata
         .annotations
         .as_ref()
         .and_then(|annotations| annotations.get(OPERATION_ANNOTATION))
         .cloned();
+
     let status = deployment.status.as_ref();
     let conditions = status.and_then(|status| status.conditions.as_ref());
     let rollout_condition = conditions.and_then(|conditions| {
@@ -296,6 +303,7 @@ fn receiver_observation(
                     .find(|condition| condition.type_ == "Available" && condition.status == "True")
             })
     });
+
     ReceiverObservation {
         deployment_uid: deployment.metadata.uid.clone(),
         resource_version: deployment.metadata.resource_version.clone(),
@@ -920,9 +928,11 @@ mod tests {
                     )));
                 }
             });
+
             let request = request();
             let outcome = apply_outcome();
             let observation = adapter.observe(&request, &outcome).await.unwrap();
+
             assert_eq!(
                 observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
                 crate::OperationResult::Succeeded,
@@ -956,6 +966,7 @@ mod tests {
                 }
                 reads
             });
+
             let request = request();
             let outcome = apply_outcome();
             let observation = adapter.observe(&request, &outcome).await.unwrap();
@@ -964,11 +975,13 @@ mod tests {
             } else {
                 crate::OperationResult::Unknown
             };
+
             assert_eq!(
                 observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
                 expected
             );
             assert_eq!(start.elapsed().as_secs(), ready_after.min(179));
+
             drop(adapter);
             assert_eq!(responder.await.unwrap(), (ready_after + 1).min(180));
         }
@@ -990,6 +1003,7 @@ mod tests {
                 )));
             }
         });
+
         let start = tokio::time::Instant::now();
         for _ in 0..3 {
             assert!(tokio::time::timeout(
@@ -1003,6 +1017,7 @@ mod tests {
             assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), before);
         }
         assert!(start.elapsed() > OBSERVATION_DEADLINE);
+
         let resumed = tokio::time::Instant::now();
         let before = reads.load(std::sync::atomic::Ordering::Relaxed);
         let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
@@ -1012,6 +1027,7 @@ mod tests {
             reads.load(std::sync::atomic::Ordering::Relaxed) - before,
             180
         );
+
         drop(adapter);
         responder.await.unwrap();
     }
@@ -1058,6 +1074,7 @@ mod tests {
         let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
         assert_eq!(observation, ReceiverObservation::unknown());
         assert_eq!(start.elapsed(), Duration::from_secs(180));
+
         drop(adapter);
         assert_eq!(responder.await.unwrap(), 17);
     }

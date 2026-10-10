@@ -219,7 +219,8 @@ fn serve_snapshot_deployment(listener: &TcpListener) -> Result<(), String> {
     if !request_line.starts_with("GET /apis/apps/v1/namespaces/demo/deployments/agent-api ") {
         return Err(format!("unexpected request line: {request_line}"));
     }
-    let body = serde_json::to_vec(&serde_json::json!({
+
+    let deployment_body = serde_json::to_vec(&serde_json::json!({
         "apiVersion":"apps/v1",
         "kind":"Deployment",
         "metadata":{"uid":"deployment-uid-1","resourceVersion":"resource-version-0"},
@@ -232,14 +233,16 @@ fn serve_snapshot_deployment(listener: &TcpListener) -> Result<(), String> {
     write!(
         stream,
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
-        body.len()
+        deployment_body.len()
     )
     .map_err(|error| error.to_string())?;
     remaining(deadline)?;
     stream
         .set_write_timeout(Some(remaining(deadline)?))
         .map_err(|error| error.to_string())?;
-    stream.write_all(&body).map_err(|error| error.to_string())?;
+    stream
+        .write_all(&deployment_body)
+        .map_err(|error| error.to_string())?;
     remaining(deadline).map(|_| ())
 }
 
@@ -275,6 +278,7 @@ fn operator_can_provision_exact_grant_without_overwriting_or_accepting_bad_seeds
             .output()
             .unwrap()
     };
+
     let output = run(&grant);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
@@ -285,15 +289,18 @@ fn operator_can_provision_exact_grant_without_overwriting_or_accepting_bad_seeds
         fs::metadata(&grant).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let original = fs::read(&grant).unwrap();
+
+    let original_grant_bytes = fs::read(&grant).unwrap();
     assert_eq!(run(&grant).status.code(), Some(3));
-    assert_eq!(fs::read(&grant).unwrap(), original);
+    assert_eq!(fs::read(&grant).unwrap(), original_grant_bytes);
+
     for length in [31, 33] {
         fs::write(&seed, vec![7; length]).unwrap();
         let destination = root.join(format!("bad-{length}.grant"));
         assert_eq!(run(&destination).status.code(), Some(3));
         assert!(!destination.exists());
     }
+
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -340,7 +347,7 @@ fn snapshot_grant_output_write_failure_uses_snapshot_command_and_preserves_file(
     let authorization = root.path().join("authorization.json");
     let seed = root.path().join("owner.seed");
     let grant = root.path().join("grant.bin");
-    let original = b"existing grant bytes";
+    let original_grant_bytes = b"existing grant bytes";
     fs::write(
         &authorization,
         serde_json::to_vec(&serde_json::json!({
@@ -352,7 +359,7 @@ fn snapshot_grant_output_write_failure_uses_snapshot_command_and_preserves_file(
     )
     .unwrap();
     fs::write(&seed, [7; 32]).unwrap();
-    fs::write(&grant, original).unwrap();
+    fs::write(&grant, original_grant_bytes).unwrap();
     let server = snapshot_kubeconfig(root.path());
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_kapsel"));
@@ -382,7 +389,7 @@ fn snapshot_grant_output_write_failure_uses_snapshot_command_and_preserves_file(
         b"{\"command\":\"provision-snapshot-grant\",\"status\":\"ERROR\",\
           \"error_class\":\"operator_configuration\"}\n"
     );
-    assert_eq!(fs::read(&grant).unwrap(), original);
+    assert_eq!(fs::read(&grant).unwrap(), original_grant_bytes);
 }
 
 #[test]

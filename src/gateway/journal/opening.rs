@@ -52,6 +52,7 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     if !fresh && initial_version != schema::JOURNAL_FORMAT_VERSION {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
+
     recover_private_rollback_journal(path, &database_identity)?;
     let database_identity = database_file
         .metadata()
@@ -64,6 +65,7 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     if !fresh && source_version != schema::JOURNAL_FORMAT_VERSION {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
+
     let mut connection = Connection::open(path).map_err(GatewayError::Database)?;
     connection
         .set_limit(Limit::SQLITE_LIMIT_LENGTH, schema::PERSISTED_ROW_BYTES_MAX)
@@ -78,6 +80,7 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
     if opened_version != source_version {
         return Err(GatewayError::InvalidPersistedState);
     }
+
     if fresh {
         initialize_journal(&mut connection)?;
     }
@@ -103,8 +106,8 @@ pub(super) fn open_journal(path: &Path) -> Result<OpenedJournal, GatewayError> {
 /// No writable connection, worker-lock creation, sidecar recovery or immutable bypass is used.
 pub(super) fn open_validation_snapshot(path: &Path) -> Result<Option<Connection>, GatewayError> {
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
-    let mut file = match open_existing_private_file(path) {
-        Ok(file) => file,
+    let mut database_file = match open_existing_private_file(path) {
+        Ok(database_file) => database_file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             // A dangling leaf or surviving worker lock is lost history, not a fresh install.
             require_absent(path)?;
@@ -118,14 +121,16 @@ pub(super) fn open_validation_snapshot(path: &Path) -> Result<Option<Connection>
         name.push(suffix);
         require_absent(Path::new(&name))?;
     }
-    let identity = file.metadata().map_err(GatewayError::JournalFile)?;
-    if identity.len() > JOURNAL_BYTES_MAX || identity.len() == 0 {
+    let database_identity = database_file
+        .metadata()
+        .map_err(GatewayError::JournalFile)?;
+    if database_identity.len() > JOURNAL_BYTES_MAX || database_identity.len() == 0 {
         return Err(GatewayError::InvalidPersistedState);
     }
-    if read_header_version(&mut file)? != schema::JOURNAL_FORMAT_VERSION {
+    if read_header_version(&mut database_file)? != schema::JOURNAL_FORMAT_VERSION {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
-    require_named_identity(path, &identity).map_err(GatewayError::JournalFile)?;
+    require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
     let connection = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -134,16 +139,17 @@ pub(super) fn open_validation_snapshot(path: &Path) -> Result<Option<Connection>
     connection
         .set_limit(Limit::SQLITE_LIMIT_LENGTH, schema::PERSISTED_ROW_BYTES_MAX)
         .map_err(GatewayError::Database)?;
+
     connection
         .execute_batch("BEGIN DEFERRED")
         .map_err(GatewayError::Database)?;
-    let version: u32 = connection
+    let snapshot_version: u32 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(GatewayError::Database)?;
-    if version != schema::JOURNAL_FORMAT_VERSION {
+    if snapshot_version != schema::JOURNAL_FORMAT_VERSION {
         return Err(GatewayError::UnsupportedJournalVersion);
     }
-    require_named_identity(path, &identity).map_err(GatewayError::JournalFile)?;
+    require_named_identity(path, &database_identity).map_err(GatewayError::JournalFile)?;
     require_private_parent(path).map_err(GatewayError::JournalFile)?;
     require_valid_snapshot(&connection)?;
     Ok(Some(connection))
@@ -259,24 +265,27 @@ fn recover_private_rollback_journal(
     require_private_parent(database_path).map_err(GatewayError::JournalFile)?;
     drop(journal);
 
-    let connection = Connection::open(database_path).map_err(GatewayError::Database)?;
-    configure_durable_connection(&connection)?;
-    connection
+    let recovery_connection = Connection::open(database_path).map_err(GatewayError::Database)?;
+    configure_durable_connection(&recovery_connection)?;
+    recovery_connection
         .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
         .map_err(GatewayError::Database)?;
-    drop(connection);
+    drop(recovery_connection);
+
     match open_existing_private_file(&journal_path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {},
         Err(error) => return Err(GatewayError::JournalBackup(error)),
-        Ok(mut residual) => {
-            let residual_identity = residual.metadata().map_err(GatewayError::JournalBackup)?;
+        Ok(mut residual_journal) => {
+            let residual_identity = residual_journal
+                .metadata()
+                .map_err(GatewayError::JournalBackup)?;
             if residual_identity.dev() != journal_identity.dev()
                 || residual_identity.ino() != journal_identity.ino()
             {
                 return Err(GatewayError::JournalBackupMismatch);
             }
             let mut header = [0_u8; 8];
-            residual
+            residual_journal
                 .read_exact(&mut header)
                 .map_err(GatewayError::JournalBackup)?;
             if header != [0_u8; 8] {
@@ -472,6 +481,7 @@ mod tests {
             open_journal(&path),
             Err(GatewayError::JournalBackup(_))
         ));
+
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -498,6 +508,7 @@ mod tests {
         drop(writer);
         assert!(!worker_lock_path(&path).exists());
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -523,6 +534,7 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"replacement");
 
         drop(original);
+
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -559,6 +571,7 @@ mod tests {
         assert!(!retained.join("journal.sqlite3-journal").exists());
         drop(journal);
         drop(handle);
+
         fs::remove_dir_all(directory).unwrap();
         fs::remove_dir_all(retained).unwrap();
     }
@@ -585,6 +598,7 @@ mod tests {
         assert_eq!(journal_mode, "delete");
         assert_eq!(synchronous, 2);
         drop(journal);
+
         fs::remove_dir_all(directory).unwrap();
     }
 }

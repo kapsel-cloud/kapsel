@@ -48,10 +48,11 @@ async fn mixed_catalog_admits_git_and_reconnects_by_original_identity_without_ma
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
-    let targets = application.status("a").unwrap().1.git.unwrap();
-    assert!(!targets.attempted);
-    assert!(targets.acknowledgement.is_none());
-    assert!(targets.observed_ref.is_none());
+
+    let original_git_targets = application.status("a").unwrap().1.git.unwrap();
+    assert!(!original_git_targets.attempted);
+    assert!(original_git_targets.acknowledgement.is_none());
+    assert!(original_git_targets.observed_ref.is_none());
     assert_eq!(
         application.receipt("a").unwrap(),
         OperationReceipt::NotReady
@@ -69,7 +70,10 @@ async fn mixed_catalog_admits_git_and_reconnects_by_original_identity_without_ma
         reopened.select("a", offline(), |_| {}).await.unwrap(),
         stopped
     );
-    assert_eq!(reopened.status("a").unwrap().1.git.unwrap(), targets);
+    assert_eq!(
+        reopened.status("a").unwrap().1.git.unwrap(),
+        original_git_targets
+    );
     drop(reopened);
     fs::remove_dir_all(root).unwrap();
 }
@@ -90,6 +94,7 @@ async fn replacement_cannot_rebind_an_identity_across_effect_types() {
         application.select("a", offline(), |_| {}).await.unwrap();
         let original = application.status("a").unwrap();
         drop(application);
+
         config.approvals[0] = if git_first {
             approval("a", 41)
         } else {
@@ -97,6 +102,7 @@ async fn replacement_cannot_rebind_an_identity_across_effect_types() {
         };
         assert!(ServiceApplication::validate_replacement(&config).is_err());
         assert!(ServiceApplication::open(config.clone()).is_err());
+
         config.approvals.clear();
         let reopened = ServiceApplication::open(config).unwrap();
         assert_eq!(reopened.status("a").unwrap(), original);

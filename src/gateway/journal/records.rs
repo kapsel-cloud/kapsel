@@ -39,14 +39,17 @@ impl Table {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Record(Vec<Value>, Table);
+pub(super) struct Record {
+    values: Vec<Value>,
+    table: Table,
+}
 
 impl Record {
     pub(super) fn empty(id: &str) -> Self {
-        let mut record = Self(
-            vec![Value::Null; schema::CURRENT_COLUMNS.len()],
-            Table::Kubernetes,
-        );
+        let mut record = Self {
+            values: vec![Value::Null; schema::CURRENT_COLUMNS.len()],
+            table: Table::Kubernetes,
+        };
         record.set("operation_id", id.to_owned());
         for field in ["target_read_failures", "apply_attempted"] {
             record.set(field, 0_i64);
@@ -55,7 +58,10 @@ impl Record {
     }
 
     pub(super) fn git_empty(id: &str) -> Self {
-        let mut record = Self(vec![Value::Null; schema::GIT_COLUMNS.len()], Table::Git);
+        let mut record = Self {
+            values: vec![Value::Null; schema::GIT_COLUMNS.len()],
+            table: Table::Git,
+        };
         record.set("operation_id", id.to_owned());
         record
     }
@@ -65,7 +71,7 @@ impl Record {
         reason = "column names are fixed internal code, never input"
     )]
     fn index(&self, field: &str) -> usize {
-        self.1
+        self.table
             .columns()
             .iter()
             .position(|name| *name == field)
@@ -73,24 +79,24 @@ impl Record {
     }
 
     pub(super) fn get<T: FromSql>(&self, field: &str) -> Result<T, GatewayError> {
-        T::column_result((&self.0[self.index(field)]).into())
+        T::column_result((&self.values[self.index(field)]).into())
             .map_err(|_| GatewayError::InvalidPersistedState)
     }
 
     pub(super) fn set(&mut self, field: &str, value: impl Into<Value>) {
         let index = self.index(field);
-        self.0[index] = value.into();
+        self.values[index] = value.into();
     }
 
     pub(super) fn set_optional<T: Into<Value>>(&mut self, field: &str, value: Option<T>) {
         let index = self.index(field);
-        self.0[index] = value.map_or(Value::Null, Into::into);
+        self.values[index] = value.map_or(Value::Null, Into::into);
     }
 
     #[cfg(test)]
     fn bounded(&self) -> bool {
         let lengths = self
-            .0
+            .values
             .iter()
             .map(|value| match value {
                 Value::Null => 0,
@@ -102,24 +108,26 @@ impl Record {
             .collect::<Vec<_>>();
         lengths
             .iter()
-            .zip(self.1.columns())
+            .zip(self.table.columns())
             .all(|(length, field)| *length <= field_limit(field))
             && lengths.iter().sum::<usize>()
                 <= usize::try_from(schema::PERSISTED_ROW_BYTES_MAX).unwrap()
     }
 
     pub(super) fn has_value(&self, field: &str) -> bool {
-        self.0[self.index(field)] != Value::Null
+        self.values[self.index(field)] != Value::Null
     }
 
     fn from_sql(row: &rusqlite::Row<'_>, table: Table) -> rusqlite::Result<Self> {
-        if !row.get::<_, bool>(table.columns().len())? {
+        let persisted_values_within_bounds = row.get::<_, bool>(table.columns().len())?;
+        if !persisted_values_within_bounds {
             return Err(rusqlite::Error::InvalidQuery);
         }
+
         (0..table.columns().len())
             .map(|index| row.get(index))
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map(|values| Self(values, table))
+            .map(|values| Self { values, table })
     }
 }
 
@@ -345,7 +353,7 @@ impl Io {
             let store = store.lock().unwrap();
             return store
                 .get(id)
-                .filter(|record| record.1 == table)
+                .filter(|record| record.table == table)
                 .map(|record| {
                     if record.bounded() {
                         Ok(record.clone())
@@ -400,7 +408,10 @@ impl Io {
             let delivery = control.take_delivery(write);
             if let Some(store) = control.virtual_store.clone() {
                 let mut store = store.lock().unwrap();
-                if store.get(&id).is_some_and(|record| record.1 != next.1) {
+                if store
+                    .get(&id)
+                    .is_some_and(|record| record.table != next.table)
+                {
                     return Err(GatewayError::OperationIdentityConflict);
                 }
                 let ignore_binding = control.defect == Some(Defect::UnconditionalWrite);
@@ -442,76 +453,48 @@ impl Io {
             rusqlite::Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
                 .map_err(GatewayError::Database)?;
         let id: String = next.get("operation_id")?;
-        let matches = read_table(&transaction, &id, next.1)?.as_ref() == expected;
+        let retained_record_matches =
+            read_table(&transaction, &id, next.table)?.as_ref() == expected;
         #[cfg(test)]
-        let matches = self.control.exercise(Defect::UnconditionalWrite) || matches;
-        if !matches {
+        let retained_record_matches =
+            self.control.exercise(Defect::UnconditionalWrite) || retained_record_matches;
+        if !retained_record_matches {
             return Err(GatewayError::InvalidTransition);
         }
+
         if let Some(previous) = expected {
-            let changes = next
-                .1
-                .columns()
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| previous.0[*index] != next.0[*index])
-                .collect::<Vec<_>>();
-            let assignments = changes
-                .iter()
-                .enumerate()
-                .map(|(parameter, (_, field))| format!("{field} = ?{}", parameter + 1))
-                .collect::<Vec<_>>()
-                .join(", ");
-            if assignments.is_empty() {
-                return Err(GatewayError::InvalidTransition);
-            }
-            let mut values = changes
-                .iter()
-                .map(|(index, _)| next.0[*index].clone())
-                .collect::<Vec<_>>();
-            values.push(Value::Text(id));
-            let sql = format!(
-                "UPDATE {} SET {assignments} \
-                WHERE operation_id = ?{}",
-                next.1.name(),
-                values.len()
-            );
-            #[cfg(test)]
-            self.control
-                .0
-                .lock()
-                .unwrap()
-                .sql
-                .push((write, sql.clone()));
-            changed_one(
-                transaction
-                    .execute(&sql, rusqlite::params_from_iter(values))
-                    .map_err(GatewayError::Database)?,
+            self.update_changed_columns(
+                &transaction,
+                previous,
+                next,
+                id,
+                #[cfg(test)]
+                write,
             )?;
         } else {
-            let collision: bool = transaction
+            let has_other_effect_identity: bool = transaction
                 .query_row(
                     &format!(
                         "SELECT EXISTS (SELECT 1 FROM {} WHERE operation_id = ?1)",
-                        next.1.other().name()
+                        next.table.other().name()
                     ),
                     [&id],
                     |row| row.get(0),
                 )
                 .map_err(GatewayError::Database)?;
-            if collision {
+            if has_other_effect_identity {
                 return Err(GatewayError::OperationIdentityConflict);
             }
             super::capacity::require_admission(&transaction)?;
-            let parameters = (1..=next.0.len())
+            let parameters = (1..=next.values.len())
                 .map(|index| format!("?{index}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let sql = format!(
                 "INSERT INTO {} ({}) \
                 VALUES ({parameters})",
-                next.1.name(),
-                next.1.columns().join(", ")
+                next.table.name(),
+                next.table.columns().join(", ")
             );
             #[cfg(test)]
             self.control
@@ -521,23 +504,76 @@ impl Io {
                 .sql
                 .push((write, sql.clone()));
             transaction
-                .execute(&sql, rusqlite::params_from_iter(&next.0))
+                .execute(&sql, rusqlite::params_from_iter(&next.values))
                 .map_err(GatewayError::Database)?;
         }
         #[cfg(test)]
         {
-            if write == Write::Receipt && next.1 == Table::Kubernetes {
+            if write == Write::Receipt && next.table == Table::Kubernetes {
                 crate::gateway::tests::storage::receipt_precommit_checkpoint(&transaction);
             }
             if delivery == Delivery::NoCommit {
                 return delivery.result();
             }
         }
+
         transaction.commit().map_err(GatewayError::Database)?;
         #[cfg(test)]
         return delivery.result();
         #[cfg(not(test))]
         Ok(())
+    }
+
+    #[allow(clippy::unused_self, reason = "test builds record the executed SQL")]
+    fn update_changed_columns(
+        &self,
+        transaction: &rusqlite::Transaction<'_>,
+        previous: &Record,
+        next: &Record,
+        id: String,
+        #[cfg(test)] write: Write,
+    ) -> Result<(), GatewayError> {
+        let changes = next
+            .table
+            .columns()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| previous.values[*index] != next.values[*index])
+            .collect::<Vec<_>>();
+        let assignments = changes
+            .iter()
+            .enumerate()
+            .map(|(parameter, (_, field))| format!("{field} = ?{}", parameter + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if assignments.is_empty() {
+            return Err(GatewayError::InvalidTransition);
+        }
+
+        let mut values = changes
+            .iter()
+            .map(|(index, _)| next.values[*index].clone())
+            .collect::<Vec<_>>();
+        values.push(Value::Text(id));
+        let sql = format!(
+            "UPDATE {} SET {assignments} \
+            WHERE operation_id = ?{}",
+            next.table.name(),
+            values.len()
+        );
+        #[cfg(test)]
+        self.control
+            .0
+            .lock()
+            .unwrap()
+            .sql
+            .push((write, sql.clone()));
+
+        changed_one(
+            transaction
+                .execute(&sql, rusqlite::params_from_iter(values))
+                .map_err(GatewayError::Database)?,
+        )
     }
 }
 
@@ -685,7 +721,7 @@ impl Control {
                 .lock()
                 .unwrap()
                 .get(id)
-                .map(|row| row.0[row.index(field)].clone())
+                .map(|row| row.values[row.index(field)].clone())
         })
     }
 

@@ -30,10 +30,10 @@ impl ApplicationReads for BlockedStorage {
             .unwrap()
             .send(())
             .unwrap();
-        let (lock, ready) = &*self.release;
+        let (lock, release_condition) = &*self.release;
         let mut released = lock.lock().unwrap();
         while !*released {
-            released = ready.wait(released).unwrap();
+            released = release_condition.wait(released).unwrap();
         }
         drop(released);
         (operation_failure(), ResponseClass::Ordinary)
@@ -60,7 +60,7 @@ fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
     runtime.block_on(async {
         let inputs = InstallationInputs::open_at(&root).unwrap();
         let listener = inputs.bind_listener().unwrap();
-        let (started, began) = oneshot::channel();
+        let (started, storage_started) = oneshot::channel();
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let retired = Arc::new(AtomicBool::new(false));
         let state = ServerState::new(
@@ -73,8 +73,8 @@ fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
         );
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
-        let (observed, acknowledged) = oneshot::channel();
-        let checked_retired = retired.clone();
+        let (stop_observed_sender, stop_observed_receiver) = oneshot::channel();
+        let storage_retired = retired.clone();
         let server = tokio::spawn(async move {
             serve_until_stopped(
                 listener,
@@ -83,12 +83,12 @@ fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
                 None,
                 async {
                     terminate.recv().await;
-                    observed.send(()).unwrap();
+                    stop_observed_sender.send(()).unwrap();
                 },
             )
             .await
             .unwrap();
-            assert!(checked_retired.load(Ordering::SeqCst));
+            assert!(storage_retired.load(Ordering::SeqCst));
             drop(inputs);
         });
         let mut client = UnixStream::connect(root.join("run/kapsel/kapseld.sock"))
@@ -104,16 +104,18 @@ fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
         )
         .await
         .unwrap();
-        began.await.unwrap();
+
+        storage_started.await.unwrap();
         rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
             .unwrap();
-        acknowledged.await.unwrap();
+        stop_observed_receiver.await.unwrap();
         assert!(!server.is_finished());
         assert!(!retired.load(Ordering::SeqCst));
         assert!(InstallationInputs::open_at(&root).is_err());
         assert!(UnixStream::connect(root.join("run/kapsel/kapseld.sock"))
             .await
             .is_err());
+
         *release.0.lock().unwrap() = true;
         release.1.notify_all();
         server.await.unwrap();
@@ -152,7 +154,7 @@ fn ready_stop_wins_over_already_queued_connection() {
         )
         .await
         .unwrap();
-        let (started, began) = oneshot::channel();
+        let (started, storage_started) = oneshot::channel();
         let retired = Arc::new(AtomicBool::new(false));
         let state = ServerState::new(
             BlockedStorage {
@@ -171,7 +173,8 @@ fn ready_stop_wins_over_already_queued_connection() {
         )
         .await
         .unwrap();
-        assert!(began.await.is_err());
+
+        assert!(storage_started.await.is_err());
         assert!(retired.load(Ordering::SeqCst));
         drop(inputs);
     });

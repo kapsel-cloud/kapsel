@@ -66,6 +66,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<Command> {
     {
         return None;
     }
+
     let cursor = |after: serde_json::Value| match after {
         serde_json::Value::Null => Some(None),
         serde_json::Value::String(id) if identity_is_valid(&id) => Some(Some(id)),
@@ -180,32 +181,31 @@ pub(super) fn render_status_with_targets(
         Ok(value) => value,
         Err(error) => return service_error(error),
     };
+
     let mut output = render_status(Ok(status));
     if status == OperationStatus::NotFound {
         return output;
     }
-    let exact = |target: Option<kapsel::ApprovedTarget>| {
+
+    let approved_target_fields = |target: Option<kapsel::ApprovedTarget>| {
         target.map(|target| {
-        serde_json::json!({ "uid": target.uid, "resource_version": target.resource_version })
-    })
+            serde_json::json!({ "uid": target.uid, "resource_version": target.resource_version })
+        })
     };
     let fields = if let Some(git) = targets.git {
         serde_json::json!({"effect":"git.transition_ref", "git": git_targets(git)})
     } else {
         serde_json::json!({
             "effect": "kubernetes.set_deployment_image",
-            "approved_target": exact(targets.approved_target),
-            "attempt_target": exact(targets.attempt_target),
+            "approved_target": approved_target_fields(targets.approved_target),
+            "attempt_target": approved_target_fields(targets.attempt_target),
             "observed_target": targets.observed_target.map(|target| serde_json::json!({
                 "uid": target.uid, "resource_version": target.resource_version,
             })),
         })
     }
     .to_string();
-    // Both objects are locally rendered JSON. Join fields without parsing or changing values.
-    output.pop();
-    output.push(b',');
-    output.extend_from_slice(&fields.as_bytes()[1..]);
+    append_object_fields(&mut output, &fields);
     output
 }
 
@@ -233,10 +233,15 @@ pub(super) fn render_execution_status(
         },
     })
     .to_string();
+    append_object_fields(&mut output, &fields);
+    output
+}
+
+// Both objects are locally rendered JSON. Join fields without parsing or changing values.
+fn append_object_fields(output: &mut Vec<u8>, fields: &str) {
     output.pop();
     output.push(b',');
     output.extend_from_slice(&fields.as_bytes()[1..]);
-    output
 }
 
 pub(super) fn render_receipt(result: Result<OperationReceipt, ServiceError>) -> Vec<u8> {
@@ -251,16 +256,18 @@ pub(super) fn render_receipt(result: Result<OperationReceipt, ServiceError>) -> 
             if !valid_sha256(&sha256) {
                 return operation_failure();
             }
-            let Some(length) = bytes
+
+            let Some(response_length) = bytes
                 .len()
                 .checked_mul(2)
                 .and_then(|length| length.checked_add(WRAPPER_BYTES))
             else {
                 return Vec::new();
             };
-            if !response_length_allowed(length, ResponseClass::Receipt) {
+            if !response_length_allowed(response_length, ResponseClass::Receipt) {
                 return Vec::new();
             }
+
             let receipt_hex = lowercase_hex(&bytes);
             format!(
                 concat!(
@@ -318,7 +325,7 @@ pub(super) fn render_catalog(
 }
 
 fn git_targets(targets: kapsel::GitOperationTargets) -> serde_json::Value {
-    let observed = targets.observed_ref.map(|observed| match observed {
+    let observed_ref = targets.observed_ref.map(|observed| match observed {
         kapsel::GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
         kapsel::GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
         kapsel::GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
@@ -328,7 +335,7 @@ fn git_targets(targets: kapsel::GitOperationTargets) -> serde_json::Value {
         "old_commit": targets.approval.old_commit, "new_commit": targets.approval.new_commit,
         "attempted": targets.attempted,
         "acknowledgement": targets.acknowledgement.map(kapsel::GitAcknowledgement::as_str),
-        "observed_ref": observed,
+        "observed_ref": observed_ref,
     })
 }
 
@@ -343,14 +350,14 @@ pub(super) fn render_execution_history(
 ) -> Vec<u8> {
     let mut entries = Vec::with_capacity(page.entries.len());
     for entry in page.entries {
-        let id = entry.operation_id.clone();
-        let observed = observation(&id);
-        let bytes = render_execution_status(entry.execution_status(observed));
+        let operation_id = entry.operation_id.clone();
+        let execution_observation = observation(&operation_id);
+        let bytes = render_execution_status(entry.execution_status(execution_observation));
         let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_slice(&bytes) else {
             return operation_failure();
         };
         fields.remove("version");
-        fields.insert("operation_id".into(), id.into());
+        fields.insert("operation_id".into(), operation_id.into());
         entries.push(fields);
     }
     serde_json::json!({

@@ -4,9 +4,9 @@ use std::collections::BTreeSet;
 
 use super::*;
 
-struct Reads(Arc<Mutex<BTreeSet<String>>>);
+struct RetainedAdmissions(Arc<Mutex<BTreeSet<String>>>);
 
-impl ApplicationReads for Reads {
+impl ApplicationReads for RetainedAdmissions {
     fn read(&self, _: protocol::ReadRequest) -> (Vec<u8>, ResponseClass) {
         (operation_failure(), ResponseClass::Ordinary)
     }
@@ -30,7 +30,7 @@ impl Drop for ReleaseOnDrop {
     }
 }
 
-struct Execution {
+struct ParkedExecution {
     admitted: Arc<Mutex<BTreeSet<String>>>,
     calls: Arc<Mutex<Vec<String>>>,
     entered: Arc<Semaphore>,
@@ -38,7 +38,7 @@ struct Execution {
     acknowledge_before_park: bool,
 }
 
-impl ApplicationExecution for Execution {
+impl ApplicationExecution for ParkedExecution {
     async fn execute(
         &mut self,
         id: String,
@@ -52,19 +52,25 @@ impl ApplicationExecution for Execution {
                 kapsel::OperationState::Requested,
             ));
         }
+
         self.entered.add_permits(1);
         self.release.acquire().await.unwrap().forget();
+
         if let Some(acknowledged) = acknowledged {
             self.admitted.lock().unwrap().insert(id);
             acknowledged(ServiceAdmission::Admitted(
                 kapsel::OperationState::Requested,
             ));
         }
+
         Ok(kapsel::ServiceStop::Finished)
     }
 }
 
-async fn select(state: &ServerState<Reads, Execution>, id: &str) -> serde_json::Value {
+async fn submit_and_read_admission(
+    state: &ServerState<RetainedAdmissions, ParkedExecution>,
+    id: &str,
+) -> serde_json::Value {
     let request = serde_json::to_vec(&serde_json::json!({
         "version": 1, "request": "submit_set_deployment_image", "operation_id": id,
     }))
@@ -97,13 +103,21 @@ fn enumerated_lifecycle_physical_retirement_barriers() {
                     .enable_all()
                     .build()
                     .unwrap();
-                runtime.block_on(schedule(first_id, acknowledge_before_park, actors));
+                runtime.block_on(run_retirement_schedule(
+                    first_id,
+                    acknowledge_before_park,
+                    actors,
+                ));
             }
         }
     }
 }
 
-async fn schedule(first_id: &str, acknowledge_before_park: bool, actors: [Actor; 2]) {
+async fn run_retirement_schedule(
+    first_id: &str,
+    acknowledge_before_park: bool,
+    actors: [Actor; 2],
+) {
     let second_id = if first_id == "a" { "b" } else { "a" };
     let admitted = Arc::new(Mutex::new(BTreeSet::new()));
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -111,8 +125,8 @@ async fn schedule(first_id: &str, acknowledge_before_park: bool, actors: [Actor;
     let release = Arc::new(Semaphore::new(0));
     let _release_on_unwind = ReleaseOnDrop(release.clone());
     let state = ServerState::new(
-        Reads(admitted.clone()),
-        Execution {
+        RetainedAdmissions(admitted.clone()),
+        ParkedExecution {
             admitted: admitted.clone(),
             calls: calls.clone(),
             entered: entered.clone(),
@@ -120,18 +134,20 @@ async fn schedule(first_id: &str, acknowledge_before_park: bool, actors: [Actor;
             acknowledge_before_park,
         },
     );
-    let owner = state.clone();
+
+    let caller_state = state.clone();
     let id = first_id.to_owned();
-    let client = tokio::spawn(async move { select(&owner, &id).await });
+    let caller = tokio::spawn(async move { submit_and_read_admission(&caller_state, &id).await });
     timeout(Duration::from_secs(2), entered.acquire())
         .await
         .unwrap()
         .unwrap()
         .forget();
+
     let supervisor = state.jobs.first_supervisor().unwrap();
     for actor in actors {
         match actor {
-            Actor::DisconnectCaller => client.abort(),
+            Actor::DisconnectCaller => caller.abort(),
             Actor::AbortSupervisor => {
                 supervisor.abort();
                 let deadline = Instant::now() + Duration::from_secs(2);
@@ -148,12 +164,13 @@ async fn schedule(first_id: &str, acknowledge_before_park: bool, actors: [Actor;
         );
         assert_eq!(calls.lock().unwrap().as_slice(), [first_id]);
     }
-    let other = select(&state, second_id).await;
-    assert_eq!(other["status"], "NOT_ADMITTED");
-    assert_eq!(other["reason"], "BUSY");
-    let same = select(&state, first_id).await;
+
+    let other_admission = submit_and_read_admission(&state, second_id).await;
+    assert_eq!(other_admission["status"], "NOT_ADMITTED");
+    assert_eq!(other_admission["reason"], "BUSY");
+    let same_admission = submit_and_read_admission(&state, first_id).await;
     assert_eq!(
-        same["status"],
+        same_admission["status"],
         if acknowledge_before_park {
             "ADMITTED"
         } else {
@@ -177,13 +194,16 @@ async fn schedule(first_id: &str, acknowledge_before_park: bool, actors: [Actor;
         release.add_permits(1);
         timeout(Duration::from_secs(2), retirement).await.unwrap();
     }
-    let _ = client.await;
+    let _ = caller.await;
     assert_eq!(state.submission.available_permits(), 1);
     assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX);
     assert!(admitted.lock().unwrap().contains(first_id));
 
     release.add_permits(1);
-    assert_eq!(select(&state, second_id).await["status"], "ADMITTED");
+    assert_eq!(
+        submit_and_read_admission(&state, second_id).await["status"],
+        "ADMITTED"
+    );
     state.jobs.drain().await;
     drop(state);
     assert_eq!(calls.lock().unwrap().as_slice(), [first_id, second_id]);

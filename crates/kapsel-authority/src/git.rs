@@ -97,6 +97,7 @@ pub fn sign_git_ref_grant(
     if !authorization.is_valid() || !identity_is_valid(key_id) {
         return Err(AuthorizationGrantError::Invalid);
     }
+
     let mut statement = STATEMENT_MAGIC.to_vec();
     for (tag, value) in (1..=6).zip([
         &authorization.authorization_id,
@@ -106,7 +107,7 @@ pub fn sign_git_ref_grant(
         &authorization.old_commit,
         &authorization.new_commit,
     ]) {
-        push(&mut statement, tag, value.as_bytes(), STATEMENT_MAX)?;
+        append_grant_record(&mut statement, tag, value.as_bytes(), STATEMENT_MAX)?;
     }
     sign_grant_statement(&statement, GRANT_MAGIC, PURPOSE, signing_seed, key_id)
 }
@@ -128,37 +129,43 @@ pub fn verify_git_ref_grant(
     if bytes.len() > GRANT_MAX {
         return Err(AuthorizationGrantError::Invalid);
     }
-    let mut envelope = record::Records::new(bytes, GRANT_MAGIC).map_err(invalid)?;
-    if envelope.take(1).map_err(invalid)? != PURPOSE.as_bytes() {
+
+    let mut envelope = record::Records::new(bytes, GRANT_MAGIC).map_err(map_frame_error)?;
+    if envelope.take(1).map_err(map_frame_error)? != PURPOSE.as_bytes() {
         return Err(AuthorizationGrantError::Invalid);
     }
-    let key_id = text(envelope.take(2).map_err(invalid)?, 128)?;
+    let key_id = decode_bounded_ascii(envelope.take(2).map_err(map_frame_error)?, 128)?;
     if !identity_is_valid(&key_id) {
         return Err(AuthorizationGrantError::Invalid);
     }
-    let statement = envelope.take(3).map_err(invalid)?;
+    let statement = envelope.take(3).map_err(map_frame_error)?;
     if statement.len() > STATEMENT_MAX {
         return Err(AuthorizationGrantError::Invalid);
     }
     let signature: [u8; 64] = envelope
         .take(4)
-        .map_err(invalid)?
+        .map_err(map_frame_error)?
         .try_into()
         .map_err(|_| AuthorizationGrantError::Invalid)?;
-    envelope.finish().map_err(invalid)?;
-    let mut fields = record::Records::new(statement, STATEMENT_MAGIC).map_err(invalid)?;
+    envelope.finish().map_err(map_frame_error)?;
+
+    let mut fields = record::Records::new(statement, STATEMENT_MAGIC).map_err(map_frame_error)?;
     let authorization = GitRefAuthorization {
-        authorization_id: text(fields.take(1).map_err(invalid)?, 128)?,
-        operation_id: text(fields.take(2).map_err(invalid)?, 128)?,
-        repository_id: text(fields.take(3).map_err(invalid)?, 128)?,
-        reference: text(fields.take(4).map_err(invalid)?, APPROVED_GIT_REF.len())?,
-        old_commit: text(fields.take(5).map_err(invalid)?, 40)?,
-        new_commit: text(fields.take(6).map_err(invalid)?, 40)?,
+        authorization_id: decode_bounded_ascii(fields.take(1).map_err(map_frame_error)?, 128)?,
+        operation_id: decode_bounded_ascii(fields.take(2).map_err(map_frame_error)?, 128)?,
+        repository_id: decode_bounded_ascii(fields.take(3).map_err(map_frame_error)?, 128)?,
+        reference: decode_bounded_ascii(
+            fields.take(4).map_err(map_frame_error)?,
+            APPROVED_GIT_REF.len(),
+        )?,
+        old_commit: decode_bounded_ascii(fields.take(5).map_err(map_frame_error)?, 40)?,
+        new_commit: decode_bounded_ascii(fields.take(6).map_err(map_frame_error)?, 40)?,
     };
-    fields.finish().map_err(invalid)?;
+    fields.finish().map_err(map_frame_error)?;
     if !authorization.is_valid() {
         return Err(AuthorizationGrantError::Invalid);
     }
+
     if key_id != trust.key_id {
         return Err(AuthorizationGrantError::Untrusted);
     }
@@ -169,6 +176,7 @@ pub fn verify_git_ref_grant(
             &Signature::from_bytes(&signature),
         )
         .map_err(|_| AuthorizationGrantError::Untrusted)?;
+
     Ok(ValidatedGitRefGrant {
         authorization,
         signer_key_id: key_id,
@@ -176,23 +184,26 @@ pub fn verify_git_ref_grant(
     })
 }
 
-fn text(bytes: &[u8], maximum: usize) -> Result<String, AuthorizationGrantError> {
-    if bytes.len() > maximum || !bytes.is_ascii() {
+fn decode_bounded_ascii(
+    bytes: &[u8],
+    maximum_bytes: usize,
+) -> Result<String, AuthorizationGrantError> {
+    if bytes.len() > maximum_bytes || !bytes.is_ascii() {
         return Err(AuthorizationGrantError::Invalid);
     }
     String::from_utf8(bytes.to_vec()).map_err(|_| AuthorizationGrantError::Invalid)
 }
 
-fn push(
+fn append_grant_record(
     output: &mut Vec<u8>,
     tag: u8,
     value: &[u8],
-    maximum: usize,
+    maximum_bytes: usize,
 ) -> Result<(), AuthorizationGrantError> {
-    record::push(output, tag, value, maximum).map_err(invalid)
+    record::push(output, tag, value, maximum_bytes).map_err(map_frame_error)
 }
 
-fn invalid(_: record::FrameError) -> AuthorizationGrantError {
+fn map_frame_error(_: record::FrameError) -> AuthorizationGrantError {
     AuthorizationGrantError::Invalid
 }
 
@@ -224,7 +235,9 @@ mod tests {
     fn exact_authority_round_trips_with_original_provenance() {
         let original = approval();
         let bytes = sign_git_ref_grant(&original, &[7; 32], "git-owner").unwrap();
+
         let (actual, signer, digest) = verify_git_ref_grant(&bytes, &trust()).unwrap().into_parts();
+
         assert_eq!(actual, original);
         assert_eq!(signer, "git-owner");
         assert_eq!(digest, digest_hex(&bytes));
@@ -252,7 +265,7 @@ mod tests {
             let mut changed = bytes.clone();
             let position = changed
                 .windows(needle.len())
-                .position(|v| v == needle.as_bytes())
+                .position(|window| window == needle.as_bytes())
                 .unwrap();
             changed[position] ^= 1;
             assert!(
@@ -260,18 +273,21 @@ mod tests {
                 "{needle}"
             );
         }
+
         let mut changed = bytes.clone();
         *changed.last_mut().unwrap() ^= 1;
         assert!(matches!(
             verify_git_ref_grant(&changed, &trust()),
             Err(AuthorizationGrantError::Untrusted)
         ));
+
         let mut wrong_identity = trust();
         wrong_identity.key_id = "another-owner".into();
         assert!(matches!(
             verify_git_ref_grant(&bytes, &wrong_identity),
             Err(AuthorizationGrantError::Untrusted)
         ));
+
         let mut wrong_key = trust();
         wrong_key.public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         assert!(matches!(
@@ -286,15 +302,19 @@ mod tests {
         for length in 0..bytes.len() {
             assert!(verify_git_ref_grant(&bytes[..length], &trust()).is_err());
         }
+
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(verify_git_ref_grant(&trailing, &trust()).is_err());
+
         let mut oversized = bytes.clone();
         oversized.resize(GRANT_MAX + 1, 0);
         assert!(verify_git_ref_grant(&oversized, &trust()).is_err());
+
         let mut reordered = bytes.clone();
         reordered[GRANT_MAGIC.len()] = 2;
         assert!(verify_git_ref_grant(&reordered, &trust()).is_err());
+
         let mut hostile_length = bytes;
         hostile_length[GRANT_MAGIC.len() + 1..GRANT_MAGIC.len() + 5]
             .copy_from_slice(&u32::MAX.to_be_bytes());
@@ -315,6 +335,7 @@ mod tests {
             value.repository_id = invalid.into();
             assert!(sign_git_ref_grant(&value, &[7; 32], "git-owner").is_err());
         }
+
         for invalid in [
             "approved",
             "refs/heads/main",
@@ -325,6 +346,7 @@ mod tests {
             value.reference = invalid.into();
             assert!(sign_git_ref_grant(&value, &[7; 32], "git-owner").is_err());
         }
+
         for invalid in [
             "",
             "HEAD",
@@ -336,9 +358,9 @@ mod tests {
             &"g".repeat(40),
         ] {
             assert!(!git_commit_id_is_valid(invalid));
-            for old in [false, true] {
+            for replace_old_commit in [false, true] {
                 let mut value = approval();
-                if old {
+                if replace_old_commit {
                     value.old_commit = invalid.into();
                 } else {
                     value.new_commit = invalid.into();
@@ -346,6 +368,7 @@ mod tests {
                 assert!(sign_git_ref_grant(&value, &[7; 32], "git-owner").is_err());
             }
         }
+
         let mut noop = approval();
         noop.new_commit.clone_from(&noop.old_commit);
         assert!(sign_git_ref_grant(&noop, &[7; 32], "git-owner").is_err());

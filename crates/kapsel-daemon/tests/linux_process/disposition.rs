@@ -12,9 +12,10 @@ fn lost_and_corrupt_history_refuse_real_startup_with_distinct_fixed_codes() {
             },
             "http://127.0.0.1:1",
         );
-        let child = start(&root);
-        let _ = status(&root.join("run/kapsel/kapseld.sock"));
-        stop(child);
+        let child = start_installed_daemon(&root);
+        let _ = read_execution_status(&root.join("run/kapsel/kapseld.sock"));
+        stop_installed_daemon(child);
+
         let journal = root.join("var/lib/kapsel/journal.sqlite3");
         let displaced = root.join("var/lib/kapsel/displaced.sqlite3");
         if missing {
@@ -23,7 +24,8 @@ fn lost_and_corrupt_history_refuse_real_startup_with_distinct_fixed_codes() {
             private_file(&journal, b"corrupt fixture");
         }
         let preserved = fs::read(if missing { &displaced } else { &journal }).unwrap();
-        let mut child = start(&root);
+
+        let mut child = start_installed_daemon(&root);
         let deadline = Instant::now() + FIXTURE_TIMEOUT;
         while child.try_wait().unwrap().is_none() {
             assert!(
@@ -33,6 +35,7 @@ fn lost_and_corrupt_history_refuse_real_startup_with_distinct_fixed_codes() {
             thread::sleep(Duration::from_millis(5));
         }
         let output = child.wait_with_output().unwrap();
+
         assert!(!output.status.success());
         assert_eq!(
             output.stderr,
@@ -53,7 +56,7 @@ fn lost_and_corrupt_history_refuse_real_startup_with_distinct_fixed_codes() {
     }
 }
 
-fn command(root: &Path) -> Command {
+fn installed_daemon_command(root: &Path) -> Command {
     let mut command = installed_command(
         root,
         1,
@@ -68,11 +71,11 @@ fn command(root: &Path) -> Command {
     command
 }
 
-fn start(root: &Path) -> ChildGuard {
-    ChildGuard::new(command(root).spawn().unwrap())
+fn start_installed_daemon(root: &Path) -> ChildGuard {
+    ChildGuard::new(installed_daemon_command(root).spawn().unwrap())
 }
 
-fn stop(mut child: ChildGuard) -> Output {
+fn stop_installed_daemon(mut child: ChildGuard) -> Output {
     let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
     rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
     let deadline = Instant::now() + FIXTURE_TIMEOUT;
@@ -89,7 +92,7 @@ fn stop(mut child: ChildGuard) -> Output {
     output
 }
 
-fn status(socket: &Path) -> serde_json::Value {
+fn read_execution_status(socket: &Path) -> serde_json::Value {
     let mut stream = connect(socket);
     write_frame(
         &mut stream,
@@ -101,7 +104,7 @@ fn status(socket: &Path) -> serde_json::Value {
 fn repeated_read_failures(socket: &Path) {
     for _ in 0..8 {
         assert_eq!(
-            status(socket),
+            read_execution_status(socket),
             serde_json::json!({
                 "status":"ERROR", "error_class":"authority_unavailable",
             })
@@ -137,25 +140,31 @@ fn full_stderr_cannot_hold_execution_status_or_graceful_retirement() {
     );
     let (mut writer, _reader) = UnixStream::pair().unwrap();
     writer.set_nonblocking(true).unwrap();
-    let mut filled = 0;
+    let mut filled_bytes = 0;
     loop {
         match writer.write(&[b'x'; 4096]) {
-            Ok(count) => filled += count,
+            Ok(count) => filled_bytes += count,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(error) => panic!("fixture fill failed: {error}"),
         }
-        assert!(filled < 16 * 1024 * 1024);
+        assert!(filled_bytes < 16 * 1024 * 1024);
     }
+
     writer.set_nonblocking(false).unwrap();
-    let fd = std::os::fd::OwnedFd::from(writer.try_clone().unwrap());
-    let child = ChildGuard::new(command(&root).stderr(Stdio::from(fd)).spawn().unwrap());
+    let stderr_fd = std::os::fd::OwnedFd::from(writer.try_clone().unwrap());
+    let child = ChildGuard::new(
+        installed_daemon_command(&root)
+            .stderr(Stdio::from(stderr_fd))
+            .spawn()
+            .unwrap(),
+    );
     let socket = root.join("run/kapsel/kapseld.sock");
     let mut selection = connect(&socket);
     write_frame(&mut selection, submit_request().as_bytes());
     assert_admitted(&mut selection, "requested");
     let deadline = Instant::now() + FIXTURE_TIMEOUT;
     loop {
-        let observed = status(&socket);
+        let observed = read_execution_status(&socket);
         if observed["execution"]["disposition"] == "operator_required" {
             assert_eq!(observed["execution"]["condition"], "receiver_unavailable");
             break;
@@ -166,7 +175,7 @@ fn full_stderr_cannot_hold_execution_status_or_graceful_retirement() {
         );
         thread::sleep(Duration::from_millis(5));
     }
-    stop(child);
+    stop_installed_daemon(child);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -183,13 +192,13 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
         b"SECRET-CREDENTIAL /private/path",
     );
     let socket = root.join("run/kapsel/kapseld.sock");
-    let child = start(&root);
+    let child = start_installed_daemon(&root);
     let mut selection = connect(&socket);
     write_frame(&mut selection, submit_request().as_bytes());
     drop(selection);
     let deadline = Instant::now() + FIXTURE_TIMEOUT;
     loop {
-        let observed = status(&socket);
+        let observed = read_execution_status(&socket);
         if observed["execution"]["disposition"] == "operator_required" {
             assert_eq!(observed["status"], "IN_PROGRESS");
             assert_eq!(observed["execution"]["condition"], "receiver_unavailable");
@@ -199,24 +208,29 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
         assert!(Instant::now() < deadline);
         thread::yield_now();
     }
-    assert_eq!(stop(child).stderr, b"kapseld: receiver_unavailable\n");
+    assert_eq!(
+        stop_installed_daemon(child).stderr,
+        b"kapseld: receiver_unavailable\n"
+    );
+
     let frozen = fs::read(root.join("var/lib/kapsel/journal.sqlite3")).unwrap();
-    let child = start(&root);
-    let observed = status(&socket);
+    let child = start_installed_daemon(&root);
+    let observed = read_execution_status(&socket);
     assert_eq!(observed["execution"]["disposition"], "resume_required");
     assert!(observed["execution"]["condition"].is_null());
-    assert_eq!(stop(child).stderr, b"");
+    assert_eq!(stop_installed_daemon(child).stderr, b"");
     assert_eq!(
         fs::read(root.join("var/lib/kapsel/journal.sqlite3")).unwrap(),
         frozen
     );
+
     let path = root.join("etc/kapsel/operator.json");
     let mut document: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     document["approvals"] = serde_json::json!([]);
     document["authorization_keys"] = serde_json::json!([]);
     private_file(&path, &serde_json::to_vec(&document).unwrap());
-    let child = start(&root);
+    let child = start_installed_daemon(&root);
     repeated_read_failures(&socket);
     let mut selection = connect(&socket);
     write_frame(&mut selection, submit_request().as_bytes());
@@ -224,7 +238,7 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
     assert_eq!(refused["error_class"], "authority_unavailable");
     // One read-access class and one explicit selection failure, never another from rendering.
     assert_eq!(
-        stop(child).stderr,
+        stop_installed_daemon(child).stderr,
         concat!(
             "kapseld: original_authority_unavailable\n",
             "kapseld: original_authority_unavailable\n",
@@ -234,8 +248,9 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
     assert!(
         matches!(receiver.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
+
     private_file(&path, b"SECRET-GRANT /private/configuration");
-    let output = start(&root).wait_with_output().unwrap();
+    let output = start_installed_daemon(&root).wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
     assert_eq!(output.stderr, b"kapseld: configuration_invalid\n");

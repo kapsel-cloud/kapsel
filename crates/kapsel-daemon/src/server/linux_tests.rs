@@ -274,6 +274,7 @@ fn authenticated_status_not_found_crosses_one_complete_frame() {
         }));
         let expected_gid = server.peer_cred().unwrap().gid();
         let handler = tokio::spawn(serve_connection(server, expected_gid, reads));
+
         let request = br#"{"request":"get_set_deployment_image_status","operation_id":"missing"}"#;
         write_frame_and_close(&mut client, request).await;
         assert_payload_eq(&read_frame(&mut client).await, br#"{"status":"NOT_FOUND"}"#);
@@ -336,6 +337,7 @@ fn authenticated_status_and_receipt_projection_matrix_crosses_exact_frames() {
             };
             assert_socket_response(reads.clone(), request.as_bytes(), expected.as_bytes()).await;
         }
+
         for (operation_id, expected) in [
             ("not-found", r#"{"status":"NOT_FOUND"}"#),
             ("not-ready", r#"{"status":"NOT_READY"}"#),
@@ -361,6 +363,7 @@ fn authenticated_status_and_receipt_projection_matrix_crosses_exact_frames() {
             );
             assert_socket_response(reads.clone(), request.as_bytes(), expected.as_bytes()).await;
         }
+
         assert_eq!(status_calls.load(Ordering::Relaxed), 9);
         assert_eq!(receipt_calls.load(Ordering::Relaxed), 4);
     });
@@ -397,7 +400,7 @@ fn socket_status_and_receipt_compose_real_application_reads_without_kubernetes()
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (application, _execution, mut kubernetes) = applications(&root);
+        let (application, _execution, mut kubernetes) = application_with_mock_receiver(&root);
         let reads = Arc::new(Mutex::new(application));
         for (request, expected) in [
             (
@@ -446,7 +449,7 @@ fn id_only_catalog_history_status_and_receipt_use_the_real_read_bridge() {
         let root = std::env::temp_dir().join(format!("kapseld-pages-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
-        let (reads, execution, mut receiver) = applications(&root);
+        let (reads, execution, mut receiver) = application_with_mock_receiver(&root);
         let state = ServerState::new(reads, execution);
         for (request, expected_status) in [
             (
@@ -501,8 +504,8 @@ fn authenticated_submit_confirms_one_durable_application_admission() {
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (projection, execution, mut kubernetes) = applications(&root);
-        let state = ServerState::new(projection, execution);
+        let (reads, execution, mut kubernetes) = application_with_mock_receiver(&root);
+        let state = ServerState::new(reads, execution);
 
         let (mut client, server) = socket_pair();
         let gid = server.peer_cred().unwrap().gid();
@@ -540,10 +543,10 @@ fn overlapping_same_id_is_admitted_without_a_second_application_attempt() {
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (projection, execution, mut kubernetes) = applications(&root);
+        let (reads, execution, mut kubernetes) = application_with_mock_receiver(&root);
         let execute_calls = Arc::new(AtomicUsize::new(0));
         let state = ServerState::new(
-            projection,
+            reads,
             CountingExecution {
                 inner: execution,
                 execute_calls: execute_calls.clone(),
@@ -604,8 +607,8 @@ fn reconnect_status_remains_available_while_execution_waits_on_provider() {
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (projection, execution, mut kubernetes) = applications(&root);
-        let state = ServerState::new(projection, execution);
+        let (reads, execution, mut kubernetes) = application_with_mock_receiver(&root);
+        let state = ServerState::new(reads, execution);
 
         let (mut submit_client, submit_server) = socket_pair();
         let gid = submit_server.peer_cred().unwrap().gid();
@@ -661,8 +664,8 @@ fn client_disconnect_before_response_does_not_cancel_execution() {
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (projection, execution, mut kubernetes) = applications(&root);
-        let state = ServerState::new(projection, execution);
+        let (reads, execution, mut kubernetes) = application_with_mock_receiver(&root);
+        let state = ServerState::new(reads, execution);
 
         let (mut submit_client, submit_server) = socket_pair();
         let gid = submit_server.peer_cred().unwrap().gid();
@@ -695,8 +698,8 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (projection, execution, mut kubernetes) = applications(&root);
-        let state = ServerState::new(projection, execution);
+        let (reads, execution, mut kubernetes) = application_with_mock_receiver(&root);
+        let state = ServerState::new(reads, execution);
         let gid = submit_and_read(&state).await.0;
 
         let (target_request, target_response) =
@@ -763,8 +766,8 @@ fn grant_mismatched_submit_is_bounded_without_execution() {
         let _ = fs::remove_dir_all(&root);
         private_directory(&root);
         private_directory(&root.join("receipts"));
-        let (projection, execution, mut kubernetes) = applications(&root);
-        let state = ServerState::new(projection, execution);
+        let (reads, execution, mut kubernetes) = application_with_mock_receiver(&root);
+        let state = ServerState::new(reads, execution);
 
         let (mut client, server) = socket_pair();
         let gid = server.peer_cred().unwrap().gid();
@@ -1176,15 +1179,15 @@ async fn assert_socket_response(reads: Arc<Mutex<TestReads>>, request: &[u8], ex
     handler.await.unwrap();
 }
 
-fn applications(
+fn application_with_mock_receiver(
     root: &Path,
 ) -> (
     Application,
     FixtureExecution,
     mock::Handle<http::Request<kube::client::Body>, http::Response<kube::client::Body>>,
 ) {
-    let seed = [41_u8; 32];
-    let key = SigningKey::from_bytes(&seed);
+    let authorization_seed = [41_u8; 32];
+    let authorization_key = SigningKey::from_bytes(&authorization_seed);
     let authorization = ExactAuthorization {
         approved_target: Some(kapsel::ApprovedTarget {
             uid: "uid-1".into(),
@@ -1203,10 +1206,11 @@ fn applications(
     };
     let grant = provision_exact_grant(&GrantProvisioning {
         authorization: &authorization,
-        signing_seed: &seed,
+        signing_seed: &authorization_seed,
         signing_key_id: "socket-authorization-key",
     })
     .unwrap();
+
     let (service, handle) =
         mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
     let client = kube::Client::new(service, "demo");
@@ -1214,7 +1218,7 @@ fn applications(
         journal_path: fs::canonicalize(root).unwrap().join("journal.sqlite3"),
         authorization_trust: vec![AuthorizationTrust {
             key_id: "socket-authorization-key".into(),
-            public_key: key.verifying_key().to_bytes(),
+            public_key: authorization_key.verifying_key().to_bytes(),
         }],
         approvals: vec![ServiceApproval {
             signed_grant: grant.clone(),

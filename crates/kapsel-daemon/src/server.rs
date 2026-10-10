@@ -47,13 +47,15 @@ impl ApplicationReads for ServiceApplication {
     ) -> (Vec<u8>, ResponseClass) {
         let ordinary = ResponseClass::Ordinary;
         match request {
-            ReadRequest::Status(id) => (
-                protocol::render_execution_status(
-                    self.execution_status(&id, observation(&id))
-                        .inspect_err(|error| report(*error)),
-                ),
-                ordinary,
-            ),
+            ReadRequest::Status(id) => {
+                let execution_status = self
+                    .execution_status(&id, observation(&id))
+                    .inspect_err(|error| report(*error));
+                (
+                    protocol::render_execution_status(execution_status),
+                    ordinary,
+                )
+            },
             ReadRequest::Receipt(id) => (
                 protocol::render_receipt(self.receipt(&id).inspect_err(|error| report(*error))),
                 ResponseClass::Receipt,
@@ -134,6 +136,7 @@ impl ApplicationExecution for ExecutionApplication {
         )
         .await
         .with_git_receiver_snapshot(self.git_receiver.as_deref());
+
         self.application
             .select(&operation_id, material, acknowledged)
             .await
@@ -169,6 +172,7 @@ fn run_installed(replace: bool) -> ExitCode {
     if replace {
         return crate::startup::replace_operator_config(&installation_root);
     }
+
     #[cfg(feature = "test-harness")]
     let connections = match std::env::var("KAPSELD_TEST_CONNECTIONS") {
         Ok(value) => match value.parse::<usize>() {
@@ -180,12 +184,14 @@ fn run_installed(replace: bool) -> ExitCode {
     };
     #[cfg(not(feature = "test-harness"))]
     let connections = None;
+
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
         return ExitCode::from(4);
     };
+
     if runtime
         .block_on(serve_installed(installation_root, connections))
         .is_ok()
@@ -219,7 +225,8 @@ async fn serve_installed(
         let execution = inputs.open_execution().map_err(open_failure)?;
         Ok::<_, io::Error>((inputs, reads, execution))
     });
-    let (opened, stopped) = tokio::select! {
+
+    let (opened, stopped_during_startup) = tokio::select! {
         biased;
         _ = terminate.recv() => {
             #[cfg(feature = "test-harness")]
@@ -232,12 +239,13 @@ async fn serve_installed(
         opened.map_err(|_| io::Error::other("startup task failed"))??;
     // Give pending reactor notifications a turn before deciding whether startup may serve.
     tokio::task::yield_now().await;
-    let stopped = stopped
+    let stopped = stopped_during_startup
         || tokio::select! {
             biased;
             _ = terminate.recv() => true,
             () = std::future::ready(()) => false,
         };
+
     let result = if stopped {
         drop(execution);
         drop(reads);
@@ -266,6 +274,7 @@ async fn serve_installed(
             },
         }
     };
+
     drop(inputs);
     result
 }

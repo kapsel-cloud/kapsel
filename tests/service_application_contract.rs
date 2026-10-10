@@ -40,7 +40,7 @@ fn trust(id: &str, seed: u8) -> AuthorizationTrust {
 }
 
 fn approval(id: &str, seed: u8) -> ServiceApproval {
-    let facts = ExactAuthorization {
+    let authorization = ExactAuthorization {
         operation_id: id.into(),
         authorization_id: format!("authorization-{id}"),
         namespace: "demo".into(),
@@ -54,7 +54,7 @@ fn approval(id: &str, seed: u8) -> ServiceApproval {
     };
     ServiceApproval {
         signed_grant: provision_exact_grant(&GrantProvisioning {
-            authorization: &facts,
+            authorization: &authorization,
             signing_seed: &[seed; 32],
             signing_key_id: id,
         })
@@ -72,7 +72,7 @@ fn configuration(root: &Path) -> ServiceConfiguration {
 }
 
 fn document(config: &ServiceConfiguration) -> serde_json::Value {
-    let hex = |bytes: &[u8]| {
+    let encode_hex = |bytes: &[u8]| {
         bytes.iter().fold(String::new(), |mut output, byte| {
             use std::fmt::Write as _;
             write!(output, "{byte:02x}").unwrap();
@@ -83,10 +83,10 @@ fn document(config: &ServiceConfiguration) -> serde_json::Value {
         "service_configuration_version": 1,
         "receipt_signing_key_id": "receipt-key",
         "authorization_keys": config.authorization_trust.iter().map(|key| serde_json::json!({
-            "key_id": key.key_id, "public_key_hex": hex(&key.public_key),
+            "key_id": key.key_id, "public_key_hex": encode_hex(&key.public_key),
         })).collect::<Vec<_>>(),
         "approvals": config.approvals.iter().map(|approval| serde_json::json!({
-            "label": approval.label, "signed_grant_hex": hex(&approval.signed_grant),
+            "label": approval.label, "signed_grant_hex": encode_hex(&approval.signed_grant),
         })).collect::<Vec<_>>(),
     })
 }
@@ -186,8 +186,9 @@ async fn cold_validation_preserves_journal_bytes_and_original_authority() {
     let mut application = ServiceApplication::open(configuration(&root)).unwrap();
     application.select("a", offline(), |_| {}).await.unwrap();
     drop(application);
+
     let journal = root.join("journal.sqlite3");
-    let before = fs::read(&journal).unwrap();
+    let original_journal_bytes = fs::read(&journal).unwrap();
     ServiceApplication::validate_replacement(&configuration(&root)).unwrap();
     let mut removed = configuration(&root);
     removed.approvals.clear();
@@ -200,8 +201,9 @@ async fn cold_validation_preserves_journal_bytes_and_original_authority() {
     let mut invalid = configuration(&root);
     invalid.approvals.push(approval("a", 41));
     assert!(ServiceApplication::validate_replacement(&invalid).is_err());
-    assert_eq!(fs::read(&journal).unwrap(), before);
+    assert_eq!(fs::read(&journal).unwrap(), original_journal_bytes);
     assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+
     let reopened = ServiceApplication::open(configuration(&root)).unwrap();
     assert_eq!(
         reopened.admitted_state("a").unwrap(),
@@ -225,8 +227,9 @@ fn cold_validation_rejects_lost_history_and_recovery_without_creating_artifacts(
     }
     let root = root("cold-recovery");
     drop(ServiceApplication::open(configuration(&root)).unwrap());
+
     let journal = root.join("journal.sqlite3");
-    let before = fs::read(&journal).unwrap();
+    let original_journal_bytes = fs::read(&journal).unwrap();
     // Preserve a real rollback journal with an uncommitted write: validation must not recover it.
     let connection = rusqlite::Connection::open(&journal).unwrap();
     connection
@@ -235,7 +238,7 @@ fn cold_validation_rejects_lost_history_and_recovery_without_creating_artifacts(
     let sidecar = root.join("journal.sqlite3-journal");
     let rollback = fs::read(&sidecar).unwrap();
     assert!(ServiceApplication::validate_replacement(&configuration(&root)).is_err());
-    assert_eq!(fs::read(&journal).unwrap(), before);
+    assert_eq!(fs::read(&journal).unwrap(), original_journal_bytes);
     assert_eq!(fs::read(&sidecar).unwrap(), rollback);
     assert_eq!(fs::read_dir(&root).unwrap().count(), 3);
     drop(connection);
@@ -280,7 +283,7 @@ async fn admission_is_durable_before_callback_and_retains_the_worker_lease() {
 async fn assert_admission_commit_and_exclusion(git: bool) {
     let root = root("admission");
     let mut config = configuration(&root);
-    let phase = if git {
+    let admitted_phase = if git {
         config.approvals[0] = git::git_approval("a");
         OperationState::Authorized
     } else {
@@ -294,13 +297,13 @@ async fn assert_admission_commit_and_exclusion(git: bool) {
         projection.admitted_state("absent"),
         Err(ServiceError::InvalidRequest)
     );
-    let (decision, read) = std::sync::mpsc::channel();
+    let (root_sender, root_receiver) = std::sync::mpsc::channel();
     application
         .select("a", offline(), move |admitted| {
-            assert_eq!(admitted, ServiceAdmission::Admitted(phase));
+            assert_eq!(admitted, ServiceAdmission::Admitted(admitted_phase));
             // Independent connection sees the complete committed identity before acknowledgement.
             let reader = projection;
-            assert_eq!(reader.admitted_state("a").unwrap(), Some(phase));
+            assert_eq!(reader.admitted_state("a").unwrap(), Some(admitted_phase));
             assert_eq!(reader.status("a").unwrap().0, OperationStatus::InProgress);
             let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
             let grant: Vec<u8> = connection
@@ -330,11 +333,11 @@ async fn assert_admission_commit_and_exclusion(git: bool) {
                 lock.try_lock(),
                 Err(std::fs::TryLockError::WouldBlock)
             ));
-            decision.send(root).unwrap();
+            root_sender.send(root).unwrap();
         })
         .await
         .unwrap();
-    let root = read.recv().unwrap();
+    let root = root_receiver.recv().unwrap();
     // No receiver materials means admitted A is blocked, not cancelled.
     // B can be selected explicitly.
     application
@@ -375,6 +378,7 @@ async fn catalog_removal_and_missing_trust_do_not_hide_healthy_history() {
         application.select(id, offline(), |_| {}).await.unwrap();
     }
     drop(application);
+
     let mut config = configuration(&root);
     config.approvals.clear();
     config.authorization_trust.remove(0);
@@ -414,6 +418,7 @@ async fn catalog_removal_and_missing_trust_do_not_hide_healthy_history() {
         .await
         .unwrap();
     drop(application);
+
     let mut changed = configuration(&root);
     changed.approvals[0] = approval("a", 43);
     changed.authorization_trust[0] = trust("a", 43);
@@ -444,6 +449,7 @@ async fn history_is_bounded_ordered_and_keeps_inaccessible_ids_visible() {
             .unwrap();
     }
     drop(application);
+
     let mut config = configuration(&root);
     config.approvals.clear();
     config.authorization_trust = (1..10)
@@ -462,6 +468,7 @@ async fn history_is_bounded_ordered_and_keeps_inaccessible_ids_visible() {
         OperationStatus::InProgress
     );
     assert_eq!(first.next_cursor.as_deref(), Some("operation-07"));
+
     let second = application.history(first.next_cursor.as_deref()).unwrap();
     assert_eq!(second.entries.len(), 2);
     assert_eq!(second.entries[0].operation_id, "operation-08");

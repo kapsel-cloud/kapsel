@@ -1,6 +1,7 @@
 //! Fixed-root startup, lifecycle exclusion and cold publication for the Kapsel service.
 
 mod publication;
+
 use std::{
     fs::File,
     io::Read as _,
@@ -50,6 +51,7 @@ impl InstallationRoots {
         let state = open_directory(&lib, "kapsel")?;
         require_owned_directory(&state, 0o700)?;
         let lease = acquire_lifecycle(&state)?;
+
         let etc = open_directory(&root, "etc")?;
         let configuration = open_directory(&etc, "kapsel")?;
         require_owned_directory(&configuration, 0o700)?;
@@ -78,6 +80,7 @@ fn acquire_lifecycle(state: &File) -> std::io::Result<File> {
         Err(error) => return Err(error.into()),
     };
     require_private_identity(state, LIFECYCLE_LOCK, &lease, 0)?;
+
     flock(&lease, FlockOperation::NonBlockingLockExclusive)?;
     require_private_identity(state, LIFECYCLE_LOCK, &lease, 0)?;
     Ok(lease)
@@ -87,7 +90,7 @@ fn require_private_identity(
     parent: &File,
     name: &str,
     file: &File,
-    maximum: u64,
+    maximum_bytes: u64,
 ) -> std::io::Result<()> {
     let metadata = file.metadata()?;
     let named = statat(parent, name, AtFlags::SYMLINK_NOFOLLOW)?;
@@ -96,7 +99,7 @@ fn require_private_identity(
         || metadata.gid() != rustix::process::getegid().as_raw()
         || metadata.nlink() != 1
         || metadata.mode() & 0o7777 != 0o600
-        || metadata.len() > maximum
+        || metadata.len() > maximum_bytes
         || named.st_dev != metadata.dev()
         || named.st_ino != metadata.ino()
         || named.st_mode != metadata.mode()
@@ -123,6 +126,7 @@ impl InstallationInputs {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
+
         let configuration = &roots.configuration;
         let state = &roots.state;
         let root = File::from(open(root, directory_flags(), Mode::empty())?);
@@ -131,6 +135,7 @@ impl InstallationInputs {
         require_owned_directory(&runtime, 0o750)?;
         validate_optional_private_file(state, "journal.sqlite3", JOURNAL_BYTES_MAX)?;
         validate_optional_private_file(state, "journal.sqlite3.kap0038-worker.lock", 0)?;
+
         let document =
             read_private_file(configuration, "operator.json", OPERATOR_DOCUMENT_BYTES_MAX)?;
         // Execution-only failures must not hide authenticated history. Unsafe bytes are never used.
@@ -138,8 +143,10 @@ impl InstallationInputs {
             read_private_file(configuration, "kubeconfig.yaml", KUBECONFIG_BYTES_MAX).ok();
         let receipt_seed = read_private_file(configuration, "receipt.seed", KEY_BYTES).ok();
         let git_receiver = read_private_file(configuration, "git-receiver.json", 4096).ok();
+
         let state_access_path = descriptor_directory_path(state)?;
         let runtime_access_path = descriptor_directory_path(&runtime)?;
+
         Ok(Self {
             runtime_root: runtime,
             document,
@@ -155,7 +162,7 @@ impl InstallationInputs {
     pub(crate) fn bind_listener(&self) -> std::io::Result<UnixListener> {
         prepare_socket_path(&self.runtime_root, &self.socket_access_path)?;
         let listener = UnixListener::bind(&self.socket_access_path)?;
-        let configured = chmodat(
+        let socket_custody = chmodat(
             &self.runtime_root,
             "kapseld.sock",
             socket_mode(),
@@ -163,7 +170,7 @@ impl InstallationInputs {
         )
         .map_err(std::io::Error::from)
         .and_then(|()| require_socket_identity(&self.runtime_root));
-        if let Err(error) = configured {
+        if let Err(error) = socket_custody {
             drop(listener);
             let _ = unlinkat(&self.runtime_root, "kapseld.sock", AtFlags::empty());
             return Err(error);
@@ -228,6 +235,7 @@ fn prepare_socket_path(runtime: &File, socket_path: &Path) -> std::io::Result<()
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {},
         Err(error) => return Err(error),
     }
+
     let current = statat(runtime, "kapseld.sock", AtFlags::SYMLINK_NOFOLLOW)?;
     require_socket_metadata(&current)?;
     if stale.st_dev != current.st_dev || stale.st_ino != current.st_ino {
@@ -236,6 +244,7 @@ fn prepare_socket_path(runtime: &File, socket_path: &Path) -> std::io::Result<()
             "service socket identity changed",
         ));
     }
+
     unlinkat(runtime, "kapseld.sock", AtFlags::empty())?;
     Ok(())
 }
@@ -288,16 +297,20 @@ fn require_owned_directory(directory: &File, mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
-fn validate_optional_private_file(parent: &File, name: &str, maximum: u64) -> std::io::Result<()> {
+fn validate_optional_private_file(
+    parent: &File,
+    name: &str,
+    maximum_bytes: u64,
+) -> std::io::Result<()> {
     let file = match openat(parent, name, read_flags(), Mode::empty()) {
         Ok(file) => File::from(file),
         Err(rustix::io::Errno::NOENT) => return Ok(()),
         Err(error) => return Err(error.into()),
     };
-    require_private_identity(parent, name, &file, maximum)
+    require_private_identity(parent, name, &file, maximum_bytes)
 }
 
-fn read_private_file(parent: &File, name: &str, maximum: usize) -> std::io::Result<Vec<u8>> {
+fn read_private_file(parent: &File, name: &str, maximum_bytes: usize) -> std::io::Result<Vec<u8>> {
     let file = File::from(openat(parent, name, read_flags(), Mode::empty())?);
     let metadata = file.metadata()?;
     if !metadata.is_file()
@@ -305,17 +318,20 @@ fn read_private_file(parent: &File, name: &str, maximum: usize) -> std::io::Resu
         || metadata.gid() != rustix::process::getegid().as_raw()
         || metadata.nlink() != 1
         || metadata.mode() & 0o7777 != 0o600
-        || usize::try_from(metadata.len()).map_or(true, |length| length > maximum)
+        || usize::try_from(metadata.len()).map_or(true, |length| length > maximum_bytes)
     {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "invalid installation file",
         ));
     }
-    let mut bytes = Vec::with_capacity(maximum.saturating_add(1));
-    let limit = u64::try_from(maximum).unwrap_or(u64::MAX).saturating_add(1);
+
+    let mut bytes = Vec::with_capacity(maximum_bytes.saturating_add(1));
+    let limit = u64::try_from(maximum_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
     file.take(limit).read_to_end(&mut bytes)?;
-    if bytes.len() > maximum {
+    if bytes.len() > maximum_bytes {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "installation file exceeds bound",
@@ -589,6 +605,7 @@ pub(crate) mod tests {
     fn validated_authority_bytes_survive_name_replacement() {
         let root = valid_root("stable-inputs");
         let inputs = InstallationInputs::open_at(&root).unwrap();
+
         for (name, replacement) in [
             ("operator.json", b"different".as_slice()),
             ("authorization.pub", &[99_u8; 32]),
@@ -599,12 +616,14 @@ pub(crate) mod tests {
             fs::rename(&path, path.with_extension("replaced")).unwrap();
             private_file(&path, replacement);
         }
+
         let application = inputs.open_application().unwrap();
         assert!(application
             .status("service-op")
             .unwrap()
             .0
             .eq(&kapsel::OperationStatus::NotFound));
+
         drop(application);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1043,9 +1062,11 @@ mod lifecycle_tests {
         fs::rename(&path, &retained).unwrap();
         fs::write(&path, b"").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
         assert!(require_private_identity(&roots.state, LIFECYCLE_LOCK, &roots._lease, 0).is_err());
         let old = File::open(&retained).unwrap();
         assert!(flock(&old, FlockOperation::NonBlockingLockExclusive).is_err());
+
         drop(roots);
         flock(&old, FlockOperation::NonBlockingLockExclusive).unwrap();
         assert!(path.exists());

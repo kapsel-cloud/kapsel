@@ -9,6 +9,7 @@ fn process_kill_child() {
     if scenario == "mutation" {
         let patch_count = PathBuf::from(std::env::var_os("KAPSEL_PROCESS_PATCH_COUNT").unwrap());
         let mut gateway = Gateway::open_for_test(&database).unwrap();
+
         let mut adapter = ProcessMutationAdapter {
             ready_path: ready,
             patch_count_path: patch_count,
@@ -76,22 +77,23 @@ async fn process_kill_after_provider_side_effect_recovers_without_second_mutatio
         gateway.get(&request.operation_id).unwrap(),
         Some(OperationState::ApplyStarted)
     );
-    let mut recovery = failed_adapter(&path, &request);
+    let mut recovery_adapter = failed_rollout_adapter(&path, &request);
     assert_eq!(
         gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
+            .run_operation_once_with_adapter(&request.operation_id, &mut recovery_adapter)
             .await
             .unwrap(),
         Some(OperationState::ReceiverObserved)
     );
-    assert_eq!(recovery.identify_calls, 0);
-    assert_eq!(recovery.apply_calls, 0);
-    assert_eq!(recovery.observe_calls, 1);
+    assert_eq!(recovery_adapter.identify_calls, 0);
+    assert_eq!(recovery_adapter.apply_calls, 0);
+    assert_eq!(recovery_adapter.observe_calls, 1);
     assert_eq!(fs::read_to_string(&patch_count).unwrap(), "1");
     assert_eq!(
         gateway.result(&request.operation_id).unwrap(),
         Some(OperationResult::Failed)
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -106,7 +108,8 @@ async fn worker_lock_prevents_overlapping_provider_activity() {
         .unwrap();
     let worker_lock = first_gateway.journal.try_lock_worker().unwrap().unwrap();
     let mut second_gateway = Gateway::open_for_test(&path).unwrap();
-    let mut adapter = failed_adapter(&path, &request);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
 
     assert_eq!(
         second_gateway
@@ -127,6 +130,7 @@ async fn worker_lock_prevents_overlapping_provider_activity() {
             .unwrap(),
         Some(OperationState::ReceiverObserved)
     );
+
     drop(second_gateway);
     drop(first_gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -136,7 +140,7 @@ async fn worker_lock_prevents_overlapping_provider_activity() {
 async fn restart_after_apply_observes_without_a_blind_second_apply() {
     let path = database_path("apply-recovery");
     let request = request();
-    let mut adapter = failed_adapter(&path, &request);
+    let mut adapter = failed_rollout_adapter(&path, &request);
     {
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
@@ -166,7 +170,7 @@ async fn restart_after_apply_observes_without_a_blind_second_apply() {
             .unwrap(),
         Some(OperationState::ReceiverObserved)
     );
-    assert!(adapter.apply_started_seen);
+    assert!(adapter.durable_attempt_seen_before_apply);
     assert_eq!(adapter.identify_calls, 1);
     assert_eq!(adapter.apply_calls, 1);
     assert_eq!(adapter.observe_calls, 1);
@@ -174,6 +178,7 @@ async fn restart_after_apply_observes_without_a_blind_second_apply() {
         gateway.result(&request.operation_id).unwrap(),
         Some(OperationResult::Failed)
     );
+
     let statement = gateway
         .journal
         .receipt_statement(&request.operation_id)
@@ -185,6 +190,7 @@ async fn restart_after_apply_observes_without_a_blind_second_apply() {
         statement.rollout_condition_reason(),
         Some("ProgressDeadlineExceeded")
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -193,7 +199,7 @@ async fn restart_after_apply_observes_without_a_blind_second_apply() {
 async fn recovery_receipt_does_not_reuse_target_uid_when_receiver_uid_is_missing() {
     let path = database_path("receiver-uid-missing");
     let request = request();
-    let mut adapter = failed_adapter(&path, &request);
+    let mut adapter = failed_rollout_adapter(&path, &request);
     adapter.observation = ReceiverObservation::unknown();
     {
         let mut gateway = Gateway::open_for_test(&path).unwrap();
@@ -216,6 +222,7 @@ async fn recovery_receipt_does_not_reuse_target_uid_when_receiver_uid_is_missing
         .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
         .await
         .unwrap();
+
     let statement = gateway
         .journal
         .receipt_statement(&request.operation_id)
@@ -224,6 +231,7 @@ async fn recovery_receipt_does_not_reuse_target_uid_when_receiver_uid_is_missing
     assert_eq!(statement.receiver_uid(), None);
     assert_eq!(statement.requested_generation(), None);
     assert_eq!(statement.result(), OperationResult::Unknown);
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -232,7 +240,7 @@ async fn recovery_receipt_does_not_reuse_target_uid_when_receiver_uid_is_missing
 async fn receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observation() {
     let path = database_path("receiver-read-fault");
     let request = request();
-    let mut fresh = failed_adapter(&path, &request);
+    let mut fresh_adapter = failed_rollout_adapter(&path, &request);
     {
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
@@ -242,7 +250,7 @@ async fn receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observat
             gateway
                 .run_operation_once_with_adapter_and_fault(
                     &request.operation_id,
-                    &mut fresh,
+                    &mut fresh_adapter,
                     Some(FaultPoint::ReceiverRead),
                 )
                 .await,
@@ -260,17 +268,22 @@ async fn receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observat
             .is_none());
     }
     assert_eq!(
-        (fresh.identify_calls, fresh.apply_calls, fresh.observe_calls),
+        (
+            fresh_adapter.identify_calls,
+            fresh_adapter.apply_calls,
+            fresh_adapter.observe_calls
+        ),
         (1, 1, 1)
     );
     let mut gateway = Gateway::open_for_test(&path).unwrap();
-    let mut recovery = failed_adapter(&path, &request);
-    recovery.observation = ReceiverObservation::unknown();
+
+    let mut recovery_adapter = failed_rollout_adapter(&path, &request);
+    recovery_adapter.observation = ReceiverObservation::unknown();
     assert_eq!(
         gateway
             .run_operation_once_with_adapter_and_fault(
                 &request.operation_id,
-                &mut recovery,
+                &mut recovery_adapter,
                 Some(FaultPoint::ReceiverRead),
             )
             .await
@@ -281,10 +294,10 @@ async fn receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observat
         gateway.result(&request.operation_id).unwrap(),
         Some(OperationResult::Unknown)
     );
-    recovery.observation = fresh.observation;
+    recovery_adapter.observation = fresh_adapter.observation;
     assert_eq!(
         gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut recovery)
+            .run_operation_once_with_adapter(&request.operation_id, &mut recovery_adapter)
             .await
             .unwrap(),
         None
@@ -295,12 +308,13 @@ async fn receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observat
     );
     assert_eq!(
         (
-            recovery.identify_calls,
-            recovery.apply_calls,
-            recovery.observe_calls
+            recovery_adapter.identify_calls,
+            recovery_adapter.apply_calls,
+            recovery_adapter.observe_calls
         ),
         (0, 0, 1)
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

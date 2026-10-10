@@ -67,9 +67,11 @@ mod checkpoints {
         file.write_all(bytes)?;
         file.sync_all()?;
 
-        let descriptor = fstat(&file)?;
-        let named = statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW)?;
-        if descriptor.st_dev != named.st_dev || descriptor.st_ino != named.st_ino {
+        let descriptor_identity = fstat(&file)?;
+        let named_identity = statat(&directory, &name, AtFlags::SYMLINK_NOFOLLOW)?;
+        if descriptor_identity.st_dev != named_identity.st_dev
+            || descriptor_identity.st_ino != named_identity.st_ino
+        {
             return Err(io::Error::other("checkpoint identity changed"));
         }
 
@@ -94,8 +96,8 @@ mod checkpoints {
             .pop()
             .ok_or_else(|| io::Error::other("missing name"))?;
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-        let descriptor_root = descriptor_root(&names, absolute)?;
-        let (mut directory, consumed) = if let Some(root) = descriptor_root {
+        let appointed_descriptor_root = descriptor_root(&names, absolute)?;
+        let (mut directory, consumed_components) = if let Some(root) = appointed_descriptor_root {
             (File::from(openat(CWD, &root, flags, Mode::empty())?), 4)
         } else {
             let start = if absolute {
@@ -109,7 +111,7 @@ mod checkpoints {
             )
         };
 
-        for name in names.into_iter().skip(consumed) {
+        for name in names.into_iter().skip(consumed_components) {
             directory = File::from(openat(
                 &directory,
                 name,
@@ -124,6 +126,7 @@ mod checkpoints {
         {
             return Err(io::Error::other("unsafe checkpoint directory"));
         }
+
         Ok((directory, destination))
     }
 

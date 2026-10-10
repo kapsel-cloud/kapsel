@@ -92,8 +92,8 @@ impl GitStatement {
         validate_key_id(&self.authorization_signer)?;
         validate_digest(&self.authorization_digest)?;
         let (observed_kind, observed_commit) = match &self.observed {
-            ObservedRef::Commit(oid) if kapsel_authority::git_commit_id_is_valid(oid) => {
-                ("commit", oid.as_str())
+            ObservedRef::Commit(commit) if kapsel_authority::git_commit_id_is_valid(commit) => {
+                ("commit", commit.as_str())
             },
             ObservedRef::Commit(_) => return Err(ReceiptError::InvalidValue),
             ObservedRef::Missing => ("missing", ""),
@@ -106,17 +106,18 @@ impl GitStatement {
             OperationResult::Failed => "FAILED",
             OperationResult::Unknown => "UNKNOWN",
         };
-        let a = &self.authorization;
+
+        let authorization = &self.authorization;
         let mut bytes = STATEMENT_MAGIC.to_vec();
         for (tag, value) in (1..=15).zip([
-            a.operation_id.as_str(),
-            &a.authorization_id,
+            authorization.operation_id.as_str(),
+            &authorization.authorization_id,
             &self.authorization_signer,
             &self.authorization_digest,
-            &a.repository_id,
-            &a.reference,
-            &a.old_commit,
-            &a.new_commit,
+            &authorization.repository_id,
+            &authorization.reference,
+            &authorization.old_commit,
+            &authorization.new_commit,
             "git-exact-lease",
             acknowledgement,
             observed_kind,
@@ -136,6 +137,7 @@ impl GitStatement {
 
     fn parse(bytes: &[u8], limits: InspectionLimits) -> Result<Self, ReceiptError> {
         bounded(bytes, limits.statement_bytes_max)?;
+
         let mut records = Records::new(bytes, STATEMENT_MAGIC, limits.text_bytes_max)?;
         let operation_id = records.text(1)?;
         let authorization_id = records.text(2)?;
@@ -149,25 +151,28 @@ impl GitStatement {
             old_commit: records.text(7)?,
             new_commit: records.text(8)?,
         };
+
         if records.text(9)? != "git-exact-lease" {
             return Err(ReceiptError::InvalidValue);
         }
         let acknowledgement =
             Acknowledgement::parse(&records.text(10)?).ok_or(ReceiptError::InvalidValue)?;
-        let kind = records.text(11)?;
-        let oid = records.text(12)?;
-        let observed = match (kind.as_str(), oid.as_str()) {
-            ("commit", _) if kapsel_authority::git_commit_id_is_valid(&oid) => {
-                ObservedRef::Commit(oid)
+        let observed_kind = records.text(11)?;
+        let observed_commit = records.text(12)?;
+        let observed = match (observed_kind.as_str(), observed_commit.as_str()) {
+            ("commit", _) if kapsel_authority::git_commit_id_is_valid(&observed_commit) => {
+                ObservedRef::Commit(observed_commit)
             },
             ("missing", "") => ObservedRef::Missing,
             ("unknown", "") => ObservedRef::Unknown,
             _ => return Err(ReceiptError::InvalidValue),
         };
-        let _attribution = records.text(13)?;
-        let _result = records.text(14)?;
-        let _non_claims = records.text(15)?;
+
+        let _encoded_attribution = records.text(13)?;
+        let _encoded_result = records.text(14)?;
+        let _encoded_non_claims = records.text(15)?;
         records.finish()?;
+
         let statement = Self {
             authorization,
             authorization_signer,
@@ -176,7 +181,8 @@ impl GitStatement {
             observed,
         };
         // Re-encoding checks derived attribution/result, exact non-claims and canonical bytes.
-        if statement.encode()? != bytes {
+        let canonical_statement = statement.encode()?;
+        if canonical_statement != bytes {
             return Err(ReceiptError::InvalidValue);
         }
         Ok(statement)
@@ -258,6 +264,7 @@ fn inspect(
     let Ok(trust) = ReceiptTrust::parse(trust, limits) else {
         return (InspectionStatus::StructureRejected, None);
     };
+
     let status = match envelope.authenticate(&trust, time) {
         Ok(status) => status,
         Err(ReceiptError::BadSignature) => return (InspectionStatus::SignatureRejected, None),
@@ -301,15 +308,15 @@ mod tests {
 
     #[test]
     fn frozen_acknowledgement_not_present_ref_owns_result_and_attribution() {
-        for (ack, expected) in [
+        for (acknowledgement, expected_result) in [
             (Acknowledgement::Updated, OperationResult::Succeeded),
             (Acknowledgement::ReceiverRejected, OperationResult::Failed),
             (Acknowledgement::RejectedBeforeSend, OperationResult::Failed),
             (Acknowledgement::Unknown, OperationResult::Unknown),
         ] {
-            let statement = statement(ack);
+            let statement = statement(acknowledgement);
             let bytes = sign(&statement, &[7; 32], "signer").unwrap();
-            if ack == Acknowledgement::Unknown {
+            if acknowledgement == Acknowledgement::Unknown {
                 assert_eq!(
                     super::super::publication::receipt_digest_hex(&bytes),
                     "92f6bcc78e348fbb9e92323603a24072b1c9479403e0f1c2c311be5c73e3a5a5"
@@ -321,9 +328,10 @@ mod tests {
                 50,
                 InspectionLimits::default(),
             );
+
             assert_eq!(status, InspectionStatus::Inspected);
             assert_eq!(parsed.unwrap(), statement);
-            assert_eq!(statement.result(), expected);
+            assert_eq!(statement.result(), expected_result);
             assert_eq!(decode(&bytes).unwrap(), ("signer".into(), statement));
             assert_eq!(
                 super::super::inspect_receipt(
@@ -348,12 +356,14 @@ mod tests {
                 InspectionStatus::StructureRejected
             );
         }
+
         let mut changed = bytes.clone();
         *changed.last_mut().unwrap() ^= 1;
         assert_eq!(
             inspect(&changed, &trusted, 50, InspectionLimits::default()).0,
             InspectionStatus::SignatureRejected
         );
+
         for (purpose, key_id, time) in [
             (super::super::PURPOSE, "signer", 50),
             (PURPOSE, "another-signer", 50),
@@ -382,6 +392,7 @@ mod tests {
             inspect(&changed, &trusted, 50, InspectionLimits::default()).0,
             InspectionStatus::StructureRejected
         );
+
         let encoded = statement(Acknowledgement::Unknown).encode().unwrap();
         let forged = String::from_utf8(encoded)
             .unwrap()

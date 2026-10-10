@@ -10,54 +10,88 @@ const PREPARE: &str = "prepare-service-config";
 const VALIDATE: &str = "validate-service-config";
 
 pub(super) fn prepare(mut arguments: impl Iterator<Item = OsString>) -> CommandResult {
-    let mut keys = Vec::new();
+    let mut authorization_keys = Vec::new();
     let mut approvals = Vec::new();
-    let mut signer = None;
-    let mut output = None;
+    let mut receipt_signing_key_id = None;
+    let mut output_path = None;
+
     while let Some(option) = arguments.next() {
         match option.to_str() {
-            Some("--authorization-key") if keys.len() < 128 => {
-                let id = text(&mut arguments)?;
-                let path = path(&mut arguments)?;
-                let public = read_exact_32(&path, PREPARE, ErrorClass::OperatorConfiguration)?;
-                keys.push(serde_json::json!({"key_id": id, "public_key_hex": hex(&public)}));
-            },
-            Some("--approval") if approvals.len() < 32 => {
-                let label = text(&mut arguments)?;
-                let path = path(&mut arguments)?;
-                let grant = read_bounded(&path, 4096, PREPARE, ErrorClass::OperatorConfiguration)?;
-                approvals.push(serde_json::json!({
-                    "label": label, "signed_grant_hex": hex(&grant),
+            Some("--authorization-key") if authorization_keys.len() < 128 => {
+                let key_id = take_text_argument(&mut arguments)?;
+                let key_path = take_path_argument(&mut arguments)?;
+                let public_key =
+                    read_exact_32(&key_path, PREPARE, ErrorClass::OperatorConfiguration)?;
+                let public_key_hex = encode_hex(&public_key);
+                authorization_keys.push(serde_json::json!({
+                    "key_id": key_id, "public_key_hex": public_key_hex,
                 }));
             },
-            Some("--receipt-signing-key-id") if signer.is_none() => {
-                signer = Some(text(&mut arguments)?);
+            Some("--approval") if approvals.len() < 32 => {
+                let label = take_text_argument(&mut arguments)?;
+                let grant_path = take_path_argument(&mut arguments)?;
+                let signed_grant = read_bounded(
+                    &grant_path,
+                    4096,
+                    PREPARE,
+                    ErrorClass::OperatorConfiguration,
+                )?;
+                let signed_grant_hex = encode_hex(&signed_grant);
+                approvals.push(serde_json::json!({
+                    "label": label, "signed_grant_hex": signed_grant_hex,
+                }));
             },
-            Some("--output") if output.is_none() => {
-                output = Some(path(&mut arguments)?);
+            Some("--receipt-signing-key-id") if receipt_signing_key_id.is_none() => {
+                receipt_signing_key_id = Some(take_text_argument(&mut arguments)?);
+            },
+            Some("--output") if output_path.is_none() => {
+                output_path = Some(take_path_argument(&mut arguments)?);
             },
             _ => return Err(CommandError::input(PREPARE)),
         }
     }
-    let signer = signer.ok_or_else(|| CommandError::input(PREPARE))?;
-    let output = output.ok_or_else(|| CommandError::input(PREPARE))?;
+
+    let receipt_signing_key_id =
+        receipt_signing_key_id.ok_or_else(|| CommandError::input(PREPARE))?;
+    let output_path = output_path.ok_or_else(|| CommandError::input(PREPARE))?;
+
     // Array counts and per-input limits bound serialization even before the document-size check.
     let mut bytes = serde_json::to_vec_pretty(&serde_json::json!({
         "service_configuration_version": 1,
-        "authorization_keys": keys,
+        "authorization_keys": authorization_keys,
         "approvals": approvals,
-        "receipt_signing_key_id": signer,
+        "receipt_signing_key_id": receipt_signing_key_id,
     }))
     .map_err(|_| CommandError::configuration(PREPARE))?;
     bytes.push(b'\n');
-    validate_bytes(&bytes, PREPARE)?;
-    write_new_private(&output, &bytes).map_err(|_| CommandError::configuration(PREPARE))?;
+    validate_document_bytes(&bytes, PREPARE)?;
+
+    write_new_private(&output_path, &bytes).map_err(|_| CommandError::configuration(PREPARE))?;
     Ok(format!(
         "{{\"command\":\"{PREPARE}\",\"status\":\"PREPARED\"}}"
     ))
 }
 
-fn text(arguments: &mut impl Iterator<Item = OsString>) -> Result<String, CommandError> {
+pub(super) fn validate(mut options: BTreeMap<String, OsString>) -> CommandResult {
+    let document_path = take_path(&mut options, "--operator-config", VALIDATE)?;
+    finish_options(&options, VALIDATE)?;
+
+    let bytes = read_bounded(
+        &document_path,
+        DOCUMENT_BYTES_MAX,
+        VALIDATE,
+        ErrorClass::CommandInput,
+    )?;
+    validate_document_bytes(&bytes, VALIDATE)?;
+
+    Ok(format!(
+        "{{\"command\":\"{VALIDATE}\",\"status\":\"VALIDATED_STATIC\"}}"
+    ))
+}
+
+fn take_text_argument(
+    arguments: &mut impl Iterator<Item = OsString>,
+) -> Result<String, CommandError> {
     let value = arguments
         .next()
         .ok_or_else(|| CommandError::input(PREPARE))?
@@ -66,32 +100,20 @@ fn text(arguments: &mut impl Iterator<Item = OsString>) -> Result<String, Comman
     if value.len() > 128 {
         return Err(CommandError::input(PREPARE));
     }
+
     Ok(value)
 }
 
-fn path(arguments: &mut impl Iterator<Item = OsString>) -> Result<PathBuf, CommandError> {
+fn take_path_argument(
+    arguments: &mut impl Iterator<Item = OsString>,
+) -> Result<PathBuf, CommandError> {
     arguments
         .next()
         .map(PathBuf::from)
         .ok_or_else(|| CommandError::input(PREPARE))
 }
 
-pub(super) fn validate(mut options: BTreeMap<String, OsString>) -> CommandResult {
-    let path = take_path(&mut options, "--operator-config", VALIDATE)?;
-    finish_options(&options, VALIDATE)?;
-    let bytes = read_bounded(
-        &path,
-        DOCUMENT_BYTES_MAX,
-        VALIDATE,
-        ErrorClass::CommandInput,
-    )?;
-    validate_bytes(&bytes, VALIDATE)?;
-    Ok(format!(
-        "{{\"command\":\"{VALIDATE}\",\"status\":\"VALIDATED_STATIC\"}}"
-    ))
-}
-
-fn validate_bytes(bytes: &[u8], command: &'static str) -> Result<(), CommandError> {
+fn validate_document_bytes(bytes: &[u8], command: &'static str) -> Result<(), CommandError> {
     // Parsing accepts a path from its caller, but static validation never accesses it.
     let document = kapsel::parse_service_operator_document(
         bytes,
@@ -102,7 +124,7 @@ fn validate_bytes(bytes: &[u8], command: &'static str) -> Result<(), CommandErro
         .map_err(|_| CommandError::configuration(command))
 }
 
-fn hex(bytes: &[u8]) -> String {
+fn encode_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -110,5 +132,6 @@ fn hex(bytes: &[u8]) -> String {
         write!(output, "{byte:02x}")
             .unwrap_or_else(|_| unreachable!("writing to a String cannot fail"));
     }
+
     output
 }

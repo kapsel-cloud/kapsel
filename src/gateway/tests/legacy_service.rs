@@ -56,8 +56,9 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
             })
             .unwrap()
     };
-    let before = read_row();
-    let mut callbacks = 0;
+
+    let original_row = read_row();
+    let mut selection_callbacks = 0;
     assert_eq!(
         service
             .select(
@@ -67,14 +68,15 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
                     kubernetes_client: None,
                     receipt_signing: Some(([13; 32], "receipt".into())),
                 },
-                |_| callbacks += 1
+                |_| selection_callbacks += 1
             )
             .await,
         Err(crate::ServiceError::InvalidRequest)
     );
-    assert_eq!(callbacks, 0);
-    assert_eq!(read_row(), before);
-    let mut adapter = failed_adapter(&path, &request);
+    assert_eq!(selection_callbacks, 0);
+    assert_eq!(read_row(), original_row);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
     gateway
         .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
         .await
@@ -100,7 +102,9 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
         service.receipt(&request.operation_id).unwrap(),
         OperationReceipt::Ready { bytes, sha256 }
     );
-    let terminal = read_row();
+
+    let finalized_row = read_row();
+
     drop(service);
     let mut service = ServiceApplication::open(configuration()).unwrap();
     assert_eq!(
@@ -112,13 +116,14 @@ async fn service_reads_but_cannot_advance_retained_legacy_authority() {
                     kubernetes_client: None,
                     receipt_signing: None,
                 },
-                |_| callbacks += 1
+                |_| selection_callbacks += 1
             )
             .await,
         Err(crate::ServiceError::InvalidRequest)
     );
-    assert_eq!(read_row(), terminal);
-    assert_eq!(callbacks, 0);
+    assert_eq!(read_row(), finalized_row);
+    assert_eq!(selection_callbacks, 0);
+
     drop(service);
     drop(gateway);
     drop(connection);

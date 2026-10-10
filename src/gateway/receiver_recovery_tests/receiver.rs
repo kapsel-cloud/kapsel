@@ -24,6 +24,7 @@ pub(super) const OTHER: &str = concat!(
 pub(super) fn read(root: &Path) -> Value {
     serde_json::from_slice(&fs::read(root.join("receiver.json")).unwrap()).unwrap()
 }
+
 pub(super) fn save(root: &Path, evidence: &Value) {
     let bytes = serde_json::to_vec(evidence).unwrap();
     assert!(bytes.len() <= 128 * 1024);
@@ -39,18 +40,42 @@ pub(super) fn save(root: &Path, evidence: &Value) {
 }
 
 pub(super) fn initialize(root: &Path) {
-    let object = json!({"apiVersion":"apps/v1", "kind":"Deployment", "metadata": {
-        "name":"api", "namespace":"demo", "uid":"uid-1", "resourceVersion":"opaque-1",
-        "generation":1,"annotations":{}}, "spec":{"replicas":1,
-        "selector":{"matchLabels":{"app":"api"}},
-        "template":{"spec":{"containers":[{"name":"api","image":OTHER}]} }},
-        "status":{"observedGeneration":1,"updatedReplicas":1,"availableReplicas":1,
-            "unavailableReplicas":0,"conditions":[{"type":"Available","status":"True",
-                "reason":"MinimumReplicasAvailable"}]}});
+    let object = json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "api",
+            "namespace": "demo",
+            "uid": "uid-1",
+            "resourceVersion": "opaque-1",
+            "generation": 1,
+            "annotations": {}
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": {"app": "api"}},
+            "template": {"spec": {"containers": [{"name": "api", "image": OTHER}]}}
+        },
+        "status": {
+            "observedGeneration": 1,
+            "updatedReplicas": 1,
+            "availableReplicas": 1,
+            "unavailableReplicas": 0,
+            "conditions": [{
+                "type": "Available",
+                "status": "True",
+                "reason": "MinimumReplicasAvailable"
+            }]
+        }
+    });
     save(
         root,
-        &json!({"object":object,"requests":[],"persisted_patches":0,
-        "writer_changes":0}),
+        &json!({
+            "object": object,
+            "requests": [],
+            "persisted_patches": 0,
+            "writer_changes": 0
+        }),
     );
 }
 
@@ -108,7 +133,8 @@ pub(super) fn client(
             let requests = evidence["requests"].as_array_mut().unwrap();
             requests.push(json!({"method":method,"body":patch}));
             assert!(requests.len() <= 182);
-            let mut status = 200;
+
+            let mut response_status = 200;
             if method == "PATCH" {
                 assert_eq!(
                     content_type.unwrap(),
@@ -116,57 +142,54 @@ pub(super) fn client(
                 );
                 assert_eq!(
                     patch,
-                    json!({"apiVersion":"apps/v1","kind":"Deployment",
-                    "metadata":{"name":"api","namespace":"demo", "uid":"uid-1",
-                        "resourceVersion":"opaque-1", "annotations":{
-                            "kapsel.dev/kap0038-operation-id":"comparison-op"}},
-                    "spec":{"template":{"spec":{"containers":[{"name":"api","image":IMAGE}]}}}})
+                    json!({
+                        "apiVersion": "apps/v1",
+                        "kind": "Deployment",
+                        "metadata": {
+                            "name": "api",
+                            "namespace": "demo",
+                            "uid": "uid-1",
+                            "resourceVersion": "opaque-1",
+                            "annotations": {
+                                "kapsel.dev/kap0038-operation-id": "comparison-op"
+                            }
+                        },
+                        "spec": {"template": {"spec": {
+                            "containers": [{"name": "api", "image": IMAGE}]
+                        }}}
+                    })
                 );
                 if case == "preflight-race" {
                     evidence["object"]["metadata"]["resourceVersion"] = json!("race-writer");
                     evidence["writer_changes"] = json!(1);
                 }
-                if evidence["object"]["metadata"]["uid"] != patch["metadata"]["uid"]
-                    || evidence["object"]["metadata"]["resourceVersion"]
-                        != patch["metadata"]["resourceVersion"]
-                {
-                    status = 409;
+                let target_preconditions_match = evidence["object"]["metadata"]["uid"]
+                    == patch["metadata"]["uid"]
+                    && evidence["object"]["metadata"]["resourceVersion"]
+                        == patch["metadata"]["resourceVersion"];
+                if target_preconditions_match {
+                    apply_accepted_patch(&mut evidence, &patch, &case);
                 } else {
-                    let object = &mut evidence["object"];
-                    object["metadata"]["resourceVersion"] = json!("opaque-2");
-                    object["metadata"]["generation"] = json!(2);
-                    object["metadata"]["annotations"] = patch["metadata"]["annotations"].clone();
-                    object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(IMAGE);
-                    object["status"]["observedGeneration"] = json!(2);
-                    if case == "slow-rollout" {
-                        object["status"]["observedGeneration"] = json!(1);
-                        object["status"]["updatedReplicas"] = json!(0);
-                        object["status"]["availableReplicas"] = json!(0);
-                        object["status"]["unavailableReplicas"] = json!(1);
-                    }
-                    if case == "failed" {
-                        object["status"]["conditions"] = json!([{"type":"Progressing",
-                            "status":"False", "reason":"ProgressDeadlineExceeded"}]);
-                    }
-                    evidence["persisted_patches"] =
-                        json!(evidence["persisted_patches"].as_u64().unwrap() + 1);
+                    response_status = 409;
                 }
             } else {
                 assert_eq!(method, "GET");
             }
+
             save(&root, &evidence);
+
             if method == "PATCH" && lose_response {
                 send.send_error(std::io::Error::other("accepted response discarded"));
             } else {
-                let body = if status == 200 {
+                let body = if response_status == 200 {
                     evidence["object"].clone()
                 } else {
                     json!({"apiVersion":"v1","kind":"Status","status":"Failure",
-                        "reason":"Conflict","message":"fixture conflict","code":status})
+                        "reason":"Conflict","message":"fixture conflict","code":response_status})
                 };
                 send.send_response(
                     http::Response::builder()
-                        .status(status)
+                        .status(response_status)
                         .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap()))
                         .unwrap(),
                 );
@@ -174,4 +197,26 @@ pub(super) fn client(
         }
     });
     (client, task)
+}
+
+fn apply_accepted_patch(evidence: &mut Value, patch: &Value, case: &str) {
+    let object = &mut evidence["object"];
+    object["metadata"]["resourceVersion"] = json!("opaque-2");
+    object["metadata"]["generation"] = json!(2);
+    object["metadata"]["annotations"] = patch["metadata"]["annotations"].clone();
+    object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(IMAGE);
+    object["status"]["observedGeneration"] = json!(2);
+
+    if case == "slow-rollout" {
+        object["status"]["observedGeneration"] = json!(1);
+        object["status"]["updatedReplicas"] = json!(0);
+        object["status"]["availableReplicas"] = json!(0);
+        object["status"]["unavailableReplicas"] = json!(1);
+    }
+    if case == "failed" {
+        object["status"]["conditions"] = json!([{"type":"Progressing",
+            "status":"False", "reason":"ProgressDeadlineExceeded"}]);
+    }
+
+    evidence["persisted_patches"] = json!(evidence["persisted_patches"].as_u64().unwrap() + 1);
 }

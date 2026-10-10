@@ -46,7 +46,7 @@ fn source_identity() -> String {
     files.sort_unstable();
     files.dedup();
     let mut hash = Sha256::new();
-    let mut total = 0;
+    let mut source_bytes_total = 0;
     for path in files {
         let text = std::str::from_utf8(path).unwrap();
         // Cached names include unstaged deletions; the digest describes the current source bytes.
@@ -54,8 +54,8 @@ fn source_identity() -> String {
             continue;
         }
         let bytes = fs::read(text).unwrap();
-        total += bytes.len();
-        assert!(total <= 64 * 1024 * 1024);
+        source_bytes_total += bytes.len();
+        assert!(source_bytes_total <= 64 * 1024 * 1024);
         hash.update(u64::try_from(path.len()).unwrap().to_le_bytes());
         hash.update(path);
         hash.update(u64::try_from(bytes.len()).unwrap().to_le_bytes());
@@ -201,6 +201,7 @@ fn single_peer() -> usize {
 }
 
 pub(crate) struct Scratch(pub(crate) PathBuf);
+
 impl Scratch {
     pub(crate) fn new() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -213,6 +214,7 @@ impl Scratch {
         Self(fs::canonicalize(path).unwrap())
     }
 }
+
 impl Drop for Scratch {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
@@ -225,6 +227,7 @@ struct Store {
     path: PathBuf,
     virtualized: bool,
 }
+
 impl Store {
     fn replace_git_receipt(&self, id: &str, mut bytes: Vec<u8>) {
         bytes.push(b' ');
@@ -274,7 +277,7 @@ impl Store {
     }
 
     fn raw_effect(&self, id: &str, git: bool) -> BTreeMap<String, Value> {
-        let fields = if git { GIT_FIELDS } else { FIELDS };
+        let fields = if git { GIT_FIELDS } else { KUBERNETES_FIELDS };
         let table = if git {
             "git_ref_operations"
         } else {
@@ -314,7 +317,7 @@ impl Store {
 
 // Frozen evidence, original intent and authority are observed by physical names, not roundtripping
 // through SnapshotRow/ReceiptRow. Legacy inert columns are retained by the SQLite boundary owner.
-const FIELDS: &[&str] = &[
+const KUBERNETES_FIELDS: &[&str] = &[
     "operation_id",
     "namespace",
     "deployment",
@@ -382,6 +385,7 @@ fn text<'a>(raw: &'a BTreeMap<String, Value>, field: &str) -> Option<&'a str> {
         _ => None,
     }
 }
+
 fn integer(raw: &BTreeMap<String, Value>, field: &str) -> Option<i64> {
     match raw.get(field) {
         Some(Value::Integer(value)) => Some(*value),
@@ -454,7 +458,7 @@ impl DeploymentImageAdapter for Adapter {
     }
 
     async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
-        let payload = permission.into_payload();
+        let (request, target) = permission.into_payload();
         let raw = self.store.raw(&self.intent.request.operation_id);
         let outcome = {
             let mut io = self.io.lock().unwrap();
@@ -465,13 +469,13 @@ impl DeploymentImageAdapter for Adapter {
             {
                 io.violation = Some("dispatch_provenance");
             }
-            if payload.0 != self.intent.request
-                || payload.1.deployment_uid != self.intent.uid
-                || payload.1.resource_version != self.intent.version
+            if request != self.intent.request
+                || target.deployment_uid != self.intent.uid
+                || target.resource_version != self.intent.version
             {
                 io.violation = Some("original_intent");
             }
-            io.sends.push(payload);
+            io.sends.push((request, target));
             let outcome = ApplyOutcome {
                 accepted: true,
                 requested_generation: Some(7),
@@ -725,6 +729,7 @@ struct Checker {
     frozen_reads: usize,
     original_bytes: Option<Value>,
 }
+
 impl Checker {
     fn receipt_bytes_unchanged(&mut self, raw: &BTreeMap<String, Value>) -> bool {
         if let Some(original) = &self.original_bytes {
@@ -913,21 +918,22 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
-                let rows_before = (!writing).then(|| {
+                let write_refused_rows_before = (!writing).then(|| {
                     peers
                         .iter()
-                        .map(|peer| peer.snapshot().0)
+                        .map(|peer| peer.snapshot().record)
                         .collect::<Vec<_>>()
                 });
-                let no_changes = !trusted[selected]
+                let must_preserve_history = !trusted[selected]
                     || (selection.sign
                         && matches!(peers[selected].signer, Signer::Invalid)
                         && matches!(
-                            text(&peers[selected].snapshot().0, "state"),
+                            text(&peers[selected].snapshot().record, "state"),
                             Some("receiver_observed" | "finalized")
                         ));
-                let before =
-                    no_changes.then(|| peers.iter().map(Peer::snapshot).collect::<Vec<_>>());
+                let protected_history_before = must_preserve_history
+                    .then(|| peers.iter().map(Peer::snapshot).collect::<Vec<_>>());
+
                 let peer = &mut peers[selected];
                 let signing = peer.signing_material();
                 let adapter = &mut peer.adapter;
@@ -969,12 +975,16 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     } else {
                         "receiver_observed"
                     };
-                    let complete = ["receipt_bytes", "receipt_digest", "receipt_key_id"]
-                        .iter()
-                        .all(|field| {
-                            raw.get(*field).is_some_and(|value| *value != Value::Null) == committed
-                        });
-                    if text(&raw, "state") != Some(expected_state) || !complete {
+                    let receipt_columns_committed_together =
+                        ["receipt_bytes", "receipt_digest", "receipt_key_id"]
+                            .iter()
+                            .all(|field| {
+                                raw.get(*field).is_some_and(|value| *value != Value::Null)
+                                    == committed
+                            });
+                    if text(&raw, "state") != Some(expected_state)
+                        || !receipt_columns_committed_together
+                    {
                         return Err(Finding {
                             law: "receipt_delivery",
                             event,
@@ -982,11 +992,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         });
                     }
                 }
-                if rows_before.is_some_and(|originals| {
+                if write_refused_rows_before.is_some_and(|originals| {
                     originals
                         != peers
                             .iter()
-                            .map(|peer| peer.snapshot().0)
+                            .map(|peer| peer.snapshot().record)
                             .collect::<Vec<_>>()
                 }) {
                     return Err(Finding {
@@ -995,7 +1005,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         defect_reached: control.defect_reached(),
                     });
                 }
-                if before.is_some_and(|originals| {
+                if protected_history_before.is_some_and(|originals| {
                     originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 }) {
                     return Err(Finding {
@@ -1073,7 +1083,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 if !available {
                     for peer in &peers {
                         if peer.git.is_some() {
-                            let raw = peer.snapshot().0;
+                            let raw = peer.snapshot().record;
                             if let Some(Value::Blob(bytes)) = raw.get("receipt_bytes") {
                                 if control.exercise(Defect::ReceiptRewrite) {
                                     store.replace_git_receipt(
@@ -1108,7 +1118,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 replacement_configuration.approvals.clear();
                 if trusted.iter().all(|key| *key) {
                     for (index, peer) in peers.iter().enumerate() {
-                        if peer.snapshot().0.is_empty() {
+                        if peer.snapshot().record.is_empty() {
                             replacement_configuration
                                 .approvals
                                 .push(peer.adapter.intent.approval());
@@ -1125,11 +1135,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         }
                     }
                 }
-                let conflict = trusted.iter().all(|key| *key)
-                    && before.iter().any(|snapshot| !snapshot.0.is_empty());
+                let expect_catalog_conflict = trusted.iter().all(|key| *key)
+                    && before.iter().any(|snapshot| !snapshot.record.is_empty());
                 let result =
                     ServiceApplication::open_simulated(replacement_configuration, control.clone());
-                if result.is_err() != conflict
+                if result.is_err() != expect_catalog_conflict
                     || before != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 {
                     return Err(Finding {
@@ -1290,7 +1300,7 @@ fn check_reads(
         let mut ids = peers
             .iter()
             .enumerate()
-            .filter(|(index, _)| !before[*index].0.is_empty())
+            .filter(|(index, _)| !before[*index].record.is_empty())
             .map(|(_, peer)| peer.adapter.intent.request.operation_id.clone())
             .collect::<Vec<_>>();
         ids.sort();
@@ -1306,7 +1316,7 @@ fn check_reads(
         )?;
     }
     for (index, peer) in peers.iter().enumerate() {
-        let raw = &before[index].0;
+        let raw = &before[index].record;
         let id = &peer.adapter.intent.request.operation_id;
         if raw.is_empty() {
             require(
@@ -1324,7 +1334,7 @@ fn check_reads(
         let status = app.status(id);
         let receipt = app.receipt(id);
         let admitted = app.admitted_state(id);
-        let projections = [status.is_ok(), receipt.is_ok(), admitted.is_ok()];
+        let projection_access = [status.is_ok(), receipt.is_ok(), admitted.is_ok()];
         // Enumeration is a physical SQL query; the virtual record store owns point reads only.
         let history_matches = peer.adapter.store.virtualized
             || history
@@ -1333,25 +1343,28 @@ fn check_reads(
                 .find(|entry| &entry.operation_id == id)
                 .is_some_and(|entry| entry.status.is_ok() == accessible);
         require(
-            history_matches && projections.iter().all(|actual| *actual == accessible),
+            history_matches && projection_access.iter().all(|actual| *actual == accessible),
             "original_trust_disclosure",
         )?;
         if accessible {
             let expected = stored_projection(peer, raw);
-            let matches = expected
-                .as_ref()
-                .is_some_and(|(state, expected_status, targets)| {
-                    status
-                        .as_ref()
-                        .is_ok_and(|actual| actual.0 == *expected_status && &actual.1 == targets)
-                        && admitted == Ok(Some(*state))
-                        && (peer.adapter.store.virtualized
-                            || history
-                                .entries
-                                .iter()
-                                .find(|entry| &entry.operation_id == id)
-                                .is_some_and(|entry| entry.status == status))
-                });
+            let stored_projection_matches =
+                expected
+                    .as_ref()
+                    .is_some_and(|(state, expected_status, targets)| {
+                        status
+                            .as_ref()
+                            .is_ok_and(|(actual_status, actual_targets)| {
+                                actual_status == expected_status && actual_targets == targets
+                            })
+                            && admitted == Ok(Some(*state))
+                            && (peer.adapter.store.virtualized
+                                || history
+                                    .entries
+                                    .iter()
+                                    .find(|entry| &entry.operation_id == id)
+                                    .is_some_and(|entry| entry.status == status))
+                    });
             let receipt_matches = match (&receipt, raw.get("receipt_bytes")) {
                 (Ok(OperationReceipt::NotReady), Some(Value::Null)) => true,
                 (Ok(OperationReceipt::Ready { bytes, sha256 }), Some(Value::Blob(stored))) => {
@@ -1359,7 +1372,10 @@ fn check_reads(
                 },
                 _ => false,
             };
-            require(matches && receipt_matches, "stored_read_projection")?;
+            require(
+                stored_projection_matches && receipt_matches,
+                "stored_read_projection",
+            )?;
         }
     }
     require(
@@ -1478,6 +1494,13 @@ fn stored_projection(
     Some((state, status, targets))
 }
 
+#[derive(Debug, PartialEq)]
+struct PeerSnapshot {
+    record: BTreeMap<String, Value>,
+    reads: usize,
+    sends: usize,
+}
+
 struct Peer {
     adapter: Adapter,
     checker: Checker,
@@ -1573,6 +1596,7 @@ impl Peer {
             |_| {},
             None,
         ));
+
         let suspended = std::future::poll_fn(|cx| {
             std::task::Poll::Ready(execution.as_mut().poll(cx).is_pending())
         })
@@ -1584,15 +1608,17 @@ impl Peer {
                 defect_reached: store.control.defect_reached(),
             });
         }
+
         let original = store.raw_effect(&id, git);
         store.set_grant(&id, git, Value::Blob(vec![1]));
         let attacked = store.raw_effect(&id, git);
+
         resume.notify_one();
         let result = execution.await;
         self.gate(None, None);
         let after = self.snapshot();
-        let expected_reads = initial.1 + 1 + usize::from(point == IoPoint::Observation);
-        let expected_sends = initial.2 + usize::from(point != IoPoint::Preflight);
+        let expected_reads = initial.reads + 1 + usize::from(point == IoPoint::Observation);
+        let expected_sends = initial.sends + usize::from(point != IoPoint::Preflight);
         if let Some(git) = &self.git {
             if store.control.reached()[writes_before..].contains(&StorageWrite::Response) {
                 *git.durable_ack.lock().unwrap() =
@@ -1600,9 +1626,10 @@ impl Peer {
             }
         }
         let refused = result.is_err()
-            && after.0 == attacked
-            && after.1 == expected_reads
-            && after.2 == expected_sends;
+            && after.record == attacked
+            && after.reads == expected_reads
+            && after.sends == expected_sends;
+
         store.set_grant(&id, git, original["signed_authorization_grant"].clone());
         if !refused {
             return Err(Finding {
@@ -1629,7 +1656,7 @@ impl Peer {
         }
     }
 
-    fn snapshot(&self) -> (BTreeMap<String, Value>, usize, usize) {
+    fn snapshot(&self) -> PeerSnapshot {
         let (reads, sends) = self.git.as_ref().map_or_else(
             || {
                 let io = self.adapter.io.lock().unwrap();
@@ -1640,14 +1667,14 @@ impl Peer {
                 (io.reads, io.sends)
             },
         );
-        (
-            self.adapter.store.raw_effect(
+        PeerSnapshot {
+            record: self.adapter.store.raw_effect(
                 &self.adapter.intent.request.operation_id,
                 self.git.is_some(),
             ),
             reads,
             sends,
-        )
+        }
     }
 }
 
@@ -1693,16 +1720,17 @@ async fn cancel_at_io(
                         (io.reads, io.sends)
                     },
                 );
-                (
-                    adapter
+                PeerSnapshot {
+                    record: adapter
                         .store
                         .raw_effect(&adapter.intent.request.operation_id, git.is_some()),
                     reads,
                     sends,
-                )
+                }
             })
             .collect::<Vec<_>>()
     };
+
     let resume = Arc::new(tokio::sync::Notify::new());
     peers[selected].gate(Some(point), Some(resume));
     let (owner, other) = match selected.cmp(&contender) {
@@ -1717,6 +1745,7 @@ async fn cancel_at_io(
         std::cmp::Ordering::Equal => (&mut peers[selected], None),
     };
     let id = owner.adapter.intent.request.operation_id.clone();
+
     let mut active = Box::pin(app.select_with_adapters(
         &id,
         ServiceExecution {
@@ -1739,6 +1768,7 @@ async fn cancel_at_io(
             defect_reached: control.defect_reached(),
         });
     }
+
     let pending = snapshots();
     let mut acknowledgements = Vec::new();
     let contender_id = contender_adapter.intent.request.operation_id.clone();
@@ -1770,16 +1800,17 @@ async fn cancel_at_io(
         ))
     ) && snapshots() == pending
         && acknowledgements == [expected_admission];
+
     // Drop the actual service selection future, not a predicted lifecycle transition.
     drop(active);
     peers[selected].gate(None, None);
     let after = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
-    let expected_reads = before[selected].1 + 1 + usize::from(point == IoPoint::Observation);
-    let expected_sends = before[selected].2 + usize::from(point != IoPoint::Preflight);
+    let expected_reads = before[selected].reads + 1 + usize::from(point == IoPoint::Observation);
+    let expected_sends = before[selected].sends + usize::from(point != IoPoint::Preflight);
     if !excluded
         || after != pending
-        || after[selected].1 != expected_reads
-        || after[selected].2 != expected_sends
+        || after[selected].reads != expected_reads
+        || after[selected].sends != expected_sends
     {
         return Err(Finding {
             law: "worker_exclusion",
@@ -1979,7 +2010,7 @@ impl Selection {
         let raw = adapter
             .store
             .raw_effect(&adapter.intent.request.operation_id, git);
-        let (state, response, observation) = match self.cut {
+        let (expected_state, expect_response_record, expect_observation_record) = match self.cut {
             Cut::None => return Ok(()),
             Cut::BeforeAttempt => ("authorized", false, false),
             Cut::Unsent | Cut::AttemptAcknowledgementLost | Cut::ResponseLost => {
@@ -1996,9 +2027,9 @@ impl Selection {
         ));
         if io_delta != (expected_reads, expected_sends)
             || result != Err(crate::ServiceError::OperationFailure)
-            || text(&raw, "state") != Some(state)
-            || writes.contains(&StorageWrite::Response) != response
-            || writes.contains(&StorageWrite::Observation) != observation
+            || text(&raw, "state") != Some(expected_state)
+            || writes.contains(&StorageWrite::Response) != expect_response_record
+            || writes.contains(&StorageWrite::Observation) != expect_observation_record
             || writes.contains(&StorageWrite::Receipt)
         {
             return Err(Finding {
@@ -2312,7 +2343,7 @@ fn receipt_matches_columns(
     io: &Observations,
     intent: &Intent,
 ) -> bool {
-    let texts = [
+    let text_fields = [
         ("operation_id", Some(statement.operation_id())),
         ("authorization_id", Some(statement.authorization_id())),
         (
@@ -2368,7 +2399,7 @@ fn receipt_matches_columns(
             statement.rollout_condition_reason(),
         ),
     ];
-    let integers = [
+    let integer_fields = [
         ("current_generation", statement.current_generation()),
         ("requested_generation", statement.requested_generation()),
         ("observed_generation", statement.observed_generation()),
@@ -2394,10 +2425,10 @@ fn receipt_matches_columns(
         crate::OperationResult::Failed => "FAILED",
         crate::OperationResult::Unknown => "UNKNOWN",
     };
-    texts
+    text_fields
         .iter()
         .all(|(column, value)| text(raw, column) == *value)
-        && integers
+        && integer_fields
             .iter()
             .all(|(column, value)| integer(raw, column) == *value)
         && result == result_from_io(io, intent)
@@ -2416,6 +2447,7 @@ fn select(
         sign,
     })
 }
+
 fn trace(seed: u64, mut prefix: Vec<Action>) -> Trace {
     prefix.extend([
         Action::Restore,
@@ -3606,6 +3638,7 @@ fn read_trace(path: &Path) -> Trace {
         .read_to_end(&mut bytes)
         .unwrap();
     assert!(bytes.len() <= 64 * 1024);
+
     let input: Trace = serde_json::from_slice(&bytes).unwrap();
     assert!(input.actions.len() <= 256 && (1..=4).contains(&input.peers));
     assert!(input.effects.is_empty() || input.effects.len() == input.peers);

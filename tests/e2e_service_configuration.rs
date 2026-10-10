@@ -19,6 +19,7 @@ impl Fixture {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!("kapsel-config-cli-{}", std::process::id()));
         fs::create_dir(&path).unwrap();
+
         let seed = [41; 32];
         fs::write(
             path.join("key.pub"),
@@ -27,6 +28,7 @@ impl Fixture {
                 .to_bytes(),
         )
         .unwrap();
+
         let authorization = ExactAuthorization {
             authorization_id: "approval-1".into(),
             operation_id: "op-1".into(),
@@ -49,9 +51,9 @@ impl Fixture {
         Self(path)
     }
 
-    fn run(&self, args: &[&str]) -> Output {
+    fn run(&self, arguments: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_kapsel"))
-            .args(args)
+            .args(arguments)
             .current_dir(&self.0)
             .env_clear()
             .output()
@@ -84,18 +86,22 @@ impl Drop for Fixture {
 #[test]
 fn preparation_and_static_validation_preserve_inputs_and_never_require_a_journal() {
     let fixture = Fixture::new();
-    let grant_before = fs::read(fixture.0.join("grant")).unwrap();
+    let original_grant = fs::read(fixture.0.join("grant")).unwrap();
+
     let prepared = fixture.prepare("grant", "candidate.json");
     assert!(prepared.status.success(), "{:?}", prepared.stderr);
     assert!(prepared.stderr.is_empty());
     let candidate = fixture.0.join("candidate.json");
-    let before = fs::read(&candidate).unwrap();
+    let prepared_document = fs::read(&candidate).unwrap();
     assert_eq!(
         fs::metadata(&candidate).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    assert!(!fixture.prepare("grant", "candidate.json").status.success());
-    assert_eq!(fs::read(&candidate).unwrap(), before);
+
+    let replacement_attempt = fixture.prepare("grant", "candidate.json");
+    assert!(!replacement_attempt.status.success());
+    assert_eq!(fs::read(&candidate).unwrap(), prepared_document);
+
     let validated = fixture.run(&[
         "validate-service-config",
         "--operator-config",
@@ -107,20 +113,23 @@ fn preparation_and_static_validation_preserve_inputs_and_never_require_a_journal
         b"{\"command\":\"validate-service-config\",\"status\":\"VALIDATED_STATIC\"}\n"
     );
     assert!(validated.stderr.is_empty());
-    assert_eq!(fs::read(&candidate).unwrap(), before);
-    assert_eq!(fs::read(fixture.0.join("grant")).unwrap(), grant_before);
+    assert_eq!(fs::read(&candidate).unwrap(), prepared_document);
+    assert_eq!(fs::read(fixture.0.join("grant")).unwrap(), original_grant);
 
     let absent_root = fixture.0.join("must-not-be-created");
-    let mut document =
-        kapsel::parse_service_operator_document(&before, absent_root.join("journal.sqlite3"))
-            .unwrap();
+    let mut document = kapsel::parse_service_operator_document(
+        &prepared_document,
+        absent_root.join("journal.sqlite3"),
+    )
+    .unwrap();
     assert!(ServiceApplication::validate_static_configuration(&document.configuration).is_ok());
     assert!(!absent_root.exists());
+
     document
         .configuration
         .approvals
         .push(kapsel::ServiceApproval {
-            signed_grant: grant_before,
+            signed_grant: original_grant,
             label: "Duplicate operation".into(),
         });
     assert!(ServiceApplication::validate_static_configuration(&document.configuration).is_err());
@@ -134,12 +143,14 @@ fn preparation_and_static_validation_preserve_inputs_and_never_require_a_journal
     assert!(!String::from_utf8(rejected.stderr)
         .unwrap()
         .contains("SECRET"));
+
     symlink("grant", fixture.0.join("linked-grant")).unwrap();
     assert!(!fixture
         .prepare("linked-grant", "rejected.json")
         .status
         .success());
     assert!(!fixture.0.join("rejected.json").exists());
+
     fs::write(fixture.0.join("oversized.json"), vec![b' '; 160 * 1024 + 1]).unwrap();
     assert!(!fixture
         .run(&[
@@ -149,6 +160,6 @@ fn preparation_and_static_validation_preserve_inputs_and_never_require_a_journal
         ])
         .status
         .success());
-    assert_eq!(fs::read(&candidate).unwrap(), before);
+    assert_eq!(fs::read(&candidate).unwrap(), prepared_document);
     assert!(!fixture.0.join("journal.sqlite3").exists());
 }

@@ -218,11 +218,12 @@ impl GitReceiver {
                 return Err(GitError::Custody);
             }
         }
-        let binary = fs::metadata(&executable).map_err(|_| GitError::Custody)?;
+        let executable_metadata = fs::metadata(&executable).map_err(|_| GitError::Custody)?;
         if executable.file_name() != Some(std::ffi::OsStr::new("git"))
-            || !binary.is_file()
-            || binary.mode() & 0o022 != 0
-            || (binary.uid() != 0 && binary.uid() != rustix::process::geteuid().as_raw())
+            || !executable_metadata.is_file()
+            || executable_metadata.mode() & 0o022 != 0
+            || (executable_metadata.uid() != 0
+                && executable_metadata.uid() != rustix::process::geteuid().as_raw())
         {
             return Err(GitError::Custody);
         }
@@ -230,7 +231,7 @@ impl GitReceiver {
         if sender == receiver {
             return Err(GitError::Configuration);
         }
-        let result = Self {
+        let receiver = Self {
             executable,
             sender,
             receiver,
@@ -240,8 +241,8 @@ impl GitReceiver {
             #[cfg(test)]
             script: None,
         };
-        result.require_custody()?;
-        Ok(result)
+        receiver.require_custody()?;
+        Ok(receiver)
     }
 
     fn require_custody(&self) -> Result<(), GitError> {
@@ -272,12 +273,14 @@ impl GitReceiver {
             return self.scripted_prepare(script, authorization).await;
         }
         self.require_custody()?;
+
         if self.run(None, &["--version".into()]).await?.stdout != VERSION {
             return Err(GitError::Configuration);
         }
         for repository in [&self.sender, &self.receiver] {
             self.require_configuration(repository).await?;
         }
+
         for oid in [&authorization.old_commit, &authorization.new_commit] {
             let output = self
                 .run(
@@ -296,6 +299,7 @@ impl GitReceiver {
                 _ => return Err(GitError::Unavailable),
             }
         }
+
         let ancestry = self
             .run(
                 Some(&self.sender),
@@ -312,11 +316,13 @@ impl GitReceiver {
             Some(1) => return Err(GitError::InvalidObjects),
             _ => return Err(GitError::Unavailable),
         }
+
         match self.observe().await {
             ObservedRef::Commit(oid) if oid == authorization.old_commit => {},
             ObservedRef::Commit(_) | ObservedRef::Missing => return Err(GitError::StaleRef),
             ObservedRef::Unknown => return Err(GitError::Unavailable),
         }
+
         Ok(PreparedTransition {
             receiver: self,
             authorization: authorization.clone(),
@@ -354,11 +360,11 @@ impl GitReceiver {
         if !output.status.success() {
             return Err(GitError::Configuration);
         }
-        let mut bare = false;
-        let mut identity = false;
-        let mut deny_deletes = false;
-        let mut deny_non_ff = false;
-        let mut names = std::collections::BTreeSet::new();
+        let mut is_bare = false;
+        let mut repository_identity_matches = false;
+        let mut denies_deletes = false;
+        let mut denies_non_fast_forwards = false;
+        let mut configuration_names = std::collections::BTreeSet::new();
         for entry in output
             .stdout
             .split(|byte| *byte == 0)
@@ -370,7 +376,7 @@ impl GitReceiver {
                 .ok_or(GitError::Configuration)?;
             let (name, rest) = entry.split_at(separator);
             let value = &rest[1..];
-            if !names.insert(name) {
+            if !configuration_names.insert(name) {
                 return Err(GitError::Configuration);
             }
             match (name, value) {
@@ -380,16 +386,18 @@ impl GitReceiver {
                     b"core.logallrefupdates" | b"core.ignorecase" | b"core.precomposeunicode",
                     b"true" | b"false",
                 ) => {},
-                (b"core.bare", b"true") => bare = true,
-                (b"receive.denydeletes", b"true") => deny_deletes = true,
-                (b"receive.denynonfastforwards", b"true") => deny_non_ff = true,
+                (b"core.bare", b"true") => is_bare = true,
+                (b"receive.denydeletes", b"true") => denies_deletes = true,
+                (b"receive.denynonfastforwards", b"true") => denies_non_fast_forwards = true,
                 (b"kapsel.repositoryid", value) if value == self.repository_id.as_bytes() => {
-                    identity = true;
+                    repository_identity_matches = true;
                 },
                 _ => return Err(GitError::Configuration),
             }
         }
-        if !bare || (repository == self.receiver && !(identity && deny_deletes && deny_non_ff)) {
+        let receiver_configuration_complete =
+            repository_identity_matches && denies_deletes && denies_non_fast_forwards;
+        if !is_bare || (repository == self.receiver && !receiver_configuration_complete) {
             return Err(GitError::Configuration);
         }
         Ok(())
@@ -417,6 +425,7 @@ impl GitReceiver {
         {
             return Acknowledgement::Unknown;
         }
+
         let args = [
             "-c".into(),
             "protocol.file.allow=always".into(),
@@ -454,6 +463,7 @@ impl GitReceiver {
         {
             return ObservedRef::Unknown;
         }
+
         let args = [
             "for-each-ref".into(),
             "--format=%(refname)%09%(objectname)%09%(objecttype)%09%(symref)".into(),
@@ -532,6 +542,11 @@ impl RetainedGitOperation {
             },
             _ => None,
         };
+        let attempted = matches!(
+            phase,
+            GitPhase::Attempted(_) | GitPhase::Observed { .. } | GitPhase::Finalized { .. }
+        );
+
         Self {
             signed_grant: binding.signed_grant().to_vec(),
             state: phase.state(),
@@ -539,10 +554,7 @@ impl RetainedGitOperation {
             result: statement.as_ref().map(evidence::GitStatement::result),
             targets: super::GitOperationTargets {
                 approval: binding.authorization().clone(),
-                attempted: matches!(
-                    phase,
-                    GitPhase::Attempted(_) | GitPhase::Observed { .. } | GitPhase::Finalized { .. }
-                ),
+                attempted,
                 acknowledgement,
                 observed_ref: statement.map(|statement| statement.observed),
             },
@@ -639,6 +651,7 @@ impl super::Gateway {
                 GatewayError::Receipt(_) => ReconciliationError::Completion,
                 error => ReconciliationError::Advancement(error),
             })?;
+
         if matches!(phase, GitPhase::Observed { .. }) {
             return Err(ReconciliationError::Blocked(
                 ReconciliationBlockage::SigningUnavailable,
@@ -679,6 +692,7 @@ pub(super) async fn advance(
     if !journal.owns_worker(worker) {
         return Err(GatewayError::InvalidTransition);
     }
+
     let mut phase = journal
         .git_operation(binding)?
         .ok_or(GatewayError::InvalidTransition)?;
@@ -688,6 +702,7 @@ pub(super) async fn advance(
     {
         return Err(GatewayError::GitReceiverUnavailable);
     }
+
     #[cfg(test)]
     let fresh = phase == GitPhase::Authorized;
     if phase == GitPhase::Authorized {
@@ -696,15 +711,18 @@ pub(super) async fn advance(
             Ok(prepared) => {
                 #[cfg(test)]
                 exploration_checkpoint(Some(receiver), super::FaultPoint::TargetObserved)?;
+
                 let permission = journal.begin_git_attempt(binding, prepared, worker)?;
                 #[cfg(test)]
                 exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyStartedCommitted)?;
+
                 let acknowledgement = receiver.send(permission).await;
                 #[cfg(test)]
                 exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyReturned)?;
                 #[cfg(feature = "demo-harness")]
                 super::demo_control::checkpoint_after_apply()
                     .map_err(|()| GatewayError::GitReceiverUnavailable)?;
+
                 journal.record_git_acknowledgement(binding, acknowledgement, worker)?;
                 #[cfg(test)]
                 exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyOutcomeCommitted)?;
@@ -726,6 +744,7 @@ pub(super) async fn advance(
             .git_operation(binding)?
             .ok_or(GatewayError::InvalidTransition)?;
     }
+
     if matches!(phase, GitPhase::Attempted(_)) {
         let receiver = receiver.ok_or(GatewayError::GitReceiverUnavailable)?;
         let observed = receiver.observe().await;
@@ -733,6 +752,7 @@ pub(super) async fn advance(
         if fresh {
             exploration_checkpoint(Some(receiver), super::FaultPoint::ReceiverRead)?;
         }
+
         journal.freeze_git_observation(binding, &observed, worker)?;
         #[cfg(test)]
         exploration_checkpoint(Some(receiver), super::FaultPoint::ReceiverObservedCommitted)?;
@@ -740,6 +760,7 @@ pub(super) async fn advance(
             .git_operation(binding)?
             .ok_or(GatewayError::InvalidTransition)?;
     }
+
     if matches!(phase, GitPhase::Observed { .. }) {
         if let Some(signing) = signing {
             let statement = phase
@@ -768,6 +789,7 @@ pub(super) async fn advance(
                 .ok_or(GatewayError::InvalidTransition)?;
         }
     }
+
     Ok(phase)
 }
 
@@ -783,7 +805,7 @@ fn exploration_checkpoint(
     }
 }
 
-async fn run_bounded(mut command: Command, deadline: Duration) -> Result<CommandOutput, GitError> {
+async fn run_bounded(mut command: Command, timeout: Duration) -> Result<CommandOutput, GitError> {
     let child = command.spawn().map_err(|_| GitError::Unavailable)?;
     let pid = child
         .id()
@@ -796,7 +818,8 @@ async fn run_bounded(mut command: Command, deadline: Duration) -> Result<Command
     };
     let stdout = group.child.stdout.take().ok_or(GitError::Unavailable)?;
     let stderr = group.child.stderr.take().ok_or(GitError::Unavailable)?;
-    let result = tokio::time::timeout(deadline, async {
+
+    let result = tokio::time::timeout(timeout, async {
         let (stdout, _) = tokio::try_join!(read_bounded(stdout), read_bounded(stderr))?;
         let status = group
             .child
@@ -807,6 +830,7 @@ async fn run_bounded(mut command: Command, deadline: Duration) -> Result<Command
         Ok::<_, GitError>(CommandOutput { status, stdout })
     })
     .await;
+
     if let Ok(Ok(output)) = result {
         Ok(output)
     } else {
@@ -832,6 +856,7 @@ async fn read_bounded(mut stream: impl AsyncRead + Unpin) -> Result<Vec<u8>, Git
         if count > OUTPUT_MAX - output.len() {
             return Err(GitError::Unavailable);
         }
+
         output.extend_from_slice(&buffer[..count]);
     }
 }
@@ -853,10 +878,10 @@ fn trusted_ancestors(path: &Path) -> Result<(), GitError> {
 
 fn private_tree(root: &Path) -> Result<(), GitError> {
     let mut pending = vec![(root.to_owned(), 0)];
-    let mut count = 0;
+    let mut visited_entries = 0;
     while let Some((path, depth)) = pending.pop() {
-        count += 1;
-        if count > TREE_ENTRIES_MAX || depth > 32 {
+        visited_entries += 1;
+        if visited_entries > TREE_ENTRIES_MAX || depth > 32 {
             return Err(GitError::Custody);
         }
         let metadata = fs::symlink_metadata(&path).map_err(|_| GitError::Custody)?;
@@ -865,7 +890,7 @@ fn private_tree(root: &Path) -> Result<(), GitError> {
         }
         if metadata.is_dir() {
             for entry in fs::read_dir(&path).map_err(|_| GitError::Custody)? {
-                if pending.len() + count >= TREE_ENTRIES_MAX {
+                if pending.len() + visited_entries >= TREE_ENTRIES_MAX {
                     return Err(GitError::Custody);
                 }
                 pending.push((entry.map_err(|_| GitError::Custody)?.path(), depth + 1));
@@ -877,7 +902,11 @@ fn private_tree(root: &Path) -> Result<(), GitError> {
     Ok(())
 }
 
-fn acknowledgement(bytes: &[u8], success: bool, approval: &GitRefAuthorization) -> Acknowledgement {
+fn acknowledgement(
+    bytes: &[u8],
+    command_succeeded: bool,
+    approval: &GitRefAuthorization,
+) -> Acknowledgement {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Acknowledgement::Unknown;
     };
@@ -885,7 +914,7 @@ fn acknowledgement(bytes: &[u8], success: bool, approval: &GitRefAuthorization) 
     let Some(header) = lines.next() else {
         return Acknowledgement::Unknown;
     };
-    let Some(status) = lines.next() else {
+    let Some(ref_status) = lines.next() else {
         return Acknowledgement::Unknown;
     };
     if !header.starts_with("To ")
@@ -895,12 +924,12 @@ fn acknowledgement(bytes: &[u8], success: bool, approval: &GitRefAuthorization) 
     {
         return Acknowledgement::Unknown;
     }
-    let expected = format!("{}:{APPROVED_GIT_REF}", approval.new_commit);
-    let fields: Vec<_> = status.split('\t').collect();
-    if fields.len() != 3 || fields[1] != expected {
+    let expected_refspec = format!("{}:{APPROVED_GIT_REF}", approval.new_commit);
+    let fields: Vec<_> = ref_status.split('\t').collect();
+    if fields.len() != 3 || fields[1] != expected_refspec {
         return Acknowledgement::Unknown;
     }
-    match (fields[0], fields[2], success) {
+    match (fields[0], fields[2], command_succeeded) {
         (" ", summary, true) if fast_forward_summary(summary, approval) => Acknowledgement::Updated,
         ("!", summary, false) if summary.starts_with("[rejected] (") && summary.ends_with(')') => {
             Acknowledgement::RejectedBeforeSend
@@ -1131,11 +1160,14 @@ mod tests {
         fs::set_permissions(&repo, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(repo.join("object"), fs::Permissions::from_mode(0o600)).unwrap();
         assert!(private_tree(&repo).is_ok());
+
         std::os::unix::fs::symlink("object", repo.join("link")).unwrap();
         assert_eq!(private_tree(&repo), Err(GitError::Custody));
+
         fs::remove_file(repo.join("link")).unwrap();
         fs::hard_link(repo.join("object"), repo.join("link")).unwrap();
         assert_eq!(private_tree(&repo), Err(GitError::Custody));
+
         fs::remove_file(repo.join("link")).unwrap();
         fs::set_permissions(repo.join("object"), fs::Permissions::from_mode(0o666)).unwrap();
         assert_eq!(private_tree(&repo), Err(GitError::Custody));
@@ -1342,6 +1374,7 @@ while read -r line; do :; done
             } else if case == "pre-receive" {
                 expected_observed.clone_from(&approval.old_commit);
             }
+
             drop(worker);
             drop(journal);
             let mut journal = Journal::open(&path).unwrap();
@@ -1382,6 +1415,7 @@ while read -r line; do :; done
                 },
                 "{case}"
             );
+
             let counts = receiver_counts(&fixture, &approval);
             assert_eq!(
                 counts,
@@ -1398,6 +1432,7 @@ while read -r line; do :; done
                 &evidence::decode(&receipt.bytes).unwrap().1,
                 statement.as_ref()
             );
+
             drop(worker);
             drop(journal);
             let mut journal = Journal::open(&path).unwrap();
@@ -1477,6 +1512,7 @@ while read -r line; do :; done
                 OperationStatus::InProgress
             );
             assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
+
             drop(service);
             fs::remove_dir_all(&receiver.receiver).unwrap();
             fs::remove_file(&receiver.executable).unwrap();
@@ -1563,6 +1599,7 @@ while read -r line; do :; done
                 Some(GitPhase::Authorized)
             );
             assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
+
             drop(worker);
             drop(journal);
             fs::rename(saved, object).unwrap();

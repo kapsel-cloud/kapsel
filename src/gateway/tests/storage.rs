@@ -57,26 +57,27 @@ pub(super) fn fragmented_maximum_page_count(path: &Path) {
 
 fn maximum_page_count_freelist(path: &Path, sparse_tail_first: bool) {
     let connection = Connection::open(path).unwrap();
-    let mut free = {
+    let mut free_pages = {
         let mut statement = connection
             .prepare("SELECT pageno FROM dbstat('main')")
             .unwrap();
-        let live = statement
+        let live_pages = statement
             .query_map([], |row| row.get::<_, u32>(0))
             .unwrap()
             .collect::<Result<std::collections::BTreeSet<_>, _>>()
             .unwrap();
         (1..=16_384_u32)
-            .filter(|page| !live.contains(page))
+            .filter(|page| !live_pages.contains(page))
             .collect::<Vec<_>>()
     };
+
     drop(connection);
-    assert!(free.len() > 2_048);
+    assert!(free_pages.len() > 2_048);
     if sparse_tail_first {
-        free.reverse();
+        free_pages.reverse();
     } else {
-        let ascending = free.clone();
-        for (index, page) in free.iter_mut().enumerate() {
+        let ascending = free_pages.clone();
+        for (index, page) in free_pages.iter_mut().enumerate() {
             *page = if index % 2 == 0 {
                 ascending[index / 2]
             } else {
@@ -84,23 +85,29 @@ fn maximum_page_count_freelist(path: &Path, sparse_tail_first: bool) {
             };
         }
     }
+
     let mut file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)
         .unwrap();
     file.set_len(64 * 1024 * 1024).unwrap();
+
     let mut offset = 0;
     let mut trunks = Vec::new();
-    while offset < free.len() {
+    while offset < free_pages.len() {
         let leaves = if offset == 0 && !sparse_tail_first {
             0
         } else {
-            (free.len() - offset - 1).min(1016)
+            (free_pages.len() - offset - 1).min(1016)
         };
-        trunks.push((free[offset], free[offset + 1..offset + 1 + leaves].to_vec()));
+        trunks.push((
+            free_pages[offset],
+            free_pages[offset + 1..offset + 1 + leaves].to_vec(),
+        ));
         offset += leaves + 1;
     }
+
     for (index, (page, leaves)) in trunks.iter().enumerate() {
         let mut bytes = [0_u8; 4096];
         let next = trunks.get(index + 1).map_or(0, |entry| entry.0);
@@ -113,13 +120,15 @@ fn maximum_page_count_freelist(path: &Path, sparse_tail_first: bool) {
             .unwrap();
         file.write_all(&bytes).unwrap();
     }
+
     file.seek(SeekFrom::Start(28)).unwrap();
     file.write_all(&16_384_u32.to_be_bytes()).unwrap();
-    file.write_all(&free[0].to_be_bytes()).unwrap();
-    file.write_all(&u32::try_from(free.len()).unwrap().to_be_bytes())
+    file.write_all(&free_pages[0].to_be_bytes()).unwrap();
+    file.write_all(&u32::try_from(free_pages.len()).unwrap().to_be_bytes())
         .unwrap();
     file.sync_all().unwrap();
     drop(file);
+
     let connection = Connection::open(path).unwrap();
     assert_eq!(
         connection
@@ -137,14 +146,14 @@ fn maximum_page_count_freelist(path: &Path, sparse_tail_first: bool) {
         connection
             .query_row("PRAGMA freelist_count", [], |row| row.get::<_, u32>(0))
             .unwrap(),
-        u32::try_from(free.len()).unwrap()
+        u32::try_from(free_pages.len()).unwrap()
     );
     eprintln!(
         concat!(
             "fragmented maximum database: {} free pages, {} trunks; ",
             "sparse_tail_first={}, full trunks1016",
         ),
-        free.len(),
+        free_pages.len(),
         trunks.len(),
         sparse_tail_first
     );
@@ -190,7 +199,7 @@ fn maximal_grant(operation: &SetDeploymentImageRequest) -> Vec<u8> {
 }
 
 pub(super) fn maximal_adapter(path: &Path, operation: &SetDeploymentImageRequest) -> FakeAdapter {
-    let mut adapter = failed_adapter(path, operation);
+    let mut adapter = failed_rollout_adapter(path, operation);
     adapter.identified_target = TargetIdentity {
         deployment_uid: "u".repeat(128),
         resource_version: "r".repeat(128),
@@ -237,6 +246,7 @@ pub(super) async fn qualify_full_capacity_order(order: &str) {
         gateway
             .submit_authorized_with_fault(&operation, &grant, None)
             .unwrap();
+
         let mut adapter = maximal_adapter(&baseline, &operation);
         assert_eq!(
             gateway
@@ -250,6 +260,7 @@ pub(super) async fn qualify_full_capacity_order(order: &str) {
             .finalize_operation_receipt_once(&operation.operation_id, &settings)
             .unwrap();
     }
+
     drop(gateway);
     for phase in [
         OperationState::Authorized,
@@ -307,7 +318,9 @@ async fn qualify_full_capacity_case(
         gateway.submit_authorized_with_fault(&overflow, &maximal_grant(&overflow), None),
         Err(GatewayError::JournalFull)
     ));
-    let mut original = stored_rows(&gateway.journal.connection);
+
+    let mut retained_rows = stored_rows(&gateway.journal.connection);
+
     drop(gateway);
     fragmented_maximum_page_count(&path);
     for (operation, grant) in pending {
@@ -332,7 +345,8 @@ async fn qualify_full_capacity_case(
             adapter.observe_calls,
             usize::from(phase != OperationState::ReceiverObserved)
         );
-        let frozen = gateway
+
+        let frozen_statement = gateway
             .journal
             .receipt_statement(&operation.operation_id)
             .unwrap();
@@ -349,7 +363,7 @@ async fn qualify_full_capacity_case(
                 .journal
                 .receipt_statement(&operation.operation_id)
                 .unwrap(),
-            frozen
+            frozen_statement
         );
         let receipt = Gateway::read_loaded_receipt(
             gateway
@@ -365,6 +379,7 @@ async fn qualify_full_capacity_case(
                 .unwrap(),
             None
         );
+
         drop(gateway);
         journal::Journal::validate_replacement(&path, &[]).unwrap();
         let reopened = maximal_gateway(&path);
@@ -379,42 +394,51 @@ async fn qualify_full_capacity_case(
             .unwrap(),
             receipt
         );
-        let mut after = stored_rows(&reopened.journal.connection);
-        let updated = after.remove(&operation.operation_id).unwrap();
-        let prior = original.remove(&operation.operation_id).unwrap();
+
+        let mut current_rows = stored_rows(&reopened.journal.connection);
+        let completed_row = current_rows.remove(&operation.operation_id).unwrap();
+
+        let original_row = retained_rows.remove(&operation.operation_id).unwrap();
         assert_eq!(
-            &updated[..9],
-            &prior[..9],
+            &completed_row[..9],
+            &original_row[..9],
             "original request and signed authority changed"
         );
         assert_eq!(
-            &updated[38..40],
-            &prior[38..40],
+            &completed_row[38..40],
+            &original_row[38..40],
             "approved snapshot changed"
         );
         if phase != OperationState::Authorized {
             assert_eq!(
-                &updated[10..19],
-                &prior[10..19],
+                &completed_row[10..19],
+                &original_row[10..19],
                 "frozen attempt/outcome changed"
             );
-            assert_eq!(&updated[40..], &prior[40..], "frozen preflight changed");
+            assert_eq!(
+                &completed_row[40..],
+                &original_row[40..],
+                "frozen preflight changed"
+            );
         }
         if phase == OperationState::ReceiverObserved {
             assert_eq!(
-                &updated[19..32],
-                &prior[19..32],
+                &completed_row[19..32],
+                &original_row[19..32],
                 "frozen receiver facts changed"
             );
             assert_eq!(
-                &updated[35..38],
-                &prior[35..38],
+                &completed_row[35..38],
+                &original_row[35..38],
                 "frozen conditions changed"
             );
         }
-        assert_eq!(after, original, "an unrelated retained row changed");
-        after.insert(operation.operation_id.clone(), updated);
-        original = after;
+        assert_eq!(
+            current_rows, retained_rows,
+            "an unrelated retained row changed"
+        );
+        current_rows.insert(operation.operation_id.clone(), completed_row);
+        retained_rows = current_rows;
     }
     assert_eq!(fs::metadata(&path).unwrap().len(), 64 * 1024 * 1024);
     eprintln!("completed504 retained/32 {phase:?}, order={order}, fragmented16384-page database");
@@ -506,18 +530,22 @@ async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_prese
         }
         kill_child(&mut child);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
-        let mut after = stored_rows(&gateway.journal.connection);
-        let current = after.remove(&selected.operation_id).unwrap();
+
+        let mut current_rows = stored_rows(&gateway.journal.connection);
+        let current_row = current_rows.remove(&selected.operation_id).unwrap();
         let mut expected = before;
-        let old = expected.remove(&selected.operation_id).unwrap();
-        assert_eq!(after, expected);
+
+        let original_row = expected.remove(&selected.operation_id).unwrap();
+        assert_eq!(current_rows, expected);
         if scenario != "receipt" {
-            assert_eq!(current, old);
+            assert_eq!(current_row, original_row);
         }
-        let frozen = gateway
+
+        let frozen_statement = gateway
             .journal
             .receipt_statement(&selected.operation_id)
             .unwrap();
+
         let mut adapter = maximal_adapter(&path, &selected);
         gateway
             .run_operation_once_with_adapter(&selected.operation_id, &mut adapter)
@@ -538,14 +566,15 @@ async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_prese
                 .journal
                 .receipt_statement(&selected.operation_id)
                 .unwrap(),
-            frozen
+            frozen_statement
         );
         if scenario == "receipt" {
             assert_eq!(
                 stored_rows(&gateway.journal.connection).get(&selected.operation_id),
-                Some(&current)
+                Some(&current_row)
             );
         }
+
         drop(gateway);
         journal::Journal::validate_replacement(&path, &[]).unwrap();
         drop(Gateway::open_for_test(&path).unwrap());
@@ -585,17 +614,17 @@ fn fill_owned_tmpfs(filler: &Path) {
         .open(filler)
         .unwrap();
     let block = [0x5a_u8; 64 * 1024];
-    let mut written = 0;
+    let mut written_bytes = 0;
     loop {
         assert!(
-            written < 128 * 1024 * 1024,
+            written_bytes < 128 * 1024 * 1024,
             "absolute filler write ceiling reached without ENOSPC"
         );
-        let remaining = 128 * 1024 * 1024 - written;
-        match file.write(&block[..remaining.min(block.len())]) {
+        let remaining_bytes = 128 * 1024 * 1024 - written_bytes;
+        match file.write(&block[..remaining_bytes.min(block.len())]) {
             Ok(count) => {
                 assert!(count > 0, "filler write made no progress");
-                written += count;
+                written_bytes += count;
             },
             Err(error) => {
                 assert_eq!(
@@ -608,12 +637,18 @@ fn fill_owned_tmpfs(filler: &Path) {
         }
     }
     assert_eq!(file.write(&[1]).unwrap_err().raw_os_error(), Some(28));
+    let written = written_bytes;
     eprintln!("actual OS ENOSPC after {written} bounded filler bytes");
 }
 
 #[cfg(target_os = "linux")]
-fn require_sparse_receipt_destinations(connection: &Connection, path: &Path, allocated: u64) {
+fn require_sparse_receipt_destinations(
+    connection: &Connection,
+    path: &Path,
+    allocated_blocks: u64,
+) {
     use std::os::unix::fs::MetadataExt as _;
+
     let mut statement = connection
         .prepare("SELECT pageno FROM dbstat('main') WHERE pageno BETWEEN 15368 AND 16383")
         .unwrap();
@@ -641,15 +676,16 @@ fn require_sparse_receipt_destinations(connection: &Connection, path: &Path, all
     );
     assert_eq!(
         fs::metadata(path).unwrap().blocks(),
-        allocated,
+        allocated_blocks,
         "cache spilling changed main-file allocation before commit"
     );
     let rollback = PathBuf::from(format!("{}-journal", path.display()));
     let bytes = fs::read(&rollback).unwrap();
-    let sector = usize::try_from(u32::from_be_bytes(bytes[20..24].try_into().unwrap())).unwrap();
-    assert_eq!((bytes.len() - sector) % 4104, 0);
+    let sector_bytes =
+        usize::try_from(u32::from_be_bytes(bytes[20..24].try_into().unwrap())).unwrap();
+    assert_eq!((bytes.len() - sector_bytes) % 4104, 0);
     assert!(
-        bytes[sector..]
+        bytes[sector_bytes..]
             .as_chunks::<4104>()
             .0
             .iter()
@@ -672,7 +708,8 @@ async fn qualify_admission_enospc() {
     gateway
         .submit_exact_for_test(&original_request, &authorization(&original_request))
         .unwrap();
-    let mut adapter = failed_adapter(&path, &original_request);
+
+    let mut adapter = failed_rollout_adapter(&path, &original_request);
     gateway
         .run_operation_once_with_adapter(&original_request.operation_id, &mut adapter)
         .await
@@ -686,7 +723,8 @@ async fn qualify_admission_enospc() {
             },
         )
         .unwrap();
-    let original = stored_rows(&gateway.journal.connection);
+
+    let retained_rows = stored_rows(&gateway.journal.connection);
     let mut selected = original_request.clone();
     selected.operation_id = "enospc-admission".into();
     let signed = sign_authorization_grant(
@@ -715,11 +753,12 @@ async fn qualify_admission_enospc() {
     assert!(matches!(result, Err(ReconciliationError::Submission(
         GatewayError::Database(rusqlite::Error::SqliteFailure(error, _))))
         if error.code == rusqlite::ErrorCode::DiskFull));
-    assert_eq!(stored_rows(&gateway.journal.connection), original);
+    assert_eq!(stored_rows(&gateway.journal.connection), retained_rows);
     fs::remove_file(&filler).unwrap();
+
     drop(gateway);
     let mut gateway = Gateway::open_for_test(&path).unwrap();
-    assert_eq!(stored_rows(&gateway.journal.connection), original);
+    assert_eq!(stored_rows(&gateway.journal.connection), retained_rows);
     let result = gateway
         .admit_and_reconcile::<FakeAdapter>(
             &selected,
@@ -744,10 +783,11 @@ async fn qualify_admission_enospc() {
     let mut repaired = stored_rows(&gateway.journal.connection);
     repaired.remove(&selected.operation_id);
     assert_eq!(
-        repaired, original,
+        repaired, retained_rows,
         "repair changed retained facts or original receipt bytes"
     );
     assert_eq!((adapter.apply_calls, adapter.observe_calls), (1, 1));
+
     drop(gateway);
     fs::remove_dir_all(directory).unwrap();
     eprintln!("KAPSEL_ADMISSION_ENOSPC_PASSED");
@@ -772,21 +812,23 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
         maximum_page_count_freelist(&path, at_commit);
         journal::Journal::validate_replacement(&path, &[]).unwrap();
         let gateway = Gateway::open_for_test(&path).unwrap();
-        let mut original = stored_rows(&gateway.journal.connection);
-        let frozen = gateway
+
+        let mut retained_rows = stored_rows(&gateway.journal.connection);
+
+        let frozen_statement = gateway
             .journal
             .receipt_statement(&selected.operation_id)
             .unwrap();
         let filler = directory.join("owned-filler");
-        let reached = std::rc::Rc::new(std::cell::Cell::new(false));
-        let flag = std::rc::Rc::clone(&reached);
+        let sql_checkpoint_reached = std::rc::Rc::new(std::cell::Cell::new(false));
+        let checkpoint_flag = std::rc::Rc::clone(&sql_checkpoint_reached);
         let checkpoint_path = path.clone();
         let checkpoint_filler = filler.clone();
-        let allocated = fs::metadata(&path).unwrap().blocks();
+        let allocated_blocks = fs::metadata(&path).unwrap().blocks();
         set_receipt_checkpoint(move |connection| {
-            flag.set(true);
+            checkpoint_flag.set(true);
             if at_commit {
-                require_sparse_receipt_destinations(connection, &checkpoint_path, allocated);
+                require_sparse_receipt_destinations(connection, &checkpoint_path, allocated_blocks);
                 fill_owned_tmpfs(&checkpoint_filler);
             }
         });
@@ -802,9 +844,9 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
         );
         eprintln!(
             "at_commit={at_commit}, sql_executed={}, result={result:?}",
-            reached.get()
+            sql_checkpoint_reached.get()
         );
-        assert_eq!(reached.get(), at_commit);
+        assert_eq!(sql_checkpoint_reached.get(), at_commit);
         assert!(
             matches!(result, Err(GatewayError::Database(rusqlite::Error::SqliteFailure(error, _)))
             if error.code == rusqlite::ErrorCode::DiskFull)
@@ -813,9 +855,10 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
             slot.borrow_mut().take();
         });
         fs::remove_file(&filler).unwrap();
+
         drop(gateway);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(stored_rows(&gateway.journal.connection), original);
+        assert_eq!(stored_rows(&gateway.journal.connection), retained_rows);
         let mut adapter = maximal_adapter(&path, &selected);
         gateway
             .run_operation_once_with_adapter(&selected.operation_id, &mut adapter)
@@ -836,12 +879,16 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
                 .journal
                 .receipt_statement(&selected.operation_id)
                 .unwrap(),
-            frozen
+            frozen_statement
         );
         let mut completed = stored_rows(&gateway.journal.connection);
         completed.remove(&selected.operation_id);
-        original.remove(&selected.operation_id);
-        assert_eq!(completed, original, "completion changed unrelated history");
+        retained_rows.remove(&selected.operation_id);
+        assert_eq!(
+            completed, retained_rows,
+            "completion changed unrelated history"
+        );
+
         drop(gateway);
         journal::Journal::validate_replacement(&path, &[]).unwrap();
         drop(Gateway::open_for_test(&path).unwrap());
@@ -863,6 +910,7 @@ async fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
         .map(|(_, sql)| sql);
     for sql in statements {
         let insert = sql.starts_with("INSERT");
+
         let mut statement = gateway
             .journal
             .connection
@@ -904,6 +952,7 @@ async fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
                 .collect::<Vec<_>>()
         );
     }
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -915,10 +964,12 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
     gateway
         .submit_exact_for_test(&request(), &authorization(&request()))
         .unwrap();
+
     drop(gateway);
     fragmented_maximum_page_count(&path);
     let gateway = Gateway::open_for_test(&path).unwrap();
-    let original = stored_rows(&gateway.journal.connection);
+
+    let retained_rows = stored_rows(&gateway.journal.connection);
     for (pragma, expected) in [
         ("cache_spill", 0),
         ("synchronous", 2),
@@ -955,11 +1006,11 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
                 params![value, request().operation_id],
             )
             .unwrap();
-        let current = fs::metadata(&rollback).unwrap().len();
+        let current_rollback_bytes = fs::metadata(&rollback).unwrap().len();
         if let Some(length) = length {
-            assert_eq!(current, length);
+            assert_eq!(current_rollback_bytes, length);
         } else {
-            length = Some(current);
+            length = Some(current_rollback_bytes);
         }
         assert_eq!(
             fs::read(&path).unwrap(),
@@ -968,10 +1019,11 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
         );
     }
     let bytes = fs::read(&rollback).unwrap();
-    let sector = usize::try_from(u32::from_be_bytes(bytes[20..24].try_into().unwrap())).unwrap();
-    assert!(sector <= 65536);
-    assert_eq!((bytes.len() - sector) % 4104, 0);
-    let page_ids = bytes[sector..]
+    let sector_bytes =
+        usize::try_from(u32::from_be_bytes(bytes[20..24].try_into().unwrap())).unwrap();
+    assert!(sector_bytes <= 65536);
+    assert_eq!((bytes.len() - sector_bytes) % 4104, 0);
+    let page_ids = bytes[sector_bytes..]
         .as_chunks::<4104>()
         .0
         .iter()
@@ -987,10 +1039,12 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
     eprintln!(
         "rollback stable over16 updates: {} bytes, {} unique original-page records, sector{sector}",
         bytes.len(),
-        page_ids.len()
+        page_ids.len(),
+        sector = sector_bytes
     );
     transaction.rollback().unwrap();
-    assert_eq!(stored_rows(&gateway.journal.connection), original);
+    assert_eq!(stored_rows(&gateway.journal.connection), retained_rows);
+
     drop(gateway);
     journal::Journal::validate_replacement(&path, &[]).unwrap();
     drop(Gateway::open_for_test(&path).unwrap());

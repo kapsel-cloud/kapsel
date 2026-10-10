@@ -22,7 +22,8 @@ async fn maximal_request_fields_complete_a_bounded_durable_receipt() {
     gateway
         .submit_exact_for_test(&request, &authorization)
         .unwrap();
-    let mut adapter = failed_adapter(&path, &request);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
     assert_eq!(
         gateway
             .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
@@ -52,6 +53,7 @@ async fn maximal_request_fields_complete_a_bounded_durable_receipt() {
     .unwrap()
     .0;
     assert!(receipt.len() <= receipt::RECEIPT_BYTES_MAX);
+
     drop(gateway);
     let reopened = Gateway::open_for_test(&path).unwrap();
     assert_eq!(
@@ -66,6 +68,7 @@ async fn maximal_request_fields_complete_a_bounded_durable_receipt() {
         .0,
         receipt
     );
+
     drop(reopened);
     for suffix in ["-journal", "-wal", "-shm"] {
         assert!(!PathBuf::from(format!("{}{suffix}", path.display())).exists());
@@ -96,7 +99,8 @@ async fn receipt_statement_retains_exact_available_condition_reason() {
     gateway
         .submit_exact_for_test(&request, &authorization(&request))
         .unwrap();
-    let mut adapter = failed_adapter(&path, &request);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
     adapter.observation.updated_replicas = Some(1);
     adapter.observation.available_replicas = Some(1);
     adapter.observation.unavailable_replicas = Some(0);
@@ -118,6 +122,7 @@ async fn receipt_statement_retains_exact_available_condition_reason() {
         statement.rollout_condition_reason(),
         Some("DifferentObservedReason")
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -130,7 +135,8 @@ async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
     gateway
         .submit_exact_for_test(&request, &authorization(&request))
         .unwrap();
-    let mut adapter = failed_adapter(&path, &request);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
     assert_eq!(
         gateway
             .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
@@ -151,6 +157,7 @@ async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
         "effect-gateway-authorization-test-key"
     );
     assert_eq!(statement.authorization_grant_digest().len(), 64);
+
     assert_eq!(statement.write_strategy(), WRITE_STRATEGY);
     assert_eq!(statement.target_uid(), "deployment-uid-1");
     assert_eq!(statement.target_resource_version(), "resource-version-0");
@@ -160,6 +167,7 @@ async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
         Some(request.immutable_image_digest.as_str())
     );
     assert_eq!(statement.observed_operation_marker(), Some("op-001"));
+
     assert_eq!(statement.current_generation(), Some(2));
     assert_eq!(statement.requested_generation(), Some(2));
     assert_eq!(statement.observed_generation(), Some(2));
@@ -167,6 +175,7 @@ async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
     assert_eq!(statement.updated_replicas(), Some(0));
     assert_eq!(statement.available_replicas(), Some(0));
     assert_eq!(statement.unavailable_replicas(), Some(1));
+
     assert_eq!(statement.result, OperationResult::Failed);
     assert_eq!(
         statement.rollout_condition_reason.as_deref(),
@@ -190,6 +199,7 @@ async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
     assert_eq!(report.status(), InspectionStatus::Inspected);
     assert_eq!(report.statement(), Some(&statement));
     assert_eq!(report.non_claims(), Some(statement.non_claims()));
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -286,7 +296,8 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
         owner
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
-        let mut adapter = failed_adapter(owner_path, &request);
+
+        let mut adapter = failed_rollout_adapter(owner_path, &request);
         adapter.observation.rollout_condition_reason = Some(reason.into());
         owner
             .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
@@ -310,6 +321,7 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
     else {
         panic!("foreign fixture must have frozen facts");
     };
+
     let retained_grant = || {
         gateway
             .journal
@@ -322,7 +334,7 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
             )
             .unwrap()
     };
-    let grant = retained_grant();
+    let original_grant = retained_grant();
     let settings = ReceiptSettings {
         signing_seed: &[71; 32],
         key_id: "original-key",
@@ -346,7 +358,7 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
         gateway.journal.operation(&request.operation_id).unwrap(),
         Some(original)
     );
-    assert_eq!(retained_grant(), grant);
+    assert_eq!(retained_grant(), original_grant);
 
     let candidate = Gateway::build_receipt(&operation, &settings).unwrap();
     gateway
@@ -358,7 +370,8 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
         .operation(&request.operation_id)
         .unwrap()
         .unwrap();
-    let evidence = Gateway::read_loaded_receipt(finalized.clone()).unwrap();
+
+    let original_receipt = Gateway::read_loaded_receipt(finalized.clone()).unwrap();
     assert!(matches!(
         gateway
             .journal
@@ -378,9 +391,10 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
                 .unwrap()
         )
         .unwrap(),
-        evidence
+        original_receipt
     );
-    assert_eq!(retained_grant(), grant);
+    assert_eq!(retained_grant(), original_grant);
+
     drop(gateway);
     drop(foreign);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -402,7 +416,7 @@ async fn finalizer_contender_changes_no_durable_or_public_fact() {
     first
         .run_operation_once_with_adapter(
             &request.operation_id,
-            &mut failed_adapter(&path, &request),
+            &mut failed_rollout_adapter(&path, &request),
         )
         .await
         .unwrap();
@@ -440,6 +454,7 @@ async fn finalizer_contender_changes_no_durable_or_public_fact() {
             .unwrap(),
         Some(OperationState::Finalized)
     );
+
     drop(contender);
     drop(first);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -454,15 +469,18 @@ async fn process_exit_before_and_after_receipt_commit_preserves_frozen_observati
         gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
-        let mut adapter = failed_adapter(&path, &request);
+
+        let mut adapter = failed_rollout_adapter(&path, &request);
         gateway
             .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
             .await
             .unwrap();
+
         let statement = gateway
             .journal
             .receipt_statement(&request.operation_id)
             .unwrap();
+
         drop(gateway);
         let ready = path.parent().unwrap().join("ready");
         let mut child = spawn_process_child(scenario, &path, &ready, None, None);
@@ -474,7 +492,7 @@ async fn process_exit_before_and_after_receipt_commit_preserves_frozen_observati
             .operation(&request.operation_id)
             .unwrap()
             .unwrap();
-        let old_bytes = if scenario == "receipt" {
+        let retained_receipt_bytes = if scenario == "receipt" {
             Some(Gateway::read_loaded_receipt(old).unwrap().0)
         } else {
             assert_eq!(old.state(), OperationState::ReceiverObserved);
@@ -497,7 +515,7 @@ async fn process_exit_before_and_after_receipt_commit_preserves_frozen_observati
                 .unwrap(),
         )
         .unwrap();
-        if let Some(old) = old_bytes {
+        if let Some(old) = retained_receipt_bytes {
             assert_eq!(bytes, old);
         }
         assert_eq!(
@@ -509,6 +527,7 @@ async fn process_exit_before_and_after_receipt_commit_preserves_frozen_observati
         );
         assert_eq!(adapter.apply_calls, 1);
         assert_eq!(adapter.observe_calls, 1);
+
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

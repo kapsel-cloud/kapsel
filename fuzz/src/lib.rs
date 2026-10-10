@@ -39,6 +39,7 @@ pub fn receipt_documents(input: &[u8]) -> Option<(&[u8], &[u8])> {
     if input.len() > 17 * 1024 + 5 {
         return None;
     }
+
     let selector: [u8; 4] = input.get(..4)?.try_into().ok()?;
     let documents = &input[4..];
     let split = u32::from_be_bytes(selector) as usize % (documents.len() + 1);
@@ -70,28 +71,31 @@ fn check_receipt(bytes: &[u8], trust: &[u8], git: bool) {
     };
     let limits = InspectionLimits::default();
     let status = inspect(bytes, trust, 150, limits);
-    let narrowed = InspectionLimits {
+
+    let receipt_byte_limit = InspectionLimits {
         receipt_bytes_max: bytes.len().saturating_sub(1).clamp(1, 16 * 1024),
         ..limits
     };
-    if bytes.len() > narrowed.receipt_bytes_max {
+    if bytes.len() > receipt_byte_limit.receipt_bytes_max {
         assert_eq!(
-            inspect(bytes, trust, 150, narrowed),
+            inspect(bytes, trust, 150, receipt_byte_limit),
             InspectionStatus::StructureRejected,
             "receipt byte limit"
         );
     }
-    let narrowed = InspectionLimits {
+
+    let trust_byte_limit = InspectionLimits {
         trust_bytes_max: trust.len().saturating_sub(1).clamp(1, 1024),
         ..limits
     };
-    if trust.len() > narrowed.trust_bytes_max {
+    if trust.len() > trust_byte_limit.trust_bytes_max {
         assert_eq!(
-            inspect(bytes, trust, 150, narrowed),
+            inspect(bytes, trust, 150, trust_byte_limit),
             InspectionStatus::StructureRejected,
             "trust byte limit"
         );
     }
+
     // Independent explicit time/limit exploration, including legal lower text/statement ceilings.
     let _ = inspect(bytes, trust, i64::MIN, limits);
     let _ = inspect(bytes, trust, i64::MAX, limits);
@@ -108,6 +112,7 @@ fn check_receipt(bytes: &[u8], trust: &[u8], git: bool) {
     if status != InspectionStatus::Inspected {
         return;
     }
+
     let mut damaged_signature = bytes.to_vec();
     *damaged_signature
         .last_mut()
@@ -121,14 +126,18 @@ fn check_receipt(bytes: &[u8], trust: &[u8], git: bool) {
     if git {
         let envelope = fixtures::fields(bytes).expect("inspected envelope");
         let statement = fixtures::fields(envelope[2]).expect("inspected statement");
-        let expected: &[u8] = match statement[9] {
+        let expected_result_token: &[u8] = match statement[9] {
             b"updated" => b"SUCCEEDED",
             b"rejected_before_send" | b"receiver_rejected" => b"FAILED",
             b"unknown" => b"UNKNOWN",
             _ => panic!("inspected acknowledgement grammar"),
         };
-        assert_eq!(statement[13], expected, "inconsistent signed statement");
+        assert_eq!(
+            statement[13], expected_result_token,
+            "inconsistent signed statement"
+        );
     }
+
     let mut trailing = bytes.to_vec();
     trailing.push(0);
     assert_eq!(
@@ -143,6 +152,7 @@ fn check_receipt(bytes: &[u8], trust: &[u8], git: bool) {
         InspectionStatus::StructureRejected,
         "trailing trust record"
     );
+
     // Once inspected, externally supplied trust must still own time, key and purpose.
     let parsed = kapsel_authority::parse_receipt_trust(
         trust,
@@ -224,22 +234,31 @@ fn check_grant(input: &[u8], git: bool) {
             verify_authorization_grant(bytes, trust).is_ok()
         }
     };
-    let accepted = accepts(input, &trust);
+    let grant_is_accepted = accepts(input, &trust);
     if input.len() > 4096 {
-        assert!(!accepted, "grant byte limit");
+        assert!(!grant_is_accepted, "grant byte limit");
     }
-    if !accepted {
+    if !grant_is_accepted {
         return;
     }
+
     let mut trailing = input.to_vec();
     trailing.push(0);
     assert!(!accepts(&trailing, &trust), "trailing grant record");
-    let mut wrong = trust.clone();
-    wrong.key_id = "another-owner".into();
-    assert!(!accepts(input, &wrong), "external grant signer identity");
-    wrong = trust.clone();
-    wrong.public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
-    assert!(!accepts(input, &wrong), "external grant signer key");
+
+    let mut wrong_signer_trust = trust.clone();
+    wrong_signer_trust.key_id = "another-owner".into();
+    assert!(
+        !accepts(input, &wrong_signer_trust),
+        "external grant signer identity"
+    );
+    wrong_signer_trust = trust.clone();
+    wrong_signer_trust.public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
+    assert!(
+        !accepts(input, &wrong_signer_trust),
+        "external grant signer key"
+    );
+
     if git {
         let (authorization, signer, _) = verify_git_ref_grant(input, &trust).unwrap().into_parts();
         assert_eq!(
@@ -276,11 +295,13 @@ pub fn service_document(input: &[u8]) {
     if input.len() > 160 * 1024 + 1 {
         return;
     }
+
     let path = PathBuf::from("/fixture/operator-owned-journal.sqlite");
     let parsed = parse_service_operator_document(input, path.clone());
     if input.len() > 160 * 1024 {
         assert!(parsed.is_err(), "service byte limit");
     }
+
     if let Ok(document) = parsed {
         assert_eq!(
             document.configuration.journal_path, path,

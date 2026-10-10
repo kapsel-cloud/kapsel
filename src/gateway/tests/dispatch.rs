@@ -29,6 +29,7 @@ fn competing_fresh_transitions_issue_one_bound_permission() {
     gateway
         .submit_exact_for_test(&request, &authorization(&request))
         .unwrap();
+
     drop(gateway);
     let barrier = Arc::new(Barrier::new(2));
     // Array::map starts both threads before either is joined at the shared barrier.
@@ -58,18 +59,19 @@ fn competing_fresh_transitions_issue_one_bound_permission() {
             }
         })
     });
-    let winners: Vec<_> = claimants
+    let dispatch_winners: Vec<_> = claimants
         .into_iter()
         .filter_map(|claimant| claimant.join().unwrap())
         .collect();
-    assert_eq!(winners.len(), 1);
-    assert_eq!(winners[0].0, request);
-    assert_eq!(winners[0].1, observed_target().to_adapter_target());
+    assert_eq!(dispatch_winners.len(), 1);
+    assert_eq!(dispatch_winners[0].0, request);
+    assert_eq!(dispatch_winners[0].1, observed_target().to_adapter_target());
     let gateway = Gateway::open_for_test(&path).unwrap();
     assert!(matches!(
         gateway.journal.operation("op-001").unwrap(),
         Some(journal::LoadedOperation::ApplyStarted(_))
     ));
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -84,28 +86,31 @@ fn a_snapshot_from_another_journal_cannot_authorize_a_different_frozen_action() 
     first
         .submit_exact_for_test(&request, &authorization(&request))
         .unwrap();
-    let mut different = request;
-    different.container = "different".into();
+    let mut different_request = request;
+    different_request.container = "different".into();
     second
-        .submit_exact_for_test(&different, &authorization(&different))
+        .submit_exact_for_test(&different_request, &authorization(&different_request))
         .unwrap();
-    let misplaced = load_authorized(&first);
+
+    let foreign_snapshot = load_authorized(&first);
     assert!(matches!(
         second
             .journal
-            .begin_attempt(&misplaced, observed_target(), None),
+            .begin_attempt(&foreign_snapshot, observed_target(), None),
         Err(GatewayError::InvalidTransition)
     ));
     assert_eq!(
         second.get("op-001").unwrap(),
         Some(OperationState::Authorized)
     );
+
     let permission = second
         .journal
         .begin_attempt(&load_authorized(&second), observed_target(), None)
         .unwrap()
         .unwrap();
-    assert_eq!(permission.into_payload().0, different);
+    assert_eq!(permission.into_payload().0, different_request);
+
     drop(first);
     drop(second);
     fs::remove_dir_all(first_path.parent().unwrap()).unwrap();
@@ -150,8 +155,9 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
         gateway
             .submit_exact_for_test(&request, &authorization(&request))
             .unwrap();
+
         let mut adapter = PausingAdapter {
-            inner: failed_adapter(&path, &request),
+            inner: failed_rollout_adapter(&path, &request),
             before_attempt,
         };
         let mut execution =
@@ -161,15 +167,15 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
             std::task::Poll::Pending
         ));
         drop(execution);
-        assert_eq!(
-            gateway.get("op-001").unwrap(),
-            Some(if before_attempt {
-                OperationState::Authorized
-            } else {
-                OperationState::ApplyStarted
-            })
-        );
+
+        let expected_state = if before_attempt {
+            OperationState::Authorized
+        } else {
+            OperationState::ApplyStarted
+        };
+        assert_eq!(gateway.get("op-001").unwrap(), Some(expected_state));
         assert_eq!(gateway.result("op-001").unwrap(), None);
+
         drop(gateway);
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
@@ -181,6 +187,7 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
             gateway.result("op-001").unwrap(),
             Some(OperationResult::Failed)
         );
+
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

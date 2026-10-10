@@ -6,6 +6,7 @@
 
 mod disposition;
 mod document;
+
 use std::{error::Error, fmt, path::PathBuf};
 
 pub use disposition::{
@@ -74,12 +75,6 @@ impl ApprovedAction {
     }
 }
 
-/// Resolved original authority, with a read-only admission snapshot separate from advancement.
-enum Selection {
-    Kubernetes(AgentRequest, Vec<u8>, Option<OperationState>),
-    Git(Vec<u8>, Option<OperationState>),
-}
-
 /// One retained identity with authenticated facts or a non-disclosing access failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryEntry {
@@ -118,11 +113,6 @@ pub struct HistoryPage {
     pub next_cursor: Option<String>,
 }
 
-struct SelectableApproval {
-    handle: ApprovedAction,
-    signed_grant: Vec<u8>,
-}
-
 /// Result of bounded admission, separate from receiver result and worker liveness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceAdmission {
@@ -157,7 +147,7 @@ impl ServiceExecution {
         receipt_signing_key_id: &str,
     ) -> Self {
         let kubernetes_client = match kubeconfig {
-            Some(bytes) if bytes.len() <= 16 * 1024 => {
+            Some(bytes) if bytes.len() <= super::KUBECONFIG_BYTES_MAX => {
                 super::load_operator_kubernetes_client(bytes).await.ok()
             },
             _ => None,
@@ -166,6 +156,7 @@ impl ServiceExecution {
             .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
             .filter(|_| crate::gateway::validate_key_id(receipt_signing_key_id).is_ok())
             .map(|seed| (seed, receipt_signing_key_id.to_owned()));
+
         Self {
             kubernetes_client,
             git_receiver: None,
@@ -181,6 +172,24 @@ impl ServiceExecution {
         self.git_receiver = bytes.and_then(crate::GitReceiverConfiguration::from_document);
         self
     }
+}
+
+struct SelectableApproval {
+    handle: ApprovedAction,
+    signed_grant: Vec<u8>,
+}
+
+/// Resolved original authority, with a read-only admission snapshot separate from advancement.
+enum Selection {
+    Kubernetes {
+        request: AgentRequest,
+        signed_grant: Vec<u8>,
+        retained_state: Option<OperationState>,
+    },
+    Git {
+        signed_grant: Vec<u8>,
+        retained_state: Option<OperationState>,
+    },
 }
 
 /// One bounded service application, with catalog selection separate from retained history.
@@ -239,6 +248,7 @@ impl ServiceApplication {
             }
             configuration
         };
+
         let gateway = Gateway::open_with_authorities(
             &configuration.journal_path,
             configuration.authorization_trust,
@@ -252,6 +262,7 @@ impl ServiceApplication {
             }
             gateway
         };
+
         for approval in &approvals {
             let validation = match &approval.handle {
                 ApprovedAction::Kubernetes { request, .. } => gateway
@@ -329,7 +340,8 @@ impl ServiceApplication {
         if configuration.approvals.len() > 32 || configuration.authorization_trust.len() > 128 {
             return Err(ServiceError::Configuration);
         }
-        let mut bytes = 0_usize;
+
+        let mut approval_bytes_total = 0_usize;
         for approval in &configuration.approvals {
             if approval.signed_grant.len() > 4096
                 || approval.label.len() > 128
@@ -340,13 +352,14 @@ impl ServiceApplication {
             {
                 return Err(ServiceError::Configuration);
             }
-            bytes = bytes
+            approval_bytes_total = approval_bytes_total
                 .checked_add(approval.signed_grant.len() + approval.label.len())
                 .ok_or(ServiceError::Configuration)?;
         }
-        if bytes > 160 * 1024 {
+        if approval_bytes_total > 160 * 1024 {
             return Err(ServiceError::Configuration);
         }
+
         // Validate every external appointment and catalog entry before journal creation.
         for (index, trust) in configuration.authorization_trust.iter().enumerate() {
             crate::gateway::validate_authorization_trust(trust)
@@ -358,6 +371,7 @@ impl ServiceApplication {
                 return Err(ServiceError::Configuration);
             }
         }
+
         let mut approvals: Vec<SelectableApproval> =
             Vec::with_capacity(configuration.approvals.len());
         for approval in &configuration.approvals {
@@ -449,13 +463,14 @@ impl ServiceApplication {
         if let Some((_, key_id)) = &execution.receipt_signing {
             crate::gateway::validate_key_id(key_id).map_err(|_| ServiceError::Configuration)?;
         }
-        let receipt = execution.receipt_signing.as_ref().map(|(seed, key_id)| {
+
+        let receipt_settings = execution.receipt_signing.as_ref().map(|(seed, key_id)| {
             crate::gateway::ReceiptSettings {
                 signing_seed: seed,
                 key_id,
             }
         });
-        let callback = |decision| {
+        let acknowledge_admission = |decision| {
             acknowledged(match decision {
                 crate::gateway::AdmissionDecision::Admitted(state) => {
                     ServiceAdmission::Admitted(state)
@@ -464,20 +479,25 @@ impl ServiceApplication {
                 crate::gateway::AdmissionDecision::Full => ServiceAdmission::Full,
             });
         };
-        let result = match selected {
-            Selection::Kubernetes(request, signed_grant, _) => {
+
+        let reconciliation_result = match selected {
+            Selection::Kubernetes {
+                request,
+                signed_grant,
+                ..
+            } => {
                 self.gateway
                     .admit_and_reconcile(
                         &request,
                         &signed_grant,
                         adapter,
-                        receipt.as_ref(),
-                        callback,
+                        receipt_settings.as_ref(),
+                        acknowledge_admission,
                         fault,
                     )
                     .await
             },
-            Selection::Git(signed_grant, _) => {
+            Selection::Git { signed_grant, .. } => {
                 self.gateway
                     .admit_and_reconcile_git(
                         operation_id,
@@ -485,13 +505,14 @@ impl ServiceApplication {
                         execution.git_receiver.as_ref(),
                         #[cfg(test)]
                         git_adapter,
-                        receipt.as_ref(),
-                        callback,
+                        receipt_settings.as_ref(),
+                        acknowledge_admission,
                     )
                     .await
             },
         };
-        result
+
+        reconciliation_result
             .map(|()| ServiceStop::Finished)
             .or_else(classify_stop)
     }
@@ -513,7 +534,8 @@ impl ServiceApplication {
     ) -> Result<Option<OperationState>, ServiceError> {
         self.retained_for_selection(operation_id)
             .map(|selected| match selected {
-                Selection::Kubernetes(_, _, state) | Selection::Git(_, state) => state,
+                Selection::Kubernetes { retained_state, .. }
+                | Selection::Git { retained_state, .. } => retained_state,
             })
     }
 
@@ -525,7 +547,10 @@ impl ServiceApplication {
             .retained_git(operation_id)
             .map_err(map_gateway_error)?
         {
-            return Ok(Selection::Git(retained.signed_grant, Some(retained.state)));
+            return Ok(Selection::Git {
+                signed_grant: retained.signed_grant,
+                retained_state: Some(retained.state),
+            });
         }
         if let Some(retained) = self
             .gateway
@@ -535,22 +560,28 @@ impl ServiceApplication {
             if retained.operation.targets().approved_target.is_none() {
                 return Err(ServiceError::InvalidRequest);
             }
-            return Ok(Selection::Kubernetes(
-                retained.request,
-                retained.signed_grant,
-                Some(retained.operation.state()),
-            ));
+            return Ok(Selection::Kubernetes {
+                request: retained.request,
+                signed_grant: retained.signed_grant,
+                retained_state: Some(retained.operation.state()),
+            });
         }
+
         let approval = self
             .approvals
             .iter()
             .find(|entry| entry.handle.operation_id() == operation_id)
             .ok_or(ServiceError::InvalidRequest)?;
         Ok(match &approval.handle {
-            ApprovedAction::Kubernetes { request, .. } => {
-                Selection::Kubernetes(request.clone(), approval.signed_grant.clone(), None)
+            ApprovedAction::Kubernetes { request, .. } => Selection::Kubernetes {
+                request: request.clone(),
+                signed_grant: approval.signed_grant.clone(),
+                retained_state: None,
             },
-            ApprovedAction::Git { .. } => Selection::Git(approval.signed_grant.clone(), None),
+            ApprovedAction::Git { .. } => Selection::Git {
+                signed_grant: approval.signed_grant.clone(),
+                retained_state: None,
+            },
         })
     }
 
@@ -592,11 +623,16 @@ impl ServiceApplication {
     ///
     /// Invalid cursor grammar or unreadable identity storage returns a bounded error.
     pub fn history(&self, after: Option<&str>) -> Result<HistoryPage, ServiceError> {
-        let mut ids = self.gateway.history_ids(after).map_err(map_gateway_error)?;
-        let more = ids.len() > 8;
-        ids.truncate(8);
-        let next_cursor = if more { ids.last().cloned() } else { None };
-        let entries = ids
+        let mut retained_ids = self.gateway.history_ids(after).map_err(map_gateway_error)?;
+        let has_more_entries = retained_ids.len() > 8;
+        retained_ids.truncate(8);
+        let next_cursor = if has_more_entries {
+            retained_ids.last().cloned()
+        } else {
+            None
+        };
+
+        let entries = retained_ids
             .into_iter()
             .map(|operation_id| {
                 let status = self.status(&operation_id);
@@ -695,11 +731,8 @@ impl ServiceApplication {
         observation: ExecutionObservation,
     ) -> Result<(OperationStatus, OperationTargets, ExecutionDisposition), ServiceError> {
         let (status, targets) = self.status(operation_id)?;
-        Ok((
-            status,
-            targets,
-            ExecutionDisposition::project(status, observation),
-        ))
+        let disposition = ExecutionDisposition::project(status, observation);
+        Ok((status, targets, disposition))
     }
 
     /// Retrieves the original committed receipt without receiver or signing availability.
@@ -794,15 +827,17 @@ fn approved_handle(
         if let Ok(grant) =
             crate::gateway::verify_authorization_grant(&approval.signed_grant, appointment)
         {
-            let facts = grant.authorization;
-            let approved_target = facts.approved_target.ok_or(ServiceError::Configuration)?;
+            let authorization = grant.authorization;
+            let approved_target = authorization
+                .approved_target
+                .ok_or(ServiceError::Configuration)?;
             return Ok(ApprovedAction::Kubernetes {
                 request: AgentRequest {
-                    operation_id: facts.operation_id,
-                    namespace: facts.namespace,
-                    deployment: facts.deployment,
-                    container: facts.container,
-                    immutable_image_digest: facts.immutable_image_digest,
+                    operation_id: authorization.operation_id,
+                    namespace: authorization.namespace,
+                    deployment: authorization.deployment,
+                    container: authorization.container,
+                    immutable_image_digest: authorization.immutable_image_digest,
                 },
                 approved_target,
                 label: approval.label.clone(),
@@ -850,6 +885,7 @@ fn map_gateway_error(error: GatewayError) -> ServiceError {
     match error {
         GatewayError::UntrustedAuthorizationGrant => ServiceError::AuthorityUnavailable,
         GatewayError::InvalidInput(field) => {
+            // Consume the private detail without exposing it in caller-safe diagnostics.
             let _ = field;
             ServiceError::InvalidRequest
         },

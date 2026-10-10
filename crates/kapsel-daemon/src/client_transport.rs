@@ -39,6 +39,7 @@ pub fn exchange(socket: &str, request: &[u8]) -> Result<(Vec<u8>, String), Error
     if request.is_empty() || request.len() > 16 * 1024 {
         return Err(Error::Exchange);
     }
+
     let mut stream = UnixStream::connect(socket).map_err(|_| Error::Connection)?;
     stream
         .set_read_timeout(Some(IO_DEADLINE))
@@ -46,23 +47,25 @@ pub fn exchange(socket: &str, request: &[u8]) -> Result<(Vec<u8>, String), Error
     stream
         .set_write_timeout(Some(IO_DEADLINE))
         .map_err(|_| Error::Exchange)?;
-    let length = u32::try_from(request.len()).map_err(|_| Error::Exchange)?;
+    let request_length = u32::try_from(request.len()).map_err(|_| Error::Exchange)?;
     stream
-        .write_all(&length.to_be_bytes())
+        .write_all(&request_length.to_be_bytes())
         .map_err(|_| Error::Exchange)?;
     stream.write_all(request).map_err(|_| Error::Exchange)?;
     stream
         .shutdown(Shutdown::Write)
         .map_err(|_| Error::Exchange)?;
+
     let mut prefix = [0_u8; 4];
     stream
         .read_exact(&mut prefix)
         .map_err(|_| Error::Exchange)?;
-    let length = usize::try_from(u32::from_be_bytes(prefix)).map_err(|_| Error::Response)?;
-    if length == 0 || length > RESPONSE_BYTES_MAX {
+    let response_length =
+        usize::try_from(u32::from_be_bytes(prefix)).map_err(|_| Error::Response)?;
+    if response_length == 0 || response_length > RESPONSE_BYTES_MAX {
         return Err(Error::Response);
     }
-    let mut response = vec![0_u8; length];
+    let mut response = vec![0_u8; response_length];
     stream
         .read_exact(&mut response)
         .map_err(|_| Error::Exchange)?;
@@ -70,6 +73,7 @@ pub fn exchange(socket: &str, request: &[u8]) -> Result<(Vec<u8>, String), Error
     if stream.read(&mut trailing).map_err(|_| Error::Exchange)? != 0 {
         return Err(Error::Response);
     }
+
     let status = validate_response_envelope(&response)?;
     Ok((response, status))
 }
@@ -177,7 +181,9 @@ mod tests {
             // Rejected prefixes can close the client before the peer finishes writing.
             let _ = stream.write_all(&reply);
         });
+
         let result = exchange(socket.to_str().unwrap(), REQUEST);
+
         peer.join().unwrap();
         result
     }
@@ -200,6 +206,7 @@ mod tests {
         ] {
             let bytes = format!(" {{\"status\":\"{status}\", \"version\":1}}\n").into_bytes();
             let (original, recognized) = exchange_reply(frame(&bytes)).unwrap();
+
             assert_eq!(original, bytes);
             assert_eq!(recognized, status);
         }

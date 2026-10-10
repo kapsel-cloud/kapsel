@@ -70,8 +70,9 @@ fn inspected_statement(bytes: &[u8]) -> ReceiptStatement {
 // Wrap only loss placement, not approval, dispatch payload, observations or classification.
 struct CutAdapter {
     inner: KubernetesDeploymentImageAdapter,
-    cut: String,
+    interruption_point: String,
 }
+
 impl DeploymentImageAdapter for CutAdapter {
     async fn identify(
         &mut self,
@@ -79,16 +80,18 @@ impl DeploymentImageAdapter for CutAdapter {
     ) -> Result<TargetIdentity, TargetReadError> {
         self.inner.identify(request).await
     }
+
     async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
-        if self.cut == "pre-send" {
+        if self.interruption_point == "pre-send" {
             std::process::exit(73);
         }
         let result = self.inner.apply(permission).await;
-        if self.cut == "lost-response" {
+        if self.interruption_point == "lost-response" {
             std::process::exit(73);
         }
         result
     }
+
     async fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -106,7 +109,7 @@ async fn run_operation(root: &Path, client: kube::Client, case: &str, cut: &str)
         .unwrap();
     let mut adapter = CutAdapter {
         inner: KubernetesDeploymentImageAdapter::new(client),
-        cut: cut.into(),
+        interruption_point: cut.into(),
     };
     // A post-marker conflict is attempted, never a stale-approval rejection.
     match gateway
@@ -122,6 +125,7 @@ async fn run_operation(root: &Path, client: kube::Client, case: &str, cut: &str)
         },
         Err(error) => panic!("unexpected receiver recovery error for {case}: {error:?}"),
     }
+
     gateway
         .finalize_operation_receipt_once(
             &request.operation_id,
@@ -131,6 +135,7 @@ async fn run_operation(root: &Path, client: kube::Client, case: &str, cut: &str)
             },
         )
         .unwrap();
+
     let result = match gateway.result("comparison-op").unwrap() {
         Some(OperationResult::Succeeded) => "SUCCEEDED",
         Some(OperationResult::Failed) => "FAILED",
@@ -202,6 +207,7 @@ fn child(root: &Path, case: &str, cut: &str) {
 fn output(root: &Path) -> Value {
     serde_json::from_slice(&fs::read(root.join("caller-output.json")).unwrap()).unwrap()
 }
+
 fn hex_digest(bytes: &[u8]) -> String {
     use std::fmt::Write;
     Sha256::digest(bytes)
@@ -220,7 +226,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 fn assert_retained_facts(case: &str, output: &Value, receiver: &Value) {
     let bytes: Vec<u8> = serde_json::from_value(output["frozen"].clone()).unwrap();
     let request = request();
-    let requested = match case {
+    let expected_requested_generation = match case {
         "pre-send" | "target-replacement" | "intervening-writer" | "preflight-race" => None,
         "retained-marker" => Some(3),
         _ => Some(2),
@@ -250,7 +256,10 @@ fn assert_retained_facts(case: &str, output: &Value, receiver: &Value) {
         json!(statement.current_generation),
         receiver["metadata"]["generation"]
     );
-    assert_eq!(statement.requested_generation, requested);
+    assert_eq!(
+        statement.requested_generation,
+        expected_requested_generation
+    );
     assert_eq!(
         json!(statement.observed_generation),
         receiver["status"]["observedGeneration"]
@@ -281,6 +290,7 @@ fn assert_retained_facts(case: &str, output: &Value, receiver: &Value) {
             .as_i64()
             .unwrap_or(0))
     );
+
     let condition = &receiver["status"]["conditions"][0];
     assert_eq!(json!(statement.rollout_condition_type), condition["type"]);
     assert_eq!(
@@ -294,6 +304,7 @@ fn assert_retained_facts(case: &str, output: &Value, receiver: &Value) {
 }
 
 struct Workspace(PathBuf);
+
 impl Workspace {
     fn new(case: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
@@ -305,6 +316,7 @@ impl Workspace {
         Self(root)
     }
 }
+
 impl Drop for Workspace {
     fn drop(&mut self) {
         if !std::thread::panicking() {
@@ -315,7 +327,7 @@ impl Drop for Workspace {
 
 #[test]
 fn receiver_recovery_scenarios() {
-    let only = std::env::var("KAPSEL_RECEIVER_ONLY").ok();
+    let selected_case = std::env::var("KAPSEL_RECEIVER_ONLY").ok();
     let mut executed = 0;
     for (case, expected, patches, gets, cut) in [
         ("failed", "FAILED", 1, 2, "none"),
@@ -327,7 +339,10 @@ fn receiver_recovery_scenarios() {
         ("preflight-race", "UNKNOWN", 1, 181, "none"),
         ("slow-rollout", "UNKNOWN", 1, 181, "none"),
     ] {
-        if only.as_deref().is_some_and(|selected| selected != case) {
+        if selected_case
+            .as_deref()
+            .is_some_and(|selected| selected != case)
+        {
             continue;
         }
         executed += 1;
@@ -343,17 +358,24 @@ fn receiver_recovery_scenarios() {
             }
             child(&root.0, case, "none");
         }
+
         let original = output(&root.0);
         assert_eq!(original["result"], expected, "{case}");
         let evidence = receiver::read(&root.0);
         assert_retained_facts(case, &original, &evidence["object"]);
         let requests = evidence["requests"].as_array().unwrap();
         assert_eq!(
-            requests.iter().filter(|r| r["method"] == "PATCH").count(),
+            requests
+                .iter()
+                .filter(|request| request["method"] == "PATCH")
+                .count(),
             patches
         );
         assert_eq!(
-            requests.iter().filter(|r| r["method"] == "GET").count(),
+            requests
+                .iter()
+                .filter(|request| request["method"] == "GET")
+                .count(),
             gets
         );
         let persisted = if case == "preflight-race" { 0 } else { patches };
@@ -365,6 +387,7 @@ fn receiver_recovery_scenarios() {
                 "target-replacement" | "intervening-writer" | "retained-marker" | "preflight-race"
             ))
         );
+
         if case == "slow-rollout" {
             receiver::intervene(&root.0, case);
         }
@@ -380,6 +403,7 @@ fn receiver_recovery_scenarios() {
             before_reconnect,
             "offline reconnect sends a request"
         );
+
         println!(
             "[receiver recovery] {case}: PATCH={patches}, GET={gets}, \
                 persisted={persisted}, result={expected}, frozen_sha256={}",
@@ -388,7 +412,7 @@ fn receiver_recovery_scenarios() {
     }
     assert_eq!(
         executed,
-        if only.is_some() { 1 } else { 8 },
+        if selected_case.is_some() { 1 } else { 8 },
         "scenario selection"
     );
 }

@@ -1,5 +1,7 @@
 use kapsel::{ExecutionCondition, ExecutionDisposition, ExecutionObservation, ServiceStop};
 
+use super::*;
+
 #[tokio::test]
 async fn preflight_failure_requires_explicit_selection_and_never_patches() {
     use http::{Method, Request, Response, StatusCode};
@@ -28,6 +30,7 @@ async fn preflight_failure_requires_explicit_selection_and_never_patches() {
         kubernetes_client: Some(client.clone()),
         receipt_signing: None,
     };
+
     let stopped = application.select("a", execution(), |_| {}).await.unwrap();
     assert_eq!(
         stopped,
@@ -62,8 +65,6 @@ async fn preflight_failure_requires_explicit_selection_and_never_patches() {
     fs::remove_dir_all(root).unwrap();
 }
 
-use super::*;
-
 #[tokio::test]
 async fn unavailable_material_is_admitted_readable_and_not_a_historical_crash_cause() {
     let root = root("disposition");
@@ -86,7 +87,8 @@ async fn unavailable_material_is_admitted_readable_and_not_a_historical_crash_ca
         application.execution_status("a", observation).unwrap().2,
         ExecutionDisposition::OperatorRequired(ExecutionCondition::ReceiverUnavailable)
     );
-    let frozen = fs::read(root.join("journal.sqlite3")).unwrap();
+
+    let original_journal_bytes = fs::read(root.join("journal.sqlite3")).unwrap();
     for _ in 0..3 {
         assert_eq!(
             application.execution_status("a", observation).unwrap().0,
@@ -98,8 +100,12 @@ async fn unavailable_material_is_admitted_readable_and_not_a_historical_crash_ca
         );
         assert_eq!(application.history(None).unwrap().entries.len(), 1);
     }
-    assert_eq!(fs::read(root.join("journal.sqlite3")).unwrap(), frozen);
+    assert_eq!(
+        fs::read(root.join("journal.sqlite3")).unwrap(),
+        original_journal_bytes
+    );
     drop(application);
+
     let application = ServiceApplication::open(configuration(&root)).unwrap();
     assert_eq!(
         application
@@ -108,8 +114,12 @@ async fn unavailable_material_is_admitted_readable_and_not_a_historical_crash_ca
             .2,
         ExecutionDisposition::ResumeRequired(None)
     );
-    assert_eq!(fs::read(root.join("journal.sqlite3")).unwrap(), frozen);
+    assert_eq!(
+        fs::read(root.join("journal.sqlite3")).unwrap(),
+        original_journal_bytes
+    );
     drop(application);
+
     let mut no_authority = configuration(&root);
     no_authority.approvals.clear();
     no_authority.authorization_trust.clear();

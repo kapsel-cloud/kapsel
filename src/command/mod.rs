@@ -204,6 +204,7 @@ fn provision(mut options: BTreeMap<String, OsString>, snapshot: bool) -> Command
         provision_exact_grant(&provisioning)
     }
     .map_err(|error| application_error_to_command(command, &error))?;
+
     write_new_private(&output_path, &grant).map_err(|_| CommandError::configuration(command))?;
     Ok(format!(
         "{{\"command\":\"{command}\",\"status\":\"PROVISIONED\"}}"
@@ -227,21 +228,23 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
     let receiver_path = take_path(&mut options, "--git-receiver", COMMAND)?;
     let seed_path = take_path(&mut options, "--signing-seed", COMMAND)?;
     let key_id = take_text(&mut options, "--signing-key-id", COMMAND)?;
-    let output = take_path(&mut options, "--output", COMMAND)?;
+    let output_path = take_path(&mut options, "--output", COMMAND)?;
     finish_options(&options, COMMAND)?;
+
     let bytes = read_bounded(&authorization_path, 4096, COMMAND, ErrorClass::CommandInput)?;
     if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
         return Err(CommandError::input(COMMAND));
     }
     let document: GitAuthorizationDocument =
         serde_json::from_slice(&bytes).map_err(|_| CommandError::input(COMMAND))?;
-    let receiver = read_bounded(
+    let receiver_document = read_bounded(
         &receiver_path,
         4096,
         COMMAND,
         ErrorClass::OperatorConfiguration,
     )?;
-    let receiver = kapsel::GitReceiverConfiguration::from_document(&receiver)
+
+    let receiver = kapsel::GitReceiverConfiguration::from_document(&receiver_document)
         .ok_or_else(|| CommandError::configuration(COMMAND))?;
     let seed = read_exact_32(&seed_path, COMMAND, ErrorClass::OperatorConfiguration)?;
     let authorization = kapsel_authority::GitRefAuthorization {
@@ -252,6 +255,7 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
         old_commit: document.old_commit,
         new_commit: document.new_commit,
     };
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -264,7 +268,8 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
             &key_id,
         ))
         .map_err(|error| application_error_to_command(COMMAND, &error))?;
-    write_new_private(&output, &grant).map_err(|_| CommandError::configuration(COMMAND))?;
+
+    write_new_private(&output_path, &grant).map_err(|_| CommandError::configuration(COMMAND))?;
     Ok(format!(
         "{{\"command\":\"{COMMAND}\",\"status\":\"PROVISIONED\"}}"
     ))
@@ -301,9 +306,11 @@ fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
         text_bytes_max: take_limit(&mut options, "--text-bytes-max", defaults.text_bytes_max)?,
     };
     finish_options(&options, "inspect")?;
+
     if !inspection_limits_are_valid(limits, defaults) {
         return Err(CommandError::input("inspect"));
     }
+
     let receipt_file = open_within_limit(
         &receipt_path,
         limits.receipt_bytes_max,
@@ -331,6 +338,7 @@ fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
         "inspect",
         ErrorClass::CommandInput,
     )?;
+
     let output = if receipt.starts_with(b"KAPSEL-GIT-REF-RECEIPT-") {
         render_git_inspection(&kapsel::inspect_git_receipt(
             &receipt,
@@ -346,11 +354,9 @@ fn inspect(mut options: BTreeMap<String, OsString>) -> CommandResult {
             limits,
         ))
     };
-    if output
-        .len()
-        .checked_add(1)
-        .is_none_or(|length| length > MACHINE_OUTPUT_BYTES_MAX)
-    {
+
+    let newline_terminated_bytes = output.len().checked_add(1);
+    if newline_terminated_bytes.is_none_or(|length| length > MACHINE_OUTPUT_BYTES_MAX) {
         return Err(CommandError::operation("inspect"));
     }
     Ok(output)
@@ -420,11 +426,10 @@ fn open_regular(
     )
     .map_err(|_| CommandError { command, class })?;
     let file = File::from(descriptor);
-    if !file
+    let metadata = file
         .metadata()
-        .map_err(|_| CommandError { command, class })?
-        .is_file()
-    {
+        .map_err(|_| CommandError { command, class })?;
+    if !metadata.is_file() {
         return Err(CommandError { command, class });
     }
     Ok(file)
@@ -472,7 +477,8 @@ fn read_opened_bounded(
         .checked_add(1)
         .ok_or(CommandError { command, class })?;
     let mut bytes = Vec::with_capacity(capacity);
-    file.take(u64::try_from(capacity).map_err(|_| CommandError { command, class })?)
+    let read_bytes_max = u64::try_from(capacity).map_err(|_| CommandError { command, class })?;
+    file.take(read_bytes_max)
         .read_to_end(&mut bytes)
         .map_err(|_| CommandError { command, class })?;
     if bytes.len() > maximum {
@@ -489,9 +495,12 @@ fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    let descriptor = file.metadata()?;
-    let named = fs::symlink_metadata(path)?;
-    if descriptor.dev() != named.dev() || descriptor.ino() != named.ino() {
+
+    let opened_metadata = file.metadata()?;
+    let named_metadata = fs::symlink_metadata(path)?;
+    if opened_metadata.dev() != named_metadata.dev()
+        || opened_metadata.ino() != named_metadata.ino()
+    {
         return Err(std::io::Error::other("output path identity changed"));
     }
     Ok(())
@@ -507,22 +516,22 @@ fn render_git_inspection(report: &kapsel::GitInspectionReport) -> String {
             "status":inspection_status(report.status()), "statement":null})
         .to_string();
     };
-    let approval = statement.authorization();
-    let observed = match statement.observed_ref() {
+    let authorization = statement.authorization();
+    let observed_ref = match statement.observed_ref() {
         kapsel::GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
         kapsel::GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
         kapsel::GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
     };
     serde_json::json!({
         "command":"inspect", "effect":"git.transition_ref",
-        "status":inspection_status(report.status()), "operation_id":approval.operation_id,
-        "authorization_id":approval.authorization_id,
+        "status":inspection_status(report.status()), "operation_id":authorization.operation_id,
+        "authorization_id":authorization.authorization_id,
         "authorization_signer_key_id":statement.authorization_signer_key_id(),
         "authorization_grant_digest":statement.authorization_grant_digest(),
-        "repository_id":approval.repository_id, "reference":approval.reference,
-        "old_commit":approval.old_commit, "new_commit":approval.new_commit,
+        "repository_id":authorization.repository_id, "reference":authorization.reference,
+        "old_commit":authorization.old_commit, "new_commit":authorization.new_commit,
         "write_strategy":"git-exact-lease", "acknowledgement":statement.acknowledgement().as_str(),
-        "observed_ref":observed, "attribution":statement.attribution(),
+        "observed_ref":observed_ref, "attribution":statement.attribution(),
         "result":operation_result(statement.result()),
         "non_claims":kapsel::GitReceiptStatement::non_claims(),
     })

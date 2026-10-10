@@ -37,6 +37,7 @@ fn main() -> ExitCode {
             };
         }
     }
+
     let replace = arguments.as_slice() == [OsStr::new("--replace-operator-config")];
     let serve = arguments.as_slice()
         == [
@@ -54,6 +55,7 @@ fn main() -> ExitCode {
         );
         return ExitCode::from(2);
     }
+
     diagnostics::initialize();
     // The journal surface accepts fixed codes, never panic payloads or source paths.
     std::panic::set_hook(Box::new(|_| diagnostic("internal_failure")));

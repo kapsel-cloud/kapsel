@@ -245,6 +245,7 @@ pub fn sign_authorization_grant(
     if !identity_is_valid(key_id) {
         return Err(AuthorizationGrantError::Invalid);
     }
+
     let statement = encode_statement(authorization)?;
     sign_grant_statement(
         &statement,
@@ -289,23 +290,20 @@ pub fn verify_authorization_grant(
     if bytes.len() > SIGNED_GRANT_BYTES_MAX {
         return Err(AuthorizationGrantError::Invalid);
     }
-    let snapshot = bytes.starts_with(SNAPSHOT_GRANT_MAGIC);
-    let mut records = GrantRecords::new(
-        bytes,
-        if snapshot {
-            SNAPSHOT_GRANT_MAGIC
-        } else {
-            SIGNED_GRANT_MAGIC
-        },
-    )?;
-    if records.take_record(1)?
-        != if snapshot {
-            SNAPSHOT_PURPOSE
-        } else {
-            GRANT_PURPOSE
-        }
-        .as_bytes()
-    {
+    let snapshot_bound = bytes.starts_with(SNAPSHOT_GRANT_MAGIC);
+    let envelope_magic = if snapshot_bound {
+        SNAPSHOT_GRANT_MAGIC
+    } else {
+        SIGNED_GRANT_MAGIC
+    };
+    let expected_purpose = if snapshot_bound {
+        SNAPSHOT_PURPOSE
+    } else {
+        GRANT_PURPOSE
+    };
+
+    let mut records = GrantRecords::new(bytes, envelope_magic)?;
+    if records.take_record(1)? != expected_purpose.as_bytes() {
         return Err(AuthorizationGrantError::Invalid);
     }
     let key_id = records.take_ascii_text(2)?;
@@ -321,20 +319,24 @@ pub fn verify_authorization_grant(
         .try_into()
         .map_err(|_| AuthorizationGrantError::Invalid)?;
     records.finish_exact()?;
+
     let authorization = parse_statement(statement_bytes)?;
-    if authorization.approved_target.is_some() != snapshot {
+    if authorization.approved_target.is_some() != snapshot_bound {
         return Err(AuthorizationGrantError::Invalid);
     }
+
     if key_id != trust.key_id {
         return Err(AuthorizationGrantError::Untrusted);
     }
-    let key = VerifyingKey::from_bytes(&trust.public_key)
+    let verifying_key = VerifyingKey::from_bytes(&trust.public_key)
         .map_err(|_| AuthorizationGrantError::Invalid)?;
-    key.verify_strict(
-        &signature_input(grant_purpose(statement_bytes), statement_bytes),
-        &Signature::from_bytes(&signature_bytes),
-    )
-    .map_err(|_| AuthorizationGrantError::Untrusted)?;
+    verifying_key
+        .verify_strict(
+            &signature_input(grant_purpose(statement_bytes), statement_bytes),
+            &Signature::from_bytes(&signature_bytes),
+        )
+        .map_err(|_| AuthorizationGrantError::Untrusted)?;
+
     Ok(ValidatedAuthorizationGrant {
         authorization,
         signer_key_id: key_id,
@@ -349,23 +351,20 @@ fn verify_authorization_grant_for_public_key(
     if bytes.len() > SIGNED_GRANT_BYTES_MAX {
         return Err(AuthorizationGrantError::Invalid);
     }
-    let snapshot = bytes.starts_with(SNAPSHOT_GRANT_MAGIC);
-    let mut records = GrantRecords::new(
-        bytes,
-        if snapshot {
-            SNAPSHOT_GRANT_MAGIC
-        } else {
-            SIGNED_GRANT_MAGIC
-        },
-    )?;
-    if records.take_record(1)?
-        != if snapshot {
-            SNAPSHOT_PURPOSE
-        } else {
-            GRANT_PURPOSE
-        }
-        .as_bytes()
-    {
+    let snapshot_bound = bytes.starts_with(SNAPSHOT_GRANT_MAGIC);
+    let envelope_magic = if snapshot_bound {
+        SNAPSHOT_GRANT_MAGIC
+    } else {
+        SIGNED_GRANT_MAGIC
+    };
+    let expected_purpose = if snapshot_bound {
+        SNAPSHOT_PURPOSE
+    } else {
+        GRANT_PURPOSE
+    };
+
+    let mut records = GrantRecords::new(bytes, envelope_magic)?;
+    if records.take_record(1)? != expected_purpose.as_bytes() {
         return Err(AuthorizationGrantError::Invalid);
     }
     let key_id = records.take_ascii_text(2)?;
@@ -441,6 +440,7 @@ pub fn parse_receipt_trust(
     if input.len() > limits.trust_bytes_max {
         return Err(ReceiptTrustError::LimitExceeded);
     }
+
     let mut records = TrustRecords::new(input, RECEIPT_TRUST_MAGIC, limits.text_bytes_max)?;
     let trust = ReceiptTrustDocument {
         key_id: records.text(1)?,
@@ -463,6 +463,7 @@ pub fn parse_receipt_trust(
         ),
     };
     records.finish()?;
+
     validate_receipt_trust(&trust)?;
     Ok(trust)
 }
@@ -470,15 +471,16 @@ pub fn parse_receipt_trust(
 fn receipt_signing_key_id(
     seed: &[u8; 32],
     trust: &[u8],
-    snapshot: bool,
+    snapshot_bound: bool,
 ) -> Result<String, ReceiptTrustError> {
     let trust = parse_receipt_trust(trust, ReceiptTrustLimits::default())?;
-    if trust.accepted_purpose
-        != if snapshot {
-            "kapsel.kap0038.kubernetes-effect-receipt.v3"
-        } else {
-            RECEIPT_PURPOSE
-        }
+    let expected_purpose = if snapshot_bound {
+        "kapsel.kap0038.kubernetes-effect-receipt.v3"
+    } else {
+        RECEIPT_PURPOSE
+    };
+
+    if trust.accepted_purpose != expected_purpose
         || trust.public_key != SigningKey::from_bytes(seed).verifying_key().to_bytes()
     {
         return Err(ReceiptTrustError::InvalidValue);
@@ -514,6 +516,7 @@ pub fn validate_service_operator_inputs(
         verified.authorization.approved_target.is_some(),
     )
     .map_err(|_| ServiceOperatorInputsError { _private: () })?;
+
     let (authorization, authorization_signing_key_id, _) = verified.into_parts();
     Ok(ValidatedServiceOperatorInputs {
         authorization,
@@ -617,10 +620,10 @@ fn encode_statement(
 }
 
 fn parse_statement(bytes: &[u8]) -> Result<ExactAuthorization, AuthorizationGrantError> {
-    let snapshot = bytes.starts_with(SNAPSHOT_STATEMENT_MAGIC);
+    let snapshot_bound = bytes.starts_with(SNAPSHOT_STATEMENT_MAGIC);
     let mut records = GrantRecords::new(
         bytes,
-        if snapshot {
+        if snapshot_bound {
             SNAPSHOT_STATEMENT_MAGIC
         } else {
             GRANT_STATEMENT_MAGIC
@@ -633,7 +636,7 @@ fn parse_statement(bytes: &[u8]) -> Result<ExactAuthorization, AuthorizationGran
         deployment: records.take_ascii_text(4)?,
         container: records.take_ascii_text(5)?,
         immutable_image_digest: records.take_ascii_text(6)?,
-        approved_target: if snapshot {
+        approved_target: if snapshot_bound {
             Some(ApprovedTarget {
                 uid: records.take_ascii_text(7)?,
                 resource_version: records.take_ascii_text(8)?,
@@ -643,6 +646,7 @@ fn parse_statement(bytes: &[u8]) -> Result<ExactAuthorization, AuthorizationGran
         },
     };
     records.finish_exact()?;
+
     authorization.validate()?;
     Ok(authorization)
 }
@@ -927,14 +931,19 @@ mod tests {
                 .0,
             approved
         );
-        let (_, start, len) = record_offset(&bytes, SNAPSHOT_GRANT_MAGIC, 3);
+
+        let (_, statement_start, statement_length) = record_offset(&bytes, SNAPSHOT_GRANT_MAGIC, 3);
         for tag in 1..=8 {
-            let (_, value, _) =
-                record_offset(&bytes[start..start + len], SNAPSHOT_STATEMENT_MAGIC, tag);
+            let (_, field_start, _) = record_offset(
+                &bytes[statement_start..statement_start + statement_length],
+                SNAPSHOT_STATEMENT_MAGIC,
+                tag,
+            );
             let mut tampered = bytes.clone();
-            tampered[start + value] ^= 1;
+            tampered[statement_start + field_start] ^= 1;
             assert!(verify_authorization_grant(&tampered, &trust).is_err());
         }
+
         for value in [String::new(), "x".repeat(129), "é".into()] {
             approved.approved_target.as_mut().unwrap().resource_version = value;
             assert!(sign_authorization_grant(&approved, &seed, &trust.key_id).is_err());
@@ -944,6 +953,7 @@ mod tests {
             resource_version: "v".repeat(128),
         });
         assert!(sign_authorization_grant(&approved, &seed, &trust.key_id).is_ok());
+
         let legacy = sign_authorization_grant(&authorization(), &seed, &trust.key_id).unwrap();
         assert!(verify_authorization_grant(&legacy, &trust)
             .unwrap()
@@ -951,6 +961,7 @@ mod tests {
             .0
             .approved_target
             .is_none());
+
         let mut mixed = bytes.clone();
         mixed[..SNAPSHOT_GRANT_MAGIC.len()].copy_from_slice(SIGNED_GRANT_MAGIC);
         assert!(verify_authorization_grant(&mixed, &trust).is_err());

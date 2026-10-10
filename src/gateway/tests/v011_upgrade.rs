@@ -16,12 +16,13 @@ fn older_journal_versions_are_rejected_without_touching_rows() {
                 .pragma_update(None, "user_version", version)
                 .unwrap();
         }
-        let before = fs::read(&path).unwrap();
+
+        let original_bytes = fs::read(&path).unwrap();
         assert!(matches!(
             Gateway::open_for_test(&path),
             Err(GatewayError::UnsupportedJournalVersion)
         ));
-        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

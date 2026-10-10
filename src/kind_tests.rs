@@ -159,6 +159,7 @@ async fn kind_changes_exactly_one_container_through_the_gateway() {
     .await
     .unwrap()
     .unwrap();
+
     let proof = tokio::time::timeout(
         std::time::Duration::from_mins(1),
         run_gateway_proof(client.clone()),
@@ -168,6 +169,7 @@ async fn kind_changes_exactly_one_container_through_the_gateway() {
         |_| Err("kind gateway proof exceeded 60 seconds".into()),
         |result| result.map_err(|error| error.to_string()),
     );
+
     let cleanup = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         namespaces.delete(NAMESPACE, &DeleteParams::default()),
@@ -203,6 +205,7 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
     .await
     .unwrap()
     .unwrap();
+
     let proof = tokio::time::timeout(
         std::time::Duration::from_mins(1),
         run_failed_rollout_proof(client.clone()),
@@ -212,6 +215,7 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
         |_| Err("kind failed-rollout proof exceeded 60 seconds".into()),
         |result| result.map_err(|error| error.to_string()),
     );
+
     let cleanup = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         namespaces.delete(FAILED_NAMESPACE, &DeleteParams::default()),
@@ -250,6 +254,7 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
     .await
     .unwrap()
     .unwrap();
+
     let proof = tokio::time::timeout(
         std::time::Duration::from_mins(4),
         run_unknown_rollout_proof(client.clone()),
@@ -259,6 +264,7 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
         |_| Err("kind unknown proof exceeded 240 seconds".into()),
         |result| result.map_err(|error| error.to_string()),
     );
+
     let cleanup = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         namespaces.delete(UNKNOWN_NAMESPACE, &DeleteParams::default()),
@@ -298,6 +304,7 @@ async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_ch
     .await
     .unwrap()
     .unwrap();
+
     let proof = tokio::time::timeout(
         std::time::Duration::from_mins(1),
         run_recovery_policy_proof(client.clone()),
@@ -307,6 +314,7 @@ async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_ch
         |_| Err("kind recovery-policy proof exceeded 60 seconds".into()),
         |result| result.map_err(|error| error.to_string()),
     );
+
     let cleanup = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         namespaces.delete(POLICY_NAMESPACE, &DeleteParams::default()),
@@ -342,6 +350,7 @@ async fn kind_snapshot_approval_rejects_stale_targets_and_pins_the_conditional_p
     .await
     .unwrap()
     .unwrap();
+
     let proof = tokio::time::timeout(
         std::time::Duration::from_mins(1),
         run_snapshot_approval_proof(client.clone()),
@@ -351,6 +360,7 @@ async fn kind_snapshot_approval_rejects_stale_targets_and_pins_the_conditional_p
         |_| Err("kind snapshot-approval proof exceeded 60 seconds".into()),
         |result| result.map_err(|error| error.to_string()),
     );
+
     let cleanup = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         namespaces.delete(SNAPSHOT_NAMESPACE, &DeleteParams::default()),
@@ -398,6 +408,7 @@ async fn prove_matching_snapshot_patches_once(
         gateway.result(&request.operation_id)?,
         Some(OperationResult::Succeeded)
     );
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -425,6 +436,7 @@ async fn prove_drifted_snapshot_rejects_before_patch(
     );
     assert_eq!(adapter.apply_calls, 0);
     assert_eq!(gateway.result(&request.operation_id)?, None);
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -456,6 +468,7 @@ async fn prove_recreated_snapshot_rejects_before_patch(
     );
     assert_eq!(adapter.apply_calls, 0);
     assert_eq!(gateway.result(&request.operation_id)?, None);
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -486,6 +499,7 @@ async fn prove_precondition_race_remains_attempted(
         Some(OperationState::ApplyStarted)
     );
     assert_eq!(gateway.result(&request.operation_id)?, None);
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -585,15 +599,15 @@ async fn run_recovery_policy_proof(client: Client) -> Result<(), Box<dyn std::er
     let frozen_target = adapter.identify(&request).await.map_err(|error| {
         format!("could not freeze policy target before the first patch: {error:?}")
     })?;
-    let before = deployments.get(POLICY_DEPLOYMENT).await?;
-    let before_generation = before
+    let before_patch = deployments.get(POLICY_DEPLOYMENT).await?;
+    let before_generation = before_patch
         .metadata
         .generation
         .ok_or("missing initial generation")?;
     let selector = ListParams::default().labels("app=image-demo-policy");
     let replica_sets_before = replica_sets.list(&selector).await?.items.len();
 
-    let first = adapter
+    let first_outcome = adapter
         .apply(crate::gateway::dispatch_permission_for_test(
             &request,
             &frozen_target,
@@ -601,7 +615,7 @@ async fn run_recovery_policy_proof(client: Client) -> Result<(), Box<dyn std::er
         .await
         .map_err(|()| "first frozen patch was rejected")?;
     assert_eq!(
-        first.deployment_uid.as_deref(),
+        first_outcome.deployment_uid.as_deref(),
         Some(frozen_target.deployment_uid.as_str())
     );
     wait_for_deployment_rollout(&deployments, POLICY_DEPLOYMENT).await?;
@@ -826,12 +840,13 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
         gateway.result(&request.operation_id)?,
         Some(OperationResult::Succeeded)
     );
-    let observed = tokio::time::timeout(
+
+    let receiver_deployment = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         deployments.get(DEPLOYMENT),
     )
     .await??;
-    let containers = &observed
+    let containers = &receiver_deployment
         .spec
         .as_ref()
         .and_then(|spec| spec.template.spec.as_ref())
@@ -852,6 +867,7 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
             .and_then(|container| container.image.as_deref()),
         Some(FIXTURE_IMAGE)
     );
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -951,6 +967,7 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
     assert_eq!(statement.result(), OperationResult::Unknown);
     assert_eq!(statement.observed_image(), None);
     assert_eq!(statement.observed_operation_marker(), None);
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -1050,6 +1067,7 @@ async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::err
         statement.observed_operation_marker(),
         Some("kind-failed-op-001")
     );
+
     drop(gateway);
     fs::remove_dir_all(directory)?;
     Ok(())
@@ -1067,14 +1085,14 @@ async fn wait_for_deployment_rollout(
         loop {
             let deployment = deployments.get(deployment_name).await?;
             let generation = deployment.metadata.generation;
-            let ready = deployment.status.as_ref().is_some_and(|status| {
+            let rollout_ready = deployment.status.as_ref().is_some_and(|status| {
                 status.observed_generation == generation
                     && status.available_replicas == Some(1)
                     && status.updated_replicas == Some(1)
                     && status.replicas == Some(1)
                     && status.ready_replicas == Some(1)
             });
-            if ready {
+            if rollout_ready {
                 return Ok::<(), kube::Error>(());
             }
             println!("waiting for the disposable kind fixture rollout");
@@ -1283,6 +1301,7 @@ mod observation_experiment {
             worker = ServiceApplication::open(configuration(&directory, &target)).unwrap();
             assert_eq!(worker.status("a").unwrap().0, OperationStatus::InProgress);
         }
+
         let worker_started = Instant::now();
         let mut pass = Box::pin(worker.select("a", execution(client), |admission| {
             assert!(matches!(admission, ServiceAdmission::Admitted(_)));
@@ -1291,6 +1310,7 @@ mod observation_experiment {
             result = &mut pass => panic!("rollout stopped before readiness: {result:?}"),
             () = tokio::time::sleep(Duration::from_secs(35)) => {},
         }
+
         drop(connected);
         connected = ServiceApplication::open(configuration(&directory, &target)).unwrap();
         let read_started = Instant::now();
@@ -1300,6 +1320,7 @@ mod observation_experiment {
         );
         assert_eq!(connected.receipt("a").unwrap(), OperationReceipt::NotReady);
         let stored_read_ms = read_started.elapsed().as_millis();
+
         connected
             .select("b", execution(client), |admission| {
                 assert_eq!(admission, ServiceAdmission::Busy);
@@ -1308,6 +1329,7 @@ mod observation_experiment {
             .unwrap();
         assert_eq!(connected.admitted_state("b").unwrap(), None);
         pass.await.unwrap();
+
         let worker_ms = worker_started.elapsed().as_millis();
         let finished_unix_ms = unix_ms();
         let expected = if ready_seconds == 60 {
@@ -1316,13 +1338,14 @@ mod observation_experiment {
             OperationStatus::Unknown
         };
         assert_eq!(connected.status("a").unwrap().0, expected);
-        let frozen = connected.receipt("a").unwrap();
-        assert!(matches!(frozen, OperationReceipt::Ready { .. }));
+
+        let original_receipt = connected.receipt("a").unwrap();
+        assert!(matches!(original_receipt, OperationReceipt::Ready { .. }));
         connected
             .select("a", execution(client), |_| {})
             .await
             .unwrap();
-        assert_eq!(connected.receipt("a").unwrap(), frozen);
+        assert_eq!(connected.receipt("a").unwrap(), original_receipt);
         assert!(started.elapsed() > Duration::from_secs(30));
         if ready_seconds > 180 {
             loop {
@@ -1340,7 +1363,7 @@ mod observation_experiment {
             }
             assert!(started.elapsed() > Duration::from_secs(180));
             assert_eq!(connected.status("a").unwrap().0, OperationStatus::Unknown);
-            assert_eq!(connected.receipt("a").unwrap(), frozen);
+            assert_eq!(connected.receipt("a").unwrap(), original_receipt);
         }
         println!(
             "[observation evidence] {}",
@@ -1352,6 +1375,7 @@ mod observation_experiment {
                 "explicit_resume":ready_seconds == 60, "interrupted_unix_ms":interrupted_unix_ms,
             })
         );
+
         drop(connected);
         drop(worker);
         fs::remove_dir_all(directory).unwrap();
@@ -1383,6 +1407,7 @@ mod observation_experiment {
             .await
             .unwrap();
         let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
+
         let proof = tokio::time::timeout(Duration::from_secs(600), async {
             for seconds in [60, 210] {
                 let name = format!("ready-{seconds}");

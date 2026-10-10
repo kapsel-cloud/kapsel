@@ -54,6 +54,7 @@ pub(crate) fn dispatch_permission_for_test(
         )
         .unwrap()
         .unwrap();
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
     permission
@@ -110,29 +111,31 @@ fn unknown_observation(request: &SetDeploymentImageRequest) -> ReceiverObservati
 
 struct FakeAdapter {
     database_path: PathBuf,
+
     identify_calls: usize,
     apply_calls: usize,
     observe_calls: usize,
-    apply_started_seen: bool,
-    identified_target: TargetIdentity,
-    apply_failure: bool,
+    durable_attempt_seen_before_apply: bool,
     applied_target: Option<TargetIdentity>,
+
+    identified_target: TargetIdentity,
+    inject_apply_failure: bool,
     outcome: ApplyOutcome,
     observation: ReceiverObservation,
 }
 
-fn failed_adapter(path: &Path, request: &SetDeploymentImageRequest) -> FakeAdapter {
+fn failed_rollout_adapter(path: &Path, request: &SetDeploymentImageRequest) -> FakeAdapter {
     FakeAdapter {
         database_path: path.to_path_buf(),
         identify_calls: 0,
         apply_calls: 0,
         observe_calls: 0,
-        apply_started_seen: false,
+        durable_attempt_seen_before_apply: false,
         identified_target: TargetIdentity {
             deployment_uid: "deployment-uid-1".into(),
             resource_version: "resource-version-0".into(),
         },
-        apply_failure: false,
+        inject_apply_failure: false,
         applied_target: None,
         outcome: ApplyOutcome {
             accepted: true,
@@ -168,7 +171,7 @@ impl DeploymentImageAdapter for FakeAdapter {
         self.apply_calls += 1;
         self.applied_target = Some(target);
         let connection = Connection::open(&self.database_path).map_err(|_| ())?;
-        let persisted: (String, i64, String) = connection
+        let persisted_attempt_facts: (String, i64, String) = connection
             .query_row(
                 "SELECT state, apply_attempted, write_strategy
                  FROM kubernetes_image_operations
@@ -177,8 +180,10 @@ impl DeploymentImageAdapter for FakeAdapter {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|_| ())?;
-        self.apply_started_seen = persisted == ("apply_started".into(), 1, WRITE_STRATEGY.into());
-        if self.apply_failure {
+        self.durable_attempt_seen_before_apply =
+            persisted_attempt_facts == ("apply_started".into(), 1, WRITE_STRATEGY.into());
+
+        if self.inject_apply_failure {
             return Err(());
         }
         Ok(self.outcome.clone())
@@ -300,12 +305,12 @@ impl DeploymentImageAdapter for ProcessMutationAdapter {
     }
 
     async fn apply(&mut self, _: DispatchPermission) -> Result<ApplyOutcome, ()> {
-        let count = fs::read_to_string(&self.patch_count_path)
+        let patch_count = fs::read_to_string(&self.patch_count_path)
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(0)
             + 1;
-        fs::write(&self.patch_count_path, count.to_string()).map_err(|_| ())?;
+        fs::write(&self.patch_count_path, patch_count.to_string()).map_err(|_| ())?;
         fs::write(&self.ready_path, b"provider-side-effect-complete").map_err(|_| ())?;
         std::future::pending::<Result<ApplyOutcome, ()>>().await
     }

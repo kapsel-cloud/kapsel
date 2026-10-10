@@ -9,7 +9,7 @@ use tokio::{
 
 use super::{Selection, CONNECTIONS_MAX};
 
-struct Lease {
+struct JobLease {
     _connection: Arc<OwnedSemaphorePermit>,
     _execution: Option<Arc<Selection>>,
     // Fields drop in declaration order. Closing this channel after the permits tells the registry
@@ -50,15 +50,17 @@ impl Jobs {
         if jobs.len() >= CONNECTIONS_MAX {
             return Err(());
         }
-        let (retired, retirement) = oneshot::channel();
-        let lease = Arc::new(Lease {
+
+        let (retirement_sender, retirement) = oneshot::channel();
+        let lease = Arc::new(JobLease {
             _connection: connection,
             _execution: execution,
-            _retirement: retired,
+            _retirement: retirement_sender,
         });
-        let (start, started) = oneshot::channel();
+
+        let (start_sender, start_receiver) = oneshot::channel();
         let supervisor = tokio::spawn(async move {
-            if started.await.is_err() {
+            if start_receiver.await.is_err() {
                 return;
             }
             let blocking_lease = lease.clone();
@@ -69,12 +71,14 @@ impl Jobs {
             let _ = blocking.await;
             drop(lease);
         });
+
         jobs.push(Job {
             supervisor,
             retirement,
         });
         drop(jobs);
-        let _ = start.send(());
+
+        let _ = start_sender.send(());
         Ok(())
     }
 
@@ -139,6 +143,7 @@ mod tests {
             )
             .unwrap();
             ready.await.unwrap();
+
             jobs.0.lock().unwrap()[0].supervisor.abort();
             let drain = jobs.drain();
             tokio::pin!(drain);
@@ -147,6 +152,7 @@ mod tests {
                 .is_err());
             assert_eq!(connections.available_permits(), 0);
             assert_eq!(execution.available_permits(), 0);
+
             release.send(()).unwrap();
             timeout(Duration::from_secs(1), drain).await.unwrap();
             assert_eq!(connections.available_permits(), 1);
@@ -244,8 +250,8 @@ mod tests {
                 Arc::new(connections.clone().try_acquire_owned().unwrap()),
                 None,
                 move || {
-                    let count = worker_jobs.0.lock().unwrap().len();
-                    let _ = entered.send(count);
+                    let registered_jobs = worker_jobs.0.lock().unwrap().len();
+                    let _ = entered.send(registered_jobs);
                     let _ = blocked.recv();
                     runtime.block_on(async {
                         tokio::time::sleep(Duration::from_millis(20)).await;

@@ -16,14 +16,14 @@ pub(super) fn push(
     maximum_bytes: usize,
 ) -> Result<(), FrameError> {
     let length = u32::try_from(value.len()).map_err(|_| FrameError::Length)?;
-    if output
+    let encoded_end = output
         .len()
         .checked_add(5)
-        .and_then(|length| length.checked_add(value.len()))
-        .is_none_or(|length| length > maximum_bytes)
-    {
+        .and_then(|header_end| header_end.checked_add(value.len()));
+    if encoded_end.is_none_or(|end| end > maximum_bytes) {
         return Err(FrameError::Length);
     }
+
     output.push(tag);
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(value);
@@ -53,6 +53,7 @@ impl<'a> Records<'a> {
         if expected_tag != self.next_tag {
             return Err(FrameError::Order);
         }
+
         let header_end = self.offset.checked_add(5).ok_or(FrameError::Length)?;
         if header_end > self.bytes.len() || self.bytes[self.offset] != expected_tag {
             return Err(FrameError::Header);
@@ -67,6 +68,7 @@ impl<'a> Records<'a> {
         if value_end > self.bytes.len() {
             return Err(FrameError::Header);
         }
+
         self.offset = value_end;
         self.next_tag = self.next_tag.checked_add(1).ok_or(FrameError::Order)?;
         Ok(&self.bytes[header_end..value_end])
@@ -104,14 +106,17 @@ mod tests {
             let mut records = Records::new(&bytes[..truncated], magic).unwrap();
             assert!(matches!(records.take(1), Err(FrameError::Header)));
         }
+
         let mut oversized = bytes.clone();
         oversized[magic.len() + 1..magic.len() + 5].copy_from_slice(&u32::MAX.to_be_bytes());
         let mut records = Records::new(&oversized, magic).unwrap();
         assert!(matches!(records.take(1), Err(FrameError::Header)));
+
         assert!(matches!(
             Records::new(&bytes, b"WRONG"),
             Err(FrameError::Header)
         ));
+
         let mut trailing = bytes.clone();
         trailing.push(0);
         let mut records = Records::new(&trailing, magic).unwrap();

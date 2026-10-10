@@ -7,7 +7,8 @@ fn canonical_and_negative_seeds_cross_production_interfaces() {
     for target in TARGETS {
         for (name, bytes) in fixtures::seeds(target) {
             run(target, &bytes);
-            let accepted = match target {
+
+            let decoder_accepted = match target {
                 "inspect_receipt" | "inspect_git_receipt" => {
                     let (receipt, trust) = receipt_documents(&bytes).unwrap();
                     let status = if target == "inspect_receipt" {
@@ -29,7 +30,8 @@ fn canonical_and_negative_seeds_cross_production_interfaces() {
                 .is_ok(),
                 _ => unreachable!(),
             };
-            let expected = match target {
+
+            let seed_should_be_accepted = match target {
                 "inspect_receipt" | "inspect_git_receipt" => matches!(
                     name.as_str(),
                     "canonical-receipt-and-trust" | "canonical-snapshot"
@@ -42,7 +44,10 @@ fn canonical_and_negative_seeds_cross_production_interfaces() {
                 "service_document" => name.starts_with("canonical"),
                 _ => unreachable!(),
             };
-            assert_eq!(accepted, expected, "{target}/{name}: seed acceptance");
+            assert_eq!(
+                decoder_accepted, seed_should_be_accepted,
+                "{target}/{name}: seed acceptance"
+            );
         }
     }
 }
@@ -54,6 +59,7 @@ fn damaged_signatures_are_rejected_for_both_receipt_purposes() {
             if !name.starts_with("canonical") {
                 continue;
             }
+
             let (receipt, trust) = receipt_documents(&input).unwrap();
             let mut damaged = receipt.to_vec();
             *damaged.last_mut().unwrap() ^= 1;
@@ -67,6 +73,7 @@ fn damaged_signatures_are_rejected_for_both_receipt_purposes() {
                 InspectionStatus::SignatureRejected,
                 "{target}/{name}"
             );
+
             run(target, &input);
             run(target, &fixtures::pair(&damaged, trust));
         }
@@ -75,10 +82,10 @@ fn damaged_signatures_are_rejected_for_both_receipt_purposes() {
 
 #[test]
 fn externally_appointed_signer_cannot_collide_with_the_wrong_signer_probe() {
-    let bytes = fixtures::git_receipt(b"UNKNOWN");
-    let mut values = fixtures::fields(&bytes).unwrap();
-    values[1] = b"not-the-signer";
-    let bytes = fixtures::records(b"KAPSEL-GIT-REF-RECEIPT-V1\0", &values);
+    let original_receipt = fixtures::git_receipt(b"UNKNOWN");
+    let mut envelope_fields = fixtures::fields(&original_receipt).unwrap();
+    envelope_fields[1] = b"not-the-signer";
+    let changed_receipt = fixtures::records(b"KAPSEL-GIT-REF-RECEIPT-V1\0", &envelope_fields);
     let trust = kapsel::ReceiptTrust {
         key_id: "not-the-signer".into(),
         public_key: fixture_trust().public_key,
@@ -88,7 +95,11 @@ fn externally_appointed_signer_cannot_collide_with_the_wrong_signer_probe() {
     }
     .encode()
     .unwrap();
-    run("inspect_git_receipt", &fixtures::pair(&bytes, &trust));
+
+    run(
+        "inspect_git_receipt",
+        &fixtures::pair(&changed_receipt, &trust),
+    );
 }
 
 #[test]
@@ -103,6 +114,7 @@ fn git_fixture_discloses_unknown_and_rejects_inconsistent_signed_result() {
         kapsel::OperationResult::Unknown
     );
     assert_eq!(report.statement().unwrap().attribution(), "not_established");
+
     let forged = fixtures::git_receipt(b"SUCCEEDED");
     assert_eq!(
         inspect_git_receipt(&forged, &trust, 150, InspectionLimits::default()).status(),

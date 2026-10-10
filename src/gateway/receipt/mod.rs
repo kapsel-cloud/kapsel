@@ -226,6 +226,7 @@ impl ReceiptStatement {
     )]
     pub(super) fn encode(&self) -> Result<Vec<u8>, ReceiptError> {
         self.validate()?;
+
         let mut output = Vec::with_capacity(1536);
         output.extend_from_slice(if self.approved_target.is_some() {
             SNAPSHOT_STATEMENT_MAGIC
@@ -247,6 +248,7 @@ impl ReceiptStatement {
         ] {
             push_text(&mut output, tag, value, STATEMENT_BYTES_MAX)?;
         }
+
         push_optional_text(
             &mut output,
             12,
@@ -265,6 +267,7 @@ impl ReceiptStatement {
             self.observed_operation_marker.as_deref(),
             STATEMENT_BYTES_MAX,
         )?;
+
         push_i64(
             &mut output,
             15,
@@ -289,6 +292,7 @@ impl ReceiptStatement {
             self.observed_resource_version.as_deref(),
             STATEMENT_BYTES_MAX,
         )?;
+
         push_i32(&mut output, 19, self.desired_replicas, STATEMENT_BYTES_MAX)?;
         push_i32(&mut output, 20, self.updated_replicas, STATEMENT_BYTES_MAX)?;
         push_i32(
@@ -303,6 +307,7 @@ impl ReceiptStatement {
             self.unavailable_replicas,
             STATEMENT_BYTES_MAX,
         )?;
+
         push_optional_text(
             &mut output,
             23,
@@ -321,6 +326,7 @@ impl ReceiptStatement {
             self.rollout_condition_reason.as_deref(),
             STATEMENT_BYTES_MAX,
         )?;
+
         push(
             &mut output,
             26,
@@ -328,6 +334,7 @@ impl ReceiptStatement {
             STATEMENT_BYTES_MAX,
         )?;
         push(&mut output, 27, NON_CLAIMS.as_bytes(), STATEMENT_BYTES_MAX)?;
+
         if let Some(approved) = &self.approved_target {
             push_text(&mut output, 28, &approved.uid, STATEMENT_BYTES_MAX)?;
             push_text(
@@ -343,10 +350,11 @@ impl ReceiptStatement {
     fn parse(input: &[u8], limits: InspectionLimits) -> Result<Self, ReceiptError> {
         limits.validate()?;
         bounded(input, limits.statement_bytes_max)?;
-        let snapshot = input.starts_with(SNAPSHOT_STATEMENT_MAGIC);
+
+        let snapshot_bound = input.starts_with(SNAPSHOT_STATEMENT_MAGIC);
         let mut records = Records::new(
             input,
-            if snapshot {
+            if snapshot_bound {
                 SNAPSHOT_STATEMENT_MAGIC
             } else {
                 STATEMENT_MAGIC
@@ -366,32 +374,38 @@ impl ReceiptStatement {
             write_strategy: records.text(9)?,
             target_uid: records.text(10)?,
             target_resource_version: records.text(11)?,
+
             receiver_uid: empty_as_none(records.text(12)?),
             observed_image: empty_as_none(records.text(13)?),
             observed_operation_marker: empty_as_none(records.text(14)?),
+
             current_generation: decode_generation(records.take(15)?)?,
             requested_generation: decode_generation(records.take(16)?)?,
             observed_generation: decode_generation(records.take(17)?)?,
             observed_resource_version: empty_as_none(records.text(18)?),
+
             desired_replicas: decode_replica_count(records.take(19)?)?,
             updated_replicas: decode_replica_count(records.take(20)?)?,
             available_replicas: decode_replica_count(records.take(21)?)?,
             unavailable_replicas: decode_replica_count(records.take(22)?)?,
+
             rollout_condition_type: empty_as_none(records.text(23)?),
             rollout_condition_status: empty_as_none(records.text(24)?),
             rollout_condition_reason: empty_as_none(records.text(25)?),
+
             result: OperationResult::from_receipt_bytes(records.take(26)?)?,
         };
         if records.take(27)? != NON_CLAIMS.as_bytes() {
             return Err(ReceiptError::InvalidValue);
         }
-        if snapshot {
+        if snapshot_bound {
             statement.approved_target = Some(super::ApprovedTarget {
                 uid: records.text(28)?,
                 resource_version: records.text(29)?,
             });
         }
         records.finish()?;
+
         statement.validate()?;
         Ok(statement)
     }
@@ -414,6 +428,7 @@ impl ReceiptStatement {
         }) {
             return Err(ReceiptError::InvalidValue);
         }
+
         validate_dns_label(InputField::Namespace, &self.namespace)
             .map_err(|_| ReceiptError::InvalidValue)?;
         validate_dns_subdomain(InputField::Deployment, &self.deployment)
@@ -425,6 +440,7 @@ impl ReceiptStatement {
         if self.write_strategy != WRITE_STRATEGY {
             return Err(ReceiptError::InvalidValue);
         }
+
         for value in [
             Some(self.target_uid.as_str()),
             Some(self.target_resource_version.as_str()),
@@ -443,13 +459,15 @@ impl ReceiptStatement {
         if let Some(image) = &self.observed_image {
             validate_immutable_image(image).map_err(|_| ReceiptError::InvalidValue)?;
         }
+
         let observation = self.receiver_observation();
         observation
             .validate()
             .map_err(|_| ReceiptError::InvalidValue)?;
         let request =
             ValidatedRequest::try_from(&self.request()).map_err(|_| ReceiptError::InvalidValue)?;
-        if observation.classify(&request, &self.apply_outcome()) != self.result {
+        let recomputed_result = observation.classify(&request, &self.apply_outcome());
+        if recomputed_result != self.result {
             return Err(ReceiptError::InvalidValue);
         }
         Ok(())
@@ -605,17 +623,16 @@ impl<Statement> ReceiptEnvelope<'_, Statement> {
                 &self.signature,
             )
             .map_err(|_| ReceiptError::BadSignature)?;
-        Ok(
-            if trust.accepted_purpose != self.accepted_purpose
-                || trust.key_id != self.key_id
-                || time < trust.not_before_unix_s
-                || time >= trust.not_after_unix_s
-            {
-                InspectionStatus::UntrustedSigner
-            } else {
-                InspectionStatus::Inspected
-            },
-        )
+
+        let trust_rejects_signer = trust.accepted_purpose != self.accepted_purpose
+            || trust.key_id != self.key_id
+            || time < trust.not_before_unix_s
+            || time >= trust.not_after_unix_s;
+        Ok(if trust_rejects_signer {
+            InspectionStatus::UntrustedSigner
+        } else {
+            InspectionStatus::Inspected
+        })
     }
 }
 
@@ -623,19 +640,23 @@ fn parse_receipt_envelope(
     receipt: &[u8],
     limits: InspectionLimits,
 ) -> Result<ReceiptEnvelope<'_, ReceiptStatement>, ReceiptError> {
-    let snapshot = receipt.starts_with(SNAPSHOT_RECEIPT_MAGIC);
+    let snapshot_bound = receipt.starts_with(SNAPSHOT_RECEIPT_MAGIC);
     parse_envelope(
         receipt,
-        if snapshot {
+        if snapshot_bound {
             SNAPSHOT_RECEIPT_MAGIC
         } else {
             RECEIPT_MAGIC
         },
-        if snapshot { SNAPSHOT_PURPOSE } else { PURPOSE },
+        if snapshot_bound {
+            SNAPSHOT_PURPOSE
+        } else {
+            PURPOSE
+        },
         limits,
         |bytes| {
             let statement = ReceiptStatement::parse(bytes, limits)?;
-            if statement.approved_target.is_some() != snapshot {
+            if statement.approved_target.is_some() != snapshot_bound {
                 return Err(ReceiptError::InvalidValue);
             }
             Ok(statement)
@@ -652,6 +673,7 @@ fn parse_envelope<'a, Statement>(
 ) -> Result<ReceiptEnvelope<'a, Statement>, ReceiptError> {
     limits.validate()?;
     bounded(receipt, limits.receipt_bytes_max)?;
+
     let mut records = Records::new(receipt, magic, limits.text_bytes_max)?;
     if records.text(1)? != purpose {
         return Err(ReceiptError::InvalidValue);
@@ -662,6 +684,7 @@ fn parse_envelope<'a, Statement>(
     let statement = parse_statement(statement_bytes)?;
     let signature = Signature::from_bytes(&array(records.take(4)?)?);
     records.finish()?;
+
     Ok(ReceiptEnvelope {
         accepted_purpose: purpose,
         key_id,
@@ -790,9 +813,8 @@ fn inspect_inner(
     let envelope = parse_receipt_envelope(receipt, limits)?;
     let parsed_trust = ReceiptTrust::parse(trust, limits)?;
 
-    if envelope.authenticate(&parsed_trust, evaluation_time_unix_s)?
-        == InspectionStatus::UntrustedSigner
-    {
+    let authentication_status = envelope.authenticate(&parsed_trust, evaluation_time_unix_s)?;
+    if authentication_status == InspectionStatus::UntrustedSigner {
         return Err(ReceiptError::UntrustedSigner(Box::new(envelope.statement)));
     }
     Ok(envelope.statement)
@@ -939,14 +961,14 @@ fn push(
     maximum_bytes: usize,
 ) -> Result<(), ReceiptError> {
     let length = u32::try_from(value.len()).map_err(|_| ReceiptError::LimitExceeded)?;
-    if output
+    let encoded_end = output
         .len()
         .checked_add(5)
-        .and_then(|length| length.checked_add(value.len()))
-        .is_none_or(|length| length > maximum_bytes)
-    {
+        .and_then(|header_end| header_end.checked_add(value.len()));
+    if encoded_end.is_none_or(|end| end > maximum_bytes) {
         return Err(ReceiptError::LimitExceeded);
     }
+
     output.push(tag);
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(value);
@@ -977,6 +999,7 @@ impl<'a> Records<'a> {
         if expected_tag != self.next_tag {
             return Err(ReceiptError::InvalidRecord);
         }
+
         let header_end = self
             .offset
             .checked_add(5)
@@ -984,8 +1007,8 @@ impl<'a> Records<'a> {
         if header_end > self.input.len() {
             return Err(ReceiptError::InvalidRecord);
         }
-        let tag = self.input[self.offset];
-        if tag != expected_tag {
+        let actual_tag = self.input[self.offset];
+        if actual_tag != expected_tag {
             return Err(ReceiptError::InvalidRecord);
         }
         let length = u32::from_be_bytes(array(&self.input[self.offset + 1..header_end])?);
@@ -996,6 +1019,7 @@ impl<'a> Records<'a> {
         if value_end > self.input.len() {
             return Err(ReceiptError::InvalidRecord);
         }
+
         self.offset = value_end;
         self.next_tag = self
             .next_tag

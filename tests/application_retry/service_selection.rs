@@ -65,6 +65,7 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             }
             worker = ServiceApplication::open(configuration(&root, false)).unwrap();
         }
+
         let previous_requests = evidence.lock().unwrap().len();
         let pass_started = tokio::time::Instant::now();
         let mut pass = Box::pin(worker.select(
@@ -114,8 +115,10 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             .unwrap();
         assert_eq!(connected.admitted_state("b").unwrap(), None);
         assert_eq!(evidence.lock().unwrap().len(), before_reads);
+
         pass.await.unwrap();
-        assert_eq!(pass_started.elapsed().as_secs(), settle_after.min(179));
+        let expected_pass_seconds = settle_after.min(179);
+        assert_eq!(pass_started.elapsed().as_secs(), expected_pass_seconds);
         if settle_after == 361 {
             assert!(start.elapsed() > Duration::from_secs(180));
         }
@@ -125,7 +128,7 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             OperationStatus::Unknown
         };
         assert_eq!(connected.status("a").unwrap().0, expected);
-        let frozen = connected.receipt("a").unwrap();
+        let original_receipt = connected.receipt("a").unwrap();
         let before_reselect = evidence.lock().unwrap().len();
         connected
             .select(
@@ -144,7 +147,7 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
             )
             .await
             .unwrap();
-        assert_eq!(connected.receipt("a").unwrap(), frozen);
+        assert_eq!(connected.receipt("a").unwrap(), original_receipt);
         assert_eq!(evidence.lock().unwrap().len(), before_reselect);
         let requests = evidence.lock().unwrap().clone();
         assert_eq!(
@@ -154,10 +157,13 @@ async fn observation_pass_holds_worker_but_not_stored_reads() {
                 .count(),
             1
         );
+        let expected_observation_reads = (settle_after + 1).min(180) as usize;
+        let expected_fresh_dispatch_requests = usize::from(previous_requests == 0) * 2;
         assert_eq!(
             requests.len() - previous_requests,
-            (settle_after + 1).min(180) as usize + usize::from(previous_requests == 0) * 2
+            expected_observation_reads + expected_fresh_dispatch_requests
         );
+
         drop(client);
         responder.await.unwrap();
         drop(connected);
@@ -283,7 +289,8 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
                 kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::PreflightUnavailable)
             }
         );
-        let original = retained_row(&root, "a");
+
+        let original_a_row = retained_row(&root, "a");
         let receipt = application.receipt("a").unwrap();
         let status = application.status("a").unwrap();
         assert_eq!(
@@ -306,13 +313,13 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
             application.status("b").unwrap().0,
             OperationStatus::Succeeded
         );
-        assert_eq!(retained_row(&root, "a"), original);
+        assert_eq!(retained_row(&root, "a"), original_a_row);
         assert_eq!(application.receipt("a").unwrap(), receipt);
         let b_receipt = application.receipt("b").unwrap();
         let after_b = evidence.lock().unwrap().clone();
         application.select("a", execution(), |_| {}).await.unwrap();
         if unknown {
-            assert_eq!(retained_row(&root, "a"), original);
+            assert_eq!(retained_row(&root, "a"), original_a_row);
             assert_eq!(application.receipt("a").unwrap(), receipt);
             assert_eq!(*evidence.lock().unwrap(), after_b);
         } else {
@@ -343,6 +350,7 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
             );
         }
         drop(application);
+
         drop(client);
         responder.await.unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -547,10 +555,10 @@ fn retained_row(root: &Path, id: &str) -> Vec<rusqlite::types::Value> {
     let mut query = connection
         .prepare("SELECT * FROM kubernetes_image_operations WHERE operation_id = ?1")
         .unwrap();
-    let columns = query.column_count();
+    let column_count = query.column_count();
     query
         .query_row([id], |row| {
-            (0..columns).map(|index| row.get(index)).collect()
+            (0..column_count).map(|index| row.get(index)).collect()
         })
         .unwrap()
 }
@@ -591,6 +599,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
         .open(root.join("journal.sqlite3.kap0038-worker.lock"))
         .unwrap();
     assert!(matches!(lock.try_lock(), Err(fs::TryLockError::WouldBlock)));
+
     let before_busy = receiver.requests();
     assert_eq!(before_busy.len(), 2);
     b.select("b", receiver.execution(true).await, |decision| {
@@ -602,6 +611,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     assert_eq!(b.status("b").unwrap().0, OperationStatus::NotFound);
     assert_eq!(b.history(None).unwrap().entries.len(), 1);
     assert_eq!(receiver.requests(), before_busy);
+
     receiver.fixture.resume.send(()).unwrap();
     let stopped = tokio::time::timeout(Duration::from_secs(5), &mut selection)
         .await
@@ -620,8 +630,8 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     );
     assert_eq!(a.status("a").unwrap().0, OperationStatus::InProgress);
     assert_eq!(a.receipt("a").unwrap(), OperationReceipt::NotReady);
-    let frozen_a = retained_row(root, "a");
-    assert!(frozen_a.contains(&rusqlite::types::Value::Blob(original_grant)));
+    let frozen_a_row = retained_row(root, "a");
+    assert!(frozen_a_row.contains(&rusqlite::types::Value::Blob(original_grant)));
     let before_b = receiver.requests();
     assert_eq!(before_b.len(), 3);
     assert_eq!(
@@ -674,7 +684,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
             OperationReceipt::Ready { .. }
         ));
     }
-    assert_eq!(retained_row(root, "a"), frozen_a);
+    assert_eq!(retained_row(root, "a"), frozen_a_row);
     assert_eq!(
         a.admitted_state("a").unwrap(),
         Some(OperationState::ReceiverObserved)
@@ -686,16 +696,16 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     // Remove catalog access: explicit resume must use retained authority and frozen observations.
     drop(a);
     drop(b);
-    let mut history = configuration(root, same_target);
-    history.approvals.clear();
-    let mut a = ServiceApplication::open(history).unwrap();
+    let mut retained_authority_only = configuration(root, same_target);
+    retained_authority_only.approvals.clear();
+    let mut a = ServiceApplication::open(retained_authority_only).unwrap();
     assert_eq!(
         a.execution_status("a", kapsel::ExecutionObservation::Unknown)
             .unwrap()
             .2,
         kapsel::ExecutionDisposition::ResumeRequired(None)
     );
-    assert_eq!(retained_row(root, "a"), frozen_a);
+    assert_eq!(retained_row(root, "a"), frozen_a_row);
     a.select("a", receiver.execution(true).await, |decision| {
         assert_eq!(
             decision,

@@ -243,43 +243,46 @@ impl LoadedOperation {
 
     fn request_facts(&self) -> &RequestFacts {
         match self {
-            Self::Requested(v) => &v.request,
-            Self::Authorized(v) => &v.request,
-            Self::NotAttempted(v) => &v.authorized.request,
-            Self::ApplyStarted(v) => &v.authorized.request,
-            Self::ReceiverObserved(v) => &v.apply_started.authorized.request,
-            Self::Finalized(v) => &v.receiver_observed.apply_started.authorized.request,
+            Self::Requested(operation) => &operation.request,
+            Self::Authorized(operation) => &operation.request,
+            Self::NotAttempted(operation) => &operation.authorized.request,
+            Self::ApplyStarted(operation) => &operation.authorized.request,
+            Self::ReceiverObserved(operation) => &operation.apply_started.authorized.request,
+            Self::Finalized(operation) => {
+                &operation.receiver_observed.apply_started.authorized.request
+            },
         }
     }
 
     pub(crate) fn targets(&self) -> super::OperationTargets {
         let request = self.request_facts();
         let attempt = match self {
-            Self::ApplyStarted(v) => Some(&v.attempt),
-            Self::ReceiverObserved(v) => Some(&v.apply_started.attempt),
-            Self::Finalized(v) => Some(&v.receiver_observed.apply_started.attempt),
+            Self::ApplyStarted(operation) => Some(&operation.attempt),
+            Self::ReceiverObserved(operation) => Some(&operation.apply_started.attempt),
+            Self::Finalized(operation) => Some(&operation.receiver_observed.apply_started.attempt),
             Self::Requested(_) | Self::Authorized(_) | Self::NotAttempted(_) => None,
         };
         let statement = match self {
-            Self::ReceiverObserved(v) => Some(v.statement()),
-            Self::Finalized(v) => Some(v.receiver_observed.statement()),
+            Self::ReceiverObserved(operation) => Some(operation.statement()),
+            Self::Finalized(operation) => Some(operation.receiver_observed.statement()),
             _ => None,
         };
+
         super::OperationTargets {
             git: None,
             approved_target: request.approved_target.clone(),
-            attempt_target: attempt.map(|v| super::ApprovedTarget {
-                uid: v.target.deployment_uid().to_owned(),
-                resource_version: v.target.resource_version().to_owned(),
+            attempt_target: attempt.map(|attempt| super::ApprovedTarget {
+                uid: attempt.target.deployment_uid().to_owned(),
+                resource_version: attempt.target.resource_version().to_owned(),
             }),
             observed_target: statement.map_or_else(
                 || {
                     request
                         .preflight_target
                         .as_ref()
-                        .map(|v| super::ObservedTarget {
-                            uid: Some(v.uid.clone()),
-                            resource_version: Some(v.resource_version.clone()),
+                        .map(|target| super::ObservedTarget {
+                            uid: Some(target.uid.clone()),
+                            resource_version: Some(target.resource_version.clone()),
                         })
                 },
                 |statement| {
@@ -381,6 +384,7 @@ impl SnapshotRow {
         {
             return Err(GatewayError::InvalidPersistedState);
         }
+
         let request = RequestFacts {
             approved_target,
             preflight_target,
@@ -393,6 +397,7 @@ impl SnapshotRow {
             })
             .map_err(|_| GatewayError::InvalidPersistedState)?,
         };
+
         let result = self
             .result
             .map(|value| OperationResult::from_sql(&value))
@@ -415,6 +420,7 @@ impl SnapshotRow {
             self.requested_generation,
             self.apply_resource_version,
         )?;
+
         if let Some(approved) = &request.approved_target {
             if authorization.is_none()
                 || attempt.as_ref().is_some_and(|attempt| {
@@ -442,6 +448,7 @@ impl SnapshotRow {
         if statement.as_ref().map(|value| value.result) != result {
             return Err(GatewayError::InvalidPersistedState);
         }
+
         let receipt = snapshot_frozen_receipt(
             request.request.operation_id(),
             self.receipt_digest,
@@ -1143,11 +1150,13 @@ impl Journal {
         } else {
             observed
         };
+
         self.mark_apply_started(operation, &target)?;
         #[cfg(test)]
         if fault == Some(super::FaultPoint::AttemptCommitAcknowledgementLost) {
             return Err(GatewayError::InjectedFault);
         }
+
         Ok(Some(DispatchPermission {
             request: operation.request().clone(),
             target,
@@ -1280,14 +1289,14 @@ impl Journal {
             "updated_replicas",
             observation.updated_replicas.map(i64::from),
         );
-        let available = observation.available_replicas;
+        let available_replicas = observation.available_replicas;
         #[cfg(test)]
-        let available = if self.exercise_defect(Defect::ReplicaSwap) {
+        let available_replicas = if self.exercise_defect(Defect::ReplicaSwap) {
             observation.updated_replicas
         } else {
-            available
+            available_replicas
         };
-        next.set_optional("available_replicas", available.map(i64::from));
+        next.set_optional("available_replicas", available_replicas.map(i64::from));
         next.set_optional(
             "unavailable_replicas",
             observation.unavailable_replicas.map(i64::from),
@@ -1337,7 +1346,7 @@ fn authorized_record_on(
     let request = authorized.request();
     let authorization = authorized.authorization();
     let existing_record = io.read(connection, request.operation_id())?;
-    let existing = existing_record
+    let retained_binding = existing_record
         .as_ref()
         .map(|record| -> Result<_, GatewayError> {
             Ok((
@@ -1363,7 +1372,7 @@ fn authorized_record_on(
         authorization_grant_digest,
         state,
         signed_grant,
-    )) = existing
+    )) = retained_binding
     else {
         let collision: bool = connection
             .query_row(
@@ -1405,7 +1414,9 @@ fn authorized_record_on(
     {
         return Err(GatewayError::OperationIdentityConflict);
     }
+
     after_ownership_read();
+
     let loaded = io
         .read(connection, request.operation_id())?
         .as_ref()
@@ -1768,6 +1779,7 @@ mod tests {
                 operation.request_facts().request.operation_id(),
                 "snapshot-op"
             );
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -1853,7 +1865,9 @@ mod tests {
                     ["snapshot-op"],
                 )
                 .unwrap();
+
             assert!(journal.operation("snapshot-op").is_err(), "{name}");
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -1907,7 +1921,9 @@ mod tests {
                     ["snapshot-op"],
                 )
                 .unwrap();
+
             assert!(journal.operation("snapshot-op").is_err(), "{name}");
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -1932,6 +1948,7 @@ mod tests {
                 .unwrap();
 
             assert!(journal.operation("snapshot-op").is_err(), "{state}");
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -1983,6 +2000,7 @@ mod tests {
                 .unwrap();
 
             assert!(journal.operation("snapshot-op").is_err(), "{name}");
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -2008,6 +2026,7 @@ mod tests {
                 .unwrap();
 
             assert!(journal.operation("snapshot-op").is_err());
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -2065,7 +2084,7 @@ mod tests {
                 Err(GatewayError::InvalidKubernetesFact)
             ));
         }
-        let persisted: (Option<bool>, Option<i64>, Option<String>) = journal
+        let retained_response: (Option<bool>, Option<i64>, Option<String>) = journal
             .connection
             .query_row(
                 "SELECT apply_accepted, requested_generation, apply_resource_version
@@ -2074,7 +2093,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        assert_eq!(persisted, (None, None, None));
+        assert_eq!(retained_response, (None, None, None));
 
         journal
             .record_apply_outcome(
@@ -2116,7 +2135,9 @@ mod tests {
         ] {
             let (journal, root) = journal(name);
             insert_snapshot_row(&journal, state, result, rejection, receipt);
+
             assert!(journal.operation("snapshot-op").is_err());
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -2146,7 +2167,9 @@ mod tests {
                 .connection
                 .execute(&update, ["snapshot-op"])
                 .unwrap();
+
             assert!(journal.operation("snapshot-op").is_err());
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -2185,7 +2208,9 @@ mod tests {
                     ["snapshot-op"],
                 )
                 .unwrap();
+
             assert!(journal.operation("snapshot-op").is_err());
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }
@@ -2436,7 +2461,9 @@ mod tests {
                 .connection
                 .execute(&update, ["snapshot-op"])
                 .unwrap();
+
             assert!(journal.operation("snapshot-op").is_err(), "{name}");
+
             drop(journal);
             fs::remove_dir_all(root).unwrap();
         }

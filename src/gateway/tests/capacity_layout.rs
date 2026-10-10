@@ -60,24 +60,26 @@ fn create_padded_layout(path: &Path, padding: usize) {
     gateway
         .submit_exact_for_test(&layout_request(), &authorization(&layout_request()))
         .unwrap();
+
     drop(gateway);
     let connection = Connection::open(path).unwrap();
     assert_eq!(rusqlite::version(), "3.53.2");
-    let sql: String = connection
+    let original_schema_sql: String = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE name = 'kubernetes_image_operations'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    let padded = sql.replacen('(', &format!("({}", " ".repeat(padding)), 1);
+    let padded_schema_sql =
+        original_schema_sql.replacen('(', &format!("({}", " ".repeat(padding)), 1);
     connection
         .execute_batch(
             "CREATE TEMP TABLE saved AS SELECT * FROM kubernetes_image_operations;
         DROP TABLE kubernetes_image_operations",
         )
         .unwrap();
-    connection.execute_batch(&padded).unwrap();
+    connection.execute_batch(&padded_schema_sql).unwrap();
     connection
         .execute_batch("INSERT INTO kubernetes_image_operations SELECT * FROM saved")
         .unwrap();
@@ -113,7 +115,7 @@ async fn complete_layout_operation(path: &Path, request: &SetDeploymentImageRequ
             .unwrap(),
         SubmissionResult::Existing(OperationState::Authorized)
     );
-    let mut adapter = failed_adapter(path, request);
+    let mut adapter = failed_rollout_adapter(path, request);
     adapter.identified_target.deployment_uid = "u".repeat(128);
     adapter.identified_target.resource_version = "r".repeat(128);
     adapter.outcome.deployment_uid = Some("u".repeat(128));
@@ -149,6 +151,7 @@ async fn complete_layout_operation(path: &Path, request: &SetDeploymentImageRequ
             .unwrap(),
     )
     .unwrap();
+
     drop(gateway);
     eprintln!("completed live pages: {}", layout_live_pages(path));
     journal::Journal::validate_replacement(path, &[]).unwrap();
@@ -191,84 +194,90 @@ fn collect_table_cells(
 ) {
     pages.push(page);
     let start = (page as usize - 1) * 4096;
-    let data = &bytes[start..start + 4096];
-    let count = usize::from(u16::from_be_bytes(data[3..5].try_into().unwrap()));
+    let page_bytes = &bytes[start..start + 4096];
+    let count = usize::from(u16::from_be_bytes(page_bytes[3..5].try_into().unwrap()));
     assert!(count > 0);
-    let header = if data[0] == 13 {
+    let header = if page_bytes[0] == 13 {
         8
     } else {
-        assert_eq!(data[0], 5);
+        assert_eq!(page_bytes[0], 5);
         12
     };
     for index in 0..count {
         let pointer = header + 2 * index;
         let offset = usize::from(u16::from_be_bytes(
-            data[pointer..pointer + 2].try_into().unwrap(),
+            page_bytes[pointer..pointer + 2].try_into().unwrap(),
         ));
-        if data[0] == 5 {
-            collect_table_cells(bytes, page_u32(data, offset), pages, cells);
+        if page_bytes[0] == 5 {
+            collect_table_cells(bytes, page_u32(page_bytes, offset), pages, cells);
         } else {
             let mut cursor = offset;
-            let payload = cell_varint(data, &mut cursor);
-            let rowid = cell_varint(data, &mut cursor);
-            assert!(payload <= 65536);
-            let local = if payload <= 4061 {
-                payload
+            let payload_bytes = cell_varint(page_bytes, &mut cursor);
+            let rowid = cell_varint(page_bytes, &mut cursor);
+            assert!(payload_bytes <= 65536);
+            let local_payload_bytes = if payload_bytes <= 4061 {
+                payload_bytes
             } else {
-                let candidate = 489 + (payload - 489) % 4092;
+                let candidate = 489 + (payload_bytes - 489) % 4092;
                 if candidate <= 4061 {
                     candidate
                 } else {
                     489
                 }
             };
-            let end = cursor + local + if local < payload { 4 } else { 0 };
-            cells.push((rowid, data[offset..end].to_vec()));
+            let overflow_pointer_bytes = if local_payload_bytes < payload_bytes {
+                4
+            } else {
+                0
+            };
+            let end = cursor + local_payload_bytes + overflow_pointer_bytes;
+            cells.push((rowid, page_bytes[offset..end].to_vec()));
         }
     }
-    if data[0] == 5 {
-        collect_table_cells(bytes, page_u32(data, 8), pages, cells);
+    if page_bytes[0] == 5 {
+        collect_table_cells(bytes, page_u32(page_bytes, 8), pages, cells);
     }
 }
 
 fn sparse_subtree(bytes: &mut Vec<u8>, page: u32, cells: &[(usize, Vec<u8>)]) {
-    let mut data = vec![0_u8; 4096];
-    data[3..5].copy_from_slice(&1_u16.to_be_bytes());
+    let mut page_bytes = vec![0_u8; 4096];
+    page_bytes[3..5].copy_from_slice(&1_u16.to_be_bytes());
     if cells.len() == 1 {
-        data[0] = 13;
+        page_bytes[0] = 13;
         let offset = 4096 - cells[0].1.len();
-        data[5..7].copy_from_slice(&u16::try_from(offset).unwrap().to_be_bytes());
-        data[8..10].copy_from_slice(&u16::try_from(offset).unwrap().to_be_bytes());
-        data[offset..].copy_from_slice(&cells[0].1);
+        page_bytes[5..7].copy_from_slice(&u16::try_from(offset).unwrap().to_be_bytes());
+        page_bytes[8..10].copy_from_slice(&u16::try_from(offset).unwrap().to_be_bytes());
+        page_bytes[offset..].copy_from_slice(&cells[0].1);
     } else {
         assert_eq!(cells.len() % 2, 0);
-        data[0] = 5;
+        page_bytes[0] = 5;
         let left = u32::try_from(bytes.len() / 4096 + 1).unwrap();
         let right = left + 1;
         bytes.resize(bytes.len() + 8192, 0);
-        data[5..7].copy_from_slice(&4091_u16.to_be_bytes());
-        data[8..12].copy_from_slice(&right.to_be_bytes());
-        data[12..14].copy_from_slice(&4091_u16.to_be_bytes());
-        data[4091..4095].copy_from_slice(&left.to_be_bytes());
+        page_bytes[5..7].copy_from_slice(&4091_u16.to_be_bytes());
+        page_bytes[8..12].copy_from_slice(&right.to_be_bytes());
+        page_bytes[12..14].copy_from_slice(&4091_u16.to_be_bytes());
+        page_bytes[4091..4095].copy_from_slice(&left.to_be_bytes());
         let middle = cells.len() / 2;
-        data[4095] = u8::try_from(cells[middle - 1].0).unwrap();
-        assert!(data[4095] < 128);
+        page_bytes[4095] = u8::try_from(cells[middle - 1].0).unwrap();
+        assert!(page_bytes[4095] < 128);
         sparse_subtree(bytes, left, &cells[..middle]);
         sparse_subtree(bytes, right, &cells[middle..]);
     }
     let start = (page as usize - 1) * 4096;
-    bytes[start..start + 4096].copy_from_slice(&data);
+    bytes[start..start + 4096].copy_from_slice(&page_bytes);
 }
 
 fn repack_sparse_table(path: &Path) {
     let connection = Connection::open(path).unwrap();
-    let root: u32 = connection
+    let root_page: u32 = connection
         .query_row(
             "SELECT rootpage FROM sqlite_schema WHERE name = 'kubernetes_image_operations'",
             [],
             |row| row.get(0),
         )
         .unwrap();
+
     drop(connection);
     let mut bytes = fs::read(path).unwrap();
     assert!(bytes.len() < 1024 * 1024);
@@ -279,24 +288,27 @@ fn repack_sparse_table(path: &Path) {
     );
     let mut pages = Vec::new();
     let mut cells = Vec::new();
-    collect_table_cells(&bytes, root, &mut pages, &mut cells);
+    collect_table_cells(&bytes, root_page, &mut pages, &mut cells);
     assert_eq!(cells.len(), 8);
     assert!(cells.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    sparse_subtree(&mut bytes, root, &cells);
+    sparse_subtree(&mut bytes, root_page, &cells);
     // Return all displaced table pages except the reused root as one valid freelist trunk.
-    let free = &pages[1..];
-    assert!(!free.is_empty() && free.len() <= 1023);
-    let trunk = (free[0] as usize - 1) * 4096;
+    let displaced_pages = &pages[1..];
+    assert!(!displaced_pages.is_empty() && displaced_pages.len() <= 1023);
+    let trunk = (displaced_pages[0] as usize - 1) * 4096;
     bytes[trunk..trunk + 4096].fill(0);
-    bytes[trunk + 4..trunk + 8]
-        .copy_from_slice(&u32::try_from(free.len() - 1).unwrap().to_be_bytes());
-    for (index, page) in free[1..].iter().enumerate() {
+    bytes[trunk + 4..trunk + 8].copy_from_slice(
+        &u32::try_from(displaced_pages.len() - 1)
+            .unwrap()
+            .to_be_bytes(),
+    );
+    for (index, page) in displaced_pages[1..].iter().enumerate() {
         bytes[trunk + 8 + index * 4..trunk + 12 + index * 4].copy_from_slice(&page.to_be_bytes());
     }
     let page_count = u32::try_from(bytes.len() / 4096).unwrap();
     bytes[28..32].copy_from_slice(&page_count.to_be_bytes());
-    bytes[32..36].copy_from_slice(&free[0].to_be_bytes());
-    bytes[36..40].copy_from_slice(&u32::try_from(free.len()).unwrap().to_be_bytes());
+    bytes[32..36].copy_from_slice(&displaced_pages[0].to_be_bytes());
+    bytes[36..40].copy_from_slice(&u32::try_from(displaced_pages.len()).unwrap().to_be_bytes());
     fs::write(path, bytes).unwrap();
 }
 
@@ -333,10 +345,14 @@ fn encoded_table_and_schema_payload_boundaries_use_actual_record_headers() {
         let path = database_path(&format!("encoded-table-{size}"));
         create_padded_layout(&path, 0);
         insert_long_retained_rows(&path, 1);
-        let current = maximum_payload(&path, "kubernetes_image_operations");
-        Connection::open(&path).unwrap().execute(
-            "UPDATE kubernetes_image_operations SET container = ?1 WHERE state = 'not_attempted'",
-            ["c".repeat(usize::try_from(16_180 + size - current).unwrap())]).unwrap();
+        let current_payload_bytes = maximum_payload(&path, "kubernetes_image_operations");
+        let container_bytes = usize::try_from(16_180 + size - current_payload_bytes).unwrap();
+        let update_container_sql =
+            "UPDATE kubernetes_image_operations SET container = ?1 WHERE state = 'not_attempted'";
+        Connection::open(&path)
+            .unwrap()
+            .execute(update_container_sql, ["c".repeat(container_bytes)])
+            .unwrap();
         assert_eq!(maximum_payload(&path, "kubernetes_image_operations"), size);
         assert_layout_open_paths(&path, size == 65_536);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -355,7 +371,7 @@ fn encoded_table_and_schema_payload_boundaries_use_actual_record_headers() {
 // Its four SQLite-created overflow pages and logical key/rowid remain unchanged.
 fn extend_index_record_header(path: &Path) {
     let connection = Connection::open(path).unwrap();
-    let root: u32 = connection
+    let root_page: u32 = connection
         .query_row(
             "SELECT rootpage FROM sqlite_schema
              WHERE name = 'sqlite_autoindex_kubernetes_image_operations_1'",
@@ -363,9 +379,10 @@ fn extend_index_record_header(path: &Path) {
             |row| row.get(0),
         )
         .unwrap();
+
     drop(connection);
     let mut bytes = fs::read(path).unwrap();
-    let start = (root as usize - 1) * 4096;
+    let start = (root_page as usize - 1) * 4096;
     assert_eq!(bytes[start], 10);
     let count = usize::from(u16::from_be_bytes(
         bytes[start + 3..start + 5].try_into().unwrap(),
@@ -383,24 +400,26 @@ fn extend_index_record_header(path: &Path) {
             continue;
         }
         assert!(!modified);
-        let mut payload = bytes[cursor..cursor + 489].to_vec();
+        let mut payload_bytes = bytes[cursor..cursor + 489].to_vec();
         let mut overflow = page_u32(&bytes, cursor + 489);
         let mut chain = Vec::new();
         while overflow != 0 {
             let offset = (overflow as usize - 1) * 4096;
             chain.push(offset);
-            payload.extend_from_slice(&bytes[offset + 4..offset + 4096]);
+            payload_bytes.extend_from_slice(&bytes[offset + 4..offset + 4096]);
             overflow = page_u32(&bytes, offset);
         }
         assert_eq!(chain.len(), 4);
-        payload.truncate(size);
-        assert_eq!(payload[0], 5);
-        assert_eq!(payload[4], 6);
-        payload[0] = 6;
-        payload.insert(0, 0x80);
+        payload_bytes.truncate(size);
+        assert_eq!(payload_bytes[0], 5);
+        assert_eq!(payload_bytes[4], 6);
+
+        payload_bytes[0] = 6;
+        payload_bytes.insert(0, 0x80);
         bytes[cursor - 1] += 1; // Same three-byte payload-length varint, no carry.
-        bytes[cursor..cursor + 489].copy_from_slice(&payload[..489]);
-        for (offset, chunk) in chain.iter().zip(payload[489..].chunks(4092)) {
+
+        bytes[cursor..cursor + 489].copy_from_slice(&payload_bytes[..489]);
+        for (offset, chunk) in chain.iter().zip(payload_bytes[489..].chunks(4092)) {
             bytes[offset + 4..offset + 4 + chunk.len()].copy_from_slice(chunk);
         }
         modified = true;
@@ -435,7 +454,7 @@ fn encoded_index_payload_boundary_includes_noncanonical_header_bytes() {
 // empty leaf, preserving row/index contents and balanced depths. Only page 1 may be unary.
 fn wrap_leaf_root(path: &Path, schema: bool, empty_child: bool) {
     let connection = Connection::open(path).unwrap();
-    let root: u32 = if schema {
+    let root_page: u32 = if schema {
         1
     } else {
         connection
@@ -446,9 +465,10 @@ fn wrap_leaf_root(path: &Path, schema: bool, empty_child: bool) {
             )
             .unwrap()
     };
+
     drop(connection);
     let mut bytes = fs::read(path).unwrap();
-    let start = (root as usize - 1) * 4096;
+    let start = (root_page as usize - 1) * 4096;
     let header = if schema { 100 } else { 0 };
     assert_eq!(bytes[start + header], 13);
     let mut child = bytes[start..start + 4096].to_vec();
@@ -535,6 +555,7 @@ fn persisted_record_limit_is_enforced_on_reopen() {
             [],
         )
         .unwrap();
+
     drop(connection);
     eprintln!(
         "oversized encoded record live pages: {}",

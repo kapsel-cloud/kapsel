@@ -164,6 +164,7 @@ mod tests {
             ExecutionObservation::OtherWorker,
             ExecutionObservation::Stopped(ExecutionCondition::SigningUnavailable),
         ];
+
         for observation in observations {
             for status in [
                 OperationStatus::Succeeded,
@@ -227,6 +228,7 @@ mod tests {
             assert_eq!(disposition.next_action(), action);
             assert_eq!(disposition.action_owner(), owner);
         }
+
         for condition in [
             ExecutionCondition::ReceiverUnavailable,
             ExecutionCondition::SigningUnavailable,
@@ -248,7 +250,8 @@ mod tests {
     #[test]
     fn error_classification_owns_blockage_without_retaining_raw_diagnostics() {
         use super::super::classify_stop;
-        for (error, expected) in [
+
+        for (error, expected_condition) in [
             (
                 ReconciliationError::Advancement(GatewayError::KubernetesTargetObservation),
                 ExecutionCondition::PreflightUnavailable,
@@ -270,8 +273,12 @@ mod tests {
                 ExecutionCondition::CompletionBlocked,
             ),
         ] {
-            assert_eq!(classify_stop(error), Ok(ServiceStop::Blocked(expected)));
+            assert_eq!(
+                classify_stop(error),
+                Ok(ServiceStop::Blocked(expected_condition))
+            );
         }
+
         assert_eq!(
             classify_stop(ReconciliationError::Submission(
                 GatewayError::UntrustedAuthorizationGrant
@@ -284,22 +291,24 @@ mod tests {
             ))),
             Err(ServiceError::StorageUnavailable)
         );
-        let entry = super::super::HistoryEntry {
+
+        let inaccessible_entry = super::super::HistoryEntry {
             operation_id: "hidden".into(),
             status: Err(ServiceError::AuthorityUnavailable),
         };
         assert_eq!(
-            entry.execution_status(ExecutionObservation::Active),
+            inaccessible_entry.execution_status(ExecutionObservation::Active),
             Err(ServiceError::AuthorityUnavailable)
         );
-        let entry = super::super::HistoryEntry {
+
+        let unfinished_entry = super::super::HistoryEntry {
             operation_id: "unfinished".into(),
             status: Ok((OperationStatus::InProgress, OperationTargets::default())),
         };
         assert_eq!(
-            entry
+            unfinished_entry
                 .execution_status(ExecutionObservation::Unknown)
-                .map(|value| value.2),
+                .map(|(_, _, disposition)| disposition),
             Ok(ExecutionDisposition::ResumeRequired(None))
         );
     }

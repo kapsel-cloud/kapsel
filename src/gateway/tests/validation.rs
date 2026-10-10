@@ -5,7 +5,7 @@ fn first_commit_retains_exact_grant_and_rejects_changed_custody() {
     let path = database_path("retained-grant");
     let gateway = Gateway::open_for_test(&path).unwrap();
     let request = request();
-    let signed = sign_authorization_grant(
+    let signed_grant = sign_authorization_grant(
         &authorization(&request),
         &[7_u8; 32],
         "effect-gateway-authorization-test-key",
@@ -14,12 +14,13 @@ fn first_commit_retains_exact_grant_and_rejects_changed_custody() {
     assert!(matches!(
         gateway.submit_authorized_with_fault(
             &request,
-            &signed,
+            &signed_grant,
             Some(FaultPoint::RequestedCommitted),
         ),
         Err(GatewayError::InjectedFault)
     ));
-    let stored: Vec<u8> = gateway
+
+    let retained_grant: Vec<u8> = gateway
         .journal
         .connection
         .query_row(
@@ -29,7 +30,7 @@ fn first_commit_retains_exact_grant_and_rejects_changed_custody() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stored, signed);
+    assert_eq!(retained_grant, signed_grant);
     assert_eq!(
         gateway.get(&request.operation_id).unwrap(),
         Some(OperationState::Requested)
@@ -44,13 +45,14 @@ fn first_commit_retains_exact_grant_and_rejects_changed_custody() {
         )
         .unwrap();
     assert!(matches!(
-        gateway.submit_authorized(&request, &signed),
+        gateway.submit_authorized(&request, &signed_grant),
         Err(GatewayError::OperationIdentityConflict)
     ));
     assert_eq!(
         gateway.get(&request.operation_id).unwrap(),
         Some(OperationState::Requested)
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -80,6 +82,7 @@ fn history_bounds_bytes_before_copying_corrupted_text_ids() {
             rusqlite::types::Type::Null,
         ))),
     ));
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -97,13 +100,17 @@ fn retained_history_uses_external_trust_and_isolates_missing_keys() {
     for (id, seed) in [("a", 7), ("b", 8)] {
         let mut operation = request();
         operation.operation_id = id.into();
-        let signed = sign_authorization_grant(&authorization(&operation), &[seed; 32], id).unwrap();
-        gateway.submit_authorized(&operation, &signed).unwrap();
+        let signed_grant =
+            sign_authorization_grant(&authorization(&operation), &[seed; 32], id).unwrap();
+        gateway
+            .submit_authorized(&operation, &signed_grant)
+            .unwrap();
         let retained = gateway.retained_operation(id).unwrap().unwrap();
         assert_eq!(retained.request, operation);
-        assert_eq!(retained.signed_grant, signed);
+        assert_eq!(retained.signed_grant, signed_grant);
         assert_eq!(retained.operation.state(), OperationState::Authorized);
     }
+
     drop(gateway);
     let gateway = Gateway::open_with_authorities(&path, vec![key("b", 8)]).unwrap();
     assert!(matches!(
@@ -120,15 +127,18 @@ fn retained_history_uses_external_trust_and_isolates_missing_keys() {
         "b"
     );
     assert!(gateway.retained_operation("absent").unwrap().is_none());
+
     drop(gateway);
     let gateway = Gateway::open_with_authorities(&path, Vec::new()).unwrap();
     assert!(matches!(
         gateway.retained_operation("b"),
         Err(GatewayError::UntrustedAuthorizationGrant),
     ));
+
     drop(gateway);
     let gateway = Gateway::open_with_authorities(&path, vec![key("a", 7), key("b", 8)]).unwrap();
     assert!(gateway.retained_operation("a").unwrap().is_some());
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -214,6 +224,7 @@ fn exact_authorization_is_required_before_persistence() {
             Some(OperationState::Requested),
             "{field}"
         );
+
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -243,13 +254,14 @@ fn requested_phase_cannot_be_authorized_with_another_bound_operation() {
 
     let mut other = request.clone();
     other.operation_id = "other-operation".into();
-    let signed = sign_authorization_grant(
+    let signed_grant = sign_authorization_grant(
         &authorization(&other),
         &[7_u8; 32],
         "effect-gateway-authorization-test-key",
     )
     .unwrap();
-    let verified = verify_authorization_grant(&signed, &gateway.authorization_trust[0]).unwrap();
+    let verified =
+        verify_authorization_grant(&signed_grant, &gateway.authorization_trust[0]).unwrap();
     let authorized =
         AuthorizedRequest::bind(ValidatedRequest::try_from(&other).unwrap(), verified).unwrap();
 
@@ -287,6 +299,7 @@ fn self_signed_or_malformed_grant_fails_before_persistence() {
         Err(GatewayError::InvalidAuthorizationGrant)
     ));
     assert_eq!(gateway.get(&request.operation_id).unwrap(), None);
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -352,7 +365,8 @@ fn duplicate_submission_rejects_inconsistent_requested_row_without_advancing() {
         gateway.submit_exact_for_test(&request, &authorization(&request)),
         Err(GatewayError::InvalidPersistedState)
     ));
-    let persisted = gateway
+
+    let persisted_request_facts = gateway
         .journal
         .connection
         .query_row(
@@ -368,7 +382,7 @@ fn duplicate_submission_rejects_inconsistent_requested_row_without_advancing() {
             },
         )
         .unwrap();
-    assert_eq!(persisted, ("requested".into(), true, None));
+    assert_eq!(persisted_request_facts, ("requested".into(), true, None));
 
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -403,6 +417,7 @@ fn shared_grammar_errors_preserve_field_classification_before_persistence() {
         ));
         assert_eq!(gateway.get(&invalid.operation_id).unwrap(), None);
     }
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -416,13 +431,13 @@ fn full_journal_preserves_existing_idempotency_and_rejects_new_identity() {
         existing.operation_id = "op-0".into();
         let mut existing_authorization = authorization(&existing);
         existing_authorization.authorization_id = "auth-0".into();
-        let signed = sign_authorization_grant(
+        let signed_grant = sign_authorization_grant(
             &existing_authorization,
             &[7_u8; 32],
             "effect-gateway-authorization-test-key",
         )
         .unwrap();
-        let existing_digest = publication::receipt_digest_hex(&signed);
+        let existing_digest = publication::receipt_digest_hex(&signed_grant);
         let transaction = gateway.journal.connection.transaction().unwrap();
         {
             let mut insert = transaction
@@ -448,7 +463,7 @@ fn full_journal_preserves_existing_idempotency_and_rejects_new_identity() {
                         } else {
                             "0000000000000000000000000000000000000000000000000000000000000000"
                         },
-                        signed,
+                        signed_grant,
                     ])
                     .unwrap();
             }
@@ -472,6 +487,7 @@ fn full_journal_preserves_existing_idempotency_and_rejects_new_identity() {
         gateway.submit_exact_for_test(&overflow, &authorization(&overflow)),
         Err(GatewayError::JournalFull)
     ));
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -487,6 +503,7 @@ fn unfinished_capacity_preserves_duplicates_and_releases_only_terminal_slots() {
             .submit_exact_for_test(&operation, &authorization(&operation))
             .unwrap();
     }
+
     let mut existing = request();
     existing.operation_id = "unfinished-0".into();
     assert_eq!(
@@ -495,12 +512,14 @@ fn unfinished_capacity_preserves_duplicates_and_releases_only_terminal_slots() {
             .unwrap(),
         SubmissionResult::Existing(OperationState::Authorized),
     );
+
     let mut next = request();
     next.operation_id = "next".into();
     assert!(matches!(
         gateway.submit_exact_for_test(&next, &authorization(&next)),
         Err(GatewayError::JournalFull)
     ));
+
     let loaded = gateway
         .journal
         .operation(&existing.operation_id)
@@ -516,6 +535,7 @@ fn unfinished_capacity_preserves_duplicates_and_releases_only_terminal_slots() {
     gateway
         .submit_exact_for_test(&next, &authorization(&next))
         .unwrap();
+
     drop(gateway);
     let reopened = Gateway::open_for_test(&path).unwrap();
     assert_eq!(
@@ -526,6 +546,7 @@ fn unfinished_capacity_preserves_duplicates_and_releases_only_terminal_slots() {
         reopened.get("unfinished-0").unwrap(),
         Some(OperationState::NotAttempted)
     );
+
     drop(reopened);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -543,11 +564,12 @@ fn concurrent_submissions_at_31_unfinished_preserve_original_authority() {
             .submit_exact_for_test(&operation, &authorization(&operation))
             .unwrap();
     }
-    let original = super::storage::stored_rows(&setup.journal.connection);
+
+    let original_rows = super::storage::stored_rows(&setup.journal.connection);
     drop(setup);
     let barrier = Barrier::new(2);
     let results = std::thread::scope(|scope| {
-        let threads = ["last-a", "last-b"].map(|id| {
+        let submitters = ["last-a", "last-b"].map(|id| {
             let gateway = Gateway::open_for_test(&path).unwrap();
             gateway
                 .journal
@@ -562,7 +584,7 @@ fn concurrent_submissions_at_31_unfinished_preserve_original_authority() {
                 gateway.submit_exact_for_test(&operation, &authorization(&operation))
             })
         });
-        threads.map(|thread| thread.join().unwrap())
+        submitters.map(|thread| thread.join().unwrap())
     });
     assert_eq!(
         results
@@ -579,11 +601,13 @@ fn concurrent_submissions_at_31_unfinished_preserve_original_authority() {
         1
     );
     let reopened = Gateway::open_for_test(&path).unwrap();
-    let rows = super::storage::stored_rows(&reopened.journal.connection);
-    assert_eq!(rows.len(), 32);
-    for (id, row) in original {
-        assert_eq!(rows.get(&id), Some(&row));
+
+    let retained_rows = super::storage::stored_rows(&reopened.journal.connection);
+    assert_eq!(retained_rows.len(), 32);
+    for (id, row) in original_rows {
+        assert_eq!(retained_rows.get(&id), Some(&row));
     }
+
     drop(reopened);
     journal::Journal::validate_replacement(&path, &[]).unwrap();
     fs::remove_dir_all(path.parent().unwrap()).unwrap();

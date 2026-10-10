@@ -122,6 +122,7 @@ impl GitReceiver {
             }
             (state.barrier, state.stale, state.unavailable)
         };
+
         if matches!(barrier, Some(Barrier::Preflight)) {
             wait_for_resume(state).await;
         }
@@ -155,32 +156,35 @@ impl GitReceiver {
                     )
                     .ok()
             });
-            let committed = state.fresh_attempt
+            let fresh_attempt_committed = state.fresh_attempt
                 && state.original == *authorization
                 && phase == Some(rusqlite::types::Value::Text("apply_started".into()))
                 && state
                     .control
                     .last_delivery(crate::gateway::StorageWrite::Attempt)
                     == Some(crate::gateway::Delivery::Confirmed);
-            if !committed {
+            if !fresh_attempt_committed {
                 state.violation = Some("dispatch_before_commit");
                 return Acknowledgement::Unknown;
             }
+
             state.sends += 1;
             if state.acknowledgement == Acknowledgement::Updated {
                 state.observed = ObservedRef::Commit(authorization.new_commit.clone());
             }
             state.ref_after_send = Some(state.observed.clone());
-            let delivered = if state.lose_response {
+            let returned_acknowledgement = if state.lose_response {
                 Acknowledgement::Unknown
             } else {
                 state.acknowledgement
             };
-            (state.barrier, delivered)
+            (state.barrier, returned_acknowledgement)
         };
+
         if matches!(barrier, Some(Barrier::Mutation)) {
             wait_for_resume(state).await;
         }
+
         state.lock().unwrap().returned_acknowledgement = Some(acknowledgement);
         acknowledgement
     }
@@ -196,9 +200,11 @@ impl GitReceiver {
             };
             (state.barrier, observed)
         };
+
         if matches!(barrier, Some(Barrier::Observation)) {
             wait_for_resume(state).await;
         }
+
         state.lock().unwrap().returned_observation = Some(observed.clone());
         observed
     }

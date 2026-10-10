@@ -10,6 +10,7 @@ use std::{
 };
 
 use http_body_util::Limited;
+pub use kapsel_authority::ValidatedServiceOperatorInputs;
 use kube::{config::KubeConfigOptions, Config};
 pub use service::{
     parse_service_operator_document, ApprovedAction, ExecutionCondition, ExecutionDisposition,
@@ -26,7 +27,7 @@ use crate::gateway::{
 /// Exact Kubernetes operation tuple retained by operator approval and service history.
 pub type AgentRequest = crate::gateway::SetDeploymentImageRequest;
 
-pub use kapsel_authority::ValidatedServiceOperatorInputs;
+const KUBECONFIG_BYTES_MAX: usize = 16 * 1024;
 
 /// Validates the service grant, authorization key, receipt seed, and evaluator trust together.
 ///
@@ -94,13 +95,15 @@ pub async fn provision_git_ref_grant(
     signing_seed: &[u8; 32],
     signing_key_id: &str,
 ) -> Result<Vec<u8>, ApplicationError> {
-    let grant = kapsel_authority::sign_git_ref_grant(authorization, signing_seed, signing_key_id)
-        .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+    let signed_grant =
+        kapsel_authority::sign_git_ref_grant(authorization, signing_seed, signing_key_id)
+            .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
+
     receiver
         .validate_preparation(authorization)
         .await
         .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
-    Ok(grant)
+    Ok(signed_grant)
 }
 
 /// Acquires the operator-selected Deployment version and signs one snapshot grant.
@@ -120,43 +123,50 @@ pub async fn provision_snapshot_grant(
     use crate::gateway::{
         ApprovedTarget, DeploymentImageAdapter, KubernetesDeploymentImageAdapter,
     };
-    if kubeconfig.len() > 16 * 1024 || provisioning.authorization.approved_target.is_some() {
+    if kubeconfig.len() > KUBECONFIG_BYTES_MAX
+        || provisioning.authorization.approved_target.is_some()
+    {
         return Err(ApplicationError::InvalidGrantProvisioning);
     }
     provision_exact_grant(provisioning)?;
+
     let client = load_operator_kubernetes_client(kubeconfig).await?;
     let mut adapter = KubernetesDeploymentImageAdapter::new(client);
     let proposal = provisioning.authorization;
-    let request = AgentRequest {
+    let target_request = AgentRequest {
         operation_id: proposal.operation_id.clone(),
         namespace: proposal.namespace.clone(),
         deployment: proposal.deployment.clone(),
         container: proposal.container.clone(),
         immutable_image_digest: proposal.immutable_image_digest.clone(),
     };
-    let observed = adapter
-        .identify(&request)
+    let observed_target = adapter
+        .identify(&target_request)
         .await
         .map_err(|_| ApplicationError::InvalidGrantProvisioning)?;
-    let mut authorization = proposal.clone();
-    authorization.approved_target = Some(ApprovedTarget {
-        uid: observed.deployment_uid,
-        resource_version: observed.resource_version,
+
+    let mut snapshot_authorization = proposal.clone();
+    snapshot_authorization.approved_target = Some(ApprovedTarget {
+        uid: observed_target.deployment_uid,
+        resource_version: observed_target.resource_version,
     });
     provision_exact_grant(&GrantProvisioning {
-        authorization: &authorization,
+        authorization: &snapshot_authorization,
         signing_seed: provisioning.signing_seed,
         signing_key_id: provisioning.signing_key_id,
     })
 }
 
-async fn load_operator_kubernetes_client(bytes: &[u8]) -> Result<kube::Client, ApplicationError> {
+async fn load_operator_kubernetes_client(
+    kubeconfig_bytes: &[u8],
+) -> Result<kube::Client, ApplicationError> {
     const KUBERNETES_RESPONSE_BYTES_MAX: usize = 2 * 1024 * 1024;
-    if bytes.is_empty() || bytes.len() > 16 * 1024 {
+
+    if kubeconfig_bytes.is_empty() || kubeconfig_bytes.len() > KUBECONFIG_BYTES_MAX {
         return Err(ApplicationError::InvalidOperatorConfiguration);
     }
-    let text =
-        std::str::from_utf8(bytes).map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    let text = std::str::from_utf8(kubeconfig_bytes)
+        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
     let mut kubeconfig = kube::config::Kubeconfig::from_yaml(text)
         .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
     let proxy_placeholder_was_added = configure_explicit_kubeconfig(&mut kubeconfig)?;
@@ -167,31 +177,33 @@ async fn load_operator_kubernetes_client(bytes: &[u8]) -> Result<kube::Client, A
     if proxy_placeholder_was_added {
         client_config.proxy_url = None;
     }
+
     // A receiver-side effect followed by 429/503/504 must remain one mutation request.
     client_config.default_retry = false;
     let response_limit =
         MapResponseBodyLayer::new(|body| Limited::new(body, KUBERNETES_RESPONSE_BYTES_MAX));
-    Ok(kube::client::ClientBuilder::try_from(client_config)
-        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?
-        .with_layer(&response_limit)
-        .build())
+    let client_builder = kube::client::ClientBuilder::try_from(client_config)
+        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+
+    Ok(client_builder.with_layer(&response_limit).build())
 }
 
 fn configure_explicit_kubeconfig(
     kubeconfig: &mut kube::config::Kubeconfig,
 ) -> Result<bool, ApplicationError> {
-    let current = kubeconfig
+    let current_context_name = kubeconfig
         .current_context
         .as_deref()
         .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
     let context = kubeconfig
         .contexts
         .iter()
-        .find(|context| context.name == current)
+        .find(|context| context.name == current_context_name)
         .and_then(|context| context.context.as_ref())
         .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
     let cluster_name = context.cluster.clone();
     let user_name = context.user.clone();
+
     let cluster = kubeconfig
         .clusters
         .iter_mut()
@@ -208,15 +220,16 @@ fn configure_explicit_kubeconfig(
             .find(|user| user.name == user_name)
             .and_then(|user| user.auth_info.as_ref())
             .ok_or(ApplicationError::InvalidOperatorConfiguration)?;
-        if user.token_file.is_some()
+        let uses_external_credentials = user.token_file.is_some()
             || user.client_certificate.is_some()
             || user.client_key.is_some()
             || user.auth_provider.is_some()
-            || user.exec.is_some()
-        {
+            || user.exec.is_some();
+        if uses_external_credentials {
             return Err(ApplicationError::InvalidOperatorConfiguration);
         }
     }
+
     if cluster.proxy_url.as_deref().is_none_or(str::is_empty) {
         cluster.proxy_url = Some(String::from("http://127.0.0.1"));
         Ok(true)
@@ -284,13 +297,16 @@ fn status_of(
 }
 
 fn validate_journal_path(path: &Path) -> Result<(), ApplicationError> {
-    if !path.is_absolute() || !matches!(path.components().next_back(), Some(Component::Normal(_))) {
+    let has_safe_basename = matches!(path.components().next_back(), Some(Component::Normal(_)));
+    if !path.is_absolute() || !has_safe_basename {
         return Err(ApplicationError::InvalidJournalPath);
     }
+
     let parent = path.parent().ok_or(ApplicationError::InvalidJournalPath)?;
     crate::gateway::validate_private_directory(parent)
         .map_err(|_| ApplicationError::InvalidJournalPath)?;
     validate_private_file_or_missing(path)?;
+
     let mut worker_lock_path = path.as_os_str().to_os_string();
     worker_lock_path.push(".kap0038-worker.lock");
     validate_private_file_or_missing(Path::new(&worker_lock_path))

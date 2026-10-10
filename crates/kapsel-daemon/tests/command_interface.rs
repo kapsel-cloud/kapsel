@@ -19,17 +19,20 @@ fn discovery_needs_no_service_or_configuration() {
             .env_clear()
             .output()
             .unwrap();
+
         assert!(version.status.success());
         assert_eq!(
             version.stdout,
             format!("{name} {}\n", env!("CARGO_PKG_VERSION")).as_bytes()
         );
         assert!(version.stderr.is_empty());
+
         let help = Command::new(binary)
             .arg("--help")
             .env_clear()
             .output()
             .unwrap();
+
         assert!(help.status.success());
         assert!(String::from_utf8(help.stdout).unwrap().contains("Usage:"));
         assert!(help.stderr.is_empty());
@@ -54,6 +57,7 @@ fn invalid_usage_is_bounded_and_does_not_echo_arguments() {
                 .env_clear()
                 .output()
                 .unwrap();
+
             assert_eq!(result.status.code(), Some(2));
             assert!(result.stdout.is_empty());
             let error = String::from_utf8(result.stderr).unwrap();
@@ -132,11 +136,11 @@ mod client_failures {
         result
     }
 
-    fn failure(result: &Output, code: &str) {
+    fn assert_local_failure(result: &Output, diagnostic_code: &str) {
         assert_eq!(result.status.code(), Some(4));
         assert!(result.stdout.is_empty());
         let diagnostic = std::str::from_utf8(&result.stderr).unwrap();
-        assert!(diagnostic.contains(code), "{diagnostic}");
+        assert!(diagnostic.contains(diagnostic_code), "{diagnostic}");
         assert!(!diagnostic.contains("SECRET"));
         assert!(diagnostic.len() < 160);
     }
@@ -144,23 +148,25 @@ mod client_failures {
     #[test]
     fn connection_exchange_and_protocol_failures_are_distinct() {
         let fixture = Fixture::new();
-        failure(
+        assert_local_failure(
             &fixture.run(&["status", "op"], None),
             "connection_unavailable",
         );
-        failure(
+        assert_local_failure(
             &fixture.run(&["submit", "op"], Some(&[0, 0])),
             "exchange_incomplete",
         );
-        failure(
+        assert_local_failure(
             &fixture.run(
                 &["status", "op"],
                 Some(&framed(br#"{"version":2,"status":"SECRET_RESPONSE"}"#)),
             ),
             "response_invalid",
         );
+
         let response = br#"{"version":1,"status":"NOT_ADMITTED","reason":"BUSY"}"#;
         let result = fixture.run(&["submit", "op"], Some(&framed(response)));
+
         assert!(result.status.success());
         assert_eq!(result.stdout, [response.as_slice(), b"\n"].concat());
         assert!(result.stderr.is_empty());
@@ -171,7 +177,7 @@ mod client_failures {
         let fixture = Fixture::new();
         let destination = fixture.0.join("SECRET_destination");
         let arguments = ["receipt", "op", destination.to_str().unwrap()];
-        failure(
+        assert_local_failure(
             &fixture.run(
                 &arguments,
                 Some(&framed(br#"{"version":1,"status":"NOT_READY"}"#)),
@@ -179,18 +185,21 @@ mod client_failures {
             "receipt_unavailable",
         );
         assert!(!destination.exists());
+
         let invalid = serde_json::to_vec(&serde_json::json!({
             "version": 1, "status": "READY", "receipt_hex": "00abff",
             "receipt_sha256": "0".repeat(64),
         }))
         .unwrap();
-        failure(
+        assert_local_failure(
             &fixture.run(&arguments, Some(&framed(&invalid))),
             "response_invalid",
         );
         assert!(!destination.exists());
+
         let relative = fixture.run(&["receipt", "op", "relative-output"], None);
         assert_eq!(relative.status.code(), Some(2));
+
         let response = serde_json::to_vec(&serde_json::json!({
             "version": 1, "status": "READY", "receipt_hex": "00abff",
             "receipt_sha256": Sha256::digest([0, 0xab, 0xff]).iter()
@@ -206,7 +215,7 @@ mod client_failures {
             .status
             .success());
         assert_eq!(fs::read(&destination).unwrap(), [0, 0xab, 0xff]);
-        failure(
+        assert_local_failure(
             &fixture.run(&arguments, Some(&framed(&response))),
             "export_failed",
         );

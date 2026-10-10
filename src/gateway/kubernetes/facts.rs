@@ -119,6 +119,7 @@ impl ReceiverObservation {
         validate_optional_fact(self.rollout_condition_type.as_deref())?;
         validate_optional_fact(self.rollout_condition_status.as_deref())?;
         validate_optional_fact(self.rollout_condition_reason.as_deref())?;
+
         let condition_type_present = self.rollout_condition_type.is_some();
         let condition_status_present = self.rollout_condition_status.is_some();
         let condition_reason_present = self.rollout_condition_reason.is_some();
@@ -127,6 +128,7 @@ impl ReceiverObservation {
         {
             return Err(GatewayError::InvalidKubernetesFact);
         }
+
         if self.current_generation.is_some_and(|value| value < 0)
             || self.observed_generation.is_some_and(|value| value < 0)
             || [
@@ -141,6 +143,7 @@ impl ReceiverObservation {
         {
             return Err(GatewayError::InvalidKubernetesFact);
         }
+
         if let Some(image) = &self.image {
             validate_immutable_image(image).map_err(|_| GatewayError::InvalidKubernetesFact)?;
         }
@@ -191,26 +194,29 @@ impl ReceiverObservation {
     ) -> OperationResult {
         let operation_matches = self.operation_marker.as_deref() == Some(operation_id)
             && self.image.as_deref() == Some(immutable_image_digest);
-        let desired_replicas_available = self.desired_replicas.is_some()
+        let replica_counts_establish_availability = self.desired_replicas.is_some()
             && self.updated_replicas == self.desired_replicas
             && self.available_replicas == self.desired_replicas
             && self.unavailable_replicas == Some(0);
-        let available = desired_replicas_available && self.available_condition();
+        let rollout_available = replica_counts_establish_availability && self.available_condition();
         let progress_deadline_exceeded = self.progress_deadline_exceeded();
+
         let requested_generation =
             self.requested_generation_for(operation_id, immutable_image_digest, outcome);
-        let receiver_establishes_requested_generation = requested_generation.is_some_and(|value| {
-            operation_matches
-                && outcome.deployment_uid.is_some()
-                && self.deployment_uid == outcome.deployment_uid
-                && self.current_generation == Some(value)
-                && self
-                    .observed_generation
-                    .is_some_and(|observed| observed >= value)
-        });
+        let receiver_establishes_requested_generation =
+            requested_generation.is_some_and(|requested_generation| {
+                operation_matches
+                    && outcome.deployment_uid.is_some()
+                    && self.deployment_uid == outcome.deployment_uid
+                    && self.current_generation == Some(requested_generation)
+                    && self
+                        .observed_generation
+                        .is_some_and(|observed| observed >= requested_generation)
+            });
+
         if receiver_establishes_requested_generation && progress_deadline_exceeded {
             OperationResult::Failed
-        } else if receiver_establishes_requested_generation && available {
+        } else if receiver_establishes_requested_generation && rollout_available {
             OperationResult::Succeeded
         } else {
             OperationResult::Unknown
@@ -390,12 +396,14 @@ mod tests {
             observation.requested_generation(&validated(&request), &recovered_outcome),
             Some(2)
         );
+
         let mut mismatched_uid = observation.clone();
         mismatched_uid.deployment_uid = Some("replacement-uid".into());
         assert_eq!(
             mismatched_uid.requested_generation(&validated(&request), &recovered_outcome),
             None
         );
+
         let mut missing_stored_uid = recovered_outcome.clone();
         missing_stored_uid.deployment_uid = None;
         assert_eq!(

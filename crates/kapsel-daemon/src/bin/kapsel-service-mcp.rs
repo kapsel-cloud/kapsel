@@ -24,60 +24,74 @@ const INPUT_MAX: u64 = 16 * 1024;
 const OUTPUT_MAX: usize = 96 * 1024;
 
 struct Unique(Value);
+
 impl<'de> Deserialize<'de> for Unique {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         deserializer.deserialize_any(UniqueVisitor)
     }
 }
+
 struct UniqueVisitor;
+
 impl<'de> Visitor<'de> for UniqueVisitor {
     type Value = Unique;
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("JSON without duplicate keys")
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JSON without duplicate keys")
     }
-    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
-        Ok(Unique(Value::Bool(v)))
+
+    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+        Ok(Unique(Value::Bool(value)))
     }
-    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
-        Ok(Unique(json!(v)))
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+        Ok(Unique(json!(value)))
     }
-    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
-        Ok(Unique(json!(v)))
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+        Ok(Unique(json!(value)))
     }
-    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
-        serde_json::Number::from_f64(v)
-            .map(|n| Unique(Value::Number(n)))
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+        serde_json::Number::from_f64(value)
+            .map(|number| Unique(Value::Number(number)))
             .ok_or_else(|| E::custom("invalid number"))
     }
-    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
-        Ok(Unique(json!(v)))
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+        Ok(Unique(json!(value)))
     }
-    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
-        Ok(Unique(json!(v)))
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+        Ok(Unique(json!(value)))
     }
+
     fn visit_none<E>(self) -> Result<Self::Value, E> {
         Ok(Unique(Value::Null))
     }
+
     fn visit_unit<E>(self) -> Result<Self::Value, E> {
         Ok(Unique(Value::Null))
     }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let mut out = Vec::new();
-        while let Some(v) = seq.next_element::<Unique>()? {
-            out.push(v.0);
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
+        let mut values = Vec::new();
+        while let Some(value) = sequence.next_element::<Unique>()? {
+            values.push(value.0);
         }
-        Ok(Unique(Value::Array(out)))
+        Ok(Unique(Value::Array(values)))
     }
+
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut keys = BTreeSet::new();
-        let mut out = serde_json::Map::new();
-        while let Some(k) = map.next_key::<String>()? {
-            if !keys.insert(k.clone()) {
+        let mut fields = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if !keys.insert(key.clone()) {
                 return Err(serde::de::Error::custom("duplicate key"));
             }
-            out.insert(k, map.next_value::<Unique>()?.0);
+            fields.insert(key, map.next_value::<Unique>()?.0);
         }
-        Ok(Unique(Value::Object(out)))
+        Ok(Unique(Value::Object(fields)))
     }
 }
 
@@ -104,9 +118,11 @@ struct Call {
 fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
+
 fn result(id: Value, value: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"result":value})
 }
+
 fn tool_result(id: Value, operation_id: &Value, service: Value, failed: bool) -> Value {
     let text = json!({"operation_id":operation_id,"service":service}).to_string();
     result(
@@ -114,9 +130,11 @@ fn tool_result(id: Value, operation_id: &Value, service: Value, failed: bool) ->
         json!({"content":[{"type":"text","text":text}],"isError":failed}),
     )
 }
+
 fn valid_id(id: &Value) -> bool {
     id.is_number() || id.as_str().is_some_and(|s| s.len() <= 128)
 }
+
 fn metadata_only(params: Option<&Value>) -> bool {
     params.is_none_or(|p| {
         p.as_object().is_some_and(|o| {
@@ -124,30 +142,35 @@ fn metadata_only(params: Option<&Value>) -> bool {
         })
     })
 }
+
 fn identity(value: &Value) -> Option<&str> {
     value
         .as_str()
         .filter(|s| kapsel_authority::identity_is_valid(s))
 }
+
 fn tools() -> Value {
-    let cursor = json!({"type":"object","properties":{"after":{"type":["string","null"],
+    let cursor_schema = json!({"type":"object","properties":{"after":{"type":["string","null"],
         "maxLength":128}},"required":["after"],"additionalProperties":false});
-    let id = json!({"type":"object","properties":{"operation_id":{"type":"string",
+    let operation_id_schema = json!({"type":"object","properties":{"operation_id":{"type":"string",
         "minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},
         "required":["operation_id"],"additionalProperties":false});
     json!({"tools":[
         {"name":"kapsel.list_approved_actions",
-         "description":"Read operator-approved handles.","inputSchema":cursor},
+         "description":"Read operator-approved handles.","inputSchema":cursor_schema},
         {"name":"kapsel.list_operation_history",
-         "description":"Read retained operation history.","inputSchema":cursor},
+         "description":"Read retained operation history.","inputSchema":cursor_schema},
         {"name":"kapsel.get_status",
-         "description":"Read stored status without advancing.","inputSchema":id},
+         "description":"Read stored status without advancing.","inputSchema":operation_id_schema},
         {"name":"kapsel.get_receipt",
-         "description":"Read original signed receipt bytes and digest.","inputSchema":id},
+         "description":"Read original signed receipt bytes and digest.",
+         "inputSchema":operation_id_schema},
         {"name":"kapsel.submit",
-         "description":"Explicitly submit or resume the same operation ID.","inputSchema":id}
+         "description":"Explicitly submit or resume the same operation ID.",
+         "inputSchema":operation_id_schema}
     ]})
 }
+
 fn receipt_valid(value: &Value) -> bool {
     let (Some(hex), Some(digest)) = (
         value.get("receipt_hex").and_then(Value::as_str),
@@ -165,6 +188,7 @@ fn receipt_valid(value: &Value) -> bool {
     {
         return false;
     }
+
     let decode = |text: &str| {
         text.as_bytes()
             .as_chunks::<2>()
@@ -178,9 +202,10 @@ fn receipt_valid(value: &Value) -> bool {
             .collect::<Vec<_>>()
     };
     let bytes = decode(hex);
-    let expected = decode(digest);
-    Sha256::digest(bytes).as_slice() == expected
+    let expected_digest = decode(digest);
+    Sha256::digest(bytes).as_slice() == expected_digest
 }
+
 fn exact(fields: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
     fields.len() == keys.len() && keys.iter().all(|key| fields.contains_key(*key))
 }
@@ -497,36 +522,39 @@ fn call(id: Value, params: Option<Value>) -> Value {
         return error(id, -32602, "Invalid params");
     };
     let _ = call.metadata;
-    let Some(args) = call.arguments.as_object() else {
+    let Some(arguments) = call.arguments.as_object() else {
         return error(id, -32602, "Invalid params");
     };
     let request = match call.name.as_str() {
-        "kapsel.list_approved_actions" | "kapsel.list_operation_history" if args.len() == 1 => {
-            let after = match args.get("after") {
+        "kapsel.list_approved_actions" | "kapsel.list_operation_history"
+            if arguments.len() == 1 =>
+        {
+            let after = match arguments.get("after") {
                 Some(Value::Null) => Value::Null,
-                Some(v) if identity(v).is_some() => v.clone(),
+                Some(cursor) if identity(cursor).is_some() => cursor.clone(),
                 _ => return error(id, -32602, "Invalid params"),
             };
-            let kind = if call.name == "kapsel.list_approved_actions" {
+            let request_name = if call.name == "kapsel.list_approved_actions" {
                 "list_approved_actions"
             } else {
                 "list_operation_history"
             };
-            json!({"version":1,"request":kind,"after":after})
+            json!({"version":1,"request":request_name,"after":after})
         },
-        "kapsel.get_status" | "kapsel.get_receipt" | "kapsel.submit" if args.len() == 1 => {
-            let Some(op) = args.get("operation_id").and_then(identity) else {
+        "kapsel.get_status" | "kapsel.get_receipt" | "kapsel.submit" if arguments.len() == 1 => {
+            let Some(operation_id) = arguments.get("operation_id").and_then(identity) else {
                 return error(id, -32602, "Invalid params");
             };
-            let kind = match call.name.as_str() {
+            let request_name = match call.name.as_str() {
                 "kapsel.get_status" => "get_set_deployment_image_status",
                 "kapsel.get_receipt" => "get_set_deployment_image_receipt",
                 _ => "submit_set_deployment_image",
             };
-            json!({"version":1,"request":kind,"operation_id":op})
+            json!({"version":1,"request":request_name,"operation_id":operation_id})
         },
         _ => return error(id, -32602, "Invalid params"),
     };
+
     #[cfg(feature = "test-harness")]
     let test_socket = std::env::var("KAPSELD_TEST_CLIENT_SOCKET").ok();
     #[cfg(feature = "test-harness")]
@@ -534,8 +562,8 @@ fn call(id: Value, params: Option<Value>) -> Value {
     #[cfg(not(feature = "test-harness"))]
     let socket = client_transport::SOCKET;
     let operation_id = request.get("operation_id").cloned().unwrap_or(Value::Null);
-    let bytes = serde_json::to_vec(&request).unwrap_or_default();
-    let bytes = match client_transport::exchange(socket, &bytes) {
+    let request_bytes = serde_json::to_vec(&request).unwrap_or_default();
+    let response_bytes = match client_transport::exchange(socket, &request_bytes) {
         Ok((bytes, _status)) => bytes,
         Err(error) => {
             let class = if matches!(error, client_transport::Error::Response) {
@@ -551,7 +579,8 @@ fn call(id: Value, params: Option<Value>) -> Value {
             );
         },
     };
-    let Ok(Unique(value)) = serde_json::from_slice::<Unique>(&bytes) else {
+
+    let Ok(Unique(value)) = serde_json::from_slice::<Unique>(&response_bytes) else {
         return tool_result(
             id,
             &operation_id,
@@ -568,16 +597,29 @@ fn call(id: Value, params: Option<Value>) -> Value {
             true,
         );
     }
+
     // Bind the caller-selected identity to the unchanged service facts. The JSON-RPC ID
     // identifies only the transport request, not the durable operation.
     tool_result(id, &operation_id, value, failed)
 }
-fn dispatch(message: Message, present: bool, phase: &mut u8) -> Option<Value> {
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HandshakePhase {
+    AwaitingInitialize,
+    AwaitingInitialized,
+    Ready,
+}
+
+fn dispatch(
+    message: Message,
+    has_request_id: bool,
+    handshake_phase: &mut HandshakePhase,
+) -> Option<Value> {
     let id = message.id.unwrap_or(Value::Null);
-    if (present && !valid_id(&id)) || message.jsonrpc != "2.0" {
+    if (has_request_id && !valid_id(&id)) || message.jsonrpc != "2.0" {
         return Some(error(Value::Null, -32600, "Invalid Request"));
     }
-    if !present
+    if !has_request_id
         && !matches!(
             message.method.as_str(),
             "notifications/initialized" | "notifications/cancelled"
@@ -586,44 +628,46 @@ fn dispatch(message: Message, present: bool, phase: &mut u8) -> Option<Value> {
         return None;
     }
     match message.method.as_str() {
-        "initialize" if present => {
-            let p = message.params.as_ref().and_then(Value::as_object);
-            if *phase != 0
-                || !p.is_some_and(|p| {
-                    p.keys().all(|k| {
+        "initialize" if has_request_id => {
+            let parameters = message.params.as_ref().and_then(Value::as_object);
+            if *handshake_phase != HandshakePhase::AwaitingInitialize
+                || !parameters.is_some_and(|fields| {
+                    fields.keys().all(|key| {
                         matches!(
-                            k.as_str(),
+                            key.as_str(),
                             "protocolVersion" | "capabilities" | "clientInfo" | "_meta"
                         )
-                    }) && p.get("protocolVersion").is_some_and(Value::is_string)
-                        && p.get("capabilities").is_some_and(Value::is_object)
-                        && p.get("clientInfo").is_some_and(|v| {
-                            v.get("name").is_some_and(Value::is_string)
-                                && v.get("version").is_some_and(Value::is_string)
+                    }) && fields.get("protocolVersion").is_some_and(Value::is_string)
+                        && fields.get("capabilities").is_some_and(Value::is_object)
+                        && fields.get("clientInfo").is_some_and(|client_info| {
+                            client_info.get("name").is_some_and(Value::is_string)
+                                && client_info.get("version").is_some_and(Value::is_string)
                         })
-                        && p.get("_meta").is_none_or(Value::is_object)
+                        && fields.get("_meta").is_none_or(Value::is_object)
                 })
             {
                 return Some(error(id, -32600, "Invalid Request"));
             }
-            *phase = 1;
+            *handshake_phase = HandshakePhase::AwaitingInitialized;
             Some(result(
                 id,
                 json!({"protocolVersion":PROTOCOL,"capabilities":{"tools":{}},
                 "serverInfo":{"name":"kapsel-service","version":env!("CARGO_PKG_VERSION")}}),
             ))
         },
-        "notifications/initialized" if !present => {
-            if *phase == 1 && metadata_only(message.params.as_ref()) {
-                *phase = 2;
+        "notifications/initialized" if !has_request_id => {
+            if *handshake_phase == HandshakePhase::AwaitingInitialized
+                && metadata_only(message.params.as_ref())
+            {
+                *handshake_phase = HandshakePhase::Ready;
             }
             None
         },
         "notifications/initialized" | "notifications/cancelled" => {
             Some(error(id, -32600, "Invalid Request"))
         },
-        "tools/list" | "tools/call" if present => {
-            if *phase != 2 {
+        "tools/list" | "tools/call" if has_request_id => {
+            if *handshake_phase != HandshakePhase::Ready {
                 return Some(error(id, -32600, "Invalid Request"));
             }
             if message.method == "tools/list" {
@@ -635,10 +679,11 @@ fn dispatch(message: Message, present: bool, phase: &mut u8) -> Option<Value> {
                 Some(call(id, message.params))
             }
         },
-        _ if !present => None,
+        _ if !has_request_id => None,
         _ => Some(error(id, -32601, "Method not found")),
     }
 }
+
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);
     if let Some(arg) = args.next() {
@@ -659,43 +704,47 @@ fn main() -> std::process::ExitCode {
         let _ = writeln!(std::io::stderr(), "kapsel-service-mcp: invalid_usage");
         return std::process::ExitCode::from(2);
     }
+
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
     let mut output = std::io::stdout().lock();
-    let mut phase = 0;
+    let mut handshake_phase = HandshakePhase::AwaitingInitialize;
     loop {
         let mut bytes = Vec::new();
-        let Ok(n) = input
+        let Ok(bytes_read) = input
             .by_ref()
             .take(INPUT_MAX + 1)
             .read_until(b'\n', &mut bytes)
         else {
             return std::process::ExitCode::from(4);
         };
-        if n == 0 {
+        if bytes_read == 0 {
             return std::process::ExitCode::SUCCESS;
         }
         if bytes.len() as u64 > INPUT_MAX || bytes.last() != Some(&b'\n') {
             return std::process::ExitCode::from(2);
         }
+
         bytes.pop();
         if bytes.last() == Some(&b'\r') {
             bytes.pop();
         }
+
         let response = match serde_json::from_slice::<Unique>(&bytes) {
             Ok(Unique(value)) => {
-                let present = value.as_object().is_some_and(|o| o.contains_key("id"));
+                let has_request_id = value.as_object().is_some_and(|o| o.contains_key("id"));
                 let envelope_id = value
                     .get("id")
                     .filter(|id| valid_id(id))
                     .cloned()
                     .unwrap_or(Value::Null);
                 match serde_json::from_value::<Message>(value) {
-                    Ok(message) => dispatch(message, present, &mut phase),
+                    Ok(message) => dispatch(message, has_request_id, &mut handshake_phase),
                     Err(_) => Some(error(envelope_id, -32600, "Invalid Request")),
                 }
             },
             Err(_) => Some(error(Value::Null, -32700, "Parse error")),
         };
+
         if let Some(response) = response {
             let Ok(mut line) = serde_json::to_vec(&response) else {
                 return std::process::ExitCode::from(4);

@@ -82,6 +82,7 @@ impl<R, E> ServerState<R, E> {
                 ExecutionObservation::OtherWorker
             };
         }
+
         self.stopped
             .lock()
             .map_or(ExecutionObservation::Unknown, |stopped| {
@@ -217,10 +218,10 @@ async fn serve<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>
 ) -> io::Result<()> {
     tokio::pin!(stop);
     let mut handlers = JoinSet::new();
-    let mut accepted = 0;
+    let mut accepted_connections = 0;
     let mut failed_handler = false;
     let mut result = loop {
-        if limit.is_some_and(|limit| accepted >= limit) {
+        if limit.is_some_and(|limit| accepted_connections >= limit) {
             break Ok(());
         }
         let stream = tokio::select! {
@@ -232,7 +233,7 @@ async fn serve<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>
             },
         };
         if limit.is_some() {
-            accepted += 1;
+            accepted_connections += 1;
         }
         while let Some(handler) = handlers.try_join_next() {
             failed_handler |= handler.is_err();
@@ -246,6 +247,7 @@ async fn serve<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>
             serve_admitted_connection(stream, expected_gid, state, Arc::new(permit)).await;
         });
     };
+
     drop(listener);
     while let Some(handler) = handlers.join_next().await {
         failed_handler |= handler.is_err();
@@ -253,6 +255,7 @@ async fn serve<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>
     if failed_handler && result.is_ok() {
         result = Err(io::Error::other("connection task failed"));
     }
+
     // A response supervisor can finish before its blocking storage work. Keep driving the reactor
     // until both retire, because surviving work can still need receiver I/O and timers.
     state.jobs.drain().await;
@@ -298,14 +301,17 @@ async fn serve_admitted_connection<
     if credentials.gid() != expected_gid {
         return;
     }
+
     let Ok(body) = read_request_with_deadline(&mut stream).await else {
         return;
     };
+
     let deadline = Instant::now() + IO_DEADLINE;
     let (response, class) = dispatch_admitted(&body, &state, connection.clone(), deadline).await;
     if !response_length_allowed(response.len(), class) {
         return;
     }
+
     let _ = write_response_with_deadline(&mut stream, &response).await;
 }
 
@@ -320,8 +326,10 @@ async fn read_request_frame(input: &mut (impl AsyncRead + Unpin)) -> io::Result<
     input.read_exact(&mut prefix).await?;
     let length =
         protocol::request_length(prefix).ok_or_else(|| io::Error::other("invalid frame length"))?;
+
     let mut body = vec![0_u8; length];
     input.read_exact(&mut body).await?;
+
     let mut trailing = [0_u8; 1];
     if input.read(&mut trailing).await? != 0 {
         return Err(io::Error::other("trailing input"));
@@ -371,31 +379,34 @@ async fn dispatch_admitted<R: ApplicationReads + 'static, E: ApplicationExecutio
     match command {
         Command::Read(request) => {
             let reads = state.reads.clone();
-            let observed = state.clone();
-            let (response, received) = oneshot::channel();
+            let observation_state = state.clone();
+            let (read_sender, read_receiver) = oneshot::channel();
             if state
                 .jobs
                 .spawn(connection, None, move || {
-                    let result = reads.lock().map_or_else(
+                    let read_result = reads.lock().map_or_else(
                         |_| {
-                            observed
+                            observation_state
                                 .read_failures
                                 .report(ServiceError::OperationFailure);
                             (operation_failure(), ResponseClass::Ordinary)
                         },
                         |reads| {
-                            reads.read_observed(request, &|id| observed.observation(id), &|error| {
-                                observed.read_failures.report(error);
-                            })
+                            reads.read_observed(
+                                request,
+                                &|id| observation_state.observation(id),
+                                &|error| observation_state.read_failures.report(error),
+                            )
                         },
                     );
-                    let _ = response.send(result);
+                    let _ = read_sender.send(read_result);
                 })
                 .is_err()
             {
                 return (Vec::new(), ResponseClass::Ordinary);
             }
-            match timeout_at(deadline, received).await {
+
+            match timeout_at(deadline, read_receiver).await {
                 Ok(Ok(response)) => response,
                 Ok(Err(_)) => (operation_failure(), ResponseClass::Ordinary),
                 Err(_) => (Vec::new(), ResponseClass::Ordinary),
@@ -430,7 +441,8 @@ fn record_stop(
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "moved selection leases must span the complete probe decision"
+    clippy::too_many_lines,
+    reason = "selection leases and admission replies stay in one physical-job custody trace"
 )]
 async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>(
     state: &ServerState<R, E>,
@@ -438,7 +450,7 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
     connection: Arc<OwnedSemaphorePermit>,
     deadline: Instant,
 ) -> SubmissionAdmission {
-    let (response, received) = oneshot::channel();
+    let (admission_sender, admission_receiver) = oneshot::channel();
     // Acquire execution or pin the current selection while holding the publication lock. The pin
     // keeps the original permit held through the probe's decision, even if execution ends mid-read.
     // Without it, an absence read followed by no current worker could hide a completed admission.
@@ -465,7 +477,8 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
             Err(selected.upgrade())
         }
     };
-    let spawned = match selection {
+
+    let job_registration = match selection {
         Ok(selection) => {
             let execution = state.execution.clone();
             let stopped = state.stopped.clone();
@@ -473,72 +486,79 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
             let lifetime = ExecutionLifetime(selection.running.clone());
             state.jobs.spawn(connection, Some(selection), move || {
                 let _lifetime = lifetime;
-                let mut response = Some(response);
+                let mut admission_sender = Some(admission_sender);
                 let result = runtime.block_on(async {
                     let mut execution = execution.lock().await;
                     execution
                         .execute(operation_id.clone(), |decision| {
-                            if let Some(response) = response.take() {
-                                let _ = response.send(SubmissionAdmission::Decided(decision));
+                            if let Some(admission_sender) = admission_sender.take() {
+                                let admission = SubmissionAdmission::Decided(decision);
+                                let _ = admission_sender.send(admission);
                             }
                         })
                         .await
                 });
+
                 record_stop(&stopped, operation_id, result);
-                if let Some(response) = response {
-                    let _ = response.send(SubmissionAdmission::Error(
+                if let Some(admission_sender) = admission_sender {
+                    let _ = admission_sender.send(SubmissionAdmission::Error(
                         result.err().unwrap_or(ServiceError::OperationFailure),
                     ));
                 }
             })
         },
-        Err(pinned) => {
+        Err(pinned_selection) => {
             let reads = state.reads.clone();
             let selected = state.selected.clone();
             let read_failures = state.read_failures.clone();
             // The supervisor and physical closure both retain the probed generation.
-            state.jobs.spawn(connection, pinned.clone(), move || {
-                let result = reads
-                    .lock()
-                    .map_err(|_| ServiceError::OperationFailure)
-                    .and_then(|reads| reads.admitted_state(&operation_id))
-                    .inspect_err(|error| read_failures.report(*error));
-                let current = selected.lock().map(|selected| selected.upgrade());
-                let decision = match (result, current) {
-                    (Ok(Some(phase)), _) => {
-                        SubmissionAdmission::Decided(ServiceAdmission::Admitted(phase))
-                    },
-                    (Err(error), _) => SubmissionAdmission::Error(error),
-                    // The original job can retire between failed acquisition and weak upgrade.
-                    // A matching successor can then admit and retire during this absence read.
-                    // Without an original pin, absence cannot establish a definite refusal.
-                    (Ok(None), _) if pinned.is_none() => SubmissionAdmission::Indeterminate,
-                    (Ok(None), Ok(current)) => {
-                        if pinned
-                            .as_ref()
-                            .is_some_and(|owner| owner.operation_id == operation_id)
-                            || current
+            state
+                .jobs
+                .spawn(connection, pinned_selection.clone(), move || {
+                    let result = reads
+                        .lock()
+                        .map_err(|_| ServiceError::OperationFailure)
+                        .and_then(|reads| reads.admitted_state(&operation_id))
+                        .inspect_err(|error| read_failures.report(*error));
+                    let current = selected.lock().map(|selected| selected.upgrade());
+                    let decision = match (result, current) {
+                        (Ok(Some(phase)), _) => {
+                            SubmissionAdmission::Decided(ServiceAdmission::Admitted(phase))
+                        },
+                        (Err(error), _) => SubmissionAdmission::Error(error),
+                        // The original job can retire between failed acquisition and weak upgrade.
+                        // A matching successor can then admit and retire during this absence read.
+                        // Without an original pin, absence cannot establish a definite refusal.
+                        (Ok(None), _) if pinned_selection.is_none() => {
+                            SubmissionAdmission::Indeterminate
+                        },
+                        (Ok(None), Ok(current)) => {
+                            let matching_selection = pinned_selection
                                 .as_ref()
                                 .is_some_and(|owner| owner.operation_id == operation_id)
-                        {
-                            SubmissionAdmission::Indeterminate
-                        } else {
-                            SubmissionAdmission::Decided(ServiceAdmission::Busy)
-                        }
-                    },
-                    (Ok(None), Err(_)) => {
-                        SubmissionAdmission::Error(ServiceError::OperationFailure)
-                    },
-                };
-                let _ = response.send(decision);
-                drop(pinned);
-            })
+                                || current
+                                    .as_ref()
+                                    .is_some_and(|owner| owner.operation_id == operation_id);
+                            if matching_selection {
+                                SubmissionAdmission::Indeterminate
+                            } else {
+                                SubmissionAdmission::Decided(ServiceAdmission::Busy)
+                            }
+                        },
+                        (Ok(None), Err(_)) => {
+                            SubmissionAdmission::Error(ServiceError::OperationFailure)
+                        },
+                    };
+                    let _ = admission_sender.send(decision);
+                    drop(pinned_selection);
+                })
         },
     };
-    if spawned.is_err() {
+    if job_registration.is_err() {
         return SubmissionAdmission::Error(ServiceError::OperationFailure);
     }
-    match timeout_at(deadline, received).await {
+
+    match timeout_at(deadline, admission_receiver).await {
         Ok(Ok(decision)) => decision,
         Ok(Err(_)) => SubmissionAdmission::Error(ServiceError::OperationFailure),
         Err(_) => SubmissionAdmission::Indeterminate,
@@ -769,14 +789,14 @@ mod admission_tests {
 
     use super::{super::protocol::ReadRequest, *};
 
-    struct Reads {
+    struct AdmissionReads {
         committed: Arc<AtomicBool>,
         probe: Option<(
             std::sync::mpsc::Sender<()>,
             Mutex<std::sync::mpsc::Receiver<()>>,
         )>,
     }
-    impl ApplicationReads for Reads {
+    impl ApplicationReads for AdmissionReads {
         fn read_observed(
             &self,
             request: ReadRequest,
@@ -816,14 +836,14 @@ mod admission_tests {
             Ok(snapshot)
         }
     }
-    struct Execution {
+    struct AdmissionExecution {
         committed: Arc<AtomicBool>,
         entered: Arc<Semaphore>,
         release: Arc<Semaphore>,
-        decision: ServiceAdmission,
+        admission: ServiceAdmission,
         stop: kapsel::ServiceStop,
     }
-    impl ApplicationExecution for Execution {
+    impl ApplicationExecution for AdmissionExecution {
         async fn execute(
             &mut self,
             _: String,
@@ -831,25 +851,25 @@ mod admission_tests {
         ) -> Result<kapsel::ServiceStop, ServiceError> {
             self.entered.add_permits(1);
             self.release.acquire().await.unwrap().forget();
-            if matches!(self.decision, ServiceAdmission::Admitted(_)) {
+            if matches!(self.admission, ServiceAdmission::Admitted(_)) {
                 self.committed.store(true, Ordering::SeqCst);
             }
-            acknowledged(self.decision);
+            acknowledged(self.admission);
             Ok(self.stop)
         }
     }
-    fn request(id: &str) -> Vec<u8> {
+    fn submission_request(id: &str) -> Vec<u8> {
         serde_json::json!({"version":1,"request":"submit_set_deployment_image","operation_id":id})
             .to_string()
             .into_bytes()
     }
-    async fn decision(
-        state: &ServerState<Reads, Execution>,
+    async fn submit_admission(
+        state: &ServerState<AdmissionReads, AdmissionExecution>,
         id: &str,
         duration: Duration,
     ) -> serde_json::Value {
         let (bytes, _) = dispatch_admitted(
-            &request(id),
+            &submission_request(id),
             state,
             Arc::new(state.connections.clone().try_acquire_owned().unwrap()),
             Instant::now() + duration,
@@ -857,18 +877,20 @@ mod admission_tests {
         .await;
         serde_json::from_slice(&bytes).unwrap()
     }
-    fn state(decision: ServiceAdmission) -> ServerState<Reads, Execution> {
+    fn admission_fixture(
+        admission: ServiceAdmission,
+    ) -> ServerState<AdmissionReads, AdmissionExecution> {
         let committed = Arc::new(AtomicBool::new(false));
         ServerState::new(
-            Reads {
+            AdmissionReads {
                 committed: committed.clone(),
                 probe: None,
             },
-            Execution {
+            AdmissionExecution {
                 committed,
                 entered: Arc::new(Semaphore::new(0)),
                 release: Arc::new(Semaphore::new(0)),
-                decision,
+                admission,
                 stop: kapsel::ServiceStop::Finished,
             },
         )
@@ -881,7 +903,7 @@ mod admission_tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let state = state(ServiceAdmission::Admitted(OperationState::Authorized));
+            let state = admission_fixture(ServiceAdmission::Admitted(OperationState::Authorized));
             let release = {
                 let mut execution = state.execution.lock().await;
                 execution.stop =
@@ -891,7 +913,7 @@ mod admission_tests {
             for index in 0..33 {
                 release.add_permits(1);
                 assert_eq!(
-                    decision(&state, &format!("op-{index}"), Duration::from_secs(2)).await
+                    submit_admission(&state, &format!("op-{index}"), Duration::from_secs(2)).await
                         ["status"],
                     "ADMITTED"
                 );
@@ -910,7 +932,7 @@ mod admission_tests {
             );
             state.execution.lock().await.stop = kapsel::ServiceStop::Finished;
             release.add_permits(1);
-            decision(&state, "op-1", Duration::from_secs(2)).await;
+            submit_admission(&state, "op-1", Duration::from_secs(2)).await;
             state.jobs.drain().await;
             assert_eq!(
                 state.observation("op-1"),
@@ -927,7 +949,7 @@ mod admission_tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let state = state(ServiceAdmission::Admitted(OperationState::Requested));
+            let state = admission_fixture(ServiceAdmission::Admitted(OperationState::Requested));
             let release = state.execution.lock().await.release.clone();
             state.stopped.lock().unwrap().push_back((
                 "one".into(),
@@ -935,7 +957,7 @@ mod admission_tests {
                     kapsel::ExecutionCondition::SigningUnavailable,
                 ),
             ));
-            let result = decision(&state, "one", Duration::from_millis(30)).await;
+            let result = submit_admission(&state, "one", Duration::from_millis(30)).await;
             assert!(state.stopped.lock().unwrap().is_empty());
             assert_eq!(
                 state.observation("one"),
@@ -959,9 +981,9 @@ mod admission_tests {
             assert_eq!(absent["execution"]["next_action"], "read_same_id");
             assert!(!state.reads.lock().unwrap().committed.load(Ordering::SeqCst));
             assert_eq!(state.submission.available_permits(), 0);
-            let same = decision(&state, "one", Duration::from_secs(1)).await;
+            let same = submit_admission(&state, "one", Duration::from_secs(1)).await;
             assert_eq!(same["status"], "INDETERMINATE");
-            let other = decision(&state, "two", Duration::from_secs(1)).await;
+            let other = submit_admission(&state, "two", Duration::from_secs(1)).await;
             assert_eq!(other["status"], "NOT_ADMITTED");
             assert_eq!(other["reason"], "BUSY");
             release.add_permits(1);
@@ -983,7 +1005,7 @@ mod admission_tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let state = state(ServiceAdmission::Admitted(OperationState::Requested));
+            let state = admission_fixture(ServiceAdmission::Admitted(OperationState::Requested));
             let (entered, probed) = std::sync::mpsc::channel();
             let (resume, release_probe) = std::sync::mpsc::channel();
             state.reads.lock().unwrap().probe = Some((entered, Mutex::new(release_probe)));
@@ -992,16 +1014,14 @@ mod admission_tests {
             let release = execution.release.clone();
             drop(execution);
             let first_state = state.clone();
-            let first =
-                tokio::spawn(
-                    async move { decision(&first_state, "one", Duration::from_secs(1)).await },
-                );
+            let first = tokio::spawn(async move {
+                submit_admission(&first_state, "one", Duration::from_secs(1)).await
+            });
             started.acquire().await.unwrap().forget();
             let probe_state = state.clone();
-            let probe =
-                tokio::spawn(
-                    async move { decision(&probe_state, "one", Duration::from_secs(1)).await },
-                );
+            let probe = tokio::spawn(async move {
+                submit_admission(&probe_state, "one", Duration::from_secs(1)).await
+            });
             let deadline = Instant::now() + Duration::from_secs(1);
             while probed.try_recv().is_err() {
                 assert!(Instant::now() < deadline);
@@ -1031,7 +1051,7 @@ mod admission_tests {
             .unwrap();
         runtime.block_on(async {
             // A occupies execution without admitting the ID whose absence B will read.
-            let mut state = state(ServiceAdmission::Busy);
+            let mut state = admission_fixture(ServiceAdmission::Busy);
             let committed = state.reads.lock().unwrap().committed.clone();
             let execution = state.execution.lock().await;
             let started = execution.entered.clone();
@@ -1039,7 +1059,7 @@ mod admission_tests {
             drop(execution);
             let predecessor_state = state.clone();
             let predecessor = tokio::spawn(async move {
-                decision(&predecessor_state, "other", Duration::from_secs(2)).await
+                submit_admission(&predecessor_state, "other", Duration::from_secs(2)).await
             });
             started.acquire().await.unwrap().forget();
             let predecessor_owner = state.selected.lock().unwrap().clone();
@@ -1074,10 +1094,9 @@ mod admission_tests {
             let (resume, release_probe) = std::sync::mpsc::channel();
             state.reads.lock().unwrap().probe = Some((entered, Mutex::new(release_probe)));
             let probe_state = state.clone();
-            let probe =
-                tokio::spawn(
-                    async move { decision(&probe_state, "one", Duration::from_secs(2)).await },
-                );
+            let probe = tokio::spawn(async move {
+                submit_admission(&probe_state, "one", Duration::from_secs(2)).await
+            });
             while probed.try_recv().is_err() {
                 assert!(Instant::now() < deadline);
                 tokio::task::yield_now().await;
@@ -1091,10 +1110,10 @@ mod admission_tests {
             // release BOTH its supervisor and physical ownership before B samples
             // current ownership.
             let mut execution = state.execution.lock().await;
-            execution.decision = ServiceAdmission::Admitted(OperationState::Requested);
+            execution.admission = ServiceAdmission::Admitted(OperationState::Requested);
             execution.release.add_permits(1);
             drop(execution);
-            let successor = decision(&state, "one", Duration::from_secs(2)).await;
+            let successor = submit_admission(&state, "one", Duration::from_secs(2)).await;
             assert_eq!(successor["status"], "ADMITTED");
             assert!(committed.load(Ordering::SeqCst));
             while state.selected.lock().unwrap().strong_count() != 0
@@ -1124,9 +1143,9 @@ mod admission_tests {
                 ServiceAdmission::Full,
                 ServiceAdmission::Admitted(OperationState::Requested),
             ] {
-                let state = state(admission);
+                let state = admission_fixture(admission);
                 state.execution.lock().await.release.add_permits(1);
-                let result = decision(&state, "one", Duration::from_secs(1)).await;
+                let result = submit_admission(&state, "one", Duration::from_secs(1)).await;
                 assert_eq!(result["version"], 1);
                 match admission {
                     ServiceAdmission::Busy => assert_eq!(result["reason"], "BUSY"),

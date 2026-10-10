@@ -118,7 +118,8 @@ fn run(arguments: &[String]) -> Result<(), ClientError> {
             return writeln!(std::io::stdout(), "{text}").map_err(|_| ClientError::Output);
         }
     }
-    let (request, output) = request(arguments).map_err(|()| ClientError::Usage)?;
+
+    let (request, receipt_output) = request(arguments).map_err(|()| ClientError::Usage)?;
     #[cfg(feature = "test-harness")]
     let test_socket = std::env::var("KAPSELD_TEST_CLIENT_SOCKET").ok();
     #[cfg(feature = "test-harness")]
@@ -126,7 +127,8 @@ fn run(arguments: &[String]) -> Result<(), ClientError> {
     #[cfg(not(feature = "test-harness"))]
     let socket = SOCKET;
     let (response, status) = client_transport::exchange(socket, &request)?;
-    match output {
+
+    match receipt_output {
         None => {
             std::io::stdout()
                 .write_all(&response)
@@ -148,23 +150,29 @@ fn request(arguments: &[String]) -> Result<(Vec<u8>, Option<&Path>), ()> {
             if after.is_some_and(|id| !kapsel_authority::identity_is_valid(id)) {
                 return Err(());
             }
-            let name = if command == "list" {
+            let request_name = if command == "list" {
                 "list_approved_actions"
             } else {
                 "list_operation_history"
             };
-            (json!({"version":1,"request":name,"after":after}), None)
+            (
+                json!({"version":1,"request":request_name,"after":after}),
+                None,
+            )
         },
         [command, id] if command == "status" || command == "submit" => {
             if !kapsel_authority::identity_is_valid(id) {
                 return Err(());
             }
-            let name = if command == "status" {
+            let request_name = if command == "status" {
                 "get_set_deployment_image_status"
             } else {
                 "submit_set_deployment_image"
             };
-            (json!({"version":1,"request":name,"operation_id":id}), None)
+            (
+                json!({"version":1,"request":request_name,"operation_id":id}),
+                None,
+            )
         },
         [command, id, output] if command == "receipt" => {
             if !kapsel_authority::identity_is_valid(id) || !Path::new(output).is_absolute() {
@@ -186,12 +194,15 @@ fn save_receipt(response: &[u8], path: &Path) -> Result<(), ClientError> {
     if ready.version != 1 || ready.status != "READY" || !lowercase_sha256(&ready.receipt_sha256) {
         return Err(ClientError::Response);
     }
-    let bytes = decode_lowercase_hex(&ready.receipt_hex).map_err(|()| ClientError::Response)?;
+
+    let receipt_bytes =
+        decode_lowercase_hex(&ready.receipt_hex).map_err(|()| ClientError::Response)?;
     let expected_digest =
         decode_lowercase_hex(&ready.receipt_sha256).map_err(|()| ClientError::Response)?;
-    if Sha256::digest(&bytes).as_slice() != expected_digest {
+    if Sha256::digest(&receipt_bytes).as_slice() != expected_digest {
         return Err(ClientError::Response);
     }
+
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -201,18 +212,20 @@ fn save_receipt(response: &[u8], path: &Path) -> Result<(), ClientError> {
     output
         .set_permissions(std::fs::Permissions::from_mode(0o600))
         .map_err(|_| ClientError::Export)?;
-    if output
+    let output_mode = output
         .metadata()
         .map_err(|_| ClientError::Export)?
         .permissions()
         .mode()
-        & 0o7777
-        != 0o600
-    {
+        & 0o7777;
+    if output_mode != 0o600 {
         return Err(ClientError::Export);
     }
-    output.write_all(&bytes).map_err(|_| ClientError::Export)?;
+    output
+        .write_all(&receipt_bytes)
+        .map_err(|_| ClientError::Export)?;
     output.sync_all().map_err(|_| ClientError::Export)?;
+
     let path = path.to_str().ok_or(ClientError::Usage)?;
     let report = serde_json::to_vec(&SavedReceipt {
         version: 1,
@@ -290,18 +303,20 @@ mod tests {
             )
             .into(),
         ];
+
         assert!(request(&status).is_ok());
         assert!(request(&receipt).is_ok());
         assert!(request(&submit).is_err());
-        for args in [
+
+        for arguments in [
             vec!["submit", "op-1"],
             vec!["list"],
             vec!["list", "op-1"],
             vec!["history"],
             vec!["history", "op-1"],
         ] {
-            let args = args.into_iter().map(String::from).collect::<Vec<_>>();
-            let (bytes, _) = request(&args).unwrap();
+            let arguments = arguments.into_iter().map(String::from).collect::<Vec<_>>();
+            let (bytes, _) = request(&arguments).unwrap();
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
                 1

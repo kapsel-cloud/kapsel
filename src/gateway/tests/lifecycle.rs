@@ -4,13 +4,13 @@ use super::*;
 fn service_admission_acknowledges_capacity_but_not_unsettled_commit_errors() {
     let path = database_path("admission-error");
     let gateway = Gateway::open_for_test(&path).unwrap();
-    for capacity in [false, true] {
+    for capacity_refusal in [false, true] {
         let mut acknowledged = false;
         let result = gateway.admit_service_operation(
             None,
             |journal, worker| {
                 assert!(journal.owns_worker(worker));
-                Err(if capacity {
+                Err(if capacity_refusal {
                     GatewayError::JournalFull
                 } else {
                     GatewayError::InjectedFault
@@ -21,8 +21,8 @@ fn service_admission_acknowledges_capacity_but_not_unsettled_commit_errors() {
                 acknowledged = true;
             },
         );
-        assert_eq!(acknowledged, capacity);
-        if capacity {
+        assert_eq!(acknowledged, capacity_refusal);
+        if capacity_refusal {
             assert!(matches!(result, Ok(None)));
         } else {
             assert!(matches!(
@@ -32,32 +32,33 @@ fn service_admission_acknowledges_capacity_but_not_unsettled_commit_errors() {
         }
         assert!(gateway.journal.try_lock_worker().unwrap().is_some());
     }
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 #[test]
 fn admission_acknowledgement_loss_covers_absent_and_committed_original_authority() {
-    for committed in [false, true] {
-        let path = database_path(if committed {
+    for request_committed in [false, true] {
+        let path = database_path(if request_committed {
             "admission-committed"
         } else {
             "admission-absent"
         });
         let gateway = Gateway::open_for_test(&path).unwrap();
         let request = request();
-        let signed = sign_authorization_grant(
+        let signed_grant = sign_authorization_grant(
             &authorization(&request),
             &[7; 32],
             "effect-gateway-authorization-test-key",
         )
         .unwrap();
-        let authorized = gateway.bind_authorization(&request, &signed).unwrap();
+        let authorized = gateway.bind_authorization(&request, &signed_grant).unwrap();
         let mut acknowledged = false;
         let result = gateway.admit_service_operation(
             None,
             |journal, _| {
-                if committed {
+                if request_committed {
                     journal.insert_requested(&authorized)?;
                 }
                 Err(GatewayError::InjectedFault)
@@ -72,19 +73,21 @@ fn admission_acknowledgement_loss_covers_absent_and_committed_original_authority
             !acknowledged,
             "unsettled admission must not acknowledge refusal"
         );
+
         drop(gateway);
         let gateway = Gateway::open_for_test(&path).unwrap();
         assert_eq!(
             gateway.journal.existing_submission(&authorized).unwrap(),
-            committed.then_some(OperationState::Requested)
+            request_committed.then_some(OperationState::Requested)
         );
-        if committed {
+        if request_committed {
             let retained = gateway
                 .retained_operation(&request.operation_id)
                 .unwrap()
                 .unwrap();
-            assert_eq!(retained.signed_grant, signed);
+            assert_eq!(retained.signed_grant, signed_grant);
         }
+
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -138,10 +141,10 @@ async fn requested_recovery_rechecks_exact_authorization_before_advancing() {
         ));
     }
     let mut gateway = Gateway::open_for_test(&path).unwrap();
-    let mut mismatch = authorization.clone();
-    mismatch.container = "other".into();
+    let mut mismatched_authorization = authorization.clone();
+    mismatched_authorization.container = "other".into();
     assert!(matches!(
-        gateway.submit_exact_for_test(&request, &mismatch),
+        gateway.submit_exact_for_test(&request, &mismatched_authorization),
         Err(GatewayError::AuthorizationMismatch)
     ));
     assert_eq!(
@@ -206,7 +209,8 @@ async fn authorized_commit_reopens_and_begins_exactly_one_apply() {
         );
     }
     let mut gateway = Gateway::open_for_test(&path).unwrap();
-    let mut adapter = failed_adapter(&path, &request);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
     assert_eq!(
         gateway
             .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
@@ -217,6 +221,7 @@ async fn authorized_commit_reopens_and_begins_exactly_one_apply() {
     assert_eq!(adapter.identify_calls, 1);
     assert_eq!(adapter.apply_calls, 1);
     assert_eq!(adapter.observe_calls, 1);
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -234,7 +239,7 @@ async fn production_writers_reload_as_their_exact_next_phase() {
         Some(journal::LoadedOperation::Authorized(_))
     ));
 
-    let mut adapter = failed_adapter(&path, &request);
+    let mut adapter = failed_rollout_adapter(&path, &request);
     assert!(matches!(
         gateway
             .run_operation_once_with_adapter_and_fault(
@@ -306,7 +311,8 @@ async fn apply_outcome_writer_reloads_as_apply_started_with_complete_response_fa
     gateway
         .submit_exact_for_test(&request, &authorization(&request))
         .unwrap();
-    let mut adapter = failed_adapter(&path, &request);
+
+    let mut adapter = failed_rollout_adapter(&path, &request);
 
     assert!(matches!(
         gateway
@@ -391,6 +397,7 @@ async fn permanent_target_rejection_is_terminal_and_does_not_block_later_operati
         gateway.result(&later.operation_id).unwrap(),
         Some(OperationResult::Failed)
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -411,9 +418,10 @@ async fn transient_target_error_stays_authorized_and_retries_only_the_safe_get()
             [],
         )
         .unwrap();
-    let data_version: i64 = connection
+    let original_data_version: i64 = connection
         .pragma_query_value(None, "data_version", |row| row.get(0))
         .unwrap();
+
     let mut adapter = TargetRoutingAdapter::transient_once(&request.operation_id);
 
     assert!(matches!(
@@ -437,8 +445,9 @@ async fn transient_target_error_stays_authorized_and_retries_only_the_safe_get()
         connection
             .pragma_query_value::<i64, _>(None, "data_version", |row| row.get(0),)
             .unwrap(),
-        data_version
+        original_data_version
     );
+
     drop(gateway);
 
     let mut gateway = Gateway::open_for_test(&path).unwrap();
@@ -462,6 +471,7 @@ async fn transient_target_error_stays_authorized_and_retries_only_the_safe_get()
             .unwrap(),
         7
     );
+
     drop(connection);
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -481,6 +491,7 @@ async fn targeted_gateway_reconciliation_does_not_advance_another_operation() {
     gateway
         .submit_exact_for_test(&configured, &authorization(&configured))
         .unwrap();
+
     let mut adapter = TargetRoutingAdapter::transient_once("never-transient");
 
     assert_eq!(
@@ -497,6 +508,7 @@ async fn targeted_gateway_reconciliation_does_not_advance_another_operation() {
         gateway.get(&first.operation_id).unwrap(),
         Some(OperationState::Authorized)
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -516,13 +528,16 @@ async fn targeted_gateway_finalization_does_not_sign_another_operation() {
         .submit_exact_for_test(&configured, &authorization(&configured))
         .unwrap();
     gateway
-        .run_operation_once_with_adapter(&first.operation_id, &mut failed_adapter(&path, &first))
+        .run_operation_once_with_adapter(
+            &first.operation_id,
+            &mut failed_rollout_adapter(&path, &first),
+        )
         .await
         .unwrap();
     gateway
         .run_operation_once_with_adapter(
             &configured.operation_id,
-            &mut failed_adapter(&path, &configured),
+            &mut failed_rollout_adapter(&path, &configured),
         )
         .await
         .unwrap();
@@ -561,6 +576,7 @@ async fn targeted_gateway_finalization_does_not_sign_another_operation() {
         gateway.get(&configured.operation_id).unwrap(),
         Some(OperationState::Finalized)
     );
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -569,7 +585,7 @@ async fn targeted_gateway_finalization_does_not_sign_another_operation() {
 async fn target_read_crash_stays_authorized_and_repeats_only_the_safe_get() {
     let path = database_path("target-read-recovery");
     let request = request();
-    let mut adapter = failed_adapter(&path, &request);
+    let mut adapter = failed_rollout_adapter(&path, &request);
     {
         let mut gateway = Gateway::open_for_test(&path).unwrap();
         gateway
@@ -602,6 +618,7 @@ async fn target_read_crash_stays_authorized_and_repeats_only_the_safe_get() {
     );
     assert_eq!(adapter.identify_calls, 2);
     assert_eq!(adapter.apply_calls, 1);
+
     drop(gateway);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

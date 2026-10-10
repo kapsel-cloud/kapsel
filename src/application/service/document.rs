@@ -9,6 +9,10 @@ use serde::{
 
 use super::{ServiceApproval, ServiceConfiguration, ServiceError};
 
+const DOCUMENT_BYTES_MAX: usize = 160 * 1024;
+const AUTHORIZATION_KEYS_MAX: usize = 128;
+const APPROVALS_MAX: usize = 32;
+
 /// Structurally bounded service configuration and its public receipt signer identity.
 ///
 /// Application opening must authenticate grants and validate retained identity before use.
@@ -21,23 +25,23 @@ pub struct ServiceOperatorDocument {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
+struct ServiceDocumentFields {
     service_configuration_version: u8,
-    authorization_keys: BoundedVec<MapOnly<Key>, 128>,
-    approvals: BoundedVec<MapOnly<Approval>, 32>,
+    authorization_keys: BoundedVec<MapOnly<AuthorizationKeyFields>, AUTHORIZATION_KEYS_MAX>,
+    approvals: BoundedVec<MapOnly<ApprovalFields>, APPROVALS_MAX>,
     receipt_signing_key_id: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Key {
+struct AuthorizationKeyFields {
     key_id: String,
     public_key_hex: String,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Approval {
+struct ApprovalFields {
     label: String,
     signed_grant_hex: String,
 }
@@ -55,52 +59,31 @@ pub fn parse_service_operator_document(
     bytes: &[u8],
     journal_path: PathBuf,
 ) -> Result<ServiceOperatorDocument, ServiceError> {
-    if bytes.is_empty() || bytes.len() > 160 * 1024 {
+    if bytes.is_empty() || bytes.len() > DOCUMENT_BYTES_MAX {
         return Err(ServiceError::Configuration);
     }
-    let MapOnly(document): MapOnly<Document> =
+
+    let MapOnly(document): MapOnly<ServiceDocumentFields> =
         serde_json::from_slice(bytes).map_err(|_| ServiceError::Configuration)?;
     if document.service_configuration_version != 1 {
         return Err(ServiceError::Configuration);
     }
     crate::gateway::validate_key_id(&document.receipt_signing_key_id)
         .map_err(|_| ServiceError::Configuration)?;
+
     let authorization_trust = document
         .authorization_keys
         .0
         .into_iter()
-        .map(|MapOnly(key)| {
-            let public_key: [u8; 32] = decode_hex(&key.public_key_hex, 32)?
-                .try_into()
-                .map_err(|_| ServiceError::Configuration)?;
-            let trust = crate::AuthorizationTrust {
-                key_id: key.key_id,
-                public_key,
-            };
-            crate::gateway::validate_authorization_trust(&trust)
-                .map_err(|_| ServiceError::Configuration)?;
-            Ok(trust)
-        })
+        .map(|MapOnly(key)| decode_authorization_key(key))
         .collect::<Result<Vec<_>, ServiceError>>()?;
     let approvals = document
         .approvals
         .0
         .into_iter()
-        .map(|MapOnly(approval)| {
-            if approval.label.len() > 128
-                || !approval
-                    .label
-                    .bytes()
-                    .all(|byte| (32..=126).contains(&byte))
-            {
-                return Err(ServiceError::Configuration);
-            }
-            Ok(ServiceApproval {
-                label: approval.label,
-                signed_grant: decode_hex(&approval.signed_grant_hex, 4096)?,
-            })
-        })
+        .map(|MapOnly(approval)| decode_approval(approval))
         .collect::<Result<Vec<_>, ServiceError>>()?;
+
     Ok(ServiceOperatorDocument {
         configuration: ServiceConfiguration {
             journal_path,
@@ -111,9 +94,44 @@ pub fn parse_service_operator_document(
     })
 }
 
-fn decode_hex(text: &str, maximum: usize) -> Result<Vec<u8>, ServiceError> {
+fn decode_authorization_key(
+    key: AuthorizationKeyFields,
+) -> Result<crate::AuthorizationTrust, ServiceError> {
+    let public_key: [u8; 32] = decode_hex(&key.public_key_hex, 32)?
+        .try_into()
+        .map_err(|_| ServiceError::Configuration)?;
+    let trust = crate::AuthorizationTrust {
+        key_id: key.key_id,
+        public_key,
+    };
+    crate::gateway::validate_authorization_trust(&trust)
+        .map_err(|_| ServiceError::Configuration)?;
+
+    Ok(trust)
+}
+
+fn decode_approval(approval: ApprovalFields) -> Result<ServiceApproval, ServiceError> {
+    if approval.label.len() > 128 {
+        return Err(ServiceError::Configuration);
+    }
+    let label_is_printable = approval
+        .label
+        .bytes()
+        .all(|byte| (32..=126).contains(&byte));
+    if !label_is_printable {
+        return Err(ServiceError::Configuration);
+    }
+    let signed_grant = decode_hex(&approval.signed_grant_hex, 4096)?;
+
+    Ok(ServiceApproval {
+        label: approval.label,
+        signed_grant,
+    })
+}
+
+fn decode_hex(text: &str, decoded_bytes_max: usize) -> Result<Vec<u8>, ServiceError> {
     if text.is_empty()
-        || text.len() > maximum * 2
+        || text.len() > decoded_bytes_max * 2
         || !text.len().is_multiple_of(2)
         || !text
             .bytes()
@@ -135,18 +153,23 @@ fn decode_hex(text: &str, maximum: usize) -> Result<Vec<u8>, ServiceError> {
 // Serde's derived struct decoders also accept positional arrays. Require an object here so input
 // cannot bypass the document's named-field grammar.
 struct MapOnly<T>(T);
+
 impl<'de, T: Deserialize<'de>> Deserialize<'de> for MapOnly<T> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct MapVisitor<T>(PhantomData<T>);
+
         impl<'de, T: Deserialize<'de>> Visitor<'de> for MapVisitor<T> {
             type Value = MapOnly<T>;
+
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str("an object with named fields")
             }
+
             fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
                 T::deserialize(MapAccessDeserializer::new(map)).map(MapOnly)
             }
         }
+
         deserializer.deserialize_map(MapVisitor::<T>(PhantomData))
     }
 }
@@ -154,14 +177,18 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for MapOnly<T> {
 // Stop before deserializing an element beyond the array limit. RejectExtra fails immediately,
 // even when that element contains malformed or deeply nested input.
 struct BoundedVec<T, const MAX: usize>(Vec<T>);
+
 impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedVec<T, MAX> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct BoundedVisitor<T, const MAX: usize>(PhantomData<T>);
+
         impl<'de, T: Deserialize<'de>, const MAX: usize> Visitor<'de> for BoundedVisitor<T, MAX> {
             type Value = BoundedVec<T, MAX>;
+
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(formatter, "an array with at most {MAX} entries")
             }
+
             fn visit_seq<A: SeqAccess<'de>>(
                 self,
                 mut sequence: A,
@@ -173,15 +200,18 @@ impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedVec
                     };
                     values.push(value);
                 }
+
                 let _ = sequence.next_element::<RejectExtra>()?;
                 Ok(BoundedVec(values))
             }
         }
+
         deserializer.deserialize_seq(BoundedVisitor::<T, MAX>(PhantomData))
     }
 }
 
 struct RejectExtra;
+
 impl<'de> Deserialize<'de> for RejectExtra {
     fn deserialize<D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
         Err(D::Error::custom("service array capacity exceeded"))
@@ -197,6 +227,7 @@ mod tests {
     fn overflow_is_rejected_before_deserializing_the_extra_element() {
         assert!(serde_json::from_slice::<BoundedVec<u8, 1>>(b"[]").is_ok());
         assert!(serde_json::from_slice::<BoundedVec<u8, 1>>(b"[1]").is_ok());
+
         let error = serde_json::from_slice::<BoundedVec<u8, 1>>(b"[1,{not valid json")
             .err()
             .unwrap();

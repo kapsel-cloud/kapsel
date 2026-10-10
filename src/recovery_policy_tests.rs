@@ -133,10 +133,15 @@ impl Receiver {
         }
     }
 
-    fn patch(&mut self, patch: FrozenPatch, response_delivered: bool, has_side_effect: bool) {
+    fn patch(
+        &mut self,
+        patch: FrozenPatch,
+        response_delivered: bool,
+        admission_has_side_effect: bool,
+    ) {
         self.http_patch_requests += 1;
         self.mutating_admission_invocations += 1;
-        self.admission_out_of_band_effects += usize::from(has_side_effect);
+        self.admission_out_of_band_effects += usize::from(admission_has_side_effect);
         self.sent_patches.push(patch);
         if patch.operation_id == OPERATION_ID_ONE {
             self.attempted_one = true;
@@ -226,7 +231,7 @@ impl Receiver {
     }
 }
 
-fn compare(policy: Policy, scenario: Scenario) -> Evidence {
+fn compare_recovery_policy(policy: Policy, scenario: Scenario) -> Evidence {
     let mut receiver = Receiver::initial();
     let concurrent = scenario == Scenario::ConcurrentInvocations;
     let side_effecting_admission = scenario == Scenario::AdmissionSideEffect;
@@ -500,21 +505,21 @@ fn frozen_recovery_policy_matrix_separates_requests_admission_and_effects() {
     ];
 
     for row in expected {
-        let actual = compare(row.policy, row.scenario);
+        let actual = compare_recovery_policy(row.policy, row.scenario);
+        let actual_counts = [
+            actual.caller_invocations,
+            actual.http_patch_requests,
+            actual.mutating_admission_invocations,
+            actual.admission_out_of_band_effects,
+            actual.persisted_deployment_changes,
+            actual.controller_effects,
+            actual.abandoned_authorized_actions,
+        ];
+
         assert_eq!(
-            [
-                actual.caller_invocations,
-                actual.http_patch_requests,
-                actual.mutating_admission_invocations,
-                actual.admission_out_of_band_effects,
-                actual.persisted_deployment_changes,
-                actual.controller_effects,
-                actual.abandoned_authorized_actions,
-            ],
-            row.counts,
+            actual_counts, row.counts,
             "count drift for {:?} / {:?}",
-            row.policy,
-            row.scenario
+            row.policy, row.scenario
         );
         assert_eq!(
             actual.conclusions, row.conclusions,

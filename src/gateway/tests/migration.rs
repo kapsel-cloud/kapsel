@@ -19,12 +19,12 @@ fn create_current_journal(path: &Path) {
 }
 
 fn assert_refusal_preserves_bytes(path: &Path) {
-    let before = fs::read(path).unwrap();
+    let original_bytes = fs::read(path).unwrap();
     assert!(matches!(
         Gateway::open_for_test(path),
         Err(GatewayError::InvalidPersistedState)
     ));
-    assert_eq!(fs::read(path).unwrap(), before);
+    assert_eq!(fs::read(path).unwrap(), original_bytes);
     assert_eq!(journal_version(path), 6);
 }
 
@@ -35,9 +35,9 @@ fn fresh_journal_initializes_directly_and_reopens_without_another_write() {
     assert_eq!(journal_version(&path), 6);
     assert!(!PathBuf::from(format!("{}.kapsel-v011.backup", path.display())).exists());
 
-    let before = fs::read(&path).unwrap();
+    let original_bytes = fs::read(&path).unwrap();
     drop(Gateway::open_for_test(&path).unwrap());
-    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(fs::read(&path).unwrap(), original_bytes);
 
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -53,13 +53,14 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
                 .execute_batch(include_str!("format5-before-direct-create.sql"))
                 .unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            let before = fs::read(&path).unwrap();
+
+            let original_bytes = fs::read(&path).unwrap();
             assert!(matches!(
                 Gateway::open_for_test(&path),
                 Err(GatewayError::UnsupportedJournalVersion)
             ));
             assert!(journal::Journal::validate_replacement(&path, &[]).is_err());
-            assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(fs::read(&path).unwrap(), original_bytes);
             fs::remove_dir_all(path.parent().unwrap()).unwrap();
             continue;
         }
@@ -76,7 +77,7 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
             });
             gateway.submit_exact_for_test(request, &grant).unwrap();
         }
-        let mut adapter = failed_adapter(&path, &finalized);
+        let mut adapter = failed_rollout_adapter(&path, &finalized);
         gateway
             .run_operation_once_with_adapter(&finalized.operation_id, &mut adapter)
             .await
@@ -90,16 +91,20 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
                 },
             )
             .unwrap();
-        let receipt = Gateway::read_loaded_receipt(
+
+        let original_receipt = Gateway::read_loaded_receipt(
             gateway
                 .loaded_for_test(&finalized.operation_id)
                 .unwrap()
                 .unwrap(),
         )
         .unwrap();
-        let rows = super::storage::stored_rows(&gateway.journal.connection);
+
+        let original_rows = super::storage::stored_rows(&gateway.journal.connection);
+
         drop(gateway);
-        let before = fs::read(&path).unwrap();
+
+        let original_bytes = fs::read(&path).unwrap();
         journal::Journal::validate_replacement(&path, &[]).unwrap();
         let reopened = Gateway::open_for_test(&path).unwrap();
         assert_eq!(journal_version(&path), 6);
@@ -113,7 +118,7 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
         );
         assert_eq!(
             super::storage::stored_rows(&reopened.journal.connection),
-            rows
+            original_rows
         );
         assert_eq!(
             Gateway::read_loaded_receipt(
@@ -123,7 +128,7 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
                     .unwrap(),
             )
             .unwrap(),
-            receipt
+            original_receipt
         );
         assert!(reopened
             .retained_operation(&pending.operation_id)
@@ -133,8 +138,9 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
             .retained_operation(&finalized.operation_id)
             .unwrap()
             .is_some());
+
         drop(reopened);
-        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }
@@ -156,6 +162,7 @@ fn persisted_value_and_row_boundaries_are_checked_on_every_reopen() {
             rusqlite::params![request().immutable_image_digest, 16 * 1024],
         )
         .unwrap();
+
     drop(connection);
     drop(Gateway::open_for_test(&value_path).unwrap());
     Connection::open(&value_path)
@@ -185,6 +192,7 @@ fn persisted_value_and_row_boundaries_are_checked_on_every_reopen() {
             rusqlite::params![request().immutable_image_digest, "é".repeat(8 * 1024)],
         )
         .unwrap();
+
     drop(connection);
     drop(Gateway::open_for_test(&text_path).unwrap());
     Connection::open(&text_path)
@@ -257,13 +265,14 @@ fn unknown_or_newer_marker_refuses_without_touching_the_store() {
         let path = database_path(&format!("unsupported-version-marker-{version}"));
         drop(Gateway::open_for_test(&path).unwrap());
         set_journal_version(&path, version);
-        let before = fs::read(&path).unwrap();
+
+        let original_bytes = fs::read(&path).unwrap();
 
         assert!(matches!(
             Gateway::open_for_test(&path),
             Err(GatewayError::UnsupportedJournalVersion)
         ));
-        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
         assert_eq!(journal_version(&path), version);
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -282,6 +291,7 @@ fn wal_or_unsupported_header_mode_refuses_before_sqlite_mutation() {
             .unwrap(),
         "wal"
     );
+
     drop(connection);
     let wal_before = fs::read(&wal_path).unwrap();
     assert!(matches!(
@@ -353,7 +363,7 @@ fn changed_checks_collations_and_constraints_refuse_without_marking() {
         let path = database_path(name);
         create_current_journal(&path);
         let connection = Connection::open(&path).unwrap();
-        let original: String = connection
+        let original_schema_sql: String = connection
             .query_row(
                 "SELECT sql FROM sqlite_schema
                  WHERE type = 'table' AND name = 'kubernetes_image_operations'",
@@ -361,12 +371,14 @@ fn changed_checks_collations_and_constraints_refuse_without_marking() {
                 |row| row.get(0),
             )
             .unwrap();
-        let changed = original.replace("state TEXT NOT NULL", changed_declaration);
-        assert_ne!(changed, original);
+        let changed_schema_sql =
+            original_schema_sql.replace("state TEXT NOT NULL", changed_declaration);
+        assert_ne!(changed_schema_sql, original_schema_sql);
         connection
             .execute_batch("DROP TABLE kubernetes_image_operations")
             .unwrap();
-        connection.execute_batch(&changed).unwrap();
+        connection.execute_batch(&changed_schema_sql).unwrap();
+
         drop(connection);
 
         assert_refusal_preserves_bytes(&path);

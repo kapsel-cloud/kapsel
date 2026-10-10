@@ -24,7 +24,7 @@ use std::{
 use serde_json::{json, Value};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-const BIN: &str = env!("CARGO_BIN_EXE_kapsel-service-mcp");
+const MCP_BINARY: &str = env!("CARGO_BIN_EXE_kapsel-service-mcp");
 
 fn run(lines: &[Value], exchanges: &[(Value, Value)]) -> Vec<Value> {
     let mut input = Vec::new();
@@ -50,8 +50,8 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut request_count = 0;
         loop {
-            let mut conn = match listener.accept() {
-                Ok((conn, _)) => conn,
+            let mut connection = match listener.accept() {
+                Ok((connection, _)) => connection,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     match stopped.try_recv() {
                         Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
@@ -63,18 +63,22 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
                 },
                 Err(error) => panic!("bridge fixture accept: {error}"),
             };
-            conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-            conn.set_write_timeout(Some(Duration::from_secs(2)))
+            connection
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            connection
+                .set_write_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
             let (expected_request, response) = exchanges
                 .get(request_count)
                 .unwrap_or_else(|| panic!("unexpected service request {}", request_count + 1));
+
             let mut prefix = [0; 4];
-            conn.read_exact(&mut prefix).unwrap();
+            connection.read_exact(&mut prefix).unwrap();
             let length = u32::from_be_bytes(prefix) as usize;
             assert!((1..=16 * 1024).contains(&length));
             let mut body = vec![0; length];
-            conn.read_exact(&mut body).unwrap();
+            connection.read_exact(&mut body).unwrap();
             let request: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(
                 &request,
@@ -83,17 +87,20 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
                 request_count + 1
             );
             let mut extra = [0; 1];
-            assert_eq!(conn.read(&mut extra).unwrap(), 0);
+            assert_eq!(connection.read(&mut extra).unwrap(), 0);
             request_count += 1;
+
             let bytes = serde_json::to_vec(response).unwrap();
-            conn.write_all(&u32::try_from(bytes.len()).unwrap().to_be_bytes())
+            connection
+                .write_all(&u32::try_from(bytes.len()).unwrap().to_be_bytes())
                 .unwrap();
-            conn.write_all(&bytes).unwrap();
-            conn.shutdown(Shutdown::Write).unwrap();
+            connection.write_all(&bytes).unwrap();
+            connection.shutdown(Shutdown::Write).unwrap();
         }
         assert_eq!(request_count, exchanges.len(), "missing service requests");
     });
-    let mut child = Command::new(BIN)
+
+    let mut child = Command::new(MCP_BINARY)
         .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -106,12 +113,14 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
     let output = child.wait_with_output().unwrap();
     let _ = stop.send(());
     server.join().unwrap();
+
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(output.stderr.is_empty());
+
     fs::remove_dir_all(root).unwrap();
     BufReader::new(output.stdout.as_slice())
         .lines()
@@ -119,16 +128,16 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
         .collect()
 }
 
-fn operation_request(kind: &str, id: &str) -> Value {
-    json!({"version":1,"request":kind,"operation_id":id})
+fn operation_request(request_name: &str, operation_id: &str) -> Value {
+    json!({"version":1,"request":request_name,"operation_id":operation_id})
 }
 
-fn execution(disposition: &str, condition: Value, next_action: &str, owner: &str) -> Value {
+fn execution(disposition: &str, condition: Value, next_action: &str, action_owner: &str) -> Value {
     json!({
         "disposition": disposition,
         "condition": condition,
         "next_action": next_action,
-        "action_owner": owner,
+        "action_owner": action_owner,
     })
 }
 
@@ -177,6 +186,7 @@ fn handshake() -> Vec<Value> {
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
     ]
 }
+
 fn tool(id: i32, name: &str, arguments: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
         "params":{"name":name,"arguments":arguments}})
@@ -198,6 +208,7 @@ fn read_and_submit_are_separate_and_preserve_service_facts() {
         "kapsel.get_receipt",
         json!({"operation_id":"op-2"}),
     ));
+
     let responses = run(
         &lines,
         &[
@@ -222,6 +233,7 @@ fn read_and_submit_are_separate_and_preserve_service_facts() {
             ),
         ],
     );
+
     assert_eq!(responses.len(), 6);
     assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 5);
     assert_eq!(responses[2]["result"]["isError"], false);
@@ -250,6 +262,7 @@ fn history_access_failure_and_receipt_unavailability_remain_distinct() {
         "kapsel.get_receipt",
         json!({"operation_id":"op-1"}),
     ));
+
     let responses = run(
         &lines,
         &[
@@ -268,6 +281,7 @@ fn history_access_failure_and_receipt_unavailability_remain_distinct() {
             ),
         ],
     );
+
     let parse = |index: usize| -> Value { service_text(&responses[index]) };
     assert_eq!(
         parse(1)["service"]["entries"][0]["error_class"],
@@ -289,8 +303,11 @@ fn hostile_tool_arguments_never_reach_service() {
     ] {
         lines.push(tool(3, "kapsel.submit", args));
     }
+
     let responses = run(&lines, &[]);
+
     assert_eq!(responses.len(), 4);
+
     for response in &responses[1..] {
         assert_eq!(response["error"]["code"], -32602);
     }
@@ -302,6 +319,7 @@ fn incomplete_admission_facts_are_not_relayed_as_decisions() {
     for id in 2..=5 {
         lines.push(tool(id, "kapsel.submit", json!({"operation_id":"op-1"})));
     }
+
     let responses = run(
         &lines,
         &[
@@ -323,6 +341,7 @@ fn incomplete_admission_facts_are_not_relayed_as_decisions() {
             ),
         ],
     );
+
     for response in &responses[1..4] {
         assert!(response["result"]["content"][0]["text"]
             .as_str()
@@ -438,7 +457,9 @@ fn status_response_accepts_only_canonical_execution_guidance() {
             )
         })
         .collect();
+
     let responses = run(&lines, &exchanges);
+
     for (response, expected) in responses[1..].iter().zip(allowed) {
         let text = service_text(response);
         assert_eq!(text["operation_id"], "op-1");
@@ -490,7 +511,9 @@ fn status_response_validates_effect_specific_target_shapes() {
             )
         })
         .collect();
+
     let responses = run(&lines, &exchanges);
+
     for (response, expected) in responses[1..].iter().zip(accepted) {
         let text = service_text(response);
         assert_eq!(text["service"], expected);
@@ -631,7 +654,9 @@ fn malformed_status_guidance_and_extra_fields_are_response_errors() {
             )
         })
         .collect();
+
     let responses = run(&lines, &exchanges);
+
     for response in &responses[1..] {
         let text = service_text(response);
         assert_eq!(text["service"]["error_class"], "response_invalid");
@@ -654,6 +679,7 @@ fn history_entries_use_the_same_status_shape() {
         json!({"after":null}),
     ));
     let expected = json!({"version":1,"status":"READY","entries":[entry],"next_cursor":null});
+
     let responses = run(
         &lines,
         &[(
@@ -661,6 +687,7 @@ fn history_entries_use_the_same_status_shape() {
             expected.clone(),
         )],
     );
+
     assert_eq!(service_text(&responses[1])["service"], expected);
 }
 
@@ -683,7 +710,9 @@ fn invalid_service_envelopes_remain_response_errors() {
         )
     })
     .collect();
+
     let responses = run(&lines, &exchanges);
+
     for response in &responses[1..] {
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("response_invalid"));
@@ -721,7 +750,7 @@ fn transport_failure_is_not_non_admission() {
     // An unbound socket exercises the bridge's uncertain delivery result. It does not model
     // actual admission or prove that a request reached the service.
     let root = std::env::temp_dir().join(format!("kapsel-mcp-absent-{}", std::process::id()));
-    let output = Command::new(BIN)
+    let output = Command::new(MCP_BINARY)
         .env("KAPSELD_TEST_CLIENT_SOCKET", &root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

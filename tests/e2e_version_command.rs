@@ -25,18 +25,21 @@ fn help_needs_no_configuration_and_rejects_extra_arguments() {
         .env_clear()
         .output()
         .unwrap();
+
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("prepare-service-config"));
-    assert!(text.contains("validate-service-config"));
-    assert!(text.contains("fixed ID-only service client/MCP bridge"));
-    assert!(!text.contains("kapsel mcp --"));
+    let help_text = String::from_utf8(output.stdout).unwrap();
+    assert!(help_text.contains("prepare-service-config"));
+    assert!(help_text.contains("validate-service-config"));
+    assert!(help_text.contains("fixed ID-only service client/MCP bridge"));
+    assert!(!help_text.contains("kapsel mcp --"));
+
     let invalid = Command::new(env!("CARGO_BIN_EXE_kapsel"))
         .args(["--help", "SECRET_EXTRA"])
         .env_clear()
         .output()
         .unwrap();
+
     assert_eq!(invalid.status.code(), Some(2));
     assert!(!String::from_utf8(invalid.stderr)
         .unwrap()

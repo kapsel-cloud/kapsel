@@ -191,7 +191,7 @@ fn serve(
     mut hold: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
 ) -> Vec<WireRequest> {
     let mut requests = Vec::new();
-    let mut patches = 0;
+    let mut patch_count = 0;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let mut stream = match listener.accept() {
@@ -218,10 +218,10 @@ fn serve(
         let code = match request.method.as_str() {
             "GET" => 200,
             "PATCH" => {
-                patches += 1;
+                patch_count += 1;
                 // The first request acts, but its response is ambiguous. A repeated stale request
                 // conflicts. Count it anyway: absence of a second stored change is not no-replay.
-                if patches == 1 {
+                if patch_count == 1 {
                     status
                 } else {
                     409
@@ -230,7 +230,7 @@ fn serve(
             method => panic!("unexpected method: {method}"),
         };
         requests.push(request);
-        if patches == 1 {
+        if patch_count == 1 {
             if let Some((pause, resumed)) = hold.take() {
                 pause.send(()).unwrap();
                 resumed.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -242,7 +242,7 @@ fn serve(
             continue;
         }
         let body = if code == 200 {
-            deployment(patches > 0)
+            deployment(patch_count > 0)
         } else {
             json!({"apiVersion": "v1", "kind": "Status", "status": "Failure",
                 "reason": "FixtureAmbiguity", "code": code})
@@ -273,23 +273,23 @@ fn read_request(stream: &mut TcpStream) -> WireRequest {
         assert!(count > 0, "incomplete request");
         bytes.extend_from_slice(&buffer[..count]);
         assert!(bytes.len() <= 16 * 1024);
-        let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
+        let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") else {
             continue;
         };
-        let end = end + 4;
-        let headers = std::str::from_utf8(&bytes[..end]).unwrap();
-        let length = headers
+        let body_start = header_end + 4;
+        let headers = std::str::from_utf8(&bytes[..body_start]).unwrap();
+        let body_bytes = headers
             .lines()
             .filter_map(|line| line.split_once(':'))
             .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
             .map_or(0, |(_, length)| length.trim().parse::<usize>().unwrap());
-        assert!(length <= 16 * 1024);
-        if bytes.len() >= end + length {
-            assert_eq!(bytes.len(), end + length);
+        assert!(body_bytes <= 16 * 1024);
+        if bytes.len() >= body_start + body_bytes {
+            assert_eq!(bytes.len(), body_start + body_bytes);
             return WireRequest {
                 method: headers.split_ascii_whitespace().next().unwrap().into(),
                 path: headers.split_ascii_whitespace().nth(1).unwrap().into(),
-                body: bytes[end..].to_vec(),
+                body: bytes[body_start..].to_vec(),
             };
         }
     }
@@ -308,9 +308,10 @@ async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_rec
         application.status("retry-op").unwrap().0,
         OperationStatus::Succeeded
     );
-    let original = application.receipt("retry-op").unwrap();
+    let original_receipt = application.receipt("retry-op").unwrap();
     let report = application.status("retry-op").unwrap();
     drop(application);
+
     let mut application = fixture.application();
     assert_eq!(application.status("retry-op").unwrap(), report);
     application
@@ -318,8 +319,9 @@ async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_rec
         .await
         .unwrap();
     assert_eq!(application.status("retry-op").unwrap(), report);
-    assert_eq!(application.receipt("retry-op").unwrap(), original);
+    assert_eq!(application.receipt("retry-op").unwrap(), original_receipt);
     drop(application);
+
     let requests = fixture.finish();
     assert_eq!(
         requests
@@ -380,15 +382,16 @@ async fn cancelled_application_dispatch_recovers_without_resending_to_available_
         application.status("retry-op").unwrap().0,
         OperationStatus::Succeeded
     );
-    let original = application.receipt("retry-op").unwrap();
+    let original_receipt = application.receipt("retry-op").unwrap();
     let report = application.status("retry-op").unwrap();
     application
         .select("retry-op", fixture.execution().await, |_| {})
         .await
         .unwrap();
     assert_eq!(application.status("retry-op").unwrap(), report);
-    assert_eq!(application.receipt("retry-op").unwrap(), original);
+    assert_eq!(application.receipt("retry-op").unwrap(), original_receipt);
     drop(application);
+
     let requests = fixture.finish();
     assert_eq!(
         requests
@@ -420,6 +423,7 @@ async fn ambiguous_patch_responses_never_trigger_hidden_client_retries() {
             kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::ReceiverUnavailable)
         );
         drop(application);
+
         let mut application = fixture.application();
         application
             .select("retry-op", fixture.execution().await, |_| {})
@@ -432,15 +436,16 @@ async fn ambiguous_patch_responses_never_trigger_hidden_client_retries() {
         let report = application.status("retry-op").unwrap();
         assert_eq!(report.0, OperationStatus::Succeeded);
         assert_eq!(report.1.attempt_target, report.1.approved_target);
-        let original = application.receipt("retry-op").unwrap();
-        assert!(matches!(original, OperationReceipt::Ready { .. }));
+        let original_receipt = application.receipt("retry-op").unwrap();
+        assert!(matches!(original_receipt, OperationReceipt::Ready { .. }));
         application
             .select("retry-op", fixture.execution().await, |_| {})
             .await
             .unwrap();
         assert_eq!(application.status("retry-op").unwrap(), report);
-        assert_eq!(application.receipt("retry-op").unwrap(), original);
+        assert_eq!(application.receipt("retry-op").unwrap(), original_receipt);
         drop(application);
+
         let requests = fixture.finish();
         let patches: Vec<_> = requests
             .iter()

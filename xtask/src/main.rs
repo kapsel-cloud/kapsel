@@ -28,16 +28,19 @@ fn run() -> Result<(), String> {
         print_help();
         return Ok(());
     }
-    let (script, arguments) = command(&arguments)?;
-    let root = checkout_root()?;
+
+    let (script, script_arguments) = parse_command(&arguments)?;
+    let root = invocation_checkout_root()?;
+
     let mut shell = Command::new("sh");
     clear_git_environment(&mut shell);
     let status = shell
         .arg(root.join(script))
-        .args(arguments)
+        .args(script_arguments)
         .current_dir(root)
         .status()
         .map_err(|error| format!("failed to run {script}: {error}"))?;
+
     if status.success() {
         Ok(())
     } else {
@@ -45,21 +48,23 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn checkout_root() -> Result<PathBuf, String> {
-    let cwd = env::current_dir().map_err(|error| format!("failed to read current dir: {error}"))?;
+fn invocation_checkout_root() -> Result<PathBuf, String> {
+    let invocation_directory =
+        env::current_dir().map_err(|error| format!("failed to read current dir: {error}"))?;
     let mut git = Command::new("git");
     clear_git_environment(&mut git);
     let output = git
         .args(["rev-parse", "--show-toplevel"])
-        .current_dir(&cwd)
+        .current_dir(&invocation_directory)
         .output()
         .map_err(|error| format!("failed to locate Git checkout root: {error}"))?;
     if !output.status.success() {
         return Err("cargo xtask must run from inside a Git checkout".into());
     }
-    let stdout = String::from_utf8(output.stdout)
+
+    let root_output = String::from_utf8(output.stdout)
         .map_err(|error| format!("Git checkout root was not valid UTF-8: {error}"))?;
-    let mut lines = stdout.lines();
+    let mut lines = root_output.lines();
     let root = lines
         .next()
         .ok_or("Git did not report a checkout root")?
@@ -67,6 +72,7 @@ fn checkout_root() -> Result<PathBuf, String> {
     if root.is_empty() || lines.next().is_some() {
         return Err("Git reported an ambiguous checkout root".into());
     }
+
     let root = PathBuf::from(root);
     validate_checkout_root(&root)?;
     Ok(root)
@@ -88,6 +94,7 @@ fn validate_checkout_root(root: &Path) -> Result<(), String> {
             manifest.display()
         ));
     }
+
     for script in FIXED_SCRIPTS {
         let path = root.join(script);
         if !path.is_file() {
@@ -100,9 +107,9 @@ fn validate_checkout_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn command(arguments: &[String]) -> Result<(&'static str, Vec<&str>), String> {
-    let values: Vec<_> = arguments.iter().map(String::as_str).collect();
-    match values.as_slice() {
+fn parse_command(arguments: &[String]) -> Result<(&'static str, Vec<&str>), String> {
+    let argument_values: Vec<_> = arguments.iter().map(String::as_str).collect();
+    match argument_values.as_slice() {
         ["setup"] => Ok(("scripts/setup.sh", vec![])),
         ["doctor"] => Ok(("scripts/setup.sh", vec!["--check"])),
         ["fmt"] => Ok(("scripts/fmt.sh", vec![])),
@@ -128,7 +135,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::command;
+    use super::parse_command;
 
     #[test]
     fn commands_preserve_modes_and_reject_extra_arguments() -> Result<(), String> {
@@ -143,12 +150,13 @@ mod tests {
             (vec!["ci", "doc"], "scripts/ci.sh", vec!["doc"]),
         ] {
             let arguments = values.iter().map(ToString::to_string).collect::<Vec<_>>();
-            assert_eq!(command(&arguments)?, (script, expected));
-            let mut extra = arguments;
-            extra.push("unexpected".into());
-            assert!(command(&extra).is_err());
+            assert_eq!(parse_command(&arguments)?, (script, expected));
+
+            let mut extra_arguments = arguments;
+            extra_arguments.push("unexpected".into());
+            assert!(parse_command(&extra_arguments).is_err());
         }
-        assert!(command(&["ci".into(), "live".into()]).is_err());
+        assert!(parse_command(&["ci".into(), "live".into()]).is_err());
         Ok(())
     }
 }

@@ -92,6 +92,7 @@ impl TryFrom<&SetDeploymentImageRequest> for ValidatedRequest {
         validate_dns_subdomain(InputField::Deployment, &request.deployment)?;
         validate_dns_label(InputField::Container, &request.container)?;
         validate_immutable_image(&request.immutable_image_digest)?;
+
         Ok(Self {
             operation_id: OperationId(request.operation_id.clone()),
             namespace: Namespace(request.namespace.clone()),
@@ -396,7 +397,7 @@ impl Gateway {
         approvals: impl Iterator<Item = (&'a SetDeploymentImageRequest, &'a [u8])>,
         git_approvals: impl Iterator<Item = &'a [u8]>,
     ) -> Result<(), GatewayError> {
-        let authorized = approvals
+        let authorized_requests = approvals
             .map(|(request, bytes)| {
                 AuthorizedRequest::bind(
                     ValidatedRequest::try_from(request)?,
@@ -404,13 +405,15 @@ impl Gateway {
                 )
             })
             .collect::<Result<Vec<_>, GatewayError>>()?;
-        let git = git_approvals
+
+        let git_bindings = git_approvals
             .map(|bytes| journal::git::GitBinding::verify(bytes, authorities))
             .collect::<Result<Vec<_>, _>>()?;
-        if git.is_empty() {
-            Journal::validate_replacement(path, &authorized)
+
+        if git_bindings.is_empty() {
+            Journal::validate_replacement(path, &authorized_requests)
         } else {
-            Journal::validate_mixed_replacement(path, &authorized, &git)
+            Journal::validate_mixed_replacement(path, &authorized_requests, &git_bindings)
         }
     }
 
@@ -488,6 +491,7 @@ impl Gateway {
         let request = ValidatedRequest::try_from(request)?;
         let verified = self.verify_grant(signed_grant)?;
         let authorized = AuthorizedRequest::bind(request, verified)?;
+
         if let Some(existing) = self.journal.existing_submission(&authorized)? {
             if existing == OperationState::Requested {
                 self.mark_requested_authorized(&authorized)?;
@@ -498,10 +502,12 @@ impl Gateway {
             }
             return Ok(SubmissionResult::Existing(existing));
         }
+
         self.journal.insert_requested(&authorized)?;
         if fault == Some(FaultPoint::RequestedCommitted) {
             return Err(GatewayError::InjectedFault);
         }
+
         self.mark_requested_authorized(&authorized)?;
         if fault == Some(FaultPoint::AuthorizedCommitted) {
             return Err(GatewayError::InjectedFault);
@@ -621,6 +627,7 @@ impl Gateway {
             acknowledged(AdmissionDecision::Admitted(state));
             return Ok(None);
         }
+
         let Some(worker) = self
             .journal
             .try_lock_worker()
@@ -631,6 +638,7 @@ impl Gateway {
                 ReconciliationBlockage::WorkerContention,
             ));
         };
+
         let state = match admit(&self.journal, &worker) {
             Ok(state) => state,
             Err(GatewayError::JournalFull) => {
@@ -639,6 +647,7 @@ impl Gateway {
             },
             Err(error) => return Err(ReconciliationError::Submission(error)),
         };
+
         acknowledged(AdmissionDecision::Admitted(state));
         Ok(Some((worker, state)))
     }
@@ -673,6 +682,7 @@ impl Gateway {
         else {
             return Ok(());
         };
+
         self.reconcile_locked_with_adapter(
             request,
             signed_grant,
@@ -776,6 +786,7 @@ impl Gateway {
                 .authorized_operation(&authorized)
                 .map_err(ReconciliationError::Advancement);
         }
+
         loop {
             let Some(operation) = self
                 .journal
@@ -819,6 +830,7 @@ impl Gateway {
                     return Ok(Some(operation));
                 },
             };
+
             if !advanced {
                 return self
                     .authorized_operation(request, signed_grant)
@@ -900,6 +912,7 @@ impl Gateway {
         } else {
             settings
         };
+
         let receipt = Self::build_receipt(&operation, settings)?;
         #[cfg(feature = "demo-harness")]
         demo_control::checkpoint_before_receipt_commit()
@@ -908,6 +921,7 @@ impl Gateway {
         if fault == Some(FaultPoint::BeforeReceiptCommit) {
             return Err(GatewayError::InjectedFault);
         }
+
         self.journal.commit_receipt(&operation, &receipt)?;
         #[cfg(feature = "demo-harness")]
         demo_control::checkpoint_after_receipt_commit()
@@ -1021,13 +1035,14 @@ impl Gateway {
         adapter: &mut A,
         fault: Option<FaultPoint>,
     ) -> Result<Option<ValidatedTargetIdentity>, GatewayError> {
-        let target = adapter
+        let target_read = adapter
             .identify(&operation.request().to_adapter_request())
             .await;
         self.journal
             .authorized_operation(authorized)?
             .ok_or(GatewayError::InvalidPersistedState)?;
-        let target = match target {
+
+        let target = match target_read {
             Ok(target) => target,
             Err(TargetReadError::Transient) => {
                 return Err(GatewayError::KubernetesTargetObservation);
@@ -1043,6 +1058,7 @@ impl Gateway {
         if fault == Some(FaultPoint::TargetObserved) {
             return Err(GatewayError::InjectedFault);
         }
+
         ValidatedTargetIdentity::try_from(target)
             .map(Some)
             .map_err(|_| GatewayError::InvalidKubernetesFact)
@@ -1061,6 +1077,7 @@ impl Gateway {
         let Some(operation) = self.journal.authorized_operation(authorized)? else {
             return Ok(None);
         };
+
         let (attempted, fault) = match operation {
             journal::LoadedOperation::Authorized(operation) => {
                 let Some(target) = self
@@ -1069,6 +1086,7 @@ impl Gateway {
                 else {
                     return Ok(Some(OperationState::NotAttempted));
                 };
+
                 let Some(permission) = self.journal.begin_attempt(&operation, target, fault)?
                 else {
                     return Ok(Some(OperationState::NotAttempted));
@@ -1081,6 +1099,7 @@ impl Gateway {
                 else {
                     return Err(GatewayError::InvalidPersistedState);
                 };
+
                 let outcome = adapter
                     .apply(permission)
                     .await
@@ -1091,6 +1110,7 @@ impl Gateway {
                 if fault == Some(FaultPoint::ApplyReturned) {
                     return Err(GatewayError::InjectedFault);
                 }
+
                 self.journal
                     .authorized_operation(authorized)?
                     .ok_or(GatewayError::InvalidPersistedState)?;
@@ -1125,6 +1145,7 @@ impl Gateway {
             | journal::LoadedOperation::ReceiverObserved(_)
             | journal::LoadedOperation::Finalized(_) => return Ok(None),
         };
+
         // Only attempted history reaches this continuation. Fresh dispatch permission has
         // already been consumed, and the worker lock remains held through observation and freeze.
         let request = attempted.request().to_adapter_request();
@@ -1136,6 +1157,7 @@ impl Gateway {
         if fault == Some(FaultPoint::ReceiverRead) {
             return Err(GatewayError::InjectedFault);
         }
+
         self.journal
             .authorized_operation(authorized)?
             .ok_or(GatewayError::InvalidPersistedState)?;

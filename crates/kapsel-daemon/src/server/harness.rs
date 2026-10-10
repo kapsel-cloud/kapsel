@@ -22,6 +22,10 @@ use super::{
     ApplicationExecution, ApplicationReads,
 };
 
+const FIXTURE_INITIAL: u8 = 0;
+const FIXTURE_ADMITTED: u8 = 1;
+const FIXTURE_FINISHED: u8 = 2;
+
 pub(super) fn run() -> ExitCode {
     let Ok(path) = std::env::var("KAPSELD_TEST_SOCKET") else {
         return ExitCode::from(4);
@@ -41,6 +45,7 @@ pub(super) fn run() -> ExitCode {
     if connections == 0 || connections > CONNECTIONS_MAX + 2 {
         return ExitCode::from(4);
     }
+
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -51,7 +56,7 @@ pub(super) fn run() -> ExitCode {
         let result = if let Some(root) = std::env::var_os("KAPSELD_TEST_APPLICATION_ROOT") {
             let root = std::path::Path::new(&root);
             let (reads, _) = open_test_application(root)?;
-            let (application, material) = open_test_application(root)?;
+            let (application, execution_material) = open_test_application(root)?;
             let listener = UnixListener::bind(&path)?;
             serve_connections_with_state(
                 listener,
@@ -60,14 +65,14 @@ pub(super) fn run() -> ExitCode {
                     reads,
                     HarnessApplication {
                         application,
-                        material,
+                        execution_material,
                     },
                 ),
                 connections,
             )
             .await
         } else {
-            let status = Arc::new(AtomicU8::new(0));
+            let status = Arc::new(AtomicU8::new(FIXTURE_INITIAL));
             let release = Arc::new(AtomicBool::new(false));
             let state = ServerState::new(
                 HarnessReads {
@@ -80,6 +85,7 @@ pub(super) fn run() -> ExitCode {
             let listener = UnixListener::bind(&path)?;
             serve_connections_with_state(listener, expected_gid, state, connections).await
         };
+
         let cleanup = std::fs::remove_file(path);
         result.and(cleanup)
     });
@@ -92,21 +98,21 @@ pub(super) fn run() -> ExitCode {
 
 struct HarnessApplication {
     application: ServiceApplication,
-    material: ServiceExecution,
+    execution_material: ServiceExecution,
 }
 impl ApplicationExecution for HarnessApplication {
     async fn execute(
         &mut self,
-        id: String,
+        operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
     ) -> Result<kapsel::ServiceStop, ServiceError> {
         self.application
             .select(
-                &id,
+                &operation_id,
                 ServiceExecution {
-                    git_receiver: self.material.git_receiver.clone(),
-                    kubernetes_client: self.material.kubernetes_client.clone(),
-                    receipt_signing: self.material.receipt_signing.clone(),
+                    git_receiver: self.execution_material.git_receiver.clone(),
+                    kubernetes_client: self.execution_material.kubernetes_client.clone(),
+                    receipt_signing: self.execution_material.receipt_signing.clone(),
                 },
                 acknowledged,
             )
@@ -140,6 +146,7 @@ fn open_test_application(
     config.default_retry = false;
     let kubernetes_client = kube::Client::try_from(config)
         .map_err(|_| io::Error::other("invalid application fixture"))?;
+
     let authorization_seed = [41_u8; 32];
     let authorization_key = SigningKey::from_bytes(&authorization_seed);
     let authorization = ExactAuthorization {
@@ -164,11 +171,13 @@ fn open_test_application(
         signing_key_id: "process-authorization-key",
     })
     .map_err(|_| io::Error::other("invalid application fixture"))?;
-    let signing = match std::env::var("KAPSELD_TEST_RECEIPT_CONFIGURATION").as_deref() {
+
+    let receipt_signing = match std::env::var("KAPSELD_TEST_RECEIPT_CONFIGURATION").as_deref() {
         Ok("A") => ([42_u8; 32], "process-receipt-key-a"),
         Ok("B") => ([43_u8; 32], "process-receipt-key-b"),
         _ => return Err(io::Error::other("invalid application fixture")),
     };
+
     let application = ServiceApplication::open(ServiceConfiguration {
         journal_path: root.join("journal.sqlite3"),
         authorization_trust: vec![AuthorizationTrust {
@@ -186,7 +195,7 @@ fn open_test_application(
         ServiceExecution {
             git_receiver: None,
             kubernetes_client: Some(kubernetes_client),
-            receipt_signing: Some((signing.0, signing.1.into())),
+            receipt_signing: Some((receipt_signing.0, receipt_signing.1.into())),
         },
     ))
 }
@@ -197,8 +206,8 @@ struct HarnessReads {
     status_reads: AtomicU8,
 }
 impl HarnessReads {
-    fn status(&self, id: &str) -> Result<OperationStatus, ServiceError> {
-        if id != "process-op" {
+    fn status(&self, operation_id: &str) -> Result<OperationStatus, ServiceError> {
+        if operation_id != "process-op" {
             return Ok(OperationStatus::NotFound);
         }
         let first_read = self.status_reads.fetch_add(1, Ordering::AcqRel) == 0;
@@ -208,8 +217,8 @@ impl HarnessReads {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             match (first_read, self.status.load(Ordering::Acquire)) {
-                (true, 1) => return Ok(OperationStatus::InProgress),
-                (false, 2) => {
+                (true, FIXTURE_ADMITTED) => return Ok(OperationStatus::InProgress),
+                (false, FIXTURE_FINISHED) => {
                     return Ok(OperationStatus::NotAttempted(
                         TargetRejection::DeploymentNotFound,
                     ))
@@ -225,9 +234,9 @@ impl HarnessReads {
 impl ApplicationReads for HarnessReads {
     fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass) {
         match request {
-            ReadRequest::Status(id) => (
+            ReadRequest::Status(operation_id) => (
                 protocol::render_status_with_targets(
-                    self.status(&id)
+                    self.status(&operation_id)
                         .map(|status| (status, kapsel::OperationTargets::default())),
                 ),
                 ResponseClass::Ordinary,
@@ -239,13 +248,16 @@ impl ApplicationReads for HarnessReads {
             _ => (protocol::invalid_request(), ResponseClass::Ordinary),
         }
     }
-    fn admitted_state(&self, id: &str) -> Result<Option<kapsel::OperationState>, ServiceError> {
-        if id != "process-op" {
+    fn admitted_state(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<kapsel::OperationState>, ServiceError> {
+        if operation_id != "process-op" {
             return Err(ServiceError::InvalidRequest);
         }
         Ok(match self.status.load(Ordering::Acquire) {
-            0 => None,
-            1 => Some(kapsel::OperationState::Requested),
+            FIXTURE_INITIAL => None,
+            FIXTURE_ADMITTED => Some(kapsel::OperationState::Requested),
             _ => Some(kapsel::OperationState::NotAttempted),
         })
     }
@@ -257,16 +269,18 @@ struct HarnessExecution {
 impl ApplicationExecution for HarnessExecution {
     async fn execute(
         &mut self,
-        id: String,
+        operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
     ) -> Result<kapsel::ServiceStop, ServiceError> {
-        if id != "process-op" {
+        if operation_id != "process-op" {
             return Err(ServiceError::InvalidRequest);
         }
-        self.status.store(1, Ordering::Release);
+
+        self.status.store(FIXTURE_ADMITTED, Ordering::Release);
         acknowledged(ServiceAdmission::Admitted(
             kapsel::OperationState::Requested,
         ));
+
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while !self.release.load(Ordering::Acquire) {
             if tokio::time::Instant::now() >= deadline {
@@ -274,7 +288,8 @@ impl ApplicationExecution for HarnessExecution {
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        self.status.store(2, Ordering::Release);
+
+        self.status.store(FIXTURE_FINISHED, Ordering::Release);
         Ok(kapsel::ServiceStop::Finished)
     }
 }

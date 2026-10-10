@@ -188,6 +188,7 @@ impl Journal {
         if phase != GitPhase::Authorized {
             return Err(GatewayError::InvalidTransition);
         }
+
         let mut next = original.clone();
         next.set("state", "apply_started".to_owned());
         self.records
@@ -196,6 +197,7 @@ impl Journal {
         if prepared.exploration_attempt_acknowledgement_lost() {
             return Err(GatewayError::InjectedFault);
         }
+
         // No permission is ever reconstructed from the stored apply_started phase.
         Ok(GitDispatchPermission { prepared })
     }
@@ -214,6 +216,7 @@ impl Journal {
             GitRejection::StaleRef => "stale_ref",
             GitRejection::InvalidObjects => "invalid_objects",
         };
+
         let mut next = original.clone();
         next.set("state", "not_attempted".to_owned());
         next.set("target_rejection", rejection.to_owned());
@@ -231,6 +234,7 @@ impl Journal {
         if phase != GitPhase::Attempted(None) {
             return Err(GatewayError::InvalidTransition);
         }
+
         let mut next = original.clone();
         next.set("acknowledgement", acknowledgement.as_str().to_owned());
         self.records
@@ -244,7 +248,7 @@ impl Journal {
         worker: &WorkerLock,
     ) -> Result<(), GatewayError> {
         let (original, phase) = self.git_write(binding, worker)?;
-        let GitPhase::Attempted(ack) = phase else {
+        let GitPhase::Attempted(retained_acknowledgement) = phase else {
             return Err(GatewayError::InvalidTransition);
         };
         let (kind, commit) = match observed {
@@ -255,9 +259,10 @@ impl Journal {
             ObservedRef::Missing => ("missing", None),
             ObservedRef::Unknown => ("unknown", None),
         };
+
         let mut next = original.clone();
         next.set("state", "receiver_observed".to_owned());
-        let acknowledgement = ack.unwrap_or(Acknowledgement::Unknown);
+        let acknowledgement = retained_acknowledgement.unwrap_or(Acknowledgement::Unknown);
         #[cfg(test)]
         let acknowledgement = if self
             .records
@@ -301,6 +306,7 @@ impl Journal {
             return Err(GatewayError::InvalidPersistedState);
         }
         let digest = receipt_digest_hex(bytes);
+
         let mut next = original.clone();
         next.set("state", "finalized".to_owned());
         next.set("receipt_bytes", bytes.to_vec());
@@ -338,13 +344,13 @@ impl Journal {
         if record.get::<Vec<u8>>("signed_authorization_grant")? != binding.grant
             && self.exercise_defect(super::records::Defect::CustodyIgnored)
         {
-            let unchecked = GitBinding {
+            let unchecked_binding = GitBinding {
                 authorization: binding.authorization.clone(),
                 signer: binding.signer.clone(),
                 digest: binding.digest.clone(),
                 grant: record.get("signed_authorization_grant")?,
             };
-            return decode_record(record, &unchecked);
+            return decode_record(record, &unchecked_binding);
         }
         decode_record(record, binding)
     }
@@ -397,9 +403,10 @@ fn decode_record(record: &Record, binding: &GitBinding) -> Result<GitPhase, Gate
     if record.get::<Vec<u8>>("signed_authorization_grant")? != binding.grant {
         return Err(GatewayError::OperationIdentityConflict);
     }
+
     let state: String = record.get("state")?;
     let rejection: Option<String> = record.get("target_rejection")?;
-    let ack: Option<String> = record.get("acknowledgement")?;
+    let retained_acknowledgement: Option<String> = record.get("acknowledgement")?;
     let observed_kind: Option<String> = record.get("observed_ref_kind")?;
     let observed_commit: Option<String> = record.get("observed_commit")?;
     let receipt_digest: Option<String> = record.get("receipt_digest")?;
@@ -420,10 +427,11 @@ fn decode_record(record: &Record, binding: &GitBinding) -> Result<GitPhase, Gate
         (_, None, None, None) => None,
         _ => return Err(GatewayError::InvalidPersistedState),
     };
+
     let phase = decode_phase(
         &state,
         rejection.as_deref(),
-        ack.as_deref(),
+        retained_acknowledgement.as_deref(),
         observed_kind.as_deref(),
         observed_commit,
     )?;
@@ -431,8 +439,9 @@ fn decode_record(record: &Record, binding: &GitBinding) -> Result<GitPhase, Gate
         let statement = phase
             .statement(binding)
             .ok_or(GatewayError::InvalidPersistedState)?;
-        let (key_id, decoded) = evidence::decode(&receipt.bytes).map_err(GatewayError::Receipt)?;
-        if decoded != statement || key_id != receipt.key_id {
+        let (key_id, decoded_statement) =
+            evidence::decode(&receipt.bytes).map_err(GatewayError::Receipt)?;
+        if decoded_statement != statement || key_id != receipt.key_id {
             return Err(GatewayError::InvalidPersistedState);
         }
         Ok(GitPhase::Finalized {
@@ -447,22 +456,25 @@ fn decode_record(record: &Record, binding: &GitBinding) -> Result<GitPhase, Gate
 fn decode_phase(
     state: &str,
     rejection: Option<&str>,
-    ack: Option<&str>,
+    retained_acknowledgement: Option<&str>,
     observed_kind: Option<&str>,
     observed_commit: Option<String>,
 ) -> Result<GitPhase, GatewayError> {
-    let acknowledgement = ack
+    let acknowledgement = retained_acknowledgement
         .map(|value| Acknowledgement::parse(value).ok_or(GatewayError::InvalidPersistedState))
         .transpose()?;
     let observed = match (observed_kind, observed_commit) {
         (None, None) => None,
         (Some("unknown"), None) => Some(ObservedRef::Unknown),
         (Some("missing"), None) => Some(ObservedRef::Missing),
-        (Some("commit"), Some(oid)) if kapsel_authority::git_commit_id_is_valid(&oid) => {
-            Some(ObservedRef::Commit(oid))
+        (Some("commit"), Some(commit_id))
+            if kapsel_authority::git_commit_id_is_valid(&commit_id) =>
+        {
+            Some(ObservedRef::Commit(commit_id))
         },
         _ => return Err(GatewayError::InvalidPersistedState),
     };
+
     match (state, rejection, acknowledgement, observed) {
         ("authorized", None, None, None) => Ok(GitPhase::Authorized),
         ("not_attempted", Some("stale_ref"), None, None) => {
@@ -471,7 +483,9 @@ fn decode_phase(
         ("not_attempted", Some("invalid_objects"), None, None) => {
             Ok(GitPhase::NotAttempted(GitRejection::InvalidObjects))
         },
-        ("apply_started", None, ack, None) => Ok(GitPhase::Attempted(ack)),
+        ("apply_started", None, retained_acknowledgement, None) => {
+            Ok(GitPhase::Attempted(retained_acknowledgement))
+        },
         ("receiver_observed" | "finalized", None, Some(acknowledgement), Some(observed)) => {
             Ok(GitPhase::Observed {
                 acknowledgement,
@@ -607,6 +621,7 @@ mod tests {
         assert!(journal
             .freeze_git_observation(&original, &ObservedRef::Missing, &worker)
             .is_err());
+
         drop(worker);
         drop(journal);
         assert_eq!(
@@ -674,6 +689,7 @@ mod tests {
             journal.insert_git(&binding("git-0"), &worker).unwrap(),
             GitPhase::Authorized
         );
+
         drop(worker);
         drop(journal);
         assert_eq!(

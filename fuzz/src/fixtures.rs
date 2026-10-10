@@ -25,10 +25,13 @@ pub fn records(magic: &[u8], values: &[&[u8]]) -> Vec<u8> {
 }
 
 fn envelope(magic: &[u8], purpose: &[u8], statement: &[u8]) -> Vec<u8> {
-    let mut signed = purpose.to_vec();
-    signed.push(0);
-    signed.extend_from_slice(statement);
-    let signature = SigningKey::from_bytes(&[7; 32]).sign(&signed).to_bytes();
+    let mut signature_message = purpose.to_vec();
+    signature_message.push(0);
+    signature_message.extend_from_slice(statement);
+    let signature = SigningKey::from_bytes(&[7; 32])
+        .sign(&signature_message)
+        .to_bytes();
+
     records(magic, &[purpose, b"signer", statement, &signature])
 }
 
@@ -39,16 +42,18 @@ pub fn fields(bytes: &[u8]) -> Option<Vec<&[u8]>> {
     if bytes.len() > 16 * 1024 {
         return None;
     }
+
     let mut offset = bytes.iter().position(|byte| *byte == 0)? + 1;
     let mut values = Vec::new();
     while offset < bytes.len() && values.len() < 40 {
         let header = bytes.get(offset..offset.checked_add(5)?)?;
-        let length = u32::from_be_bytes(header[1..].try_into().ok()?) as usize;
+        let value_bytes_len = u32::from_be_bytes(header[1..].try_into().ok()?) as usize;
         offset += 5;
-        let end = offset.checked_add(length)?;
-        values.push(bytes.get(offset..end)?);
-        offset = end;
+        let value_end = offset.checked_add(value_bytes_len)?;
+        values.push(bytes.get(offset..value_end)?);
+        offset = value_end;
     }
+
     (offset == bytes.len()).then_some(values)
 }
 
@@ -60,14 +65,18 @@ pub fn reauthenticate(bytes: &[u8]) -> Option<Vec<u8>> {
     if values.len() != 4 || values[3].len() != 64 {
         return None;
     }
-    let mut signed = values[0].to_vec();
-    signed.push(0);
-    signed.extend_from_slice(values[2]);
-    let signature = SigningKey::from_bytes(&[7; 32]).sign(&signed).to_bytes();
+
+    let mut signature_message = values[0].to_vec();
+    signature_message.push(0);
+    signature_message.extend_from_slice(values[2]);
+    let signature = SigningKey::from_bytes(&[7; 32])
+        .sign(&signature_message)
+        .to_bytes();
+
     let signature_start = bytes.len().checked_sub(64)?;
-    let mut changed = bytes.to_vec();
-    changed[signature_start..].copy_from_slice(&signature);
-    Some(changed)
+    let mut reauthenticated = bytes.to_vec();
+    reauthenticated[signature_start..].copy_from_slice(&signature);
+    Some(reauthenticated)
 }
 
 /// Encodes the maintained receipt/trust split fixture.
@@ -82,7 +91,7 @@ pub fn pair(receipt: &[u8], trust: &[u8]) -> Vec<u8> {
     input
 }
 
-fn hex(text: &str) -> Vec<u8> {
+fn decode_fixture_hex(text: &str) -> Vec<u8> {
     let (pairs, remainder) = text.trim().as_bytes().as_chunks::<2>();
     assert!(
         remainder.is_empty(),
@@ -153,8 +162,9 @@ pub fn git_trust() -> Vec<u8> {
 ///
 /// Panics on an unknown target or an invalid maintained fixture.
 pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
-    let legacy_receipt = hex(include_str!("../../vectors/effect-gateway-receipt.hex"));
-    let legacy_trust = hex(include_str!("../../vectors/effect-gateway-trust.hex"));
+    let legacy_receipt =
+        decode_fixture_hex(include_str!("../../vectors/effect-gateway-receipt.hex"));
+    let legacy_trust = decode_fixture_hex(include_str!("../../vectors/effect-gateway-trust.hex"));
     let git_receipt = git_receipt(b"UNKNOWN");
     let git_trust = git_trust();
     let mut seeds = Vec::new();
@@ -180,7 +190,8 @@ pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
                     pair(&self::git_receipt(b"SUCCEEDED"), &trust),
                 ));
             } else {
-                let statement = hex(include_str!("../../vectors/effect-gateway-statement.hex"));
+                let statement =
+                    decode_fixture_hex(include_str!("../../vectors/effect-gateway-statement.hex"));
                 let mut values = fields(&statement).unwrap();
                 values[25] = b"SUCCEEDED";
                 let inconsistent = records(b"KAPSEL-KAP0038-K8S-STATEMENT-V2\0", &values);
@@ -201,19 +212,21 @@ pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
                     "signed-inconsistent-result".into(),
                     pair(&signed, &trusted.encode().unwrap()),
                 ));
-                let mut values = fields(&statement).unwrap();
-                let approved = [values[9], values[10]];
-                values.extend(approved);
-                let snapshot = records(b"KAPSEL-KAP0038-K8S-STATEMENT-V3\0", &values);
+
+                let mut snapshot_fields = fields(&statement).unwrap();
+                let approved = [snapshot_fields[9], snapshot_fields[10]];
+                snapshot_fields.extend(approved);
+                let snapshot_statement =
+                    records(b"KAPSEL-KAP0038-K8S-STATEMENT-V3\0", &snapshot_fields);
                 trusted.accepted_purpose = "kapsel.kap0038.kubernetes-effect-receipt.v3".into();
-                let signed = envelope(
+                let signed_snapshot = envelope(
                     b"KAPSEL-KAP0038-K8S-RECEIPT-V3\0",
                     trusted.accepted_purpose.as_bytes(),
-                    &snapshot,
+                    &snapshot_statement,
                 );
                 seeds.push((
                     "canonical-snapshot".into(),
-                    pair(&signed, &trusted.encode().unwrap()),
+                    pair(&signed_snapshot, &trusted.encode().unwrap()),
                 ));
             }
             let original = fields(&receipt).unwrap();
@@ -255,12 +268,14 @@ pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
                 immutable_image_digest: format!("registry.example/app@sha256:{}", "a".repeat(64)),
             };
             let legacy = sign_authorization_grant(&authorization, &[7; 32], "owner").unwrap();
-            let mut snapshot = authorization;
-            snapshot.approved_target = Some(ApprovedTarget {
+
+            let mut snapshot_authorization = authorization;
+            snapshot_authorization.approved_target = Some(ApprovedTarget {
                 uid: "uid-1".into(),
                 resource_version: "opaque:1".into(),
             });
-            let snapshot = sign_authorization_grant(&snapshot, &[7; 32], "owner").unwrap();
+            let snapshot_grant =
+                sign_authorization_grant(&snapshot_authorization, &[7; 32], "owner").unwrap();
             let git = sign_git_ref_grant(
                 &GitRefAuthorization {
                     authorization_id: "approval".into(),
@@ -277,11 +292,11 @@ pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
             let canonical = if target == "verify_git_grant" {
                 git.clone()
             } else {
-                snapshot.clone()
+                snapshot_grant.clone()
             };
             seeds.push(("canonical".into(), canonical.clone()));
             seeds.push(("legacy-kubernetes".into(), legacy));
-            seeds.push(("snapshot-kubernetes".into(), snapshot));
+            seeds.push(("snapshot-kubernetes".into(), snapshot_grant));
             seeds.push(("git-purpose".into(), git));
             let original = fields(&canonical).unwrap();
             let magic_end = canonical.iter().position(|byte| *byte == 0).unwrap() + 1;
@@ -299,7 +314,7 @@ pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
             seeds.push(("over-limit".into(), vec![0; 4097]));
             seeds.push((
                 "exact-legacy-vector".into(),
-                hex(include_str!("../../vectors/effect-gateway-grant.hex")),
+                decode_fixture_hex(include_str!("../../vectors/effect-gateway-grant.hex")),
             ));
         },
         "service_document" => {
@@ -391,28 +406,34 @@ pub fn seeds(target: &str) -> Vec<(String, Vec<u8>)> {
 }
 
 fn binary_mutations(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
-    let start = bytes.iter().position(|byte| *byte == 0).unwrap() + 1;
-    let first_length = u32::from_be_bytes(bytes[start + 1..start + 5].try_into().unwrap()) as usize;
-    let end = start + 5 + first_length;
+    let first_record_start = bytes.iter().position(|byte| *byte == 0).unwrap() + 1;
+    let first_value_bytes_len = u32::from_be_bytes(
+        bytes[first_record_start + 1..first_record_start + 5]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let first_record_end = first_record_start + 5 + first_value_bytes_len;
+
     let mut trailing = bytes.to_vec();
     trailing.push(0);
-    let mut duplicate = bytes[..end].to_vec();
-    duplicate.extend_from_slice(&bytes[start..]);
+    let mut duplicate = bytes[..first_record_end].to_vec();
+    duplicate.extend_from_slice(&bytes[first_record_start..]);
     let mut unknown = bytes.to_vec();
-    unknown[start] = 255;
+    unknown[first_record_start] = 255;
     let mut reordered = bytes.to_vec();
-    reordered[start] = 2;
-    let mut length = bytes.to_vec();
-    length[start + 1..start + 5].fill(255);
-    let mut utf8 = bytes.to_vec();
-    utf8[start + 5] = 255;
+    reordered[first_record_start] = 2;
+    let mut overflowing_length = bytes.to_vec();
+    overflowing_length[first_record_start + 1..first_record_start + 5].fill(255);
+    let mut invalid_utf8 = bytes.to_vec();
+    invalid_utf8[first_record_start + 5] = 255;
+
     vec![
         ("trailing".into(), trailing),
         ("duplicate".into(), duplicate),
         ("unknown".into(), unknown),
         ("reordered".into(), reordered),
-        ("length-overflow".into(), length),
-        ("invalid-utf8".into(), utf8),
+        ("length-overflow".into(), overflowing_length),
+        ("invalid-utf8".into(), invalid_utf8),
         ("truncated".into(), bytes[..bytes.len() - 1].to_vec()),
     ]
 }

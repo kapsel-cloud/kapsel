@@ -33,8 +33,8 @@ impl Outcome {
 }
 
 pub(crate) fn replace_operator_config(root: &Path) -> ExitCode {
-    let outcome = replace(root, &mut io::stdin().lock());
-    let (line, exit) = outcome.status();
+    let publication_outcome = replace(root, &mut io::stdin().lock());
+    let (line, exit) = publication_outcome.status();
     let mut output = io::stdout().lock();
     if output
         .write_all(line)
@@ -52,13 +52,15 @@ fn replace(root: &Path, input: &mut impl io::Read) -> Outcome {
     };
     #[cfg(feature = "test-harness")]
     let _ = std::fs::write(root.join("control/publisher.ready"), b"");
-    let Ok(bytes) = validate(&roots, input) else {
+
+    let Ok(bytes) = validate_candidate(&roots, input) else {
         return Outcome::NotPublished;
     };
+
     publish(&roots.configuration, &bytes)
 }
 
-fn validate(roots: &InstallationRoots, input: &mut impl io::Read) -> io::Result<Vec<u8>> {
+fn validate_candidate(roots: &InstallationRoots, input: &mut impl io::Read) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(OPERATOR_DOCUMENT_BYTES_MAX + 1);
     input
         .take((OPERATOR_DOCUMENT_BYTES_MAX + 1) as u64)
@@ -66,23 +68,25 @@ fn validate(roots: &InstallationRoots, input: &mut impl io::Read) -> io::Result<
     if bytes.len() > OPERATOR_DOCUMENT_BYTES_MAX {
         return Err(io::Error::other("candidate exceeds bound"));
     }
+
     validate_optional_private_file(&roots.state, "journal.sqlite3", JOURNAL_BYTES_MAX)?;
     validate_optional_private_file(&roots.state, "journal.sqlite3.kap0038-worker.lock", 0)?;
-    let path = descriptor_directory_path(&roots.state)?.join("journal.sqlite3");
-    let document = kapsel::parse_service_operator_document(&bytes, path)
+
+    let journal_path = descriptor_directory_path(&roots.state)?.join("journal.sqlite3");
+    let document = kapsel::parse_service_operator_document(&bytes, journal_path)
         .map_err(|_| io::Error::other("invalid candidate"))?;
     kapsel::ServiceApplication::validate_replacement(&document.configuration)
         .map_err(|_| io::Error::other("invalid replacement"))?;
     Ok(bytes)
 }
 
-struct Temporary<'a> {
+struct TemporaryCandidate<'a> {
     directory: &'a File,
     name: String,
     file: File,
 }
 
-impl<'a> Temporary<'a> {
+impl<'a> TemporaryCandidate<'a> {
     fn create(directory: &'a File) -> io::Result<Self> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = format!(
@@ -106,7 +110,7 @@ impl<'a> Temporary<'a> {
     }
 }
 
-impl Drop for Temporary<'_> {
+impl Drop for TemporaryCandidate<'_> {
     fn drop(&mut self) {
         if require_private_identity(
             self.directory,
@@ -142,7 +146,7 @@ fn publish(directory: &File, bytes: &[u8]) -> Outcome {
 }
 
 fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) -> Outcome {
-    let Ok(mut temporary) = Temporary::create(directory) else {
+    let Ok(mut temporary) = TemporaryCandidate::create(directory) else {
         return Outcome::NotPublished;
     };
     #[cfg(test)]
@@ -152,6 +156,7 @@ fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) 
     if temporary.file.write_all(bytes).is_err() {
         return Outcome::NotPublished;
     }
+
     #[cfg(test)]
     if fault == Fault::FileSync {
         return Outcome::NotPublished;
@@ -173,10 +178,12 @@ fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) 
     {
         return Outcome::NotPublished;
     }
+
     #[cfg(test)]
     if fault == Fault::BeforeRename {
         return Outcome::NotPublished;
     }
+
     // An error returned by rename does not prove that publication did not occur.
     #[cfg(test)]
     if fault == Fault::Rename {
@@ -193,6 +200,7 @@ fn publish_candidate(directory: &File, bytes: &[u8], #[cfg(test)] fault: Fault) 
     {
         return Outcome::Indeterminate;
     }
+
     #[cfg(test)]
     if fault == Fault::DirectorySync {
         return Outcome::Indeterminate;
@@ -301,7 +309,9 @@ mod tests {
             candidate.extend_from_slice(b" \n");
             let stale = root.join("etc/kapsel/.operator-stale.tmp");
             fs::write(&stale, b"not ours").unwrap();
+
             let result = publish_candidate(&roots.configuration, &candidate, fault);
+
             let renamed = matches!(fault, Fault::None | Fault::DirectorySync);
             assert_eq!(
                 result,
@@ -332,6 +342,7 @@ mod tests {
                     .count(),
                 1
             );
+
             drop(roots);
             fs::remove_dir_all(root).unwrap();
         }
@@ -350,7 +361,7 @@ mod tests {
         fs::set_permissions(&configuration, fs::Permissions::from_mode(0o700)).unwrap();
         fs::write(configuration.join("operator.json"), b"foreign root").unwrap();
         assert_eq!(
-            validate(&roots, &mut candidate.as_slice()).unwrap(),
+            validate_candidate(&roots, &mut candidate.as_slice()).unwrap(),
             candidate
         );
         assert_eq!(
@@ -370,11 +381,12 @@ mod tests {
     fn publication_does_not_unlink_a_substituted_temporary_inode() {
         let root = valid_root("publisher-temp-substitution");
         let roots = InstallationRoots::open_at(&root).unwrap();
-        let temp = Temporary::create(&roots.configuration).unwrap();
+        let temp = TemporaryCandidate::create(&roots.configuration).unwrap();
         let path = root.join("etc/kapsel").join(&temp.name);
         fs::rename(&path, path.with_extension("retained")).unwrap();
         fs::write(&path, b"replacement").unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
         drop(temp);
         assert_eq!(fs::read(&path).unwrap(), b"replacement");
         drop(roots);

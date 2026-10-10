@@ -164,10 +164,10 @@ pub(super) fn initialize_schema(
 }
 
 pub(super) fn require_integrity(connection: &Connection) -> Result<(), GatewayError> {
-    let result: String = connection
+    let integrity_result: String = connection
         .query_row("PRAGMA integrity_check(1)", [], |row| row.get(0))
         .map_err(GatewayError::Database)?;
-    if result == "ok" {
+    if integrity_result == "ok" {
         Ok(())
     } else {
         Err(GatewayError::InvalidPersistedState)
@@ -199,7 +199,7 @@ pub(super) fn recognized_supported_schema(connection: &Connection) -> Result<boo
 fn require_all_persisted_bounds(connection: &Connection) -> Result<(), GatewayError> {
     require_persisted_bounds(connection, "kubernetes_image_operations", CURRENT_COLUMNS)?;
     require_persisted_bounds(connection, "git_ref_operations", GIT_COLUMNS)?;
-    let overlap: bool = connection
+    let has_shared_identity: bool = connection
         .query_row(
             "SELECT EXISTS (SELECT 1 FROM kubernetes_image_operations AS k
          JOIN git_ref_operations AS g USING (operation_id))",
@@ -207,7 +207,7 @@ fn require_all_persisted_bounds(connection: &Connection) -> Result<(), GatewayEr
             |row| row.get(0),
         )
         .map_err(GatewayError::Database)?;
-    if overlap {
+    if has_shared_identity {
         Err(GatewayError::InvalidPersistedState)
     } else {
         Ok(())
@@ -225,7 +225,7 @@ fn require_persisted_bounds(
         .map(|name| format!("COALESCE(length(CAST({name} AS BLOB)), 0) > ?2"))
         .collect::<Vec<_>>()
         .join(" OR ");
-    let query = format!(
+    let bounds_query = format!(
         "SELECT
             (SELECT COUNT(*) FROM {table}) <= ?1
             AND NOT EXISTS (
@@ -235,14 +235,16 @@ fn require_persisted_bounds(
                 LIMIT 1
             )"
     );
-    let value_max = i64::try_from(PERSISTED_VALUE_BYTES_MAX)
+    let value_limit_bytes = i64::try_from(PERSISTED_VALUE_BYTES_MAX)
         .map_err(|_| GatewayError::InvalidPersistedState)?;
-    let within_bounds = connection
-        .query_row(&query, [OPERATION_COUNT_MAX, value_max], |row| {
-            row.get::<_, bool>(0)
-        })
+    let persisted_values_within_bounds = connection
+        .query_row(
+            &bounds_query,
+            [OPERATION_COUNT_MAX, value_limit_bytes],
+            |row| row.get::<_, bool>(0),
+        )
         .map_err(GatewayError::Database)?;
-    if within_bounds {
+    if persisted_values_within_bounds {
         Ok(())
     } else {
         Err(GatewayError::InvalidPersistedState)
@@ -356,7 +358,8 @@ fn recognized_schema(
     {
         return Ok(false);
     }
-    let strict = connection
+
+    let strict_table_flag = connection
         .query_row(
             "SELECT strict FROM pragma_table_list WHERE name = ?1",
             [table],
@@ -364,9 +367,10 @@ fn recognized_schema(
         )
         .optional()
         .map_err(GatewayError::Database)?;
-    if strict != Some(1) {
+    if strict_table_flag != Some(1) {
         return Ok(false);
     }
+
     let columns = table_columns(connection, table)?;
     if columns.len() != expected_columns.len()
         || !columns.iter().zip(expected_columns).enumerate().all(
@@ -389,10 +393,12 @@ fn recognized_schema(
     {
         return Ok(false);
     }
+
     let indexes = table_indexes(connection, table)?;
     if indexes != [(0, expected_index, 1, "pk".into(), 0)] {
         return Ok(false);
     }
+
     let index_columns = primary_index_columns(connection, table)?;
     Ok(index_columns
         == [

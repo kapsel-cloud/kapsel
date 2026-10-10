@@ -117,7 +117,7 @@ fn kapseld_executable() -> PathBuf {
     )
 }
 
-fn spawn(socket: &Path, expected_gid: u32, connections: usize) -> ChildGuard {
+fn spawn_harness_daemon(socket: &Path, expected_gid: u32, connections: usize) -> ChildGuard {
     ChildGuard::new(
         Command::new(kapseld_executable())
             .env("KAPSELD_TEST_SOCKET", socket)
@@ -351,13 +351,13 @@ fn wait_for_finalized(journal: &Path) {
     }
 }
 
-fn assert_terminal_status(stream: &mut UnixStream, status: &str, snapshot: bool) {
+fn assert_terminal_status(stream: &mut UnixStream, status: &str, has_approved_target: bool) {
     let target = serde_json::json!({"uid": "uid-1", "resource_version": "1"});
     let actual = serde_json::from_slice::<serde_json::Value>(&read_frame(stream)).unwrap();
     let expected = serde_json::json!({
         "status": status,
         "effect": "kubernetes.set_deployment_image",
-        "approved_target": snapshot.then_some(&target),
+        "approved_target": has_approved_target.then_some(&target),
         "attempt_target": target,
         "observed_target": {"uid": "uid-1", "resource_version": "3"},
         "execution": {"disposition":"complete", "condition":null,
@@ -570,8 +570,9 @@ fn read_http_stream(mut stream: TcpStream) -> (TcpStream, String, String, Vec<u8
     stream.set_nonblocking(false).unwrap();
     stream.set_read_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
     stream.set_write_timeout(Some(FIXTURE_TIMEOUT)).unwrap();
+
     let mut bytes = Vec::new();
-    let total = loop {
+    let request_bytes = loop {
         let mut chunk = [0_u8; 4096];
         let read = match stream.read(&mut chunk) {
             Ok(read) => read,
@@ -604,7 +605,7 @@ fn read_http_stream(mut stream: TcpStream) -> (TcpStream, String, String, Vec<u8
     };
     assert_eq!(
         bytes.len(),
-        total,
+        request_bytes,
         "provider fixture rejected trailing request bytes"
     );
     let header_end = bytes
@@ -612,6 +613,7 @@ fn read_http_stream(mut stream: TcpStream) -> (TcpStream, String, String, Vec<u8
         .position(|window| window == b"\r\n\r\n")
         .unwrap()
         + 4;
+
     let request_line = std::str::from_utf8(&bytes[..header_end])
         .unwrap()
         .lines()
@@ -770,7 +772,7 @@ fn success_server() -> SuccessServer {
     }
 }
 
-fn unknown_server() -> (
+fn bounded_progressing_receiver() -> (
     String,
     Arc<AtomicUsize>,
     mpsc::Sender<()>,
@@ -853,7 +855,7 @@ fn wait_for_marker(child: &mut Child, marker: &Path) {
 }
 
 #[test]
-fn ordinary_restart_reads_before_explicit_reselection_without_second_patch() {
+fn installed_restart_reads_before_explicit_reselection_without_second_patch() {
     let server = success_server();
     let root = installation_root_with_url("ordinary-recovery", &server.url);
     let socket = root.join("run/kapsel/kapseld.sock");
@@ -1082,6 +1084,7 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     let original_hex = receipt["service"]["receipt_hex"].as_str().unwrap();
     assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
     assert!(service.wait_with_output().unwrap().status.success());
+
     let restarted = spawn_application(&socket, &root, &server.url, "A", None, 2);
     wait_for_socket(&socket);
     assert_eq!(run_caller("read", &[])["service"]["status"], "SUCCEEDED");
@@ -1091,6 +1094,7 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         repeated["service"]["receipt_sha256"],
         receipt["service"]["receipt_sha256"]
     );
+
     let (pairs, remainder) = original_hex.as_bytes().as_chunks::<2>();
     assert!(
         remainder.is_empty(),
@@ -1254,7 +1258,7 @@ fn ordinary_startup_removes_only_an_exact_inactive_stale_socket() {
 }
 
 #[test]
-fn ordinary_startup_uses_fixed_inputs_and_serves_until_systemd_termination() {
+fn installed_startup_uses_fixed_inputs_and_retires_after_connection_limit() {
     let root = installation_root("ordinary-startup");
     let socket = root.join("run/kapsel/kapseld.sock");
     let child = spawn_installed(&root, 1);
@@ -1282,7 +1286,7 @@ fn ordinary_startup_uses_fixed_inputs_and_serves_until_systemd_termination() {
 }
 
 #[test]
-fn restart_reads_before_explicit_reselection_without_a_second_patch() {
+fn harness_restart_reads_before_explicit_reselection_without_a_second_patch() {
     let root = application_root("startup-reconcile");
     let socket = root.join("kapseld.sock");
     let server = success_server();
@@ -1525,7 +1529,7 @@ fn corrupted_retained_receipt_fails_startup_without_reconciliation() {
 fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() {
     let root = application_root("unknown-recovery");
     let socket = root.join("kapseld.sock");
-    let (url, patch_count, stop, server) = unknown_server();
+    let (url, patch_count, stop, server) = bounded_progressing_receiver();
 
     let mut first = spawn_application(&socket, &root, &url, "A", Some("after_apply"), 10);
     let mut submit = connect(&socket);
@@ -1578,7 +1582,7 @@ fn startup_failure_is_silent_and_leaves_no_socket() {
 fn matching_effective_gid_crosses_the_real_kapseld_process() {
     let root = root("allow");
     let socket = root.join("kapseld.sock");
-    let child = spawn(&socket, effective_gid(), 1);
+    let child = spawn_harness_daemon(&socket, effective_gid(), 1);
     let mut stream = connect(&socket);
     write_frame(
         &mut stream,
@@ -1608,7 +1612,7 @@ fn matching_effective_gid_crosses_the_real_kapseld_process() {
 fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() {
     let root = root("execution");
     let socket = root.join("kapseld.sock");
-    let child = spawn(&socket, effective_gid(), 4);
+    let child = spawn_harness_daemon(&socket, effective_gid(), 4);
 
     let mut disconnected = connect(&socket);
     write_frame(&mut disconnected, submit_request().as_bytes());
@@ -1649,10 +1653,10 @@ fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() 
 }
 
 #[test]
-fn saturated_ninth_is_closed_and_new_tenth_succeeds_after_recovery() {
+fn connection_saturation_refuses_ninth_and_admits_tenth_after_permit_release() {
     let root = root("saturation");
     let socket = root.join("kapseld.sock");
-    let child = spawn(&socket, effective_gid(), 10);
+    let child = spawn_harness_daemon(&socket, effective_gid(), 10);
     let mut admitted = vec![connect(&socket)];
     for _ in 1..8 {
         admitted.push(UnixStream::connect(&socket).unwrap());
@@ -1706,7 +1710,7 @@ fn distinct_effective_gid_is_denied_before_frame_read() {
     let server_gid = effective_gid();
     let client_gid = group_gid("docker");
     assert_ne!(server_gid, client_gid);
-    let child = spawn(&socket, server_gid, 1);
+    let child = spawn_harness_daemon(&socket, server_gid, 1);
     wait_for_socket(&socket);
 
     let client = root.join("client.py");
@@ -1749,7 +1753,7 @@ fn different_expected_gid_is_denied_before_body_disclosure() {
     let root = root("deny");
     let socket = root.join("kapseld.sock");
     let expected_gid = effective_gid().wrapping_add(1);
-    let child = spawn(&socket, expected_gid, 1);
+    let child = spawn_harness_daemon(&socket, expected_gid, 1);
     let mut stream = connect(&socket);
     let _ = stream.write_all(b"SECRET_UNAUTHENTICATED_BODY");
     let mut response = Vec::new();

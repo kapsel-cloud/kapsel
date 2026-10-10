@@ -18,8 +18,8 @@ use kapsel::ReceiptTrust;
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 fn decode_hex(input: &str) -> Vec<u8> {
-    let trimmed = input.trim();
-    let (pairs, remainder) = trimmed.as_bytes().as_chunks::<2>();
+    let hex_digits = input.trim();
+    let (pairs, remainder) = hex_digits.as_bytes().as_chunks::<2>();
     assert!(
         remainder.is_empty(),
         "hex fixture has an odd number of nibbles"
@@ -27,8 +27,8 @@ fn decode_hex(input: &str) -> Vec<u8> {
     pairs
         .iter()
         .map(|pair| {
-            let text = std::str::from_utf8(pair).unwrap();
-            u8::from_str_radix(text, 16).unwrap()
+            let hex_pair = std::str::from_utf8(pair).unwrap();
+            u8::from_str_radix(hex_pair, 16).unwrap()
         })
         .collect()
 }
@@ -182,6 +182,7 @@ fn canonical_vectors_are_inspected_at_the_explicit_time() {
     assert!(stdout.len() < 64 * 1024);
     assert!(output.stderr.is_empty());
     assert!(!stdout.contains("VERIFIED"));
+
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -223,6 +224,7 @@ fn failed_rollout_fixture_is_classifier_complete() {
     assert!(stdout.contains("\"result\":\"FAILED\""));
     assert!(!stdout.contains("VERIFIED"));
     assert!(output.stderr.is_empty());
+
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -242,11 +244,13 @@ fn malformed_bytes_and_explicit_lower_limits_use_owned_status_vocabulary() {
         assert!(!stdout.contains("VERIFIED"));
         assert!(output.stderr.is_empty());
     }
+
     let invalid_limit = inspect(&receipt, &trust, &["--receipt-bytes-max", "0"]);
     assert_eq!(invalid_limit.status.code(), Some(2));
     assert!(String::from_utf8(invalid_limit.stdout)
         .unwrap()
         .contains("\"error_class\":\"command_input\""));
+
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -283,5 +287,6 @@ fn signature_and_separate_trust_failures_keep_distinct_statuses() {
     assert!(stdout.contains("\"status\":\"UNTRUSTED_SIGNER\""));
     assert!(stdout.contains("\"operation_id\":\"op-001\""));
     assert!(!stdout.contains("VERIFIED"));
+
     fs::remove_dir_all(root).unwrap();
 }
