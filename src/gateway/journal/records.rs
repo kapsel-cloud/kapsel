@@ -613,6 +613,7 @@ pub(crate) enum Defect {
     WrongPeerRead,
     ReceiptProjectionSwap,
     GitInferredAcknowledgement,
+    CatalogConflictAccepted,
 }
 
 #[cfg(test)]

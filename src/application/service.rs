@@ -225,6 +225,8 @@ impl ServiceApplication {
         configuration: ServiceConfiguration,
         #[cfg(test)] control: Option<crate::gateway::StorageControl>,
     ) -> Result<Self, ServiceError> {
+        #[cfg(test)]
+        let storage_control = control.clone();
         let approvals = Self::validate_configuration(&configuration)?;
         super::validate_journal_path(&configuration.journal_path)
             .map_err(|_| ServiceError::Configuration)?;
@@ -242,18 +244,23 @@ impl ServiceApplication {
             gateway
         };
         for approval in &approvals {
-            match &approval.handle {
-                ApprovedAction::Kubernetes { request, .. } => {
-                    gateway
-                        .authorized_operation(request, &approval.signed_grant)
-                        .map_err(map_gateway_error)?;
-                },
+            let validation = match &approval.handle {
+                ApprovedAction::Kubernetes { request, .. } => gateway
+                    .authorized_operation(request, &approval.signed_grant)
+                    .map(|_| ()),
                 ApprovedAction::Git { .. } => {
-                    gateway
-                        .authorized_git(&approval.signed_grant)
-                        .map_err(map_gateway_error)?;
+                    gateway.authorized_git(&approval.signed_grant).map(|_| ())
                 },
+            };
+            #[cfg(test)]
+            if validation.is_err()
+                && storage_control.as_ref().is_some_and(|control| {
+                    control.exercise(crate::gateway::Defect::CatalogConflictAccepted)
+                })
+            {
+                continue;
             }
+            validation.map_err(map_gateway_error)?;
         }
         Ok(Self { gateway, approvals })
     }

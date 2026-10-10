@@ -111,12 +111,16 @@ service application and shared journal. Each identity has distinct intent, targe
 receipt signing material. Every event checks every peer's raw facts and independently counted
 receiver I/O. Generated three-identity schedules use Kubernetes-only, Git-only and mixed
 assignments. They interleave selections, receiver changes, catalog removal, trust withdrawal and
-restored prerequisites. Withdrawn trust must permit neither I/O nor retained fact changes; restoring
-trust does not substitute current catalog authority for retained history. Production journal policy
-validates authority, transitions and frozen facts. Its private record-I/O owner reads complete
-bounded rows from either typed table and conditionally commits against the original row. SQLite
-updates only changed columns. The test-only virtual store implements atomic records, not lifecycle
-policy. Neither backend selection nor fault controls are caller inputs.
+restored prerequisites. Conflicting catalog replacement must fail application construction without
+changing any peer's retained facts or receiver counts. Withdrawn trust must permit neither I/O nor
+retained fact changes; restoring trust does not substitute current catalog authority for history.
+Signer rotation before receipt commitment may choose the new signer. Rotation after commitment must
+return the original bytes and signer. Invalid signing material at frozen history must change no
+facts or receiver counts. Production journal policy validates authority, transitions and frozen
+facts. Its private record-I/O owner reads complete bounded rows from either typed table and
+conditionally commits against the original row. SQLite updates only changed columns. The test-only
+virtual store implements atomic records, not lifecycle policy. Neither backend selection nor fault
+controls are caller inputs.
 
 The slice checks original intent, confirmed dispatch provenance, initial classification, complete
 receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt
@@ -130,16 +134,16 @@ infers an acknowledgement from externally established B must fail `git_acknowled
 including after an unsent attempt. Its minimized input must fail on both stores and pass without the
 control. The shared stale-record control also runs against Git rows.
 
-Seeded remint, wrong-initial-result, no-op, wrong-signer, wrong-peer lookup, physical
-replica-field-swap, receipt-decoder field-swap and unconditional-write controls must violate their
-intended law and report the reached faulty branch. Wrong-peer lookup deliberately misroutes the
-selected identity before grant binding; a wrong lower-layer row alone is refused by the existing
-identity guard. An unrelated bounded refusal does not qualify as detection. Generated schedules
-record their actions and retain an explicit healthy suffix. Progress requires a restored receiver,
-healthy storage, original trust and an available signer for every identity. Minimized progress
-witnesses must preserve eligibility for every peer, not only the first peer checked. Minimized
-safety witnesses need not finish the operation; correct code must pass those same prefixes on both
-stores.
+Seeded remint, wrong-initial-result, no-op, wrong-signer, accepted catalog conflict, wrong-peer
+lookup, physical replica-field-swap, receipt-decoder field-swap and unconditional-write controls
+must violate their intended law and report the reached faulty branch. Wrong-peer lookup deliberately
+misroutes the selected identity before grant binding; a wrong lower-layer row alone is refused by
+the existing identity guard. An unrelated bounded refusal does not qualify as detection. Generated
+schedules record their actions and retain an explicit healthy suffix. Progress requires a restored
+receiver, healthy storage, original trust and an available signer for every identity. Minimized
+progress witnesses must preserve eligibility for every peer, not only the first peer checked.
+Minimized safety witnesses need not finish the operation; correct code must pass those same prefixes
+on both stores.
 
 Run the deterministic slice:
 
@@ -154,6 +158,14 @@ send, recovery freezes honest `UNKNOWN`, and later selection retains original by
 competing-claimants check still owns stale Authorized-snapshot refusal; foreign snapshots, authority
 changes during I/O and actual cancellation retain their local owners.
 
+`replacement_catalog_and_rotated_material_preserve_retained_history` checks admitted, authorized,
+attempted, frozen and finalized history across catalog conflicts and signer changes. Receipt
+no-commit leaves all receipt columns absent in `receiver_observed`; acknowledgement loss leaves all
+three committed together in `finalized`. The all-peer checker binds stored bytes, digest and key
+identity to the completion material, then inspects returned bytes under that key. Together with
+atomic-delivery laws, this replaces the deterministic receipt-commit/rotation matrix. Actual
+process-exit, configured-client HTTP and native receipt owners remain separate.
+
 For retained local exploration, select a new private directory outside the checkout:
 
 ```sh
@@ -162,9 +174,10 @@ cargo test --locked -p kapsel --lib \
   kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
 ```
 
-Set `KAPSEL_KERNEL_DEFECTS=1` to retain the eight lifecycle defect inputs and their minimized
-findings. The atomic-record binding control has its separate deterministic owner. Each document is
-created exclusively before execution and records source-content and executable digests. These
+Set `KAPSEL_KERNEL_DEFECTS=1` to retain thirteen inputs for nine lifecycle defects and their
+minimized findings. Catalog-conflict and wrong-signer controls include Kubernetes, Git and mixed
+assignments. The atomic-record binding control has its separate deterministic owner. Each document
+is created exclusively before execution and records source-content and executable digests. These
 digests are not build attestations. Replay a retained document without regenerating its schedule:
 
 ```sh
@@ -287,7 +300,7 @@ The replacement preserves these obligations, not merely the old test name:
 | Seven fresh attempt/response/observation interruption points recover without resend                                | Explicit `Stop` events, independently counted receivers, and preflight/mutation/observation cancellation schedules                                                             |
 | Dropped permission and lost attempt acknowledgement send nothing                                                   | Unsent and acknowledgement-loss traces; journal dispatch regressions remain. The old adapter's preloaded failed observation is not evidence of a sent mutation                 |
 | Frozen observation survives repeated reopen without receiver I/O                                                   | Frozen-result oracle checks every identity after every event; real process/recovery tests remain                                                                               |
-| Receipt precommit, finalized checkpoint, lost commit acknowledgement and signer rotation preserve durable evidence | `CompletionStop` events and immutable-byte checks; `receipt_commit_freezes_bytes_and_signer_under_acknowledgement_loss` retains all checkpoint variants                        |
+| Receipt precommit, finalized checkpoint, lost commit acknowledgement and signer rotation preserve durable evidence | Atomic receipt-delivery and material-replacement laws; `CompletionStop` events and process-exit checks retain their distinct checkpoints                                       |
 | Legacy and snapshot grants retain their original interpretation                                                    | Snapshot/binding tests and `service_reads_but_cannot_advance_retained_legacy_authority` remain; service exploration does not admit legacy authority                            |
 | Many retained identities share a journal without losing facts or completion headroom                               | Two-to-four-identity exploration checks all peers; full-capacity/layout, storage-failure and retained-history tests remain rather than being replaced by fresh trace databases |
 | Seed/shard accounting, scratch custody and retained failure evidence                                               | Existing robustness supervision plus explicit full-trace retention, minimization, Rust replay and exact shard markers                                                          |

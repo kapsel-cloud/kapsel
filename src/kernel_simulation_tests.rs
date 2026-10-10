@@ -78,7 +78,16 @@ enum Action {
     GitRef { new: bool },
     Reopen { catalog: bool },
     Trust(bool),
+    ReplaceCatalog,
+    Signer(Signer),
     Restore,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+enum Signer {
+    Original,
+    Rotated,
+    Invalid,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -601,6 +610,7 @@ impl Checker {
             return Ok(());
         }
         require(intent.matches_record(&raw), "original_authority")?;
+        require(receipt_columns_match(&raw, intent), "receipt_columns")?;
         if integer(&raw, "apply_attempted") == Some(1) {
             require(
                 text(&raw, "target_uid") == Some(intent.uid.as_str())
@@ -722,6 +732,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 },
             };
             Peer {
+                original_signing: (intent.receipt_seed, intent.receipt_key.clone()),
                 adapter: Adapter {
                     intent,
                     store: store.clone(),
@@ -732,6 +743,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 },
                 checker: Checker::default(),
                 eligible_progress: false,
+                signer: Signer::Original,
                 git,
             }
         })
@@ -754,10 +766,25 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
+                let no_changes = !trusted
+                    || (selection.sign
+                        && matches!(peers[selected].signer, Signer::Invalid)
+                        && matches!(
+                            text(&peers[selected].snapshot().0, "state"),
+                            Some("receiver_observed" | "finalized")
+                        ));
                 let before =
-                    (!trusted).then(|| peers.iter().map(Peer::snapshot).collect::<Vec<_>>());
+                    no_changes.then(|| peers.iter().map(Peer::snapshot).collect::<Vec<_>>());
                 let peer = &mut peers[selected];
+                let signing = peer.signing_material();
                 let adapter = &mut peer.adapter;
+                // Completion chooses current material once; terminal reads retain that choice.
+                let raw =
+                    store.raw_effect(&adapter.intent.request.operation_id, peer.git.is_some());
+                if selection.sign && raw.get("receipt_bytes").is_none_or(|v| *v == Value::Null) {
+                    adapter.intent.receipt_seed = signing.0;
+                    adapter.intent.receipt_key.clone_from(&signing.1);
+                }
                 peer.eligible_progress |= restored
                     && trusted
                     && selection.sign
@@ -770,17 +797,45 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         .is_empty()
                         || !configuration.approvals.is_empty());
                 if let Some(git) = &peer.git {
-                    selection.execute_git(&mut app, adapter, git, event).await?;
+                    selection
+                        .execute_git(&mut app, adapter, git, signing, event)
+                        .await?;
                 } else {
                     selection
-                        .execute(&mut app, adapter, &mut peer.checker, event)
+                        .execute(&mut app, adapter, &mut peer.checker, signing, event)
                         .await?;
+                }
+                if let Some((StorageWrite::Receipt, delivery)) = selection.commit {
+                    let raw =
+                        store.raw_effect(&adapter.intent.request.operation_id, peer.git.is_some());
+                    let committed = delivery != Delivery::NoCommit;
+                    let expected_state = if committed {
+                        "finalized"
+                    } else {
+                        "receiver_observed"
+                    };
+                    let complete = ["receipt_bytes", "receipt_digest", "receipt_key_id"]
+                        .iter()
+                        .all(|field| {
+                            raw.get(*field).is_some_and(|value| *value != Value::Null) == committed
+                        });
+                    if text(&raw, "state") != Some(expected_state) || !complete {
+                        return Err(Finding {
+                            law: "receipt_delivery",
+                            event,
+                            defect_reached: control.defect_reached(),
+                        });
+                    }
                 }
                 if before.is_some_and(|originals| {
                     originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 }) {
                     return Err(Finding {
-                        law: "withdrawn_trust",
+                        law: if trusted {
+                            "failed_signing_preserves_history"
+                        } else {
+                            "withdrawn_trust"
+                        },
                         event,
                         defect_reached: control.defect_reached(),
                     });
@@ -848,6 +903,44 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 };
                 app = open(configuration.clone(), &control);
             },
+            Action::ReplaceCatalog => {
+                let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
+                let mut replacement_configuration = configuration.clone();
+                replacement_configuration.approvals.clear();
+                if trusted {
+                    for (index, peer) in peers.iter().enumerate() {
+                        if peer.snapshot().0.is_empty() {
+                            replacement_configuration
+                                .approvals
+                                .push(peer.adapter.intent.approval());
+                            continue;
+                        }
+                        let (approval, trust) = peer.replacement(index);
+                        replacement_configuration.approvals.push(approval);
+                        if !replacement_configuration
+                            .authorization_trust
+                            .iter()
+                            .any(|key| key.key_id == trust.key_id)
+                        {
+                            replacement_configuration.authorization_trust.push(trust);
+                        }
+                    }
+                }
+                let conflict = trusted && before.iter().any(|snapshot| !snapshot.0.is_empty());
+                let result =
+                    ServiceApplication::open_simulated(replacement_configuration, control.clone());
+                if result.is_err() != conflict
+                    || before != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
+                {
+                    return Err(Finding {
+                        law: "catalog_identity_conflict",
+                        event,
+                        defect_reached: control.defect_reached(),
+                    });
+                }
+                // A refused operator configuration never replaces the running application.
+            },
+            Action::Signer(signer) => peers[selected].signer = signer,
             Action::Restore => {
                 restored = true;
                 trusted = true;
@@ -928,6 +1021,8 @@ struct Peer {
     adapter: Adapter,
     checker: Checker,
     eligible_progress: bool,
+    signer: Signer,
+    original_signing: ([u8; 32], String),
     git: Option<GitPeer>,
 }
 
@@ -938,6 +1033,60 @@ struct GitPeer {
 }
 
 impl Peer {
+    fn signing_material(&self) -> ([u8; 32], String) {
+        let id = &self.adapter.intent.request.operation_id;
+        match self.signer {
+            Signer::Rotated => {
+                let seed = self.original_signing.0.map(|byte| byte + 60);
+                (seed, format!("rotated-receipt-{id}"))
+            },
+            Signer::Original => self.original_signing.clone(),
+            Signer::Invalid => (self.original_signing.0, "invalid key".into()),
+        }
+    }
+
+    fn replacement(&self, index: usize) -> (ServiceApproval, AuthorizationTrust) {
+        let mut replacement = Intent::new(index);
+        replacement.authorization_id = format!("replacement-authorization-{index}");
+        replacement.authorization_key = format!("replacement-authority-{index}");
+        replacement.authority_seed = [63 + u8::try_from(index).unwrap(); 32];
+        replacement.grant = if let Some(git) = &self.git {
+            let mut authorization = git.authorization.clone();
+            authorization
+                .authorization_id
+                .clone_from(&replacement.authorization_id);
+            authorization.repository_id = format!("replacement-repository-{index}");
+            authorization.new_commit = format!("{:040x}", index + 19);
+            kapsel_authority::sign_git_ref_grant(
+                &authorization,
+                &replacement.authority_seed,
+                &replacement.authorization_key,
+            )
+            .unwrap()
+        } else {
+            let mut request = self.adapter.intent.request.clone();
+            request.immutable_image_digest = format!("registry.example/other@sha256:{index:064x}");
+            crate::gateway::sign_authorization_grant(
+                &ExactAuthorization {
+                    authorization_id: replacement.authorization_id.clone(),
+                    operation_id: request.operation_id,
+                    namespace: request.namespace,
+                    deployment: request.deployment,
+                    container: request.container,
+                    immutable_image_digest: request.immutable_image_digest,
+                    approved_target: Some(ApprovedTarget {
+                        uid: "replacement-uid".into(),
+                        resource_version: "replacement-version".into(),
+                    }),
+                },
+                &replacement.authority_seed,
+                &replacement.authorization_key,
+            )
+            .unwrap()
+        };
+        (replacement.approval(), replacement.trust())
+    }
+
     fn snapshot(&self) -> (BTreeMap<String, Value>, usize, usize) {
         let (reads, sends) = self.git.as_ref().map_or_else(
             || {
@@ -995,6 +1144,7 @@ impl Checker {
         if raw.is_empty() {
             return require(!require_progress, "healthy_progress");
         }
+        require(receipt_columns_match(&raw, intent), "receipt_columns")?;
         let approval = &git.authorization;
         let digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&intent.grant));
         for (field, expected) in [
@@ -1140,6 +1290,7 @@ impl Selection {
         app: &mut ServiceApplication,
         adapter: &Adapter,
         git: &GitPeer,
+        signing: ([u8; 32], String),
         event: usize,
     ) -> Checked {
         let control = &adapter.store.control;
@@ -1167,12 +1318,7 @@ impl Selection {
                 ServiceExecution {
                     kubernetes_client: None,
                     git_receiver: None,
-                    receipt_signing: self.sign.then(|| {
-                        (
-                            adapter.intent.receipt_seed,
-                            adapter.intent.receipt_key.clone(),
-                        )
-                    }),
+                    receipt_signing: self.sign.then_some(signing),
                 },
                 None,
                 Some(git.script.receiver()),
@@ -1233,6 +1379,7 @@ impl Selection {
         app: &mut ServiceApplication,
         adapter: &mut Adapter,
         checker: &mut Checker,
+        signing: ([u8; 32], String),
         event: usize,
     ) -> Checked {
         let control = adapter.store.control.clone();
@@ -1248,12 +1395,7 @@ impl Selection {
         let execution = ServiceExecution {
             kubernetes_client: None,
             git_receiver: None,
-            receipt_signing: self.sign.then(|| {
-                (
-                    adapter.intent.receipt_seed,
-                    adapter.intent.receipt_key.clone(),
-                )
-            }),
+            receipt_signing: self.sign.then_some(signing),
         };
         let mut acknowledgements = Vec::new();
         let _result = app
@@ -1293,6 +1435,20 @@ impl Selection {
         }
         Ok(())
     }
+}
+
+fn receipt_columns_match(raw: &BTreeMap<String, Value>, intent: &Intent) -> bool {
+    if text(raw, "state") != Some("finalized") {
+        return ["receipt_bytes", "receipt_digest", "receipt_key_id"]
+            .iter()
+            .all(|field| raw.get(*field) == Some(&Value::Null));
+    }
+    let Some(Value::Blob(bytes)) = raw.get("receipt_bytes") else {
+        return false;
+    };
+    let digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(bytes));
+    text(raw, "receipt_digest") == Some(digest.as_str())
+        && text(raw, "receipt_key_id") == Some(intent.receipt_key.as_str())
 }
 
 fn check_terminal(
@@ -1813,8 +1969,78 @@ async fn all_peers_preserve_original_authority_during_material_withdrawal() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn replacement_catalog_and_rotated_material_preserve_retained_history() {
+    for first in [
+        select(
+            Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
+            Cut::None,
+            false,
+            false,
+        ),
+        select(None, Cut::BeforeAttempt, false, false),
+        select(None, Cut::Unsent, false, false),
+        select(None, Cut::Frozen, false, false),
+        select(
+            Some((StorageWrite::Receipt, Delivery::NoCommit)),
+            Cut::None,
+            false,
+            true,
+        ),
+        select(
+            Some((StorageWrite::Receipt, Delivery::LostAcknowledgement)),
+            Cut::None,
+            false,
+            true,
+        ),
+        select(None, Cut::None, false, true),
+    ] {
+        let mut actions = Vec::new();
+        for peer in 0..3 {
+            actions.extend([Action::Peer(peer), first.clone()]);
+        }
+        actions.push(Action::ReplaceCatalog);
+        actions.push(Action::Reopen { catalog: false });
+        for peer in (0..3).rev() {
+            actions.extend([
+                Action::Peer(peer),
+                Action::Signer(Signer::Invalid),
+                select(None, Cut::None, false, true),
+                Action::Signer(Signer::Rotated),
+                select(None, Cut::None, false, false),
+                select(None, Cut::None, false, true),
+                Action::Signer(Signer::Original),
+                select(None, Cut::None, false, true),
+            ]);
+        }
+        let mut input = multi_trace(11, 3, actions);
+        for effects in [
+            vec![Effect::Kubernetes; 3],
+            vec![Effect::Git; 3],
+            vec![Effect::Kubernetes, Effect::Git, Effect::Git],
+        ] {
+            input.effects = effects;
+            for virtualized in [true, false] {
+                assert_eq!(
+                    replay(&input, virtualized).await,
+                    Ok(()),
+                    "{first:?}/{virtualized}"
+                );
+            }
+        }
+    }
+}
+
 fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
     vec![
+        (
+            Defect::CatalogConflictAccepted,
+            "catalog_identity_conflict",
+            vec![
+                select(None, Cut::BeforeAttempt, false, false),
+                Action::ReplaceCatalog,
+            ],
+        ),
         (
             Defect::GitInferredAcknowledgement,
             "git_acknowledgement_binding",
@@ -1847,7 +2073,13 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         (
             Defect::WrongSigner,
             "original_signer",
-            vec![select(None, Cut::Frozen, false, false)],
+            vec![
+                select(None, Cut::Frozen, false, false),
+                Action::ReplaceCatalog,
+                Action::Reopen { catalog: false },
+                Action::Signer(Signer::Rotated),
+                select(None, Cut::None, false, true),
+            ],
         ),
         (
             Defect::ReceiptProjectionSwap,
@@ -1868,14 +2100,41 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
     ]
 }
 
+fn defect_inputs() -> Vec<Trace> {
+    defect_cases()
+        .into_iter()
+        .flat_map(|(defect, _, prefix)| {
+            let assignments = match defect {
+                Defect::GitInferredAcknowledgement => vec![vec![Effect::Git; 2]],
+                Defect::WrongSigner | Defect::CatalogConflictAccepted => vec![
+                    vec![Effect::Kubernetes; 2],
+                    vec![Effect::Git; 2],
+                    vec![Effect::Kubernetes, Effect::Git],
+                ],
+                _ => vec![vec![Effect::Kubernetes; 2]],
+            };
+            assignments.into_iter().map(move |effects| {
+                let mut input = multi_trace(3, 2, prefix.clone());
+                input.effects = effects;
+                if matches!(
+                    defect,
+                    Defect::WrongSigner | Defect::CatalogConflictAccepted
+                ) && matches!(input.effects[1], Effect::Git)
+                {
+                    input.actions.insert(0, Action::Peer(1));
+                }
+                input.defect = Some(defect);
+                input
+            })
+        })
+        .collect()
+}
+
 #[tokio::test(start_paused = true)]
 async fn seeded_defects_fail_intended_laws_and_minimized_replay_reaches_the_branch() {
-    for (defect, law, prefix) in defect_cases() {
-        let mut input = multi_trace(3, 2, prefix);
-        if defect == Defect::GitInferredAcknowledgement {
-            input.effects = vec![Effect::Git; 2];
-        }
-        input.defect = Some(defect);
+    for input in defect_inputs() {
+        let defect = input.defect.unwrap();
+        let law = defect_law(defect);
         for virtualized in [true, false] {
             let finding = replay(&input, virtualized).await.unwrap_err();
             assert_eq!(finding.law, law);
@@ -1917,6 +2176,7 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::WrongPeerRead => "original_intent",
         Defect::ReceiptProjectionSwap => "receipt_binding",
         Defect::GitInferredAcknowledgement => "git_acknowledgement_binding",
+        Defect::CatalogConflictAccepted => "catalog_identity_conflict",
     }
 }
 
@@ -1986,7 +2246,7 @@ fn generated(seed: u64, steps: usize) -> Trace {
         random ^= random >> 7;
         random ^= random << 17;
         actions.push(Action::Peer(usize::try_from((random / 8) % 3).unwrap()));
-        actions.push(match random % 8 {
+        actions.push(match random % 10 {
             0 => Action::Receiver(Receiver::Unavailable),
             1 => Action::Receiver(Receiver::Pending),
             2 => Action::Receiver(Receiver::Failed),
@@ -1996,6 +2256,12 @@ fn generated(seed: u64, steps: usize) -> Trace {
             },
             5 => Action::Trust(false),
             6 => Action::Trust(true),
+            7 => Action::ReplaceCatalog,
+            8 => Action::Signer(if random & 16 == 0 {
+                Signer::Rotated
+            } else {
+                Signer::Original
+            }),
             _ => select(None, Cut::None, false, random & 8 == 0),
         });
     }
@@ -2092,17 +2358,7 @@ async fn kernel_trace_exploration_or_replay() {
     assert!((1..=10_000).contains(&cases) && (8..=48).contains(&steps));
     assert!((1..=128).contains(&shards) && shards <= cases && shard < shards);
     let inputs = if std::env::var_os("KAPSEL_KERNEL_DEFECTS").is_some() {
-        defect_cases()
-            .into_iter()
-            .map(|(defect, _, prefix)| {
-                let mut input = multi_trace(3, 2, prefix);
-                if defect == Defect::GitInferredAcknowledgement {
-                    input.effects = vec![Effect::Git; 2];
-                }
-                input.defect = Some(defect);
-                input
-            })
-            .collect::<Vec<_>>()
+        defect_inputs()
     } else {
         (0..cases)
             .map(|case| generated(seed.wrapping_add(u64::try_from(case).unwrap()), steps))

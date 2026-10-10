@@ -648,6 +648,21 @@ impl super::Gateway {
     }
 }
 
+#[cfg(test)]
+fn controlled_receipt_signing<'a>(
+    journal: &Journal,
+    signing: &ReceiptSettings<'a>,
+) -> ReceiptSettings<'a> {
+    ReceiptSettings {
+        signing_seed: if journal.exercise_defect(super::Defect::WrongSigner) {
+            &[99; 32]
+        } else {
+            signing.signing_seed
+        },
+        key_id: signing.key_id,
+    }
+}
+
 /// Advances only an admitted identity under the caller's already-held journal worker lease.
 /// Attempted history never enters prepare/send, even if the ref has returned to the old commit.
 #[allow(
@@ -730,6 +745,8 @@ pub(super) async fn advance(
             let statement = phase
                 .statement(binding)
                 .ok_or(GatewayError::InvalidPersistedState)?;
+            #[cfg(test)]
+            let signing = &controlled_receipt_signing(journal, signing);
             let bytes = evidence::sign(&statement, signing.signing_seed, signing.key_id)
                 .map_err(GatewayError::Receipt)?;
             #[cfg(feature = "demo-harness")]

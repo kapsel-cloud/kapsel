@@ -27,9 +27,9 @@ Receipt checks therefore cross completion, application reads, service retrieval 
 
 | Guarantee                                                          | Maintained check                                                                                 | Evidence limit                                                 |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| Signing failure leaves frozen observations unchanged               | [`gateway::tests::receipt`](../../src/gateway/tests/receipt.rs)                                  | Fixture signing, not key-management qualification              |
+| Signing failure leaves frozen observations unchanged               | [Atomic-record simulator](../../src/kernel_simulation_tests.rs)                                  | Fixture signing, not key-management qualification              |
 | Completion rejects another statement for the same ID               | `receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changing_history` in that suite | Checks the current row, not only the builder's call convention |
-| Lost commit acknowledgement resolves to original bytes             | Receipt fault/process-exit tests; application retry/snapshot suites                              | Process exit is not power loss                                 |
+| Lost commit acknowledgement resolves to original bytes             | Atomic receipt-delivery laws; process-exit and application retry/snapshot suites                 | Process exit is not power loss                                 |
 | Retrieval survives changed signing settings and unavailable export | [Linux process lane](qualification.md#kapsel-service-candidate)                                  | Source harness, not installed production bytes                 |
 
 A valid signature is not enough for receipt completion: the statement must match the current row's
