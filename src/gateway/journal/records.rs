@@ -576,6 +576,7 @@ pub(crate) struct Control(Arc<Mutex<Controls>>);
 struct Controls {
     virtual_store: Option<Arc<Mutex<BTreeMap<String, Record>>>>,
     deliveries: VecDeque<(Write, Delivery)>,
+    refuse_writes: bool,
     reached: Vec<Write>,
     deliveries_seen: Vec<(Write, Delivery)>,
     defect: Option<Defect>,
@@ -588,7 +589,9 @@ struct Controls {
 impl Controls {
     fn take_delivery(&mut self, write: Write) -> Delivery {
         self.reached.push(write);
-        let delivery = if self
+        let delivery = if self.refuse_writes {
+            Delivery::NoCommit
+        } else if self
             .deliveries
             .front()
             .is_some_and(|(point, _)| *point == write)
@@ -692,6 +695,10 @@ impl Control {
         let control = Self::default();
         control.0.lock().unwrap().virtual_store = Some(Arc::new(Mutex::new(BTreeMap::new())));
         control
+    }
+
+    pub(crate) fn refuse_writes(&self, refuse: bool) {
+        self.0.lock().unwrap().refuse_writes = refuse;
     }
 
     pub(crate) fn fail_next(&self, write: Write, delivery: Delivery) {

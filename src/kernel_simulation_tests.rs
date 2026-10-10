@@ -39,6 +39,8 @@ enum Receiver {
     Failed,
     Pending,
     Replaced,
+    StaleVersion,
+    WrongGeneration,
     Unavailable,
 }
 
@@ -47,6 +49,10 @@ enum Cut {
     None,
     BeforeAttempt,
     Unsent,
+    AttemptAcknowledgementLost,
+    ResponseLost,
+    ResponseRecorded,
+    ObservationLost,
     Frozen,
 }
 
@@ -56,6 +62,10 @@ impl Cut {
             Self::None => None,
             Self::BeforeAttempt => Some(FaultPoint::TargetObserved),
             Self::Unsent => Some(FaultPoint::ApplyStartedCommitted),
+            Self::AttemptAcknowledgementLost => Some(FaultPoint::AttemptCommitAcknowledgementLost),
+            Self::ResponseLost => Some(FaultPoint::ApplyReturned),
+            Self::ResponseRecorded => Some(FaultPoint::ApplyOutcomeCommitted),
+            Self::ObservationLost => Some(FaultPoint::ReceiverRead),
             Self::Frozen => Some(FaultPoint::ReceiverObservedCommitted),
         }
     }
@@ -81,6 +91,8 @@ enum Action {
     Trust(bool),
     SubstituteTrustKey,
     CustodyDuringIo(IoPoint),
+    CancelAtIo { point: IoPoint, contender: usize },
+    Writes(bool),
     ReplaceCatalog,
     Signer(Signer),
     Restore,
@@ -319,6 +331,7 @@ struct Observations {
     violation: Option<&'static str>,
 }
 
+#[derive(Clone)]
 struct Adapter {
     intent: Intent,
     store: Store,
@@ -365,7 +378,11 @@ impl DeploymentImageAdapter for Adapter {
             } else {
                 self.intent.uid.clone()
             },
-            resource_version: self.intent.version.clone(),
+            resource_version: if matches!(self.receiver, Receiver::StaleVersion) {
+                "stale-version".into()
+            } else {
+                self.intent.version.clone()
+            },
         })
     }
 
@@ -438,13 +455,15 @@ impl DeploymentImageAdapter for Adapter {
                     .into(),
                 ),
                 current_generation: Some(if sent { 7 } else { 3 }),
-                observed_generation: Some(if sent && pending {
-                    6
-                } else if sent {
-                    7
-                } else {
-                    3
-                }),
+                observed_generation: Some(
+                    if matches!(self.receiver, Receiver::WrongGeneration) || (sent && pending) {
+                        6
+                    } else if sent {
+                        7
+                    } else {
+                        3
+                    },
+                ),
                 image: sent.then(|| self.intent.request.immutable_image_digest.clone()),
                 operation_marker: sent.then(|| self.intent.request.operation_id.clone()),
                 desired_replicas: Some(if pending { 5 } else { 1 }),
@@ -820,10 +839,17 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     let mut app = open(configuration.clone(), &control);
     let mut selected = 0;
     let mut restored = false;
+    let mut writing = true;
     let mut trusted = vec![true; peers.len()];
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
+                let rows_before = (!writing).then(|| {
+                    peers
+                        .iter()
+                        .map(|peer| peer.snapshot().0)
+                        .collect::<Vec<_>>()
+                });
                 let no_changes = !trusted[selected]
                     || (selection.sign
                         && matches!(peers[selected].signer, Signer::Invalid)
@@ -845,6 +871,8 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 }
                 peer.eligible_progress |= restored
                     && trusted[selected]
+                    && writing
+                    && !matches!(peer.signer, Signer::Invalid)
                     && selection.sign
                     && selection.commit.is_none()
                     && matches!(selection.cut, Cut::None)
@@ -885,6 +913,19 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         });
                     }
                 }
+                if rows_before.is_some_and(|originals| {
+                    originals
+                        != peers
+                            .iter()
+                            .map(|peer| peer.snapshot().0)
+                            .collect::<Vec<_>>()
+                }) {
+                    return Err(Finding {
+                        law: "write_refusal_preserves_history",
+                        event,
+                        defect_reached: control.defect_reached(),
+                    });
+                }
                 if before.is_some_and(|originals| {
                     originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 }) {
@@ -908,11 +949,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 if let Some(git) = &peers[selected].git {
                     let mut state = git.script.state.lock().unwrap();
                     state.unavailable = matches!(receiver, Receiver::Unavailable);
-                    state.stale = matches!(receiver, Receiver::Replaced);
-                    state.acknowledgement = if matches!(receiver, Receiver::Failed) {
-                        crate::gateway::git::Acknowledgement::ReceiverRejected
-                    } else {
-                        crate::gateway::git::Acknowledgement::Updated
+                    state.stale = matches!(receiver, Receiver::Replaced | Receiver::StaleVersion);
+                    state.acknowledgement = match receiver {
+                        Receiver::Healthy => crate::gateway::git::Acknowledgement::Updated,
+                        Receiver::Failed => crate::gateway::git::Acknowledgement::ReceiverRejected,
+                        _ => crate::gateway::git::Acknowledgement::Unknown,
                     };
                     state.observed = crate::gateway::git::ObservedRef::Commit(
                         if matches!(receiver, Receiver::Healthy) && state.sends > 0 {
@@ -1032,9 +1073,25 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     });
                 }
             },
+            Action::CancelAtIo { point, contender } => {
+                cancel_at_io(
+                    &mut app,
+                    &configuration,
+                    &mut peers,
+                    selected,
+                    contender,
+                    point,
+                    event,
+                )
+                .await?;
+            },
+            Action::Writes(enabled) => {
+                writing = enabled;
+            },
             Action::Signer(signer) => peers[selected].signer = signer,
             Action::Restore => {
                 restored = true;
+                writing = true;
                 trusted.fill(true);
                 drop(app);
                 for peer in &mut peers {
@@ -1058,12 +1115,15 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 app = open(configuration.clone(), &control);
             },
         }
+        if virtualized {
+            control.refuse_writes(!writing);
+        } else {
+            app.exploration_write_failure(!writing).unwrap();
+        }
         check_disclosure(&app, &peers, &trusted, &control, event)?;
-        for (index, peer) in peers.iter_mut().enumerate() {
+        // External trust gates application disclosure, not the independent raw-history oracle.
+        for peer in &mut peers {
             let adapter = &peer.adapter;
-            if !trusted[index] {
-                continue;
-            }
             if let Some(git) = &peer.git {
                 peer.checker
                     .check_git(&app, &store, &adapter.intent, git, event, false)?;
@@ -1081,7 +1141,15 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
             )?;
         }
     }
-    if trace.require_progress && peers.iter().any(|peer| !peer.eligible_progress) {
+    if trace.require_progress
+        && peers.iter().enumerate().any(|(index, peer)| {
+            !peer.eligible_progress
+                || !trusted[index]
+                || !writing
+                || matches!(peer.signer, Signer::Invalid)
+                || !matches!(peer.adapter.receiver, Receiver::Healthy)
+        })
+    {
         return Err(Finding {
             law: "ineligible_progress",
             event: trace.actions.len(),
@@ -1232,18 +1300,7 @@ impl Peer {
         let git = self.git.is_some();
         let initial = self.snapshot();
         let writes_before = store.control.reached().len();
-        self.adapter.gate = Some((point, Arc::clone(&resume)));
-        if let Some(git) = &self.git {
-            let mut state = git.script.state.lock().unwrap();
-            state.barrier = Some(match point {
-                IoPoint::Preflight => crate::gateway::git::exploration::Barrier::Preflight,
-                IoPoint::Mutation => crate::gateway::git::exploration::Barrier::Mutation,
-                IoPoint::Observation => crate::gateway::git::exploration::Barrier::Observation,
-            });
-            state.resume = Some(Arc::clone(&resume));
-            state.fresh_attempt = true;
-            state.fault = None;
-        }
+        self.gate(Some(point), Some(Arc::clone(&resume)));
         let mut execution = Box::pin(app.select_with_adapters(
             &id,
             ServiceExecution {
@@ -1272,12 +1329,7 @@ impl Peer {
         let attacked = store.raw_effect(&id, git);
         resume.notify_one();
         let result = execution.await;
-        self.adapter.gate = None;
-        if let Some(git) = &self.git {
-            let mut state = git.script.state.lock().unwrap();
-            state.barrier = None;
-            state.resume = None;
-        }
+        self.gate(None, None);
         let after = self.snapshot();
         let expected_reads = initial.1 + 1 + usize::from(point == IoPoint::Observation);
         let expected_sends = initial.2 + usize::from(point != IoPoint::Preflight);
@@ -1302,6 +1354,21 @@ impl Peer {
         Ok(())
     }
 
+    fn gate(&mut self, point: Option<IoPoint>, resume: Option<Arc<tokio::sync::Notify>>) {
+        self.adapter.gate = point.zip(resume.clone());
+        if let Some(git) = &self.git {
+            let mut state = git.script.state.lock().unwrap();
+            state.barrier = point.map(|point| match point {
+                IoPoint::Preflight => crate::gateway::git::exploration::Barrier::Preflight,
+                IoPoint::Mutation => crate::gateway::git::exploration::Barrier::Mutation,
+                IoPoint::Observation => crate::gateway::git::exploration::Barrier::Observation,
+            });
+            state.resume = resume;
+            state.fresh_attempt = true;
+            state.fault = None;
+        }
+    }
+
     fn snapshot(&self) -> (BTreeMap<String, Value>, usize, usize) {
         let (reads, sends) = self.git.as_ref().map_or_else(
             || {
@@ -1322,6 +1389,149 @@ impl Peer {
             sends,
         )
     }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep pending selection, contender refusal and cancellation observations together"
+)]
+async fn cancel_at_io(
+    app: &mut ServiceApplication,
+    configuration: &ServiceConfiguration,
+    peers: &mut [Peer],
+    selected: usize,
+    contender: usize,
+    point: IoPoint,
+    event: usize,
+) -> Checked {
+    assert!(contender < peers.len(), "bounded contender identity");
+    let control = peers[selected].adapter.store.control.clone();
+    let mut second = open(configuration.clone(), &control);
+    let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
+    let mut contender_adapter = peers[contender].adapter.clone();
+    // Independent views stay readable while the selected adapter is borrowed by its future.
+    let views = peers
+        .iter()
+        .map(|peer| {
+            (
+                peer.adapter.clone(),
+                peer.git.as_ref().map(|git| Arc::clone(&git.script.state)),
+            )
+        })
+        .collect::<Vec<_>>();
+    let snapshots = || {
+        views
+            .iter()
+            .map(|(adapter, git)| {
+                let (reads, sends) = git.as_ref().map_or_else(
+                    || {
+                        let io = adapter.io.lock().unwrap();
+                        (io.reads, io.sends.len())
+                    },
+                    |state| {
+                        let io = state.lock().unwrap();
+                        (io.reads, io.sends)
+                    },
+                );
+                (
+                    adapter
+                        .store
+                        .raw_effect(&adapter.intent.request.operation_id, git.is_some()),
+                    reads,
+                    sends,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let resume = Arc::new(tokio::sync::Notify::new());
+    peers[selected].gate(Some(point), Some(resume));
+    let (owner, other) = match selected.cmp(&contender) {
+        std::cmp::Ordering::Less => {
+            let (left, right) = peers.split_at_mut(contender);
+            (&mut left[selected], Some(&right[0]))
+        },
+        std::cmp::Ordering::Greater => {
+            let (left, right) = peers.split_at_mut(selected);
+            (&mut right[0], Some(&left[contender]))
+        },
+        std::cmp::Ordering::Equal => (&mut peers[selected], None),
+    };
+    let id = owner.adapter.intent.request.operation_id.clone();
+    let mut active = Box::pin(app.select_with_adapters(
+        &id,
+        ServiceExecution {
+            kubernetes_client: None,
+            git_receiver: None,
+            receipt_signing: None,
+        },
+        Some(&mut owner.adapter),
+        owner.git.as_ref().map(|git| git.script.receiver()),
+        |_| {},
+        None,
+    ));
+    let parked =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(active.as_mut().poll(cx).is_pending()))
+            .await;
+    if !parked {
+        return Err(Finding {
+            law: "cancellation_cut_not_reached",
+            event,
+            defect_reached: control.defect_reached(),
+        });
+    }
+    let pending = snapshots();
+    let mut acknowledgements = Vec::new();
+    let contender_id = contender_adapter.intent.request.operation_id.clone();
+    let expected_admission = second.admitted_state(&contender_id).unwrap().map_or(
+        crate::ServiceAdmission::Busy,
+        crate::ServiceAdmission::Admitted,
+    );
+    let result = second
+        .select_with_adapters(
+            &contender_id,
+            ServiceExecution {
+                kubernetes_client: None,
+                git_receiver: None,
+                receipt_signing: None,
+            },
+            Some(&mut contender_adapter),
+            other
+                .and_then(|peer| peer.git.as_ref())
+                .or_else(|| owner.git.as_ref().filter(|_| selected == contender))
+                .map(|git| git.script.receiver()),
+            |admission| acknowledgements.push(admission),
+            None,
+        )
+        .await;
+    let excluded = matches!(
+        result,
+        Ok(crate::ServiceStop::Blocked(
+            crate::ExecutionCondition::WorkerContention
+        ))
+    ) && snapshots() == pending
+        && acknowledgements == [expected_admission];
+    // Drop the actual service selection future, not a predicted lifecycle transition.
+    drop(active);
+    peers[selected].gate(None, None);
+    let after = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
+    let expected_reads = before[selected].1 + 1 + usize::from(point == IoPoint::Observation);
+    let expected_sends = before[selected].2 + usize::from(point != IoPoint::Preflight);
+    if !excluded
+        || after != pending
+        || after[selected].1 != expected_reads
+        || after[selected].2 != expected_sends
+    {
+        return Err(Finding {
+            law: "worker_exclusion",
+            event,
+            defect_reached: control.defect_reached(),
+        });
+    }
+    if let Some(git) = &peers[selected].git {
+        *git.durable_ack.lock().unwrap() =
+            git.script.state.lock().unwrap().returned_acknowledgement;
+    }
+    Ok(())
 }
 
 impl Checker {
@@ -1500,6 +1710,54 @@ impl Checker {
 }
 
 impl Selection {
+    fn check_cut(
+        self,
+        result: Result<crate::ServiceStop, crate::ServiceError>,
+        adapter: &Adapter,
+        git: bool,
+        writes_before: usize,
+        io_delta: (usize, usize),
+        event: usize,
+    ) -> Checked {
+        if self.commit.is_some() || matches!(self.cut, Cut::None) {
+            return Ok(());
+        }
+        let control = &adapter.store.control;
+        let writes = &control.reached()[writes_before..];
+        let raw = adapter
+            .store
+            .raw_effect(&adapter.intent.request.operation_id, git);
+        let (state, response, observation) = match self.cut {
+            Cut::None => return Ok(()),
+            Cut::BeforeAttempt => ("authorized", false, false),
+            Cut::Unsent | Cut::AttemptAcknowledgementLost | Cut::ResponseLost => {
+                ("apply_started", false, false)
+            },
+            Cut::ResponseRecorded | Cut::ObservationLost => ("apply_started", true, false),
+            Cut::Frozen => ("receiver_observed", true, true),
+        };
+        let expected_reads =
+            1 + usize::from(matches!(self.cut, Cut::ObservationLost | Cut::Frozen));
+        let expected_sends = usize::from(!matches!(
+            self.cut,
+            Cut::BeforeAttempt | Cut::Unsent | Cut::AttemptAcknowledgementLost
+        ));
+        if io_delta != (expected_reads, expected_sends)
+            || result != Err(crate::ServiceError::OperationFailure)
+            || text(&raw, "state") != Some(state)
+            || writes.contains(&StorageWrite::Response) != response
+            || writes.contains(&StorageWrite::Observation) != observation
+            || writes.contains(&StorageWrite::Receipt)
+        {
+            return Err(Finding {
+                law: "checkpoint_not_reached",
+                event,
+                defect_reached: control.defect_reached(),
+            });
+        }
+        Ok(())
+    }
+
     async fn execute_git(
         &self,
         app: &mut ServiceApplication,
@@ -1513,7 +1771,7 @@ impl Selection {
         if let Some((write, delivery)) = self.commit {
             control.fail_next(write, delivery);
         }
-        let (sends_before, expected_update) = {
+        let (reads_before, sends_before, expected_update) = {
             let mut io = git.script.state.lock().unwrap();
             io.fault = self.cut.fault();
             io.lose_response = self.lose_response;
@@ -1522,12 +1780,22 @@ impl Selection {
                 .raw_effect(&adapter.intent.request.operation_id, true);
             io.fresh_attempt = before.is_empty() || text(&before, "state") == Some("authorized");
             (
+                io.reads,
                 io.sends,
                 io.acknowledgement == crate::gateway::git::Acknowledgement::Updated,
             )
         };
         let mut acknowledgements = Vec::new();
-        let _result = app
+        let fresh_cut = git.script.state.lock().unwrap().fresh_attempt
+            && app
+                .admitted_state(&adapter.intent.request.operation_id)
+                .is_ok()
+            && (!self.sign || signing.1 != "invalid key")
+            && !matches!(
+                adapter.receiver,
+                Receiver::Unavailable | Receiver::Replaced | Receiver::StaleVersion
+            );
+        let result = app
             .select_with_adapters::<Adapter>(
                 &adapter.intent.request.operation_id,
                 ServiceExecution {
@@ -1541,6 +1809,24 @@ impl Selection {
                 self.cut.fault(),
             )
             .await;
+        if let Some(law) = git.script.state.lock().unwrap().violation {
+            return Err(Finding {
+                law,
+                event,
+                defect_reached: control.defect_reached(),
+            });
+        }
+        if fresh_cut {
+            let io = git.script.state.lock().unwrap();
+            self.check_cut(
+                result,
+                adapter,
+                true,
+                writes_before,
+                (io.reads - reads_before, io.sends - sends_before),
+                event,
+            )?;
+        }
         {
             let io = git.script.state.lock().unwrap();
             if self.lose_response
@@ -1565,28 +1851,7 @@ impl Selection {
             *git.durable_ack.lock().unwrap() =
                 git.script.state.lock().unwrap().returned_acknowledgement;
         }
-        if let Some((write, delivery)) = self.commit {
-            if !reached[writes_before..].contains(&write)
-                || control.last_delivery(write) != Some(delivery)
-            {
-                return Err(Finding {
-                    law: "fault_not_reached",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
-            }
-            if write == StorageWrite::Admission
-                && delivery != Delivery::Confirmed
-                && !acknowledgements.is_empty()
-            {
-                return Err(Finding {
-                    law: "unconfirmed_admission",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
-            }
-        }
-        Ok(())
+        self.check_delivery(control, writes_before, !acknowledgements.is_empty(), event)
     }
 
     async fn execute(
@@ -1598,6 +1863,11 @@ impl Selection {
         event: usize,
     ) -> Checked {
         let control = adapter.store.control.clone();
+        let writes_before = control.reached().len();
+        let (reads_before, sends_before) = {
+            let io = adapter.io.lock().unwrap();
+            (io.reads, io.sends.len())
+        };
         if let Some((write, delivery)) = self.commit {
             control.fail_next(write, delivery);
         }
@@ -1605,15 +1875,24 @@ impl Selection {
         let before = adapter.store.raw(&adapter.intent.request.operation_id);
         adapter.fresh = !matches!(
             text(&before, "state"),
-            Some("apply_started" | "receiver_observed" | "finalized")
+            Some("apply_started" | "receiver_observed" | "finalized" | "not_attempted")
         );
+        let fresh_cut = adapter.fresh
+            && app
+                .admitted_state(&adapter.intent.request.operation_id)
+                .is_ok()
+            && (!self.sign || signing.1 != "invalid key")
+            && !matches!(
+                adapter.receiver,
+                Receiver::Unavailable | Receiver::Replaced | Receiver::StaleVersion
+            );
         let execution = ServiceExecution {
             kubernetes_client: None,
             git_receiver: None,
             receipt_signing: self.sign.then_some(signing),
         };
         let mut acknowledgements = Vec::new();
-        let _result = app
+        let result = app
             .select_with_adapter(
                 &adapter.intent.request.operation_id.clone(),
                 execution,
@@ -1628,27 +1907,49 @@ impl Selection {
             &adapter.intent,
             event,
         )?;
-        if let Some((write, delivery)) = self.commit {
-            if !control.reached().contains(&write) || control.last_delivery(write) != Some(delivery)
-            {
-                return Err(Finding {
-                    law: "fault_not_reached",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
-            }
-            if write == StorageWrite::Admission
-                && delivery != Delivery::Confirmed
-                && !acknowledgements.is_empty()
-            {
-                return Err(Finding {
-                    law: "unconfirmed_admission",
-                    event,
-                    defect_reached: control.defect_reached(),
-                });
-            }
+        if fresh_cut {
+            let io = adapter.io.lock().unwrap();
+            self.check_cut(
+                result,
+                adapter,
+                false,
+                writes_before,
+                (io.reads - reads_before, io.sends.len() - sends_before),
+                event,
+            )?;
         }
-        Ok(())
+        self.check_delivery(&control, writes_before, !acknowledgements.is_empty(), event)
+    }
+
+    fn check_delivery(
+        self,
+        control: &StorageControl,
+        writes_before: usize,
+        acknowledged: bool,
+        event: usize,
+    ) -> Checked {
+        let Some((write, delivery)) = self.commit else {
+            return Ok(());
+        };
+        let law = if !control.reached()[writes_before..].contains(&write)
+            || control.last_delivery(write) != Some(delivery)
+        {
+            Some("fault_not_reached")
+        } else if write == StorageWrite::Admission
+            && delivery != Delivery::Confirmed
+            && acknowledged
+        {
+            Some("unconfirmed_admission")
+        } else {
+            None
+        };
+        law.map_or(Ok(()), |law| {
+            Err(Finding {
+                law,
+                event,
+                defect_reached: control.defect_reached(),
+            })
+        })
     }
 }
 
@@ -1678,7 +1979,9 @@ fn check_terminal(
     let terminal = store.raw(&intent.request.operation_id);
     if text(&terminal, "state") == Some("not_attempted") {
         if text(&terminal, "target_rejection") == Some("stale_approval")
-            && text(&terminal, "preflight_uid") == Some("replacement-uid")
+            && (text(&terminal, "preflight_uid") == Some("replacement-uid")
+                || (text(&terminal, "preflight_uid") == Some(intent.uid.as_str())
+                    && text(&terminal, "preflight_resource_version") == Some("stale-version")))
             && io.sends.is_empty()
         {
             return Ok(());
@@ -1897,8 +2200,62 @@ fn multi_trace(seed: u64, peers: usize, prefix: Vec<Action>) -> Trace {
     input
 }
 
+fn without_peer(input: &Trace, removed: usize) -> Trace {
+    let mut candidate = input.clone();
+    candidate.peers -= 1;
+    if !candidate.effects.is_empty() {
+        candidate.effects.remove(removed);
+    }
+    let mut selected = 0;
+    candidate.actions = input
+        .actions
+        .iter()
+        .filter_map(|action| {
+            if let Action::Peer(peer) = *action {
+                selected = peer;
+                return (peer != removed).then(|| Action::Peer(peer - usize::from(peer > removed)));
+            }
+            match *action {
+                Action::Restore
+                | Action::Trust(_)
+                | Action::Reopen { .. }
+                | Action::Writes(_)
+                | Action::ReplaceCatalog => Some(action.clone()),
+                Action::CancelAtIo { point, contender }
+                    if selected != removed && contender != removed =>
+                {
+                    Some(Action::CancelAtIo {
+                        point,
+                        contender: contender - usize::from(contender > removed),
+                    })
+                },
+                Action::CancelAtIo { .. } => None,
+                _ => (selected != removed).then(|| action.clone()),
+            }
+        })
+        .collect();
+    candidate
+}
+
+async fn same_finding(input: &Trace, law: &'static str) -> bool {
+    replay(input, true).await.err().is_some_and(|finding| {
+        finding.law == law
+            && input
+                .defect
+                .is_none_or(|defect| finding.defect_reached.contains(&defect))
+    })
+}
+
 async fn minimize(mut input: Trace, law: &'static str) -> Trace {
     input.require_progress = law == "healthy_progress";
+    let mut peer = input.peers;
+    while peer > 0 && input.peers > 1 {
+        peer -= 1;
+        let candidate = without_peer(&input, peer);
+        if same_finding(&candidate, law).await {
+            input = candidate;
+        }
+    }
     let mut index = 0;
     while index < input.actions.len() {
         if input.require_progress && matches!(input.actions[index], Action::Restore) {
@@ -1907,15 +2264,29 @@ async fn minimize(mut input: Trace, law: &'static str) -> Trace {
         }
         let mut candidate = input.clone();
         candidate.actions.remove(index);
-        if replay(&candidate, true).await.err().is_some_and(|finding| {
-            finding.law == law
-                && candidate
-                    .defect
-                    .is_none_or(|defect| finding.defect_reached.contains(&defect))
-        }) {
+        if same_finding(&candidate, law).await {
             input = candidate;
         } else {
             index += 1;
+        }
+    }
+    for index in 0..input.actions.len() {
+        let simpler = match input.actions[index] {
+            Action::Select(_) => Some(select(None, Cut::None, false, true)),
+            Action::Receiver(_) => Some(Action::Receiver(Receiver::Healthy)),
+            Action::Signer(_) => Some(Action::Signer(Signer::Original)),
+            Action::CancelAtIo { contender, .. } => Some(Action::CancelAtIo {
+                point: IoPoint::Preflight,
+                contender,
+            }),
+            _ => None,
+        };
+        if let Some(action) = simpler {
+            let mut candidate = input.clone();
+            candidate.actions[index] = action;
+            if same_finding(&candidate, law).await {
+                input = candidate;
+            }
         }
     }
     input
@@ -2096,6 +2467,264 @@ async fn git_atomic_delivery_and_interruption_preserve_laws_and_progress() {
         input.effects = vec![Effect::Git];
         for virtualized in [true, false] {
             assert_eq!(replay(&input, virtualized).await, Ok(()));
+        }
+    }
+}
+
+const FRESH_CUTS: [Cut; 7] = [
+    Cut::BeforeAttempt,
+    Cut::Unsent,
+    Cut::AttemptAcknowledgementLost,
+    Cut::ResponseLost,
+    Cut::ResponseRecorded,
+    Cut::ObservationLost,
+    Cut::Frozen,
+];
+
+fn assignments(peers: usize) -> [Vec<Effect>; 3] {
+    [
+        vec![Effect::Kubernetes; peers],
+        vec![Effect::Git; peers],
+        (0..peers)
+            .map(|peer| {
+                if peer == 0 {
+                    Effect::Kubernetes
+                } else {
+                    Effect::Git
+                }
+            })
+            .collect(),
+    ]
+}
+
+#[tokio::test(start_paused = true)]
+async fn fresh_checkpoints_precede_cancellation_and_recover_under_original_authority() {
+    for effects in assignments(2) {
+        for cut in FRESH_CUTS {
+            for receiver in [
+                Receiver::Healthy,
+                Receiver::Failed,
+                Receiver::Pending,
+                Receiver::Replaced,
+                Receiver::StaleVersion,
+                Receiver::WrongGeneration,
+                Receiver::Unavailable,
+            ] {
+                let mut input = multi_trace(
+                    0,
+                    2,
+                    vec![
+                        Action::Receiver(receiver),
+                        select(None, cut, false, false),
+                        Action::Reopen { catalog: false },
+                    ],
+                );
+                input.effects = effects.clone();
+                for virtualized in [true, false] {
+                    assert_eq!(
+                        replay(&input, virtualized).await,
+                        Ok(()),
+                        "{effects:?}/{cut:?}/{receiver:?}/virtual={virtualized}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_contention_reopen_and_catalog_conflict_orders_preserve_all_peers() {
+    for effects in assignments(2) {
+        for owner in 0..2 {
+            for point in [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation] {
+                for order in [
+                    [0, 1, 2],
+                    [0, 2, 1],
+                    [1, 0, 2],
+                    [1, 2, 0],
+                    [2, 0, 1],
+                    [2, 1, 0],
+                ] {
+                    let events = [
+                        Action::CancelAtIo {
+                            point,
+                            contender: 1 - owner,
+                        },
+                        Action::ReplaceCatalog,
+                        Action::Reopen { catalog: false },
+                    ];
+                    let mut actions = vec![
+                        Action::Peer(0),
+                        select(None, Cut::BeforeAttempt, false, false),
+                        Action::Peer(1),
+                        select(None, Cut::BeforeAttempt, false, false),
+                        Action::Peer(owner),
+                    ];
+                    actions.extend(order.map(|index| events[index].clone()));
+                    let mut input = multi_trace(0, 2, actions);
+                    input.effects = effects.clone();
+                    for virtualized in [true, false] {
+                        assert_eq!(
+                            replay(&input, virtualized).await,
+                            Ok(()),
+                            "{effects:?}/{owner}/{point:?}/{order:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn suspended_selection_excludes_same_and_other_ids_until_cancellation() {
+    for effects in assignments(2) {
+        for owner in 0..2 {
+            for contender in 0..2 {
+                for point in [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation] {
+                    let mut input = multi_trace(
+                        0,
+                        2,
+                        vec![
+                            Action::Peer(owner),
+                            Action::CancelAtIo { point, contender },
+                            Action::ReplaceCatalog,
+                            Action::Reopen { catalog: false },
+                        ],
+                    );
+                    input.effects = effects.clone();
+                    for virtualized in [true, false] {
+                        assert_eq!(
+                            replay(&input, virtualized).await,
+                            Ok(()),
+                            "{effects:?}/owner={owner}/contender={contender}/{point:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn deliberate_inputs() -> Vec<Trace> {
+    let joins = [
+        (Cut::BeforeAttempt, Receiver::Failed),
+        (Cut::Unsent, Receiver::Pending),
+        (Cut::AttemptAcknowledgementLost, Receiver::Replaced),
+        (Cut::ResponseLost, Receiver::Unavailable),
+        (Cut::ResponseRecorded, Receiver::WrongGeneration),
+        (Cut::ObservationLost, Receiver::Pending),
+        (Cut::Frozen, Receiver::Replaced),
+        (Cut::None, Receiver::StaleVersion),
+    ];
+    assignments(2)
+        .into_iter()
+        .flat_map(|effects| {
+            joins
+                .into_iter()
+                .enumerate()
+                .map(move |(index, (cut, receiver))| {
+                    let mut input = multi_trace(
+                        u64::try_from(index).unwrap(),
+                        2,
+                        vec![
+                            Action::Peer(1),
+                            Action::CancelAtIo {
+                                point: [
+                                    IoPoint::Preflight,
+                                    IoPoint::Mutation,
+                                    IoPoint::Observation,
+                                ][index % 3],
+                                contender: 0,
+                            },
+                            Action::Peer(0),
+                            Action::ReplaceCatalog,
+                            Action::Receiver(Receiver::Unavailable),
+                            select(None, Cut::None, false, false),
+                            Action::Receiver(Receiver::Healthy),
+                            select(None, cut, false, false),
+                            Action::Trust(false),
+                            select(None, Cut::None, false, false),
+                            Action::Trust(true),
+                            Action::ReplaceCatalog,
+                            Action::Reopen { catalog: false },
+                            Action::Receiver(receiver),
+                            select(None, Cut::ObservationLost, false, false),
+                            select(None, Cut::None, false, false),
+                            Action::Receiver(Receiver::Failed),
+                            select(None, Cut::Frozen, false, false),
+                            select(
+                                Some((StorageWrite::Receipt, Delivery::NoCommit)),
+                                Cut::None,
+                                false,
+                                true,
+                            ),
+                            Action::Reopen { catalog: false },
+                            Action::Signer(Signer::Rotated),
+                            select(
+                                Some((StorageWrite::Receipt, Delivery::LostAcknowledgement)),
+                                Cut::None,
+                                false,
+                                true,
+                            ),
+                            Action::Signer(Signer::Original),
+                            select(None, Cut::None, false, true),
+                        ],
+                    );
+                    input.effects = effects.clone();
+                    input
+                })
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn sqlite_and_virtual_write_refusal_preserve_facts_until_same_id_repair() {
+    for effects in assignments(2) {
+        for first in [
+            None,
+            Some(select(
+                Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
+                Cut::None,
+                false,
+                false,
+            )),
+            Some(select(None, Cut::BeforeAttempt, false, false)),
+            Some(select(None, Cut::Unsent, false, false)),
+            Some(select(None, Cut::Frozen, false, false)),
+            Some(select(None, Cut::None, false, true)),
+        ] {
+            let mut actions = first.into_iter().collect::<Vec<_>>();
+            actions.extend([
+                Action::Writes(false),
+                select(None, Cut::None, false, true),
+                Action::Reopen { catalog: true },
+                select(None, Cut::None, false, true),
+            ]);
+            let mut input = multi_trace(0, 2, actions);
+            input.effects = effects.clone();
+            for virtualized in [true, false] {
+                assert_eq!(
+                    replay(&input, virtualized).await,
+                    Ok(()),
+                    "{effects:?}/virtual={virtualized}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn deliberate_recovery_joins_use_the_same_all_peer_laws() {
+    for input in deliberate_inputs() {
+        for virtualized in [true, false] {
+            assert_eq!(
+                replay(&input, virtualized).await,
+                Ok(()),
+                "seed={}/effects={:?}/virtual={virtualized}",
+                input.seed,
+                input.effects
+            );
         }
     }
 }
@@ -2325,6 +2954,14 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
             vec![select(None, Cut::Unsent, false, false)],
         ),
         (
+            Defect::Remint,
+            "dispatch_provenance",
+            vec![Action::CancelAtIo {
+                point: IoPoint::Mutation,
+                contender: 1,
+            }],
+        ),
+        (
             Defect::InitialUnknown,
             "initial_result",
             vec![select(None, Cut::Frozen, false, false)],
@@ -2524,6 +3161,11 @@ fn generated(seed: u64, steps: usize) -> Trace {
     let mut actions = vec![
         Action::Peer(1),
         Action::CustodyDuringIo(point),
+        Action::Peer(2),
+        Action::CancelAtIo {
+            point,
+            contender: 0,
+        },
         Action::Peer(0),
         select(Some((write, delivery)), Cut::None, false, true),
     ];
@@ -2550,12 +3192,82 @@ fn generated(seed: u64, steps: usize) -> Trace {
             } else {
                 Signer::Original
             }),
-            _ => select(None, Cut::None, false, random & 8 == 0),
+            _ => select(
+                None,
+                FRESH_CUTS[usize::try_from((random / 11) % 7).unwrap()],
+                false,
+                random & 8 == 0,
+            ),
         });
     }
     let mut input = multi_trace(seed, 3, actions);
     input.effects = effects;
     input
+}
+
+#[tokio::test(start_paused = true)]
+async fn unavailable_catalog_does_not_claim_a_fresh_checkpoint() {
+    for effects in assignments(2) {
+        for cut in FRESH_CUTS {
+            let mut input = multi_trace(
+                0,
+                2,
+                vec![
+                    Action::Reopen { catalog: false },
+                    select(None, cut, false, false),
+                ],
+            );
+            input.effects = effects.clone();
+            for virtualized in [true, false] {
+                assert_eq!(replay(&input, virtualized).await, Ok(()));
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn progress_reduction_requires_every_remaining_peer_and_current_prerequisites() {
+    for withdrawal in [
+        Action::Trust(false),
+        Action::SubstituteTrustKey,
+        Action::Writes(false),
+        Action::Signer(Signer::Invalid),
+        Action::Receiver(Receiver::Unavailable),
+    ] {
+        let mut input = multi_trace(0, 2, vec![]);
+        input.defect = Some(Defect::NoOp);
+        input.actions.push(withdrawal);
+        let finding = replay(&input, true).await.unwrap_err();
+        assert_eq!(finding.law, "ineligible_progress");
+        assert!(finding.defect_reached.contains(&Defect::NoOp));
+    }
+    let mut input = multi_trace(0, 3, vec![]);
+    input.actions = vec![
+        Action::Restore,
+        Action::Peer(0),
+        select(None, Cut::None, false, true),
+    ];
+    assert_eq!(
+        replay(&input, true).await.unwrap_err().law,
+        "ineligible_progress"
+    );
+    input.actions.extend([
+        Action::Peer(1),
+        select(None, Cut::None, false, true),
+        Action::Peer(2),
+        select(None, Cut::None, false, true),
+    ]);
+    input.defect = Some(Defect::NoOp);
+    let minimized = minimize(input, "healthy_progress").await;
+    assert!(minimized.require_progress);
+    assert!(minimized.peers < 3);
+    for virtualized in [true, false] {
+        let finding = replay(&minimized, virtualized).await.unwrap_err();
+        assert_eq!(finding.law, "healthy_progress");
+        let mut correct = minimized.clone();
+        correct.defect = None;
+        assert_eq!(replay(&correct, virtualized).await, Ok(()));
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -2647,6 +3359,8 @@ async fn kernel_trace_exploration_or_replay() {
     assert!((1..=128).contains(&shards) && shards <= cases && shard < shards);
     let inputs = if std::env::var_os("KAPSEL_KERNEL_DEFECTS").is_some() {
         defect_inputs()
+    } else if std::env::var_os("KAPSEL_KERNEL_DELIBERATE").is_some() {
+        deliberate_inputs()
     } else {
         (0..cases)
             .map(|case| generated(seed.wrapping_add(u64::try_from(case).unwrap()), steps))

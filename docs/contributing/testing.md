@@ -178,6 +178,27 @@ identity to the completion material, then inspects returned bytes under that key
 atomic-delivery laws, this replaces the deterministic receipt-commit/rotation matrix. Actual
 process-exit, configured-client HTTP and native receipt owners remain separate.
 
+Fresh-checkpoint enumeration runs before any cancellation can consume the attempt. Both stores and
+effects check all seven interruption windows against healthy, failed, pending, replaced, stale,
+wrong-generation and unavailable receivers. Eligible fresh selections must reach the selected
+checkpoint, with matching returned error, durable writes and exact receiver call counts. Recovery's
+`ReceiverRead` interruption remains fresh-only.
+
+Suspended service selections contend with the same or another identity at preflight, mutation and
+observation. The contender must acknowledge only existing responsibility or busy refusal, changing
+neither peer's facts nor receiver counts. Dropping the real selection future releases the worker;
+same-ID continuation still cannot resend. Retained schedules enumerate the six orders of
+cancellation, conflicting catalog construction and reopen. Physical blocking-job retirement remains
+a separate runtime owner.
+
+Eight deliberate recovery joins use those same actions and all-peer laws under Kubernetes-only,
+Git-only and mixed assignments. SQLite query-only refusal and virtual no-commit refusal preserve
+previous facts through reopen and same-ID repair. Progress findings require current healthy
+prerequisites and an eligible selection for every remaining identity. Reduction can remove
+identities, actions and selected values only while reproducing the same law and reached defect. The
+older lifecycle explorer remains until these replacement workloads and exploration custody qualify
+its retirement.
+
 For retained local exploration, select a new private directory outside the checkout:
 
 ```sh
@@ -186,8 +207,9 @@ cargo test --locked -p kapsel --lib \
   kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
 ```
 
-Set `KAPSEL_KERNEL_DEFECTS=1` to retain nineteen inputs for eleven lifecycle defects and their
-minimized findings. Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include
+Set `KAPSEL_KERNEL_DELIBERATE=1` to retain the 24 deliberate inputs for direct replay. Set
+`KAPSEL_KERNEL_DEFECTS=1` to retain twenty inputs for eleven lifecycle defects and their minimized
+findings. Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include
 Kubernetes, Git and mixed assignments. The atomic-record binding control has its separate
 deterministic owner. Each document is created exclusively before execution and records
 source-content and executable digests. These digests are not build attestations. Replay a retained
