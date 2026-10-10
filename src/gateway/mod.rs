@@ -568,6 +568,11 @@ impl Gateway {
     }
 
     #[cfg(test)]
+    pub(crate) fn exercise_defect(&self, defect: Defect) -> bool {
+        self.journal.exercise_defect(defect)
+    }
+
+    #[cfg(test)]
     pub(crate) fn exploration_write_failure(&self, fail: bool) -> Result<(), GatewayError> {
         self.journal
             .connection

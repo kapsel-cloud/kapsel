@@ -619,6 +619,8 @@ pub(crate) enum Defect {
     GitInferredAcknowledgement,
     GitObservationSubstitution,
     ReceiptRewrite,
+    StatusProjectionSwap,
+    TargetProjectionSwap,
     CatalogConflictAccepted,
     StaleTrust,
     CustodyIgnored,

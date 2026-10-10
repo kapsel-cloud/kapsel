@@ -630,13 +630,16 @@ impl ServiceApplication {
         {
             let status = super::status_of(retained.state, retained.rejection, retained.result)
                 .map_err(|_| ServiceError::OperationFailure)?;
-            return Ok((
+            let projection = (
                 status,
                 OperationTargets {
                     git: Some(retained.targets),
                     ..OperationTargets::default()
                 },
-            ));
+            );
+            #[cfg(test)]
+            let projection = self.exploration_read_projection(projection);
+            return Ok(projection);
         }
         let Some(retained) = self
             .gateway
@@ -651,7 +654,31 @@ impl ServiceApplication {
             retained.operation.result(),
         )
         .map_err(|_| ServiceError::OperationFailure)?;
-        Ok((status, retained.operation.targets()))
+        let projection = (status, retained.operation.targets());
+        #[cfg(test)]
+        let projection = self.exploration_read_projection(projection);
+        Ok(projection)
+    }
+
+    #[cfg(test)]
+    fn exploration_read_projection(
+        &self,
+        (mut status, mut targets): (OperationStatus, OperationTargets),
+    ) -> (OperationStatus, OperationTargets) {
+        use crate::gateway::Defect;
+        if self.gateway.exercise_defect(Defect::StatusProjectionSwap) {
+            status = OperationStatus::NotFound;
+        }
+        if let Some(git) = &mut targets.git {
+            if self.gateway.exercise_defect(Defect::TargetProjectionSwap) {
+                git.approval.new_commit = "c".repeat(40);
+            }
+        } else if let Some(approved) = &mut targets.approved_target {
+            if self.gateway.exercise_defect(Defect::TargetProjectionSwap) {
+                approved.uid = "foreign-target".into();
+            }
+        }
+        (status, targets)
     }
 
     /// Projects execution guidance only after authenticating stored history.

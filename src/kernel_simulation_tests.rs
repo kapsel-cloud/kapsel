@@ -1204,7 +1204,6 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
         } else {
             app.exploration_write_failure(!writing).unwrap();
         }
-        check_disclosure(&app, &peers, &trusted, &control, event)?;
         // External trust gates application disclosure, not the independent raw-history oracle.
         for peer in &mut peers {
             let adapter = &peer.adapter;
@@ -1224,6 +1223,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 false,
             )?;
         }
+        check_reads(&app, &peers, &trusted, &control, event)?;
     }
     if trace.require_progress
         && peers.iter().enumerate().any(|(index, peer)| {
@@ -1265,25 +1265,66 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     Ok(())
 }
 
-fn check_disclosure(
+fn check_reads(
     app: &ServiceApplication,
     peers: &[Peer],
     trusted: &[bool],
     control: &StorageControl,
     event: usize,
 ) -> Checked {
+    let require = |condition, law| {
+        if condition {
+            Ok(())
+        } else {
+            Err(Finding {
+                law,
+                event,
+                defect_reached: control.defect_reached(),
+            })
+        }
+    };
+    let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
+    let writes_before = control.reached().len();
     let history = app.history(None).unwrap();
+    if !peers[0].adapter.store.virtualized {
+        let mut ids = peers
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !before[*index].0.is_empty())
+            .map(|(_, peer)| peer.adapter.intent.request.operation_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort();
+        require(
+            history.next_cursor.is_none()
+                && history
+                    .entries
+                    .iter()
+                    .map(|entry| entry.operation_id.clone())
+                    .collect::<Vec<_>>()
+                    == ids,
+            "stored_history_projection",
+        )?;
+    }
     for (index, peer) in peers.iter().enumerate() {
-        if peer.snapshot().0.is_empty() {
+        let raw = &before[index].0;
+        let id = &peer.adapter.intent.request.operation_id;
+        if raw.is_empty() {
+            require(
+                app.status(id)
+                    == Ok((
+                        crate::OperationStatus::NotFound,
+                        crate::OperationTargets::default(),
+                    ))
+                    && app.receipt(id) == Ok(OperationReceipt::NotFound),
+                "original_intent",
+            )?;
             continue;
         }
-        let id = &peer.adapter.intent.request.operation_id;
         let accessible = trusted[index];
-        let projections = [
-            app.status(id).is_ok(),
-            app.receipt(id).is_ok(),
-            app.admitted_state(id).is_ok(),
-        ];
+        let status = app.status(id);
+        let receipt = app.receipt(id);
+        let admitted = app.admitted_state(id);
+        let projections = [status.is_ok(), receipt.is_ok(), admitted.is_ok()];
         // Enumeration is a physical SQL query; the virtual record store owns point reads only.
         let history_matches = peer.adapter.store.virtualized
             || history
@@ -1291,15 +1332,150 @@ fn check_disclosure(
                 .iter()
                 .find(|entry| &entry.operation_id == id)
                 .is_some_and(|entry| entry.status.is_ok() == accessible);
-        if !history_matches || projections.iter().any(|actual| *actual != accessible) {
-            return Err(Finding {
-                law: "original_trust_disclosure",
-                event,
-                defect_reached: control.defect_reached(),
-            });
+        require(
+            history_matches && projections.iter().all(|actual| *actual == accessible),
+            "original_trust_disclosure",
+        )?;
+        if accessible {
+            let expected = stored_projection(peer, raw);
+            let matches = expected
+                .as_ref()
+                .is_some_and(|(state, expected_status, targets)| {
+                    status
+                        .as_ref()
+                        .is_ok_and(|actual| actual.0 == *expected_status && &actual.1 == targets)
+                        && admitted == Ok(Some(*state))
+                        && (peer.adapter.store.virtualized
+                            || history
+                                .entries
+                                .iter()
+                                .find(|entry| &entry.operation_id == id)
+                                .is_some_and(|entry| entry.status == status))
+                });
+            let receipt_matches = match (&receipt, raw.get("receipt_bytes")) {
+                (Ok(OperationReceipt::NotReady), Some(Value::Null)) => true,
+                (Ok(OperationReceipt::Ready { bytes, sha256 }), Some(Value::Blob(stored))) => {
+                    bytes == stored && text(raw, "receipt_digest") == Some(sha256.as_str())
+                },
+                _ => false,
+            };
+            require(matches && receipt_matches, "stored_read_projection")?;
         }
     }
-    Ok(())
+    require(
+        before == peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
+            && writes_before == control.reached().len(),
+        "stored_reads_are_read_only",
+    )
+}
+
+// Project already retained facts, not a predicted next lifecycle phase or production classifier.
+fn stored_projection(
+    peer: &Peer,
+    raw: &BTreeMap<String, Value>,
+) -> Option<(
+    crate::OperationState,
+    crate::OperationStatus,
+    crate::OperationTargets,
+)> {
+    use crate::{OperationState as State, OperationStatus as Status};
+    let state = match text(raw, "state")? {
+        "requested" => State::Requested,
+        "authorized" => State::Authorized,
+        "apply_started" => State::ApplyStarted,
+        "receiver_observed" => State::ReceiverObserved,
+        "finalized" => State::Finalized,
+        "not_attempted" => State::NotAttempted,
+        _ => return None,
+    };
+    let status = match state {
+        State::Finalized => {
+            if let Some(git) = &peer.git {
+                use crate::gateway::git::Acknowledgement;
+                match git
+                    .durable_ack
+                    .lock()
+                    .unwrap()
+                    .unwrap_or(Acknowledgement::Unknown)
+                {
+                    Acknowledgement::Updated => Status::Succeeded,
+                    Acknowledgement::RejectedBeforeSend | Acknowledgement::ReceiverRejected => {
+                        Status::Failed
+                    },
+                    Acknowledgement::Unknown => Status::Unknown,
+                }
+            } else {
+                match text(raw, "result")? {
+                    "SUCCEEDED" => Status::Succeeded,
+                    "FAILED" => Status::Failed,
+                    "UNKNOWN" => Status::Unknown,
+                    _ => return None,
+                }
+            }
+        },
+        State::NotAttempted => Status::NotAttempted(match text(raw, "target_rejection")? {
+            "stale_approval" => crate::TargetRejection::StaleApproval,
+            "stale_ref" => crate::TargetRejection::GitStaleRef,
+            _ => return None,
+        }),
+        State::Requested | State::Authorized | State::ApplyStarted | State::ReceiverObserved => {
+            Status::InProgress
+        },
+    };
+    let targets = if let Some(git) = &peer.git {
+        use crate::gateway::git::{Acknowledgement, ObservedRef};
+        let acknowledgement = match text(raw, "acknowledgement") {
+            Some("updated") => Some(Acknowledgement::Updated),
+            Some("rejected_before_send") => Some(Acknowledgement::RejectedBeforeSend),
+            Some("receiver_rejected") => Some(Acknowledgement::ReceiverRejected),
+            Some("unknown") => Some(Acknowledgement::Unknown),
+            None => None,
+            _ => return None,
+        };
+        let observed_ref = match text(raw, "observed_ref_kind") {
+            Some("commit") => Some(ObservedRef::Commit(text(raw, "observed_commit")?.into())),
+            Some("missing") => Some(ObservedRef::Missing),
+            Some("unknown") => Some(ObservedRef::Unknown),
+            None => None,
+            _ => return None,
+        };
+        crate::OperationTargets {
+            git: Some(crate::GitOperationTargets {
+                approval: git.authorization.clone(),
+                attempted: matches!(
+                    state,
+                    State::ApplyStarted | State::ReceiverObserved | State::Finalized
+                ),
+                acknowledgement,
+                observed_ref,
+            }),
+            ..crate::OperationTargets::default()
+        }
+    } else {
+        let intent = &peer.adapter.intent;
+        let approved = ApprovedTarget {
+            uid: intent.uid.clone(),
+            resource_version: intent.version.clone(),
+        };
+        let observed_target = if matches!(state, State::ReceiverObserved | State::Finalized) {
+            Some(crate::ObservedTarget {
+                uid: text(raw, "receiver_uid").map(str::to_owned),
+                resource_version: text(raw, "receiver_resource_version").map(str::to_owned),
+            })
+        } else {
+            text(raw, "preflight_uid").map(|uid| crate::ObservedTarget {
+                uid: Some(uid.into()),
+                resource_version: text(raw, "preflight_resource_version").map(str::to_owned),
+            })
+        };
+        crate::OperationTargets {
+            approved_target: Some(approved.clone()),
+            attempt_target: (integer(raw, "apply_attempted") == Some(1)).then_some(approved),
+            observed_target,
+            git: None,
+        }
+    };
+    Some((state, status, targets))
 }
 
 struct Peer {
@@ -3074,6 +3250,16 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
         ),
         (Defect::NoOp, "healthy_progress", vec![]),
         (
+            Defect::StatusProjectionSwap,
+            "stored_read_projection",
+            vec![select(None, Cut::Frozen, false, false)],
+        ),
+        (
+            Defect::TargetProjectionSwap,
+            "stored_read_projection",
+            vec![select(None, Cut::BeforeAttempt, false, false)],
+        ),
+        (
             Defect::WrongPeerRead,
             "original_intent",
             vec![
@@ -3124,6 +3310,8 @@ fn defect_inputs() -> Vec<Trace> {
                     vec![vec![Effect::Git; 2], vec![Effect::Git, Effect::Kubernetes]]
                 },
                 Defect::WrongSigner
+                | Defect::StatusProjectionSwap
+                | Defect::TargetProjectionSwap
                 | Defect::CatalogConflictAccepted
                 | Defect::StaleTrust
                 | Defect::CustodyIgnored => vec![
@@ -3139,6 +3327,8 @@ fn defect_inputs() -> Vec<Trace> {
                 if matches!(
                     defect,
                     Defect::WrongSigner
+                        | Defect::StatusProjectionSwap
+                        | Defect::TargetProjectionSwap
                         | Defect::CatalogConflictAccepted
                         | Defect::StaleTrust
                         | Defect::CustodyIgnored
@@ -3196,6 +3386,7 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::UnconditionalWrite => "conditional_binding",
         Defect::ReplicaSwap | Defect::GitObservationSubstitution => "frozen_io_binding",
         Defect::ReceiptRewrite => "original_receipt_bytes",
+        Defect::StatusProjectionSwap | Defect::TargetProjectionSwap => "stored_read_projection",
         Defect::WrongSigner => "original_signer",
         Defect::WrongPeerRead => "original_intent",
         Defect::ReceiptProjectionSwap => "receipt_binding",
