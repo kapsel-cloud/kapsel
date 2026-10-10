@@ -1010,17 +1010,14 @@ def smoke(
 
 
 def systemctl(*arguments: str) -> str:
-    return (
-        run_bounded(
-            ["systemctl", *arguments],
-            check=True,
-            stdout_max=64 * 1024,
-            stderr_max=16 * 1024,
-            timeout=60,
-        )
-        .stdout.decode()
-        .strip()
+    result = run_bounded(
+        ["systemctl", *arguments],
+        check=True,
+        stdout_max=64 * 1024,
+        stderr_max=16 * 1024,
+        timeout=60,
     )
+    return result.stdout.decode().strip()
 
 
 def refuse_systemd_references(parent: pathlib.Path) -> None:

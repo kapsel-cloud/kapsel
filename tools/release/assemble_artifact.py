@@ -200,11 +200,8 @@ def run_bounded(
 
 
 def run(*arguments: str, cwd: pathlib.Path = ROOT) -> str:
-    return (
-        run_bounded(arguments, cwd=cwd, timeout=10, stdout_max=16 * 1024, stderr_max=16 * 1024)
-        .stdout.decode()
-        .strip()
-    )
+    result = run_bounded(arguments, cwd=cwd, timeout=10, stdout_max=16 * 1024, stderr_max=16 * 1024)
+    return result.stdout.decode().strip()
 
 
 def file_sha256(path: pathlib.Path) -> str:
@@ -576,17 +573,14 @@ def cargo_graph(
         (package["name"], package["version"], package.get("source")): package.get("checksum")
         for package in lock["package"]
     }
-    identifiers = {
-        package.identity: (
-            "SPDXRef-Package-kapsel-source"
-            if package.identity == root_id
-            else spdx_id("Package", package.identity)
-        )
-        for package in records.packages
-        if package.identity in reachable
-    }
-
     reachable_packages = [package for package in records.packages if package.identity in reachable]
+    identifiers = {}
+    for package in reachable_packages:
+        if package.identity == root_id:
+            identifiers[package.identity] = "SPDXRef-Package-kapsel-source"
+        else:
+            identifiers[package.identity] = spdx_id("Package", package.identity)
+
     reachable_packages.sort(key=lambda package: (package.name, package.version, package.identity))
     packages: list[dict[str, object]] = []
     for package in reachable_packages:
@@ -671,16 +665,16 @@ def create_sbom(
             "relationshipType": "GENERATED_FROM",
             "relatedSpdxElement": root_package_id,
         },
-        *[
+    ]
+    for identifier in binary_ids.values():
+        relationships.append(
             {
                 "spdxElementId": archive_id,
                 "relationshipType": "CONTAINS",
                 "relatedSpdxElement": identifier,
             }
-            for identifier in binary_ids.values()
-        ],
-        *cargo_relationships,
-    ]
+        )
+    relationships.extend(cargo_relationships)
 
     sbom = {
         "spdxVersion": "SPDX-2.3",
