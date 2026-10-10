@@ -637,8 +637,7 @@ fn fill_owned_tmpfs(filler: &Path) {
         }
     }
     assert_eq!(file.write(&[1]).unwrap_err().raw_os_error(), Some(28));
-    let written = written_bytes;
-    eprintln!("actual OS ENOSPC after {written} bounded filler bytes");
+    eprintln!("actual OS ENOSPC after {written_bytes} bounded filler bytes");
 }
 
 #[cfg(target_os = "linux")]

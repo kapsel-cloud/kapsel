@@ -187,7 +187,7 @@ pub(super) fn render_status_with_targets(
         return output;
     }
 
-    let approved_target_fields = |target: Option<kapsel::ApprovedTarget>| {
+    let target_fields = |target: Option<kapsel::ApprovedTarget>| {
         target.map(|target| {
             serde_json::json!({ "uid": target.uid, "resource_version": target.resource_version })
         })
@@ -197,8 +197,8 @@ pub(super) fn render_status_with_targets(
     } else {
         serde_json::json!({
             "effect": "kubernetes.set_deployment_image",
-            "approved_target": approved_target_fields(targets.approved_target),
-            "attempt_target": approved_target_fields(targets.attempt_target),
+            "approved_target": target_fields(targets.approved_target),
+            "attempt_target": target_fields(targets.attempt_target),
             "observed_target": targets.observed_target.map(|target| serde_json::json!({
                 "uid": target.uid, "resource_version": target.resource_version,
             })),
