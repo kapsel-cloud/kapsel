@@ -29,6 +29,7 @@ pub(crate) struct State {
     pub(crate) acknowledgement: Acknowledgement,
     pub(crate) observed: ObservedRef,
     pub(crate) barrier: Option<Barrier>,
+    pub(crate) resume: Option<Arc<tokio::sync::Notify>>,
     pub(crate) fault: Option<FaultPoint>,
     pub(crate) violation: Option<&'static str>,
     pub(crate) returned_acknowledgement: Option<Acknowledgement>,
@@ -67,6 +68,7 @@ impl Script {
             acknowledgement: Acknowledgement::Updated,
             observed: ObservedRef::Commit("a".repeat(40)),
             barrier: None,
+            resume: None,
             fault: None,
             violation: None,
             returned_acknowledgement: None,
@@ -161,6 +163,15 @@ impl Script {
     }
 }
 
+async fn wait_for_resume(state: &Mutex<State>) {
+    let resume = state.lock().unwrap().resume.clone();
+    if let Some(resume) = resume {
+        resume.notified().await;
+    } else {
+        std::future::pending::<()>().await;
+    }
+}
+
 impl GitReceiver {
     pub(super) fn exploration_fault(&self, point: FaultPoint) -> bool {
         self.script
@@ -186,7 +197,7 @@ impl GitReceiver {
             (state.barrier, state.stale, state.unavailable)
         };
         if matches!(barrier, Some(Barrier::Preflight)) {
-            std::future::pending::<()>().await;
+            wait_for_resume(state).await;
         }
         if unavailable {
             return Err(GitError::Unavailable);
@@ -252,7 +263,7 @@ impl GitReceiver {
             (state.barrier, delivered)
         };
         if matches!(barrier, Some(Barrier::Mutation)) {
-            std::future::pending::<()>().await;
+            wait_for_resume(state).await;
         }
         state.lock().unwrap().returned_acknowledgement = Some(acknowledgement);
         acknowledgement
@@ -270,7 +281,7 @@ impl GitReceiver {
             (state.barrier, observed)
         };
         if matches!(barrier, Some(Barrier::Observation)) {
-            std::future::pending::<()>().await;
+            wait_for_resume(state).await;
         }
         state.lock().unwrap().returned_observation = Some(observed.clone());
         observed

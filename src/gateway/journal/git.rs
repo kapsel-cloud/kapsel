@@ -140,7 +140,7 @@ impl Journal {
         binding: &GitBinding,
     ) -> Result<Option<GitPhase>, GatewayError> {
         self.git_record(binding)?
-            .map(|record| decode_record(&record, binding))
+            .map(|record| self.decode_git_record(&record, binding))
             .transpose()
     }
 
@@ -312,8 +312,32 @@ impl Journal {
         let record = self
             .git_record(binding)?
             .ok_or(GatewayError::InvalidTransition)?;
-        let phase = decode_record(&record, binding)?;
+        let phase = self.decode_git_record(&record, binding)?;
         Ok((record, phase))
+    }
+
+    #[allow(
+        clippy::unused_self,
+        reason = "custody control exists only in test builds"
+    )]
+    fn decode_git_record(
+        &self,
+        record: &Record,
+        binding: &GitBinding,
+    ) -> Result<GitPhase, GatewayError> {
+        #[cfg(test)]
+        if record.get::<Vec<u8>>("signed_authorization_grant")? != binding.grant
+            && self.exercise_defect(super::records::Defect::CustodyIgnored)
+        {
+            let unchecked = GitBinding {
+                authorization: binding.authorization.clone(),
+                signer: binding.signer.clone(),
+                digest: binding.digest.clone(),
+                grant: record.get("signed_authorization_grant")?,
+            };
+            return decode_record(record, &unchecked);
+        }
+        decode_record(record, binding)
     }
 
     fn git_record(&self, binding: &GitBinding) -> Result<Option<Record>, GatewayError> {

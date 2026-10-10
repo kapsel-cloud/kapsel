@@ -1008,6 +1008,40 @@ impl Gateway {
 
     // The unique caller borrow is held across I/O as part of worker ownership.
     #[allow(clippy::needless_pass_by_ref_mut)]
+    async fn preflight_target<A: DeploymentImageAdapter + Send>(
+        &mut self,
+        authorized: &AuthorizedRequest,
+        operation: &journal::AuthorizedOperation,
+        adapter: &mut A,
+        fault: Option<FaultPoint>,
+    ) -> Result<Option<ValidatedTargetIdentity>, GatewayError> {
+        let target = adapter
+            .identify(&operation.request().to_adapter_request())
+            .await;
+        self.journal
+            .authorized_operation(authorized)?
+            .ok_or(GatewayError::InvalidPersistedState)?;
+        let target = match target {
+            Ok(target) => target,
+            Err(TargetReadError::Transient) => {
+                return Err(GatewayError::KubernetesTargetObservation);
+            },
+            Err(TargetReadError::Permanent(rejection)) => {
+                self.journal.mark_not_attempted(operation, rejection)?;
+                if fault == Some(FaultPoint::TargetRejectedCommitted) {
+                    return Err(GatewayError::InjectedFault);
+                }
+                return Ok(None);
+            },
+        };
+        if fault == Some(FaultPoint::TargetObserved) {
+            return Err(GatewayError::InjectedFault);
+        }
+        ValidatedTargetIdentity::try_from(target)
+            .map(Some)
+            .map_err(|_| GatewayError::InvalidKubernetesFact)
+    }
+
     async fn run_locked_operation_once<A: DeploymentImageAdapter + Send>(
         &mut self,
         authorized: &AuthorizedRequest,
@@ -1023,25 +1057,12 @@ impl Gateway {
         };
         let (attempted, fault) = match operation {
             journal::LoadedOperation::Authorized(operation) => {
-                let adapter_request = operation.request().to_adapter_request();
-                let target = match adapter.identify(&adapter_request).await {
-                    Ok(target) => target,
-                    Err(TargetReadError::Transient) => {
-                        return Err(GatewayError::KubernetesTargetObservation);
-                    },
-                    Err(TargetReadError::Permanent(rejection)) => {
-                        self.journal.mark_not_attempted(&operation, rejection)?;
-                        if fault == Some(FaultPoint::TargetRejectedCommitted) {
-                            return Err(GatewayError::InjectedFault);
-                        }
-                        return Ok(Some(OperationState::NotAttempted));
-                    },
+                let Some(target) = self
+                    .preflight_target(authorized, &operation, adapter, fault)
+                    .await?
+                else {
+                    return Ok(Some(OperationState::NotAttempted));
                 };
-                if fault == Some(FaultPoint::TargetObserved) {
-                    return Err(GatewayError::InjectedFault);
-                }
-                let target = ValidatedTargetIdentity::try_from(target)
-                    .map_err(|_| GatewayError::InvalidKubernetesFact)?;
                 let Some(permission) = self.journal.begin_attempt(&operation, target, fault)?
                 else {
                     return Ok(Some(OperationState::NotAttempted));

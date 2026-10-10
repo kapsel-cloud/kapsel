@@ -4,6 +4,8 @@ Notable changes are recorded here. Release tags retain their matching documentat
 
 ## Unreleased
 
+- Kubernetes preflight now rechecks retained grant custody before recording an attempt or rejection.
+  Changed grant bytes during receiver identification fail closed without advancing retained facts.
 - Git journal transitions now use the shared bounded atomic record-I/O owner. Format-6 bytes, phase
   checks, original authority and observation-only recovery remain unchanged.
 - Snapshot grant provisioning output-write failures now report the `provision-snapshot-grant`

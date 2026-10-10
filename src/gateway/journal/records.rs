@@ -581,6 +581,7 @@ struct Controls {
     defect: Option<Defect>,
     defect_reached: Vec<Defect>,
     sql: Vec<(Write, String)>,
+    original_trust: Option<Vec<crate::AuthorizationTrust>>,
 }
 
 #[cfg(test)]
@@ -614,10 +615,29 @@ pub(crate) enum Defect {
     ReceiptProjectionSwap,
     GitInferredAcknowledgement,
     CatalogConflictAccepted,
+    StaleTrust,
+    CustodyIgnored,
 }
 
 #[cfg(test)]
 impl Control {
+    pub(crate) fn appointed_trust(
+        &self,
+        current: Vec<crate::AuthorizationTrust>,
+    ) -> Vec<crate::AuthorizationTrust> {
+        let mut control = self.0.lock().unwrap();
+        let original = control
+            .original_trust
+            .get_or_insert_with(|| current.clone())
+            .clone();
+        if control.defect == Some(Defect::StaleTrust) && original != current {
+            control.defect_reached.push(Defect::StaleTrust);
+            original
+        } else {
+            current
+        }
+    }
+
     pub(crate) fn seed(&self, defect: Defect) {
         self.0.lock().unwrap().defect = Some(defect);
     }
@@ -660,6 +680,12 @@ impl Control {
                 .get(id)
                 .map(|row| row.0[row.index(field)].clone())
         })
+    }
+
+    pub(crate) fn set_value(&self, id: &str, field: &str, value: Value) {
+        let control = self.0.lock().unwrap();
+        let mut store = control.virtual_store.as_ref().unwrap().lock().unwrap();
+        store.get_mut(id).unwrap().set(field, value);
     }
 
     pub(crate) fn virtualized() -> Self {

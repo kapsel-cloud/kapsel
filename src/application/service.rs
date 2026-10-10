@@ -230,6 +230,15 @@ impl ServiceApplication {
         let approvals = Self::validate_configuration(&configuration)?;
         super::validate_journal_path(&configuration.journal_path)
             .map_err(|_| ServiceError::Configuration)?;
+        #[cfg(test)]
+        let configuration = {
+            let mut configuration = configuration;
+            if let Some(control) = &storage_control {
+                configuration.authorization_trust =
+                    control.appointed_trust(configuration.authorization_trust);
+            }
+            configuration
+        };
         let gateway = Gateway::open_with_authorities(
             &configuration.journal_path,
             configuration.authorization_trust,

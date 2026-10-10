@@ -1379,7 +1379,10 @@ fn authorized_record_on(
         };
     };
     let signed_grant = signed_grant.ok_or(GatewayError::InvalidPersistedState)?;
-    if signed_grant != authorization.signed_grant
+    let grant_changed = signed_grant != authorization.signed_grant;
+    #[cfg(test)]
+    let grant_changed = grant_changed && !io.control.exercise(Defect::CustodyIgnored);
+    if grant_changed
         || namespace != request.namespace()
         || deployment != request.deployment()
         || container != request.container()

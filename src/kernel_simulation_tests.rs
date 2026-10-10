@@ -4,6 +4,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    future::Future,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     sync::{
@@ -78,9 +79,18 @@ enum Action {
     GitRef { new: bool },
     Reopen { catalog: bool },
     Trust(bool),
+    SubstituteTrustKey,
+    CustodyDuringIo(IoPoint),
     ReplaceCatalog,
     Signer(Signer),
     Restore,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+enum IoPoint {
+    Preflight,
+    Mutation,
+    Observation,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -157,6 +167,29 @@ struct Store {
     virtualized: bool,
 }
 impl Store {
+    fn set_grant(&self, id: &str, git: bool, value: Value) {
+        if self.virtualized {
+            self.control
+                .set_value(id, "signed_authorization_grant", value);
+        } else {
+            let table = if git {
+                "git_ref_operations"
+            } else {
+                "kubernetes_image_operations"
+            };
+            Connection::open(&self.path)
+                .unwrap()
+                .execute(
+                    &format!(
+                        "UPDATE {table} SET signed_authorization_grant = ?1
+                     WHERE operation_id = ?2"
+                    ),
+                    rusqlite::params![value, id],
+                )
+                .unwrap();
+        }
+    }
+
     fn raw(&self, id: &str) -> BTreeMap<String, Value> {
         self.raw_effect(id, false)
     }
@@ -293,6 +326,17 @@ struct Adapter {
     receiver: Receiver,
     lose_response: bool,
     fresh: bool,
+    gate: Option<(IoPoint, Arc<tokio::sync::Notify>)>,
+}
+
+impl Adapter {
+    async fn pause(&self, point: IoPoint) {
+        if let Some((selected, resume)) = &self.gate {
+            if *selected == point {
+                resume.notified().await;
+            }
+        }
+    }
 }
 
 #[allow(
@@ -304,12 +348,14 @@ impl DeploymentImageAdapter for Adapter {
         &mut self,
         selected: &SetDeploymentImageRequest,
     ) -> Result<TargetIdentity, TargetReadError> {
-        let mut io = self.io.lock().unwrap();
-        io.reads += 1;
-        if selected != &self.intent.request {
-            io.violation = Some("original_intent");
+        {
+            let mut io = self.io.lock().unwrap();
+            io.reads += 1;
+            if selected != &self.intent.request {
+                io.violation = Some("original_intent");
+            }
         }
-        drop(io);
+        self.pause(IoPoint::Preflight).await;
         if matches!(self.receiver, Receiver::Unavailable) {
             return Err(TargetReadError::Transient);
         }
@@ -326,31 +372,35 @@ impl DeploymentImageAdapter for Adapter {
     async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
         let payload = permission.into_payload();
         let raw = self.store.raw(&self.intent.request.operation_id);
-        let mut io = self.io.lock().unwrap();
-        if !self.fresh
-            || self.store.control.last_delivery(StorageWrite::Attempt) != Some(Delivery::Confirmed)
-            || text(&raw, "state") != Some("apply_started")
-        {
-            io.violation = Some("dispatch_provenance");
-        }
-        if payload.0 != self.intent.request
-            || payload.1.deployment_uid != self.intent.uid
-            || payload.1.resource_version != self.intent.version
-        {
-            io.violation = Some("original_intent");
-        }
-        io.sends.push(payload);
-        let outcome = ApplyOutcome {
-            accepted: true,
-            requested_generation: Some(7),
-            deployment_uid: Some(self.intent.uid.clone()),
-            resource_version: Some("after-patch".into()),
+        let outcome = {
+            let mut io = self.io.lock().unwrap();
+            if !self.fresh
+                || self.store.control.last_delivery(StorageWrite::Attempt)
+                    != Some(Delivery::Confirmed)
+                || text(&raw, "state") != Some("apply_started")
+            {
+                io.violation = Some("dispatch_provenance");
+            }
+            if payload.0 != self.intent.request
+                || payload.1.deployment_uid != self.intent.uid
+                || payload.1.resource_version != self.intent.version
+            {
+                io.violation = Some("original_intent");
+            }
+            io.sends.push(payload);
+            let outcome = ApplyOutcome {
+                accepted: true,
+                requested_generation: Some(7),
+                deployment_uid: Some(self.intent.uid.clone()),
+                resource_version: Some("after-patch".into()),
+            };
+            if self.lose_response {
+                return Err(());
+            }
+            io.response = Some(outcome.clone());
+            outcome
         };
-        if self.lose_response {
-            return Err(());
-        }
-        io.response = Some(outcome.clone());
-        drop(io);
+        self.pause(IoPoint::Mutation).await;
         Ok(outcome)
     }
 
@@ -359,53 +409,60 @@ impl DeploymentImageAdapter for Adapter {
         selected: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
     ) -> Result<ReceiverObservation, ()> {
-        let mut io = self.io.lock().unwrap();
-        io.reads += 1;
-        if selected != &self.intent.request
-            || outcome.deployment_uid.as_deref() != Some(self.intent.uid.as_str())
-        {
-            io.violation = Some("original_intent");
-        }
-        if matches!(self.receiver, Receiver::Unavailable) {
-            return Err(());
-        }
-        let sent = !io.sends.is_empty();
-        let failed = matches!(self.receiver, Receiver::Failed);
-        let pending = matches!(self.receiver, Receiver::Pending);
-        let observation = ReceiverObservation {
-            deployment_uid: Some(if matches!(self.receiver, Receiver::Replaced) {
-                "replacement-uid".into()
-            } else {
-                self.intent.uid.clone()
-            }),
-            resource_version: Some(
-                if sent {
-                    "observed-version"
+        let observation = {
+            let mut io = self.io.lock().unwrap();
+            io.reads += 1;
+            if selected != &self.intent.request
+                || outcome.deployment_uid.as_deref() != Some(self.intent.uid.as_str())
+            {
+                io.violation = Some("original_intent");
+            }
+            if matches!(self.receiver, Receiver::Unavailable) {
+                return Err(());
+            }
+            let sent = !io.sends.is_empty();
+            let failed = matches!(self.receiver, Receiver::Failed);
+            let pending = matches!(self.receiver, Receiver::Pending);
+            let observation = ReceiverObservation {
+                deployment_uid: Some(if matches!(self.receiver, Receiver::Replaced) {
+                    "replacement-uid".into()
                 } else {
-                    &self.intent.version
-                }
-                .into(),
-            ),
-            current_generation: Some(if sent { 7 } else { 3 }),
-            observed_generation: Some(if sent && pending {
-                6
-            } else if sent {
-                7
-            } else {
-                3
-            }),
-            image: sent.then(|| self.intent.request.immutable_image_digest.clone()),
-            operation_marker: sent.then(|| self.intent.request.operation_id.clone()),
-            desired_replicas: Some(if pending { 5 } else { 1 }),
-            updated_replicas: Some(if pending { 4 } else { i32::from(!failed) }),
-            available_replicas: Some(if pending { 2 } else { i32::from(!failed) }),
-            unavailable_replicas: Some(if pending { 3 } else { i32::from(failed) }),
-            rollout_condition_type: Some(if failed { "Progressing" } else { "Available" }.into()),
-            rollout_condition_status: Some(if failed || pending { "False" } else { "True" }.into()),
-            rollout_condition_reason: failed.then(|| "ProgressDeadlineExceeded".into()),
+                    self.intent.uid.clone()
+                }),
+                resource_version: Some(
+                    if sent {
+                        "observed-version"
+                    } else {
+                        &self.intent.version
+                    }
+                    .into(),
+                ),
+                current_generation: Some(if sent { 7 } else { 3 }),
+                observed_generation: Some(if sent && pending {
+                    6
+                } else if sent {
+                    7
+                } else {
+                    3
+                }),
+                image: sent.then(|| self.intent.request.immutable_image_digest.clone()),
+                operation_marker: sent.then(|| self.intent.request.operation_id.clone()),
+                desired_replicas: Some(if pending { 5 } else { 1 }),
+                updated_replicas: Some(if pending { 4 } else { i32::from(!failed) }),
+                available_replicas: Some(if pending { 2 } else { i32::from(!failed) }),
+                unavailable_replicas: Some(if pending { 3 } else { i32::from(failed) }),
+                rollout_condition_type: Some(
+                    if failed { "Progressing" } else { "Available" }.into(),
+                ),
+                rollout_condition_status: Some(
+                    if failed || pending { "False" } else { "True" }.into(),
+                ),
+                rollout_condition_reason: failed.then(|| "ProgressDeadlineExceeded".into()),
+            };
+            io.returned = Some(observation.clone());
+            observation
         };
-        io.returned = Some(observation.clone());
-        drop(io);
+        self.pause(IoPoint::Observation).await;
         Ok(observation)
     }
 }
@@ -740,6 +797,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     receiver: Receiver::Healthy,
                     lose_response: false,
                     fresh: true,
+                    gate: None,
                 },
                 checker: Checker::default(),
                 eligible_progress: false,
@@ -762,11 +820,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     let mut app = open(configuration.clone(), &control);
     let mut selected = 0;
     let mut restored = false;
-    let mut trusted = true;
+    let mut trusted = vec![true; peers.len()];
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
-                let no_changes = !trusted
+                let no_changes = !trusted[selected]
                     || (selection.sign
                         && matches!(peers[selected].signer, Signer::Invalid)
                         && matches!(
@@ -786,7 +844,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     adapter.intent.receipt_key.clone_from(&signing.1);
                 }
                 peer.eligible_progress |= restored
-                    && trusted
+                    && trusted[selected]
                     && selection.sign
                     && selection.commit.is_none()
                     && matches!(selection.cut, Cut::None)
@@ -831,7 +889,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     originals != peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
                 }) {
                     return Err(Finding {
-                        law: if trusted {
+                        law: if trusted[selected] {
                             "failed_signing_preserves_history"
                         } else {
                             "withdrawn_trust"
@@ -879,7 +937,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
             },
             Action::Reopen { catalog } => {
                 drop(app);
-                configuration.approvals = if catalog && trusted {
+                configuration.approvals = if catalog && trusted.iter().all(|key| *key) {
                     peers
                         .iter()
                         .map(|peer| peer.adapter.intent.approval())
@@ -891,7 +949,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
             },
             Action::Trust(available) => {
                 drop(app);
-                trusted = available;
+                trusted.fill(available);
                 configuration.approvals.clear();
                 configuration.authorization_trust = if available {
                     peers
@@ -903,11 +961,27 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 };
                 app = open(configuration.clone(), &control);
             },
+            Action::SubstituteTrustKey => {
+                drop(app);
+                trusted[selected] = false;
+                configuration.approvals.clear();
+                let original = &peers[selected].adapter.intent;
+                if let Some(appointment) = configuration
+                    .authorization_trust
+                    .iter_mut()
+                    .find(|key| key.key_id == original.authorization_key)
+                {
+                    appointment.public_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32])
+                        .verifying_key()
+                        .to_bytes();
+                }
+                app = open(configuration.clone(), &control);
+            },
             Action::ReplaceCatalog => {
                 let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
                 let mut replacement_configuration = configuration.clone();
                 replacement_configuration.approvals.clear();
-                if trusted {
+                if trusted.iter().all(|key| *key) {
                     for (index, peer) in peers.iter().enumerate() {
                         if peer.snapshot().0.is_empty() {
                             replacement_configuration
@@ -926,7 +1000,8 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         }
                     }
                 }
-                let conflict = trusted && before.iter().any(|snapshot| !snapshot.0.is_empty());
+                let conflict = trusted.iter().all(|key| *key)
+                    && before.iter().any(|snapshot| !snapshot.0.is_empty());
                 let result =
                     ServiceApplication::open_simulated(replacement_configuration, control.clone());
                 if result.is_err() != conflict
@@ -940,10 +1015,27 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 }
                 // A refused operator configuration never replaces the running application.
             },
+            Action::CustodyDuringIo(point) => {
+                let before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
+                peers[selected]
+                    .custody_during_io(&mut app, point, event)
+                    .await?;
+                if peers
+                    .iter()
+                    .enumerate()
+                    .any(|(index, peer)| index != selected && peer.snapshot() != before[index])
+                {
+                    return Err(Finding {
+                        law: "custody_after_io",
+                        event,
+                        defect_reached: control.defect_reached(),
+                    });
+                }
+            },
             Action::Signer(signer) => peers[selected].signer = signer,
             Action::Restore => {
                 restored = true;
-                trusted = true;
+                trusted.fill(true);
                 drop(app);
                 for peer in &mut peers {
                     peer.adapter.receiver = Receiver::Healthy;
@@ -966,8 +1058,12 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 app = open(configuration.clone(), &control);
             },
         }
-        for peer in &mut peers {
+        check_disclosure(&app, &peers, &trusted, &control, event)?;
+        for (index, peer) in peers.iter_mut().enumerate() {
             let adapter = &peer.adapter;
+            if !trusted[index] {
+                continue;
+            }
             if let Some(git) = &peer.git {
                 peer.checker
                     .check_git(&app, &store, &adapter.intent, git, event, false)?;
@@ -1013,6 +1109,43 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
             trace.actions.len(),
             trace.require_progress,
         )?;
+    }
+    Ok(())
+}
+
+fn check_disclosure(
+    app: &ServiceApplication,
+    peers: &[Peer],
+    trusted: &[bool],
+    control: &StorageControl,
+    event: usize,
+) -> Checked {
+    let history = app.history(None).unwrap();
+    for (index, peer) in peers.iter().enumerate() {
+        if peer.snapshot().0.is_empty() {
+            continue;
+        }
+        let id = &peer.adapter.intent.request.operation_id;
+        let accessible = trusted[index];
+        let projections = [
+            app.status(id).is_ok(),
+            app.receipt(id).is_ok(),
+            app.admitted_state(id).is_ok(),
+        ];
+        // Enumeration is a physical SQL query; the virtual record store owns point reads only.
+        let history_matches = peer.adapter.store.virtualized
+            || history
+                .entries
+                .iter()
+                .find(|entry| &entry.operation_id == id)
+                .is_some_and(|entry| entry.status.is_ok() == accessible);
+        if !history_matches || projections.iter().any(|actual| *actual != accessible) {
+            return Err(Finding {
+                law: "original_trust_disclosure",
+                event,
+                defect_reached: control.defect_reached(),
+            });
+        }
     }
     Ok(())
 }
@@ -1085,6 +1218,88 @@ impl Peer {
             .unwrap()
         };
         (replacement.approval(), replacement.trust())
+    }
+
+    async fn custody_during_io(
+        &mut self,
+        app: &mut ServiceApplication,
+        point: IoPoint,
+        event: usize,
+    ) -> Checked {
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let id = self.adapter.intent.request.operation_id.clone();
+        let store = self.adapter.store.clone();
+        let git = self.git.is_some();
+        let initial = self.snapshot();
+        let writes_before = store.control.reached().len();
+        self.adapter.gate = Some((point, Arc::clone(&resume)));
+        if let Some(git) = &self.git {
+            let mut state = git.script.state.lock().unwrap();
+            state.barrier = Some(match point {
+                IoPoint::Preflight => crate::gateway::git::exploration::Barrier::Preflight,
+                IoPoint::Mutation => crate::gateway::git::exploration::Barrier::Mutation,
+                IoPoint::Observation => crate::gateway::git::exploration::Barrier::Observation,
+            });
+            state.resume = Some(Arc::clone(&resume));
+            state.fresh_attempt = true;
+            state.fault = None;
+        }
+        let mut execution = Box::pin(app.select_with_adapters(
+            &id,
+            ServiceExecution {
+                kubernetes_client: None,
+                git_receiver: None,
+                receipt_signing: None,
+            },
+            Some(&mut self.adapter),
+            self.git.as_ref().map(|git| git.script.receiver()),
+            |_| {},
+            None,
+        ));
+        let suspended = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(execution.as_mut().poll(cx).is_pending())
+        })
+        .await;
+        if !suspended {
+            return Err(Finding {
+                law: "custody_cut_not_reached",
+                event,
+                defect_reached: store.control.defect_reached(),
+            });
+        }
+        let original = store.raw_effect(&id, git);
+        store.set_grant(&id, git, Value::Blob(vec![1]));
+        let attacked = store.raw_effect(&id, git);
+        resume.notify_one();
+        let result = execution.await;
+        self.adapter.gate = None;
+        if let Some(git) = &self.git {
+            let mut state = git.script.state.lock().unwrap();
+            state.barrier = None;
+            state.resume = None;
+        }
+        let after = self.snapshot();
+        let expected_reads = initial.1 + 1 + usize::from(point == IoPoint::Observation);
+        let expected_sends = initial.2 + usize::from(point != IoPoint::Preflight);
+        if let Some(git) = &self.git {
+            if store.control.reached()[writes_before..].contains(&StorageWrite::Response) {
+                *git.durable_ack.lock().unwrap() =
+                    git.script.state.lock().unwrap().returned_acknowledgement;
+            }
+        }
+        let refused = result.is_err()
+            && after.0 == attacked
+            && after.1 == expected_reads
+            && after.2 == expected_sends;
+        store.set_grant(&id, git, original["signed_authorization_grant"].clone());
+        if !refused {
+            return Err(Finding {
+                law: "custody_after_io",
+                event,
+                defect_reached: store.control.defect_reached(),
+            });
+        }
+        Ok(())
     }
 
     fn snapshot(&self) -> (BTreeMap<String, Value>, usize, usize) {
@@ -2001,6 +2216,13 @@ async fn replacement_catalog_and_rotated_material_preserve_retained_history() {
         }
         actions.push(Action::ReplaceCatalog);
         actions.push(Action::Reopen { catalog: false });
+        for peer in 0..3 {
+            actions.extend([Action::Peer(peer), Action::SubstituteTrustKey]);
+            for selected in 0..3 {
+                actions.extend([Action::Peer(selected), select(None, Cut::None, false, true)]);
+            }
+            actions.push(Action::Trust(true));
+        }
         for peer in (0..3).rev() {
             actions.extend([
                 Action::Peer(peer),
@@ -2031,8 +2253,55 @@ async fn replacement_catalog_and_rotated_material_preserve_retained_history() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn suspended_io_rechecks_original_custody_before_advancing_any_peer() {
+    for point in [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation] {
+        let mut input = multi_trace(
+            19,
+            3,
+            vec![
+                Action::Peer(0),
+                select(None, Cut::Frozen, false, false),
+                Action::Peer(1),
+                select(None, Cut::None, false, true),
+                Action::Peer(2),
+                Action::CustodyDuringIo(point),
+            ],
+        );
+        for effects in [
+            vec![Effect::Kubernetes; 3],
+            vec![Effect::Git; 3],
+            vec![Effect::Kubernetes, Effect::Git, Effect::Kubernetes],
+            vec![Effect::Git, Effect::Kubernetes, Effect::Git],
+        ] {
+            input.effects = effects;
+            for virtualized in [true, false] {
+                assert_eq!(
+                    replay(&input, virtualized).await,
+                    Ok(()),
+                    "{point:?}/{virtualized}/{:?}",
+                    input.effects
+                );
+            }
+        }
+    }
+}
+
 fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
     vec![
+        (
+            Defect::CustodyIgnored,
+            "custody_after_io",
+            vec![Action::CustodyDuringIo(IoPoint::Mutation)],
+        ),
+        (
+            Defect::StaleTrust,
+            "original_trust_disclosure",
+            vec![
+                select(None, Cut::BeforeAttempt, false, false),
+                Action::SubstituteTrustKey,
+            ],
+        ),
         (
             Defect::CatalogConflictAccepted,
             "catalog_identity_conflict",
@@ -2106,7 +2375,10 @@ fn defect_inputs() -> Vec<Trace> {
         .flat_map(|(defect, _, prefix)| {
             let assignments = match defect {
                 Defect::GitInferredAcknowledgement => vec![vec![Effect::Git; 2]],
-                Defect::WrongSigner | Defect::CatalogConflictAccepted => vec![
+                Defect::WrongSigner
+                | Defect::CatalogConflictAccepted
+                | Defect::StaleTrust
+                | Defect::CustodyIgnored => vec![
                     vec![Effect::Kubernetes; 2],
                     vec![Effect::Git; 2],
                     vec![Effect::Kubernetes, Effect::Git],
@@ -2118,7 +2390,10 @@ fn defect_inputs() -> Vec<Trace> {
                 input.effects = effects;
                 if matches!(
                     defect,
-                    Defect::WrongSigner | Defect::CatalogConflictAccepted
+                    Defect::WrongSigner
+                        | Defect::CatalogConflictAccepted
+                        | Defect::StaleTrust
+                        | Defect::CustodyIgnored
                 ) && matches!(input.effects[1], Effect::Git)
                 {
                     input.actions.insert(0, Action::Peer(1));
@@ -2177,6 +2452,8 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::ReceiptProjectionSwap => "receipt_binding",
         Defect::GitInferredAcknowledgement => "git_acknowledgement_binding",
         Defect::CatalogConflictAccepted => "catalog_identity_conflict",
+        Defect::StaleTrust => "original_trust_disclosure",
+        Defect::CustodyIgnored => "custody_after_io",
     }
 }
 
@@ -2239,14 +2516,24 @@ fn generated(seed: u64, steps: usize) -> Trace {
     if matches!(effects[0], Effect::Git) && write == StorageWrite::Authorization {
         write = StorageWrite::Admission;
     }
-    let mut actions = vec![select(Some((write, delivery)), Cut::None, false, true)];
+    let point = match (seed / 3) % 3 {
+        0 => IoPoint::Preflight,
+        1 => IoPoint::Mutation,
+        _ => IoPoint::Observation,
+    };
+    let mut actions = vec![
+        Action::Peer(1),
+        Action::CustodyDuringIo(point),
+        Action::Peer(0),
+        select(Some((write, delivery)), Cut::None, false, true),
+    ];
     let mut random = seed.wrapping_add(1);
     for _ in 0..steps {
         random ^= random << 13;
         random ^= random >> 7;
         random ^= random << 17;
         actions.push(Action::Peer(usize::try_from((random / 8) % 3).unwrap()));
-        actions.push(match random % 10 {
+        actions.push(match random % 11 {
             0 => Action::Receiver(Receiver::Unavailable),
             1 => Action::Receiver(Receiver::Pending),
             2 => Action::Receiver(Receiver::Failed),
@@ -2257,7 +2544,8 @@ fn generated(seed: u64, steps: usize) -> Trace {
             5 => Action::Trust(false),
             6 => Action::Trust(true),
             7 => Action::ReplaceCatalog,
-            8 => Action::Signer(if random & 16 == 0 {
+            8 => Action::SubstituteTrustKey,
+            9 => Action::Signer(if random & 16 == 0 {
                 Signer::Rotated
             } else {
                 Signer::Original

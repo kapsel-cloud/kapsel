@@ -113,14 +113,17 @@ receiver I/O. Generated three-identity schedules use Kubernetes-only, Git-only a
 assignments. They interleave selections, receiver changes, catalog removal, trust withdrawal and
 restored prerequisites. Conflicting catalog replacement must fail application construction without
 changing any peer's retained facts or receiver counts. Withdrawn trust must permit neither I/O nor
-retained fact changes; restoring trust does not substitute current catalog authority for history.
-Signer rotation before receipt commitment may choose the new signer. Rotation after commitment must
-return the original bytes and signer. Invalid signing material at frozen history must change no
-facts or receiver counts. Production journal policy validates authority, transitions and frozen
-facts. Its private record-I/O owner reads complete bounded rows from either typed table and
-conditionally commits against the original row. SQLite updates only changed columns. The test-only
-virtual store implements atomic records, not lifecycle policy. Neither backend selection nor fault
-controls are caller inputs.
+retained fact changes. Substituting a different public key under the original key ID must disclose
+neither targets nor receipt bytes. Every retained peer checks status, admission and receipt reads;
+real SQLite additionally checks history-page projections. Unaffected peers remain readable.
+Restoring trust does not substitute current catalog authority for history. Signer rotation before
+receipt commitment may choose the new signer. Rotation after commitment must return the original
+bytes and signer. Invalid signing material at frozen history must change no facts or receiver
+counts. Production journal policy validates authority, transitions and frozen facts. Its private
+record-I/O owner reads complete bounded rows from either typed table and conditionally commits
+against the original row. SQLite updates only changed columns. The test-only virtual store
+implements atomic records, not lifecycle policy. Neither backend selection nor fault controls are
+caller inputs.
 
 The slice checks original intent, confirmed dispatch provenance, initial classification, complete
 receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt
@@ -136,14 +139,15 @@ control. The shared stale-record control also runs against Git rows.
 
 Seeded remint, wrong-initial-result, no-op, wrong-signer, accepted catalog conflict, wrong-peer
 lookup, physical replica-field-swap, receipt-decoder field-swap and unconditional-write controls
-must violate their intended law and report the reached faulty branch. Wrong-peer lookup deliberately
-misroutes the selected identity before grant binding; a wrong lower-layer row alone is refused by
-the existing identity guard. An unrelated bounded refusal does not qualify as detection. Generated
-schedules record their actions and retain an explicit healthy suffix. Progress requires a restored
-receiver, healthy storage, original trust and an available signer for every identity. Minimized
-progress witnesses must preserve eligibility for every peer, not only the first peer checked.
-Minimized safety witnesses need not finish the operation; correct code must pass those same prefixes
-on both stores.
+must violate their intended law and report the reached faulty branch. Stale-trust and
+ignored-custody controls separately establish original-key non-disclosure and post-I/O binding.
+Wrong-peer lookup deliberately misroutes the selected identity before grant binding; a wrong
+lower-layer row alone is refused by the existing identity guard. An unrelated bounded refusal does
+not qualify as detection. Generated schedules record their actions and retain an explicit healthy
+suffix. Progress requires a restored receiver, healthy storage, original trust and an available
+signer for every identity. Minimized progress witnesses must preserve eligibility for every peer,
+not only the first peer checked. Minimized safety witnesses need not finish the operation; correct
+code must pass those same prefixes on both stores.
 
 Run the deterministic slice:
 
@@ -155,8 +159,16 @@ cargo test --locked -p kapsel --lib atomic_record_binding
 The atomic-delivery workload and remint control replace the procedural unsent-attempt recovery
 scenario in `gateway::tests::dispatch`: acknowledgement loss or a dropped fresh permission adds no
 send, recovery freezes honest `UNKNOWN`, and later selection retains original bytes with no I/O. The
-competing-claimants check still owns stale Authorized-snapshot refusal; foreign snapshots, authority
-changes during I/O and actual cancellation retain their local owners.
+competing-claimants check still owns stale Authorized-snapshot refusal; foreign snapshots and actual
+cancellation retain their local owners.
+
+`suspended_io_rechecks_original_custody_before_advancing_any_peer` suspends real selection at
+preflight, mutation and observation. While the future is pending, it replaces retained grant bytes,
+then releases the receiver. The continuation must refuse without changing the attacked record or
+performing further I/O. The checker restores only the externally altered grant bytes before same-ID
+recovery. Frozen and finalized neighbours remain unchanged. Both effects run this law on both
+stores, with reached ignored-custody defects and minimized replay. These checks replace the local
+changed-grant-during-apply matrix; they do not replace filesystem/process custody.
 
 `replacement_catalog_and_rotated_material_preserve_retained_history` checks admitted, authorized,
 attempted, frozen and finalized history across catalog conflicts and signer changes. Receipt
@@ -174,11 +186,12 @@ cargo test --locked -p kapsel --lib \
   kernel_simulation_tests::kernel_trace_exploration_or_replay -- --ignored --exact --nocapture
 ```
 
-Set `KAPSEL_KERNEL_DEFECTS=1` to retain thirteen inputs for nine lifecycle defects and their
-minimized findings. Catalog-conflict and wrong-signer controls include Kubernetes, Git and mixed
-assignments. The atomic-record binding control has its separate deterministic owner. Each document
-is created exclusively before execution and records source-content and executable digests. These
-digests are not build attestations. Replay a retained document without regenerating its schedule:
+Set `KAPSEL_KERNEL_DEFECTS=1` to retain nineteen inputs for eleven lifecycle defects and their
+minimized findings. Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include
+Kubernetes, Git and mixed assignments. The atomic-record binding control has its separate
+deterministic owner. Each document is created exclusively before execution and records
+source-content and executable digests. These digests are not build attestations. Replay a retained
+document without regenerating its schedule:
 
 ```sh
 KAPSEL_KERNEL_REPLAY=/absolute/retained/finding-0.json cargo test --locked -p kapsel --lib \
