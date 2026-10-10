@@ -20,11 +20,6 @@ pub(crate) use authorization::{
     sign_authorization_grant, validate_authorization_trust, verify_authorization_grant,
 };
 pub use authorization::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
-#[cfg(test)]
-pub(crate) use git::exploration::{
-    approval as exploration_git_approval, Barrier as ExplorationGitBarrier,
-    Script as ExplorationGitScript,
-};
 pub use git::{
     Acknowledgement as GitAcknowledgement, GitReceiverConfiguration, ObservedRef as GitObservedRef,
 };

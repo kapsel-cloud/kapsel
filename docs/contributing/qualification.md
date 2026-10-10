@@ -464,38 +464,32 @@ not merely a zero process exit.
 
 ### Background sweep and retained evidence
 
-For the bounded lifecycle explorer, use the same existing private state and scratch roots:
+For the shared atomic-record simulator, use the existing private state and scratch roots:
 
 ```sh
 python3 tools/dev/run_robustness.py exploration \
   --seed 21182435931731969 --cases 1000 --shards 2 --timeout 1800
 ```
 
-`exploration`, `simulation`, and `soak` default to the same lifecycle explorer; existing shell
-commands and `KAPSEL_SIMULATION_*` seed/case/shard defaults remain accepted. Select the
-atomic-record mixed-effect simulator explicitly with `--simulation-engine kernel`:
+`exploration`, `simulation` and `soak` use the same simulator. Existing shell commands and
+`KAPSEL_SIMULATION_*` seed/case/shard defaults remain accepted; `--simulation-engine kernel` selects
+the same owner explicitly. The supervisor preserves source checks, storage budgets, locking, command
+retirement, shard accounting and Rust-owned directory replay.
 
-```sh
-python3 tools/dev/run_robustness.py exploration --simulation-engine kernel \
-  --seed 21182435931731969 --cases 1000 --shards 2 --timeout 1800
-```
+Generated schedules interleave 48 steps across three distinct identities under Kubernetes-only,
+Git-only and mixed assignments. Suspended custody and cancellation events precede those steps;
+healthy suffixes are additional. Every event checks all peers through real service selection and
+virtual atomic records. Defect inputs use the separate local detection route, not this healthy
+sweep. Cases are bounded to 10,000 per seed. This lane does not qualify actual Git transport,
+physical jobs, SQLite OS failures, live receivers or installed artifacts.
 
-The kernel route uses the same supervisor, source checks, storage budget, lock, command retirement,
-shard accounting and Rust-owned directory replay. It explores three distinct identities under
-Kubernetes-only, Git-only and mixed assignments through real service selection and virtual atomic
-records. It does not qualify actual Git transport, physical jobs, SQLite OS failures, live receivers
-or installed artifacts. The supervisor requests 48 generated steps. Lifecycle counts them per
-identity; kernel interleaves them across three identities. Healthy suffixes are additional. Kernel
-defect-control inputs belong to the separate local detection route, not the healthy supervised
-sweep. Cases are bounded to 10,000 per seed. These modes share the simulation lane's custody lock
-and unresolved-finding stop rule. It builds once in owned scratch and retains every full trace
-before execution. The default engine runs explicit Kubernetes/Git/application traces with 48
-generated steps per identity. It checks each shard's completion count, trace identities, and content
-hashes, then directly deserializes and replays every retained document through the owning Rust
-implementation. Missing documents, failed replay, or missing replay markers do not pass. The
-1,800-second overall limit includes compilation and replay; completion need not take 30 minutes.
-Infrastructure must enforce the two-CPU/4-GiB ceilings described below. The unchanged
-clean-committed-source requirement also applies to this mode.
+These modes share the simulation lane's custody lock and unresolved-finding stop rule. The
+supervisor builds once in owned scratch and retains every full trace before execution. It checks
+each shard's completion count, trace identities and content hashes. Then the owning Rust parser and
+oracle deserialize and replay every retained document. Missing documents, failed replay or missing
+markers do not pass. The 1,800-second overall limit includes compilation and replay; completion need
+not take 30 minutes. Infrastructure must enforce the two-CPU/4-GiB ceilings described below. Clean
+committed source remains required.
 
 [The soak runner](../../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random
 seeds, 1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout

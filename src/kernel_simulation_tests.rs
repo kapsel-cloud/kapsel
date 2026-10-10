@@ -25,6 +25,53 @@ use crate::{
     TargetReadError,
 };
 
+fn source_identity() -> String {
+    use std::process::Command;
+    let output = Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success() && output.stdout.len() < 1024 * 1024);
+    let mut files = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    files.sort_unstable();
+    files.dedup();
+    let mut hash = Sha256::new();
+    let mut total = 0;
+    for path in files {
+        let text = std::str::from_utf8(path).unwrap();
+        // Cached names include unstaged deletions; the digest describes the current source bytes.
+        if !Path::new(text).try_exists().unwrap() {
+            continue;
+        }
+        let bytes = fs::read(text).unwrap();
+        total += bytes.len();
+        assert!(total <= 64 * 1024 * 1024);
+        hash.update(u64::try_from(path.len()).unwrap().to_le_bytes());
+        hash.update(path);
+        hash.update(u64::try_from(bytes.len()).unwrap().to_le_bytes());
+        hash.update(bytes);
+    }
+    hex(&hash.finalize())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut output, byte| {
+        write!(output, "{byte:02x}").unwrap();
+        output
+    })
+}
+
 const ID: &str = "kernel-kubernetes";
 const UID: &str = "original-uid";
 const VERSION: &str = "approved-version";
@@ -179,6 +226,26 @@ struct Store {
     virtualized: bool,
 }
 impl Store {
+    fn replace_git_receipt(&self, id: &str, mut bytes: Vec<u8>) {
+        bytes.push(b' ');
+        let digest = hex(&Sha256::digest(&bytes));
+        if self.virtualized {
+            self.control
+                .set_value(id, "receipt_bytes", Value::Blob(bytes));
+            self.control
+                .set_value(id, "receipt_digest", Value::Text(digest));
+        } else {
+            Connection::open(&self.path)
+                .unwrap()
+                .execute(
+                    "UPDATE git_ref_operations SET receipt_bytes = ?1, receipt_digest = ?2
+                 WHERE operation_id = ?3",
+                    rusqlite::params![bytes, digest, id],
+                )
+                .unwrap();
+        }
+    }
+
     fn set_grant(&self, id: &str, git: bool, value: Value) {
         if self.virtualized {
             self.control
@@ -625,7 +692,7 @@ impl Intent {
     }
 
     fn matches_record(&self, raw: &BTreeMap<String, Value>) -> bool {
-        let grant_digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&self.grant));
+        let grant_digest = hex(&Sha256::digest(&self.grant));
         text(raw, "authorization_id") == Some(self.authorization_id.as_str())
             && text(raw, "authorization_signer_key_id") == Some(self.authorization_key.as_str())
             && text(raw, "authorization_grant_digest") == Some(grant_digest.as_str())
@@ -659,6 +726,17 @@ struct Checker {
     original_bytes: Option<Value>,
 }
 impl Checker {
+    fn receipt_bytes_unchanged(&mut self, raw: &BTreeMap<String, Value>) -> bool {
+        if let Some(original) = &self.original_bytes {
+            return raw.get("receipt_bytes") == Some(original);
+        }
+        self.original_bytes = raw
+            .get("receipt_bytes")
+            .filter(|value| **value != Value::Null)
+            .cloned();
+        true
+    }
+
     fn check(
         &mut self,
         store: &Store,
@@ -694,16 +772,7 @@ impl Checker {
                 "attempt_binding",
             )?;
         }
-        if let Some(bytes) = raw
-            .get("receipt_bytes")
-            .filter(|value| **value != Value::Null)
-        {
-            if let Some(original) = &self.original_bytes {
-                require(original == bytes, "original_receipt_bytes")?;
-            } else {
-                self.original_bytes = Some(bytes.clone());
-            }
-        }
+        require(self.receipt_bytes_unchanged(&raw), "original_receipt_bytes")?;
         if matches!(text(&raw, "state"), Some("receiver_observed" | "finalized")) {
             if self.frozen.is_none() {
                 require(
@@ -792,7 +861,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 Effect::Kubernetes => (Intent::new(peer), None),
                 Effect::Git => {
                     let (intent, authorization) = Intent::git(peer);
-                    let script = crate::gateway::git::exploration::Script::kernel(
+                    let script = crate::gateway::git::exploration::Script::new(
                         authorization.clone(),
                         store.path.clone(),
                         control.clone(),
@@ -1001,6 +1070,21 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     vec![]
                 };
                 app = open(configuration.clone(), &control);
+                if !available {
+                    for peer in &peers {
+                        if peer.git.is_some() {
+                            let raw = peer.snapshot().0;
+                            if let Some(Value::Blob(bytes)) = raw.get("receipt_bytes") {
+                                if control.exercise(Defect::ReceiptRewrite) {
+                                    store.replace_git_receipt(
+                                        &peer.adapter.intent.request.operation_id,
+                                        bytes.clone(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             },
             Action::SubstituteTrustKey => {
                 drop(app);
@@ -1570,8 +1654,9 @@ impl Checker {
             return require(!require_progress, "healthy_progress");
         }
         require(receipt_columns_match(&raw, intent), "receipt_columns")?;
+        require(self.receipt_bytes_unchanged(&raw), "original_receipt_bytes")?;
         let approval = &git.authorization;
-        let digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&intent.grant));
+        let digest = hex(&Sha256::digest(&intent.grant));
         for (field, expected) in [
             ("operation_id", &approval.operation_id),
             ("repository_id", &approval.repository_id),
@@ -1671,16 +1756,7 @@ impl Checker {
                     raw.get("receipt_bytes") == Some(&Value::Blob(bytes.clone())),
                     "original_receipt_bytes",
                 )?;
-                require(
-                    crate::lifecycle_exploration_tests::hex(&Sha256::digest(&bytes)) == sha256,
-                    "receipt_digest",
-                )?;
-                let bytes = Value::Blob(bytes);
-                if let Some(original) = &self.original_bytes {
-                    require(original == &bytes, "original_receipt_bytes")?;
-                } else {
-                    self.original_bytes = Some(bytes);
-                }
+                require(hex(&Sha256::digest(&bytes)) == sha256, "receipt_digest")?;
             } else {
                 require(!require_progress, "healthy_progress")?;
             }
@@ -1962,7 +2038,7 @@ fn receipt_columns_match(raw: &BTreeMap<String, Value>, intent: &Intent) -> bool
     let Some(Value::Blob(bytes)) = raw.get("receipt_bytes") else {
         return false;
     };
-    let digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(bytes));
+    let digest = hex(&Sha256::digest(bytes));
     text(raw, "receipt_digest") == Some(digest.as_str())
         && text(raw, "receipt_key_id") == Some(intent.receipt_key.as_str())
 }
@@ -2031,7 +2107,7 @@ fn check_terminal(
                     defect_reached: control.defect_reached(),
                 });
             }
-            let digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&bytes));
+            let digest = hex(&Sha256::digest(&bytes));
             if digest != sha256 {
                 return Err(Finding {
                     law: "receipt_digest",
@@ -2672,6 +2748,18 @@ fn deliberate_inputs() -> Vec<Trace> {
                         ],
                     );
                     input.effects = effects.clone();
+                    if index == 1 && matches!(effects[0], Effect::Git) {
+                        let pending = input
+                            .actions
+                            .iter()
+                            .position(|action| {
+                                matches!(action, Action::Receiver(Receiver::Pending))
+                            })
+                            .unwrap();
+                        input
+                            .actions
+                            .insert(pending + 1, Action::GitRef { new: true });
+                    }
                     input
                 })
         })
@@ -2916,6 +3004,10 @@ async fn suspended_io_rechecks_original_custody_before_advancing_any_peer() {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep each seeded defect with its intended law and reached input"
+)]
 fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
     vec![
         (
@@ -2946,6 +3038,20 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
                 select(None, Cut::Unsent, false, false),
                 Action::GitRef { new: true },
                 select(None, Cut::Frozen, false, false),
+            ],
+        ),
+        (
+            Defect::GitObservationSubstitution,
+            "frozen_io_binding",
+            vec![select(None, Cut::Frozen, false, false)],
+        ),
+        (
+            Defect::ReceiptRewrite,
+            "original_receipt_bytes",
+            vec![
+                select(None, Cut::None, false, true),
+                Action::Peer(1),
+                Action::Trust(false),
             ],
         ),
         (
@@ -3011,7 +3117,12 @@ fn defect_inputs() -> Vec<Trace> {
         .into_iter()
         .flat_map(|(defect, _, prefix)| {
             let assignments = match defect {
-                Defect::GitInferredAcknowledgement => vec![vec![Effect::Git; 2]],
+                Defect::GitInferredAcknowledgement | Defect::GitObservationSubstitution => {
+                    vec![vec![Effect::Git; 2]]
+                },
+                Defect::ReceiptRewrite => {
+                    vec![vec![Effect::Git; 2], vec![Effect::Git, Effect::Kubernetes]]
+                },
                 Defect::WrongSigner
                 | Defect::CatalogConflictAccepted
                 | Defect::StaleTrust
@@ -3083,7 +3194,8 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::InitialUnknown => "initial_result",
         Defect::NoOp => "healthy_progress",
         Defect::UnconditionalWrite => "conditional_binding",
-        Defect::ReplicaSwap => "frozen_io_binding",
+        Defect::ReplicaSwap | Defect::GitObservationSubstitution => "frozen_io_binding",
+        Defect::ReceiptRewrite => "original_receipt_bytes",
         Defect::WrongSigner => "original_signer",
         Defect::WrongPeerRead => "original_intent",
         Defect::ReceiptProjectionSwap => "receipt_binding",
@@ -3344,9 +3456,9 @@ async fn kernel_trace_exploration_or_replay() {
     assert!(requested.is_absolute() && fs::symlink_metadata(&requested).unwrap().is_dir());
     let directory = fs::canonicalize(requested).unwrap();
     crate::gateway::validate_private_directory(&directory).unwrap();
-    let source = crate::lifecycle_exploration_tests::source_identity();
+    let source = source_identity();
     let executable = fs::read(std::env::current_exe().unwrap()).unwrap();
-    let executable_digest = crate::lifecycle_exploration_tests::hex(&Sha256::digest(&executable));
+    let executable_digest = hex(&Sha256::digest(&executable));
     let number = |name: &str, default: u64| {
         std::env::var(name).map_or(default, |value| value.parse::<u64>().unwrap())
     };

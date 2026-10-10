@@ -65,9 +65,8 @@ class ResultRecord(TypedDict):
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPLORATION_TEST = "lifecycle_exploration_tests::lifecycle_trace_exploration_or_replay"
 KERNEL_TEST = "kernel_simulation_tests::kernel_trace_exploration_or_replay"
-SimulationEngine = Literal["lifecycle", "kernel"]
+SimulationEngine = Literal["kernel"]
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
 STATE_LIMIT = 1024 * 1024 * 1024
@@ -451,11 +450,11 @@ def simulation(
     seeds: list[int],
     cases: int,
     shards: int,
-    engine: SimulationEngine = "lifecycle",
+    engine: SimulationEngine = "kernel",
     source_revision: str | None = None,
 ) -> None:
-    prefix = "KAPSEL_KERNEL" if engine == "kernel" else "KAPSEL_LIFECYCLE"
-    selected_test = KERNEL_TEST if engine == "kernel" else EXPLORATION_TEST
+    prefix = "KAPSEL_KERNEL"
+    selected_test = KERNEL_TEST
     source_archive = None
     if source_revision is not None:
         archive = supervisor.evidence / "source.tar"
@@ -821,7 +820,7 @@ def main() -> int:
         "--shards", type=positive, default=os.environ.get("KAPSEL_SIMULATION_SHARDS", "2")
     )
     parser.add_argument("--seed", type=int, action="append")
-    parser.add_argument("--simulation-engine", choices=("lifecycle", "kernel"), default="lifecycle")
+    parser.add_argument("--simulation-engine", choices=("kernel",), default="kernel")
     parser.add_argument(
         "--fuzz-seconds", type=positive, default=os.environ.get("KAPSEL_FUZZ_MAX_TIME", "1800")
     )

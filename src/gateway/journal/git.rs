@@ -273,6 +273,15 @@ impl Journal {
         next.set("acknowledgement", acknowledgement.as_str().to_owned());
         next.set("observed_ref_kind", kind.to_owned());
         next.set_optional("observed_commit", commit.map(str::to_owned));
+        #[cfg(test)]
+        if self
+            .records
+            .control
+            .exercise(super::records::Defect::GitObservationSubstitution)
+        {
+            next.set("observed_ref_kind", "commit".to_owned());
+            next.set("observed_commit", binding.authorization.old_commit.clone());
+        }
         self.records
             .replace(&self.connection, Some(&original), &next, Write::Observation)
     }

@@ -277,7 +277,7 @@ class RobustnessTests(unittest.TestCase):
             "profile": {"test": True},
         }
         output = (
-            "KAPSEL_LIFECYCLE_COMPLETED seed=1 shard=0/1 cases=2 steps=48\n"
+            "KAPSEL_KERNEL_COMPLETED seed=1 shard=0/1 cases=2 steps=48\n"
             "test result: ok. 1 passed; 0 failed; 0 ignored;"
         )
         with (
@@ -290,7 +290,7 @@ class RobustnessTests(unittest.TestCase):
                     [json.dumps(message)],
                     [output],
                     [
-                        "KAPSEL_LIFECYCLE_REPLAYED cases=2\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
+                        "KAPSEL_KERNEL_REPLAYED cases=2\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
                     ],
                 ],
             ) as run,
@@ -330,7 +330,7 @@ class RobustnessTests(unittest.TestCase):
             "target": {"name": "kapsel"},
             "profile": {"test": True},
         }
-        output = "KAPSEL_LIFECYCLE_COMPLETED seed=1 shard=0/1 cases=20 steps=48\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
+        output = "KAPSEL_KERNEL_COMPLETED seed=1 shard=0/1 cases=20 steps=48\ntest result: ok. 1 passed; 0 failed; 0 ignored;"
         with patch.object(self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]):
             with self.assertRaises(runner.Incomplete):
                 runner.simulation(self.supervisor, [1], 2, 1)
@@ -351,16 +351,16 @@ class RobustnessTests(unittest.TestCase):
                 return [json.dumps(message)]
             outputs = []
             for index, environment in enumerate(environments):
-                if "KAPSEL_LIFECYCLE_REPLAY_DIRECTORY" in environment:
-                    traces = Path(environment["KAPSEL_LIFECYCLE_REPLAY_DIRECTORY"])
+                if "KAPSEL_KERNEL_REPLAY_DIRECTORY" in environment:
+                    traces = Path(environment["KAPSEL_KERNEL_REPLAY_DIRECTORY"])
                     count = len(list(traces.iterdir()))
                     outputs.append(
-                        f"KAPSEL_LIFECYCLE_REPLAYED cases={count}\n"
+                        f"KAPSEL_KERNEL_REPLAYED cases={count}\n"
                         "test result: ok. 1 passed; 0 failed; 0 ignored;"
                     )
                     continue
-                self.assertEqual(selected[index][1], runner.EXPLORATION_TEST)
-                traces = Path(environment["KAPSEL_LIFECYCLE_EVIDENCE"])
+                self.assertEqual(selected[index][1], runner.KERNEL_TEST)
+                traces = Path(environment["KAPSEL_KERNEL_EVIDENCE"])
                 count = 0
                 for case in range(index, 3, 2):
                     runner.atomic_json(
@@ -369,17 +369,16 @@ class RobustnessTests(unittest.TestCase):
                             "seed": 7 + case,
                             "executable_sha256": digest,
                             "source_sha256": "a" * 64,
-                            "version": 1,
-                            "initial_state": "fresh_trusted_healthy",
-                            "identities": ["a", "b"],
-                            "effects": ["kubernetes", "git"],
-                            "require_progress": False,
-                            "events": [{"actor": "caller_submit", "id": 0, "competing": False}],
+                            "peers": 2,
+                            "effects": ["Kubernetes", "Git"],
+                            "require_progress": True,
+                            "defect": None,
+                            "actions": [],
                         },
                     )
                     count += 1
                 outputs.append(
-                    f"KAPSEL_LIFECYCLE_COMPLETED seed=7 shard={index}/2 cases={count} steps=48\n"
+                    f"KAPSEL_KERNEL_COMPLETED seed=7 shard={index}/2 cases={count} steps=48\n"
                     "test result: ok. 1 passed; 0 failed; 0 ignored;"
                 )
             self.assertTrue(finding)
@@ -459,7 +458,7 @@ class RobustnessTests(unittest.TestCase):
             "profile": {"test": True},
         }
         output = (
-            "KAPSEL_LIFECYCLE_COMPLETED seed=7 shard=0/1 cases=2 steps=48\n"
+            "KAPSEL_KERNEL_COMPLETED seed=7 shard=0/1 cases=2 steps=48\n"
             "test result: ok. 1 passed; 0 failed; 0 ignored;"
         )
         with patch.object(self.supervisor, "run", side_effect=[[json.dumps(message)], [output]]):
@@ -476,7 +475,7 @@ class RobustnessTests(unittest.TestCase):
             "profile": {"test": True},
         }
         output = (
-            "KAPSEL_LIFECYCLE_COMPLETED seed=7 shard=0/1 cases=2 steps=48\n"
+            "KAPSEL_KERNEL_COMPLETED seed=7 shard=0/1 cases=2 steps=48\n"
             "test result: ok. 1 passed; 0 failed; 0 ignored;"
         )
         with (

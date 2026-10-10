@@ -195,9 +195,7 @@ Eight deliberate recovery joins use those same actions and all-peer laws under K
 Git-only and mixed assignments. SQLite query-only refusal and virtual no-commit refusal preserve
 previous facts through reopen and same-ID repair. Progress findings require current healthy
 prerequisites and an eligible selection for every remaining identity. Reduction can remove
-identities, actions and selected values only while reproducing the same law and reached defect. The
-older lifecycle explorer remains until these replacement workloads and exploration custody qualify
-its retirement.
+identities, actions and selected values only while reproducing the same law and reached defect.
 
 For retained local exploration, select a new private directory outside the checkout:
 
@@ -208,8 +206,8 @@ cargo test --locked -p kapsel --lib \
 ```
 
 Set `KAPSEL_KERNEL_DELIBERATE=1` to retain the 24 deliberate inputs for direct replay. Set
-`KAPSEL_KERNEL_DEFECTS=1` to retain twenty inputs for eleven lifecycle defects and their minimized
-findings. Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include
+`KAPSEL_KERNEL_DEFECTS=1` to retain twenty-three inputs for thirteen lifecycle defects and their
+minimized findings. Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include
 Kubernetes, Git and mixed assignments. The atomic-record binding control has its separate
 deterministic owner. Each document is created exclusively before execution and records
 source-content and executable digests. These digests are not build attestations. Replay a retained
@@ -227,164 +225,59 @@ installed-artifact evidence. Those owners remain separate.
 
 ## Lifecycle exploration
 
-`src/lifecycle_exploration_tests.rs` explores private Kubernetes and Git gateway continuation
-against real SQLite. Each of two to four identities has a distinct target and an independently
-counted receiver. Expected authority comes from the trace's original approval, not retained
-production output. The oracle tracks mutation opportunities, frozen results, and original receipt
-bytes without calling production classifiers or receipt builders. The Git oracle checks the exact
-retained acknowledgement and frozen ref, then inspects receipt facts under the original selected
-signer. Observing the requested commit cannot replace a missing acknowledgement.
+The [atomic-record simulator](#atomic-record-io-simulation) owns fresh interruption enumeration,
+suspended service contention, deliberate recovery joins and generated schedules. It exercises one
+real application and shared journal, not a predicted lifecycle implementation. Every event checks
+all peers' original authority, raw history and independently counted I/O, including peers whose
+external trust is unavailable. Application reads must still refuse disclosure under unavailable
+original trust.
 
-Fresh-operation schedules enumerate every interruption point before cancellation can consume an
-attempt. Eligible fresh continuations must report the selected interruption checkpoint. Separate
-schedules enumerate cancellation and competing selection around suspended preflight, mutation, and
-observation calls. Seeded traces interleave submissions, receiver changes, trust withdrawal, reopen,
-stale/replaced targets, attempt/response/observation loss, and receipt precommit or acknowledgement
-loss. Application events exercise real `ServiceApplication::select` with removed or replaced catalog
-entries and optional signing material. Real SQLite write refusal checks previous facts and same-ID
-repair; admission commit-loss events retain the committed responsibility. These seams enumerate
-understood alternatives, not arbitrary SQLite I/O failures.
+`exploration`, `simulation` and `soak` use this same owner through the existing robustness
+supervisor. The local `KAPSEL_KERNEL_*` commands above accept uncommitted source. Supervised runs
+require clean committed source, bounded resources and retained evidence. See
+[supervised exploration](qualification.md#background-sweep-and-retained-evidence). Retained older
+inputs require their original test executable; rebuilding does not recreate that executable
+identity.
 
-The deterministic interaction owner, `bounded_lifecycle_exploration`, runs eight deliberate traces
-under Kubernetes-only, Git-only, and mixed assignments. It replaces the generated outer stop ×
-receiver × effect matrix, not the fresh-boundary enumeration or contention schedules. Each trace
-includes transient preflight deferral, competing submission, a reached contention barrier, trust
-withdrawal, catalog removal/replacement, missing signing material, and same-ID continuation. The
-independent oracle checks every peer throughout these interactions.
-
-| Deliberate trace                     | Distinct join                                                                                                                    |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `safe_retry_then_failure`            | Before-attempt interruption permits safe retry; later failed observation freezes                                                 |
-| `unsent_present_b`                   | Committed unsent permission stays observation-only; present Git B is not acknowledgement                                         |
-| `ambiguous_attempt_replaced`         | Lost attempt acknowledgement sends nothing; replacement cannot create success                                                    |
-| `lost_response_unavailable`          | Sent mutation loses response; Kubernetes waits for observation availability, while Git freezes `UNKNOWN` acknowledgement and ref |
-| `recorded_response_wrong_generation` | Retained response does not excuse mismatched observed generation                                                                 |
-| `lost_observation_pending`           | Read-but-uncommitted observation is replaced by recovery's current observation                                                   |
-| `frozen_before_replacement`          | Frozen success survives replacement and trust withdrawal; signing completes without catalog restoration or receiver I/O          |
-| `terminal_before_stale_version`      | Frozen evidence survives later version changes and terminal signer rotation                                                      |
-
-`ProductiveSummary` reports reached interruption checkpoints by effect and boundary, and counts
-ineligible selected stops separately. It counts first attempts, observation freezes, and receipt
-commits only after the durable-state oracle validates a transition from prior facts. Repeated
-terminal events do not increase these counts. Barrier records identify the owner and contender's
-identities and effects. Withdrawal records identify trust, catalog, or signing material, the phase
-at withdrawal, and a productive same-ID transition after restoration. Catalog removal does not
-revoke retained authority; these records do not imply that restoring the catalog is required. A
-missing signer can defer receipt completion without preventing an earlier observation freeze. Run
-with `--nocapture` to see the bounded summaries. They describe these traces, not universal coverage,
-throughput, or a coverage score.
-
-Safety checks run after each event. Progress requires an explicit healthy suffix with restored
-trust, writes, receiver availability, authorization, and completion opportunities. Shrinking
-preserves that suffix for progress findings. Longer development traces use 48 generated steps per
-identity rather than the deterministic checks' eight.
-
-The runtime's `enumerated_lifecycle_physical_retirement_barriers` separately exercises real tracked
-jobs. It parks execution before or after admission acknowledgement, disconnects the caller and
-aborts the supervisor in both orders, contends with same and different IDs, and verifies that drain
-and worker capacity remain blocked until physical release. Panic-safe fixture cleanup releases
-parked work when an assertion fails. These checks do not replace Linux socket/process or
-native-service qualification.
-
-The test-only generator uses no new dependency. Its explicit event format supports direct replay and
-reduction of identities, events, and selected values. A failing run preserves the full trace before
-execution, then writes and replays its minimized finding. Trace records include the seed, initial
-identities, source-content digest, and executable digest. The source digest describes the checkout
-at invocation; it is not a build attestation.
-
-This replaces the prescribed fixed-failure simulation after seeded-defect detection, minimized
-replay, and supervised exploration evidence passed. The mapping below preserves the old obligations.
-Keep the existing HTTP, SQLite, Git, Linux process, live-receiver, ENOSPC, and artifact checks.
+The runtime's `enumerated_lifecycle_physical_retirement_barriers` separately exercises tracked jobs.
+It parks work before or after admission acknowledgement, disconnects the caller and aborts the
+supervisor in both orders. Same-ID and different-ID contention must leave drain and capacity blocked
+until physical release. This does not replace Linux socket/process or native-service qualification.
 
 ### Consolidated crash-matrix obligations
 
-Fresh enumeration and deliberate interactions jointly own the retired
-`every_apply_window_recovers_without_a_second_mutation` matrix. Enumeration alone establishes
-checkpoint reach, not interaction equivalence.
+Fresh enumeration and deliberate joins jointly establish these obligations. Checkpoint reach alone
+cannot establish interaction equivalence.
 
-| Retired window                            | Consolidated obligation and owner                                                                                                                                                  |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TargetObserved`                          | `BeforeAttempt` enumeration and `safe_retry_then_failure`: no first send, safe retry under original authority                                                                      |
-| `ApplyStartedCommitted`                   | `UnsentAttempt` enumeration and `unsent_present_b`: zero original sends, observation-only recovery, `UNKNOWN` without acknowledgement                                              |
-| `ApplyReturned` / `ApplyOutcomeCommitted` | Response-loss/recorded-response enumeration and deliberate unavailable/wrong-generation recovery                                                                                   |
-| `ReceiverRead`                            | `ObservationLost` enumeration and `lost_observation_pending`; retained `receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observation` checks fresh-only interruption |
-| `ReceiverObservedCommitted`               | `ObservationRecorded` enumeration and `frozen_before_replacement`: zero-I/O continuation, unchanged frozen history, original receipt bytes                                         |
+| Window                                    | Simulator obligation                                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `TargetObserved`                          | `BeforeAttempt`: no first send; safe retry under original authority before later failed observation                 |
+| `ApplyStartedCommitted`                   | `Unsent`: zero original sends; observation-only recovery, including present Git B without acknowledgement           |
+| `AttemptCommitAcknowledgementLost`        | Lost confirmation creates no dispatch permission; receiver replacement cannot create success                        |
+| `ApplyReturned` / `ApplyOutcomeCommitted` | Response-loss and recorded-response cuts join unavailable or wrong-generation recovery                              |
+| `ReceiverRead`                            | `ObservationLost`: recovery freezes its current observation; the interruption is fresh-only                         |
+| `ReceiverObservedCommitted`               | `Frozen`: receiver replacement and trust withdrawal add no observation; completion retains original facts and bytes |
 
-The retired matrix's preloaded failed observation in its zero-send window was not receiver evidence.
-The explorer leaves an unsent Kubernetes receiver unchanged and preserves `UNKNOWN`. Legacy grants
-remain covered by `service_reads_but_cannot_advance_retained_legacy_authority` and snapshot/binding
-tests. The inert format-6 `target_read_failures` checks remain in gateway lifecycle/storage tests.
-
-The generated outer matrix's other obligations retain direct owners: fresh receiver/result variants
-in `enumerated_fresh_lifecycle_boundaries`, assignment/order/barrier joins in
-`enumerated_two_identity_barrier_schedules`, SQLite refusal in
-`sqlite_write_refusal_preserves_previous_facts_and_same_id_repair`, and admission ambiguity in
-`admission_commit_loss_retains_original_responsibility`. Deliberate interactions preserve catalog
-conflicts, withdrawn trust, changed receivers, receipt precommit loss, and original signer/byte
-retention. Their healthy suffix includes receipt acknowledgement loss and rotated-key continuation.
-Random longer traces remain available for exploration and minimization; they are not a second
-maintained outer matrix.
+The local `receiver_read_fault_is_fresh_only_and_recovery_freezes_its_own_observation` regression
+retains its direct driver check. An unsent Kubernetes receiver stays unchanged; a preloaded failed
+observation is not evidence of a sent mutation. Legacy grants retain the
+`service_reads_but_cannot_advance_retained_legacy_authority` and snapshot/binding owners. Format-6
+inert `target_read_failures` checks remain in gateway lifecycle/storage tests.
 
 ### Old simulation obligations
 
-The replacement preserves these obligations, not merely the old test name:
+| Obligation                                                      | Replacement or retained owner                                                                                                                                                            |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transient target deferral preserves authority and sends nothing | Unavailable-receiver actions and restored progress; bounded read-budget adapter checks remain                                                                                            |
+| Seven fresh windows recover without resend                      | Fresh-checkpoint enumeration and suspended cancellation, with reached remint controls                                                                                                    |
+| Frozen history survives reopen and changed receiver facts       | All-peer raw-fact and no-I/O laws; Git observation substitution changes the ref without changing acknowledgement/result; receipt rewrite replaces bytes and digest under withdrawn trust |
+| Receipt loss and signer rotation preserve original evidence     | Atomic delivery and material-replacement laws; actual process-exit checkpoints remain separate                                                                                           |
+| Shared history retains facts and completion headroom            | One shared simulator journal; full-capacity/layout and storage-failure owners remain                                                                                                     |
+| Seed/shard accounting and evidence custody                      | Existing supervisor, exclusive full-input retention, reached-defect reduction and Rust-owned replay of every document                                                                    |
 
-| Old obligation                                                                                                     | Replacement or retained owner                                                                                                                                                  |
-| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Repeated transient target deferral leaves authority unchanged and sends nothing                                    | `Receiver::Unavailable` / `WorkerAdvance`, followed by restored-receiver progress; bounded observation/read-budget adapter tests remain                                        |
-| Seven fresh attempt/response/observation interruption points recover without resend                                | Explicit `Stop` events, independently counted receivers, and preflight/mutation/observation cancellation schedules                                                             |
-| Dropped permission and lost attempt acknowledgement send nothing                                                   | Unsent and acknowledgement-loss traces; journal dispatch regressions remain. The old adapter's preloaded failed observation is not evidence of a sent mutation                 |
-| Frozen observation survives repeated reopen without receiver I/O                                                   | Frozen-result oracle checks every identity after every event; real process/recovery tests remain                                                                               |
-| Receipt precommit, finalized checkpoint, lost commit acknowledgement and signer rotation preserve durable evidence | Atomic receipt-delivery and material-replacement laws; `CompletionStop` events and process-exit checks retain their distinct checkpoints                                       |
-| Legacy and snapshot grants retain their original interpretation                                                    | Snapshot/binding tests and `service_reads_but_cannot_advance_retained_legacy_authority` remain; service exploration does not admit legacy authority                            |
-| Many retained identities share a journal without losing facts or completion headroom                               | Two-to-four-identity exploration checks all peers; full-capacity/layout, storage-failure and retained-history tests remain rather than being replaced by fresh trace databases |
-| Seed/shard accounting, scratch custody and retained failure evidence                                               | Existing robustness supervision plus explicit full-trace retention, minimization, Rust replay and exact shard markers                                                          |
-
-The explorer does not replace independent HTTP counts, actual Git transport, SQLite OS-failure,
-Linux process, live-receiver, ENOSPC, or packaged artifact evidence. A failed or unrun required
-negative control blocks retirement even when the deterministic checks pass.
-
-Run the deterministic checks:
-
-```sh
-cargo test --locked -p kapsel --lib lifecycle_exploration_tests
-```
-
-For a small development exploration, select a new private directory outside the checkout. This
-command accepts uncommitted source and does not provide the robustness supervisor's job limits. Do
-not use it as the supervised 30-minute qualification lane.
-
-```sh
-export KAPSEL_LIFECYCLE_EVIDENCE="$(mktemp -d)"
-KAPSEL_LIFECYCLE_CASES=100 cargo test --locked -p kapsel --lib \
-  lifecycle_exploration_tests::lifecycle_trace_exploration_or_replay -- --ignored --exact
-```
-
-To retain the deliberate interaction inputs instead of generated cases, set
-`KAPSEL_LIFECYCLE_DELIBERATE=1` with the same evidence-directory command. It writes one named trace
-per assignment and uses the same oracle, minimizer, and direct replay entry point. This mode also
-supports isolated negative controls against those exact inputs.
-
-Each case creates its JSON input exclusively; existing evidence is never overwritten. A safety
-finding can reduce to a trace that ends before completion. Its `require_progress` flag is false;
-progress findings retain their recovery preconditions. Replay the recorded events directly, without
-regenerating earlier cases:
-
-```sh
-KAPSEL_LIFECYCLE_REPLAY=/absolute/retained/finding-N.json cargo test --locked -p kapsel --lib \
-  lifecycle_exploration_tests::lifecycle_trace_exploration_or_replay -- --ignored --exact
-```
-
-Replay under the retained executable for exact binary reproduction. Rebuilding tests exercises the
-same events against the new source, not the original executable identity. `KAPSEL_LIFECYCLE_STEPS`
-selects 8 through 48 generated steps per identity. Shard variables partition the same generated case
-sequence; each completed shard reports its exact count.
-
-The existing robustness supervisor's `exploration`, `simulation`, and `soak` modes all use this
-explorer. They retain full traces and their hashes, then use the owning Rust parser and oracle to
-replay every retained document. A generation marker or matching header hashes alone cannot qualify a
-run. See [supervised exploration](qualification.md#background-sweep-and-retained-evidence) for
-custody, clean-source requirements, resource limits, and commands.
+Independent HTTP counts, actual Git transport, SQLite OS-failure, Linux process, live-receiver,
+ENOSPC and packaged-artifact evidence remain separate. A failed or unrun required negative control
+blocks retirement even when deterministic checks pass.
 
 ## Commands and detailed mappings
 
