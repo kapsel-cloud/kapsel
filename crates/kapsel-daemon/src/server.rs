@@ -7,9 +7,14 @@ mod runtime;
 
 #[cfg(target_os = "linux")]
 use std::io;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::{future::Future, process::ExitCode};
 
-use kapsel::{ServiceAdmission, ServiceApplication, ServiceError, ServiceExecution};
+use kapsel::{
+    ExecutionObservation, OperationState, ServiceAdmission, ServiceApplication, ServiceError,
+    ServiceExecution, ServiceStop,
+};
 use protocol::{ReadRequest, ResponseClass};
 #[cfg(not(target_os = "linux"))]
 use runtime::serve_connections_with_state;
@@ -18,6 +23,11 @@ use runtime::serve_until_stopped;
 use runtime::ServerState;
 #[cfg(all(target_os = "linux", feature = "test-harness"))]
 use runtime::CONNECTIONS_MAX;
+#[cfg(target_os = "linux")]
+use tokio::runtime::Builder;
+
+#[cfg(target_os = "linux")]
+use crate::startup::InstallationInputs;
 
 trait ApplicationReads: Send {
     fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass);
@@ -25,24 +35,21 @@ trait ApplicationReads: Send {
     fn read_observed(
         &self,
         request: ReadRequest,
-        observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+        observation: &dyn Fn(&str) -> ExecutionObservation,
         report: &dyn Fn(ServiceError),
     ) -> (Vec<u8>, ResponseClass) {
         let _ = (observation, report);
         self.read(request)
     }
 
-    fn admitted_state(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<kapsel::OperationState>, ServiceError>;
+    fn admitted_state(&self, operation_id: &str) -> Result<Option<OperationState>, ServiceError>;
 }
 
 impl ApplicationReads for ServiceApplication {
     fn read_observed(
         &self,
         request: ReadRequest,
-        observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+        observation: &dyn Fn(&str) -> ExecutionObservation,
         report: &dyn Fn(ServiceError),
     ) -> (Vec<u8>, ResponseClass) {
         let ordinary = ResponseClass::Ordinary;
@@ -96,13 +103,10 @@ impl ApplicationReads for ServiceApplication {
     }
 
     fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass) {
-        self.read_observed(request, &|_| kapsel::ExecutionObservation::Unknown, &|_| {})
+        self.read_observed(request, &|_| ExecutionObservation::Unknown, &|_| {})
     }
 
-    fn admitted_state(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<kapsel::OperationState>, ServiceError> {
+    fn admitted_state(&self, operation_id: &str) -> Result<Option<OperationState>, ServiceError> {
         Self::admitted_state(self, operation_id)
     }
 }
@@ -112,7 +116,7 @@ pub(crate) trait ApplicationExecution: Send {
         &mut self,
         operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> impl Future<Output = Result<kapsel::ServiceStop, ServiceError>> + Send;
+    ) -> impl Future<Output = Result<ServiceStop, ServiceError>> + Send;
 }
 
 pub(crate) struct ExecutionApplication {
@@ -128,7 +132,7 @@ impl ApplicationExecution for ExecutionApplication {
         &mut self,
         operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ServiceError> {
+    ) -> Result<ServiceStop, ServiceError> {
         let material = ServiceExecution::from_operator_snapshots(
             self.kubeconfig.as_deref(),
             self.receipt_seed.as_deref(),
@@ -166,9 +170,9 @@ pub(crate) fn run(replace: bool) -> ExitCode {
 fn run_installed(replace: bool) -> ExitCode {
     #[cfg(feature = "test-harness")]
     let installation_root = std::env::var_os("KAPSELD_TEST_INSTALLATION_ROOT")
-        .map_or_else(|| std::path::PathBuf::from("/"), std::path::PathBuf::from);
+        .map_or_else(|| PathBuf::from("/"), PathBuf::from);
     #[cfg(not(feature = "test-harness"))]
-    let installation_root = std::path::PathBuf::from("/");
+    let installation_root = PathBuf::from("/");
     if replace {
         return crate::startup::replace_operator_config(&installation_root);
     }
@@ -185,10 +189,7 @@ fn run_installed(replace: bool) -> ExitCode {
     #[cfg(not(feature = "test-harness"))]
     let connections = None;
 
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
+    let Ok(runtime) = Builder::new_current_thread().enable_all().build() else {
         return ExitCode::from(4);
     };
 
@@ -209,11 +210,7 @@ fn open_failure(error: ServiceError) -> io::Error {
 }
 
 #[cfg(target_os = "linux")]
-async fn serve_installed(
-    installation_root: std::path::PathBuf,
-    connections: Option<usize>,
-) -> io::Result<()> {
-    use crate::startup::InstallationInputs;
+async fn serve_installed(installation_root: PathBuf, connections: Option<usize>) -> io::Result<()> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     #[cfg(feature = "test-harness")]
     let stop_marker = installation_root.join("control/stop.ready");

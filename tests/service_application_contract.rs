@@ -19,6 +19,8 @@ use kapsel::{
     GrantProvisioning, OperationReceipt, OperationState, OperationStatus, ServiceAdmission,
     ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
 };
+use rusqlite::Connection;
+use serde_json::Value;
 
 fn root(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -71,7 +73,7 @@ fn configuration(root: &Path) -> ServiceConfiguration {
     }
 }
 
-fn document(config: &ServiceConfiguration) -> serde_json::Value {
+fn document(config: &ServiceConfiguration) -> Value {
     let encode_hex = |bytes: &[u8]| {
         bytes.iter().fold(String::new(), |mut output, byte| {
             use std::fmt::Write as _;
@@ -155,7 +157,7 @@ fn document_refuses_legacy_grammar_unknown_duplicate_and_out_of_bound_fields() {
     }
     for (array, count) in [("approvals", 33), ("authorization_keys", 129)] {
         let mut changed = valid.clone();
-        changed[array] = serde_json::Value::Array(vec![valid[array][0].clone(); count]);
+        changed[array] = Value::Array(vec![valid[array][0].clone(); count]);
         cases.push(serde_json::to_vec(&changed).unwrap());
     }
     let serialized = serde_json::to_string(&valid).unwrap();
@@ -231,7 +233,7 @@ fn cold_validation_rejects_lost_history_and_recovery_without_creating_artifacts(
     let journal = root.join("journal.sqlite3");
     let original_journal_bytes = fs::read(&journal).unwrap();
     // Preserve a real rollback journal with an uncommitted write: validation must not recover it.
-    let connection = rusqlite::Connection::open(&journal).unwrap();
+    let connection = Connection::open(&journal).unwrap();
     connection
         .execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 9;")
         .unwrap();
@@ -305,7 +307,7 @@ async fn assert_admission_commit_and_exclusion(git: bool) {
             let reader = projection;
             assert_eq!(reader.admitted_state("a").unwrap(), Some(admitted_phase));
             assert_eq!(reader.status("a").unwrap().0, OperationStatus::InProgress);
-            let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
+            let connection = Connection::open(root.join("journal.sqlite3")).unwrap();
             let grant: Vec<u8> = connection
                 .query_row(
                     if git {

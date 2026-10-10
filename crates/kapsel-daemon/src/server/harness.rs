@@ -2,6 +2,7 @@
 
 use std::{
     io,
+    path::Path,
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -10,11 +11,14 @@ use std::{
     time::Duration,
 };
 
+use ed25519_dalek::SigningKey;
 use kapsel::{
-    OperationReceipt, OperationStatus, ServiceAdmission, ServiceApplication, ServiceError,
-    ServiceExecution, TargetRejection,
+    provision_exact_grant, ApprovedTarget, AuthorizationTrust, ExactAuthorization,
+    GrantProvisioning, OperationReceipt, OperationState, OperationStatus, OperationTargets,
+    ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError,
+    ServiceExecution, ServiceStop, TargetRejection,
 };
-use tokio::net::UnixListener;
+use tokio::{net::UnixListener, runtime::Builder, time::Instant};
 
 use super::{
     protocol::{self, ReadRequest, ResponseClass},
@@ -46,15 +50,12 @@ pub(super) fn run() -> ExitCode {
         return ExitCode::from(4);
     }
 
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    else {
+    let Ok(runtime) = Builder::new_current_thread().enable_all().build() else {
         return ExitCode::from(4);
     };
     let result = runtime.block_on(async {
         let result = if let Some(root) = std::env::var_os("KAPSELD_TEST_APPLICATION_ROOT") {
-            let root = std::path::Path::new(&root);
+            let root = Path::new(&root);
             let (reads, _) = open_test_application(root)?;
             let (application, execution_material) = open_test_application(root)?;
             let listener = UnixListener::bind(&path)?;
@@ -105,7 +106,7 @@ impl ApplicationExecution for HarnessApplication {
         &mut self,
         operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ServiceError> {
+    ) -> Result<ServiceStop, ServiceError> {
         self.application
             .select(
                 &operation_id,
@@ -120,14 +121,7 @@ impl ApplicationExecution for HarnessApplication {
     }
 }
 
-fn open_test_application(
-    root: &std::path::Path,
-) -> io::Result<(ServiceApplication, ServiceExecution)> {
-    use ed25519_dalek::SigningKey;
-    use kapsel::{
-        provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
-        ServiceApproval, ServiceConfiguration,
-    };
+fn open_test_application(root: &Path) -> io::Result<(ServiceApplication, ServiceExecution)> {
     if !root.is_absolute() {
         return Err(io::Error::other("invalid application fixture"));
     }
@@ -150,7 +144,7 @@ fn open_test_application(
     let authorization_seed = [41_u8; 32];
     let authorization_key = SigningKey::from_bytes(&authorization_seed);
     let authorization = ExactAuthorization {
-        approved_target: Some(kapsel::ApprovedTarget {
+        approved_target: Some(ApprovedTarget {
             uid: "uid-1".into(),
             resource_version: "1".into(),
         }),
@@ -237,7 +231,7 @@ impl ApplicationReads for HarnessReads {
             ReadRequest::Status(operation_id) => (
                 protocol::render_status_with_targets(
                     self.status(&operation_id)
-                        .map(|status| (status, kapsel::OperationTargets::default())),
+                        .map(|status| (status, OperationTargets::default())),
                 ),
                 ResponseClass::Ordinary,
             ),
@@ -248,17 +242,14 @@ impl ApplicationReads for HarnessReads {
             _ => (protocol::invalid_request(), ResponseClass::Ordinary),
         }
     }
-    fn admitted_state(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<kapsel::OperationState>, ServiceError> {
+    fn admitted_state(&self, operation_id: &str) -> Result<Option<OperationState>, ServiceError> {
         if operation_id != "process-op" {
             return Err(ServiceError::InvalidRequest);
         }
         Ok(match self.status.load(Ordering::Acquire) {
             FIXTURE_INITIAL => None,
-            FIXTURE_ADMITTED => Some(kapsel::OperationState::Requested),
-            _ => Some(kapsel::OperationState::NotAttempted),
+            FIXTURE_ADMITTED => Some(OperationState::Requested),
+            _ => Some(OperationState::NotAttempted),
         })
     }
 }
@@ -271,25 +262,23 @@ impl ApplicationExecution for HarnessExecution {
         &mut self,
         operation_id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ServiceError> {
+    ) -> Result<ServiceStop, ServiceError> {
         if operation_id != "process-op" {
             return Err(ServiceError::InvalidRequest);
         }
 
         self.status.store(FIXTURE_ADMITTED, Ordering::Release);
-        acknowledged(ServiceAdmission::Admitted(
-            kapsel::OperationState::Requested,
-        ));
+        acknowledged(ServiceAdmission::Admitted(OperationState::Requested));
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(5);
         while !self.release.load(Ordering::Acquire) {
-            if tokio::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return Err(ServiceError::OperationFailure);
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
 
         self.status.store(FIXTURE_FINISHED, Ordering::Release);
-        Ok(kapsel::ServiceStop::Finished)
+        Ok(ServiceStop::Finished)
     }
 }

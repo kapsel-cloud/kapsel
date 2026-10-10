@@ -1,4 +1,9 @@
-use super::*;
+use std::task::Poll;
+
+use super::{
+    journal::{AuthorizedOperation, LoadedOperation},
+    *,
+};
 
 // Evidence for the adopted fresh-commit-to-dispatch boundary, using real journal decisions.
 
@@ -10,9 +15,8 @@ fn observed_target() -> ValidatedTargetIdentity {
     .unwrap()
 }
 
-fn load_authorized(gateway: &Gateway) -> journal::AuthorizedOperation {
-    let Some(journal::LoadedOperation::Authorized(operation)) =
-        gateway.journal.operation("op-001").unwrap()
+fn load_authorized(gateway: &Gateway) -> AuthorizedOperation {
+    let Some(LoadedOperation::Authorized(operation)) = gateway.journal.operation("op-001").unwrap()
     else {
         panic!("fixture must still be authorized");
     };
@@ -69,7 +73,7 @@ fn competing_fresh_transitions_issue_one_bound_permission() {
     let gateway = Gateway::open_for_test(&path).unwrap();
     assert!(matches!(
         gateway.journal.operation("op-001").unwrap(),
-        Some(journal::LoadedOperation::ApplyStarted(_))
+        Some(LoadedOperation::ApplyStarted(_))
     ));
 
     drop(gateway);
@@ -163,8 +167,8 @@ async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
         let mut execution =
             Box::pin(gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter));
         assert!(matches!(
-            std::future::poll_fn(|cx| std::task::Poll::Ready(execution.as_mut().poll(cx))).await,
-            std::task::Poll::Pending
+            std::future::poll_fn(|cx| Poll::Ready(execution.as_mut().poll(cx))).await,
+            Poll::Pending
         ));
         drop(execution);
 

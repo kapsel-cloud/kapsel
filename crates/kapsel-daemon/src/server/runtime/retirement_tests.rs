@@ -12,6 +12,9 @@ use std::sync::{
     Condvar,
 };
 
+use kapsel::OperationState;
+use tokio::runtime::Builder;
+
 use super::*;
 use crate::startup::{tests::valid_root, InstallationInputs};
 
@@ -38,7 +41,7 @@ impl ApplicationReads for BlockedStorage {
         drop(released);
         (operation_failure(), ResponseClass::Ordinary)
     }
-    fn admitted_state(&self, _: &str) -> Result<Option<kapsel::OperationState>, ServiceError> {
+    fn admitted_state(&self, _: &str) -> Result<Option<OperationState>, ServiceError> {
         Ok(None)
     }
 }
@@ -53,10 +56,7 @@ impl Drop for BlockedStorage {
 #[test]
 fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
     let root = valid_root("retirement-storage");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let inputs = InstallationInputs::open_at(&root).unwrap();
         let listener = inputs.bind_listener().unwrap();
@@ -128,10 +128,7 @@ fn sigterm_retains_blocked_storage_and_lease_until_ordered_retirement() {
 #[test]
 fn ready_stop_wins_over_already_queued_connection() {
     let root = valid_root("retirement-ready-stop");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
         let inputs = InstallationInputs::open_at(&root).unwrap();
         let listener = inputs.bind_listener().unwrap();

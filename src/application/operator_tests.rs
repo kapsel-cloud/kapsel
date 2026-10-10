@@ -9,6 +9,7 @@ use std::{
     io::{Read as _, Write as _},
     net::TcpListener,
     thread,
+    time::Duration,
 };
 
 use k8s_openapi::api::apps::v1::Deployment;
@@ -49,10 +50,10 @@ async fn request_deployment(body_bytes: usize, framing: ResponseFraming) -> bool
     let receiver_thread = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         stream
-            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let mut request = [0_u8; 4096];
         let _ = stream.read(&mut request).unwrap();

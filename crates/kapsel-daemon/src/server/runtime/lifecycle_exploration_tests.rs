@@ -2,6 +2,9 @@
 
 use std::collections::BTreeSet;
 
+use kapsel::{OperationState, ServiceStop};
+use tokio::runtime::Builder;
+
 use super::*;
 
 struct RetainedAdmissions(Arc<Mutex<BTreeSet<String>>>);
@@ -11,13 +14,13 @@ impl ApplicationReads for RetainedAdmissions {
         (operation_failure(), ResponseClass::Ordinary)
     }
 
-    fn admitted_state(&self, id: &str) -> Result<Option<kapsel::OperationState>, ServiceError> {
+    fn admitted_state(&self, id: &str) -> Result<Option<OperationState>, ServiceError> {
         Ok(self
             .0
             .lock()
             .unwrap()
             .contains(id)
-            .then_some(kapsel::OperationState::Requested))
+            .then_some(OperationState::Requested))
     }
 }
 
@@ -43,14 +46,12 @@ impl ApplicationExecution for ParkedExecution {
         &mut self,
         id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ServiceError> {
+    ) -> Result<ServiceStop, ServiceError> {
         self.calls.lock().unwrap().push(id.clone());
         let mut acknowledged = Some(acknowledged);
         if self.acknowledge_before_park {
             self.admitted.lock().unwrap().insert(id.clone());
-            acknowledged.take().unwrap()(ServiceAdmission::Admitted(
-                kapsel::OperationState::Requested,
-            ));
+            acknowledged.take().unwrap()(ServiceAdmission::Admitted(OperationState::Requested));
         }
 
         self.entered.add_permits(1);
@@ -58,12 +59,10 @@ impl ApplicationExecution for ParkedExecution {
 
         if let Some(acknowledged) = acknowledged {
             self.admitted.lock().unwrap().insert(id);
-            acknowledged(ServiceAdmission::Admitted(
-                kapsel::OperationState::Requested,
-            ));
+            acknowledged(ServiceAdmission::Admitted(OperationState::Requested));
         }
 
-        Ok(kapsel::ServiceStop::Finished)
+        Ok(ServiceStop::Finished)
     }
 }
 
@@ -99,10 +98,7 @@ fn enumerated_lifecycle_physical_retirement_barriers() {
                 [Actor::DisconnectCaller, Actor::AbortSupervisor],
                 [Actor::AbortSupervisor, Actor::DisconnectCaller],
             ] {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
+                let runtime = Builder::new_current_thread().enable_all().build().unwrap();
                 runtime.block_on(run_retirement_schedule(
                     first_id,
                     acknowledge_before_park,
@@ -158,10 +154,7 @@ async fn run_retirement_schedule(
             },
         }
         assert_eq!(state.submission.available_permits(), 0, "{actors:?}");
-        assert_eq!(
-            state.observation(first_id),
-            kapsel::ExecutionObservation::Active
-        );
+        assert_eq!(state.observation(first_id), ExecutionObservation::Active);
         assert_eq!(calls.lock().unwrap().as_slice(), [first_id]);
     }
 

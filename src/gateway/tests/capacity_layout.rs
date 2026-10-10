@@ -1,4 +1,4 @@
-use super::*;
+use super::{Journal, *};
 
 // SQLite creates all records and overflow chains. Only the table's b-tree packing is changed
 // by the sparse fixture below; unrelated retained rows are deliberately not selectable operations.
@@ -107,7 +107,7 @@ fn insert_long_retained_rows(path: &Path, count: usize) {
 
 async fn complete_layout_operation(path: &Path, request: &SetDeploymentImageRequest) {
     // Shared read-only snapshot acceptance is separate from logical selection of the valid row.
-    journal::Journal::validate_replacement(path, &[]).unwrap();
+    Journal::validate_replacement(path, &[]).unwrap();
     let mut gateway = Gateway::open_for_test(path).unwrap();
     assert_eq!(
         gateway
@@ -154,7 +154,7 @@ async fn complete_layout_operation(path: &Path, request: &SetDeploymentImageRequ
 
     drop(gateway);
     eprintln!("completed live pages: {}", layout_live_pages(path));
-    journal::Journal::validate_replacement(path, &[]).unwrap();
+    Journal::validate_replacement(path, &[]).unwrap();
     let reopened = Gateway::open_for_test(path).unwrap();
     assert_eq!(
         Gateway::read_loaded_receipt(
@@ -315,7 +315,7 @@ fn repack_sparse_table(path: &Path) {
 fn assert_layout_open_paths(path: &Path, accepted: bool) {
     layout_live_pages(path);
     let before = fs::read(path).unwrap();
-    let readonly = journal::Journal::validate_replacement(path, &[]);
+    let readonly = Journal::validate_replacement(path, &[]);
     assert_eq!(fs::read(path).unwrap(), before);
     let writable = Gateway::open_for_test(path);
     if accepted {
@@ -516,7 +516,7 @@ fn empty_children_and_unary_operation_roots_are_rejection_controls() {
             matches!(integrity, Err(rusqlite::Error::SqliteFailure(error, _))
             if error.code == rusqlite::ErrorCode::DatabaseCorrupt)
         );
-        assert!(journal::Journal::validate_replacement(&path, &[]).is_err());
+        assert!(Journal::validate_replacement(&path, &[]).is_err());
         assert!(Gateway::open_for_test(&path).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();

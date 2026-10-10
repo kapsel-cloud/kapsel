@@ -1,6 +1,6 @@
 //! Route contributor commands to the scripts that implement their checks.
 //!
-//! This crate accepts a fixed set of commands and modes, then runs their shell scripts
+//! This executable accepts a fixed set of commands and modes, then runs their shell scripts
 //! from the checkout root. The scripts own the checks, not this routing layer.
 
 use std::{

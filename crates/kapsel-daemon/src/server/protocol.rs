@@ -1,8 +1,16 @@
 //! Pure fixed service grammar, validation projection, response bytes and frame limits.
 
-use kapsel::{OperationReceipt, OperationStatus, ServiceAdmission, ServiceError, TargetRejection};
+#[cfg(test)]
+use kapsel::HistoryEntry;
+use kapsel::{
+    ApprovedAction, ApprovedTarget, ExecutionCondition, ExecutionDisposition, ExecutionObservation,
+    GitAcknowledgement, GitObservedRef, GitOperationTargets, HistoryPage, OperationReceipt,
+    OperationState, OperationStatus, OperationTargets, ServiceAdmission, ServiceError,
+    TargetRejection,
+};
 use kapsel_authority::identity_is_valid;
 use serde::Deserialize;
+use serde_json::Value;
 
 pub(super) const REQUEST_BYTES_MAX: usize = 16 * 1024;
 const ORDINARY_RESPONSE_BYTES_MAX: usize = 16 * 1024;
@@ -19,15 +27,9 @@ pub(super) enum SubmissionAdmission {
 #[serde(tag = "request", deny_unknown_fields)]
 enum Request {
     #[serde(rename = "list_approved_actions")]
-    List {
-        version: u8,
-        after: serde_json::Value,
-    },
+    List { version: u8, after: Value },
     #[serde(rename = "list_operation_history")]
-    History {
-        version: u8,
-        after: serde_json::Value,
-    },
+    History { version: u8, after: Value },
     #[serde(rename = "get_set_deployment_image_status")]
     Status { version: u8, operation_id: String },
     #[serde(rename = "get_set_deployment_image_receipt")]
@@ -67,9 +69,9 @@ pub(super) fn decode(bytes: &[u8]) -> Option<Command> {
         return None;
     }
 
-    let cursor = |after: serde_json::Value| match after {
-        serde_json::Value::Null => Some(None),
-        serde_json::Value::String(id) if identity_is_valid(&id) => Some(Some(id)),
+    let cursor = |after: Value| match after {
+        Value::Null => Some(None),
+        Value::String(id) if identity_is_valid(&id) => Some(Some(id)),
         _ => None,
     };
     match serde_json::from_slice::<Request>(bytes).ok()? {
@@ -146,8 +148,7 @@ pub(super) fn service_error(error: ServiceError) -> Vec<u8> {
     format!("{{\"version\":1,\"status\":\"ERROR\",\"error_class\":\"{class}\"}}").into_bytes()
 }
 
-const fn phase_name(phase: kapsel::OperationState) -> &'static str {
-    use kapsel::OperationState;
+const fn phase_name(phase: OperationState) -> &'static str {
     match phase {
         OperationState::Requested => "requested",
         OperationState::Authorized => "authorized",
@@ -175,7 +176,7 @@ fn render_status(result: Result<OperationStatus, ServiceError>) -> Vec<u8> {
 }
 
 pub(super) fn render_status_with_targets(
-    result: Result<(OperationStatus, kapsel::OperationTargets), ServiceError>,
+    result: Result<(OperationStatus, OperationTargets), ServiceError>,
 ) -> Vec<u8> {
     let (status, targets) = match result {
         Ok(value) => value,
@@ -187,7 +188,7 @@ pub(super) fn render_status_with_targets(
         return output;
     }
 
-    let target_fields = |target: Option<kapsel::ApprovedTarget>| {
+    let target_fields = |target: Option<ApprovedTarget>| {
         target.map(|target| {
             serde_json::json!({ "uid": target.uid, "resource_version": target.resource_version })
         })
@@ -210,14 +211,7 @@ pub(super) fn render_status_with_targets(
 }
 
 pub(super) fn render_execution_status(
-    result: Result<
-        (
-            OperationStatus,
-            kapsel::OperationTargets,
-            kapsel::ExecutionDisposition,
-        ),
-        ServiceError,
-    >,
+    result: Result<(OperationStatus, OperationTargets, ExecutionDisposition), ServiceError>,
 ) -> Vec<u8> {
     let (status, targets, execution) = match result {
         Ok(value) => value,
@@ -227,7 +221,7 @@ pub(super) fn render_execution_status(
     let fields = serde_json::json!({
         "execution": {
             "disposition": execution.as_str(),
-            "condition": execution.condition().map(kapsel::ExecutionCondition::as_str),
+            "condition": execution.condition().map(ExecutionCondition::as_str),
             "next_action": execution.next_action(),
             "action_owner": execution.action_owner(),
         },
@@ -282,14 +276,11 @@ pub(super) fn render_receipt(result: Result<OperationReceipt, ServiceError>) -> 
     }
 }
 
-pub(super) fn render_catalog(
-    entries: Vec<kapsel::ApprovedAction>,
-    next_cursor: Option<&str>,
-) -> Vec<u8> {
+pub(super) fn render_catalog(entries: Vec<ApprovedAction>, next_cursor: Option<&str>) -> Vec<u8> {
     let entries: Vec<_> = entries
         .into_iter()
         .map(|entry| match entry {
-            kapsel::ApprovedAction::Kubernetes {
+            ApprovedAction::Kubernetes {
                 request,
                 approved_target,
                 label,
@@ -308,7 +299,7 @@ pub(super) fn render_catalog(
                     "label": label,
                 })
             },
-            kapsel::ApprovedAction::Git {
+            ApprovedAction::Git {
                 authorization,
                 label,
             } => serde_json::json!({
@@ -324,36 +315,36 @@ pub(super) fn render_catalog(
         .into_bytes()
 }
 
-fn git_targets(targets: kapsel::GitOperationTargets) -> serde_json::Value {
+fn git_targets(targets: GitOperationTargets) -> Value {
     let observed_ref = targets.observed_ref.map(|observed| match observed {
-        kapsel::GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
-        kapsel::GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
-        kapsel::GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
+        GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
+        GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
+        GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
     });
     serde_json::json!({
         "repository_id": targets.approval.repository_id, "reference": targets.approval.reference,
         "old_commit": targets.approval.old_commit, "new_commit": targets.approval.new_commit,
         "attempted": targets.attempted,
-        "acknowledgement": targets.acknowledgement.map(kapsel::GitAcknowledgement::as_str),
+        "acknowledgement": targets.acknowledgement.map(GitAcknowledgement::as_str),
         "observed_ref": observed_ref,
     })
 }
 
 #[cfg(test)]
-fn render_history(page: kapsel::HistoryPage) -> Vec<u8> {
-    render_execution_history(page, &|_| kapsel::ExecutionObservation::Unknown)
+fn render_history(page: HistoryPage) -> Vec<u8> {
+    render_execution_history(page, &|_| ExecutionObservation::Unknown)
 }
 
 pub(super) fn render_execution_history(
-    page: kapsel::HistoryPage,
-    observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+    page: HistoryPage,
+    observation: &dyn Fn(&str) -> ExecutionObservation,
 ) -> Vec<u8> {
     let mut entries = Vec::with_capacity(page.entries.len());
     for entry in page.entries {
         let operation_id = entry.operation_id.clone();
         let execution_observation = observation(&operation_id);
         let bytes = render_execution_status(entry.execution_status(execution_observation));
-        let Ok(serde_json::Value::Object(mut fields)) = serde_json::from_slice(&bytes) else {
+        let Ok(Value::Object(mut fields)) = serde_json::from_slice(&bytes) else {
             return operation_failure();
         };
         fields.remove("version");
@@ -615,30 +606,27 @@ mod tests {
                 new_commit: "b".repeat(40),
             },
             attempted: true,
-            acknowledgement: Some(kapsel::GitAcknowledgement::Unknown),
-            observed_ref: Some(kapsel::GitObservedRef::Commit("b".repeat(40))),
+            acknowledgement: Some(GitAcknowledgement::Unknown),
+            observed_ref: Some(GitObservedRef::Commit("b".repeat(40))),
         };
-        let targets = kapsel::OperationTargets {
+        let targets = OperationTargets {
             git: Some(git),
-            ..kapsel::OperationTargets::default()
+            ..OperationTargets::default()
         };
-        let bytes = render_history(kapsel::HistoryPage {
+        let bytes = render_history(HistoryPage {
             entries: vec![
-                kapsel::HistoryEntry {
+                HistoryEntry {
                     operation_id: "git-op".into(),
                     status: Ok((OperationStatus::Unknown, targets.clone())),
                 },
-                kapsel::HistoryEntry {
+                HistoryEntry {
                     operation_id: "k8s-op".into(),
-                    status: Ok((
-                        OperationStatus::InProgress,
-                        kapsel::OperationTargets::default(),
-                    )),
+                    status: Ok((OperationStatus::InProgress, OperationTargets::default())),
                 },
             ],
             next_cursor: None,
         });
-        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let page: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(page["entries"][0]["effect"], "git.transition_ref");
         assert_eq!(page["entries"][0]["status"], "UNKNOWN");
         assert_eq!(page["entries"][0]["git"]["acknowledgement"], "unknown");
@@ -670,14 +658,14 @@ mod tests {
         ] {
             let bytes = render_execution_status(Ok((
                 OperationStatus::InProgress,
-                kapsel::OperationTargets::default(),
+                OperationTargets::default(),
                 disposition,
             )));
             assert!(response_length_allowed(
                 bytes.len(),
                 ResponseClass::Ordinary
             ));
-            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(
                 value,
                 serde_json::json!({"version":1, "status":"IN_PROGRESS",
@@ -692,7 +680,7 @@ mod tests {
         }
         let bytes = render_execution_status(Err(ServiceError::AuthorityUnavailable));
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
             serde_json::json!({"version":1,"status":"ERROR",
                 "error_class":"authority_unavailable"})
         );
@@ -700,29 +688,29 @@ mod tests {
 
     #[test]
     fn history_projection_keeps_authority_errors_per_id_and_without_action_facts() {
-        let bytes = render_history(kapsel::HistoryPage {
+        let bytes = render_history(HistoryPage {
             entries: vec![
-                kapsel::HistoryEntry {
+                HistoryEntry {
                     operation_id: "inaccessible".into(),
                     status: Err(ServiceError::AuthorityUnavailable),
                 },
-                kapsel::HistoryEntry {
+                HistoryEntry {
                     operation_id: "readable".into(),
                     status: Ok((
                         OperationStatus::InProgress,
-                        kapsel::OperationTargets {
-                            approved_target: Some(kapsel::ApprovedTarget {
+                        OperationTargets {
+                            approved_target: Some(ApprovedTarget {
                                 uid: "original-uid".into(),
                                 resource_version: "7".into(),
                             }),
-                            ..kapsel::OperationTargets::default()
+                            ..OperationTargets::default()
                         },
                     )),
                 },
             ],
             next_cursor: Some("readable".into()),
         });
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["version"], 1);
         assert_eq!(value["status"], "READY");
         assert_eq!(value["next_cursor"], "readable");

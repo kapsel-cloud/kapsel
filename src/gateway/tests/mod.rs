@@ -8,7 +8,10 @@ use std::{
 
 use rusqlite::{params, Connection};
 
-use super::{journal, *};
+use super::{
+    journal::{self, LoadedOperation},
+    *,
+};
 
 fn database_path(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
@@ -40,7 +43,7 @@ pub(crate) fn dispatch_permission_for_test(
         resource_version: target.resource_version.clone(),
     });
     gateway.submit_exact_for_test(request, &approval).unwrap();
-    let Some(journal::LoadedOperation::Authorized(operation)) =
+    let Some(LoadedOperation::Authorized(operation)) =
         gateway.journal.operation(&request.operation_id).unwrap()
     else {
         panic!("fixture must be authorized");

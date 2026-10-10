@@ -212,6 +212,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
+    use crate::{ApprovedTarget, ExactAuthorization};
 
     fn approval() -> GitRefAuthorization {
         GitRefAuthorization {
@@ -378,7 +379,7 @@ mod tests {
     fn git_and_kubernetes_grants_cannot_cross_purposes() {
         let git = sign_git_ref_grant(&approval(), &[7; 32], "git-owner").unwrap();
         assert!(crate::verify_authorization_grant(&git, &trust()).is_err());
-        let mut kubernetes = crate::ExactAuthorization {
+        let mut kubernetes = ExactAuthorization {
             approved_target: None,
             authorization_id: "approval-1".into(),
             operation_id: "operation-1".into(),
@@ -389,7 +390,7 @@ mod tests {
         };
         for snapshot in [
             None,
-            Some(crate::ApprovedTarget {
+            Some(ApprovedTarget {
                 uid: "uid-1".into(),
                 resource_version: "1".into(),
             }),

@@ -1,4 +1,4 @@
-use super::*;
+use super::{Journal, *};
 
 fn journal_version(path: &Path) -> u32 {
     let connection = Connection::open(path).unwrap();
@@ -59,7 +59,7 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
                 Gateway::open_for_test(&path),
                 Err(GatewayError::UnsupportedJournalVersion)
             ));
-            assert!(journal::Journal::validate_replacement(&path, &[]).is_err());
+            assert!(Journal::validate_replacement(&path, &[]).is_err());
             assert_eq!(fs::read(&path).unwrap(), original_bytes);
             fs::remove_dir_all(path.parent().unwrap()).unwrap();
             continue;
@@ -105,7 +105,7 @@ async fn format_six_reopens_history_and_refuses_prior_format_five_construction()
         drop(gateway);
 
         let original_bytes = fs::read(&path).unwrap();
-        journal::Journal::validate_replacement(&path, &[]).unwrap();
+        Journal::validate_replacement(&path, &[]).unwrap();
         let reopened = Gateway::open_for_test(&path).unwrap();
         assert_eq!(journal_version(&path), 6);
         assert_eq!(

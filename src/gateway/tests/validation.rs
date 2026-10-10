@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    journal::{Journal, LoadedOperation},
+    *,
+};
 
 #[test]
 fn first_commit_retains_exact_grant_and_rejects_changed_custody() {
@@ -244,11 +247,8 @@ fn requested_phase_cannot_be_authorized_with_another_bound_operation() {
         Err(GatewayError::InjectedFault)
     ));
     let loaded = gateway.journal.operation(&request.operation_id).unwrap();
-    assert!(matches!(
-        loaded,
-        Some(journal::LoadedOperation::Requested(_))
-    ));
-    let Some(journal::LoadedOperation::Requested(requested)) = loaded else {
+    assert!(matches!(loaded, Some(LoadedOperation::Requested(_))));
+    let Some(LoadedOperation::Requested(requested)) = loaded else {
         return;
     };
 
@@ -271,7 +271,7 @@ fn requested_phase_cannot_be_authorized_with_another_bound_operation() {
     ));
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::Requested(_))
+        Some(LoadedOperation::Requested(_))
     ));
     assert_eq!(gateway.get(&other.operation_id).unwrap(), None);
 
@@ -609,7 +609,7 @@ fn concurrent_submissions_at_31_unfinished_preserve_original_authority() {
     }
 
     drop(reopened);
-    journal::Journal::validate_replacement(&path, &[]).unwrap();
+    Journal::validate_replacement(&path, &[]).unwrap();
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 

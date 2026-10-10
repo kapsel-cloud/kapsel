@@ -8,6 +8,7 @@ use serde::{
 };
 
 use super::{ServiceApproval, ServiceConfiguration, ServiceError};
+use crate::gateway::AuthorizationTrust;
 
 const DOCUMENT_BYTES_MAX: usize = 160 * 1024;
 const AUTHORIZATION_KEYS_MAX: usize = 128;
@@ -96,11 +97,11 @@ pub fn parse_service_operator_document(
 
 fn decode_authorization_key(
     key: AuthorizationKeyFields,
-) -> Result<crate::AuthorizationTrust, ServiceError> {
+) -> Result<AuthorizationTrust, ServiceError> {
     let public_key: [u8; 32] = decode_hex(&key.public_key_hex, 32)?
         .try_into()
         .map_err(|_| ServiceError::Configuration)?;
-    let trust = crate::AuthorizationTrust {
+    let trust = AuthorizationTrust {
         key_id: key.key_id,
         public_key,
     };

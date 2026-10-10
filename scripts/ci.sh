@@ -36,6 +36,11 @@ run_static_checks() {
   python3 tools/release/test_assemble_artifact.py
   python3 tools/release/test_scan_sbom.py
 
+  printf '%s\n' "==> Rust import checker regressions"
+  cargo test --locked -p xtask --bin check-rust-imports --test rust_imports
+  printf '%s\n' "==> Rust import structure"
+  cargo run --locked --quiet -p xtask --bin check-rust-imports
+
   printf '%s\n' "==> Rust line width"
   ./tools/checks/check-rust-width.sh
 

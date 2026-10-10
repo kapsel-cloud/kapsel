@@ -13,11 +13,12 @@ use std::{
 
 use kapsel::{
     inspect_receipt, provision_exact_grant, provision_snapshot_grant, ApplicationError,
-    ExactAuthorization, GrantProvisioning, InspectionLimits, InspectionReport, InspectionStatus,
-    OperationResult, ReceiptStatement,
+    ExactAuthorization, GitObservedRef, GrantProvisioning, InspectionLimits, InspectionReport,
+    InspectionStatus, OperationResult, ReceiptStatement,
 };
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use serde::Deserialize;
+use tokio::runtime::Builder;
 
 const JSON_BYTES_MAX: usize = 16 * 1024;
 const MACHINE_OUTPUT_BYTES_MAX: usize = 64 * 1024;
@@ -195,7 +196,7 @@ fn provision(mut options: BTreeMap<String, OsString>, snapshot: bool) -> Command
             command,
             ErrorClass::OperatorConfiguration,
         )?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
+        let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|_| CommandError::configuration(command))?;
@@ -256,7 +257,7 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
         new_commit: document.new_commit,
     };
 
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| CommandError::configuration(COMMAND))?;
@@ -518,9 +519,9 @@ fn render_git_inspection(report: &kapsel::GitInspectionReport) -> String {
     };
     let authorization = statement.authorization();
     let observed_ref = match statement.observed_ref() {
-        kapsel::GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
-        kapsel::GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
-        kapsel::GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
+        GitObservedRef::Commit(oid) => serde_json::json!({"kind":"commit", "commit":oid}),
+        GitObservedRef::Missing => serde_json::json!({"kind":"missing", "commit":null}),
+        GitObservedRef::Unknown => serde_json::json!({"kind":"unknown", "commit":null}),
     };
     serde_json::json!({
         "command":"inspect", "effect":"git.transition_ref",

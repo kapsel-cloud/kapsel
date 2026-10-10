@@ -23,10 +23,12 @@ pub use authorization::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
 pub use git::{
     Acknowledgement as GitAcknowledgement, GitReceiverConfiguration, ObservedRef as GitObservedRef,
 };
-use journal::Journal;
+use journal::{AuthorizedOperation, Journal, WorkerLock};
 #[cfg(test)]
 pub(crate) use journal::{Defect, Delivery, StorageControl, StorageWrite};
 pub(crate) use journal::{DispatchPermission, LoadedOperation};
+#[cfg(test)]
+use kube::Client;
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
 #[cfg(test)]
 pub(crate) use kubernetes::{
@@ -523,7 +525,7 @@ impl Gateway {
             .journal
             .operation(authorized.request().operation_id())?
             .ok_or(GatewayError::InvalidPersistedState)?;
-        let journal::LoadedOperation::Requested(requested) = operation else {
+        let LoadedOperation::Requested(requested) = operation else {
             return Err(GatewayError::InvalidTransition);
         };
         self.journal.mark_authorized(&requested, authorized)
@@ -590,7 +592,7 @@ impl Gateway {
     pub(crate) fn loaded_for_test(
         &self,
         operation_id: &str,
-    ) -> Result<Option<journal::LoadedOperation>, GatewayError> {
+    ) -> Result<Option<LoadedOperation>, GatewayError> {
         self.journal.operation(operation_id)
     }
 
@@ -598,7 +600,7 @@ impl Gateway {
         &self,
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
-    ) -> Result<Option<journal::LoadedOperation>, GatewayError> {
+    ) -> Result<Option<LoadedOperation>, GatewayError> {
         self.journal
             .authorized_operation(&self.bind_authorization(request, signed_grant)?)
     }
@@ -620,9 +622,9 @@ impl Gateway {
     fn admit_service_operation(
         &self,
         existing: Option<OperationState>,
-        admit: impl FnOnce(&Journal, &journal::WorkerLock) -> Result<OperationState, GatewayError>,
+        admit: impl FnOnce(&Journal, &WorkerLock) -> Result<OperationState, GatewayError>,
         acknowledged: impl FnOnce(AdmissionDecision),
-    ) -> Result<Option<(journal::WorkerLock, OperationState)>, ReconciliationError> {
+    ) -> Result<Option<(WorkerLock, OperationState)>, ReconciliationError> {
         if let Some(state @ (OperationState::Finalized | OperationState::NotAttempted)) = existing {
             acknowledged(AdmissionDecision::Admitted(state));
             return Ok(None);
@@ -709,7 +711,7 @@ impl Gateway {
         &mut self,
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
-        client: kube::Client,
+        client: Client,
         receipt_settings: &ReceiptSettings<'_>,
     ) -> Result<Option<LoadedOperation>, ReconciliationError> {
         let Some(existing) = self
@@ -746,9 +748,9 @@ impl Gateway {
         &mut self,
         request: &SetDeploymentImageRequest,
         signed_grant: &[u8],
-        client: Option<kube::Client>,
+        client: Option<Client>,
         receipt_settings: Option<&ReceiptSettings<'_>>,
-        worker: &journal::WorkerLock,
+        worker: &WorkerLock,
     ) -> Result<Option<LoadedOperation>, ReconciliationError> {
         let mut adapter = client.map(KubernetesDeploymentImageAdapter::new);
         self.reconcile_locked_with_adapter(
@@ -768,7 +770,7 @@ impl Gateway {
         signed_grant: &[u8],
         mut adapter: Option<&mut A>,
         receipt_settings: Option<&ReceiptSettings<'_>>,
-        worker: &journal::WorkerLock,
+        worker: &WorkerLock,
         fault: Option<FaultPoint>,
     ) -> Result<Option<LoadedOperation>, ReconciliationError> {
         if !self.journal.owns_worker(worker) {
@@ -898,7 +900,7 @@ impl Gateway {
     ) -> Result<Option<OperationState>, GatewayError> {
         #[cfg(not(test))]
         let _ = fault;
-        let Some(journal::LoadedOperation::ReceiverObserved(operation)) = operation else {
+        let Some(LoadedOperation::ReceiverObserved(operation)) = operation else {
             return Ok(None);
         };
         #[cfg(test)]
@@ -959,9 +961,9 @@ impl Gateway {
     }
 
     pub(crate) fn read_loaded_receipt(
-        operation: journal::LoadedOperation,
+        operation: LoadedOperation,
     ) -> Result<(Vec<u8>, String), GatewayError> {
-        let journal::LoadedOperation::Finalized(operation) = operation else {
+        let LoadedOperation::Finalized(operation) = operation else {
             return Err(GatewayError::InvalidPersistedState);
         };
         let receipt = operation.receipt();
@@ -981,7 +983,7 @@ impl Gateway {
     pub(crate) async fn run_operation_once(
         &mut self,
         operation_id: &str,
-        client: kube::Client,
+        client: Client,
     ) -> Result<Option<OperationState>, GatewayError> {
         let mut adapter = KubernetesDeploymentImageAdapter::new(client);
         self.run_operation_once_with_adapter_and_fault(operation_id, &mut adapter, None)
@@ -1031,7 +1033,7 @@ impl Gateway {
     async fn preflight_target<A: DeploymentImageAdapter + Send>(
         &mut self,
         authorized: &AuthorizedRequest,
-        operation: &journal::AuthorizedOperation,
+        operation: &AuthorizedOperation,
         adapter: &mut A,
         fault: Option<FaultPoint>,
     ) -> Result<Option<ValidatedTargetIdentity>, GatewayError> {
@@ -1069,7 +1071,7 @@ impl Gateway {
         authorized: &AuthorizedRequest,
         adapter: &mut A,
         fault: Option<FaultPoint>,
-        worker: &journal::WorkerLock,
+        worker: &WorkerLock,
     ) -> Result<Option<OperationState>, GatewayError> {
         if !self.journal.owns_worker(worker) {
             return Err(GatewayError::InvalidTransition);
@@ -1079,7 +1081,7 @@ impl Gateway {
         };
 
         let (attempted, fault) = match operation {
-            journal::LoadedOperation::Authorized(operation) => {
+            LoadedOperation::Authorized(operation) => {
                 let Some(target) = self
                     .preflight_target(authorized, &operation, adapter, fault)
                     .await?
@@ -1094,7 +1096,7 @@ impl Gateway {
                 if fault == Some(FaultPoint::ApplyStartedCommitted) {
                     return Err(GatewayError::InjectedFault);
                 }
-                let Some(journal::LoadedOperation::ApplyStarted(started)) =
+                let Some(LoadedOperation::ApplyStarted(started)) =
                     self.journal.authorized_operation(authorized)?
                 else {
                     return Err(GatewayError::InvalidPersistedState);
@@ -1118,7 +1120,7 @@ impl Gateway {
                 if fault == Some(FaultPoint::ApplyOutcomeCommitted) {
                     return Err(GatewayError::InjectedFault);
                 }
-                let Some(journal::LoadedOperation::ApplyStarted(started)) =
+                let Some(LoadedOperation::ApplyStarted(started)) =
                     self.journal.authorized_operation(authorized)?
                 else {
                     return Err(GatewayError::InvalidPersistedState);
@@ -1127,7 +1129,7 @@ impl Gateway {
             },
             // Observation-only recovery determines what can be concluded without resending.
             // The durable attempt records that dispatch may have happened, not permission to send.
-            journal::LoadedOperation::ApplyStarted(operation) => {
+            LoadedOperation::ApplyStarted(operation) => {
                 #[cfg(test)]
                 if self.journal.exercise_defect(Defect::Remint) {
                     let permission = Journal::remint_for_control(&operation);
@@ -1140,10 +1142,10 @@ impl Gateway {
                 let fault = fault.filter(|point| *point != FaultPoint::ReceiverRead);
                 (operation, fault)
             },
-            journal::LoadedOperation::Requested(_)
-            | journal::LoadedOperation::NotAttempted(_)
-            | journal::LoadedOperation::ReceiverObserved(_)
-            | journal::LoadedOperation::Finalized(_) => return Ok(None),
+            LoadedOperation::Requested(_)
+            | LoadedOperation::NotAttempted(_)
+            | LoadedOperation::ReceiverObserved(_)
+            | LoadedOperation::Finalized(_) => return Ok(None),
         };
 
         // Only attempted history reaches this continuation. Fresh dispatch permission has

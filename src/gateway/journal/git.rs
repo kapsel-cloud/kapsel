@@ -5,6 +5,8 @@
 use kapsel_authority::{verify_git_ref_grant, AuthorizationTrust, GitRefAuthorization};
 use rusqlite::Connection;
 
+#[cfg(test)]
+use super::records::Defect;
 use super::{
     records::{Record, Write},
     GatewayError, Journal, WorkerLock,
@@ -12,7 +14,7 @@ use super::{
 use crate::gateway::{
     git::{Acknowledgement, ObservedRef, PreparedTransition},
     receipt::{git as evidence, publication::receipt_digest_hex},
-    FrozenReceipt,
+    FrozenReceipt, OperationState,
 };
 
 pub(in crate::gateway) struct GitBinding {
@@ -75,8 +77,7 @@ pub(in crate::gateway) enum GitPhase {
 }
 
 impl GitPhase {
-    pub(in crate::gateway) fn state(&self) -> crate::gateway::OperationState {
-        use crate::gateway::OperationState;
+    pub(in crate::gateway) fn state(&self) -> OperationState {
         match self {
             Self::Authorized => OperationState::Authorized,
             Self::NotAttempted(_) => OperationState::NotAttempted,
@@ -267,7 +268,7 @@ impl Journal {
         let acknowledgement = if self
             .records
             .control
-            .exercise(super::records::Defect::GitInferredAcknowledgement)
+            .exercise(Defect::GitInferredAcknowledgement)
             && matches!(observed, ObservedRef::Commit(commit)
                 if commit == &binding.authorization.new_commit)
         {
@@ -282,7 +283,7 @@ impl Journal {
         if self
             .records
             .control
-            .exercise(super::records::Defect::GitObservationSubstitution)
+            .exercise(Defect::GitObservationSubstitution)
         {
             next.set("observed_ref_kind", "commit".to_owned());
             next.set("observed_commit", binding.authorization.old_commit.clone());
@@ -342,7 +343,7 @@ impl Journal {
     ) -> Result<GitPhase, GatewayError> {
         #[cfg(test)]
         if record.get::<Vec<u8>>("signed_authorization_grant")? != binding.grant
-            && self.exercise_defect(super::records::Defect::CustodyIgnored)
+            && self.exercise_defect(Defect::CustodyIgnored)
         {
             let unchecked_binding = GitBinding {
                 authorization: binding.authorization.clone(),

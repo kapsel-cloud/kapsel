@@ -8,7 +8,7 @@ use std::{
 };
 
 use http_body_util::BodyExt;
-use kube::Client;
+use kube::{client::Body, Client};
 use serde_json::{json, Value};
 use tower_test::mock;
 
@@ -109,8 +109,7 @@ pub(super) fn client(
     case: &str,
     lose_response: bool,
 ) -> (Client, tokio::task::JoinHandle<()>) {
-    let (service, mut handle) =
-        mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
+    let (service, mut handle) = mock::pair::<http::Request<Body>, http::Response<Body>>();
     let client = Client::new(service, "demo");
     let root = root.to_owned();
     let case = case.to_owned();
@@ -190,7 +189,7 @@ pub(super) fn client(
                 send.send_response(
                     http::Response::builder()
                         .status(response_status)
-                        .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap()))
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
                         .unwrap(),
                 );
             }

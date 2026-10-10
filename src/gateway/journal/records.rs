@@ -4,10 +4,12 @@ use std::sync::OnceLock;
 
 use rusqlite::{
     types::{FromSql, Value},
-    Connection, OptionalExtension, TransactionBehavior,
+    Connection, OptionalExtension, Transaction, TransactionBehavior,
 };
 
-use super::{changed_one, schema, GatewayError};
+use super::{changed_one, schema, GatewayError, LoadedOperation};
+#[cfg(test)]
+use crate::kernel_simulation_tests::Scratch;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Table {
@@ -134,7 +136,7 @@ impl Record {
 pub(super) fn decode(
     record: &Record,
     #[cfg(test)] control: &Control,
-) -> Result<super::LoadedOperation, GatewayError> {
+) -> Result<LoadedOperation, GatewayError> {
     let snapshot = super::SnapshotRow {
         approved_uid: record.get("approved_uid")?,
         approved_resource_version: record.get("approved_resource_version")?,
@@ -310,7 +312,7 @@ impl Io {
         clippy::unused_self,
         reason = "decoder defect controls exist only in test builds"
     )]
-    pub(super) fn decode(&self, record: &Record) -> Result<super::LoadedOperation, GatewayError> {
+    pub(super) fn decode(&self, record: &Record) -> Result<LoadedOperation, GatewayError> {
         decode(
             record,
             #[cfg(test)]
@@ -449,9 +451,8 @@ impl Io {
         #[cfg(test)] write: Write,
         #[cfg(test)] delivery: Delivery,
     ) -> Result<(), GatewayError> {
-        let transaction =
-            rusqlite::Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
-                .map_err(GatewayError::Database)?;
+        let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)
+            .map_err(GatewayError::Database)?;
         let id: String = next.get("operation_id")?;
         let retained_record_matches =
             read_table(&transaction, &id, next.table)?.as_ref() == expected;
@@ -527,7 +528,7 @@ impl Io {
     #[allow(clippy::unused_self, reason = "test builds record the executed SQL")]
     fn update_changed_columns(
         &self,
-        transaction: &rusqlite::Transaction<'_>,
+        transaction: &Transaction<'_>,
         previous: &Record,
         next: &Record,
         id: String,
@@ -584,6 +585,9 @@ use std::{
 };
 
 #[cfg(test)]
+use crate::gateway::{journal::Journal, AuthorizationTrust};
+
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Delivery {
     NoCommit,
@@ -618,7 +622,7 @@ struct Controls {
     defect: Option<Defect>,
     defect_reached: Vec<Defect>,
     sql: Vec<(Write, String)>,
-    original_trust: Option<Vec<crate::AuthorizationTrust>>,
+    original_trust: Option<Vec<AuthorizationTrust>>,
 }
 
 #[cfg(test)]
@@ -666,8 +670,8 @@ pub(crate) enum Defect {
 impl Control {
     pub(crate) fn appointed_trust(
         &self,
-        current: Vec<crate::AuthorizationTrust>,
-    ) -> Vec<crate::AuthorizationTrust> {
+        current: Vec<AuthorizationTrust>,
+    ) -> Vec<AuthorizationTrust> {
         let mut control = self.0.lock().unwrap();
         let original = control
             .original_trust
@@ -777,8 +781,8 @@ mod tests {
         defect: bool,
         git: bool,
     ) -> Result<(bool, Vec<Defect>), GatewayError> {
-        let scratch = crate::kernel_simulation_tests::Scratch::new();
-        let mut journal = super::super::Journal::open(scratch.0.join("journal.sqlite3")).unwrap();
+        let scratch = Scratch::new();
+        let mut journal = Journal::open(scratch.0.join("journal.sqlite3")).unwrap();
         let control = if virtualized {
             Control::virtualized()
         } else {
@@ -854,9 +858,8 @@ mod tests {
                 ("receiver_image", schema::PERSISTED_VALUE_BYTES_MAX),
                 ("signed_authorization_grant", 4096),
             ] {
-                let scratch = crate::kernel_simulation_tests::Scratch::new();
-                let mut journal =
-                    super::super::Journal::open(scratch.0.join("journal.sqlite3")).unwrap();
+                let scratch = Scratch::new();
+                let mut journal = Journal::open(scratch.0.join("journal.sqlite3")).unwrap();
                 let control = if virtualized {
                     Control::virtualized()
                 } else {

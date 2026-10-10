@@ -9,7 +9,7 @@ use kapsel_authority::{
 };
 pub use kapsel_authority::{ApprovedTarget, AuthorizationTrust, ExactAuthorization};
 
-use super::GatewayError;
+use super::{GatewayError, InputField};
 
 pub(crate) struct VerifiedAuthorization {
     pub(crate) authorization: ExactAuthorization,
@@ -64,13 +64,13 @@ fn map_authorization_error(error: AuthorizationGrantError) -> GatewayError {
     }
 }
 
-fn map_input_field(field: AuthorizationInputField) -> super::InputField {
+fn map_input_field(field: AuthorizationInputField) -> InputField {
     match field {
-        AuthorizationInputField::AuthorizationId => super::InputField::AuthorizationId,
-        AuthorizationInputField::OperationId => super::InputField::OperationId,
-        AuthorizationInputField::Namespace => super::InputField::Namespace,
-        AuthorizationInputField::Deployment => super::InputField::Deployment,
-        AuthorizationInputField::Container => super::InputField::Container,
-        AuthorizationInputField::ImmutableImageDigest => super::InputField::ImmutableImageDigest,
+        AuthorizationInputField::AuthorizationId => InputField::AuthorizationId,
+        AuthorizationInputField::OperationId => InputField::OperationId,
+        AuthorizationInputField::Namespace => InputField::Namespace,
+        AuthorizationInputField::Deployment => InputField::Deployment,
+        AuthorizationInputField::Container => InputField::Container,
+        AuthorizationInputField::ImmutableImageDigest => InputField::ImmutableImageDigest,
     }
 }

@@ -11,18 +11,35 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    task::Poll,
 };
 
+use ed25519_dalek::SigningKey;
+use kapsel_authority::GitRefAuthorization;
 use rusqlite::{types::Value, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Notify;
 
 use crate::{
-    gateway::{Defect, Delivery, DispatchPermission, StorageControl, StorageWrite},
-    ApplyOutcome, ApprovedTarget, AuthorizationTrust, DeploymentImageAdapter, ExactAuthorization,
-    FaultPoint, OperationReceipt, ReceiverObservation, ServiceApplication, ServiceApproval,
-    ServiceConfiguration, ServiceExecution, SetDeploymentImageRequest, TargetIdentity,
-    TargetReadError,
+    application::{
+        ExecutionCondition, OperationReceipt, OperationStatus, ServiceAdmission,
+        ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
+        ServiceStop,
+    },
+    gateway::{
+        git::{
+            exploration::{Barrier, Script},
+            Acknowledgement, ObservedRef,
+        },
+        inspect_receipt, ApprovedTarget, AuthorizationTrust, Defect, Delivery,
+        DeploymentImageAdapter, DispatchPermission, ExactAuthorization, FaultPoint,
+        GitOperationTargets, InspectionLimits, InspectionStatus, ObservedTarget, OperationResult,
+        OperationState, OperationTargets, ReceiptStatement, ReceiptTrust,
+        SetDeploymentImageRequest, StorageControl, StorageWrite, TargetReadError, TargetRejection,
+        TestApplyOutcome as ApplyOutcome, TestReceiverObservation as ReceiverObservation,
+        TestTargetIdentity as TargetIdentity,
+    },
 };
 
 fn source_identity() -> String {
@@ -410,7 +427,7 @@ struct Adapter {
     receiver: Receiver,
     lose_response: bool,
     fresh: bool,
-    gate: Option<(IoPoint, Arc<tokio::sync::Notify>)>,
+    gate: Option<(IoPoint, Arc<Notify>)>,
 }
 
 impl Adapter {
@@ -666,10 +683,10 @@ impl Intent {
         }
     }
 
-    fn git(peer: usize) -> (Self, kapsel_authority::GitRefAuthorization) {
+    fn git(peer: usize) -> (Self, GitRefAuthorization) {
         let mut intent = Self::new(peer);
         intent.request.operation_id = format!("kernel-git-{peer}");
-        let approval = kapsel_authority::GitRefAuthorization {
+        let approval = GitRefAuthorization {
             authorization_id: intent.authorization_id.clone(),
             operation_id: intent.request.operation_id.clone(),
             repository_id: format!("kernel-repository-{peer}"),
@@ -689,7 +706,7 @@ impl Intent {
     fn trust(&self) -> AuthorizationTrust {
         AuthorizationTrust {
             key_id: self.authorization_key.clone(),
-            public_key: ed25519_dalek::SigningKey::from_bytes(&self.authority_seed)
+            public_key: SigningKey::from_bytes(&self.authority_seed)
                 .verifying_key()
                 .to_bytes(),
         }
@@ -866,11 +883,8 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                 Effect::Kubernetes => (Intent::new(peer), None),
                 Effect::Git => {
                     let (intent, authorization) = Intent::git(peer);
-                    let script = crate::gateway::git::exploration::Script::new(
-                        authorization.clone(),
-                        store.path.clone(),
-                        control.clone(),
-                    );
+                    let script =
+                        Script::new(authorization.clone(), store.path.clone(), control.clone());
                     (
                         intent,
                         Some(GitPeer {
@@ -1030,11 +1044,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     state.unavailable = matches!(receiver, Receiver::Unavailable);
                     state.stale = matches!(receiver, Receiver::Replaced | Receiver::StaleVersion);
                     state.acknowledgement = match receiver {
-                        Receiver::Healthy => crate::gateway::git::Acknowledgement::Updated,
-                        Receiver::Failed => crate::gateway::git::Acknowledgement::ReceiverRejected,
-                        _ => crate::gateway::git::Acknowledgement::Unknown,
+                        Receiver::Healthy => Acknowledgement::Updated,
+                        Receiver::Failed => Acknowledgement::ReceiverRejected,
+                        _ => Acknowledgement::Unknown,
                     };
-                    state.observed = crate::gateway::git::ObservedRef::Commit(
+                    state.observed = ObservedRef::Commit(
                         if matches!(receiver, Receiver::Healthy) && state.sends > 0 {
                             git.authorization.new_commit.clone()
                         } else {
@@ -1048,12 +1062,11 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     .git
                     .as_ref()
                     .expect("Git-ref events select a Git peer");
-                git.script.state.lock().unwrap().observed =
-                    crate::gateway::git::ObservedRef::Commit(if new {
-                        git.authorization.new_commit.clone()
-                    } else {
-                        git.authorization.old_commit.clone()
-                    });
+                git.script.state.lock().unwrap().observed = ObservedRef::Commit(if new {
+                    git.authorization.new_commit.clone()
+                } else {
+                    git.authorization.old_commit.clone()
+                });
             },
             Action::Reopen { catalog } => {
                 drop(app);
@@ -1106,9 +1119,8 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                     .iter_mut()
                     .find(|key| key.key_id == original.authorization_key)
                 {
-                    appointment.public_key = ed25519_dalek::SigningKey::from_bytes(&[91; 32])
-                        .verifying_key()
-                        .to_bytes();
+                    appointment.public_key =
+                        SigningKey::from_bytes(&[91; 32]).verifying_key().to_bytes();
                 }
                 app = open(configuration.clone(), &control);
             },
@@ -1195,7 +1207,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                         let mut state = git.script.state.lock().unwrap();
                         state.unavailable = false;
                         state.stale = false;
-                        state.acknowledgement = crate::gateway::git::Acknowledgement::Updated;
+                        state.acknowledgement = Acknowledgement::Updated;
                     }
                 }
                 configuration.authorization_trust = peers
@@ -1320,11 +1332,7 @@ fn check_reads(
         let id = &peer.adapter.intent.request.operation_id;
         if raw.is_empty() {
             require(
-                app.status(id)
-                    == Ok((
-                        crate::OperationStatus::NotFound,
-                        crate::OperationTargets::default(),
-                    ))
+                app.status(id) == Ok((OperationStatus::NotFound, OperationTargets::default()))
                     && app.receipt(id) == Ok(OperationReceipt::NotFound),
                 "original_intent",
             )?;
@@ -1389,12 +1397,9 @@ fn check_reads(
 fn stored_projection(
     peer: &Peer,
     raw: &BTreeMap<String, Value>,
-) -> Option<(
-    crate::OperationState,
-    crate::OperationStatus,
-    crate::OperationTargets,
-)> {
-    use crate::{OperationState as State, OperationStatus as Status};
+) -> Option<(OperationState, OperationStatus, OperationTargets)> {
+    use OperationState as State;
+    use OperationStatus as Status;
     let state = match text(raw, "state")? {
         "requested" => State::Requested,
         "authorized" => State::Authorized,
@@ -1407,7 +1412,6 @@ fn stored_projection(
     let status = match state {
         State::Finalized => {
             if let Some(git) = &peer.git {
-                use crate::gateway::git::Acknowledgement;
                 match git
                     .durable_ack
                     .lock()
@@ -1430,8 +1434,8 @@ fn stored_projection(
             }
         },
         State::NotAttempted => Status::NotAttempted(match text(raw, "target_rejection")? {
-            "stale_approval" => crate::TargetRejection::StaleApproval,
-            "stale_ref" => crate::TargetRejection::GitStaleRef,
+            "stale_approval" => TargetRejection::StaleApproval,
+            "stale_ref" => TargetRejection::GitStaleRef,
             _ => return None,
         }),
         State::Requested | State::Authorized | State::ApplyStarted | State::ReceiverObserved => {
@@ -1439,7 +1443,6 @@ fn stored_projection(
         },
     };
     let targets = if let Some(git) = &peer.git {
-        use crate::gateway::git::{Acknowledgement, ObservedRef};
         let acknowledgement = match text(raw, "acknowledgement") {
             Some("updated") => Some(Acknowledgement::Updated),
             Some("rejected_before_send") => Some(Acknowledgement::RejectedBeforeSend),
@@ -1455,8 +1458,8 @@ fn stored_projection(
             None => None,
             _ => return None,
         };
-        crate::OperationTargets {
-            git: Some(crate::GitOperationTargets {
+        OperationTargets {
+            git: Some(GitOperationTargets {
                 approval: git.authorization.clone(),
                 attempted: matches!(
                     state,
@@ -1465,7 +1468,7 @@ fn stored_projection(
                 acknowledgement,
                 observed_ref,
             }),
-            ..crate::OperationTargets::default()
+            ..OperationTargets::default()
         }
     } else {
         let intent = &peer.adapter.intent;
@@ -1474,17 +1477,17 @@ fn stored_projection(
             resource_version: intent.version.clone(),
         };
         let observed_target = if matches!(state, State::ReceiverObserved | State::Finalized) {
-            Some(crate::ObservedTarget {
+            Some(ObservedTarget {
                 uid: text(raw, "receiver_uid").map(str::to_owned),
                 resource_version: text(raw, "receiver_resource_version").map(str::to_owned),
             })
         } else {
-            text(raw, "preflight_uid").map(|uid| crate::ObservedTarget {
+            text(raw, "preflight_uid").map(|uid| ObservedTarget {
                 uid: Some(uid.into()),
                 resource_version: text(raw, "preflight_resource_version").map(str::to_owned),
             })
         };
-        crate::OperationTargets {
+        OperationTargets {
             approved_target: Some(approved.clone()),
             attempt_target: (integer(raw, "apply_attempted") == Some(1)).then_some(approved),
             observed_target,
@@ -1511,9 +1514,9 @@ struct Peer {
 }
 
 struct GitPeer {
-    authorization: kapsel_authority::GitRefAuthorization,
-    script: crate::gateway::git::exploration::Script,
-    durable_ack: Mutex<Option<crate::gateway::git::Acknowledgement>>,
+    authorization: GitRefAuthorization,
+    script: Script,
+    durable_ack: Mutex<Option<Acknowledgement>>,
 }
 
 impl Peer {
@@ -1577,7 +1580,7 @@ impl Peer {
         point: IoPoint,
         event: usize,
     ) -> Checked {
-        let resume = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(Notify::new());
         let id = self.adapter.intent.request.operation_id.clone();
         let store = self.adapter.store.clone();
         let git = self.git.is_some();
@@ -1597,10 +1600,8 @@ impl Peer {
             None,
         ));
 
-        let suspended = std::future::poll_fn(|cx| {
-            std::task::Poll::Ready(execution.as_mut().poll(cx).is_pending())
-        })
-        .await;
+        let suspended =
+            std::future::poll_fn(|cx| Poll::Ready(execution.as_mut().poll(cx).is_pending())).await;
         if !suspended {
             return Err(Finding {
                 law: "custody_cut_not_reached",
@@ -1641,14 +1642,14 @@ impl Peer {
         Ok(())
     }
 
-    fn gate(&mut self, point: Option<IoPoint>, resume: Option<Arc<tokio::sync::Notify>>) {
+    fn gate(&mut self, point: Option<IoPoint>, resume: Option<Arc<Notify>>) {
         self.adapter.gate = point.zip(resume.clone());
         if let Some(git) = &self.git {
             let mut state = git.script.state.lock().unwrap();
             state.barrier = point.map(|point| match point {
-                IoPoint::Preflight => crate::gateway::git::exploration::Barrier::Preflight,
-                IoPoint::Mutation => crate::gateway::git::exploration::Barrier::Mutation,
-                IoPoint::Observation => crate::gateway::git::exploration::Barrier::Observation,
+                IoPoint::Preflight => Barrier::Preflight,
+                IoPoint::Mutation => Barrier::Mutation,
+                IoPoint::Observation => Barrier::Observation,
             });
             state.resume = resume;
             state.fresh_attempt = true;
@@ -1731,7 +1732,7 @@ async fn cancel_at_io(
             .collect::<Vec<_>>()
     };
 
-    let resume = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(Notify::new());
     peers[selected].gate(Some(point), Some(resume));
     let (owner, other) = match selected.cmp(&contender) {
         std::cmp::Ordering::Less => {
@@ -1759,8 +1760,7 @@ async fn cancel_at_io(
         None,
     ));
     let parked =
-        std::future::poll_fn(|cx| std::task::Poll::Ready(active.as_mut().poll(cx).is_pending()))
-            .await;
+        std::future::poll_fn(|cx| Poll::Ready(active.as_mut().poll(cx).is_pending())).await;
     if !parked {
         return Err(Finding {
             law: "cancellation_cut_not_reached",
@@ -1772,10 +1772,10 @@ async fn cancel_at_io(
     let pending = snapshots();
     let mut acknowledgements = Vec::new();
     let contender_id = contender_adapter.intent.request.operation_id.clone();
-    let expected_admission = second.admitted_state(&contender_id).unwrap().map_or(
-        crate::ServiceAdmission::Busy,
-        crate::ServiceAdmission::Admitted,
-    );
+    let expected_admission = second
+        .admitted_state(&contender_id)
+        .unwrap()
+        .map_or(ServiceAdmission::Busy, ServiceAdmission::Admitted);
     let result = second
         .select_with_adapters(
             &contender_id,
@@ -1795,9 +1795,7 @@ async fn cancel_at_io(
         .await;
     let excluded = matches!(
         result,
-        Ok(crate::ServiceStop::Blocked(
-            crate::ExecutionCondition::WorkerContention
-        ))
+        Ok(ServiceStop::Blocked(ExecutionCondition::WorkerContention))
     ) && snapshots() == pending
         && acknowledgements == [expected_admission];
 
@@ -1839,7 +1837,6 @@ impl Checker {
         event: usize,
         require_progress: bool,
     ) -> Checked {
-        use crate::gateway::git::{Acknowledgement, ObservedRef};
         let require = |condition, law| {
             if condition {
                 Ok(())
@@ -1889,11 +1886,11 @@ impl Checker {
             .unwrap()
             .unwrap_or(Acknowledgement::Unknown);
         let expected_result = match acknowledgement {
-            Acknowledgement::Updated => crate::OperationResult::Succeeded,
+            Acknowledgement::Updated => OperationResult::Succeeded,
             Acknowledgement::RejectedBeforeSend | Acknowledgement::ReceiverRejected => {
-                crate::OperationResult::Failed
+                OperationResult::Failed
             },
-            Acknowledgement::Unknown => crate::OperationResult::Unknown,
+            Acknowledgement::Unknown => OperationResult::Unknown,
         };
         if matches!(text(&raw, "state"), Some("receiver_observed" | "finalized")) {
             if self.frozen.is_none() {
@@ -1922,9 +1919,9 @@ impl Checker {
             if let Ok(OperationReceipt::Ready { bytes, sha256 }) =
                 app.receipt(&approval.operation_id)
             {
-                let trust = crate::ReceiptTrust {
+                let trust = ReceiptTrust {
                     key_id: intent.receipt_key.clone(),
-                    public_key: ed25519_dalek::SigningKey::from_bytes(&intent.receipt_seed)
+                    public_key: SigningKey::from_bytes(&intent.receipt_seed)
                         .verifying_key()
                         .to_bytes(),
                     accepted_purpose: "kapsel.git-ref-transition-receipt.v1".into(),
@@ -1933,14 +1930,10 @@ impl Checker {
                 }
                 .encode()
                 .unwrap();
-                let inspection = crate::inspect_git_receipt(
-                    &bytes,
-                    &trust,
-                    1,
-                    crate::InspectionLimits::default(),
-                );
+                let inspection =
+                    crate::inspect_git_receipt(&bytes, &trust, 1, InspectionLimits::default());
                 require(
-                    inspection.status() == crate::InspectionStatus::Inspected,
+                    inspection.status() == InspectionStatus::Inspected,
                     "original_signer",
                 )?;
                 require(
@@ -1995,7 +1988,7 @@ impl Checker {
 impl Selection {
     fn check_cut(
         self,
-        result: Result<crate::ServiceStop, crate::ServiceError>,
+        result: Result<ServiceStop, ServiceError>,
         adapter: &Adapter,
         git: bool,
         writes_before: usize,
@@ -2026,7 +2019,7 @@ impl Selection {
             Cut::BeforeAttempt | Cut::Unsent | Cut::AttemptAcknowledgementLost
         ));
         if io_delta != (expected_reads, expected_sends)
-            || result != Err(crate::ServiceError::OperationFailure)
+            || result != Err(ServiceError::OperationFailure)
             || text(&raw, "state") != Some(expected_state)
             || writes.contains(&StorageWrite::Response) != expect_response_record
             || writes.contains(&StorageWrite::Observation) != expect_observation_record
@@ -2065,7 +2058,7 @@ impl Selection {
             (
                 io.reads,
                 io.sends,
-                io.acknowledgement == crate::gateway::git::Acknowledgement::Updated,
+                io.acknowledgement == Acknowledgement::Updated,
             )
         };
         let mut acknowledgements = Vec::new();
@@ -2116,9 +2109,7 @@ impl Selection {
                 && expected_update
                 && io.sends > sends_before
                 && io.ref_after_send
-                    != Some(crate::gateway::git::ObservedRef::Commit(
-                        git.authorization.new_commit.clone(),
-                    ))
+                    != Some(ObservedRef::Commit(git.authorization.new_commit.clone()))
             {
                 return Err(Finding {
                     law: "git_lost_response_preserves_update",
@@ -2277,9 +2268,9 @@ fn check_terminal(
     }
     match app.receipt(&intent.request.operation_id) {
         Ok(OperationReceipt::Ready { bytes, sha256 }) => {
-            let trust = crate::ReceiptTrust {
+            let trust = ReceiptTrust {
                 key_id: intent.receipt_key.clone(),
-                public_key: ed25519_dalek::SigningKey::from_bytes(&intent.receipt_seed)
+                public_key: SigningKey::from_bytes(&intent.receipt_seed)
                     .verifying_key()
                     .to_bytes(),
                 accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
@@ -2288,9 +2279,8 @@ fn check_terminal(
             }
             .encode()
             .unwrap();
-            let inspection =
-                crate::inspect_receipt(&bytes, &trust, 1, crate::InspectionLimits::default());
-            if inspection.status() != crate::InspectionStatus::Inspected {
+            let inspection = inspect_receipt(&bytes, &trust, 1, InspectionLimits::default());
+            if inspection.status() != InspectionStatus::Inspected {
                 return Err(Finding {
                     law: "original_signer",
                     event,
@@ -2338,7 +2328,7 @@ fn check_terminal(
 // Named columns have already been bound to original intent and actual I/O by event laws.
 // This projects public inspected fields, not the production statement builder or classifier.
 fn receipt_matches_columns(
-    statement: &crate::ReceiptStatement,
+    statement: &ReceiptStatement,
     raw: &BTreeMap<String, Value>,
     io: &Observations,
     intent: &Intent,
@@ -2421,9 +2411,9 @@ fn receipt_matches_columns(
         ),
     ];
     let result = match statement.result() {
-        crate::OperationResult::Succeeded => "SUCCEEDED",
-        crate::OperationResult::Failed => "FAILED",
-        crate::OperationResult::Unknown => "UNKNOWN",
+        OperationResult::Succeeded => "SUCCEEDED",
+        OperationResult::Failed => "FAILED",
+        OperationResult::Unknown => "UNKNOWN",
     };
     text_fields
         .iter()

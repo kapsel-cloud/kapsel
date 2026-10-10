@@ -1,4 +1,6 @@
-use super::*;
+use kube::client::Body;
+
+use super::{LoadedOperation, *};
 
 #[test]
 fn service_admission_acknowledges_capacity_but_not_unsettled_commit_errors() {
@@ -137,7 +139,7 @@ async fn requested_recovery_rechecks_exact_authorization_before_advancing() {
         );
         assert!(matches!(
             gateway.journal.operation(&request.operation_id).unwrap(),
-            Some(journal::LoadedOperation::Requested(_))
+            Some(LoadedOperation::Requested(_))
         ));
     }
     let mut gateway = Gateway::open_for_test(&path).unwrap();
@@ -157,10 +159,8 @@ async fn requested_recovery_rechecks_exact_authorization_before_advancing() {
         "effect-gateway-authorization-test-key",
     )
     .unwrap();
-    let (service, mut handle) = tower_test::mock::pair::<
-        http::Request<kube::client::Body>,
-        http::Response<kube::client::Body>,
-    >();
+    let (service, mut handle) =
+        tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
     let client = kube::Client::new(service, "demo");
     let lock_owner = Gateway::open_for_test(&path).unwrap();
     let worker_lock = lock_owner.journal.try_lock_worker().unwrap().unwrap();
@@ -236,7 +236,7 @@ async fn production_writers_reload_as_their_exact_next_phase() {
         .unwrap();
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::Authorized(_))
+        Some(LoadedOperation::Authorized(_))
     ));
 
     let mut adapter = failed_rollout_adapter(&path, &request);
@@ -252,7 +252,7 @@ async fn production_writers_reload_as_their_exact_next_phase() {
     ));
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::ApplyStarted(_))
+        Some(LoadedOperation::ApplyStarted(_))
     ));
     assert_eq!(adapter.apply_calls, 0);
 
@@ -265,7 +265,7 @@ async fn production_writers_reload_as_their_exact_next_phase() {
     );
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::ReceiverObserved(_))
+        Some(LoadedOperation::ReceiverObserved(_))
     ));
     assert_eq!(adapter.apply_calls, 0);
 
@@ -283,7 +283,7 @@ async fn production_writers_reload_as_their_exact_next_phase() {
     ));
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::ReceiverObserved(_))
+        Some(LoadedOperation::ReceiverObserved(_))
     ));
 
     assert!(matches!(
@@ -296,7 +296,7 @@ async fn production_writers_reload_as_their_exact_next_phase() {
     ));
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::Finalized(_))
+        Some(LoadedOperation::Finalized(_))
     ));
 
     drop(gateway);
@@ -326,7 +326,7 @@ async fn apply_outcome_writer_reloads_as_apply_started_with_complete_response_fa
     ));
     assert!(matches!(
         gateway.journal.operation(&request.operation_id).unwrap(),
-        Some(journal::LoadedOperation::ApplyStarted(_))
+        Some(LoadedOperation::ApplyStarted(_))
     ));
     assert_eq!(adapter.apply_calls, 1);
 
@@ -374,7 +374,7 @@ async fn permanent_target_rejection_is_terminal_and_does_not_block_later_operati
         );
         assert!(matches!(
             gateway.journal.operation(&rejected.operation_id).unwrap(),
-            Some(journal::LoadedOperation::NotAttempted(_))
+            Some(LoadedOperation::NotAttempted(_))
         ));
         assert_eq!(gateway.result(&rejected.operation_id).unwrap(), None);
         assert_eq!(

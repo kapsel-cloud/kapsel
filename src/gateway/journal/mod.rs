@@ -30,9 +30,10 @@ use super::ReceiptReference;
 use super::{
     kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity, ValidatedTargetIdentity},
     receipt::{decode_frozen_receipt, publication, ReceiptStatement, RECEIPT_BYTES_MAX},
-    validate_identity, AuthorizedRequest, FrozenReceipt, GatewayError, InputField, OperationResult,
-    OperationState, ReceiptToPrepare, SetDeploymentImageRequest, TargetRejection, ValidatedRequest,
-    WRITE_STRATEGY,
+    validate_identity, ApprovedTarget, AuthorizedRequest, FaultPoint, FrozenReceipt, GatewayError,
+    InputField, ObservedTarget, OperationResult, OperationState, OperationTargets,
+    ReceiptToPrepare, RetainedOperation, SetDeploymentImageRequest, TargetRejection,
+    ValidatedRequest, WRITE_STRATEGY,
 };
 
 pub(crate) const OPERATION_COUNT_MAX: i64 = 10_000;
@@ -73,8 +74,8 @@ impl DispatchPermission {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::gateway) struct RequestFacts {
-    approved_target: Option<super::ApprovedTarget>,
-    preflight_target: Option<super::ApprovedTarget>,
+    approved_target: Option<ApprovedTarget>,
+    preflight_target: Option<ApprovedTarget>,
     request: ValidatedRequest,
 }
 
@@ -182,7 +183,7 @@ impl AuthorizedOperation {
         &self.request.request
     }
 
-    pub(in crate::gateway) fn approved_target(&self) -> Option<&super::ApprovedTarget> {
+    pub(in crate::gateway) fn approved_target(&self) -> Option<&ApprovedTarget> {
         self.request.approved_target.as_ref()
     }
 }
@@ -254,7 +255,7 @@ impl LoadedOperation {
         }
     }
 
-    pub(crate) fn targets(&self) -> super::OperationTargets {
+    pub(crate) fn targets(&self) -> OperationTargets {
         let request = self.request_facts();
         let attempt = match self {
             Self::ApplyStarted(operation) => Some(&operation.attempt),
@@ -268,10 +269,10 @@ impl LoadedOperation {
             _ => None,
         };
 
-        super::OperationTargets {
+        OperationTargets {
             git: None,
             approved_target: request.approved_target.clone(),
-            attempt_target: attempt.map(|attempt| super::ApprovedTarget {
+            attempt_target: attempt.map(|attempt| ApprovedTarget {
                 uid: attempt.target.deployment_uid().to_owned(),
                 resource_version: attempt.target.resource_version().to_owned(),
             }),
@@ -280,13 +281,13 @@ impl LoadedOperation {
                     request
                         .preflight_target
                         .as_ref()
-                        .map(|target| super::ObservedTarget {
+                        .map(|target| ObservedTarget {
                             uid: Some(target.uid.clone()),
                             resource_version: Some(target.resource_version.clone()),
                         })
                 },
                 |statement| {
-                    Some(super::ObservedTarget {
+                    Some(ObservedTarget {
                         uid: statement.receiver_uid.clone(),
                         resource_version: statement.observed_resource_version.clone(),
                     })
@@ -841,7 +842,7 @@ impl Journal {
         &self,
         operation_id: &str,
         authorize: impl FnOnce(&[u8]) -> Result<AuthorizedRequest, GatewayError>,
-    ) -> Result<Option<super::RetainedOperation>, GatewayError> {
+    ) -> Result<Option<RetainedOperation>, GatewayError> {
         let transaction = self
             .connection
             .unchecked_transaction()
@@ -856,7 +857,7 @@ impl Journal {
         let authorized = authorize(&bytes)?;
         let operation = authorized_record_on(&transaction, &self.records, &authorized, || {})?
             .ok_or(GatewayError::InvalidPersistedState)?;
-        Ok(Some(super::RetainedOperation {
+        Ok(Some(RetainedOperation {
             request: authorized.request().to_adapter_request(),
             signed_grant: bytes,
             operation,
@@ -1125,7 +1126,7 @@ impl Journal {
         &self,
         operation: &AuthorizedOperation,
         observed: ValidatedTargetIdentity,
-        fault: Option<super::FaultPoint>,
+        fault: Option<FaultPoint>,
     ) -> Result<Option<DispatchPermission>, GatewayError> {
         #[cfg(not(test))]
         let _ = fault;
@@ -1153,7 +1154,7 @@ impl Journal {
 
         self.mark_apply_started(operation, &target)?;
         #[cfg(test)]
-        if fault == Some(super::FaultPoint::AttemptCommitAcknowledgementLost) {
+        if fault == Some(FaultPoint::AttemptCommitAcknowledgementLost) {
             return Err(GatewayError::InjectedFault);
         }
 
@@ -1435,11 +1436,11 @@ fn authorized_record_on(
 fn snapshot_target(
     uid: Option<String>,
     resource_version: Option<String>,
-) -> Result<Option<super::ApprovedTarget>, GatewayError> {
+) -> Result<Option<ApprovedTarget>, GatewayError> {
     match (uid, resource_version) {
         (None, None) => Ok(None),
         (Some(uid), Some(resource_version)) => {
-            let target = super::ApprovedTarget {
+            let target = ApprovedTarget {
                 uid,
                 resource_version,
             };
@@ -1610,11 +1611,14 @@ fn changed_one(changed: usize) -> Result<(), GatewayError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
+
+    use ed25519_dalek::SigningKey;
 
     use super::*;
     use crate::gateway::{
-        sign_authorization_grant, verify_authorization_grant, ExactAuthorization,
+        receipt::sign_statement, sign_authorization_grant, verify_authorization_grant,
+        AuthorizationTrust, ExactAuthorization,
     };
 
     fn journal(name: &str) -> (Journal, PathBuf) {
@@ -1693,8 +1697,7 @@ mod tests {
         );
         let statement = snapshot_statement();
         let receipt_bytes =
-            super::super::receipt::sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key")
-                .unwrap();
+            sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key").unwrap();
         let receipt_digest = publication::receipt_digest_hex(&receipt_bytes);
         journal
             .connection
@@ -2260,9 +2263,9 @@ mod tests {
             sign_authorization_grant(&authorization, &[7_u8; 32], "snapshot-signer").unwrap();
         let verified = verify_authorization_grant(
             &signed,
-            &super::super::AuthorizationTrust {
+            &AuthorizationTrust {
                 key_id: "snapshot-signer".into(),
-                public_key: ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+                public_key: SigningKey::from_bytes(&[7_u8; 32])
                     .verifying_key()
                     .to_bytes(),
             },
@@ -2279,10 +2282,7 @@ mod tests {
             Some(OperationState::Requested)
         );
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
-        other
-            .connection
-            .busy_timeout(std::time::Duration::ZERO)
-            .unwrap();
+        other.connection.busy_timeout(Duration::ZERO).unwrap();
 
         let snapshot = journal
             .authorized_operation_with(&authorized, || {
@@ -2350,9 +2350,9 @@ mod tests {
             sign_authorization_grant(&authorization, &[7_u8; 32], "snapshot-signer").unwrap();
         let verified = verify_authorization_grant(
             &signed,
-            &super::super::AuthorizationTrust {
+            &AuthorizationTrust {
                 key_id: "snapshot-signer".into(),
-                public_key: ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32])
+                public_key: SigningKey::from_bytes(&[7_u8; 32])
                     .verifying_key()
                     .to_bytes(),
             },
@@ -2361,8 +2361,7 @@ mod tests {
         let mut statement = snapshot_statement();
         statement.authorization_grant_digest = verified.grant_digest.clone();
         let receipt_bytes =
-            super::super::receipt::sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key")
-                .unwrap();
+            sign_statement(&statement, &[9_u8; 32], "snapshot-receipt-key").unwrap();
         let receipt_digest = publication::receipt_digest_hex(&receipt_bytes);
         journal
             .connection
@@ -2384,10 +2383,7 @@ mod tests {
             AuthorizedRequest::bind(ValidatedRequest::try_from(&request).unwrap(), verified)
                 .unwrap();
         let other = Journal::open(root.join("journal.sqlite3")).unwrap();
-        other
-            .connection
-            .busy_timeout(std::time::Duration::ZERO)
-            .unwrap();
+        other.connection.busy_timeout(Duration::ZERO).unwrap();
 
         let snapshot = journal
             .authorized_operation_with(&authorized, || {

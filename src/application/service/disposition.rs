@@ -1,7 +1,7 @@
 //! Caller-safe execution guidance. Process observations never become historical evidence.
 
 use super::ServiceError;
-use crate::OperationStatus;
+use crate::application::OperationStatus;
 
 /// Why a bounded execution pass stopped, not a receiver result or durable fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,7 +154,10 @@ impl ServiceStop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{gateway::*, OperationTargets, TargetRejection};
+    use crate::gateway::{
+        GatewayError, OperationTargets, ReconciliationBlockage, ReconciliationError,
+        TargetRejection,
+    };
 
     #[test]
     fn durable_terminal_history_overrides_every_process_observation() {
@@ -249,7 +252,7 @@ mod tests {
 
     #[test]
     fn error_classification_owns_blockage_without_retaining_raw_diagnostics() {
-        use super::super::classify_stop;
+        use crate::application::service::{classify_stop, HistoryEntry};
 
         for (error, expected_condition) in [
             (
@@ -292,7 +295,7 @@ mod tests {
             Err(ServiceError::StorageUnavailable)
         );
 
-        let inaccessible_entry = super::super::HistoryEntry {
+        let inaccessible_entry = HistoryEntry {
             operation_id: "hidden".into(),
             status: Err(ServiceError::AuthorityUnavailable),
         };
@@ -301,7 +304,7 @@ mod tests {
             Err(ServiceError::AuthorityUnavailable)
         );
 
-        let unfinished_entry = super::super::HistoryEntry {
+        let unfinished_entry = HistoryEntry {
             operation_id: "unfinished".into(),
             status: Ok((OperationStatus::InProgress, OperationTargets::default())),
         };

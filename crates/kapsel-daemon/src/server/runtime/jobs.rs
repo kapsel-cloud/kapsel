@@ -2,6 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use tokio::runtime::Builder;
 use tokio::{
     sync::{oneshot, OwnedSemaphorePermit},
     task::JoinHandle,
@@ -119,10 +121,7 @@ mod tests {
 
     #[test]
     fn supervisor_abort_keeps_permits_until_blocking_work_retires() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let jobs = Jobs::new();
             let connections = Arc::new(Semaphore::new(1));
@@ -162,10 +161,7 @@ mod tests {
 
     #[test]
     fn abandoned_reads_stay_bounded_and_hold_connection_capacity() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let jobs = Jobs::new();
             let connections = Arc::new(Semaphore::new(CONNECTIONS_MAX));
@@ -205,10 +201,7 @@ mod tests {
 
     #[test]
     fn completed_jobs_are_reaped_across_repeated_selections() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let jobs = Jobs::new();
             let connections = Arc::new(Semaphore::new(1));
@@ -235,10 +228,7 @@ mod tests {
 
     #[test]
     fn publication_precedes_work_and_drain_keeps_the_reactor_driven() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let jobs = Arc::new(Jobs::new());
             let connections = Arc::new(Semaphore::new(1));

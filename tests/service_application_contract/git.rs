@@ -1,4 +1,6 @@
 //! Mixed-effect catalog and retained-ID routing without receiver credentials.
+use kapsel::GitReceiverConfiguration;
+
 use super::*;
 
 pub(super) fn git_approval(id: &str) -> ServiceApproval {
@@ -117,13 +119,13 @@ fn git_material_is_bounded_object_only_and_does_not_open_paths_when_decoded() {
         "executable":"/absent/git", "sender":"/absent/sender.git",
         "receiver":"/absent/receiver.git", "repository_id":"repository-1"
     }"#;
-    assert!(kapsel::GitReceiverConfiguration::from_document(material).is_some());
-    assert!(kapsel::GitReceiverConfiguration::from_document(
-        br#"["/git","/sender","/receiver","id"]"#
-    )
-    .is_none());
-    assert!(kapsel::GitReceiverConfiguration::from_document(&[b' '; 4097]).is_none());
-    assert!(kapsel::GitReceiverConfiguration::from_document(
+    assert!(GitReceiverConfiguration::from_document(material).is_some());
+    assert!(
+        GitReceiverConfiguration::from_document(br#"["/git","/sender","/receiver","id"]"#)
+            .is_none()
+    );
+    assert!(GitReceiverConfiguration::from_document(&[b' '; 4097]).is_none());
+    assert!(GitReceiverConfiguration::from_document(
         br#"{
         "executable":"/git", "executable":"/git", "sender":"/s",
         "receiver":"/r", "repository_id":"id"

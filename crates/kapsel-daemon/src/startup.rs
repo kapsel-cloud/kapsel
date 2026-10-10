@@ -20,6 +20,8 @@ use rustix::fs::{
 };
 use tokio::net::UnixListener;
 
+use crate::server::ExecutionApplication;
+
 const OPERATOR_DOCUMENT_BYTES_MAX: usize = 160 * 1024;
 const KEY_BYTES: usize = 32;
 const KUBECONFIG_BYTES_MAX: usize = 16 * 1024;
@@ -184,12 +186,10 @@ impl InstallationInputs {
         ServiceApplication::open(document.configuration)
     }
 
-    pub(crate) fn open_execution(
-        &self,
-    ) -> Result<crate::server::ExecutionApplication, ServiceError> {
+    pub(crate) fn open_execution(&self) -> Result<ExecutionApplication, ServiceError> {
         let document =
             parse_service_operator_document(&self.document, self.journal_access_path.clone())?;
-        Ok(crate::server::ExecutionApplication {
+        Ok(ExecutionApplication {
             application: ServiceApplication::open(document.configuration)?,
             kubeconfig: self.kubeconfig.clone(),
             git_receiver: self.git_receiver.clone(),
@@ -368,7 +368,11 @@ pub(crate) mod tests {
     };
 
     use ed25519_dalek::SigningKey;
-    use kapsel::{provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning};
+    use kapsel::{
+        provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning,
+        OperationReceipt, OperationStatus, ServiceAdmission,
+    };
+    use tokio::runtime::Builder;
 
     use super::{InstallationInputs, OPERATOR_DOCUMENT_BYTES_MAX};
     use crate::server::ApplicationExecution;
@@ -622,7 +626,7 @@ pub(crate) mod tests {
             .status("service-op")
             .unwrap()
             .0
-            .eq(&kapsel::OperationStatus::NotFound));
+            .eq(&OperationStatus::NotFound));
 
         drop(application);
         fs::remove_dir_all(root).unwrap();
@@ -694,10 +698,7 @@ pub(crate) mod tests {
                 .remove("receipt_directory");
             fs::write(document_path, serde_json::to_vec(&document).unwrap()).unwrap();
             let inputs = InstallationInputs::open_at(&root).unwrap();
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+            let runtime = Builder::new_current_thread().enable_all().build().unwrap();
 
             let mut execution = inputs.open_execution().unwrap();
             runtime
@@ -707,11 +708,11 @@ pub(crate) mod tests {
 
             assert_eq!(
                 application.status(&request().operation_id).unwrap().0,
-                kapsel::OperationStatus::Succeeded
+                OperationStatus::Succeeded
             );
             assert!(matches!(
                 application.receipt(&request().operation_id).unwrap(),
-                kapsel::OperationReceipt::Ready { .. }
+                OperationReceipt::Ready { .. }
             ));
             assert_eq!(fs::read_dir(&retained).unwrap().count(), 0);
             if replacement {
@@ -743,10 +744,7 @@ pub(crate) mod tests {
             if replacement {
                 directory(&runtime_path, 0o750);
             }
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+            let runtime = Builder::new_current_thread().enable_all().build().unwrap();
 
             let listener = runtime.block_on(async { inputs.bind_listener() }).unwrap();
 
@@ -767,10 +765,7 @@ pub(crate) mod tests {
             fs::Permissions::from_mode(0o660),
         )
         .unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
 
         let error = runtime
             .block_on(async { inputs.bind_listener() })
@@ -793,10 +788,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         drop(stale);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
 
         let listener = runtime.block_on(async { inputs.bind_listener() }).unwrap();
 
@@ -885,23 +877,20 @@ pub(crate) mod tests {
                     _ => unreachable!(),
                 }
             }
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+            let runtime = Builder::new_current_thread().enable_all().build().unwrap();
             let inputs = InstallationInputs::open_at(&root).unwrap();
             runtime.block_on(async {
                 let reads = inputs.open_application().unwrap();
                 let listener = inputs.bind_listener().unwrap();
                 assert_eq!(
                     reads.status("service-op").unwrap().0,
-                    kapsel::OperationStatus::NotFound
+                    OperationStatus::NotFound
                 );
                 let mut execution = inputs.open_execution().unwrap();
                 let mut admitted = false;
                 let _ = execution
                     .execute("service-op".into(), |decision| {
-                        assert!(matches!(decision, kapsel::ServiceAdmission::Admitted(_)));
+                        assert!(matches!(decision, ServiceAdmission::Admitted(_)));
                         admitted = true;
                     })
                     .await;
@@ -910,11 +899,11 @@ pub(crate) mod tests {
                 drop(listener);
                 assert_eq!(
                     reads.status("service-op").unwrap().0,
-                    kapsel::OperationStatus::InProgress
+                    OperationStatus::InProgress
                 );
                 assert!(matches!(
                     reads.receipt("service-op").unwrap(),
-                    kapsel::OperationReceipt::NotReady
+                    OperationReceipt::NotReady
                 ));
             });
             drop(inputs);

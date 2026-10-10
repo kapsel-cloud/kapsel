@@ -1,6 +1,6 @@
 //! Explicit live-cluster proof for the effect-gateway Deployment-image operation.
 
-use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf, time::Duration};
 
 use ed25519_dalek::SigningKey;
 use k8s_openapi::{
@@ -16,11 +16,13 @@ use kube::{
 };
 use serde_json::json;
 
-use crate::{
+use crate::gateway::{
     inspect_receipt, test_deployment_patch_document, ApprovedTarget, DeploymentImageAdapter,
-    ExactAuthorization, FaultPoint, Gateway, GatewayError, InspectionLimits, InspectionStatus,
-    KubernetesDeploymentImageAdapter, OperationResult, OperationState, ReceiptSettings,
-    ReceiptTrust, SetDeploymentImageRequest, TargetIdentity,
+    DispatchPermission, ExactAuthorization, FaultPoint, Gateway, GatewayError, InspectionLimits,
+    InspectionStatus, OperationResult, OperationState, ReceiptSettings, ReceiptTrust,
+    SetDeploymentImageRequest, TargetReadError, TestApplyOutcome as ApplyOutcome,
+    TestKubernetesDeploymentImageAdapter as KubernetesDeploymentImageAdapter,
+    TestReceiverObservation as ReceiverObservation, TestTargetIdentity as TargetIdentity,
 };
 
 const NAMESPACE: &str = "kapsel-effect-gateway";
@@ -60,14 +62,11 @@ impl DeploymentImageAdapter for CountingAdapter {
     async fn identify(
         &mut self,
         request: &SetDeploymentImageRequest,
-    ) -> Result<crate::TargetIdentity, crate::TargetReadError> {
+    ) -> Result<TargetIdentity, TargetReadError> {
         self.inner.identify(request).await
     }
 
-    async fn apply(
-        &mut self,
-        permission: crate::gateway::DispatchPermission,
-    ) -> Result<crate::ApplyOutcome, ()> {
+    async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
         self.apply_calls += 1;
         self.inner.apply(permission).await
     }
@@ -75,8 +74,8 @@ impl DeploymentImageAdapter for CountingAdapter {
     async fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
-        outcome: &crate::ApplyOutcome,
-    ) -> Result<crate::ReceiverObservation, ()> {
+        outcome: &ApplyOutcome,
+    ) -> Result<ReceiverObservation, ()> {
         self.inner.observe(request, outcome).await
     }
 }
@@ -101,14 +100,11 @@ impl DeploymentImageAdapter for PreconditionRaceAdapter {
     async fn identify(
         &mut self,
         request: &SetDeploymentImageRequest,
-    ) -> Result<crate::TargetIdentity, crate::TargetReadError> {
+    ) -> Result<TargetIdentity, TargetReadError> {
         self.inner.identify(request).await
     }
 
-    async fn apply(
-        &mut self,
-        permission: crate::gateway::DispatchPermission,
-    ) -> Result<crate::ApplyOutcome, ()> {
+    async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
         let request = permission.request_for_test();
         self.apply_calls += 1;
         Api::<Deployment>::namespaced(self.client.clone(), &request.namespace)
@@ -131,8 +127,8 @@ impl DeploymentImageAdapter for PreconditionRaceAdapter {
     async fn observe(
         &mut self,
         request: &SetDeploymentImageRequest,
-        outcome: &crate::ApplyOutcome,
-    ) -> Result<crate::ReceiverObservation, ()> {
+        outcome: &ApplyOutcome,
+    ) -> Result<ReceiverObservation, ()> {
         self.inner.observe(request, outcome).await
     }
 }
@@ -144,7 +140,7 @@ async fn kind_changes_exactly_one_container_through_the_gateway() {
     let client = Client::try_default().await.unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.create(
             &PostParams::default(),
             &Namespace {
@@ -160,18 +156,15 @@ async fn kind_changes_exactly_one_container_through_the_gateway() {
     .unwrap()
     .unwrap();
 
-    let proof = tokio::time::timeout(
-        std::time::Duration::from_mins(1),
-        run_gateway_proof(client.clone()),
-    )
-    .await
-    .map_or_else(
-        |_| Err("kind gateway proof exceeded 60 seconds".into()),
-        |result| result.map_err(|error| error.to_string()),
-    );
+    let proof = tokio::time::timeout(Duration::from_mins(1), run_gateway_proof(client.clone()))
+        .await
+        .map_or_else(
+            |_| Err("kind gateway proof exceeded 60 seconds".into()),
+            |result| result.map_err(|error| error.to_string()),
+        );
 
     let cleanup = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.delete(NAMESPACE, &DeleteParams::default()),
     )
     .await
@@ -190,7 +183,7 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
     let client = Client::try_default().await.unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.create(
             &PostParams::default(),
             &Namespace {
@@ -207,7 +200,7 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
     .unwrap();
 
     let proof = tokio::time::timeout(
-        std::time::Duration::from_mins(1),
+        Duration::from_mins(1),
         run_failed_rollout_proof(client.clone()),
     )
     .await
@@ -217,7 +210,7 @@ async fn kind_failed_rollout_recovers_and_inspects_classifier_complete_receipt()
     );
 
     let cleanup = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.delete(FAILED_NAMESPACE, &DeleteParams::default()),
     )
     .await
@@ -239,7 +232,7 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
     let client = Client::try_default().await.unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.create(
             &PostParams::default(),
             &Namespace {
@@ -256,7 +249,7 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
     .unwrap();
 
     let proof = tokio::time::timeout(
-        std::time::Duration::from_mins(4),
+        Duration::from_mins(4),
         run_unknown_rollout_proof(client.clone()),
     )
     .await
@@ -266,7 +259,7 @@ async fn kind_deleted_after_patch_recovers_to_classifier_complete_unknown_receip
     );
 
     let cleanup = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        Duration::from_secs(15),
         namespaces.delete(UNKNOWN_NAMESPACE, &DeleteParams::default()),
     )
     .await
@@ -285,7 +278,7 @@ async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_ch
     let client = Client::try_default().await.unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.create(
             &PostParams::default(),
             &Namespace {
@@ -306,7 +299,7 @@ async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_ch
     .unwrap();
 
     let proof = tokio::time::timeout(
-        std::time::Duration::from_mins(1),
+        Duration::from_mins(1),
         run_recovery_policy_proof(client.clone()),
     )
     .await
@@ -316,7 +309,7 @@ async fn kind_stale_exact_replay_reaches_admission_without_a_second_persisted_ch
     );
 
     let cleanup = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        Duration::from_secs(15),
         namespaces.delete(POLICY_NAMESPACE, &DeleteParams::default()),
     )
     .await
@@ -335,7 +328,7 @@ async fn kind_snapshot_approval_rejects_stale_targets_and_pins_the_conditional_p
     let client = Client::try_default().await.unwrap();
     let namespaces: Api<Namespace> = Api::all(client.clone());
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         namespaces.create(
             &PostParams::default(),
             &Namespace {
@@ -352,7 +345,7 @@ async fn kind_snapshot_approval_rejects_stale_targets_and_pins_the_conditional_p
     .unwrap();
 
     let proof = tokio::time::timeout(
-        std::time::Duration::from_mins(1),
+        Duration::from_mins(1),
         run_snapshot_approval_proof(client.clone()),
     )
     .await
@@ -362,7 +355,7 @@ async fn kind_snapshot_approval_rejects_stale_targets_and_pins_the_conditional_p
     );
 
     let cleanup = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        Duration::from_secs(15),
         namespaces.delete(SNAPSHOT_NAMESPACE, &DeleteParams::default()),
     )
     .await
@@ -510,7 +503,7 @@ async fn create_snapshot_fixture(
     deployment: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         deployments.create(
             &PostParams::default(),
             &fixture_deployment_for(SNAPSHOT_NAMESPACE, deployment),
@@ -568,12 +561,12 @@ async fn wait_for_deployment_deletion(
     deployments: &Api<Deployment>,
     deployment: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if deployments.get_opt(deployment).await?.is_none() {
                 return Ok::<(), kube::Error>(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
@@ -585,7 +578,7 @@ async fn run_recovery_policy_proof(client: Client) -> Result<(), Box<dyn std::er
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), POLICY_NAMESPACE);
     let replica_sets: Api<ReplicaSet> = Api::namespaced(client.clone(), POLICY_NAMESPACE);
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         deployments.create(
             &PostParams::default(),
             &fixture_deployment_for(POLICY_NAMESPACE, POLICY_DEPLOYMENT),
@@ -733,13 +726,13 @@ async fn wait_for_admission_effects(
     operation_id: &str,
     expected: usize,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let effects = admission_effects(client, operation_id).await?;
             if effects.len() >= expected {
                 return Ok::<Vec<String>, Box<dyn std::error::Error>>(effects);
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
@@ -789,7 +782,7 @@ fn report_recovery_policy_evidence(
 async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), NAMESPACE);
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         deployments.create(
             &PostParams::default(),
             &fixture_deployment_for(NAMESPACE, DEPLOYMENT),
@@ -841,11 +834,8 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
         Some(OperationResult::Succeeded)
     );
 
-    let receiver_deployment = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        deployments.get(DEPLOYMENT),
-    )
-    .await??;
+    let receiver_deployment =
+        tokio::time::timeout(Duration::from_secs(10), deployments.get(DEPLOYMENT)).await??;
     let containers = &receiver_deployment
         .spec
         .as_ref()
@@ -876,7 +866,7 @@ async fn run_gateway_proof(client: Client) -> Result<(), Box<dyn std::error::Err
 async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), UNKNOWN_NAMESPACE);
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         deployments.create(
             &PostParams::default(),
             &fixture_deployment_for(UNKNOWN_NAMESPACE, UNKNOWN_DEPLOYMENT),
@@ -918,7 +908,7 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
     drop(gateway);
 
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         deployments.delete(UNKNOWN_DEPLOYMENT, &DeleteParams::default()),
     )
     .await??;
@@ -976,7 +966,7 @@ async fn run_unknown_rollout_proof(client: Client) -> Result<(), Box<dyn std::er
 async fn run_failed_rollout_proof(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     let deployments: Api<Deployment> = Api::namespaced(client.clone(), FAILED_NAMESPACE);
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        Duration::from_secs(10),
         deployments.create(
             &PostParams::default(),
             &fixture_deployment_for(FAILED_NAMESPACE, FAILED_DEPLOYMENT),
@@ -1081,7 +1071,7 @@ async fn wait_for_deployment_rollout(
     deployments: &Api<Deployment>,
     deployment_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let deployment = deployments.get(deployment_name).await?;
             let generation = deployment.metadata.generation;
@@ -1096,7 +1086,7 @@ async fn wait_for_deployment_rollout(
                 return Ok::<(), kube::Error>(());
             }
             println!("waiting for the disposable kind fixture rollout");
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     })
     .await
@@ -1208,13 +1198,16 @@ fn private_test_directory_for(scenario: &str) -> PathBuf {
 }
 
 mod observation_experiment {
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use super::*;
     use crate::{
-        provision_exact_grant, AuthorizationTrust, GrantProvisioning, OperationReceipt,
-        OperationStatus, ServiceAdmission, ServiceApplication, ServiceApproval,
-        ServiceConfiguration, ServiceExecution,
+        application::{
+            provision_exact_grant, GrantProvisioning, OperationReceipt, OperationStatus,
+            ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration,
+            ServiceExecution,
+        },
+        gateway::AuthorizationTrust,
     };
 
     const NAMESPACE: &str = "kapsel-observation-experiment";

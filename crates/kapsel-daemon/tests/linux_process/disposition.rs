@@ -92,7 +92,7 @@ fn stop_installed_daemon(mut child: ChildGuard) -> Output {
     output
 }
 
-fn read_execution_status(socket: &Path) -> serde_json::Value {
+fn read_execution_status(socket: &Path) -> Value {
     let mut stream = connect(socket);
     write_frame(
         &mut stream,
@@ -118,8 +118,7 @@ fn repeated_read_failures(socket: &Path) {
         ] {
             let mut stream = connect(socket);
             write_frame(&mut stream, request.as_bytes());
-            let value: serde_json::Value =
-                serde_json::from_slice(&read_frame(&mut stream)).unwrap();
+            let value: Value = serde_json::from_slice(&read_frame(&mut stream)).unwrap();
             let error = if value["status"] == "READY" {
                 &value["entries"][0]
             } else {
@@ -225,8 +224,7 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
     );
 
     let path = root.join("etc/kapsel/operator.json");
-    let mut document: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     document["approvals"] = serde_json::json!([]);
     document["authorization_keys"] = serde_json::json!([]);
     private_file(&path, &serde_json::to_vec(&document).unwrap());
@@ -234,7 +232,7 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
     repeated_read_failures(&socket);
     let mut selection = connect(&socket);
     write_frame(&mut selection, submit_request().as_bytes());
-    let refused: serde_json::Value = serde_json::from_slice(&read_frame(&mut selection)).unwrap();
+    let refused: Value = serde_json::from_slice(&read_frame(&mut selection)).unwrap();
     assert_eq!(refused["error_class"], "authority_unavailable");
     // One read-access class and one explicit selection failure, never another from rendering.
     assert_eq!(

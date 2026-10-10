@@ -124,8 +124,7 @@ fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_
     let journal = root.join("var/lib/kapsel/journal.sqlite3");
     let original_journal = fs::read(&journal).unwrap();
     let connection =
-        rusqlite::Connection::open_with_flags(&journal, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .unwrap();
+        Connection::open_with_flags(&journal, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     let original_receipt: Vec<u8> = connection
         .query_row(
             "SELECT receipt_bytes FROM kubernetes_image_operations",
@@ -136,7 +135,7 @@ fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_
     drop(connection);
 
     let operator_document_path = root.join("etc/kapsel/operator.json");
-    let mut candidate: serde_json::Value =
+    let mut candidate: Value =
         serde_json::from_slice(&fs::read(&operator_document_path).unwrap()).unwrap();
     candidate["approvals"] = serde_json::json!([]);
     let with_trust = serde_json::to_vec(&candidate).unwrap();
@@ -152,7 +151,7 @@ fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_
         &mut receipt,
         br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
     );
-    let response: serde_json::Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
     assert_eq!(response["status"], "READY");
     assert_eq!(response["receipt_hex"], lowercase_hex(&original_receipt));
     assert!(wait_for_retirement(next).status.success());
@@ -170,7 +169,7 @@ fn sigterm_drains_provider_before_publication_and_catalog_key_removal_preserves_
         &mut receipt,
         br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
     );
-    let response: serde_json::Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
     assert_eq!(response["error_class"], "authority_unavailable");
     assert!(wait_for_retirement(next).status.success());
     assert_eq!(fs::read(&journal).unwrap(), original_journal);

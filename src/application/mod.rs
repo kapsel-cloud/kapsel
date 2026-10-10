@@ -11,7 +11,10 @@ use std::{
 
 use http_body_util::Limited;
 pub use kapsel_authority::ValidatedServiceOperatorInputs;
-use kube::{config::KubeConfigOptions, Config};
+use kube::{
+    config::{KubeConfigOptions, Kubeconfig},
+    Config,
+};
 pub use service::{
     parse_service_operator_document, ApprovedAction, ExecutionCondition, ExecutionDisposition,
     ExecutionObservation, HistoryEntry, HistoryPage, ServiceAdmission, ServiceApplication,
@@ -21,7 +24,9 @@ pub use service::{
 use tower_http::map_response_body::MapResponseBodyLayer;
 
 use crate::gateway::{
-    sign_authorization_grant, ExactAuthorization, OperationResult, OperationState, TargetRejection,
+    sign_authorization_grant, ApprovedTarget, DeploymentImageAdapter, ExactAuthorization,
+    GitReceiverConfiguration, KubernetesDeploymentImageAdapter, OperationResult, OperationState,
+    TargetRejection,
 };
 
 /// Exact Kubernetes operation tuple retained by operator approval and service history.
@@ -91,7 +96,7 @@ pub fn provision_exact_grant(
 /// Returns [`ApplicationError::InvalidGrantProvisioning`] for invalid inputs or failed preflight.
 pub async fn provision_git_ref_grant(
     authorization: &kapsel_authority::GitRefAuthorization,
-    receiver: &crate::GitReceiverConfiguration,
+    receiver: &GitReceiverConfiguration,
     signing_seed: &[u8; 32],
     signing_key_id: &str,
 ) -> Result<Vec<u8>, ApplicationError> {
@@ -120,9 +125,6 @@ pub async fn provision_snapshot_grant(
     provisioning: &GrantProvisioning<'_>,
     kubeconfig: &[u8],
 ) -> Result<Vec<u8>, ApplicationError> {
-    use crate::gateway::{
-        ApprovedTarget, DeploymentImageAdapter, KubernetesDeploymentImageAdapter,
-    };
     if kubeconfig.len() > KUBECONFIG_BYTES_MAX
         || provisioning.authorization.approved_target.is_some()
     {
@@ -167,8 +169,8 @@ async fn load_operator_kubernetes_client(
     }
     let text = std::str::from_utf8(kubeconfig_bytes)
         .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
-    let mut kubeconfig = kube::config::Kubeconfig::from_yaml(text)
-        .map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
+    let mut kubeconfig =
+        Kubeconfig::from_yaml(text).map_err(|_| ApplicationError::InvalidOperatorConfiguration)?;
     let proxy_placeholder_was_added = configure_explicit_kubeconfig(&mut kubeconfig)?;
     let mut client_config =
         Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
@@ -188,9 +190,7 @@ async fn load_operator_kubernetes_client(
     Ok(client_builder.with_layer(&response_limit).build())
 }
 
-fn configure_explicit_kubeconfig(
-    kubeconfig: &mut kube::config::Kubeconfig,
-) -> Result<bool, ApplicationError> {
+fn configure_explicit_kubeconfig(kubeconfig: &mut Kubeconfig) -> Result<bool, ApplicationError> {
     let current_context_name = kubeconfig
         .current_context
         .as_deref()

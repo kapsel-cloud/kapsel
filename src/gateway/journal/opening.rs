@@ -441,7 +441,7 @@ fn is_proc_self_fd_directory(path: &Path) -> bool {
 mod tests {
     #[cfg(target_os = "linux")]
     use std::os::fd::AsRawFd;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
     use super::*;
     use crate::gateway::journal::Journal;
@@ -454,7 +454,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
         let path = directory.join("journal.sqlite3");
-        assert!(std::process::Command::new("mkfifo")
+        assert!(Command::new("mkfifo")
             .arg(&path)
             .status()
             .unwrap()
@@ -471,7 +471,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         drop(Journal::open(&path).unwrap());
         let rollback = directory.join("journal.sqlite3-journal");
-        assert!(std::process::Command::new("mkfifo")
+        assert!(Command::new("mkfifo")
             .arg(&rollback)
             .status()
             .unwrap()

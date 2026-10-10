@@ -17,7 +17,11 @@ use std::{
     time::Duration,
 };
 
-use kapsel::{ServiceAdmission, ServiceError};
+#[cfg(test)]
+use kapsel::ExecutionCondition;
+use kapsel::{ExecutionObservation, ServiceAdmission, ServiceError, ServiceStop};
+#[cfg(test)]
+use tokio::runtime::Builder;
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::{UnixListener, UnixStream},
@@ -45,7 +49,7 @@ pub(super) struct ServerState<R, E> {
     jobs: Arc<jobs::Jobs>,
     read_failures: Arc<crate::diagnostics::ReadFailures>,
     selected: Arc<Mutex<Weak<Selection>>>,
-    stopped: Arc<Mutex<VecDeque<(String, kapsel::ExecutionObservation)>>>,
+    stopped: Arc<Mutex<VecDeque<(String, ExecutionObservation)>>>,
     #[cfg(test)]
     after_failed_acquisition: Option<Arc<dyn Fn() + Send + Sync>>,
 }
@@ -67,8 +71,7 @@ impl Drop for ExecutionLifetime {
 }
 
 impl<R, E> ServerState<R, E> {
-    fn observation(&self, operation_id: &str) -> kapsel::ExecutionObservation {
-        use kapsel::ExecutionObservation;
+    fn observation(&self, operation_id: &str) -> ExecutionObservation {
         // Selection publication and stale-diagnostic invalidation share this exclusion.
         let Ok(selected) = self.selected.lock() else {
             return ExecutionObservation::Unknown;
@@ -154,7 +157,7 @@ impl ApplicationExecution for UnavailableExecution {
         &mut self,
         _operation_id: String,
         _acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> impl Future<Output = Result<kapsel::ServiceStop, ServiceError>> + Send {
+    ) -> impl Future<Output = Result<ServiceStop, ServiceError>> + Send {
         std::future::ready(Err(ServiceError::OperationFailure))
     }
 }
@@ -420,21 +423,21 @@ async fn dispatch_admitted<R: ApplicationReads + 'static, E: ApplicationExecutio
 }
 
 fn record_stop(
-    stopped: &Mutex<VecDeque<(String, kapsel::ExecutionObservation)>>,
+    stopped: &Mutex<VecDeque<(String, ExecutionObservation)>>,
     operation_id: String,
-    result: Result<kapsel::ServiceStop, ServiceError>,
+    result: Result<ServiceStop, ServiceError>,
 ) {
     if let Ok(mut stopped) = stopped.lock() {
         stopped.retain(|(id, _)| id != &operation_id);
         if stopped.len() == 32 {
             stopped.pop_front();
         }
-        stopped.push_back((operation_id, kapsel::ServiceStop::observation(result)));
+        stopped.push_back((operation_id, ServiceStop::observation(result)));
     }
     // State is recorded first. Diagnostic loss must never defer state or physical retirement.
     match result {
-        Ok(kapsel::ServiceStop::Blocked(condition)) => crate::diagnostic(condition.as_str()),
-        Err(ServiceError::InvalidRequest) | Ok(kapsel::ServiceStop::Finished) => {},
+        Ok(ServiceStop::Blocked(condition)) => crate::diagnostic(condition.as_str()),
+        Err(ServiceError::InvalidRequest) | Ok(ServiceStop::Finished) => {},
         Err(error) => crate::diagnostic(error.operator_diagnostic()),
     }
 }
@@ -567,10 +570,10 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::protocol::{ReadRequest, REQUEST_BYTES_MAX},
-        *,
-    };
+    use kapsel::OperationState;
+
+    use super::*;
+    use crate::server::protocol::{ReadRequest, REQUEST_BYTES_MAX};
 
     #[test]
     fn invalid_requests_are_rejected_before_application_access() {
@@ -583,10 +586,7 @@ mod tests {
                 (operation_failure(), ResponseClass::Ordinary)
             }
 
-            fn admitted_state(
-                &self,
-                _: &str,
-            ) -> Result<Option<kapsel::OperationState>, ServiceError> {
+            fn admitted_state(&self, _: &str) -> Result<Option<OperationState>, ServiceError> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Err(ServiceError::OperationFailure)
             }
@@ -596,16 +596,12 @@ mod tests {
                 &mut self,
                 _: String,
                 _: impl FnOnce(ServiceAdmission) + Send,
-            ) -> impl Future<Output = Result<kapsel::ServiceStop, ServiceError>> + Send
-            {
+            ) -> impl Future<Output = Result<ServiceStop, ServiceError>> + Send {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 std::future::ready(Err(ServiceError::OperationFailure))
             }
         }
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let calls = Arc::new(AtomicUsize::new(0));
             let state = ServerState::new(
@@ -671,10 +667,7 @@ mod tests {
 
     #[test]
     fn frame_reader_enforces_length_body_eof_and_trailing_bounds() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             for (bytes, accepted) in [
                 ([1_u32.to_be_bytes().as_slice(), b"x"].concat(), true),
@@ -757,26 +750,20 @@ mod disposition_tests {
         let physical = ExecutionLifetime(selection.running.clone());
         state.stopped.lock().unwrap().push_back((
             "a".into(),
-            kapsel::ExecutionObservation::Stopped(kapsel::ExecutionCondition::SigningUnavailable),
+            ExecutionObservation::Stopped(ExecutionCondition::SigningUnavailable),
         ));
-        assert_eq!(state.observation("a"), kapsel::ExecutionObservation::Active);
+        assert_eq!(state.observation("a"), ExecutionObservation::Active);
         drop(physical);
         // A contention probe may still retain this selection's permit,
         // but no physical work survives.
-        assert_eq!(
-            state.observation("a"),
-            kapsel::ExecutionObservation::OtherWorker
-        );
+        assert_eq!(state.observation("a"), ExecutionObservation::OtherWorker);
         drop(selection);
         assert_eq!(
             state.observation("a"),
-            kapsel::ExecutionObservation::Stopped(kapsel::ExecutionCondition::SigningUnavailable)
+            ExecutionObservation::Stopped(ExecutionCondition::SigningUnavailable)
         );
         let restarted = ServerState::new((), ());
-        assert_eq!(
-            restarted.observation("a"),
-            kapsel::ExecutionObservation::Unknown
-        );
+        assert_eq!(restarted.observation("a"), ExecutionObservation::Unknown);
     }
 }
 
@@ -785,9 +772,11 @@ mod admission_tests {
     //! Decision/ownership races at the actual tracked runtime boundary.
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use kapsel::OperationState;
+    use kapsel::{OperationState, OperationStatus, OperationTargets};
+    use serde_json::Value;
 
-    use super::{super::protocol::ReadRequest, *};
+    use super::*;
+    use crate::server::protocol::ReadRequest;
 
     struct AdmissionReads {
         committed: Arc<AtomicBool>,
@@ -800,20 +789,20 @@ mod admission_tests {
         fn read_observed(
             &self,
             request: ReadRequest,
-            observation: &dyn Fn(&str) -> kapsel::ExecutionObservation,
+            observation: &dyn Fn(&str) -> ExecutionObservation,
             _: &dyn Fn(ServiceError),
         ) -> (Vec<u8>, ResponseClass) {
             let ReadRequest::Status(id) = request else {
                 return (invalid_request(), ResponseClass::Ordinary);
             };
             let status = if self.committed.load(Ordering::SeqCst) {
-                kapsel::OperationStatus::InProgress
+                OperationStatus::InProgress
             } else {
-                kapsel::OperationStatus::NotFound
+                OperationStatus::NotFound
             };
             let entry = kapsel::HistoryEntry {
                 operation_id: id.clone(),
-                status: Ok((status, kapsel::OperationTargets::default())),
+                status: Ok((status, OperationTargets::default())),
             };
             (
                 protocol::render_execution_status(entry.execution_status(observation(&id))),
@@ -841,14 +830,14 @@ mod admission_tests {
         entered: Arc<Semaphore>,
         release: Arc<Semaphore>,
         admission: ServiceAdmission,
-        stop: kapsel::ServiceStop,
+        stop: ServiceStop,
     }
     impl ApplicationExecution for AdmissionExecution {
         async fn execute(
             &mut self,
             _: String,
             acknowledged: impl FnOnce(ServiceAdmission) + Send,
-        ) -> Result<kapsel::ServiceStop, ServiceError> {
+        ) -> Result<ServiceStop, ServiceError> {
             self.entered.add_permits(1);
             self.release.acquire().await.unwrap().forget();
             if matches!(self.admission, ServiceAdmission::Admitted(_)) {
@@ -867,7 +856,7 @@ mod admission_tests {
         state: &ServerState<AdmissionReads, AdmissionExecution>,
         id: &str,
         duration: Duration,
-    ) -> serde_json::Value {
+    ) -> Value {
         let (bytes, _) = dispatch_admitted(
             &submission_request(id),
             state,
@@ -891,23 +880,19 @@ mod admission_tests {
                 entered: Arc::new(Semaphore::new(0)),
                 release: Arc::new(Semaphore::new(0)),
                 admission,
-                stop: kapsel::ServiceStop::Finished,
+                stop: ServiceStop::Finished,
             },
         )
     }
 
     #[test]
     fn bounded_diagnostics_evict_to_unknown_and_reselection_replaces_old_causes() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let state = admission_fixture(ServiceAdmission::Admitted(OperationState::Authorized));
             let release = {
                 let mut execution = state.execution.lock().await;
-                execution.stop =
-                    kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::SigningUnavailable);
+                execution.stop = ServiceStop::Blocked(ExecutionCondition::SigningUnavailable);
                 execution.release.clone()
             };
             for index in 0..33 {
@@ -920,53 +905,34 @@ mod admission_tests {
                 state.jobs.drain().await;
             }
             assert_eq!(state.stopped.lock().unwrap().len(), 32);
-            assert_eq!(
-                state.observation("op-0"),
-                kapsel::ExecutionObservation::Unknown
-            );
+            assert_eq!(state.observation("op-0"), ExecutionObservation::Unknown);
             assert_eq!(
                 state.observation("op-1"),
-                kapsel::ExecutionObservation::Stopped(
-                    kapsel::ExecutionCondition::SigningUnavailable
-                )
+                ExecutionObservation::Stopped(ExecutionCondition::SigningUnavailable)
             );
-            state.execution.lock().await.stop = kapsel::ServiceStop::Finished;
+            state.execution.lock().await.stop = ServiceStop::Finished;
             release.add_permits(1);
             submit_admission(&state, "op-1", Duration::from_secs(2)).await;
             state.jobs.drain().await;
-            assert_eq!(
-                state.observation("op-1"),
-                kapsel::ExecutionObservation::Unknown
-            );
+            assert_eq!(state.observation("op-1"), ExecutionObservation::Unknown);
             assert_eq!(state.stopped.lock().unwrap().len(), 32);
         });
     }
 
     #[test]
     fn deadline_abandons_only_response_and_contention_distinguishes_identity() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let state = admission_fixture(ServiceAdmission::Admitted(OperationState::Requested));
             let release = state.execution.lock().await.release.clone();
             state.stopped.lock().unwrap().push_back((
                 "one".into(),
-                kapsel::ExecutionObservation::Stopped(
-                    kapsel::ExecutionCondition::SigningUnavailable,
-                ),
+                ExecutionObservation::Stopped(ExecutionCondition::SigningUnavailable),
             ));
             let result = submit_admission(&state, "one", Duration::from_millis(30)).await;
             assert!(state.stopped.lock().unwrap().is_empty());
-            assert_eq!(
-                state.observation("one"),
-                kapsel::ExecutionObservation::Active
-            );
-            assert_eq!(
-                state.observation("two"),
-                kapsel::ExecutionObservation::OtherWorker
-            );
+            assert_eq!(state.observation("one"), ExecutionObservation::Active);
+            assert_eq!(state.observation("two"), ExecutionObservation::OtherWorker);
             assert_eq!(result["status"], "INDETERMINATE");
             assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX - 1);
             let status_request = concat!(
@@ -975,7 +941,7 @@ mod admission_tests {
             )
             .as_bytes();
             let (bytes, _) = dispatch_with_state(status_request, &state).await;
-            let absent: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let absent: Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(absent["status"], "NOT_FOUND");
             assert_eq!(absent["execution"]["disposition"], "admission_unconfirmed");
             assert_eq!(absent["execution"]["next_action"], "read_same_id");
@@ -991,19 +957,13 @@ mod admission_tests {
             assert!(state.reads.lock().unwrap().committed.load(Ordering::SeqCst));
             assert_eq!(state.submission.available_permits(), 1);
             assert_eq!(state.connections.available_permits(), CONNECTIONS_MAX);
-            assert_eq!(
-                state.observation("one"),
-                kapsel::ExecutionObservation::Unknown
-            );
+            assert_eq!(state.observation("one"), ExecutionObservation::Unknown);
         });
     }
 
     #[test]
     fn same_id_completion_during_absence_probe_retains_original_generation() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let state = admission_fixture(ServiceAdmission::Admitted(OperationState::Requested));
             let (entered, probed) = std::sync::mpsc::channel();
@@ -1045,10 +1005,7 @@ mod admission_tests {
 
     #[test]
     fn pinless_absence_probe_cannot_refuse_a_completed_matching_successor() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             // A occupies execution without admitting the ID whose absence B will read.
             let mut state = admission_fixture(ServiceAdmission::Busy);
@@ -1070,10 +1027,7 @@ mod admission_tests {
                 assert!(Instant::now() < deadline);
                 tokio::task::yield_now().await;
             }
-            assert_eq!(
-                state.observation("other"),
-                kapsel::ExecutionObservation::Active
-            );
+            assert_eq!(state.observation("other"), ExecutionObservation::Active);
             assert_eq!(predecessor_owner.strong_count(), 1);
             assert_eq!(state.submission.available_permits(), 0);
 
@@ -1133,10 +1087,7 @@ mod admission_tests {
 
     #[test]
     fn callback_is_required_and_capacity_is_only_a_definite_decision() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        let runtime = Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             for admission in [
                 ServiceAdmission::Busy,

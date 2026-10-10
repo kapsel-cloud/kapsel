@@ -11,13 +11,12 @@ use kube::{
     Client,
 };
 use serde_json::{json, Value};
+use tokio::time::Instant;
 
-use super::{
-    super::{
-        DeploymentImageAdapter, DispatchPermission, SetDeploymentImageRequest, TargetReadError,
-        TargetRejection,
-    },
-    facts::{ApplyOutcome, ReceiverObservation, TargetIdentity},
+use super::facts::{ApplyOutcome, ReceiverObservation, TargetIdentity};
+use crate::gateway::{
+    DeploymentImageAdapter, DispatchPermission, SetDeploymentImageRequest, TargetReadError,
+    TargetRejection,
 };
 
 const OPERATION_ANNOTATION: &str = "kapsel.dev/kap0038-operation-id";
@@ -92,22 +91,21 @@ impl KubernetesDeploymentImageAdapter {
         &self,
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
-        deadline: tokio::time::Instant,
+        deadline: Instant,
     ) -> ReceiverObservation {
         let mut latest_observation = ReceiverObservation::unknown();
         for read_index in 0..self.observation_attempts {
-            if tokio::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return ReceiverObservation::unknown();
             }
-            let read_deadline =
-                deadline.min(tokio::time::Instant::now() + self.provider_request_timeout);
+            let read_deadline = deadline.min(Instant::now() + self.provider_request_timeout);
             let response = tokio::time::timeout_at(
                 read_deadline,
                 self.deployments(&request.namespace)
                     .get(&request.deployment),
             )
             .await;
-            if tokio::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return ReceiverObservation::unknown();
             }
 
@@ -209,7 +207,7 @@ impl DeploymentImageAdapter for KubernetesDeploymentImageAdapter {
         request: &SetDeploymentImageRequest,
         outcome: &ApplyOutcome,
     ) -> Result<ReceiverObservation, ()> {
-        let deadline = tokio::time::Instant::now() + self.observation_deadline;
+        let deadline = Instant::now() + self.observation_deadline;
         Ok(tokio::time::timeout_at(
             deadline,
             self.observe_until_terminal(request, outcome, deadline),
@@ -323,7 +321,7 @@ fn receiver_observation(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, future::pending};
+    use std::{collections::BTreeMap, future::pending, sync::atomic::Ordering};
 
     use http::{Method, Request, Response, StatusCode};
     use kube::client::Body;
@@ -331,7 +329,7 @@ mod tests {
     use tower_test::mock;
 
     use super::*;
-    use crate::gateway::ValidatedRequest;
+    use crate::gateway::{OperationResult, ValidatedRequest};
 
     fn request() -> SetDeploymentImageRequest {
         SetDeploymentImageRequest {
@@ -793,7 +791,7 @@ mod tests {
         assert_eq!(observation.unavailable_replicas, Some(0));
         assert_eq!(
             observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
-            crate::OperationResult::Succeeded
+            OperationResult::Succeeded
         );
         responder.await.unwrap();
     }
@@ -843,7 +841,7 @@ mod tests {
         assert!(!observation.observation_is_complete(&request, &outcome));
         assert_eq!(
             observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
-            crate::OperationResult::Unknown
+            OperationResult::Unknown
         );
         responder.await.unwrap();
     }
@@ -935,7 +933,7 @@ mod tests {
 
             assert_eq!(
                 observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
-                crate::OperationResult::Succeeded,
+                OperationResult::Succeeded,
                 "{case}"
             );
             responder.await.unwrap();
@@ -948,7 +946,7 @@ mod tests {
             let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
             let mut adapter =
                 KubernetesDeploymentImageAdapter::new(Client::new(mock_service, "default"));
-            let start = tokio::time::Instant::now();
+            let start = Instant::now();
             let responder = tokio::spawn(async move {
                 let mut reads = 0;
                 while let Some((request, send)) = handle.next_request().await {
@@ -971,9 +969,9 @@ mod tests {
             let outcome = apply_outcome();
             let observation = adapter.observe(&request, &outcome).await.unwrap();
             let expected = if ready_after == 60 {
-                crate::OperationResult::Succeeded
+                OperationResult::Succeeded
             } else {
-                crate::OperationResult::Unknown
+                OperationResult::Unknown
             };
 
             assert_eq!(
@@ -997,14 +995,14 @@ mod tests {
         let responder = tokio::spawn(async move {
             while let Some((request, send)) = handle.next_request().await {
                 assert_eq!(request.method(), Method::GET);
-                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                counted.fetch_add(1, Ordering::Relaxed);
                 send.send_response(Response::new(Body::from(
                     serde_json::to_vec(&progressing_response()).unwrap(),
                 )));
             }
         });
 
-        let start = tokio::time::Instant::now();
+        let start = Instant::now();
         for _ in 0..3 {
             assert!(tokio::time::timeout(
                 Duration::from_secs(60),
@@ -1012,21 +1010,18 @@ mod tests {
             )
             .await
             .is_err());
-            let before = reads.load(std::sync::atomic::Ordering::Relaxed);
+            let before = reads.load(Ordering::Relaxed);
             tokio::time::sleep(Duration::from_secs(20)).await;
-            assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), before);
+            assert_eq!(reads.load(Ordering::Relaxed), before);
         }
         assert!(start.elapsed() > OBSERVATION_DEADLINE);
 
-        let resumed = tokio::time::Instant::now();
-        let before = reads.load(std::sync::atomic::Ordering::Relaxed);
+        let resumed = Instant::now();
+        let before = reads.load(Ordering::Relaxed);
         let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
         assert!(!observation.observation_is_complete(&request(), &apply_outcome()));
         assert_eq!(resumed.elapsed(), Duration::from_secs(179));
-        assert_eq!(
-            reads.load(std::sync::atomic::Ordering::Relaxed) - before,
-            180
-        );
+        assert_eq!(reads.load(Ordering::Relaxed) - before, 180);
 
         drop(adapter);
         responder.await.unwrap();
@@ -1046,7 +1041,7 @@ mod tests {
                     serde_json::to_vec(&deployment_response(false)).unwrap(),
                 )));
             });
-            let start = tokio::time::Instant::now();
+            let start = Instant::now();
             let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
             assert_eq!(
                 observation.observation_is_complete(&request(), &apply_outcome()),
@@ -1070,7 +1065,7 @@ mod tests {
             }
             pending_responses.len()
         });
-        let start = tokio::time::Instant::now();
+        let start = Instant::now();
         let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
         assert_eq!(observation, ReceiverObservation::unknown());
         assert_eq!(start.elapsed(), Duration::from_secs(180));

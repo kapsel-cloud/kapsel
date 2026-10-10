@@ -318,7 +318,7 @@ mod tests {
             let bytes = sign(&statement, &[7; 32], "signer").unwrap();
             if acknowledgement == Acknowledgement::Unknown {
                 assert_eq!(
-                    super::super::publication::receipt_digest_hex(&bytes),
+                    crate::gateway::receipt::publication::receipt_digest_hex(&bytes),
                     "92f6bcc78e348fbb9e92323603a24072b1c9479403e0f1c2c311be5c73e3a5a5"
                 );
             }
@@ -334,7 +334,7 @@ mod tests {
             assert_eq!(statement.result(), expected_result);
             assert_eq!(decode(&bytes).unwrap(), ("signer".into(), statement));
             assert_eq!(
-                super::super::inspect_receipt(
+                crate::gateway::receipt::inspect_receipt(
                     &bytes,
                     &trust().encode().unwrap(),
                     50,
@@ -365,7 +365,7 @@ mod tests {
         );
 
         for (purpose, key_id, time) in [
-            (super::super::PURPOSE, "signer", 50),
+            (crate::gateway::receipt::PURPOSE, "signer", 50),
             (PURPOSE, "another-signer", 50),
             (PURPOSE, "signer", -1),
             (PURPOSE, "signer", 100),

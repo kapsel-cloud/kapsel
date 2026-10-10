@@ -15,10 +15,14 @@ pub use disposition::{
 pub use document::{parse_service_operator_document, ServiceOperatorDocument};
 
 use super::{AgentRequest, OperationReceipt, OperationStatus};
-use crate::{
-    gateway::{AuthorizationTrust, Gateway, GatewayError, OperationState},
-    OperationTargets,
+use crate::gateway::{
+    validate_authorization_trust, validate_key_id, verify_authorization_grant, AdmissionDecision,
+    ApprovedTarget, AuthorizationTrust, DeploymentImageAdapter, FaultPoint, Gateway, GatewayError,
+    GitReceiverConfiguration, KubernetesDeploymentImageAdapter, OperationState, OperationTargets,
+    ReceiptSettings, ReconciliationBlockage, ReconciliationError,
 };
+#[cfg(test)]
+use crate::gateway::{Defect, StorageControl};
 
 /// One exact approval supplied only by the operator, never by socket input.
 ///
@@ -52,7 +56,7 @@ pub enum ApprovedAction {
         /// Stable identity and exact bounded tuple.
         request: AgentRequest,
         /// Original operator-acquired target snapshot.
-        approved_target: crate::ApprovedTarget,
+        approved_target: ApprovedTarget,
         /// Display label, not matching authority.
         label: String,
     },
@@ -117,7 +121,7 @@ pub struct HistoryPage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceAdmission {
     /// This identity has confirmed durable responsibility, including identical resubmission.
-    Admitted(crate::OperationState),
+    Admitted(OperationState),
     /// New work was not admitted because the journal worker is occupied.
     Busy,
     /// New work was not admitted because retained or unfinished capacity is full.
@@ -131,7 +135,7 @@ pub struct ServiceExecution {
     /// Explicit receiver client with mutation retries disabled.
     pub kubernetes_client: Option<kube::Client>,
     /// Optional operator-owned fixed local Git receiver material, never socket input.
-    pub git_receiver: Option<crate::GitReceiverConfiguration>,
+    pub git_receiver: Option<GitReceiverConfiguration>,
     /// Optional original-completion signing seed and public key identity.
     pub receipt_signing: Option<([u8; 32], String)>,
 }
@@ -169,7 +173,7 @@ impl ServiceExecution {
     /// Invalid or absent bytes leave Git unavailable without hiding authenticated history.
     #[must_use]
     pub fn with_git_receiver_snapshot(mut self, bytes: Option<&[u8]>) -> Self {
-        self.git_receiver = bytes.and_then(crate::GitReceiverConfiguration::from_document);
+        self.git_receiver = bytes.and_then(GitReceiverConfiguration::from_document);
         self
     }
 }
@@ -202,7 +206,7 @@ impl ServiceApplication {
     #[cfg(test)]
     pub(crate) fn open_simulated(
         configuration: ServiceConfiguration,
-        control: crate::gateway::StorageControl,
+        control: StorageControl,
     ) -> Result<Self, ServiceError> {
         Self::open_with_storage(configuration, Some(control))
     }
@@ -232,7 +236,7 @@ impl ServiceApplication {
 
     fn open_with_storage(
         configuration: ServiceConfiguration,
-        #[cfg(test)] control: Option<crate::gateway::StorageControl>,
+        #[cfg(test)] control: Option<StorageControl>,
     ) -> Result<Self, ServiceError> {
         #[cfg(test)]
         let storage_control = control.clone();
@@ -274,9 +278,9 @@ impl ServiceApplication {
             };
             #[cfg(test)]
             if validation.is_err()
-                && storage_control.as_ref().is_some_and(|control| {
-                    control.exercise(crate::gateway::Defect::CatalogConflictAccepted)
-                })
+                && storage_control
+                    .as_ref()
+                    .is_some_and(|control| control.exercise(Defect::CatalogConflictAccepted))
             {
                 continue;
             }
@@ -362,8 +366,7 @@ impl ServiceApplication {
 
         // Validate every external appointment and catalog entry before journal creation.
         for (index, trust) in configuration.authorization_trust.iter().enumerate() {
-            crate::gateway::validate_authorization_trust(trust)
-                .map_err(|_| ServiceError::Configuration)?;
+            validate_authorization_trust(trust).map_err(|_| ServiceError::Configuration)?;
             if configuration.authorization_trust[..index]
                 .iter()
                 .any(|key| key.key_id == trust.key_id)
@@ -419,7 +422,7 @@ impl ServiceApplication {
         let mut adapter = execution
             .kubernetes_client
             .clone()
-            .map(crate::gateway::KubernetesDeploymentImageAdapter::new);
+            .map(KubernetesDeploymentImageAdapter::new);
         self.select_with_adapter(
             operation_id,
             execution,
@@ -430,13 +433,13 @@ impl ServiceApplication {
         .await
     }
 
-    pub(crate) async fn select_with_adapter<A: crate::gateway::DeploymentImageAdapter + Send>(
+    pub(crate) async fn select_with_adapter<A: DeploymentImageAdapter + Send>(
         &mut self,
         operation_id: &str,
         execution: ServiceExecution,
         adapter: Option<&mut A>,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-        fault: Option<crate::gateway::FaultPoint>,
+        fault: Option<FaultPoint>,
     ) -> Result<ServiceStop, ServiceError> {
         self.select_with_adapters(
             operation_id,
@@ -450,33 +453,33 @@ impl ServiceApplication {
         .await
     }
 
-    pub(crate) async fn select_with_adapters<A: crate::gateway::DeploymentImageAdapter + Send>(
+    pub(crate) async fn select_with_adapters<A: DeploymentImageAdapter + Send>(
         &mut self,
         operation_id: &str,
         execution: ServiceExecution,
         adapter: Option<&mut A>,
         #[cfg(test)] git_adapter: Option<&crate::gateway::git::GitReceiver>,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-        fault: Option<crate::gateway::FaultPoint>,
+        fault: Option<FaultPoint>,
     ) -> Result<ServiceStop, ServiceError> {
         let selected = self.retained_for_selection(operation_id)?;
         if let Some((_, key_id)) = &execution.receipt_signing {
-            crate::gateway::validate_key_id(key_id).map_err(|_| ServiceError::Configuration)?;
+            validate_key_id(key_id).map_err(|_| ServiceError::Configuration)?;
         }
 
-        let receipt_settings = execution.receipt_signing.as_ref().map(|(seed, key_id)| {
-            crate::gateway::ReceiptSettings {
-                signing_seed: seed,
-                key_id,
-            }
-        });
+        let receipt_settings =
+            execution
+                .receipt_signing
+                .as_ref()
+                .map(|(seed, key_id)| ReceiptSettings {
+                    signing_seed: seed,
+                    key_id,
+                });
         let acknowledge_admission = |decision| {
             acknowledged(match decision {
-                crate::gateway::AdmissionDecision::Admitted(state) => {
-                    ServiceAdmission::Admitted(state)
-                },
-                crate::gateway::AdmissionDecision::Busy => ServiceAdmission::Busy,
-                crate::gateway::AdmissionDecision::Full => ServiceAdmission::Full,
+                AdmissionDecision::Admitted(state) => ServiceAdmission::Admitted(state),
+                AdmissionDecision::Busy => ServiceAdmission::Busy,
+                AdmissionDecision::Full => ServiceAdmission::Full,
             });
         };
 
@@ -701,7 +704,6 @@ impl ServiceApplication {
         &self,
         (mut status, mut targets): (OperationStatus, OperationTargets),
     ) -> (OperationStatus, OperationTargets) {
-        use crate::gateway::Defect;
         if self.gateway.exercise_defect(Defect::StatusProjectionSwap) {
             status = OperationStatus::NotFound;
         }
@@ -824,9 +826,7 @@ fn approved_handle(
     trust: &[AuthorizationTrust],
 ) -> Result<ApprovedAction, ServiceError> {
     for appointment in trust {
-        if let Ok(grant) =
-            crate::gateway::verify_authorization_grant(&approval.signed_grant, appointment)
-        {
+        if let Ok(grant) = verify_authorization_grant(&approval.signed_grant, appointment) {
             let authorization = grant.authorization;
             let approved_target = authorization
                 .approved_target
@@ -855,22 +855,25 @@ fn approved_handle(
     Err(ServiceError::Configuration)
 }
 
-fn classify_stop(error: crate::gateway::ReconciliationError) -> Result<ServiceStop, ServiceError> {
-    use crate::gateway::{ReconciliationBlockage as Blockage, ReconciliationError as Error};
+fn classify_stop(error: ReconciliationError) -> Result<ServiceStop, ServiceError> {
     let condition = match error {
-        Error::Blocked(Blockage::SigningUnavailable) => ExecutionCondition::SigningUnavailable,
-        Error::Blocked(Blockage::WorkerContention) => ExecutionCondition::WorkerContention,
-        Error::Completion => ExecutionCondition::CompletionBlocked,
-        Error::Advancement(GatewayError::KubernetesTargetObservation) => {
+        ReconciliationError::Blocked(ReconciliationBlockage::SigningUnavailable) => {
+            ExecutionCondition::SigningUnavailable
+        },
+        ReconciliationError::Blocked(ReconciliationBlockage::WorkerContention) => {
+            ExecutionCondition::WorkerContention
+        },
+        ReconciliationError::Completion => ExecutionCondition::CompletionBlocked,
+        ReconciliationError::Advancement(GatewayError::KubernetesTargetObservation) => {
             ExecutionCondition::PreflightUnavailable
         },
-        Error::Blocked(Blockage::ReceiverUnavailable)
-        | Error::Advancement(
+        ReconciliationError::Blocked(ReconciliationBlockage::ReceiverUnavailable)
+        | ReconciliationError::Advancement(
             GatewayError::KubernetesApply
             | GatewayError::KubernetesReceiverObservation
             | GatewayError::GitReceiverUnavailable,
         ) => ExecutionCondition::ReceiverUnavailable,
-        Error::Submission(error) | Error::Advancement(error) => {
+        ReconciliationError::Submission(error) | ReconciliationError::Advancement(error) => {
             return Err(map_gateway_error(error));
         },
     };

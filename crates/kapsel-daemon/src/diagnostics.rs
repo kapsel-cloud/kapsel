@@ -90,6 +90,7 @@ impl ReadFailures {
 )]
 mod tests {
     use std::{
+        fs::File,
         io::{Read as _, Write as _},
         os::unix::net::UnixStream,
     };
@@ -152,9 +153,8 @@ mod tests {
 
         drop(reader);
         emit_to(&fd, "signing_unavailable");
-        assert!(prepare(std::fs::File::open("/dev/null").unwrap()).is_none());
-        let regular =
-            std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        assert!(prepare(File::open("/dev/null").unwrap()).is_none());
+        let regular = File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
         assert!(prepare(regular).is_none());
     }
 }

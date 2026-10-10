@@ -2,7 +2,7 @@
 //!
 //! This module is pure policy. It performs no Kubernetes calls and no durable I/O.
 
-use super::super::{
+use crate::gateway::{
     validate_immutable_image, GatewayError, OperationResult, SetDeploymentImageRequest,
     ValidatedRequest,
 };

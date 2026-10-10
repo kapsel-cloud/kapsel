@@ -2,10 +2,14 @@
 
 use std::sync::{Arc, Mutex};
 
+use http::{Method, Request, Response};
 use kapsel::{
-    AuthorizationTrust, OperationStatus, ServiceAdmission, ServiceApplication, ServiceApproval,
-    ServiceConfiguration, ServiceExecution, TargetRejection,
+    AuthorizationTrust, ExecutionCondition, ExecutionDisposition, OperationStatus,
+    ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceExecution,
+    ServiceStop, TargetRejection,
 };
+use kube::{client::Body, Client};
+use tower_test::mock;
 
 use super::*;
 
@@ -15,10 +19,6 @@ use super::*;
     reason = "ordered observation, reconnect and frozen-history proof"
 )]
 async fn observation_pass_holds_worker_but_not_stored_reads() {
-    use http::{Method, Request, Response};
-    use kube::{client::Body, Client};
-    use tower_test::mock;
-
     for settle_after in [60, 181, 361] {
         let root = std::env::temp_dir().join(format!(
             "kapsel-service-observation-{}-{settle_after}",
@@ -214,10 +214,6 @@ async fn interrupt_service_observation(
     reason = "two bounded A/B traces with frozen-history assertions"
 )]
 async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
-    use http::{Method, Request, Response};
-    use kube::{client::Body, Client};
-    use tower_test::mock;
-
     for unknown in [false, true] {
         let root = std::env::temp_dir().join(format!(
             "kapsel-service-independent-history-{}-{unknown}",
@@ -284,9 +280,9 @@ async fn independent_b_preserves_preflight_blocked_or_unknown_a() {
         assert_eq!(
             stopped,
             if unknown {
-                kapsel::ServiceStop::Finished
+                ServiceStop::Finished
             } else {
-                kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::PreflightUnavailable)
+                ServiceStop::Blocked(ExecutionCondition::PreflightUnavailable)
             }
         );
 
@@ -619,7 +615,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
         .unwrap();
     assert_eq!(
         stopped,
-        kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::SigningUnavailable)
+        ServiceStop::Blocked(ExecutionCondition::SigningUnavailable)
     );
     drop(selection);
     lock.try_lock().unwrap();
@@ -635,12 +631,10 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     let before_b = receiver.requests();
     assert_eq!(before_b.len(), 3);
     assert_eq!(
-        a.execution_status("a", kapsel::ServiceStop::observation(Ok(stopped)))
+        a.execution_status("a", ServiceStop::observation(Ok(stopped)))
             .unwrap()
             .2,
-        kapsel::ExecutionDisposition::OperatorRequired(
-            kapsel::ExecutionCondition::SigningUnavailable
-        )
+        ExecutionDisposition::OperatorRequired(ExecutionCondition::SigningUnavailable)
     );
     assert_eq!(receiver.requests(), before_b);
     b.select("b", receiver.execution(true).await, |decision| {
@@ -703,7 +697,7 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
         a.execution_status("a", kapsel::ExecutionObservation::Unknown)
             .unwrap()
             .2,
-        kapsel::ExecutionDisposition::ResumeRequired(None)
+        ExecutionDisposition::ResumeRequired(None)
     );
     assert_eq!(retained_row(root, "a"), frozen_a_row);
     a.select("a", receiver.execution(true).await, |decision| {
@@ -716,10 +710,10 @@ async fn selected_b_advances_while_a_awaits_signing(same_target: bool) {
     .unwrap();
     assert_eq!(a.status("a").unwrap().0, OperationStatus::Succeeded);
     assert_eq!(
-        a.execution_status("a", kapsel::ServiceStop::observation(Ok(stopped)))
+        a.execution_status("a", ServiceStop::observation(Ok(stopped)))
             .unwrap()
             .2,
-        kapsel::ExecutionDisposition::Complete
+        ExecutionDisposition::Complete
     );
     let original_receipt = a.receipt("a").unwrap();
     assert!(matches!(original_receipt, OperationReceipt::Ready { .. }));

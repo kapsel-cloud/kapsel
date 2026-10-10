@@ -1,4 +1,6 @@
-use super::*;
+use ed25519_dalek::SigningKey;
+
+use super::{LoadedOperation, *};
 
 #[tokio::test]
 async fn maximal_request_fields_complete_a_bounded_durable_receipt() {
@@ -183,7 +185,7 @@ async fn receipt_inspection_reports_frozen_failed_receiver_facts() {
     );
 
     let seed = [7_u8; 32];
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let signing_key = SigningKey::from_bytes(&seed);
     let trust = ReceiptTrust {
         key_id: "effect-gateway-test-key".into(),
         public_key: signing_key.verifying_key().to_bytes(),
@@ -236,7 +238,7 @@ fn hostile_receipt_inputs_fail_closed_without_verified_vocabulary() {
         result: OperationResult::Failed,
     };
     let seed = [8_u8; 32];
-    let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let signing_key = SigningKey::from_bytes(&seed);
     let trust = ReceiptTrust {
         key_id: "effect-gateway-test-key".into(),
         public_key: signing_key.verifying_key().to_bytes(),
@@ -310,10 +312,10 @@ async fn receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changin
         .operation(&request.operation_id)
         .unwrap()
         .unwrap();
-    let journal::LoadedOperation::ReceiverObserved(operation) = original.clone() else {
+    let LoadedOperation::ReceiverObserved(operation) = original.clone() else {
         panic!("fixture must have frozen facts");
     };
-    let journal::LoadedOperation::ReceiverObserved(foreign_operation) = foreign
+    let LoadedOperation::ReceiverObserved(foreign_operation) = foreign
         .journal
         .operation(&request.operation_id)
         .unwrap()

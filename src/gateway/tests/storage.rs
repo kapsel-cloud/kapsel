@@ -1,20 +1,23 @@
 //! Bounded storage qualification fixtures; no production storage API or filesystem reservation.
 
+#[cfg(target_os = "linux")]
+use std::{cell::Cell, rc::Rc};
 use std::{
-    collections::BTreeMap,
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
     io::{Seek as _, SeekFrom, Write as _},
 };
 
 use rusqlite::types::Value;
 
-use super::*;
+use super::{Journal, *};
 
 pub(super) type StoredRows = BTreeMap<String, Vec<Value>>;
 
 type ReceiptCheckpoint = Box<dyn FnOnce(&Connection)>;
 thread_local! {
-    static RECEIPT_CHECKPOINT: std::cell::RefCell<Option<ReceiptCheckpoint>> = const {
-        std::cell::RefCell::new(None)
+    static RECEIPT_CHECKPOINT: RefCell<Option<ReceiptCheckpoint>> = const {
+        RefCell::new(None)
     };
 }
 
@@ -64,7 +67,7 @@ fn maximum_page_count_freelist(path: &Path, sparse_tail_first: bool) {
         let live_pages = statement
             .query_map([], |row| row.get::<_, u32>(0))
             .unwrap()
-            .collect::<Result<std::collections::BTreeSet<_>, _>>()
+            .collect::<Result<BTreeSet<_>, _>>()
             .unwrap();
         (1..=16_384_u32)
             .filter(|page| !live_pages.contains(page))
@@ -324,7 +327,7 @@ async fn qualify_full_capacity_case(
     drop(gateway);
     fragmented_maximum_page_count(&path);
     for (operation, grant) in pending {
-        journal::Journal::validate_replacement(&path, &[]).unwrap();
+        Journal::validate_replacement(&path, &[]).unwrap();
         let mut gateway = maximal_gateway(&path);
         assert_eq!(
             gateway
@@ -381,7 +384,7 @@ async fn qualify_full_capacity_case(
         );
 
         drop(gateway);
-        journal::Journal::validate_replacement(&path, &[]).unwrap();
+        Journal::validate_replacement(&path, &[]).unwrap();
         let reopened = maximal_gateway(&path);
         assert_eq!(
             Gateway::read_loaded_receipt(
@@ -576,7 +579,7 @@ async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_prese
         }
 
         drop(gateway);
-        journal::Journal::validate_replacement(&path, &[]).unwrap();
+        Journal::validate_replacement(&path, &[]).unwrap();
         drop(Gateway::open_for_test(&path).unwrap());
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -809,7 +812,7 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
         let path = directory.join("journal.sqlite3");
         let selected = failure_history(&path).await;
         maximum_page_count_freelist(&path, at_commit);
-        journal::Journal::validate_replacement(&path, &[]).unwrap();
+        Journal::validate_replacement(&path, &[]).unwrap();
         let gateway = Gateway::open_for_test(&path).unwrap();
 
         let mut retained_rows = stored_rows(&gateway.journal.connection);
@@ -819,8 +822,8 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
             .receipt_statement(&selected.operation_id)
             .unwrap();
         let filler = directory.join("owned-filler");
-        let sql_checkpoint_reached = std::rc::Rc::new(std::cell::Cell::new(false));
-        let checkpoint_flag = std::rc::Rc::clone(&sql_checkpoint_reached);
+        let sql_checkpoint_reached = Rc::new(Cell::new(false));
+        let checkpoint_flag = Rc::clone(&sql_checkpoint_reached);
         let checkpoint_path = path.clone();
         let checkpoint_filler = filler.clone();
         let allocated_blocks = fs::metadata(&path).unwrap().blocks();
@@ -889,7 +892,7 @@ async fn genuine_enospc_during_admission_and_receipt_recovers_without_resend() {
         );
 
         drop(gateway);
-        journal::Journal::validate_replacement(&path, &[]).unwrap();
+        Journal::validate_replacement(&path, &[]).unwrap();
         drop(Gateway::open_for_test(&path).unwrap());
         fs::remove_dir_all(directory).unwrap();
     }
@@ -1029,10 +1032,7 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
         .map(|record| u32::from_be_bytes(record[..4].try_into().unwrap()))
         .collect::<Vec<_>>();
     assert_eq!(
-        page_ids
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
+        page_ids.iter().collect::<BTreeSet<_>>().len(),
         page_ids.len()
     );
     eprintln!(
@@ -1045,7 +1045,7 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
     assert_eq!(stored_rows(&gateway.journal.connection), retained_rows);
 
     drop(gateway);
-    journal::Journal::validate_replacement(&path, &[]).unwrap();
+    Journal::validate_replacement(&path, &[]).unwrap();
     drop(Gateway::open_for_test(&path).unwrap());
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
@@ -1055,7 +1055,7 @@ fn full_page_count_fragmented_freelist_is_accepted_by_both_owners() {
     let path = database_path("maximum-fragmented-freelist");
     drop(Gateway::open_for_test(&path).unwrap());
     fragmented_maximum_page_count(&path);
-    journal::Journal::validate_replacement(&path, &[]).unwrap();
+    Journal::validate_replacement(&path, &[]).unwrap();
     drop(Gateway::open_for_test(&path).unwrap());
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }

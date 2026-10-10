@@ -9,14 +9,16 @@ use std::{
     collections::BTreeSet,
     fmt,
     io::{BufRead as _, Read as _, Write as _},
+    process::ExitCode,
 };
 
+use kapsel::{ExecutionCondition, ExecutionDisposition};
 use kapsel_daemon::client_transport;
 use serde::{
     de::{MapAccess, SeqAccess, Visitor},
     Deserialize, Deserializer,
 };
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use sha2::{Digest as _, Sha256};
 
 const PROTOCOL: &str = "2025-11-25";
@@ -84,7 +86,7 @@ impl<'de> Visitor<'de> for UniqueVisitor {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut keys = BTreeSet::new();
-        let mut fields = serde_json::Map::new();
+        let mut fields = Map::new();
         while let Some(key) = map.next_key::<String>()? {
             if !keys.insert(key.clone()) {
                 return Err(serde::de::Error::custom("duplicate key"));
@@ -112,7 +114,7 @@ struct Call {
     name: String,
     arguments: Value,
     #[serde(rename = "_meta")]
-    metadata: Option<serde_json::Map<String, Value>>,
+    metadata: Option<Map<String, Value>>,
 }
 
 fn error(id: Value, code: i32, message: &str) -> Value {
@@ -206,11 +208,11 @@ fn receipt_valid(value: &Value) -> bool {
     Sha256::digest(bytes).as_slice() == expected_digest
 }
 
-fn exact(fields: &serde_json::Map<String, Value>, keys: &[&str]) -> bool {
+fn exact(fields: &Map<String, Value>, keys: &[&str]) -> bool {
     fields.len() == keys.len() && keys.iter().all(|key| fields.contains_key(*key))
 }
 
-fn string_field(fields: &serde_json::Map<String, Value>, key: &str) -> bool {
+fn string_field(fields: &Map<String, Value>, key: &str) -> bool {
     fields.get(key).is_some_and(Value::is_string)
 }
 
@@ -226,39 +228,40 @@ fn nullable_target(value: Option<&Value>) -> bool {
     value.is_some_and(|value| value.is_null() || target_object(value))
 }
 
-fn execution_disposition(
-    fields: &serde_json::Map<String, Value>,
-) -> Option<kapsel::ExecutionDisposition> {
-    use kapsel::{ExecutionCondition as Condition, ExecutionDisposition as Disposition};
+fn execution_disposition(fields: &Map<String, Value>) -> Option<ExecutionDisposition> {
     let condition = fields.get("condition")?;
     match fields.get("disposition")?.as_str()? {
-        "active" if condition.is_null() => Some(Disposition::Active),
-        "waiting_for_worker" if condition.is_null() => Some(Disposition::WaitingForWorker),
+        "active" if condition.is_null() => Some(ExecutionDisposition::Active),
+        "waiting_for_worker" if condition.is_null() => Some(ExecutionDisposition::WaitingForWorker),
         "resume_required" => match condition.as_str() {
-            None if condition.is_null() => Some(Disposition::ResumeRequired(None)),
-            Some("preflight_unavailable") => Some(Disposition::ResumeRequired(Some(
-                Condition::PreflightUnavailable,
+            None if condition.is_null() => Some(ExecutionDisposition::ResumeRequired(None)),
+            Some("preflight_unavailable") => Some(ExecutionDisposition::ResumeRequired(Some(
+                ExecutionCondition::PreflightUnavailable,
             ))),
-            Some("worker_contention") => Some(Disposition::ResumeRequired(Some(
-                Condition::WorkerContention,
+            Some("worker_contention") => Some(ExecutionDisposition::ResumeRequired(Some(
+                ExecutionCondition::WorkerContention,
             ))),
             _ => None,
         },
         "operator_required" => match condition.as_str()? {
-            "receiver_unavailable" => Some(Disposition::OperatorRequired(
-                Condition::ReceiverUnavailable,
+            "receiver_unavailable" => Some(ExecutionDisposition::OperatorRequired(
+                ExecutionCondition::ReceiverUnavailable,
             )),
-            "signing_unavailable" => {
-                Some(Disposition::OperatorRequired(Condition::SigningUnavailable))
-            },
-            "completion_blocked" => {
-                Some(Disposition::OperatorRequired(Condition::CompletionBlocked))
-            },
-            "operation_blocked" => Some(Disposition::OperatorRequired(Condition::OperationBlocked)),
+            "signing_unavailable" => Some(ExecutionDisposition::OperatorRequired(
+                ExecutionCondition::SigningUnavailable,
+            )),
+            "completion_blocked" => Some(ExecutionDisposition::OperatorRequired(
+                ExecutionCondition::CompletionBlocked,
+            )),
+            "operation_blocked" => Some(ExecutionDisposition::OperatorRequired(
+                ExecutionCondition::OperationBlocked,
+            )),
             _ => None,
         },
-        "complete" if condition.is_null() => Some(Disposition::Complete),
-        "admission_unconfirmed" if condition.is_null() => Some(Disposition::AdmissionUnconfirmed),
+        "complete" if condition.is_null() => Some(ExecutionDisposition::Complete),
+        "admission_unconfirmed" if condition.is_null() => {
+            Some(ExecutionDisposition::AdmissionUnconfirmed)
+        },
         _ => None,
     }
 }
@@ -277,14 +280,13 @@ fn execution_shape(value: &Value, status: &str) -> bool {
         && fields.get("next_action").and_then(Value::as_str) == Some(disposition.next_action())
         && fields.get("action_owner").and_then(Value::as_str) == Some(disposition.action_owner())
         && match status {
-            "NOT_FOUND" => disposition == kapsel::ExecutionDisposition::AdmissionUnconfirmed,
+            "NOT_FOUND" => disposition == ExecutionDisposition::AdmissionUnconfirmed,
             "IN_PROGRESS" => !matches!(
                 disposition,
-                kapsel::ExecutionDisposition::Complete
-                    | kapsel::ExecutionDisposition::AdmissionUnconfirmed
+                ExecutionDisposition::Complete | ExecutionDisposition::AdmissionUnconfirmed
             ),
             "NOT_ATTEMPTED" | "SUCCEEDED" | "FAILED" | "UNKNOWN" => {
-                disposition == kapsel::ExecutionDisposition::Complete
+                disposition == ExecutionDisposition::Complete
             },
             _ => false,
         }
@@ -684,14 +686,14 @@ fn dispatch(
     }
 }
 
-fn main() -> std::process::ExitCode {
+fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     if let Some(arg) = args.next() {
         if args.len() == 0 && arg == "--help" {
             let _ =
                 writeln!(std::io::stdout(),
                 "kapsel-service-mcp: ID-only resident service bridge\nUsage: kapsel-service-mcp");
-            return std::process::ExitCode::SUCCESS;
+            return ExitCode::SUCCESS;
         }
         if args.len() == 0 && arg == "--version" {
             let _ = writeln!(
@@ -699,10 +701,10 @@ fn main() -> std::process::ExitCode {
                 "kapsel-service-mcp {}",
                 env!("CARGO_PKG_VERSION")
             );
-            return std::process::ExitCode::SUCCESS;
+            return ExitCode::SUCCESS;
         }
         let _ = writeln!(std::io::stderr(), "kapsel-service-mcp: invalid_usage");
-        return std::process::ExitCode::from(2);
+        return ExitCode::from(2);
     }
 
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
@@ -715,13 +717,13 @@ fn main() -> std::process::ExitCode {
             .take(INPUT_MAX + 1)
             .read_until(b'\n', &mut bytes)
         else {
-            return std::process::ExitCode::from(4);
+            return ExitCode::from(4);
         };
         if bytes_read == 0 {
-            return std::process::ExitCode::SUCCESS;
+            return ExitCode::SUCCESS;
         }
         if bytes.len() as u64 > INPUT_MAX || bytes.last() != Some(&b'\n') {
-            return std::process::ExitCode::from(2);
+            return ExitCode::from(2);
         }
 
         bytes.pop();
@@ -747,14 +749,14 @@ fn main() -> std::process::ExitCode {
 
         if let Some(response) = response {
             let Ok(mut line) = serde_json::to_vec(&response) else {
-                return std::process::ExitCode::from(4);
+                return ExitCode::from(4);
             };
             line.push(b'\n');
             if line.len() > OUTPUT_MAX
                 || output.write_all(&line).is_err()
                 || output.flush().is_err()
             {
-                return std::process::ExitCode::from(4);
+                return ExitCode::from(4);
             }
         }
     }

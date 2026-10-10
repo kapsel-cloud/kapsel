@@ -99,6 +99,30 @@ an exhaustive decoder or an ordered recovery trace merely to reduce its length. 
 at the narrowest useful scope and explain the preserved interface or invariant in `reason`. A stated
 reason records intent; review must still check whether the exception is needed.
 
+### Rust imports and module paths
+
+Import commonly used types at module scope; prefer direct imports for distinctive names. Keep
+qualification when it explains ownership or disambiguates names, such as `io::Error` and
+`io::Result`. One-off external types may stay inline. Let rustfmt handle import layout.
+
+- Import internal types from their owning module; other crates and integration tests use the public
+  API, including crate-root re-exports.
+- Use `super::` for immediate parent and nearby sibling relationships; use `crate::` for deeper
+  paths.
+- Preserve role aliases such as `receipt::git as evidence`.
+- Avoid production wildcard imports; tests may use `super::*`.
+- Treat `pub use` as an API decision, not import cleanup.
+
+The static gate rejects multi-level `super::` paths and named imports inside production blocks.
+Local `as _` trait imports and test-only scopes are exempt from the block-local rule; files shared
+with production are not. A necessary local import needs an immediately preceding
+`// rust-imports: allow-local-use: <reason>` comment with a nonempty technical reason. This
+exception applies only to that import item.
+
+Run separately with `cargo run --locked -p xtask --bin check-rust-imports`. The checker parses
+source without macro expansion or type resolution. Qualification, role aliases, and module ownership
+remain review judgments.
+
 ### Rust documentation and layout
 
 Every externally reachable public Rust item needs rustdoc. State caller-visible inputs, bounds,

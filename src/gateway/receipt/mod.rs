@@ -6,6 +6,7 @@
 use std::{error::Error, fmt};
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use kapsel_authority::ReceiptTrustError;
 
 pub(in crate::gateway) mod git;
 pub use git::{
@@ -17,7 +18,8 @@ pub(in crate::gateway) mod publication;
 use super::{
     kubernetes::facts::{ApplyOutcome, ReceiverObservation, KUBERNETES_FACT_BYTES_MAX},
     validate_dns_label, validate_dns_subdomain, validate_identity, validate_immutable_image,
-    InputField, OperationResult, SetDeploymentImageRequest, ValidatedRequest, WRITE_STRATEGY,
+    ApprovedTarget, InputField, OperationResult, SetDeploymentImageRequest, ValidatedRequest,
+    WRITE_STRATEGY,
 };
 
 const STATEMENT_MAGIC: &[u8] = b"KAPSEL-KAP0038-K8S-STATEMENT-V2\0";
@@ -46,7 +48,7 @@ const _: () = assert!(STATEMENT_BYTES_MAX < RECEIPT_BYTES_MAX);
 /// are separate checks reported by [`InspectionReport::status`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReceiptStatement {
-    pub(in crate::gateway) approved_target: Option<super::ApprovedTarget>,
+    pub(in crate::gateway) approved_target: Option<ApprovedTarget>,
     pub(in crate::gateway) operation_id: String,
     pub(in crate::gateway) authorization_id: String,
     pub(in crate::gateway) authorization_signer_key_id: String,
@@ -77,7 +79,7 @@ pub struct ReceiptStatement {
 
 impl ReceiptStatement {
     /// Returns the signed approved object version, absent for legacy receipts.
-    pub fn approved_target(&self) -> Option<&super::ApprovedTarget> {
+    pub fn approved_target(&self) -> Option<&ApprovedTarget> {
         self.approved_target.as_ref()
     }
 
@@ -399,7 +401,7 @@ impl ReceiptStatement {
             return Err(ReceiptError::InvalidValue);
         }
         if snapshot_bound {
-            statement.approved_target = Some(super::ApprovedTarget {
+            statement.approved_target = Some(ApprovedTarget {
                 uid: records.text(28)?,
                 resource_version: records.text(29)?,
             });
@@ -1064,11 +1066,11 @@ pub(crate) fn validate_key_id(value: &str) -> Result<(), ReceiptError> {
     }
 }
 
-fn map_receipt_trust_error(error: kapsel_authority::ReceiptTrustError) -> ReceiptError {
+fn map_receipt_trust_error(error: ReceiptTrustError) -> ReceiptError {
     match error {
-        kapsel_authority::ReceiptTrustError::LimitExceeded => ReceiptError::LimitExceeded,
-        kapsel_authority::ReceiptTrustError::InvalidValue => ReceiptError::InvalidValue,
-        kapsel_authority::ReceiptTrustError::InvalidRecord => ReceiptError::InvalidRecord,
+        ReceiptTrustError::LimitExceeded => ReceiptError::LimitExceeded,
+        ReceiptTrustError::InvalidValue => ReceiptError::InvalidValue,
+        ReceiptTrustError::InvalidRecord => ReceiptError::InvalidRecord,
     }
 }
 
@@ -1346,7 +1348,7 @@ mod tests {
     #[test]
     fn snapshot_and_legacy_envelopes_require_matching_statement_versions() {
         let mut snapshot = statement();
-        snapshot.approved_target = Some(super::super::ApprovedTarget {
+        snapshot.approved_target = Some(ApprovedTarget {
             uid: snapshot.target_uid.clone(),
             resource_version: snapshot.target_resource_version.clone(),
         });

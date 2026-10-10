@@ -16,15 +16,20 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
+use http::{Method, Request, Response, StatusCode};
 use kapsel::{
-    provision_exact_grant, AuthorizationTrust, ExactAuthorization, GrantProvisioning,
-    OperationReceipt, OperationStatus, ServiceApplication as Application, ServiceApproval,
-    ServiceConfiguration, ServiceError as ApplicationError, ServiceExecution, TargetRejection,
+    provision_exact_grant, ApprovedTarget, AuthorizationTrust, ExactAuthorization,
+    GrantProvisioning, OperationReceipt, OperationState, OperationStatus, OperationTargets,
+    ServiceApplication as Application, ServiceApproval, ServiceConfiguration,
+    ServiceError as ApplicationError, ServiceExecution, ServiceStop, TargetRejection,
 };
-use tokio::{net::UnixStream, runtime::Builder};
+use kube::{client::Body, Client};
+use serde_json::Value;
+use tokio::{net::UnixStream, runtime::Builder, time::Instant};
 use tower_test::mock;
 
-use super::{super::protocol::REQUEST_BYTES_MAX, *};
+use super::*;
+use crate::server::protocol::{ReadRequest, REQUEST_BYTES_MAX};
 
 trait FixtureReads: Send {
     fn status(&self, id: &str) -> Result<OperationStatus, ApplicationError>;
@@ -32,13 +37,12 @@ trait FixtureReads: Send {
 }
 
 impl<T: FixtureReads> ApplicationReads for T {
-    fn read(&self, request: super::super::protocol::ReadRequest) -> (Vec<u8>, ResponseClass) {
-        use super::super::protocol::ReadRequest;
+    fn read(&self, request: ReadRequest) -> (Vec<u8>, ResponseClass) {
         match request {
             ReadRequest::Status(id) => (
                 protocol::render_status_with_targets(
                     self.status(&id)
-                        .map(|status| (status, kapsel::OperationTargets::default())),
+                        .map(|status| (status, OperationTargets::default())),
                 ),
                 ResponseClass::Ordinary,
             ),
@@ -49,21 +53,21 @@ impl<T: FixtureReads> ApplicationReads for T {
             _ => (protocol::invalid_request(), ResponseClass::Ordinary),
         }
     }
-    fn admitted_state(&self, _: &str) -> Result<Option<kapsel::OperationState>, ServiceError> {
+    fn admitted_state(&self, _: &str) -> Result<Option<OperationState>, ServiceError> {
         Ok(None)
     }
 }
 
 struct FixtureExecution {
     application: Application,
-    client: kube::Client,
+    client: Client,
 }
 impl ApplicationExecution for FixtureExecution {
     async fn execute(
         &mut self,
         id: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ServiceError> {
+    ) -> Result<ServiceStop, ServiceError> {
         self.application
             .select(
                 &id,
@@ -180,17 +184,15 @@ impl ApplicationExecution for BlockingExecution {
         &mut self,
         _request: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ApplicationError> {
-        acknowledged(ServiceAdmission::Admitted(
-            kapsel::OperationState::Requested,
-        ));
+    ) -> Result<ServiceStop, ApplicationError> {
+        acknowledged(ServiceAdmission::Admitted(OperationState::Requested));
         self.started.add_permits(1);
         self.release
             .acquire()
             .await
             .map_err(|_| ApplicationError::OperationFailure)?
             .forget();
-        Ok(kapsel::ServiceStop::Finished)
+        Ok(ServiceStop::Finished)
     }
 }
 
@@ -204,7 +206,7 @@ impl<E: ApplicationExecution> ApplicationExecution for CountingExecution<E> {
         &mut self,
         request: String,
         acknowledged: impl FnOnce(ServiceAdmission) + Send,
-    ) -> Result<kapsel::ServiceStop, ApplicationError> {
+    ) -> Result<ServiceStop, ApplicationError> {
         self.execute_calls.fetch_add(1, Ordering::SeqCst);
         self.inner.execute(request, acknowledged).await
     }
@@ -473,8 +475,7 @@ fn id_only_catalog_history_status_and_receipt_use_the_real_read_bridge() {
             let gid = server.peer_cred().unwrap().gid();
             let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
             write_frame_and_close(&mut client, request.as_bytes()).await;
-            let response: serde_json::Value =
-                serde_json::from_slice(&read_frame(&mut client).await).unwrap();
+            let response: Value = serde_json::from_slice(&read_frame(&mut client).await).unwrap();
             assert_eq!(response["status"], expected_status);
             if request.contains("list_approved_actions") {
                 assert_eq!(response["entries"].as_array().unwrap().len(), 1);
@@ -522,9 +523,9 @@ fn authenticated_submit_confirms_one_durable_application_admission() {
             .unwrap()
             .unwrap();
         response.send_response(
-            http::Response::builder()
-                .status(http::StatusCode::NOT_FOUND)
-                .body(kube::client::Body::from(Vec::<u8>::new()))
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from(Vec::<u8>::new()))
                 .unwrap(),
         );
 
@@ -642,7 +643,7 @@ fn reconnect_status_remains_available_while_execution_waits_on_provider() {
         let status = timeout(Duration::from_secs(1), read_frame(&mut status_client))
             .await
             .unwrap();
-        let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+        let status: Value = serde_json::from_slice(&status).unwrap();
         assert_eq!(status["status"], "IN_PROGRESS");
         assert_eq!(status["execution"]["disposition"], "active");
         assert_eq!(status["execution"]["next_action"], "wait");
@@ -707,7 +708,7 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
                 .await
                 .unwrap()
                 .unwrap();
-        assert_eq!(target_request.method(), http::Method::GET);
+        assert_eq!(target_request.method(), Method::GET);
         send_deployment(target_response, &deployment("1", 1, false));
 
         let (apply_request, apply_response) =
@@ -715,7 +716,7 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
                 .await
                 .unwrap()
                 .unwrap();
-        assert_eq!(apply_request.method(), http::Method::PATCH);
+        assert_eq!(apply_request.method(), Method::PATCH);
         send_deployment(apply_response, &deployment("2", 2, false));
 
         let (observation_request, observation_response) =
@@ -723,7 +724,7 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
                 .await
                 .unwrap()
                 .unwrap();
-        assert_eq!(observation_request.method(), http::Method::GET);
+        assert_eq!(observation_request.method(), Method::GET);
         let (_, competing_response) = submit_and_read(&state).await;
         assert_payload_eq(
             &competing_response,
@@ -737,14 +738,14 @@ fn retry_race_after_apply_started_keeps_one_provider_mutation() {
         send_deployment(observation_response, &deployment("3", 2, true));
         wait_for_status(&state, gid, br#"{"status":"SUCCEEDED"}"#).await;
 
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(1);
         let (_, replay_response) = submit_and_read(&state).await;
         assert_payload_eq(
             &replay_response,
             br#"{"status":"ADMITTED","phase":"finalized"}"#,
         );
         while state.submission.available_permits() == 0 {
-            assert!(tokio::time::Instant::now() < deadline);
+            assert!(Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
@@ -939,12 +940,12 @@ fn blocked_application_read_does_not_prevent_another_frame_deadline() {
             br#"{"request":"get_set_deployment_image_status","operation_id":"blocked"}"#,
         )
         .await;
-        let started_deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let started_deadline = Instant::now() + Duration::from_secs(1);
         loop {
             if gate.0.lock().unwrap().started {
                 break;
             }
-            assert!(tokio::time::Instant::now() < started_deadline);
+            assert!(Instant::now() < started_deadline);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
@@ -1184,12 +1185,12 @@ fn application_with_mock_receiver(
 ) -> (
     Application,
     FixtureExecution,
-    mock::Handle<http::Request<kube::client::Body>, http::Response<kube::client::Body>>,
+    mock::Handle<Request<Body>, Response<Body>>,
 ) {
     let authorization_seed = [41_u8; 32];
     let authorization_key = SigningKey::from_bytes(&authorization_seed);
     let authorization = ExactAuthorization {
-        approved_target: Some(kapsel::ApprovedTarget {
+        approved_target: Some(ApprovedTarget {
             uid: "uid-1".into(),
             resource_version: "1".into(),
         }),
@@ -1211,9 +1212,8 @@ fn application_with_mock_receiver(
     })
     .unwrap();
 
-    let (service, handle) =
-        mock::pair::<http::Request<kube::client::Body>, http::Response<kube::client::Body>>();
-    let client = kube::Client::new(service, "demo");
+    let (service, handle) = mock::pair::<Request<Body>, Response<Body>>();
+    let client = Client::new(service, "demo");
     let configuration = || ServiceConfiguration {
         journal_path: fs::canonicalize(root).unwrap().join("journal.sqlite3"),
         authorization_trust: vec![AuthorizationTrust {
@@ -1247,8 +1247,8 @@ async fn wait_for_not_attempted<E: ApplicationExecution + 'static>(
     .await;
 }
 
-fn every_expected_field_matches(observed: &serde_json::Value, expected: &[u8]) -> bool {
-    let Ok(expected) = serde_json::from_slice::<serde_json::Value>(expected) else {
+fn every_expected_field_matches(observed: &Value, expected: &[u8]) -> bool {
+    let Ok(expected) = serde_json::from_slice::<Value>(expected) else {
         return false;
     };
     let (Some(observed), Some(expected)) = (observed.as_object(), expected.as_object()) else {
@@ -1264,7 +1264,7 @@ async fn wait_for_status<E: ApplicationExecution + 'static>(
     gid: u32,
     expected: &[u8],
 ) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let (mut client, server) = socket_pair();
         let handler = tokio::spawn(serve_connection_with_state(server, gid, state.clone()));
@@ -1275,7 +1275,7 @@ async fn wait_for_status<E: ApplicationExecution + 'static>(
         .await;
         let response = read_frame(&mut client).await;
         handler.await.unwrap();
-        let observed: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let observed: Value = serde_json::from_slice(&response).unwrap();
         if every_expected_field_matches(&observed, expected) {
             break;
         }
@@ -1283,7 +1283,7 @@ async fn wait_for_status<E: ApplicationExecution + 'static>(
             observed.get("status"),
             Some(&serde_json::json!("IN_PROGRESS"))
         );
-        assert!(tokio::time::Instant::now() < deadline);
+        assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -1300,28 +1300,25 @@ async fn submit_and_read<E: ApplicationExecution + 'static>(
     (gid, response)
 }
 
-fn send_not_found(response: tower_test::mock::SendResponse<http::Response<kube::client::Body>>) {
+fn send_not_found(response: mock::SendResponse<Response<Body>>) {
     response.send_response(
-        http::Response::builder()
-            .status(http::StatusCode::NOT_FOUND)
-            .body(kube::client::Body::from(Vec::<u8>::new()))
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from(Vec::<u8>::new()))
             .unwrap(),
     );
 }
 
-fn send_deployment(
-    response: tower_test::mock::SendResponse<http::Response<kube::client::Body>>,
-    body: &serde_json::Value,
-) {
+fn send_deployment(response: mock::SendResponse<Response<Body>>, body: &Value) {
     response.send_response(
-        http::Response::builder()
-            .status(http::StatusCode::OK)
-            .body(kube::client::Body::from(serde_json::to_vec(&body).unwrap()))
+        Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap(),
     );
 }
 
-fn deployment(resource_version: &str, generation: i64, observed: bool) -> serde_json::Value {
+fn deployment(resource_version: &str, generation: i64, observed: bool) -> Value {
     let old_image = concat!(
         "registry.example/agent-api@sha256:",
         "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -1416,7 +1413,7 @@ async fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
 }
 
 fn remove_top_level_version(body: &[u8]) -> Vec<u8> {
-    let mut value: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let mut value: Value = serde_json::from_slice(body).unwrap();
     let object = value.as_object_mut().unwrap();
     assert_eq!(object.remove("version"), Some(serde_json::json!(1)));
     serde_json::to_vec(&value).unwrap()
@@ -1424,8 +1421,8 @@ fn remove_top_level_version(body: &[u8]) -> Vec<u8> {
 
 fn assert_payload_eq(actual: &[u8], expected: &[u8]) {
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(actual).unwrap(),
-        serde_json::from_slice::<serde_json::Value>(expected).unwrap()
+        serde_json::from_slice::<Value>(actual).unwrap(),
+        serde_json::from_slice::<Value>(expected).unwrap()
     );
 }
 
@@ -1444,7 +1441,7 @@ fn read_frame_payload_removes_only_top_level_version() {
     let payload =
         remove_top_level_version(br#"{"version":1,"status":"READY","nested":{"version":1}}"#);
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+        serde_json::from_slice::<Value>(&payload).unwrap(),
         serde_json::json!({"status":"READY","nested":{"version":1}})
     );
 }

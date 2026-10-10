@@ -35,13 +35,3 @@ pub use gateway::{
     ReceiptError, ReceiptReference, ReceiptStatement, ReceiptTrust, TargetRejection,
     GIT_RECEIPT_PURPOSE,
 };
-#[cfg(test)]
-use gateway::{
-    test_deployment_patch_document, TestApplyOutcome as ApplyOutcome,
-    TestKubernetesDeploymentImageAdapter as KubernetesDeploymentImageAdapter,
-    TestReceiverObservation as ReceiverObservation, TestTargetIdentity as TargetIdentity,
-};
-#[cfg(test)]
-use gateway::{DeploymentImageAdapter, Gateway, ReceiptSettings, TargetReadError};
-#[cfg(test)]
-use gateway::{FaultPoint, GatewayError, SetDeploymentImageRequest};

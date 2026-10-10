@@ -14,6 +14,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(test)]
+use ed25519_dalek::SigningKey;
+#[cfg(test)]
+use kapsel_authority::AuthorizationTrust;
 use kapsel_authority::{git_commit_id_is_valid, GitRefAuthorization, APPROVED_GIT_REF};
 use rustix::process::{kill_process_group, Pid, Signal};
 use tokio::{
@@ -27,8 +31,11 @@ use super::{
         Journal, WorkerLock,
     },
     receipt::git as evidence,
-    GatewayError, ReceiptSettings,
+    GatewayError, GitOperationTargets, InputField, OperationResult, OperationState,
+    ReceiptSettings, ReconciliationBlockage, ReconciliationError, TargetRejection,
 };
+#[cfg(test)]
+use super::{Defect, FaultPoint};
 
 #[cfg(test)]
 pub(crate) mod exploration;
@@ -170,7 +177,7 @@ impl PreparedTransition<'_> {
     #[cfg(test)]
     pub(in crate::gateway) fn exploration_attempt_acknowledgement_lost(&self) -> bool {
         self.receiver
-            .exploration_fault(super::FaultPoint::AttemptCommitAcknowledgementLost)
+            .exploration_fault(FaultPoint::AttemptCommitAcknowledgementLost)
     }
 }
 
@@ -515,10 +522,10 @@ impl GitReceiver {
 
 pub(crate) struct RetainedGitOperation {
     pub(crate) signed_grant: Vec<u8>,
-    pub(crate) state: super::OperationState,
-    pub(crate) targets: super::GitOperationTargets,
-    pub(crate) rejection: Option<super::TargetRejection>,
-    pub(crate) result: Option<super::OperationResult>,
+    pub(crate) state: OperationState,
+    pub(crate) targets: GitOperationTargets,
+    pub(crate) rejection: Option<TargetRejection>,
+    pub(crate) result: Option<OperationResult>,
     pub(crate) receipt: Option<(Vec<u8>, String)>,
 }
 
@@ -534,11 +541,9 @@ impl RetainedGitOperation {
             GitPhase::Authorized | GitPhase::NotAttempted(_) => None,
         };
         let rejection = match phase {
-            GitPhase::NotAttempted(GitRejection::StaleRef) => {
-                Some(super::TargetRejection::GitStaleRef)
-            },
+            GitPhase::NotAttempted(GitRejection::StaleRef) => Some(TargetRejection::GitStaleRef),
             GitPhase::NotAttempted(GitRejection::InvalidObjects) => {
-                Some(super::TargetRejection::GitInvalidObjects)
+                Some(TargetRejection::GitInvalidObjects)
             },
             _ => None,
         };
@@ -552,7 +557,7 @@ impl RetainedGitOperation {
             state: phase.state(),
             rejection,
             result: statement.as_ref().map(evidence::GitStatement::result),
-            targets: super::GitOperationTargets {
+            targets: GitOperationTargets {
                 approval: binding.authorization().clone(),
                 attempted,
                 acknowledgement,
@@ -571,7 +576,7 @@ impl super::Gateway {
         &self,
         id: &str,
     ) -> Result<Option<RetainedGitOperation>, GatewayError> {
-        super::validate_identity(super::InputField::OperationId, id)?;
+        super::validate_identity(InputField::OperationId, id)?;
         self.journal
             .retained_git(id, &self.authorization_trust)
             .map(|operation| {
@@ -597,8 +602,7 @@ impl super::Gateway {
         #[cfg(test)] simulated_receiver: Option<&GitReceiver>,
         signing: Option<&ReceiptSettings<'_>>,
         acknowledged: impl FnOnce(super::AdmissionDecision) + Send,
-    ) -> Result<(), super::ReconciliationError> {
-        use super::{OperationState, ReconciliationBlockage, ReconciliationError};
+    ) -> Result<(), ReconciliationError> {
         let binding = GitBinding::verify(grant, &self.authorization_trust)
             .map_err(ReconciliationError::Submission)?;
         if binding.authorization().operation_id != id {
@@ -667,7 +671,7 @@ fn controlled_receipt_signing<'a>(
     signing: &ReceiptSettings<'a>,
 ) -> ReceiptSettings<'a> {
     ReceiptSettings {
-        signing_seed: if journal.exercise_defect(super::Defect::WrongSigner) {
+        signing_seed: if journal.exercise_defect(Defect::WrongSigner) {
             &[99; 32]
         } else {
             signing.signing_seed
@@ -710,22 +714,22 @@ pub(super) async fn advance(
         match receiver.prepare(binding.authorization()).await {
             Ok(prepared) => {
                 #[cfg(test)]
-                exploration_checkpoint(Some(receiver), super::FaultPoint::TargetObserved)?;
+                exploration_checkpoint(Some(receiver), FaultPoint::TargetObserved)?;
 
                 let permission = journal.begin_git_attempt(binding, prepared, worker)?;
                 #[cfg(test)]
-                exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyStartedCommitted)?;
+                exploration_checkpoint(Some(receiver), FaultPoint::ApplyStartedCommitted)?;
 
                 let acknowledgement = receiver.send(permission).await;
                 #[cfg(test)]
-                exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyReturned)?;
+                exploration_checkpoint(Some(receiver), FaultPoint::ApplyReturned)?;
                 #[cfg(feature = "demo-harness")]
                 super::demo_control::checkpoint_after_apply()
                     .map_err(|()| GatewayError::GitReceiverUnavailable)?;
 
                 journal.record_git_acknowledgement(binding, acknowledgement, worker)?;
                 #[cfg(test)]
-                exploration_checkpoint(Some(receiver), super::FaultPoint::ApplyOutcomeCommitted)?;
+                exploration_checkpoint(Some(receiver), FaultPoint::ApplyOutcomeCommitted)?;
             },
             Err(GitError::StaleRef) => {
                 journal.reject_git(binding, GitRejection::StaleRef, worker)?;
@@ -750,12 +754,12 @@ pub(super) async fn advance(
         let observed = receiver.observe().await;
         #[cfg(test)]
         if fresh {
-            exploration_checkpoint(Some(receiver), super::FaultPoint::ReceiverRead)?;
+            exploration_checkpoint(Some(receiver), FaultPoint::ReceiverRead)?;
         }
 
         journal.freeze_git_observation(binding, &observed, worker)?;
         #[cfg(test)]
-        exploration_checkpoint(Some(receiver), super::FaultPoint::ReceiverObservedCommitted)?;
+        exploration_checkpoint(Some(receiver), FaultPoint::ReceiverObservedCommitted)?;
         phase = journal
             .git_operation(binding)?
             .ok_or(GatewayError::InvalidTransition)?;
@@ -774,13 +778,10 @@ pub(super) async fn advance(
             super::demo_control::checkpoint_before_receipt_commit()
                 .map_err(|()| GatewayError::InvalidTransition)?;
             #[cfg(test)]
-            exploration_checkpoint(receiver, super::FaultPoint::BeforeReceiptCommit)?;
+            exploration_checkpoint(receiver, FaultPoint::BeforeReceiptCommit)?;
             journal.commit_git_receipt(binding, &bytes, worker)?;
             #[cfg(test)]
-            exploration_checkpoint(
-                receiver,
-                super::FaultPoint::ReceiptCommitAcknowledgementLost,
-            )?;
+            exploration_checkpoint(receiver, FaultPoint::ReceiptCommitAcknowledgementLost)?;
             #[cfg(feature = "demo-harness")]
             super::demo_control::checkpoint_after_receipt_commit()
                 .map_err(|()| GatewayError::InvalidTransition)?;
@@ -796,7 +797,7 @@ pub(super) async fn advance(
 #[cfg(test)]
 fn exploration_checkpoint(
     receiver: Option<&GitReceiver>,
-    point: super::FaultPoint,
+    point: FaultPoint,
 ) -> Result<(), GatewayError> {
     if receiver.is_some_and(|receiver| receiver.exploration_fault(point)) {
         Err(GatewayError::InjectedFault)
@@ -983,7 +984,20 @@ mod tests {
     };
 
     use super::*;
-    use crate::gateway::OperationResult;
+    use crate::{
+        application::{
+            provision_git_ref_grant, ExecutionCondition, OperationReceipt, OperationStatus,
+            ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration,
+            ServiceExecution, ServiceStop,
+        },
+        gateway::{
+            journal::{
+                git::{GitDispatchPermission, GitPhase},
+                Journal,
+            },
+            OperationResult, OperationState,
+        },
+    };
 
     fn approval() -> GitRefAuthorization {
         GitRefAuthorization {
@@ -1224,8 +1238,7 @@ mod tests {
         fixture: &Fixture,
         approval: &GitRefAuthorization,
         prepared: PreparedTransition<'receiver>,
-    ) -> super::super::journal::git::GitDispatchPermission<'receiver> {
-        use super::super::journal::Journal;
+    ) -> GitDispatchPermission<'receiver> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = fixture
             .0
@@ -1239,7 +1252,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             journal.git_operation(&binding).unwrap(),
-            Some(super::super::journal::git::GitPhase::Attempted(None))
+            Some(GitPhase::Attempted(None))
         );
         permission
     }
@@ -1454,10 +1467,6 @@ while read -r line; do :; done
         reason = "one service lifecycle proves signing-only resumption after material removal"
     )]
     async fn real_git_service_reconnects_and_signs_frozen_evidence_without_receiver() {
-        use crate::{
-            OperationReceipt, OperationStatus, ServiceApplication, ServiceApproval,
-            ServiceConfiguration, ServiceExecution,
-        };
         for case in ["healthy", "post-receive"] {
             let (fixture, receiver, approval, _) = receiver_fixture();
             install_hooks(&fixture, &receiver, case);
@@ -1467,17 +1476,15 @@ while read -r line; do :; done
                 receiver: receiver.receiver.clone(),
                 repository_id: receiver.repository_id.clone(),
             };
-            let grant = crate::provision_git_ref_grant(&approval, &material, &[7; 32], "owner")
+            let grant = provision_git_ref_grant(&approval, &material, &[7; 32], "owner")
                 .await
                 .unwrap();
             assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
             let mut configuration = ServiceConfiguration {
                 journal_path: fixture.0.join("service-journal"),
-                authorization_trust: vec![kapsel_authority::AuthorizationTrust {
+                authorization_trust: vec![AuthorizationTrust {
                     key_id: "owner".into(),
-                    public_key: ed25519_dalek::SigningKey::from_bytes(&[7; 32])
-                        .verifying_key()
-                        .to_bytes(),
+                    public_key: SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
                 }],
                 approvals: vec![ServiceApproval {
                     signed_grant: grant,
@@ -1496,7 +1503,7 @@ while read -r line; do :; done
                     |admission| {
                         assert_eq!(
                             admission,
-                            crate::ServiceAdmission::Admitted(crate::OperationState::Authorized)
+                            ServiceAdmission::Admitted(OperationState::Authorized)
                         );
                         assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
                     },
@@ -1505,7 +1512,7 @@ while read -r line; do :; done
                 .unwrap();
             assert_eq!(
                 stopped,
-                crate::ServiceStop::Blocked(crate::ExecutionCondition::SigningUnavailable)
+                ServiceStop::Blocked(ExecutionCondition::SigningUnavailable)
             );
             assert_eq!(
                 service.status(&approval.operation_id).unwrap().0,
@@ -1531,7 +1538,7 @@ while read -r line; do :; done
                     )
                     .await
                     .unwrap(),
-                crate::ServiceStop::Finished
+                ServiceStop::Finished
             );
             let expected = if case == "healthy" {
                 OperationStatus::Succeeded
@@ -1665,11 +1672,9 @@ while read -r line; do :; done
     fn binding_for(approval: &GitRefAuthorization) -> GitBinding {
         let seed = [7; 32];
         let bytes = kapsel_authority::sign_git_ref_grant(approval, &seed, "owner").unwrap();
-        let trust = kapsel_authority::AuthorizationTrust {
+        let trust = AuthorizationTrust {
             key_id: "owner".into(),
-            public_key: ed25519_dalek::SigningKey::from_bytes(&seed)
-                .verifying_key()
-                .to_bytes(),
+            public_key: SigningKey::from_bytes(&seed).verifying_key().to_bytes(),
         };
         GitBinding::verify(&bytes, &[trust]).unwrap()
     }

@@ -11,7 +11,7 @@ use std::{
     fmt::Write as _,
     fs,
     io::{Read as _, Write as _},
-    net::{TcpListener, TcpStream},
+    net::{Shutdown, TcpListener, TcpStream},
     ops::{Deref, DerefMut},
     os::unix::{
         fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _},
@@ -28,7 +28,12 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
-use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning};
+use kapsel::{
+    provision_exact_grant, ExactAuthorization, GrantProvisioning, InspectionLimits,
+    InspectionStatus, ReceiptTrust,
+};
+use rusqlite::Connection;
+use serde_json::Value;
 use sha2::Digest as _;
 
 #[path = "linux_process/cold_publication.rs"]
@@ -270,7 +275,7 @@ fn write_frame(stream: &mut UnixStream, body: &[u8]) {
         .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
         .unwrap();
     stream.write_all(body).unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
 }
 
 fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
@@ -283,7 +288,7 @@ fn read_frame(stream: &mut UnixStream) -> Vec<u8> {
 }
 
 fn remove_top_level_version(body: &[u8]) -> Vec<u8> {
-    let mut value: serde_json::Value = serde_json::from_slice(body).unwrap();
+    let mut value: Value = serde_json::from_slice(body).unwrap();
     let object = value.as_object_mut().unwrap();
     assert_eq!(object.remove("version"), Some(serde_json::json!(1)));
     serde_json::to_vec(&value).unwrap()
@@ -294,13 +299,13 @@ fn process_read_frame_payload_removes_only_top_level_version() {
     let payload =
         remove_top_level_version(br#"{"version":1,"status":"READY","service":{"version":1}}"#);
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+        serde_json::from_slice::<Value>(&payload).unwrap(),
         serde_json::json!({"status":"READY","service":{"version":1}})
     );
 }
 
 fn assert_admission_unconfirmed(stream: &mut UnixStream) {
-    let response: serde_json::Value = serde_json::from_slice(&read_frame(stream)).unwrap();
+    let response: Value = serde_json::from_slice(&read_frame(stream)).unwrap();
     assert_eq!(
         response,
         serde_json::json!({
@@ -312,7 +317,7 @@ fn assert_admission_unconfirmed(stream: &mut UnixStream) {
 }
 
 fn assert_admitted(stream: &mut UnixStream, phase: &str) {
-    let response: serde_json::Value = serde_json::from_slice(&read_frame(stream)).unwrap();
+    let response: Value = serde_json::from_slice(&read_frame(stream)).unwrap();
     assert_eq!(
         response,
         serde_json::json!({"status":"ADMITTED","phase":phase})
@@ -325,7 +330,7 @@ fn resume_after_read(socket: &Path) {
         &mut status,
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
-    let status: serde_json::Value = serde_json::from_slice(&read_frame(&mut status)).unwrap();
+    let status: Value = serde_json::from_slice(&read_frame(&mut status)).unwrap();
     assert_eq!(status["status"], "IN_PROGRESS");
     assert_eq!(status["execution"]["disposition"], "resume_required");
     assert!(status["execution"]["condition"].is_null());
@@ -337,7 +342,7 @@ fn resume_after_read(socket: &Path) {
 fn wait_for_finalized(journal: &Path) {
     let deadline = Instant::now() + Duration::from_secs(210);
     loop {
-        let connection = rusqlite::Connection::open(journal).unwrap();
+        let connection = Connection::open(journal).unwrap();
         let phase: String = connection
             .query_row("SELECT state FROM kubernetes_image_operations", [], |row| {
                 row.get(0)
@@ -353,7 +358,7 @@ fn wait_for_finalized(journal: &Path) {
 
 fn assert_terminal_status(stream: &mut UnixStream, status: &str, has_approved_target: bool) {
     let target = serde_json::json!({"uid": "uid-1", "resource_version": "1"});
-    let actual = serde_json::from_slice::<serde_json::Value>(&read_frame(stream)).unwrap();
+    let actual = serde_json::from_slice::<Value>(&read_frame(stream)).unwrap();
     let expected = serde_json::json!({
         "status": status,
         "effect": "kubernetes.set_deployment_image",
@@ -526,7 +531,7 @@ fn deployment(resource_version: &str, generation: i64, observed: bool) -> String
 }
 
 fn progressing_deployment() -> String {
-    let mut value: serde_json::Value = serde_json::from_str(&deployment("3", 2, false)).unwrap();
+    let mut value: Value = serde_json::from_str(&deployment("3", 2, false)).unwrap();
     value["metadata"]["annotations"] = serde_json::json!({
         "kapsel.dev/kap0038-operation-id": "process-op"
     });
@@ -638,7 +643,7 @@ fn assert_provider_request(
     assert_eq!(path, expected_path);
     if expected_method == "PATCH" {
         assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(body).unwrap(),
+            serde_json::from_slice::<Value>(body).unwrap(),
             serde_json::json!({
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
@@ -885,7 +890,7 @@ fn installed_restart_reads_before_explicit_reselection_without_second_patch() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
     drop(connect(&socket));
@@ -961,7 +966,7 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     // Hold the service's durable acknowledgement outside the bridge. Kill the thin caller while
     // the acknowledgement is undelivered, without cancelling the service-owned worker.
@@ -977,13 +982,13 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         caller.read_exact(&mut prefix).unwrap();
         let mut body = vec![0_u8; u32::from_be_bytes(prefix) as usize];
         caller.read_exact(&mut body).unwrap();
-        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let request: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(request["request"], "submit_set_deployment_image");
         assert_eq!(request["operation_id"], "process-op");
         let mut service = UnixStream::connect(service_socket).unwrap();
         service.write_all(&prefix).unwrap();
         service.write_all(&body).unwrap();
-        service.shutdown(std::net::Shutdown::Write).unwrap();
+        service.shutdown(Shutdown::Write).unwrap();
         assert_admitted(&mut service, "requested");
         ack_tx.send(()).unwrap();
         release_rx.recv_timeout(FIXTURE_TIMEOUT).unwrap();
@@ -1054,14 +1059,14 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let responses: Vec<serde_json::Value> = output
+    let responses: Vec<Value> = output
         .stdout
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_slice(line).unwrap())
         .collect();
     assert_eq!(responses.len(), 3);
-    let status: serde_json::Value = serde_json::from_str(
+    let status: Value = serde_json::from_str(
         responses[1]["result"]["content"][0]["text"]
             .as_str()
             .unwrap(),
@@ -1069,7 +1074,7 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     .unwrap();
     assert_eq!(status["operation_id"], "process-op");
     assert_eq!(status["service"]["status"], "SUCCEEDED");
-    let receipt: serde_json::Value = serde_json::from_str(
+    let receipt: Value = serde_json::from_str(
         responses[2]["result"]["content"][0]["text"]
             .as_str()
             .unwrap(),
@@ -1104,7 +1109,7 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
-    let trust = kapsel::ReceiptTrust {
+    let trust = ReceiptTrust {
         key_id: "process-receipt-key-a".into(),
         public_key: SigningKey::from_bytes(&[42_u8; 32])
             .verifying_key()
@@ -1116,8 +1121,8 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     .encode()
     .unwrap();
     assert_eq!(
-        kapsel::inspect_receipt(&frozen, &trust, 150, kapsel::InspectionLimits::default()).status(),
-        kapsel::InspectionStatus::Inspected
+        kapsel::inspect_receipt(&frozen, &trust, 150, InspectionLimits::default()).status(),
+        InspectionStatus::Inspected
     );
     if let Ok(inspector) = std::env::var("KAPSEL_TEST_INSPECT") {
         let receipt_path = root.join("detached.receipt");
@@ -1137,7 +1142,7 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(report["status"], "INSPECTED");
     }
     assert!(restarted.wait_with_output().unwrap().status.success());
@@ -1340,8 +1345,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     let receipts = root.join("var/lib/kapsel/receipts");
     fs::remove_dir(&receipts).unwrap();
     let document_path = root.join("etc/kapsel/operator.json");
-    let mut document: serde_json::Value =
-        serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
+    let mut document: Value = serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
     document
         .as_object_mut()
         .unwrap()
@@ -1368,7 +1372,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
         &root.join("control/after-receipt-commit.ready"),
     );
     assert!(socket.exists());
-    let connection = rusqlite::Connection::open(&journal).unwrap();
+    let connection = Connection::open(&journal).unwrap();
     let (state, frozen, signer): (String, Vec<u8>, String) = connection
         .query_row(
             "SELECT state, receipt_bytes, receipt_key_id FROM kubernetes_image_operations",
@@ -1396,7 +1400,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
         &mut receipt,
         br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
     );
-    let response: serde_json::Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
     let expected_hex = lowercase_hex(&frozen);
     let expected_digest = lowercase_hex(&sha2::Sha256::digest(&frozen));
     assert_eq!(response["status"], "READY");
@@ -1420,7 +1424,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     assert!(run_client(&repeated).status.success());
     assert_eq!(fs::read(&exported).unwrap(), frozen);
     assert_eq!(fs::read(&repeated).unwrap(), frozen);
-    let trust = kapsel::ReceiptTrust {
+    let trust = ReceiptTrust {
         key_id: signer.clone(),
         public_key: SigningKey::from_bytes(&[112_u8; 32])
             .verifying_key()
@@ -1432,8 +1436,8 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     .encode()
     .unwrap();
     assert_eq!(
-        kapsel::inspect_receipt(&frozen, &trust, 150, kapsel::InspectionLimits::default()).status(),
-        kapsel::InspectionStatus::Inspected
+        kapsel::inspect_receipt(&frozen, &trust, 150, InspectionLimits::default()).status(),
+        InspectionStatus::Inspected
     );
     let mut replay = connect(&socket);
     write_frame(&mut replay, submit_request().as_bytes());
@@ -1450,7 +1454,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
         br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
     );
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&read_frame(&mut receipt)).unwrap(),
+        serde_json::from_slice::<Value>(&read_frame(&mut receipt)).unwrap(),
         response
     );
     let output = child.wait_with_output().unwrap();
@@ -1459,7 +1463,7 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     assert!(output.stderr.is_empty());
     assert!(!receipts.exists());
     assert!(!root.join("missing-rotated-receipts").exists());
-    let connection = rusqlite::Connection::open(&journal).unwrap();
+    let connection = Connection::open(&journal).unwrap();
     let retained: (Vec<u8>, String) = connection
         .query_row(
             "SELECT receipt_bytes, receipt_key_id FROM kubernetes_image_operations",
@@ -1506,7 +1510,7 @@ fn corrupted_retained_receipt_fails_startup_without_reconciliation() {
     );
     kill(&mut publication);
     fs::remove_file(&socket).unwrap();
-    let connection = rusqlite::Connection::open(root.join("journal.sqlite3")).unwrap();
+    let connection = Connection::open(root.join("journal.sqlite3")).unwrap();
     connection
         .execute(
             "UPDATE kubernetes_image_operations SET receipt_bytes = ?1",
@@ -1553,7 +1557,7 @@ fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() 
         &mut receipt,
         br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
     );
-    let response: serde_json::Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
     assert_eq!(response["status"], "READY");
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
@@ -1624,7 +1628,7 @@ fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() 
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&read_frame(&mut status)).unwrap(),
+        serde_json::from_slice::<Value>(&read_frame(&mut status)).unwrap(),
         serde_json::json!({"status":"IN_PROGRESS", "effect":"kubernetes.set_deployment_image",
             "approved_target":null, "attempt_target":null, "observed_target":null}),
     );
@@ -1639,7 +1643,7 @@ fn disconnect_identical_admission_and_reconnect_status_cross_the_real_process() 
         br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
     );
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&read_frame(&mut completed)).unwrap(),
+        serde_json::from_slice::<Value>(&read_frame(&mut completed)).unwrap(),
         serde_json::json!({"status":"NOT_ATTEMPTED", "target_rejection":"DEPLOYMENT_NOT_FOUND",
             "effect":"kubernetes.set_deployment_image", "approved_target":null,
             "attempt_target":null, "observed_target":null})
@@ -1677,7 +1681,7 @@ fn connection_saturation_refuses_ninth_and_admits_tenth_after_permit_release() {
     // EOF terminates this idle handler without spawning a storage job. The fixture's
     // current-thread runtime releases its permit before it can accept the tenth peer.
     let mut released = admitted.remove(0);
-    released.shutdown(std::net::Shutdown::Write).unwrap();
+    released.shutdown(Shutdown::Write).unwrap();
     let mut closed = Vec::new();
     released.read_to_end(&mut closed).unwrap();
     assert!(closed.is_empty());
