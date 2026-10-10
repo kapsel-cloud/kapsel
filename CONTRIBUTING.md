@@ -209,8 +209,7 @@ owning checks. Contract edits need semantic review, not just shorter sentences.
 Review the changed boundary: authority, ordering, recovery, result meaning, original bytes, input
 bounds, and disclosure. Confirm that tests cross the interface owning the guarantee. Explain the
 checks performed and any material limitation. Source coverage and model agreement are not proof that
-a workflow works. The [code-quality review](docs/contributing/code_quality_review.md) records the
-consistency pass's coverage, exception decisions, and retained design boundaries.
+a workflow works.
 
 Use a plain domain-oriented imperative subject, for example:
 
