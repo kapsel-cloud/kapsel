@@ -12,9 +12,9 @@ webhook Dockerfile, and the frozen format-5 SQL fixture omitted from that initia
 Dependency source, generated output, and binary vector/corpus data are not authored-source review
 coverage. Frozen fixtures retain their bytes.
 
-**Integration status:** corrections are integrated in the isolated candidate. Its earlier snapshot
-passed Linux and artifact validation. The refreshed candidate still needs final validation and
-integration.
+**Review status:** source coverage, correction integration, exception review, and focused
+independent review are complete. The validated candidate is identified below. Mainline integration
+and publication are separate actions.
 
 ## Correction decisions
 
@@ -260,12 +260,18 @@ The owning evidence gate remains [Build and test](build.md), with platform and a
 Offline fake-tool tests do not establish a successful live Trivy scan, Docker/kind run, or published
 artifact qualification. Source changes do not change v0.3.0's published bytes or claims.
 
-The candidate at `009c82de028c89970dd930b8883a98504f68c441` passed the full Linux deterministic
-gate, 22 real-process tests, 11 MCP tests, and all 19 fresh-session caller tests. One supplementary
+The refreshed candidate at `c44760bd10d01cdc95c5ee83b494ce718be34b9a`, based on
+`470bb1199fb035931b50a514da1fcfaef0b9fabe`, passed the full deterministic gate on macOS and Linux,
+22 Linux real-process tests, 11 MCP tests, and all 19 fresh-session caller tests. One supplementary
 Docker-group process test remained intentionally ignored. Its packaged consumer suite passed 27
-tests with one skip, and a second assembly passed the maintained reproducibility check. These
-results establish that candidate's execution, not the refreshed integration tree or a published
-release. Live security scans and privileged native-service qualification remain separate lanes.
+tests with one skip, and a second assembly passed the maintained reproducibility check. Focused
+independent review found no concrete correction needed in the refreshed gateway comments, lint
+reasons, or review record.
+
+These results establish that candidate's execution, not a published release. This record's final
+status update is documentation-only. Live security scans, live receiver qualification, and
+privileged native-service qualification remain separate lanes; ignored or skipped tests are not
+passing evidence.
 
 ### Initial authored-source coverage
 
