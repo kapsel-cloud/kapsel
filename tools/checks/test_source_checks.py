@@ -50,6 +50,42 @@ class SourcePrivacyTests(unittest.TestCase):
                 path.write_text("synthetic\n")
             self.assertEqual(PRIVACY.tracked_paths(root), sorted(names))
 
+    def test_pending_retirement_does_not_exclude_existing_unsafe_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            names = ["README.md", "src/link.rs", "docs/fifo.md"]
+            for name in names:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic\n")
+            subprocess.run(["git", "add", "--", *names], cwd=root, check=True)
+            (root / names[0]).unlink()
+            (root / names[1]).unlink()
+            (root / names[1]).symlink_to(root / "absent")
+            (root / names[2]).unlink()
+            os.mkfifo(root / names[2])
+            self.assertEqual(PRIVACY.tracked_paths(root), sorted(names[1:]))
+            for name in names[1:]:
+                with self.subTest(name=name), self.assertRaises(RuntimeError):
+                    PRIVACY.validate(root, [name])
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory search permissions")
+    def test_inaccessible_parent_cannot_be_mistaken_for_retirement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            parent = root / "src"
+            parent.mkdir()
+            (parent / "private.rs").write_text("synthetic\n")
+            subprocess.run(["git", "add", "--", "src/private.rs"], cwd=root, check=True)
+            parent.chmod(0)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "unsupported source file"):
+                    PRIVACY.tracked_paths(root)
+            finally:
+                parent.chmod(0o700)
+
     def test_private_inputs_and_overclaims_fail_without_disclosing_contents(self) -> None:
         cases = {
             "private-path.md": b"path: /Users/operator/private\n",

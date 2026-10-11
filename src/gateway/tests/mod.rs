@@ -63,6 +63,7 @@ pub(crate) fn dispatch_permission_for_test(
     permission
 }
 
+#[cfg(target_os = "linux")]
 fn private_directory(path: &Path) {
     fs::create_dir(path).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -118,8 +119,6 @@ struct FakeAdapter {
     identify_calls: usize,
     apply_calls: usize,
     observe_calls: usize,
-    durable_attempt_seen_before_apply: bool,
-    applied_target: Option<TargetIdentity>,
 
     identified_target: TargetIdentity,
     inject_apply_failure: bool,
@@ -133,13 +132,11 @@ fn failed_rollout_adapter(path: &Path, request: &SetDeploymentImageRequest) -> F
         identify_calls: 0,
         apply_calls: 0,
         observe_calls: 0,
-        durable_attempt_seen_before_apply: false,
         identified_target: TargetIdentity {
             deployment_uid: "deployment-uid-1".into(),
             resource_version: "resource-version-0".into(),
         },
         inject_apply_failure: false,
-        applied_target: None,
         outcome: ApplyOutcome {
             accepted: true,
             requested_generation: Some(2),
@@ -170,9 +167,8 @@ impl DeploymentImageAdapter for FakeAdapter {
     }
 
     async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
-        let (request, target) = permission.into_payload();
+        let (request, _) = permission.into_payload();
         self.apply_calls += 1;
-        self.applied_target = Some(target);
         let connection = Connection::open(&self.database_path).map_err(|_| ())?;
         let persisted_attempt_facts: (String, i64, String) = connection
             .query_row(
@@ -183,9 +179,10 @@ impl DeploymentImageAdapter for FakeAdapter {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(|_| ())?;
-        self.durable_attempt_seen_before_apply =
-            persisted_attempt_facts == ("apply_started".into(), 1, WRITE_STRATEGY.into());
-
+        assert_eq!(
+            persisted_attempt_facts,
+            ("apply_started".into(), 1, WRITE_STRATEGY.into())
+        );
         if self.inject_apply_failure {
             return Err(());
         }
@@ -199,91 +196,6 @@ impl DeploymentImageAdapter for FakeAdapter {
     ) -> Result<ReceiverObservation, ()> {
         self.observe_calls += 1;
         Ok(self.observation.clone())
-    }
-}
-
-struct TargetRoutingAdapter {
-    permanent: Option<(String, TargetRejection)>,
-    transient_once: Option<String>,
-    transient_returned: bool,
-    identify_order: Vec<String>,
-    apply_order: Vec<String>,
-    observe_order: Vec<String>,
-}
-
-impl TargetRoutingAdapter {
-    fn permanent(operation_id: &str, rejection: TargetRejection) -> Self {
-        Self {
-            permanent: Some((operation_id.into(), rejection)),
-            transient_once: None,
-            transient_returned: false,
-            identify_order: Vec::new(),
-            apply_order: Vec::new(),
-            observe_order: Vec::new(),
-        }
-    }
-
-    fn transient_once(operation_id: &str) -> Self {
-        Self {
-            permanent: None,
-            transient_once: Some(operation_id.into()),
-            transient_returned: false,
-            identify_order: Vec::new(),
-            apply_order: Vec::new(),
-            observe_order: Vec::new(),
-        }
-    }
-}
-
-#[allow(
-    clippy::unused_async_trait_impl,
-    reason = "the fake mirrors the production async provider seam"
-)]
-impl DeploymentImageAdapter for TargetRoutingAdapter {
-    async fn identify(
-        &mut self,
-        request: &SetDeploymentImageRequest,
-    ) -> Result<TargetIdentity, TargetReadError> {
-        self.identify_order.push(request.operation_id.clone());
-        if let Some((operation_id, rejection)) = &self.permanent {
-            if operation_id == &request.operation_id {
-                return Err(TargetReadError::Permanent(*rejection));
-            }
-        }
-        if self.transient_once.as_deref() == Some(request.operation_id.as_str())
-            && !self.transient_returned
-        {
-            self.transient_returned = true;
-            return Err(TargetReadError::Transient);
-        }
-        Ok(TargetIdentity {
-            deployment_uid: "deployment-uid-1".into(),
-            resource_version: "resource-version-0".into(),
-        })
-    }
-
-    async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
-        let (request, _) = permission.into_payload();
-        self.apply_order.push(request.operation_id);
-        Ok(ApplyOutcome {
-            accepted: true,
-            requested_generation: Some(2),
-            deployment_uid: Some("deployment-uid-1".into()),
-            resource_version: Some("resource-version-1".into()),
-        })
-    }
-
-    async fn observe(
-        &mut self,
-        request: &SetDeploymentImageRequest,
-        _: &ApplyOutcome,
-    ) -> Result<ReceiverObservation, ()> {
-        self.observe_order.push(request.operation_id.clone());
-        let mut observation = unknown_observation(request);
-        observation.rollout_condition_type = Some("Progressing".into());
-        observation.rollout_condition_status = Some("False".into());
-        observation.rollout_condition_reason = Some("ProgressDeadlineExceeded".into());
-        Ok(observation)
     }
 }
 

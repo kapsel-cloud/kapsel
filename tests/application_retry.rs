@@ -15,7 +15,10 @@ use std::{
     net::{TcpListener, TcpStream},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -55,9 +58,11 @@ impl Fixture {
     }
 
     fn with_pause(status: u16, pause_first_patch: bool) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "kapsel-application-retry-{}-{status}-{pause_first_patch}",
-            std::process::id()
+            "kapsel-application-retry-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         // Refuse a collision. Never erase another run's retained evidence to make a test pass.
         fs::create_dir(&root).unwrap();

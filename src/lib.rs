@@ -16,8 +16,6 @@ mod gateway;
 mod kernel_simulation_tests;
 #[cfg(test)]
 mod kind_tests;
-#[cfg(test)]
-mod recovery_policy_tests;
 
 pub use application::{
     parse_service_operator_document, provision_exact_grant, provision_git_ref_grant,

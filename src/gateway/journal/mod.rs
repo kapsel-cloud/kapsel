@@ -25,8 +25,6 @@ pub(crate) use records::{Control as StorageControl, Defect, Delivery};
 use rusqlite::{params, OptionalExtension};
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 
-#[cfg(test)]
-use super::ReceiptReference;
 use super::{
     kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity, ValidatedTargetIdentity},
     receipt::{decode_frozen_receipt, publication, ReceiptStatement, RECEIPT_BYTES_MAX},
@@ -318,16 +316,6 @@ impl LoadedOperation {
     pub(in crate::gateway) fn frozen_receipt(&self) -> Option<&FrozenReceipt> {
         match self {
             Self::Finalized(value) => Some(value.receipt()),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn receipt_reference(&self) -> Option<ReceiptReference> {
-        match self {
-            Self::Finalized(value) => Some(ReceiptReference {
-                digest: value.receipt().digest.clone(),
-            }),
             _ => None,
         }
     }
@@ -950,25 +938,6 @@ impl Journal {
     }
 
     #[cfg(test)]
-    pub(in crate::gateway) fn target_rejection(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<TargetRejection>, GatewayError> {
-        self.connection
-            .query_row(
-                "SELECT target_rejection
-                 FROM kubernetes_image_operations
-                 WHERE operation_id = ?1 AND state = ?2",
-                params![operation_id, OperationState::NotAttempted.as_sql()],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(GatewayError::Database)?
-            .map(|value| TargetRejection::from_sql(&value))
-            .transpose()
-    }
-
-    #[cfg(test)]
     pub(in crate::gateway) fn result(
         &self,
         operation_id: &str,
@@ -1035,16 +1004,6 @@ impl Journal {
             &next,
             StorageWrite::Receipt,
         )
-    }
-
-    #[cfg(test)]
-    pub(in crate::gateway) fn receipt_reference(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<ReceiptReference>, GatewayError> {
-        Ok(self
-            .operation(operation_id)?
-            .and_then(|op| op.receipt_reference()))
     }
 
     pub(in crate::gateway) fn operation(

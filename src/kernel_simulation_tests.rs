@@ -414,6 +414,7 @@ fn integer(raw: &BTreeMap<String, Value>, field: &str) -> Option<i64> {
 struct Observations {
     sends: Vec<(SetDeploymentImageRequest, TargetIdentity)>,
     reads: usize,
+    preflight: Option<TargetIdentity>,
     returned: Option<ReceiverObservation>,
     response: Option<ApplyOutcome>,
     violation: Option<&'static str>,
@@ -456,7 +457,7 @@ impl DeploymentImageAdapter for Adapter {
         if matches!(self.receiver, Receiver::Unavailable) {
             return Err(TargetReadError::Transient);
         }
-        Ok(TargetIdentity {
+        let target = TargetIdentity {
             deployment_uid: if matches!(self.receiver, Receiver::Replaced) {
                 "replacement-uid".into()
             } else {
@@ -467,7 +468,9 @@ impl DeploymentImageAdapter for Adapter {
             } else {
                 self.intent.version.clone()
             },
-        })
+        };
+        self.io.lock().unwrap().preflight = Some(target.clone());
+        Ok(target)
     }
 
     async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
@@ -738,6 +741,8 @@ fn open(configuration: ServiceConfiguration, control: &StorageControl) -> Servic
 
 #[derive(Default)]
 struct Checker {
+    preflight: Option<(String, String)>,
+    rejected: Option<BTreeMap<String, Value>>,
     frozen: Option<BTreeMap<String, Value>>,
     frozen_reads: usize,
     original_bytes: Option<Value>,
@@ -783,6 +788,28 @@ impl Checker {
         }
         require(intent.matches_record(&raw), "original_authority")?;
         require(receipt_columns_match(&raw, intent), "receipt_columns")?;
+        if let Some(original) = &self.rejected {
+            require(original == &raw, "rejected_history_immutable")?;
+        }
+        if text(&raw, "state") == Some("not_attempted") {
+            require(io.sends.is_empty(), "rejection_without_mutation")?;
+            self.rejected.get_or_insert_with(|| raw.clone());
+        }
+        if let (Some(uid), Some(version)) = (
+            text(&raw, "preflight_uid"),
+            text(&raw, "preflight_resource_version"),
+        ) {
+            let retained = (uid.to_owned(), version.to_owned());
+            if self.preflight.as_ref() != Some(&retained) {
+                require(
+                    io.preflight.as_ref().is_some_and(|target| {
+                        target.deployment_uid == uid && target.resource_version == version
+                    }),
+                    "preflight_io_binding",
+                )?;
+                self.preflight = Some(retained);
+            }
+        }
         if integer(&raw, "apply_attempted") == Some(1) {
             require(
                 text(&raw, "target_uid") == Some(intent.uid.as_str())
@@ -928,6 +955,7 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
+                let peers_before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
                 let write_refused_rows_before = (!writing).then(|| {
                     peers
                         .iter()
@@ -1001,6 +1029,15 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
                             defect_reached: control.defect_reached(),
                         });
                     }
+                }
+                if peers.iter().enumerate().any(|(index, peer)| {
+                    index != selected && peer.snapshot() != peers_before[index]
+                }) {
+                    return Err(Finding {
+                        law: "nonselected_peer_immutable",
+                        event,
+                        defect_reached: control.defect_reached(),
+                    });
                 }
                 if write_refused_rows_before.is_some_and(|originals| {
                     originals
@@ -2265,6 +2302,26 @@ impl Selection {
             &adapter.intent,
             event,
         )?;
+        if self.lose_response && matches!(self.cut, Cut::None) {
+            let io = adapter.io.lock().unwrap();
+            if io.sends.len() > sends_before
+                && (result
+                    != Ok(ServiceStop::Blocked(
+                        ExecutionCondition::ReceiverUnavailable,
+                    ))
+                    || io.reads != reads_before + 1
+                    || text(
+                        &adapter.store.raw(&adapter.intent.request.operation_id),
+                        "state",
+                    ) != Some("apply_started"))
+            {
+                return Err(Finding {
+                    law: "apply_error_stops",
+                    event,
+                    defect_reached: control.defect_reached(),
+                });
+            }
+        }
         if fresh_cut {
             let io = adapter.io.lock().unwrap();
             self.check_cut(
@@ -2734,6 +2791,42 @@ pub(crate) async fn executed_write_statements() -> Vec<(StorageWrite, String)> {
     statements.sort_by(|left, right| left.1.cmp(&right.1));
     statements.dedup_by(|left, right| left.1 == right.1);
     statements
+}
+
+#[tokio::test(start_paused = true)]
+async fn refused_preflight_commit_preserves_prior_evidence_until_repair() {
+    let input = trace(
+        111,
+        vec![
+            select(None, Cut::BeforeAttempt, false, false),
+            Action::Writes(false),
+            Action::Receiver(Receiver::Replaced),
+            select(None, Cut::None, false, true),
+        ],
+    );
+    for virtualized in [true, false] {
+        assert_eq!(replay(&input, virtualized).await, Ok(()));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn authorized_reopen_rejects_single_field_drift_and_keeps_rejection_terminal() {
+    for receiver in [Receiver::Replaced, Receiver::StaleVersion] {
+        let input = trace(
+            110,
+            vec![
+                select(None, Cut::BeforeAttempt, false, false),
+                Action::Reopen { catalog: false },
+                Action::Receiver(receiver),
+                select(None, Cut::None, false, true),
+                Action::Reopen { catalog: true },
+                select(None, Cut::None, false, true),
+            ],
+        );
+        for virtualized in [true, false] {
+            assert_eq!(replay(&input, virtualized).await, Ok(()));
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]

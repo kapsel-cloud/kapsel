@@ -162,22 +162,6 @@ impl ApplicationExecution for UnavailableExecution {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
-async fn serve_connections<R: ApplicationReads + 'static>(
-    listener: UnixListener,
-    expected_gid: u32,
-    reads: Arc<Mutex<R>>,
-    connections: usize,
-) -> io::Result<()> {
-    serve_connections_with_state(
-        listener,
-        expected_gid,
-        ServerState::read_only(reads),
-        connections,
-    )
-    .await
-}
-
 #[cfg(any(not(target_os = "linux"), test, feature = "test-harness"))]
 pub(super) async fn serve_connections_with_state<
     R: ApplicationReads + 'static,

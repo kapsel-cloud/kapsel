@@ -85,14 +85,14 @@ They exercise a service fixture, not live admission or power-loss durability. Ru
 
 Related checks stay at the interfaces that own them:
 
-| Guarantee                              | Maintained check                                                                                                                                                  |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Healthy execution and reconnect        | `application_retry::healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt`: one PATCH, two GETs, original receipt                           |
-| Missing zero-replica fields            | Adapter `omitted_zero_replica_counts_can_still_report_success`                                                                                                    |
-| Stale UID or version                   | `gateway::tests::snapshot_approval::stale_snapshot_is_durable_status_only_without_patch_or_receipt`: no apply/observe or receipt; targets preserved across reopen |
-| Exact authority before persistence     | `gateway::tests::validation::exact_authorization_is_required_before_persistence`: every field, fresh and already requested                                        |
-| Approval cannot refresh an existing ID | Snapshot-approval crash tests: changed UID/version rejected before and after completion; original bytes preserved                                                 |
-| Worker exclusion                       | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity`; application contender during a pending HTTP PATCH                                 |
+| Guarantee                              | Maintained check                                                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Healthy execution and reconnect        | `application_retry::healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt`: one PATCH, two GETs, original receipt |
+| Missing zero-replica fields            | Adapter `omitted_zero_replica_counts_can_still_report_success`                                                                          |
+| Stale UID or version                   | Shared simulator: single-field drift after authorized reopen; terminal rejection, no mutation or receipt                                |
+| Exact authority before persistence     | `gateway::tests::validation::every_authority_field_is_bound_before_first_or_requested_admission`: independent raw-row preservation      |
+| Approval cannot refresh an existing ID | `each_snapshot_field_and_legacy_downgrade_preserve_original_history`: UID/version conflicts and downgrade before and after completion   |
+| Worker exclusion                       | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity`; application contender during a pending HTTP PATCH       |
 
 Adapter identification tests check UID/version extraction. Classifier tables check generation and
 pending-rollout predicates. Image acceptance is not rollout completion. A new name/revision lookup
@@ -103,19 +103,19 @@ can describe an intervening writer or recreated Deployment.
 Use the [gateway contract](../reference/effect_gateway.md) for the definitions in this table. Names
 below identify suites, not separate release gates.
 
-| Boundary                         | Maintained checks                                                                                                                 | Obligation                                                                                                                               |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                           | Bounds and exact signed authority; reject before persistence                                                                             |
-| Journal transitions and dispatch | Gateway `lifecycle`, `dispatch`, `recovery`, `snapshot_approval`; [atomic-record simulator](../../src/kernel_simulation_tests.rs) | Enumerate fresh durable windows and deliberate recovery interactions; permission only from a confirmed fresh attempt commit              |
-| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                             | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                                  |
-| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                                   | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                         |
-| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                                  | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                                |
-| Export                           | Fixed-client and command-interface tests                                                                                          | Exclusive copy of committed bytes; export failure cannot reopen completion                                                               |
-| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests.rs)                                                                   | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                       |
-| Stored read projections          | Atomic-record simulator                                                                                                           | Exact status, admitted phase, original targets and receipt bytes/readiness; ordered history entries on SQLite; no writes or receiver I/O |
-| Original-key disclosure          | Atomic-record simulator                                                                                                           | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite    |
-| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                                   | Older journals remain untouched, without migration                                                                                       |
-| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                                    | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                                  |
+| Boundary                         | Maintained checks                                                                                                         | Obligation                                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                   | Bounds and exact signed authority; reject before persistence                                                                             |
+| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests.rs); compact admission, snapshot and physical dispatch checks | Enumerate fresh durable windows and recovery interactions; permission only from a confirmed fresh attempt commit                         |
+| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                     | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                                  |
+| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                           | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                         |
+| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                          | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                                |
+| Export                           | Fixed-client and command-interface tests                                                                                  | Exclusive copy of committed bytes; export failure cannot reopen completion                                                               |
+| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests.rs)                                                           | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                       |
+| Stored read projections          | Atomic-record simulator                                                                                                   | Exact status, admitted phase, original targets and receipt bytes/readiness; ordered history entries on SQLite; no writes or receiver I/O |
+| Original-key disclosure          | Atomic-record simulator                                                                                                   | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite    |
+| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                           | Older journals remain untouched, without migration                                                                                       |
+| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                            | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                                  |
 
 The same simulator owns fresh interruption enumeration, deliberate joins and suspended service
 contention. Its [window mapping](testing.md#consolidated-crash-matrix-obligations) connects safe
@@ -137,22 +137,22 @@ The useful question is not just “is there a limit?” but “does the check ru
 The contracts own exact maxima. This map identifies the parser or I/O suites that must keep checking
 placement, rejection and disclosure.
 
-| Boundary                   | Maintained owner/checks                                                                                                              | Must happen before                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| Kubernetes/Git grants      | [`kapsel-authority`](../../crates/kapsel-authority/src/lib.rs), [`git`](../../crates/kapsel-authority/src/git.rs) verification tests | Envelope decoding, statement parsing and text copying                                |
-| Ordered binary records     | Authority `record::Records`; receipt parser tests                                                                                    | Arithmetic, allocation and use of ordered fields                                     |
-| Receipt/trust inspection   | Kubernetes/Git receipt tests; `InspectionLimits::validate`; trust parser tests                                                       | Parsing beyond supplied limits or accepting key/purpose/time                         |
-| Service operator document  | [`document`](../../src/application/service/document.rs) parser and `BoundedVec` tests                                                | JSON decoding of excess bytes or an extra array element; hex output allocation       |
-| Receiver material          | Git configuration, kubeconfig loader and service snapshot tests                                                                      | Construction from unsafe or excessive input; ambient fallback                        |
-| Operator and receipt files | Command `read_bounded`; daemon startup file tests                                                                                    | Allocation/read, symlink following or waiting for a special-file peer                |
-| Kubernetes HTTP            | Adapter/client tests                                                                                                                 | Aggregate body collection and JSON decoding; a retry of mutation                     |
-| Socket requests            | Protocol/runtime tests                                                                                                               | Frame allocation, application access or unbounded connection/job creation            |
-| Fixed-client responses     | Client-transport tests                                                                                                               | Reply allocation or accepting trailing bytes                                         |
-| Stdio MCP                  | [`service_mcp`](../../crates/kapsel-daemon/tests/service_mcp.rs)                                                                     | Parsing an oversized line or exposing authority in tool input/output                 |
-| Journal opening            | Opening/schema/capacity tests; `capacity_layout`                                                                                     | SQLite recovery, row loading or accepting unaccounted physical pages                 |
-| Retained capacity          | Capacity/storage/validation suites                                                                                                   | Admission beyond aggregate responsibility or completion-space bounds                 |
-| Git subprocesses           | `gateway::git` tests                                                                                                                 | Output-buffer extension; unbounded command lifetime or orphaned owned process groups |
-| Git custody walk           | `private_tree`/`trusted_ancestors` tests                                                                                             | Enqueueing excessive entries/depth or accepting unsafe custody                       |
+| Boundary                   | Maintained owner/checks                                                                                                                         | Must happen before                                                                   |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Kubernetes/Git grants      | [`kapsel-authority`](../../crates/kapsel-authority/src/lib.rs), [`git`](../../crates/kapsel-authority/src/git.rs) verification tests            | Envelope decoding, statement parsing and text copying                                |
+| Ordered binary records     | Authority `record::Records`; receipt parser tests                                                                                               | Arithmetic, allocation and use of ordered fields                                     |
+| Receipt/trust inspection   | Kubernetes/Git receipt tests; `InspectionLimits::validate`; trust parser tests                                                                  | Parsing beyond supplied limits or accepting key/purpose/time                         |
+| Service operator document  | [`document`](../../src/application/service/document.rs) parser and `BoundedVec` tests                                                           | JSON decoding of excess bytes or an extra array element; hex output allocation       |
+| Receiver material          | Git configuration, kubeconfig loader and service snapshot tests                                                                                 | Construction from unsafe or excessive input; ambient fallback                        |
+| Operator and receipt files | Command `read_bounded`; daemon startup file tests                                                                                               | Allocation/read, symlink following or waiting for a special-file peer                |
+| Kubernetes HTTP            | Adapter/client tests                                                                                                                            | Aggregate body collection and JSON decoding; a retry of mutation                     |
+| Socket requests            | Protocol/runtime tests                                                                                                                          | Frame allocation, application access or unbounded connection/job creation            |
+| Fixed-client responses     | Client-transport tests                                                                                                                          | Reply allocation or accepting trailing bytes                                         |
+| Stdio MCP                  | [Bridge decoder](../../crates/kapsel-daemon/src/bin/kapsel-service-mcp.rs) and [`service_mcp`](../../crates/kapsel-daemon/tests/service_mcp.rs) | Parsing an oversized line or exposing authority in tool input/output                 |
+| Journal opening            | Opening/schema/capacity tests; `capacity_layout`                                                                                                | SQLite recovery, row loading or accepting unaccounted physical pages                 |
+| Retained capacity          | Capacity/storage/validation suites                                                                                                              | Admission beyond aggregate responsibility or completion-space bounds                 |
+| Git subprocesses           | `gateway::git` tests                                                                                                                            | Output-buffer extension; unbounded command lifetime or orphaned owned process groups |
+| Git custody walk           | `private_tree`/`trusted_ancestors` tests                                                                                                        | Enqueueing excessive entries/depth or accepting unsafe custody                       |
 
 Exact limits and exclusions are in [authority/evidence formats](../reference/evidence_formats.md),
 [service](../reference/service.md), [MCP](../reference/mcp.md),
@@ -291,31 +291,26 @@ separate. Sigstore bundles receive identity/failure checks, not a reproducibilit
 
 Service tests compose one catalog and journal around `ServiceApplication`:
 
-| Boundary                                            | Maintained checks                                                           | Evidence limit                                                                                      |
-| --------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Admission, original authority and history           | `service_application_contract`                                              | `ADMITTED` does not prove receiver success or worker liveness                                       |
-| Independent and shared-target A/B selection         | `application_retry::service_selection`                                      | No inferred conflict safety or refreshed approval                                                   |
-| Framing, admission races, jobs and diagnostics      | Daemon protocol/runtime suites                                              | Storage may stall beyond response deadlines                                                         |
-| Peer credentials, disconnect and read-first restart | `linux_process`                                                             | Source process lane, not power-loss qualification                                                   |
-| Custody, publication and retirement                 | Startup/publication tests                                                   | Stable roots and cooperative launches remain host assumptions                                       |
-| Unit, sysusers, RBAC and fixed argv                 | `install_assets`                                                            | Static assets alone do not establish native installation                                            |
-| Fixed client and receipt export                     | [Client tests](../../crates/kapsel-daemon/src/bin/kapsel-service-client.rs) | Five versioned commands; bounded framing; receipt digest verification; exclusive mode-`0600` output |
+| Boundary                                            | Maintained checks                                                                        | Evidence limit                                                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Admission, original authority and history           | `service_application_contract`                                                           | `ADMITTED` does not prove receiver success or worker liveness                                       |
+| Independent and shared-target A/B selection         | Shared simulator; `application_retry::service_selection` for shared-target TCP preflight | Separate peer isolation from actual same-target version conflict                                    |
+| Framing, admission races, jobs and diagnostics      | Daemon protocol/runtime suites                                                           | Storage may stall beyond response deadlines                                                         |
+| Peer credentials, disconnect and read-first restart | `linux_process`                                                                          | Source process lane, not power-loss qualification                                                   |
+| Custody, publication and retirement                 | Startup/publication tests                                                                | Stable roots and cooperative launches remain host assumptions                                       |
+| Unit, sysusers, RBAC and fixed argv                 | `install_assets`                                                                         | Static assets alone do not establish native installation                                            |
+| Fixed client and receipt export                     | [Client tests](../../crates/kapsel-daemon/src/bin/kapsel-service-client.rs)              | Five versioned commands; bounded framing; receipt digest verification; exclusive mode-`0600` output |
 
 Fixed-client tests freeze `list`, `history`, `submit`, `status` and `receipt` with version 1. They
 check receipt hex/digest agreement, refuse existing export files, and keep authority and lifecycle
 configuration out of the client interface.
 
-The A/B traces distinguish a free worker from completed evidence or a still-valid approval:
-
-| A's state                                          | Selecting B                      | Required receiver/history check                                               |
-| -------------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------- |
-| PATCH response held; worker occupied               | `BUSY`                           | No B insertion or I/O                                                         |
-| Frozen at `receiver_observed`; signer missing      | Independent target succeeds      | One PATCH per operation; A's row unchanged                                    |
-| Same frozen state; B shares A's target             | `NOT_ATTEMPTED / STALE_APPROVAL` | A has one PATCH, B zero; B performs a real GET                                |
-| Transient preflight stopped, or terminal `UNKNOWN` | B can complete                   | A's row/receipt unchanged; only explicit selection repeats A's safe preflight |
-
-Resuming observed A signs frozen facts without more HTTP. Terminal A gains no new I/O. The
-paused-clock cases check the transient-preflight and terminal-`UNKNOWN` interleavings.
+The simulator checks nonselected peers after every selection, including first receipt commitment.
+Its suspended selections own same-ID and different-ID contention. The configured-client
+`shared_target_preflight_rejects_b_without_changing_frozen_a` checks the distinct TCP fact: after A
+changes the object, B's original version is stale. Independent SQL reads preserve A's frozen row.
+The exact request sequence is GET, PATCH, GET for A, then one GET for B. Resuming A only signs.
+Adapter paused-clock tests own read and elapsed ceilings, including interrupted passes.
 Root-substitution tests keep journal creation and socket binding with retained directory identities.
 Retrieval does not need a receipt root. Authority grammar/vector tests check their own parsers.
 Service/gateway tests check rejection before application access or persistence. None makes the

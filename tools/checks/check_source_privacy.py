@@ -67,7 +67,22 @@ def tracked_paths(root: Path) -> list[str]:
         cwd=root,
         text=True,
     ).splitlines()
-    selected = [path for path in paths if path in ROOT_FILES or path.startswith(ROOT_PREFIXES)]
+    deleted = set(
+        subprocess.check_output(["git", "ls-files", "--deleted"], cwd=root, text=True).splitlines()
+    )
+    selected: list[str] = []
+    for path in paths:
+        if path not in ROOT_FILES and not path.startswith(ROOT_PREFIXES):
+            continue
+        if path in deleted:
+            try:
+                (root / path).lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise RuntimeError(f"unsupported source file at {path}") from error
+        # Existing links and FIFOs still reach the bounded reader's rejection.
+        selected.append(path)
     return sorted(selected)
 
 

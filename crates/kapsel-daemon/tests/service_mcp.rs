@@ -1,16 +1,17 @@
-//! Black-box bounded stdio bridge tests against a fixed service socket fixture.
+//! Black-box stdio/socket composition; exhaustive reply grammar lives at its decoder.
 #![cfg(feature = "test-harness")]
 #![allow(
     clippy::unwrap_used,
     clippy::panic,
-    reason = "test fixture failures must stop the test"
+    reason = "fail-fast bounded bridge fixtures"
 )]
 
 use std::{
     fs,
-    io::{BufRead as _, BufReader, Read as _, Write as _},
+    io::{Read as _, Write as _},
     net::Shutdown,
     os::unix::net::UnixListener,
+    path::Path,
     process::{Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -23,23 +24,43 @@ use std::{
 use serde_json::{json, Value};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-const MCP_BINARY: &str = env!("CARGO_BIN_EXE_kapsel-service-mcp");
 
-fn run(lines: &[Value], exchanges: &[(Value, Value)]) -> Vec<Value> {
-    let mut input = Vec::new();
-    for line in lines {
-        writeln!(&mut input, "{line}").unwrap();
-    }
-    run_raw(&input, exchanges)
-}
-
-fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
-    let root = std::env::temp_dir().join(format!(
+fn root() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
         "kapsel-mcp-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    fs::create_dir(&root).unwrap();
+    fs::create_dir(&path).unwrap();
+    path
+}
+
+fn bridge(socket: &Path, input: &[u8]) -> Vec<Value> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
+        .env("KAPSELD_TEST_CLIENT_SOCKET", socket)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect()
+}
+
+fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
+    let root = root();
     let socket = root.join("socket");
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -47,10 +68,10 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
     let (stop, stopped) = mpsc::channel();
     let server = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
-        let mut request_count = 0;
+        let mut count = 0;
         loop {
-            let mut connection = match listener.accept() {
-                Ok((connection, _)) => connection,
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     match stopped.try_recv() {
                         Ok(()) | Err(mpsc::TryRecvError::Disconnected) => break,
@@ -62,727 +83,200 @@ fn run_raw(input: &[u8], exchanges: &[(Value, Value)]) -> Vec<Value> {
                 },
                 Err(error) => panic!("bridge fixture accept: {error}"),
             };
-            connection
+            stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            connection
+            stream
                 .set_write_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            let (expected_request, response) = exchanges
-                .get(request_count)
-                .unwrap_or_else(|| panic!("unexpected service request {}", request_count + 1));
-
+            let (expected, response) = exchanges
+                .get(count)
+                .unwrap_or_else(|| panic!("unexpected socket access {count}"));
             let mut prefix = [0; 4];
-            connection.read_exact(&mut prefix).unwrap();
+            stream.read_exact(&mut prefix).unwrap();
             let length = u32::from_be_bytes(prefix) as usize;
             assert!((1..=16 * 1024).contains(&length));
             let mut body = vec![0; length];
-            connection.read_exact(&mut body).unwrap();
-            let request: Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(
-                &request,
-                expected_request,
-                "service request {}",
-                request_count + 1
-            );
-            let mut extra = [0; 1];
-            assert_eq!(connection.read(&mut extra).unwrap(), 0);
-            request_count += 1;
-
-            let bytes = serde_json::to_vec(response).unwrap();
-            connection
-                .write_all(&u32::try_from(bytes.len()).unwrap().to_be_bytes())
+            stream.read_exact(&mut body).unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), *expected);
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0, "request must half-close");
+            let body = serde_json::to_vec(response).unwrap();
+            stream
+                .write_all(&u32::try_from(body.len()).unwrap().to_be_bytes())
                 .unwrap();
-            connection.write_all(&bytes).unwrap();
-            connection.shutdown(Shutdown::Write).unwrap();
+            stream.write_all(&body).unwrap();
+            stream.shutdown(Shutdown::Write).unwrap();
+            count += 1;
         }
-        assert_eq!(request_count, exchanges.len(), "missing service requests");
+        assert_eq!(count, exchanges.len(), "missing socket access");
     });
-
-    let mut child = Command::new(MCP_BINARY)
-        .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(input).unwrap();
-    drop(stdin);
-    let output = child.wait_with_output().unwrap();
+    let responses = bridge(&socket, input);
     let _ = stop.send(());
     server.join().unwrap();
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(output.stderr.is_empty());
-
     fs::remove_dir_all(root).unwrap();
-    BufReader::new(output.stdout.as_slice())
-        .lines()
-        .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
-        .collect()
+    responses
 }
 
-fn operation_request(request_name: &str, operation_id: &str) -> Value {
-    json!({"version":1,"request":request_name,"operation_id":operation_id})
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "fixture constructors accept owned JSON values to keep guidance tuples inline"
-)]
-fn execution(disposition: &str, condition: Value, next_action: &str, action_owner: &str) -> Value {
-    json!({
-        "disposition": disposition,
-        "condition": condition,
-        "next_action": next_action,
-        "action_owner": action_owner,
-    })
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "fixture constructors accept owned execution envelopes from inline guidance tuples"
-)]
-fn kubernetes_status(status: &str, execution: Value) -> Value {
-    json!({
-        "version": 1,
-        "status": status,
-        "effect": "kubernetes.set_deployment_image",
-        "approved_target": {"uid": "uid-1", "resource_version": "10"},
-        "attempt_target": null,
-        "observed_target": null,
-        "execution": execution,
-    })
-}
-
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "fixture constructors accept owned execution envelopes from inline guidance tuples"
-)]
-fn git_status(status: &str, execution: Value) -> Value {
-    json!({
-        "version": 1,
-        "status": status,
-        "effect": "git.transition_ref",
-        "git": {
-            "repository_id": "repo-1",
-            "reference": "refs/heads/main",
-            "old_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "new_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "attempted": true,
-            "acknowledgement": "updated",
-            "observed_ref": {
-                "kind": "commit",
-                "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            },
-        },
-        "execution": execution,
-    })
-}
-
-fn service_text(response: &Value) -> Value {
-    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+fn run(lines: &[Value], exchanges: &[(Value, Value)]) -> Vec<Value> {
+    let mut input = Vec::new();
+    for line in lines {
+        writeln!(&mut input, "{line}").unwrap();
+    }
+    run_raw(&input, exchanges)
 }
 
 fn handshake() -> Vec<Value> {
     vec![
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-        "protocolVersion":"2025-11-25","capabilities":{},
-        "clientInfo":{"name":"test","version":"1"}}}),
+            "protocolVersion":"2025-11-25","capabilities":{},
+            "clientInfo":{"name":"test","version":"1"}}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
     ]
 }
 
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "fixture requests accept owned arguments so hostile envelopes remain inline"
-)]
-fn tool(id: i32, name: &str, arguments: Value) -> Value {
+fn tool(id: i32, name: &str, arguments: &Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
         "params":{"name":name,"arguments":arguments}})
 }
 
-#[test]
-fn read_and_submit_are_separate_and_preserve_service_facts() {
-    let mut lines = handshake();
-    lines.push(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
-    lines.push(tool(
-        3,
-        "kapsel.list_approved_actions",
-        json!({"after":null}),
-    ));
-    lines.push(tool(4, "kapsel.get_status", json!({"operation_id":"op-1"})));
-    lines.push(tool(5, "kapsel.submit", json!({"operation_id":"op-2"})));
-    lines.push(tool(
-        6,
-        "kapsel.get_receipt",
-        json!({"operation_id":"op-2"}),
-    ));
+fn request(name: &str, id: &str) -> Value {
+    json!({"version":1,"request":name,"operation_id":id})
+}
 
-    let responses = run(
-        &lines,
-        &[
-            (
-                json!({"version":1,"request":"list_approved_actions","after":null}),
-                json!({"version":1,"status":"READY","entries":[],"next_cursor":null}),
-            ),
-            (
-                operation_request("get_set_deployment_image_status", "op-1"),
-                kubernetes_status(
-                    "IN_PROGRESS",
-                    execution("resume_required", Value::Null, "select_same_id", "caller"),
-                ),
-            ),
-            (
-                operation_request("submit_set_deployment_image", "op-2"),
-                json!({"version":1,"status":"ADMITTED","phase":"apply_started"}),
-            ),
-            (
-                operation_request("get_set_deployment_image_receipt", "op-2"),
-                json!({"version":1,"status":"NOT_READY"}),
-            ),
-        ],
-    );
-
-    assert_eq!(responses.len(), 6);
-    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 5);
-    assert_eq!(responses[2]["result"]["isError"], false);
-    let read = service_text(&responses[3]);
-    assert_eq!(read["operation_id"], "op-1");
-    assert_eq!(
-        read["service"]["execution"]["disposition"],
-        "resume_required"
-    );
-    let admitted = service_text(&responses[4]);
-    assert_eq!(admitted["operation_id"], "op-2");
-    assert_eq!(admitted["service"]["phase"], "apply_started");
+fn service(response: &Value) -> Value {
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
 #[test]
-fn history_access_failure_and_receipt_unavailability_remain_distinct() {
+fn caller_reads_and_explicit_submission_preserve_exact_service_facts() {
     let mut lines = handshake();
-    lines.push(tool(
-        2,
-        "kapsel.list_operation_history",
-        json!({"after":"op-previous"}),
-    ));
-    lines.push(tool(3, "kapsel.get_status", json!({"operation_id":"op-1"})));
-    lines.push(tool(
-        4,
-        "kapsel.get_receipt",
-        json!({"operation_id":"op-1"}),
-    ));
+    lines.push(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
+    let calls = [
+        (
+            "kapsel.list_approved_actions",
+            json!({"after":null}),
+            json!({"version":1,"request":"list_approved_actions","after":null}),
+            json!({"version":1,"status":"READY","entries":[],"next_cursor":null}),
+        ),
+        (
+            "kapsel.get_status",
+            json!({"operation_id":"op-1"}),
+            request("get_set_deployment_image_status", "op-1"),
+            json!({"version":1,"status":"NOT_FOUND","execution":{
+                "disposition":"admission_unconfirmed","condition":null,
+                "next_action":"read_same_id","action_owner":"caller"}}),
+        ),
+        (
+            "kapsel.submit",
+            json!({"operation_id":"op-2"}),
+            request("submit_set_deployment_image", "op-2"),
+            json!({"version":1,"status":"ADMITTED","phase":"requested"}),
+        ),
+        (
+            "kapsel.get_receipt",
+            json!({"operation_id":"op-2"}),
+            request("get_set_deployment_image_receipt", "op-2"),
+            json!({"version":1,"status":"NOT_READY"}),
+        ),
+    ];
+    let mut exchanges = Vec::new();
+    for (index, (name, args, request, response)) in calls.iter().enumerate() {
+        lines.push(tool(i32::try_from(index + 3).unwrap(), name, args));
+        exchanges.push((request.clone(), response.clone()));
+    }
+    let responses = run(&lines, &exchanges);
+    assert_eq!(responses.len(), 6);
+    assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 5);
+    for (response, (_, arguments, _, expected)) in responses[2..].iter().zip(&calls) {
+        assert_eq!(service(response)["service"], *expected);
+        assert_eq!(service(response)["operation_id"], arguments["operation_id"]);
+        assert_eq!(response["result"]["isError"], false);
+    }
+}
 
-    let responses = run(
-        &lines,
-        &[
-            (
-                json!({"version":1,"request":"list_operation_history","after":"op-previous"}),
-                json!({"version":1,"status":"READY","entries":[{"operation_id":"op-1",
-                    "status":"ERROR","error_class":"authority_unavailable"}],"next_cursor":null}),
-            ),
-            (
-                operation_request("get_set_deployment_image_status", "op-1"),
-                json!({"version":1,"status":"ERROR","error_class":"authority_unavailable"}),
-            ),
-            (
-                operation_request("get_set_deployment_image_receipt", "op-1"),
-                json!({"version":1,"status":"NOT_READY"}),
-            ),
-        ],
-    );
-
-    let parse = |index: usize| -> Value { service_text(&responses[index]) };
+#[test]
+fn authority_failure_invalid_reply_and_nonadmission_are_not_interchangeable() {
+    let mut lines = handshake();
+    let exchanges = [
+        (
+            request("get_set_deployment_image_status", "op-1"),
+            json!({"version":1,"status":"ERROR","error_class":"authority_unavailable"}),
+        ),
+        (
+            request("submit_set_deployment_image", "op-1"),
+            json!({"version":1,"status":"ADMITTED"}),
+        ),
+        (
+            request("submit_set_deployment_image", "op-1"),
+            json!({"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}),
+        ),
+    ];
+    for (id, name) in [
+        (2, "kapsel.get_status"),
+        (3, "kapsel.submit"),
+        (4, "kapsel.submit"),
+    ] {
+        lines.push(tool(id, name, &json!({"operation_id":"op-1"})));
+    }
+    let responses = run(&lines, &exchanges);
     assert_eq!(
-        parse(1)["service"]["entries"][0]["error_class"],
+        service(&responses[1])["service"]["error_class"],
         "authority_unavailable"
     );
-    assert_eq!(parse(2)["service"]["error_class"], "authority_unavailable");
+    assert_eq!(
+        service(&responses[2])["service"]["error_class"],
+        "response_invalid"
+    );
+    assert_eq!(service(&responses[3])["service"]["status"], "NOT_ADMITTED");
+    assert_eq!(service(&responses[3])["service"]["reason"], "CAPACITY");
+    assert_eq!(responses[1]["result"]["isError"], true);
     assert_eq!(responses[2]["result"]["isError"], true);
-    assert_eq!(parse(3)["service"]["status"], "NOT_READY");
     assert_eq!(responses[3]["result"]["isError"], false);
 }
 
 #[test]
-fn hostile_tool_arguments_never_reach_service() {
+fn hostile_and_duplicate_arguments_are_rejected_before_any_socket_access() {
     let mut lines = handshake();
-    for args in [
-        json!({"operation_id":"op-1","grant":"bad"}),
+    for arguments in [
+        json!({"operation_id":"op-1","grant":"SECRET"}),
         json!({"operation_id":"../oops"}),
         json!({"operation_id":1}),
     ] {
-        lines.push(tool(3, "kapsel.submit", args));
+        lines.push(tool(2, "kapsel.submit", &arguments));
     }
-
-    let responses = run(&lines, &[]);
-
-    assert_eq!(responses.len(), 4);
-
-    for response in &responses[1..] {
+    for response in &run(&lines, &[])[1..] {
         assert_eq!(response["error"]["code"], -32602);
     }
-}
-
-#[test]
-fn incomplete_admission_facts_are_not_relayed_as_decisions() {
-    let mut lines = handshake();
-    for id in 2..=5 {
-        lines.push(tool(id, "kapsel.submit", json!({"operation_id":"op-1"})));
+    let mut raw = Vec::new();
+    for line in handshake() {
+        writeln!(&mut raw, "{line}").unwrap();
     }
-
-    let responses = run(
-        &lines,
-        &[
-            (
-                operation_request("submit_set_deployment_image", "op-1"),
-                json!({"version":1,"status":"ADMITTED"}),
-            ),
-            (
-                operation_request("submit_set_deployment_image", "op-1"),
-                json!({"version":1,"status":"ADMITTED","phase":"surprise"}),
-            ),
-            (
-                operation_request("submit_set_deployment_image", "op-1"),
-                json!({"version":1,"status":"NOT_ADMITTED"}),
-            ),
-            (
-                operation_request("submit_set_deployment_image", "op-1"),
-                json!({"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}),
-            ),
-        ],
-    );
-
-    for response in &responses[1..4] {
-        assert!(response["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("response_invalid"));
-        assert_eq!(response["result"]["isError"], true);
-    }
-    assert!(responses[4]["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("NOT_ADMITTED"));
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "canonical guidance tuples stay adjacent to exact unchanged-value assertions"
-)]
-fn status_response_accepts_only_canonical_execution_guidance() {
-    let allowed = [
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution("active", Value::Null, "wait", "caller"),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "waiting_for_worker",
-                Value::Null,
-                "wait_then_select_same_id",
-                "caller",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution("resume_required", Value::Null, "select_same_id", "caller"),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "resume_required",
-                json!("preflight_unavailable"),
-                "select_same_id",
-                "caller",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "resume_required",
-                json!("worker_contention"),
-                "select_same_id",
-                "caller",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "operator_required",
-                json!("receiver_unavailable"),
-                "contact_operator",
-                "operator",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "operator_required",
-                json!("signing_unavailable"),
-                "contact_operator",
-                "operator",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "operator_required",
-                json!("completion_blocked"),
-                "contact_operator",
-                "operator",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "operator_required",
-                json!("operation_blocked"),
-                "contact_operator",
-                "operator",
-            ),
-        ),
-        kubernetes_status(
-            "SUCCEEDED",
-            execution("complete", Value::Null, "inspect_result", "caller"),
-        ),
-        json!({"version":1,"status":"NOT_FOUND","execution":execution(
-            "admission_unconfirmed", Value::Null, "read_same_id", "caller"
-        )}),
-    ];
-    let mut lines = handshake();
-    let exchanges: Vec<_> = allowed
-        .iter()
-        .enumerate()
-        .map(|(index, response)| {
-            lines.push(tool(
-                i32::try_from(index + 2).unwrap(),
-                "kapsel.get_status",
-                json!({"operation_id":"op-1"}),
-            ));
-            (
-                operation_request("get_set_deployment_image_status", "op-1"),
-                response.clone(),
-            )
-        })
-        .collect();
-
-    let responses = run(&lines, &exchanges);
-
-    for (response, expected) in responses[1..].iter().zip(allowed) {
-        let text = service_text(response);
-        assert_eq!(text["operation_id"], "op-1");
-        assert_eq!(text["service"], expected);
-        assert_eq!(response["result"]["isError"], false);
-    }
-}
-
-#[test]
-fn status_response_validates_effect_specific_target_shapes() {
-    let mut kube_not_attempted = kubernetes_status(
-        "NOT_ATTEMPTED",
-        execution("complete", Value::Null, "inspect_result", "caller"),
-    );
-    kube_not_attempted["target_rejection"] = json!("STALE_APPROVAL");
-    let git_unknown = git_status(
-        "UNKNOWN",
-        execution("complete", Value::Null, "inspect_result", "caller"),
-    );
-    let mut git_stale = git_status(
-        "NOT_ATTEMPTED",
-        execution("complete", Value::Null, "inspect_result", "caller"),
-    );
-    git_stale["target_rejection"] = json!("GIT_STALE_REF");
-    let mut git_invalid = git_stale.clone();
-    git_invalid["target_rejection"] = json!("GIT_INVALID_OBJECTS");
-    let accepted = [
-        json!({"version":1,"status":"NOT_FOUND","execution":execution(
-            "admission_unconfirmed", Value::Null, "read_same_id", "caller"
-        )}),
-        kube_not_attempted,
-        git_unknown,
-        git_stale,
-        git_invalid,
-    ];
-    let mut lines = handshake();
-    let exchanges: Vec<_> = accepted
-        .iter()
-        .enumerate()
-        .map(|(index, response)| {
-            lines.push(tool(
-                i32::try_from(index + 2).unwrap(),
-                "kapsel.get_status",
-                json!({"operation_id":"op-1"}),
-            ));
-            (
-                operation_request("get_set_deployment_image_status", "op-1"),
-                response.clone(),
-            )
-        })
-        .collect();
-
-    let responses = run(&lines, &exchanges);
-
-    for (response, expected) in responses[1..].iter().zip(accepted) {
-        let text = service_text(response);
-        assert_eq!(text["service"], expected);
-        assert_eq!(response["result"]["isError"], false);
-    }
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "hostile reply variants stay adjacent to their common opaque-error assertions"
-)]
-fn malformed_status_guidance_and_extra_fields_are_response_errors() {
-    let mut extra_execution = kubernetes_status(
-        "IN_PROGRESS",
-        execution("resume_required", Value::Null, "select_same_id", "caller"),
-    );
-    extra_execution["execution"]["extra"] = json!(true);
-    let malformed = [
-        json!({"version":1,"status":"IN_PROGRESS"}),
-        json!({"version":1,"status":"IN_PROGRESS","execution":[]}),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution("surprise", Value::Null, "wait", "caller"),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution(
-                "resume_required",
-                json!("receiver_unavailable"),
-                "select_same_id",
-                "caller",
-            ),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution("resume_required", Value::Null, "wait", "caller"),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution("active", Value::Null, "wait", "operator"),
-        ),
-        kubernetes_status(
-            "IN_PROGRESS",
-            execution("complete", Value::Null, "inspect_result", "caller"),
-        ),
-        kubernetes_status(
-            "SUCCEEDED",
-            execution("active", Value::Null, "wait", "caller"),
-        ),
-        {
-            let mut response = kubernetes_status(
-                "IN_PROGRESS",
-                execution("active", Value::Null, "wait", "caller"),
-            );
-            response["unexpected"] = json!(true);
-            response
-        },
-        extra_execution,
-        {
-            let mut response = kubernetes_status(
-                "IN_PROGRESS",
-                execution("active", Value::Null, "wait", "caller"),
-            );
-            response.as_object_mut().unwrap().remove("approved_target");
-            response
-        },
-        {
-            let mut response = kubernetes_status(
-                "IN_PROGRESS",
-                execution("active", Value::Null, "wait", "caller"),
-            );
-            response["approved_target"] = json!({"uid":"uid-1"});
-            response
-        },
-        {
-            let mut response = kubernetes_status(
-                "NOT_ATTEMPTED",
-                execution("complete", Value::Null, "inspect_result", "caller"),
-            );
-            response["target_rejection"] = json!("GIT_STALE_REF");
-            response
-        },
-        {
-            let mut response = kubernetes_status(
-                "NOT_ATTEMPTED",
-                execution("complete", Value::Null, "inspect_result", "caller"),
-            );
-            response["target_rejection"] = json!("stale_approval");
-            response
-        },
-        {
-            let mut response = git_status(
-                "NOT_ATTEMPTED",
-                execution("complete", Value::Null, "inspect_result", "caller"),
-            );
-            response["target_rejection"] = json!("STALE_APPROVAL");
-            response
-        },
-        {
-            let mut response = git_status(
-                "UNKNOWN",
-                execution("complete", Value::Null, "inspect_result", "caller"),
-            );
-            response["git"]["acknowledgement"] = json!("surprise");
-            response
-        },
-        {
-            let mut response = git_status(
-                "UNKNOWN",
-                execution("complete", Value::Null, "inspect_result", "caller"),
-            );
-            response["git"]["observed_ref"] = json!({"kind":"tag","commit":null});
-            response
-        },
-        {
-            let mut response = git_status(
-                "UNKNOWN",
-                execution("complete", Value::Null, "inspect_result", "caller"),
-            );
-            response["git"]["observed_ref"]["extra"] = json!(true);
-            response
-        },
-    ];
-    let mut lines = handshake();
-    let exchanges: Vec<_> = malformed
-        .into_iter()
-        .enumerate()
-        .map(|(index, response)| {
-            lines.push(tool(
-                i32::try_from(index + 2).unwrap(),
-                "kapsel.get_status",
-                json!({"operation_id":"op-1"}),
-            ));
-            (
-                operation_request("get_set_deployment_image_status", "op-1"),
-                response,
-            )
-        })
-        .collect();
-
-    let responses = run(&lines, &exchanges);
-
-    for response in &responses[1..] {
-        let text = service_text(response);
-        assert_eq!(text["service"]["error_class"], "response_invalid");
-        assert_eq!(response["result"]["isError"], true);
-    }
-}
-
-#[test]
-fn history_entries_use_the_same_status_shape() {
-    let mut entry = git_status(
-        "UNKNOWN",
-        execution("complete", Value::Null, "inspect_result", "caller"),
-    );
-    entry.as_object_mut().unwrap().remove("version");
-    entry["operation_id"] = json!("op-1");
-    let mut lines = handshake();
-    lines.push(tool(
-        2,
-        "kapsel.list_operation_history",
-        json!({"after":null}),
-    ));
-    let expected = json!({"version":1,"status":"READY","entries":[entry],"next_cursor":null});
-
-    let responses = run(
-        &lines,
-        &[(
-            json!({"version":1,"request":"list_operation_history","after":null}),
-            expected.clone(),
-        )],
-    );
-
-    assert_eq!(service_text(&responses[1])["service"], expected);
-}
-
-#[test]
-fn invalid_service_envelopes_remain_response_errors() {
-    let mut lines = handshake();
-    let exchanges: Vec<_> = [
-        json!({"status":"ADMITTED","phase":"authorized"}),
-        json!({"version":2,"status":"ADMITTED","phase":"authorized"}),
-        json!({"version":1.0,"status":"ADMITTED","phase":"authorized"}),
-        json!({"version":1,"status":"ACCEPTED","phase":"authorized"}),
-    ]
-    .into_iter()
-    .zip(2..)
-    .map(|(response, id)| {
-        lines.push(tool(id, "kapsel.submit", json!({"operation_id":"op-1"})));
-        (
-            operation_request("submit_set_deployment_image", "op-1"),
-            response,
+    raw.extend_from_slice(
+        concat!(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"#,
+            r#""name":"kapsel.submit","arguments":{"#,
+            r#""operation_id":"op-1","operation_id":"op-2"}}}"#,
+            "\n",
         )
-    })
-    .collect();
-
-    let responses = run(&lines, &exchanges);
-
-    for response in &responses[1..] {
-        let text = response["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("response_invalid"));
-        assert!(!text.contains("NOT_ADMITTED"));
-        assert!(!text.contains("service_exchange_uncertain"));
-        assert_eq!(response["result"]["isError"], true);
-    }
+        .as_bytes(),
+    );
+    assert_eq!(run_raw(&raw, &[])[1]["error"]["code"], -32700);
 }
 
 #[test]
-fn duplicate_nested_json_is_rejected_before_socket_access() {
+fn an_unbound_transport_reports_uncertainty_not_nonadmission() {
+    let root = root();
+    let mut lines = handshake();
+    lines.push(tool(2, "kapsel.submit", &json!({"operation_id":"op-1"})));
     let mut input = Vec::new();
-    for message in handshake() {
-        writeln!(&mut input, "{message}").unwrap();
-    }
-    input
-        .write_all(
-            concat!(
-                r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"#,
-                r#""name":"kapsel.submit","arguments":{"#,
-                r#""operation_id":"op-1","operation_id":"op-2"}}}"#,
-                "\n",
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-    let responses = run_raw(&input, &[]);
-    assert_eq!(responses[1]["error"]["code"], -32700);
-}
-
-#[test]
-fn transport_failure_is_not_non_admission() {
-    let mut lines = handshake();
-    lines.push(tool(2, "kapsel.submit", json!({"operation_id":"op-1"})));
-    // An unbound socket exercises the bridge's uncertain delivery result. It does not model
-    // actual admission or prove that a request reached the service.
-    let root = std::env::temp_dir().join(format!("kapsel-mcp-absent-{}", std::process::id()));
-    let output = Command::new(MCP_BINARY)
-        .env("KAPSELD_TEST_CLIENT_SOCKET", &root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut input = output.stdin.as_ref().unwrap();
     for line in lines {
-        writeln!(input, "{line}").unwrap();
+        writeln!(&mut input, "{line}").unwrap();
     }
-    let output = output.wait_with_output().unwrap();
-    let responses: Vec<Value> = BufReader::new(output.stdout.as_slice())
-        .lines()
-        .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
-        .collect();
-    let text = responses[1]["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap();
-    assert!(text.contains("service_exchange_uncertain"));
-    assert!(!text.contains("NOT_ADMITTED"));
+    let responses = bridge(&root.join("absent"), &input);
+    assert_eq!(
+        service(&responses[1])["service"]["error_class"],
+        "service_exchange_uncertain"
+    );
+    assert_eq!(responses[1]["result"]["isError"], true);
+    fs::remove_dir_all(root).unwrap();
 }

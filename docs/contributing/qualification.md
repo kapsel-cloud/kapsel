@@ -207,7 +207,7 @@ Focused deterministic observation checks:
 
 ```sh
 cargo test --locked -p kapsel gateway::kubernetes
-cargo test --locked -p kapsel --test application_retry observation_pass
+cargo test --locked -p kapsel gateway::kubernetes::adapter::tests::production_policy
 cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests::receiver_recovery_scenarios
 ```
 

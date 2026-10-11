@@ -65,16 +65,16 @@ Missing prerequisites mean missing evidence, not a passing substitute.
 
 ## Focused gates
 
-| Change                     | Command                                                                           |
-| -------------------------- | --------------------------------------------------------------------------------- |
-| Core effect or application | `cargo test --locked -p kapsel`                                                   |
-| Shared authority           | `cargo test --locked -p kapsel-authority`                                         |
-| Service or private harness | `cargo test --locked -p kapsel-daemon --features test-harness`                    |
-| Installed assets           | `cargo test --locked -p kapsel-daemon --test install_assets`                      |
-| MCP bridge                 | `cargo test --locked -p kapsel-daemon --features test-harness --test service_mcp` |
-| Fresh-session caller       | `python3 examples/test_fresh_session_caller.py`                                   |
-| Formatting pipeline        | `python3 tools/dev/test_format.py`                                                |
-| Python tooling             | `cargo xtask ci static`                                                           |
+| Change                     | Command                                                                                                    |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Core effect or application | `cargo test --locked -p kapsel`                                                                            |
+| Shared authority           | `cargo test --locked -p kapsel-authority`                                                                  |
+| Service or private harness | `cargo test --locked -p kapsel-daemon --features test-harness`                                             |
+| Installed assets           | `cargo test --locked -p kapsel-daemon --test install_assets`                                               |
+| MCP bridge                 | `cargo test --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp --test service_mcp` |
+| Fresh-session caller       | `python3 examples/test_fresh_session_caller.py`                                                            |
+| Formatting pipeline        | `python3 tools/dev/test_format.py`                                                                         |
+| Python tooling             | `cargo xtask ci static`                                                                                    |
 
 [Test strategy](testing.md) explains where tests belong. The [evidence map](evidence.md) connects
 guarantees to checks. [Qualification](qualification.md) contains Linux process, real Git, live

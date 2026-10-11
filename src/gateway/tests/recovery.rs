@@ -137,65 +137,6 @@ async fn worker_lock_prevents_overlapping_provider_activity() {
 }
 
 #[tokio::test]
-async fn restart_after_apply_observes_without_a_blind_second_apply() {
-    let path = database_path("apply-recovery");
-    let request = request();
-    let mut adapter = failed_rollout_adapter(&path, &request);
-    {
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .submit_exact_for_test(&request, &authorization(&request))
-            .unwrap();
-        assert!(matches!(
-            gateway
-                .run_operation_once_with_adapter_and_fault(
-                    &request.operation_id,
-                    &mut adapter,
-                    Some(FaultPoint::ApplyReturned),
-                )
-                .await,
-            Err(GatewayError::InjectedFault)
-        ));
-        assert_eq!(
-            gateway.get(&request.operation_id).unwrap(),
-            Some(OperationState::ApplyStarted)
-        );
-    }
-    let mut gateway = Gateway::open_for_test(&path).unwrap();
-
-    assert_eq!(
-        gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut adapter)
-            .await
-            .unwrap(),
-        Some(OperationState::ReceiverObserved)
-    );
-    assert!(adapter.durable_attempt_seen_before_apply);
-    assert_eq!(adapter.identify_calls, 1);
-    assert_eq!(adapter.apply_calls, 1);
-    assert_eq!(adapter.observe_calls, 1);
-    assert_eq!(
-        gateway.result(&request.operation_id).unwrap(),
-        Some(OperationResult::Failed)
-    );
-
-    let statement = gateway
-        .journal
-        .receipt_statement(&request.operation_id)
-        .unwrap()
-        .unwrap();
-    assert_eq!(statement.requested_generation(), Some(2));
-    assert_eq!(statement.receiver_uid(), Some("deployment-uid-1"));
-    assert_eq!(
-        statement.rollout_condition_reason(),
-        Some("ProgressDeadlineExceeded")
-    );
-
-    drop(gateway);
-    fs::remove_dir_all(path.parent().unwrap()).unwrap();
-}
-
-#[tokio::test]
 async fn recovery_receipt_does_not_reuse_target_uid_when_receiver_uid_is_missing() {
     let path = database_path("receiver-uid-missing");
     let request = request();

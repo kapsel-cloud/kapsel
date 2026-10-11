@@ -154,63 +154,23 @@ impl ServiceStop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::{
-        GatewayError, OperationTargets, ReconciliationBlockage, ReconciliationError,
-        TargetRejection,
-    };
+    use crate::gateway::{GatewayError, ReconciliationBlockage, ReconciliationError};
 
     #[test]
-    fn durable_terminal_history_overrides_every_process_observation() {
-        let observations = [
-            ExecutionObservation::Unknown,
-            ExecutionObservation::Active,
-            ExecutionObservation::OtherWorker,
-            ExecutionObservation::Stopped(ExecutionCondition::SigningUnavailable),
-        ];
-
-        for observation in observations {
-            for status in [
-                OperationStatus::Succeeded,
-                OperationStatus::Failed,
-                OperationStatus::Unknown,
-                OperationStatus::NotAttempted(TargetRejection::StaleApproval),
-            ] {
-                assert_eq!(
-                    ExecutionDisposition::project(status, observation),
-                    ExecutionDisposition::Complete
-                );
-            }
-            assert_eq!(
-                ExecutionDisposition::project(OperationStatus::NotFound, observation),
-                ExecutionDisposition::AdmissionUnconfirmed
-            );
-        }
-    }
-
-    #[test]
-    fn unfinished_history_explains_who_can_act_without_inventing_a_cause() {
-        let status = OperationStatus::InProgress;
-        for (observation, disposition, action, owner) in [
+    fn disposition_guidance_names_the_next_action_and_owner() {
+        for (disposition, action, owner) in [
             (
-                ExecutionObservation::Unknown,
                 ExecutionDisposition::ResumeRequired(None),
                 "select_same_id",
                 "caller",
             ),
+            (ExecutionDisposition::Active, "wait", "caller"),
             (
-                ExecutionObservation::Active,
-                ExecutionDisposition::Active,
-                "wait",
-                "caller",
-            ),
-            (
-                ExecutionObservation::OtherWorker,
                 ExecutionDisposition::WaitingForWorker,
                 "wait_then_select_same_id",
                 "caller",
             ),
             (
-                ExecutionObservation::Stopped(ExecutionCondition::PreflightUnavailable),
                 ExecutionDisposition::ResumeRequired(Some(
                     ExecutionCondition::PreflightUnavailable,
                 )),
@@ -218,16 +178,11 @@ mod tests {
                 "caller",
             ),
             (
-                ExecutionObservation::Stopped(ExecutionCondition::WorkerContention),
                 ExecutionDisposition::ResumeRequired(Some(ExecutionCondition::WorkerContention)),
                 "select_same_id",
                 "caller",
             ),
         ] {
-            assert_eq!(
-                ExecutionDisposition::project(status, observation),
-                disposition
-            );
             assert_eq!(disposition.next_action(), action);
             assert_eq!(disposition.action_owner(), owner);
         }
@@ -238,12 +193,7 @@ mod tests {
             ExecutionCondition::CompletionBlocked,
             ExecutionCondition::OperationBlocked,
         ] {
-            let disposition =
-                ExecutionDisposition::project(status, ExecutionObservation::Stopped(condition));
-            assert_eq!(
-                disposition,
-                ExecutionDisposition::OperatorRequired(condition)
-            );
+            let disposition = ExecutionDisposition::OperatorRequired(condition);
             assert_eq!(disposition.next_action(), "contact_operator");
             assert_eq!(disposition.action_owner(), "operator");
             assert_eq!(disposition.condition(), Some(condition));
@@ -252,7 +202,7 @@ mod tests {
 
     #[test]
     fn error_classification_owns_blockage_without_retaining_raw_diagnostics() {
-        use crate::application::service::{classify_stop, HistoryEntry};
+        use crate::application::service::classify_stop;
 
         for (error, expected_condition) in [
             (
@@ -293,26 +243,6 @@ mod tests {
                 std::io::Error::other("SECRET /private/path grant credential")
             ))),
             Err(ServiceError::StorageUnavailable)
-        );
-
-        let inaccessible_entry = HistoryEntry {
-            operation_id: "hidden".into(),
-            status: Err(ServiceError::AuthorityUnavailable),
-        };
-        assert_eq!(
-            inaccessible_entry.execution_status(ExecutionObservation::Active),
-            Err(ServiceError::AuthorityUnavailable)
-        );
-
-        let unfinished_entry = HistoryEntry {
-            operation_id: "unfinished".into(),
-            status: Ok((OperationStatus::InProgress, OperationTargets::default())),
-        };
-        assert_eq!(
-            unfinished_entry
-                .execution_status(ExecutionObservation::Unknown)
-                .map(|(_, _, disposition)| disposition),
-            Ok(ExecutionDisposition::ResumeRequired(None))
         );
     }
 }

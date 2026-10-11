@@ -693,73 +693,6 @@ impl Gateway {
         .map(|_| ())
     }
 
-    /// Advances an existing exact-authorized operation to a blocked or terminal snapshot.
-    ///
-    /// Authority, client and signing settings are operator-owned. Each iteration rechecks the
-    /// original request and grant. The worker lease spans reloads, receiver I/O and completion.
-    /// Receipt completion also uses a conditional write transaction. On worker contention, this
-    /// method returns a fresh snapshot without waiting. It does not submit an absent operation.
-    ///
-    /// Cancellation leaves the last committed phase intact. Attempted history is observation-only,
-    /// and frozen observations are completed without further Kubernetes access. Export is separate.
-    #[cfg(test)]
-    pub(crate) async fn reconcile(
-        &mut self,
-        request: &SetDeploymentImageRequest,
-        signed_grant: &[u8],
-        client: Client,
-        receipt_settings: &ReceiptSettings<'_>,
-    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
-        let Some(existing) = self
-            .authorized_operation(request, signed_grant)
-            .map_err(ReconciliationError::Advancement)?
-        else {
-            return Ok(None);
-        };
-        if existing.state() == OperationState::Requested {
-            self.submit_authorized(request, signed_grant)
-                .map_err(ReconciliationError::Submission)?;
-        }
-        let Some(worker) = self
-            .journal
-            .try_lock_worker()
-            .map_err(ReconciliationError::Advancement)?
-        else {
-            return self
-                .authorized_operation(request, signed_grant)
-                .map_err(ReconciliationError::Advancement);
-        };
-        self.reconcile_locked(
-            request,
-            signed_grant,
-            Some(client),
-            Some(receipt_settings),
-            &worker,
-        )
-        .await
-    }
-
-    #[cfg(test)]
-    async fn reconcile_locked(
-        &mut self,
-        request: &SetDeploymentImageRequest,
-        signed_grant: &[u8],
-        client: Option<Client>,
-        receipt_settings: Option<&ReceiptSettings<'_>>,
-        worker: &WorkerLock,
-    ) -> Result<Option<LoadedOperation>, ReconciliationError> {
-        let mut adapter = client.map(KubernetesDeploymentImageAdapter::new);
-        self.reconcile_locked_with_adapter(
-            request,
-            signed_grant,
-            adapter.as_mut(),
-            receipt_settings,
-            worker,
-            None,
-        )
-        .await
-    }
-
     async fn reconcile_locked_with_adapter<A: DeploymentImageAdapter + Send>(
         &mut self,
         request: &SetDeploymentImageRequest,
@@ -844,15 +777,6 @@ impl Gateway {
         operation_id: &str,
     ) -> Result<Option<OperationResult>, GatewayError> {
         self.journal.result(operation_id)
-    }
-
-    /// Reads a terminal pre-attempt target rejection, distinct from receiver result.
-    #[cfg(test)]
-    pub(crate) fn target_rejection(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<TargetRejection>, GatewayError> {
-        self.journal.target_rejection(operation_id)
     }
 
     #[cfg(test)]
@@ -964,15 +888,6 @@ impl Gateway {
         };
         let receipt = operation.receipt();
         Ok((receipt.bytes.clone(), receipt.digest.clone()))
-    }
-
-    /// Reads the terminal receipt reference for a finalized operation.
-    #[cfg(test)]
-    pub(crate) fn receipt_reference(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<ReceiptReference>, GatewayError> {
-        self.journal.receipt_reference(operation_id)
     }
 
     #[cfg(test)]

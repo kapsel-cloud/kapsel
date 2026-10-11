@@ -240,11 +240,9 @@ fn connect_with_timeout(socket: &Path, timeout: Duration) -> UnixStream {
 }
 
 fn wait_for_socket(socket: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "kapseld did not bind");
-        thread::sleep(Duration::from_millis(10));
-    }
+    // A killed daemon leaves its pathname behind. Successful connection, not existence, proves
+    // the replacement listener is bound. The fixture connection budget includes this probe.
+    drop(connect(socket));
 }
 
 fn group_gid(group: &str) -> u32 {
@@ -859,72 +857,53 @@ fn wait_for_marker(child: &mut Child, marker: &Path) {
     }
 }
 
-#[test]
-fn installed_restart_reads_before_explicit_reselection_without_second_patch() {
-    let server = success_server();
-    let root = installation_root_with_url("ordinary-recovery", &server.url);
-    let socket = root.join("run/kapsel/kapseld.sock");
-    let script = root.join("fresh_session_caller.py");
-    fs::write(
-        &script,
-        include_str!("../../../examples/fresh_session_caller.py").replace(
-            "BRIDGE = \"/usr/bin/kapsel-service-mcp\"",
-            &format!("BRIDGE = \"{}\"", env!("CARGO_BIN_EXE_kapsel-service-mcp")),
-        ),
-    )
-    .unwrap();
-    let reference = root.join("operation.ref");
-    let run_caller = |command: &str, extra: &[&str]| {
-        let output = Command::new("python3")
-            .arg(&script)
+struct FreshCaller {
+    script: PathBuf,
+    reference: PathBuf,
+    socket: PathBuf,
+}
+
+impl FreshCaller {
+    fn new(root: &Path, socket: &Path) -> Self {
+        let script = root.join("fresh_session_caller.py");
+        fs::write(
+            &script,
+            include_str!("../../../examples/fresh_session_caller.py").replace(
+                "BRIDGE = \"/usr/bin/kapsel-service-mcp\"",
+                &format!("BRIDGE = \"{}\"", env!("CARGO_BIN_EXE_kapsel-service-mcp")),
+            ),
+        )
+        .unwrap();
+        Self {
+            script,
+            reference: root.join("operation.ref"),
+            socket: socket.into(),
+        }
+    }
+
+    fn command(&self, action: &str, arguments: &[&str]) -> Command {
+        let mut command = Command::new("python3");
+        command
+            .arg(&self.script)
             .args(["--service", "fixture-history-1", "--reference"])
-            .arg(&reference)
-            .arg(command)
-            .args(extra)
-            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-            .output()
-            .unwrap();
+            .arg(&self.reference)
+            .arg(action)
+            .args(arguments)
+            .env("KAPSELD_TEST_CLIENT_SOCKET", &self.socket);
+        command
+    }
+
+    fn run(&self, action: &str, arguments: &[&str]) -> Value {
+        let output = self.command(action, arguments).output().unwrap();
         assert!(
             output.status.success(),
-            "stdout: {}, stderr: {}",
+            "caller {action}: {:?}; stdout: {}; stderr: {}",
+            output.status.code(),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()
-    };
-    let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
-    drop(connect(&socket));
-    assert_eq!(
-        run_caller("start", &["process-op"])["service"]["status"],
-        "ADMITTED"
-    );
-    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
-    kill(&mut first);
-    assert!(socket.exists());
-
-    let child = spawn_installed(&root, 5);
-    drop(connect(&socket));
-    assert_eq!(run_caller("read", &[])["service"]["status"], "IN_PROGRESS");
-    assert_eq!(run_caller("resume", &[])["service"]["status"], "ADMITTED");
-    server
-        .observation_started
-        .recv_timeout(FIXTURE_TIMEOUT)
-        .unwrap();
-    server.release_observation.send(()).unwrap();
-    wait_for_finalized(&root.join("var/lib/kapsel/journal.sqlite3"));
-
-    let mut status = connect(&socket);
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_terminal_status(&mut status, "SUCCEEDED", true);
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    server.finish();
-    fs::remove_dir_all(root).unwrap();
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
 }
 
 #[test]
@@ -938,36 +917,9 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     let root = application_root("mcp-bridge-loss");
     let socket = root.join("kapseld.sock");
     let server = success_server();
-    let service = spawn_application(&socket, &root, &server.url, "A", None, 5);
+    let service = spawn_application(&socket, &root, &server.url, "A", None, 6);
     wait_for_socket(&socket);
-    let caller_script = root.join("fresh_session_caller.py");
-    let source = include_str!("../../../examples/fresh_session_caller.py");
-    fs::write(
-        &caller_script,
-        source.replace(
-            "BRIDGE = \"/usr/bin/kapsel-service-mcp\"",
-            &format!("BRIDGE = \"{}\"", env!("CARGO_BIN_EXE_kapsel-service-mcp")),
-        ),
-    )
-    .unwrap();
-    let reference = root.join("operation.ref");
-    let run_caller = |command: &str, extra: &[&str]| {
-        let output = Command::new("python3")
-            .arg(&caller_script)
-            .args(["--service", "fixture-history-1", "--reference"])
-            .arg(&reference)
-            .arg(command)
-            .args(extra)
-            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice::<Value>(&output.stdout).unwrap()
-    };
+    let fresh = FreshCaller::new(&root, &socket);
     // Hold the service's durable acknowledgement outside the bridge. Kill the thin caller while
     // the acknowledgement is undelivered, without cancelling the service-owned worker.
     let proxy_socket = root.join("mcp-proxy.sock");
@@ -996,11 +948,8 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     });
 
     let mut caller = ChildGuard::new(
-        Command::new("python3")
-            .arg(&caller_script)
-            .args(["--service", "fixture-history-1", "--reference"])
-            .arg(&reference)
-            .args(["start", "process-op"])
+        fresh
+            .command("start", &["process-op"])
             .env("KAPSELD_TEST_CLIENT_SOCKET", &proxy_socket)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1008,16 +957,9 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
             .unwrap(),
     );
     ack_rx.recv_timeout(FIXTURE_TIMEOUT).unwrap();
-    assert!(reference.exists());
+    assert!(fresh.reference.exists());
     kill(&mut caller);
-    let second_start = Command::new("python3")
-        .arg(&caller_script)
-        .args(["--service", "fixture-history-1", "--reference"])
-        .arg(&reference)
-        .args(["start", "process-op"])
-        .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-        .output()
-        .unwrap();
+    let second_start = fresh.command("start", &["process-op"]).output().unwrap();
     assert_eq!(second_start.status.code(), Some(4));
     release_tx.send(()).unwrap();
     proxy.join().unwrap();
@@ -1025,10 +967,10 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
         .observation_started
         .recv_timeout(FIXTURE_TIMEOUT)
         .unwrap();
-    assert_eq!(run_caller("read", &[])["service"]["status"], "IN_PROGRESS");
+    assert_eq!(fresh.run("read", &[])["service"]["status"], "IN_PROGRESS");
     server.release_observation.send(()).unwrap();
     wait_for_finalized(&root.join("journal.sqlite3"));
-    assert_eq!(run_caller("read", &[])["service"]["status"], "SUCCEEDED");
+    assert_eq!(fresh.run("read", &[])["service"]["status"], "SUCCEEDED");
 
     let mut reconnect = ChildGuard::new(
         Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
@@ -1090,10 +1032,10 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
     assert!(service.wait_with_output().unwrap().status.success());
 
-    let restarted = spawn_application(&socket, &root, &server.url, "A", None, 2);
+    let restarted = spawn_application(&socket, &root, &server.url, "A", None, 3);
     wait_for_socket(&socket);
-    assert_eq!(run_caller("read", &[])["service"]["status"], "SUCCEEDED");
-    let repeated = run_caller("receipt", &[]);
+    assert_eq!(fresh.run("read", &[])["service"]["status"], "SUCCEEDED");
+    let repeated = fresh.run("receipt", &[]);
     assert_eq!(repeated["service"]["receipt_hex"], original_hex);
     assert_eq!(
         repeated["service"]["receipt_sha256"],
@@ -1291,48 +1233,6 @@ fn installed_startup_uses_fixed_inputs_and_retires_after_connection_limit() {
 }
 
 #[test]
-fn harness_restart_reads_before_explicit_reselection_without_a_second_patch() {
-    let root = application_root("startup-reconcile");
-    let socket = root.join("kapseld.sock");
-    let server = success_server();
-
-    let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
-    let mut submit = connect(&socket);
-    write_frame(&mut submit, submit_request().as_bytes());
-    assert_admitted(&mut submit, "requested");
-    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
-    kill(&mut first);
-    fs::remove_file(&socket).unwrap();
-
-    let child = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 3);
-    resume_after_read(&socket);
-    server
-        .observation_started
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap();
-    server.release_observation.send(()).unwrap();
-    wait_for_finalized(&root.join("journal.sqlite3"));
-
-    let mut status = connect(&socket);
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_terminal_status(&mut status, "SUCCEEDED", true);
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    assert!(!socket.exists());
-    server.finish();
-    assert_eq!(
-        fs::read_to_string(root.join("control/provider-apply-count")).unwrap(),
-        "1"
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one process trace proves snapshot recovery and export without replay"
@@ -1352,16 +1252,36 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
         .remove("receipt_directory");
     private_file(&document_path, &serde_json::to_vec(&document).unwrap());
 
+    let fresh = FreshCaller::new(&root, &socket);
     let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
-    let mut submit = connect(&socket);
-    write_frame(&mut submit, submit_request().as_bytes());
-    assert_admitted(&mut submit, "requested");
+    wait_for_socket(&socket);
+    let admission = fresh.run("start", &["process-op"]);
+    assert_eq!(admission["service"]["status"], "ADMITTED");
+    assert_eq!(admission["service"]["phase"], "requested");
+    let reference = fs::read(&fresh.reference).unwrap();
     wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
     kill(&mut first);
     assert!(socket.exists());
 
     let mut publication = spawn_installed_with_seam(&root, 10, "after_receipt_commit");
-    resume_after_read(&socket);
+    wait_for_socket(&socket);
+    let current = fresh.run("read", &[]);
+    assert_eq!(current["service"]["status"], "IN_PROGRESS");
+    assert_eq!(
+        current["service"]["execution"]["disposition"],
+        "resume_required"
+    );
+    assert!(current["service"]["execution"]["condition"].is_null());
+    assert_eq!(current["service"]["execution"]["action_owner"], "caller");
+    assert_eq!(
+        current["service"]["execution"]["next_action"],
+        "select_same_id"
+    );
+    let resumed = fresh.run("resume", &[]);
+    assert_eq!(resumed["reference"]["operation_id"], "process-op");
+    assert_eq!(resumed["service"]["status"], "ADMITTED");
+    assert_eq!(resumed["service"]["phase"], "apply_started");
+    assert_eq!(fs::read(&fresh.reference).unwrap(), reference);
     server
         .observation_started
         .recv_timeout(Duration::from_secs(10))
@@ -1714,7 +1634,7 @@ fn distinct_effective_gid_is_denied_before_frame_read() {
     let server_gid = effective_gid();
     let client_gid = group_gid("docker");
     assert_ne!(server_gid, client_gid);
-    let child = spawn_harness_daemon(&socket, server_gid, 1);
+    let child = spawn_harness_daemon(&socket, server_gid, 2);
     wait_for_socket(&socket);
 
     let client = root.join("client.py");

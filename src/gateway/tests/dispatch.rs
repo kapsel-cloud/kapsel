@@ -1,5 +1,3 @@
-use std::task::Poll;
-
 use super::{
     journal::{AuthorizedOperation, LoadedOperation},
     *,
@@ -119,80 +117,4 @@ fn a_snapshot_from_another_journal_cannot_authorize_a_different_frozen_action() 
     drop(second);
     fs::remove_dir_all(first_path.parent().unwrap()).unwrap();
     fs::remove_dir_all(second_path.parent().unwrap()).unwrap();
-}
-
-// Poll the real driver until the adapter pauses, then drop the future to model cancellation.
-// Target, attempt and recovery decisions still belong to Gateway and Journal.
-#[tokio::test]
-async fn cancellation_before_and_after_dispatch_preserves_durable_meaning() {
-    struct PausingAdapter {
-        inner: FakeAdapter,
-        before_attempt: bool,
-    }
-    impl DeploymentImageAdapter for PausingAdapter {
-        async fn identify(
-            &mut self,
-            request: &SetDeploymentImageRequest,
-        ) -> Result<TargetIdentity, TargetReadError> {
-            if self.before_attempt {
-                std::future::pending().await
-            } else {
-                self.inner.identify(request).await
-            }
-        }
-        async fn apply(&mut self, permission: DispatchPermission) -> Result<ApplyOutcome, ()> {
-            self.inner.apply(permission).await?;
-            std::future::pending().await
-        }
-        async fn observe(
-            &mut self,
-            request: &SetDeploymentImageRequest,
-            outcome: &ApplyOutcome,
-        ) -> Result<ReceiverObservation, ()> {
-            self.inner.observe(request, outcome).await
-        }
-    }
-    for before_attempt in [true, false] {
-        let path = database_path(&format!("dispatch-cancel-{before_attempt}"));
-        let request = request();
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .submit_exact_for_test(&request, &authorization(&request))
-            .unwrap();
-
-        let mut adapter = PausingAdapter {
-            inner: failed_rollout_adapter(&path, &request),
-            before_attempt,
-        };
-        let mut execution =
-            Box::pin(gateway.run_operation_once_with_adapter(&request.operation_id, &mut adapter));
-        assert!(matches!(
-            std::future::poll_fn(|cx| Poll::Ready(execution.as_mut().poll(cx))).await,
-            Poll::Pending
-        ));
-        drop(execution);
-
-        let expected_state = if before_attempt {
-            OperationState::Authorized
-        } else {
-            OperationState::ApplyStarted
-        };
-        assert_eq!(gateway.get("op-001").unwrap(), Some(expected_state));
-        assert_eq!(gateway.result("op-001").unwrap(), None);
-
-        drop(gateway);
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        gateway
-            .run_operation_once_with_adapter(&request.operation_id, &mut adapter.inner)
-            .await
-            .unwrap();
-        assert_eq!(adapter.inner.apply_calls, 1);
-        assert_eq!(
-            gateway.result("op-001").unwrap(),
-            Some(OperationResult::Failed)
-        );
-
-        drop(gateway);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
 }

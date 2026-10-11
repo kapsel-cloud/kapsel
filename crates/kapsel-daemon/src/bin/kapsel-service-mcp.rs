@@ -772,3 +772,301 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "independent frozen grammar fixtures")]
+    use super::*;
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep literal wire tuples beside their independent grammar cross-product"
+    )]
+    fn execution_grammar_accepts_only_independently_pinned_tuples() {
+        // Literal wire tuples, not ExecutionDisposition's implementation or getters.
+        let guidance = [
+            ("active", None, "wait", "caller"),
+            (
+                "waiting_for_worker",
+                None,
+                "wait_then_select_same_id",
+                "caller",
+            ),
+            ("resume_required", None, "select_same_id", "caller"),
+            (
+                "resume_required",
+                Some("preflight_unavailable"),
+                "select_same_id",
+                "caller",
+            ),
+            (
+                "resume_required",
+                Some("worker_contention"),
+                "select_same_id",
+                "caller",
+            ),
+            (
+                "operator_required",
+                Some("receiver_unavailable"),
+                "contact_operator",
+                "operator",
+            ),
+            (
+                "operator_required",
+                Some("signing_unavailable"),
+                "contact_operator",
+                "operator",
+            ),
+            (
+                "operator_required",
+                Some("completion_blocked"),
+                "contact_operator",
+                "operator",
+            ),
+            (
+                "operator_required",
+                Some("operation_blocked"),
+                "contact_operator",
+                "operator",
+            ),
+        ];
+        let dispositions = [
+            "active",
+            "waiting_for_worker",
+            "resume_required",
+            "operator_required",
+            "complete",
+            "admission_unconfirmed",
+            "surprise",
+        ];
+        let conditions = [
+            None,
+            Some("preflight_unavailable"),
+            Some("worker_contention"),
+            Some("receiver_unavailable"),
+            Some("signing_unavailable"),
+            Some("completion_blocked"),
+            Some("operation_blocked"),
+            Some("surprise"),
+        ];
+        for status in [
+            "NOT_FOUND",
+            "IN_PROGRESS",
+            "NOT_ATTEMPTED",
+            "SUCCEEDED",
+            "FAILED",
+            "UNKNOWN",
+        ] {
+            let mut allowed = Vec::new();
+            if status == "IN_PROGRESS" {
+                allowed.extend(guidance);
+            } else if status == "NOT_FOUND" {
+                allowed.push(("admission_unconfirmed", None, "read_same_id", "caller"));
+            } else {
+                allowed.push(("complete", None, "inspect_result", "caller"));
+            }
+            for disposition in dispositions {
+                for condition in conditions {
+                    for next_action in [
+                        "wait",
+                        "wait_then_select_same_id",
+                        "select_same_id",
+                        "contact_operator",
+                        "inspect_result",
+                        "read_same_id",
+                        "surprise",
+                    ] {
+                        for owner in ["caller", "operator", "surprise"] {
+                            let tuple = (disposition, condition, next_action, owner);
+                            let value = json!({"disposition":disposition,"condition":condition,
+                                "next_action":next_action,"action_owner":owner});
+                            let mut reply = self::status("kubernetes.set_deployment_image");
+                            reply["status"] = json!(status);
+                            reply["execution"] = value;
+                            if status == "NOT_FOUND" {
+                                for field in [
+                                    "effect",
+                                    "approved_target",
+                                    "attempt_target",
+                                    "observed_target",
+                                ] {
+                                    reply.as_object_mut().unwrap().remove(field);
+                                }
+                            } else if status == "NOT_ATTEMPTED" {
+                                reply["target_rejection"] = json!("STALE_APPROVAL");
+                            }
+                            assert_eq!(
+                                response_shape("kapsel.get_status", &reply),
+                                allowed.contains(&tuple),
+                                "{reply}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        for value in [
+            Value::Null,
+            json!([]),
+            json!({"disposition":"active","condition":null,
+            "next_action":"wait","action_owner":"caller","extra":true}),
+        ] {
+            assert!(!execution_shape(&value, "IN_PROGRESS"));
+        }
+    }
+
+    fn status(effect: &str) -> Value {
+        let mut value = json!({"version":1,"status":"UNKNOWN","effect":effect,
+            "execution":{"disposition":"complete","condition":null,
+                "next_action":"inspect_result","action_owner":"caller"}});
+        if effect == "git.transition_ref" {
+            value["git"] = json!({"repository_id":"repo-1","reference":"refs/heads/main",
+                "old_commit":"a".repeat(40),"new_commit":"b".repeat(40),"attempted":true,
+                "acknowledgement":"updated",
+                "observed_ref":{"kind":"commit","commit":"b".repeat(40)}});
+        } else {
+            value["approved_target"] = json!({"uid":"uid-1","resource_version":"10"});
+            value["attempt_target"] = Value::Null;
+            value["observed_target"] = Value::Null;
+        }
+        value
+    }
+
+    fn reject_missing_and_extra_members(value: &Value, prefix: &str) {
+        let fields = value.pointer(prefix).unwrap().as_object().unwrap();
+        for field in fields.keys() {
+            let mut changed = value.clone();
+            changed
+                .pointer_mut(prefix)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                !response_shape("kapsel.get_status", &changed),
+                "missing {prefix}/{field}"
+            );
+        }
+        let mut changed = value.clone();
+        changed.pointer_mut(prefix).unwrap()["extra"] = json!(true);
+        assert!(
+            !response_shape("kapsel.get_status", &changed),
+            "extra at {prefix}"
+        );
+    }
+
+    #[test]
+    fn effect_and_history_shapes_bind_every_member_at_the_decoder() {
+        for effect in ["kubernetes.set_deployment_image", "git.transition_ref"] {
+            let original = status(effect);
+            assert!(response_shape("kapsel.get_status", &original));
+            reject_missing_and_extra_members(&original, "");
+            reject_missing_and_extra_members(&original, "/execution");
+            if effect == "git.transition_ref" {
+                reject_missing_and_extra_members(&original, "/git");
+                reject_missing_and_extra_members(&original, "/git/observed_ref");
+            } else {
+                reject_missing_and_extra_members(&original, "/approved_target");
+            }
+            let mut entry = original.clone();
+            entry.as_object_mut().unwrap().remove("version");
+            entry["operation_id"] = json!("op-1");
+            assert!(response_shape(
+                "kapsel.list_operation_history",
+                &json!({"version":1,
+                "status":"READY","entries":[entry],"next_cursor":null})
+            ));
+            for rejection in [
+                "STALE_APPROVAL",
+                "GIT_STALE_REF",
+                "GIT_INVALID_OBJECTS",
+                "stale_approval",
+            ] {
+                let mut rejected = original.clone();
+                rejected["status"] = json!("NOT_ATTEMPTED");
+                rejected["target_rejection"] = json!(rejection);
+                let expected = if effect == "git.transition_ref" {
+                    matches!(rejection, "GIT_STALE_REF" | "GIT_INVALID_OBJECTS")
+                } else {
+                    rejection == "STALE_APPROVAL"
+                };
+                assert_eq!(response_shape("kapsel.get_status", &rejected), expected);
+            }
+        }
+        for (pointer, bad) in [
+            ("/git/acknowledgement", json!("surprise")),
+            ("/git/observed_ref/kind", json!("tag")),
+            ("/git/attempted", json!(1)),
+        ] {
+            let mut changed = status("git.transition_ref");
+            *changed.pointer_mut(pointer).unwrap() = bad;
+            assert!(!response_shape("kapsel.get_status", &changed));
+        }
+        for bad in [
+            json!({"uid":"uid-1"}),
+            json!(true),
+            json!({"uid":1,"resource_version":"10"}),
+        ] {
+            let mut changed = status("kubernetes.set_deployment_image");
+            changed["approved_target"] = bad;
+            assert!(!response_shape("kapsel.get_status", &changed));
+        }
+    }
+
+    #[test]
+    fn admission_requires_an_exact_versioned_decision() {
+        for (value, expected) in [
+            (
+                json!({"version":1,"status":"ADMITTED","phase":"authorized"}),
+                true,
+            ),
+            (
+                json!({"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}),
+                true,
+            ),
+            (json!({"version":1,"status":"ADMITTED"}), false),
+            (
+                json!({"version":1,"status":"ADMITTED","phase":"surprise"}),
+                false,
+            ),
+            (json!({"version":1,"status":"NOT_ADMITTED"}), false),
+            (json!({"status":"ADMITTED","phase":"authorized"}), false),
+            (
+                json!({"version":2,"status":"ADMITTED","phase":"authorized"}),
+                false,
+            ),
+            (
+                json!({"version":1.0,"status":"ADMITTED","phase":"authorized"}),
+                false,
+            ),
+            (
+                json!({"version":1,"status":"ACCEPTED","phase":"authorized"}),
+                false,
+            ),
+        ] {
+            assert_eq!(response_shape("kapsel.submit", &value), expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn receipt_reply_preserves_exact_hex_and_independently_pinned_digest() {
+        let original = json!({"version":1,"status":"READY","receipt_hex":"616263",
+            "receipt_sha256":concat!("ba7816bf8f01cfea414140de5dae2223",
+                "b00361a396177a9cb410ff61f20015ad")});
+        assert!(response_shape("kapsel.get_receipt", &original));
+        for (field, bad) in [
+            ("receipt_hex", json!("616264")),
+            ("receipt_hex", json!("61626")),
+            ("receipt_hex", json!("AB")),
+            ("receipt_hex", json!(false)),
+            ("receipt_sha256", json!("0".repeat(64))),
+            ("receipt_sha256", json!("0".repeat(63))),
+            ("extra", json!(true)),
+        ] {
+            let mut changed = original.clone();
+            changed[field] = bad;
+            assert!(!response_shape("kapsel.get_receipt", &changed), "{field}");
+        }
+    }
+}
