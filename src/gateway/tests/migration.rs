@@ -1,523 +1,349 @@
+use std::os::unix::fs::symlink;
+
+use rusqlite::types::Value;
+
 use super::{Journal, *};
 
-fn journal_version(path: &Path) -> u32 {
-    let connection = Connection::open(path).unwrap();
-    connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .unwrap()
-}
-
-fn set_journal_version(path: &Path, version: u32) {
-    let connection = Connection::open(path).unwrap();
-    connection
-        .pragma_update(None, "user_version", version)
-        .unwrap();
-}
-
-fn create_current_journal(path: &Path) {
+fn current_journal(path: &Path) {
     drop(Gateway::open_for_test(path).unwrap());
 }
 
-fn assert_refusal_preserves_bytes(path: &Path) {
-    let original_bytes = fs::read(path).unwrap();
+fn assert_invalid_unchanged(path: &Path) {
+    let before = fs::read(path).unwrap();
+    assert!(matches!(
+        Journal::validate_replacement(path, &[]),
+        Err(GatewayError::InvalidPersistedState)
+    ));
     assert!(matches!(
         Gateway::open_for_test(path),
         Err(GatewayError::InvalidPersistedState)
     ));
-    assert_eq!(fs::read(path).unwrap(), original_bytes);
-    assert_eq!(journal_version(path), 6);
+    assert_eq!(fs::read(path).unwrap(), before);
 }
 
 #[test]
-fn fresh_journal_initializes_directly_and_reopens_without_another_write() {
-    let path = database_path("fresh-version-marker");
-    drop(Gateway::open_for_test(&path).unwrap());
-    assert_eq!(journal_version(&path), 6);
-    assert!(!PathBuf::from(format!("{}.kapsel-v011.backup", path.display())).exists());
-
-    let original_bytes = fs::read(&path).unwrap();
-    drop(Gateway::open_for_test(&path).unwrap());
-    assert_eq!(fs::read(&path).unwrap(), original_bytes);
-
-    fs::remove_dir_all(path.parent().unwrap()).unwrap();
-}
-
-#[tokio::test]
-async fn format_six_reopens_history_and_refuses_prior_format_five_construction() {
-    for prior_construction in [true, false] {
-        let path = database_path(&format!("format-five-construction-{prior_construction}"));
-        if prior_construction {
-            // Frozen CREATE plus four ALTERs from cd9893d, before direct construction.
-            Connection::open(&path)
-                .unwrap()
-                .execute_batch(include_str!("format5-before-direct-create.sql"))
-                .unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-
-            let original_bytes = fs::read(&path).unwrap();
-            assert!(matches!(
-                Gateway::open_for_test(&path),
-                Err(GatewayError::UnsupportedJournalVersion)
-            ));
-            assert!(Journal::validate_replacement(&path, &[]).is_err());
-            assert_eq!(fs::read(&path).unwrap(), original_bytes);
-            fs::remove_dir_all(path.parent().unwrap()).unwrap();
-            continue;
-        }
-        let mut gateway = Gateway::open_for_test(&path).unwrap();
-        let mut pending = request();
-        pending.operation_id = "pending-format-five".into();
-        let mut finalized = request();
-        finalized.operation_id = "finalized-format-five".into();
-        for request in [&pending, &finalized] {
-            let mut grant = authorization(request);
-            grant.approved_target = Some(ApprovedTarget {
-                uid: "deployment-uid-1".into(),
-                resource_version: "resource-version-0".into(),
-            });
-            gateway.submit_exact_for_test(request, &grant).unwrap();
-        }
-        let mut adapter = failed_rollout_adapter(&path, &finalized);
-        gateway
-            .run_operation_once_with_adapter(&finalized.operation_id, &mut adapter)
-            .await
-            .unwrap();
-        gateway
-            .finalize_operation_receipt_once(
-                &finalized.operation_id,
-                &ReceiptSettings {
-                    signing_seed: &[42; 32],
-                    key_id: "format-five-receipt",
-                },
-            )
-            .unwrap();
-
-        let original_receipt = Gateway::read_loaded_receipt(
-            gateway
-                .loaded_for_test(&finalized.operation_id)
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-
-        let original_rows = super::storage::stored_rows(&gateway.journal.connection);
-
-        drop(gateway);
-
-        let original_bytes = fs::read(&path).unwrap();
-        Journal::validate_replacement(&path, &[]).unwrap();
-        let reopened = Gateway::open_for_test(&path).unwrap();
-        assert_eq!(journal_version(&path), 6);
-        assert_eq!(
-            reopened.get(&pending.operation_id).unwrap(),
-            Some(OperationState::Authorized)
-        );
-        assert_eq!(
-            reopened.get(&finalized.operation_id).unwrap(),
-            Some(OperationState::Finalized)
-        );
-        assert_eq!(
-            super::storage::stored_rows(&reopened.journal.connection),
-            original_rows
-        );
-        assert_eq!(
-            Gateway::read_loaded_receipt(
-                reopened
-                    .loaded_for_test(&finalized.operation_id)
-                    .unwrap()
-                    .unwrap(),
-            )
-            .unwrap(),
-            original_receipt
-        );
-        assert!(reopened
-            .retained_operation(&pending.operation_id)
-            .unwrap()
-            .is_some());
-        assert!(reopened
-            .retained_operation(&finalized.operation_id)
-            .unwrap()
-            .is_some());
-
-        drop(reopened);
-        assert_eq!(fs::read(&path).unwrap(), original_bytes);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-}
-
-#[test]
-fn persisted_value_and_row_boundaries_are_checked_on_every_reopen() {
-    let value_path = database_path("persisted-value-bound");
-    drop(Gateway::open_for_test(&value_path).unwrap());
-    let connection = Connection::open(&value_path).unwrap();
-    connection
-        .execute(
-            concat!(
-                "INSERT INTO kubernetes_image_operations (",
-                "operation_id, namespace, deployment, container, ",
-                "immutable_image_digest, state, receipt_bytes",
-                ") VALUES ('op-value', 'demo', 'agent-api', 'api', ?1, ",
-                "'authorized', zeroblob(?2))"
-            ),
-            rusqlite::params![request().immutable_image_digest, 16 * 1024],
-        )
-        .unwrap();
-
-    drop(connection);
-    drop(Gateway::open_for_test(&value_path).unwrap());
-    Connection::open(&value_path)
-        .unwrap()
-        .execute(
-            "UPDATE kubernetes_image_operations SET receipt_bytes = zeroblob(?1)",
-            [16 * 1024 + 1],
-        )
-        .unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&value_path),
-        Err(GatewayError::InvalidPersistedState)
-    ));
-    fs::remove_dir_all(value_path.parent().unwrap()).unwrap();
-
-    let text_path = database_path("persisted-text-byte-bound");
-    drop(Gateway::open_for_test(&text_path).unwrap());
-    let connection = Connection::open(&text_path).unwrap();
-    connection
-        .execute(
-            concat!(
-                "INSERT INTO kubernetes_image_operations (",
-                "operation_id, namespace, deployment, container, ",
-                "immutable_image_digest, authorization_id, state",
-                ") VALUES ('op-text', 'demo', 'agent-api', 'api', ?1, ?2, 'authorized')"
-            ),
-            rusqlite::params![request().immutable_image_digest, "é".repeat(8 * 1024)],
-        )
-        .unwrap();
-
-    drop(connection);
-    drop(Gateway::open_for_test(&text_path).unwrap());
-    Connection::open(&text_path)
-        .unwrap()
-        .execute(
-            "UPDATE kubernetes_image_operations SET authorization_id = ?1",
-            ["é".repeat(8 * 1024 + 1)],
-        )
-        .unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&text_path),
-        Err(GatewayError::InvalidPersistedState)
-    ));
-    fs::remove_dir_all(text_path.parent().unwrap()).unwrap();
-
-    let count_path = database_path("persisted-row-count-bound");
-    drop(Gateway::open_for_test(&count_path).unwrap());
-    Connection::open(&count_path)
-        .unwrap()
-        .execute(
-            concat!(
-                "WITH RECURSIVE numbers(value) AS (",
-                "SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 504",
-                ") INSERT INTO kubernetes_image_operations (",
-                "operation_id, namespace, deployment, container, immutable_image_digest, state",
-                ") SELECT 'op-' || value, 'demo', 'agent-api', 'api', ?1, ",
-                "'not_attempted' FROM numbers"
-            ),
-            [&request().immutable_image_digest],
-        )
-        .unwrap();
-    drop(Gateway::open_for_test(&count_path).unwrap());
-    Connection::open(&count_path)
-        .unwrap()
-        .execute(
-            concat!(
-                "INSERT INTO kubernetes_image_operations (",
-                "operation_id, namespace, deployment, container, immutable_image_digest, state",
-                ") VALUES ('op-overflow', 'demo', 'agent-api', 'api', ?1, 'authorized')"
-            ),
-            [&request().immutable_image_digest],
-        )
-        .unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&count_path),
-        Err(GatewayError::InvalidPersistedState)
-    ));
-    fs::remove_dir_all(count_path.parent().unwrap()).unwrap();
-}
-
-#[test]
-fn orphan_pages_cannot_consume_reserved_completion_space_on_reopen() {
-    use std::io::{Seek as _, SeekFrom, Write as _};
-
-    let path = database_path("orphan-completion-pages");
-    create_current_journal(&path);
-    let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
-    file.set_len(64 * 1024 * 1024).unwrap();
-    file.seek(SeekFrom::Start(28)).unwrap();
-    file.write_all(&16_384_u32.to_be_bytes()).unwrap();
-    file.sync_all().unwrap();
-    drop(file);
-    assert_refusal_preserves_bytes(&path);
-    fs::remove_dir_all(path.parent().unwrap()).unwrap();
-}
-
-#[test]
-fn unknown_or_newer_marker_refuses_without_touching_the_store() {
-    for version in [1, 4, 5, 7] {
-        let path = database_path(&format!("unsupported-version-marker-{version}"));
-        drop(Gateway::open_for_test(&path).unwrap());
-        set_journal_version(&path, version);
-
-        let original_bytes = fs::read(&path).unwrap();
-
-        assert!(matches!(
-            Gateway::open_for_test(&path),
-            Err(GatewayError::UnsupportedJournalVersion)
-        ));
-        assert_eq!(fs::read(&path).unwrap(), original_bytes);
-        assert_eq!(journal_version(&path), version);
-
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-}
-
-#[test]
-fn wal_or_unsupported_header_mode_refuses_before_sqlite_mutation() {
-    let wal_path = database_path("wal-upgrade-refusal");
-    create_current_journal(&wal_path);
-    let connection = Connection::open(&wal_path).unwrap();
+fn format_six_reopens_original_history_without_rewriting_schema_rows_or_version() {
+    let path = database_path("current-history");
+    let gateway = Gateway::open(&path, journal::test_history::trust()).unwrap();
     assert_eq!(
-        connection
-            .query_row("PRAGMA journal_mode = WAL", [], |row| row
-                .get::<_, String>(0))
+        gateway
+            .journal
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
             .unwrap(),
-        "wal"
+        6
     );
-
-    drop(connection);
-    let wal_before = fs::read(&wal_path).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&wal_path),
-        Err(GatewayError::InvalidPersistedState)
-    ));
-    assert_eq!(fs::read(&wal_path).unwrap(), wal_before);
-    fs::remove_dir_all(wal_path.parent().unwrap()).unwrap();
-
-    let unsupported_path = database_path("unsupported-header-mode-refusal");
-    create_current_journal(&unsupported_path);
-    let mut bytes = fs::read(&unsupported_path).unwrap();
-    bytes[18] = 3;
-    bytes[19] = 3;
-    fs::write(&unsupported_path, &bytes).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&unsupported_path),
-        Err(GatewayError::InvalidPersistedState)
-    ));
-    assert_eq!(fs::read(&unsupported_path).unwrap(), bytes);
-    fs::remove_dir_all(unsupported_path.parent().unwrap()).unwrap();
-}
-
-#[test]
-fn extra_schema_objects_and_generated_columns_refuse_without_marking() {
-    let cases = [
-        ("extra-table", "CREATE TABLE unexpected(value TEXT) STRICT;"),
-        (
-            "extra-view",
-            "CREATE VIEW unexpected AS SELECT operation_id FROM \
-             kubernetes_image_operations;",
-        ),
-        (
-            "extra-trigger",
-            "CREATE TRIGGER unexpected AFTER INSERT ON kubernetes_image_operations \
-             BEGIN SELECT 1; END;",
-        ),
-        (
-            "explicit-index",
-            "CREATE INDEX unexpected ON kubernetes_image_operations(state);",
-        ),
-        (
-            "generated-column",
-            "ALTER TABLE kubernetes_image_operations ADD COLUMN unexpected TEXT \
-             GENERATED ALWAYS AS (state) VIRTUAL;",
-        ),
-    ];
-    for (name, change) in cases {
-        let path = database_path(name);
-        create_current_journal(&path);
-        Connection::open(&path)
-            .unwrap()
-            .execute_batch(change)
-            .unwrap();
-
-        assert_refusal_preserves_bytes(&path);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    assert!(!PathBuf::from(format!("{}.kapsel-v011.backup", path.display())).exists());
+    for phase in ["authorized", "finalized"] {
+        History::kube(phase).insert(&gateway.journal.connection, phase);
     }
-}
-
-#[test]
-fn changed_checks_collations_and_constraints_refuse_without_marking() {
-    let cases = [
-        ("changed-check", "state TEXT NOT NULL CHECK (state <> '')"),
-        ("changed-collation", "state TEXT COLLATE NOCASE NOT NULL"),
-        ("changed-constraint", "state TEXT NOT NULL UNIQUE"),
-    ];
-    for (name, changed_declaration) in cases {
-        let path = database_path(name);
-        create_current_journal(&path);
-        let connection = Connection::open(&path).unwrap();
-        let original_schema_sql: String = connection
-            .query_row(
-                "SELECT sql FROM sqlite_schema
-                 WHERE type = 'table' AND name = 'kubernetes_image_operations'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let changed_schema_sql =
-            original_schema_sql.replace("state TEXT NOT NULL", changed_declaration);
-        assert_ne!(changed_schema_sql, original_schema_sql);
-        connection
-            .execute_batch("DROP TABLE kubernetes_image_operations")
-            .unwrap();
-        connection.execute_batch(&changed_schema_sql).unwrap();
-
-        drop(connection);
-
-        assert_refusal_preserves_bytes(&path);
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-}
-
-#[test]
-fn oversized_or_nonexact_mode_artifacts_refuse_before_sqlite_reads() {
-    const JOURNAL_BYTES_MAX: u64 = 64 * 1024 * 1024;
-    const ROLLBACK_JOURNAL_BYTES_MAX: u64 = 65 * 1024 * 1024;
-
-    let oversized_source = database_path("oversized-source");
-    let source = fs::File::create(&oversized_source).unwrap();
-    source.set_len(JOURNAL_BYTES_MAX + 1).unwrap();
-    fs::set_permissions(&oversized_source, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&oversized_source),
-        Err(GatewayError::InvalidPersistedState)
-    ));
-    fs::remove_dir_all(oversized_source.parent().unwrap()).unwrap();
-
-    let oversized_rollback = database_path("oversized-rollback-journal");
-    drop(Gateway::open_for_test(&oversized_rollback).unwrap());
-    let rollback = PathBuf::from(format!("{}-journal", oversized_rollback.display()));
-    let rollback_file = fs::File::create(&rollback).unwrap();
-    rollback_file
-        .set_len(ROLLBACK_JOURNAL_BYTES_MAX + 1)
-        .unwrap();
-    fs::set_permissions(&rollback, fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&oversized_rollback),
-        Err(GatewayError::JournalBackupMismatch)
-    ));
-    fs::remove_dir_all(oversized_rollback.parent().unwrap()).unwrap();
-
-    for mode in [0o700, 0o4600] {
-        let source_path = database_path(&format!("nonexact-source-mode-{mode:o}"));
-        drop(Gateway::open_for_test(&source_path).unwrap());
-        fs::set_permissions(&source_path, fs::Permissions::from_mode(mode)).unwrap();
-        assert!(matches!(
-            Gateway::open_for_test(&source_path),
-            Err(GatewayError::JournalFile(_))
-        ));
-        fs::remove_dir_all(source_path.parent().unwrap()).unwrap();
-    }
-
-    let special_parent = database_path("special-parent-mode");
-    drop(Gateway::open_for_test(&special_parent).unwrap());
-    fs::set_permissions(
-        special_parent.parent().unwrap(),
-        fs::Permissions::from_mode(0o2700),
-    )
-    .unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&special_parent),
-        Err(GatewayError::JournalFile(_))
-    ));
-    fs::remove_dir_all(special_parent.parent().unwrap()).unwrap();
-
-    let special_lock = database_path("special-lock-mode");
-    drop(Gateway::open_for_test(&special_lock).unwrap());
-    let lock = PathBuf::from(format!("{}.kap0038-worker.lock", special_lock.display()));
-    fs::set_permissions(&lock, fs::Permissions::from_mode(0o4600)).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&special_lock),
-        Err(GatewayError::WorkerLock(_))
-    ));
-    fs::remove_dir_all(special_lock.parent().unwrap()).unwrap();
-
-    let special_rollback = database_path("special-rollback-mode");
-    drop(Gateway::open_for_test(&special_rollback).unwrap());
-    let rollback = PathBuf::from(format!("{}-journal", special_rollback.display()));
-    fs::write(&rollback, [0_u8; 8]).unwrap();
-    fs::set_permissions(&rollback, fs::Permissions::from_mode(0o4600)).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&special_rollback),
-        Err(GatewayError::JournalBackup(_))
-    ));
-    fs::remove_dir_all(special_rollback.parent().unwrap()).unwrap();
-}
-
-#[test]
-fn symlink_and_dangling_symlink_inputs_refuse_without_source_mutation() {
-    use std::os::unix::fs::symlink;
-
-    let source_path = database_path("source-symlink");
-    create_current_journal(&source_path);
-    let real_source = source_path.with_extension("real");
-    fs::rename(&source_path, &real_source).unwrap();
-    symlink(&real_source, &source_path).unwrap();
-    let source_before = fs::read(&real_source).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&source_path),
-        Err(GatewayError::JournalFile(_))
-    ));
-    assert_eq!(fs::read(&real_source).unwrap(), source_before);
-    fs::remove_dir_all(source_path.parent().unwrap()).unwrap();
-
-    let dangling_source = database_path("dangling-source-symlink");
-    symlink(dangling_source.with_extension("missing"), &dangling_source).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&dangling_source),
-        Err(GatewayError::JournalFile(_))
-    ));
-    fs::remove_dir_all(dangling_source.parent().unwrap()).unwrap();
-}
-
-#[test]
-fn multiply_linked_source_refuses_without_mutation() {
-    let path = database_path("multiply-linked-source");
-    create_current_journal(&path);
-    fs::hard_link(&path, path.with_extension("hardlink")).unwrap();
+    let original_rows = stored_rows(&gateway.journal.connection);
+    drop(gateway);
     let before = fs::read(&path).unwrap();
-    assert!(matches!(
-        Gateway::open_for_test(&path),
-        Err(GatewayError::JournalFile(_))
-    ));
+    Journal::validate_replacement(&path, &[]).unwrap();
+    let reopened = Gateway::open(&path, journal::test_history::trust()).unwrap();
+    assert_eq!(stored_rows(&reopened.journal.connection), original_rows);
+    for (id, phase) in [
+        ("authorized", OperationState::Authorized),
+        ("finalized", OperationState::Finalized),
+    ] {
+        assert_eq!(reopened.get(id).unwrap(), Some(phase));
+        assert!(reopened.retained_operation(id).unwrap().is_some());
+    }
+    assert_eq!(
+        Gateway::read_loaded_receipt(reopened.loaded_for_test("finalized").unwrap().unwrap())
+            .unwrap()
+            .0,
+        History::kube("finalized").receipt().bytes
+    );
+    drop(reopened);
     assert_eq!(fs::read(&path).unwrap(), before);
     fs::remove_dir_all(path.parent().unwrap()).unwrap();
 }
 
 #[test]
-fn symlinked_parent_refuses_before_journal_open() {
-    use std::os::unix::fs::symlink;
-
-    let root = database_path("symlinked-parent-root")
-        .parent()
+fn prior_construction_and_unknown_versions_are_refused_unchanged() {
+    for version in [1, 4, 5, 7] {
+        let path = database_path(&format!("version-{version}"));
+        current_journal(&path);
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(matches!(
+            Gateway::open_for_test(&path),
+            Err(GatewayError::UnsupportedJournalVersion)
+        ));
+        assert!(matches!(
+            Journal::validate_replacement(&path, &[]),
+            Err(GatewayError::UnsupportedJournalVersion)
+        ));
+        assert_eq!(fs::read(&path).unwrap(), before);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    let path = database_path("format-five-construction");
+    Connection::open(&path)
         .unwrap()
-        .to_path_buf();
-    fs::remove_dir_all(&root).unwrap();
-    let real_parent = root.with_extension("real");
-    fs::create_dir(&real_parent).unwrap();
-    fs::set_permissions(&real_parent, fs::Permissions::from_mode(0o700)).unwrap();
-    symlink(&real_parent, &root).unwrap();
+        .execute_batch(include_str!("format5-before-direct-create.sql"))
+        .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let before = fs::read(&path).unwrap();
     assert!(matches!(
-        Gateway::open_for_test(root.join("journal.sqlite3")),
+        Gateway::open_for_test(&path),
+        Err(GatewayError::UnsupportedJournalVersion)
+    ));
+    assert!(Journal::validate_replacement(&path, &[]).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn persisted_byte_and_count_boundaries_are_checked_on_every_reopen() {
+    for (name, field, at_limit, over_limit) in [
+        (
+            "blob",
+            "receipt_bytes",
+            Value::Blob(vec![0; 16384]),
+            Value::Blob(vec![0; 16385]),
+        ),
+        (
+            "utf8",
+            "authorization_id",
+            Value::Text("é".repeat(8192)),
+            Value::Text("é".repeat(8193)),
+        ),
+        (
+            "grant",
+            "signed_authorization_grant",
+            Value::Blob(vec![0; 4096]),
+            Value::Blob(vec![0; 4097]),
+        ),
+    ] {
+        let path = database_path(name);
+        let gateway = Gateway::open_for_test(&path).unwrap();
+        History::kube("boundary").insert(&gateway.journal.connection, "authorized");
+        gateway
+            .journal
+            .connection
+            .execute(
+                &format!("UPDATE kubernetes_image_operations SET {field} = ?1"),
+                [at_limit],
+            )
+            .unwrap();
+        drop(gateway);
+        drop(Gateway::open_for_test(&path).unwrap());
+        Journal::validate_replacement(&path, &[]).unwrap();
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                &format!("UPDATE kubernetes_image_operations SET {field} = ?1"),
+                [over_limit],
+            )
+            .unwrap();
+        assert_invalid_unchanged(&path);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    let path = database_path("persisted-count");
+    current_journal(&path);
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "WITH RECURSIVE numbers(value) AS (
+            SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < 504)
+         INSERT INTO kubernetes_image_operations
+            (operation_id, namespace, deployment, container, immutable_image_digest, state)
+         SELECT 'op-' || value, 'demo', 'agent-api', 'api', ?1, 'not_attempted' FROM numbers",
+            [request().immutable_image_digest],
+        )
+        .unwrap();
+    drop(Gateway::open_for_test(&path).unwrap());
+    Journal::validate_replacement(&path, &[]).unwrap();
+    Connection::open(&path)
+        .unwrap()
+        .execute(
+            "INSERT INTO kubernetes_image_operations
+         (operation_id, namespace, deployment, container, immutable_image_digest, state)
+         VALUES ('overflow', 'demo', 'agent-api', 'api', ?1, 'authorized')",
+            [request().immutable_image_digest],
+        )
+        .unwrap();
+    assert_invalid_unchanged(&path);
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn orphan_pages_and_unsupported_header_modes_refuse_before_mutation() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+
+    for name in ["orphan", "wal", "header"] {
+        let path = database_path(name);
+        current_journal(&path);
+        match name {
+            "orphan" => {
+                let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+                file.set_len(64 * 1024 * 1024).unwrap();
+                file.seek(SeekFrom::Start(28)).unwrap();
+                file.write_all(&16_384_u32.to_be_bytes()).unwrap();
+                file.sync_all().unwrap();
+            },
+            "wal" => {
+                assert_eq!(
+                    Connection::open(&path)
+                        .unwrap()
+                        .query_row("PRAGMA journal_mode = WAL", [], |row| row
+                            .get::<_, String>(0))
+                        .unwrap(),
+                    "wal"
+                );
+            },
+            _ => {
+                let mut bytes = fs::read(&path).unwrap();
+                bytes[18..20].fill(3);
+                fs::write(&path, bytes).unwrap();
+            },
+        }
+        assert_invalid_unchanged(&path);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn nonexact_schema_is_refused_without_rewriting() {
+    for change in [
+        "CREATE TABLE unexpected(value TEXT) STRICT;",
+        "CREATE VIEW unexpected AS SELECT operation_id FROM kubernetes_image_operations;",
+        "CREATE TRIGGER unexpected AFTER INSERT ON kubernetes_image_operations
+         BEGIN SELECT 1; END;",
+        "CREATE INDEX unexpected ON kubernetes_image_operations(state);",
+        "ALTER TABLE kubernetes_image_operations ADD COLUMN unexpected TEXT
+         GENERATED ALWAYS AS (state) VIRTUAL;",
+        "state TEXT NOT NULL CHECK (state <> '')",
+        "state TEXT COLLATE NOCASE NOT NULL",
+        "state TEXT NOT NULL UNIQUE",
+    ] {
+        let path = database_path("changed-schema");
+        current_journal(&path);
+        let connection = Connection::open(&path).unwrap();
+        if change.starts_with("state ") {
+            let original: String = connection
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE name = 'kubernetes_image_operations'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let changed = original.replace("state TEXT NOT NULL", change);
+            assert_ne!(changed, original);
+            connection
+                .execute_batch("DROP TABLE kubernetes_image_operations")
+                .unwrap();
+            connection.execute_batch(&changed).unwrap();
+        } else {
+            connection.execute_batch(change).unwrap();
+        }
+        drop(connection);
+        assert_invalid_unchanged(&path);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn unsafe_artifact_sizes_and_modes_refuse_before_sqlite_reads() {
+    for (suffix, size, mode) in [
+        ("", 64 * 1024 * 1024 + 1, 0o600),
+        ("-journal", 65 * 1024 * 1024 + 1, 0o600),
+        ("", 0, 0o700),
+        ("", 0, 0o4600),
+        (".kap0038-worker.lock", 0, 0o4600),
+        ("-journal", 8, 0o4600),
+    ] {
+        let path = database_path("unsafe-artifact");
+        current_journal(&path);
+        let artifact = PathBuf::from(format!("{}{suffix}", path.display()));
+        if size != 0 {
+            fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&artifact)
+                .unwrap()
+                .set_len(size)
+                .unwrap();
+        }
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(mode)).unwrap();
+        let result = Gateway::open_for_test(&path);
+        match (suffix, size) {
+            ("", 0) => assert!(matches!(result, Err(GatewayError::JournalFile(_)))),
+            ("", _) => assert!(matches!(result, Err(GatewayError::InvalidPersistedState))),
+            (".kap0038-worker.lock", _) => {
+                assert!(matches!(result, Err(GatewayError::WorkerLock(_))));
+            },
+            ("-journal", 8) => assert!(matches!(result, Err(GatewayError::JournalBackup(_)))),
+            _ => assert!(matches!(result, Err(GatewayError::JournalBackupMismatch))),
+        }
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+    let path = database_path("special-parent");
+    current_journal(&path);
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o2700)).unwrap();
+    assert!(matches!(
+        Gateway::open_for_test(&path),
         Err(GatewayError::JournalFile(_))
     ));
-    fs::remove_file(&root).unwrap();
-    fs::remove_dir_all(&real_parent).unwrap();
+    fs::remove_dir_all(path.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn linked_sources_and_parents_refuse_without_mutating_history() {
+    for kind in ["symlink", "dangling", "hardlink", "parent"] {
+        let path = database_path(kind);
+        current_journal(&path);
+        let original = fs::read(&path).unwrap();
+        let real = path.with_extension("real");
+        match kind {
+            "hardlink" => fs::hard_link(&path, &real).unwrap(),
+            "parent" => {
+                let parent = path.parent().unwrap();
+                let relocated = parent.with_extension("real");
+                fs::rename(parent, &relocated).unwrap();
+                symlink(&relocated, parent).unwrap();
+            },
+            _ => {
+                fs::rename(&path, &real).unwrap();
+                symlink(
+                    if kind == "dangling" {
+                        path.with_extension("missing")
+                    } else {
+                        real.clone()
+                    },
+                    &path,
+                )
+                .unwrap();
+            },
+        }
+        assert!(matches!(
+            Gateway::open_for_test(&path),
+            Err(GatewayError::JournalFile(_))
+        ));
+        assert!(matches!(
+            Journal::validate_replacement(&path, &[]),
+            Err(GatewayError::JournalFile(_))
+        ));
+        let preserved = if kind == "parent" {
+            path.parent()
+                .unwrap()
+                .with_extension("real")
+                .join("journal.sqlite3")
+        } else {
+            real
+        };
+        assert_eq!(fs::read(preserved).unwrap(), original);
+        if kind == "parent" {
+            fs::remove_file(path.parent().unwrap()).unwrap();
+            fs::remove_dir_all(path.parent().unwrap().with_extension("real")).unwrap();
+        } else {
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
 }

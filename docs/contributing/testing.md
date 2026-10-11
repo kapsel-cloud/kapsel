@@ -42,6 +42,16 @@ checks, including custody and MCP, rather than repeating a successful operation/
 standalone verifier's explicit container and native-systemd modes remain available; packaged
 crash/live receiver lanes remain separate.
 
+Journal decoder checks use a concrete independently authored SQLite history builder. Expected
+request, authority, attempt, receiver and receipt fields do not come from production row writers.
+Unequal generation and replica values expose field swaps. Every corruption vector starts from a
+checked-valid row and exercises writable, retained-history and read-only publication readers.
+Kubernetes and Git retain their distinct typed-table checks. Shared SQL fixtures also supply format,
+capacity-layout and receipt-candidate tests; they do not replace production-generated full-capacity
+histories, competing-writer read views, rollback records, process commitment windows or ENOSPC. The
+full-capacity process trace owns the before-SQL, SQL-executed/precommit and committed-receipt
+observations without a second small receipt process journey.
+
 The whole-suite working budget is 17,400 charged lines, including all replacement support:
 
 | Owner                                                    | After-budget |

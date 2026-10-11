@@ -4,15 +4,13 @@
 use std::{cell::Cell, rc::Rc};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io::{Seek as _, SeekFrom, Write as _},
 };
 
 use rusqlite::types::Value;
 
 use super::{Journal, *};
-
-pub(super) type StoredRows = BTreeMap<String, Vec<Value>>;
 
 type ReceiptCheckpoint = Box<dyn FnOnce(&Connection)>;
 thread_local! {
@@ -30,25 +28,6 @@ pub(in crate::gateway) fn receipt_precommit_checkpoint(connection: &Connection) 
 
 fn set_receipt_checkpoint(checkpoint: impl FnOnce(&Connection) + 'static) {
     RECEIPT_CHECKPOINT.with(|slot| assert!(slot.replace(Some(Box::new(checkpoint))).is_none()));
-}
-
-pub(super) fn stored_rows(connection: &Connection) -> StoredRows {
-    let mut statement = connection
-        .prepare("SELECT * FROM kubernetes_image_operations")
-        .unwrap();
-    let columns = statement.column_count();
-    statement
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                (0..columns)
-                    .map(|index| row.get(index))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ))
-        })
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
 }
 
 // All existing live pages are retained. Rebuild only the freelist, including a zero-leaf
@@ -449,7 +428,7 @@ async fn qualify_full_capacity_case(
 }
 
 // Copy committed bytes only; each case owns a fresh worker lock and rollback journal.
-fn copy_closed_journal(source: &Path, destination: &Path) {
+pub(in crate::gateway) fn copy_closed_journal(source: &Path, destination: &Path) {
     for suffix in ["-journal", "-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", source.display()));
         assert!(!sidecar.exists());
@@ -540,7 +519,14 @@ async fn full_capacity_process_kills_before_sql_after_sql_and_after_commit_prese
 
         let original_row = expected.remove(&selected.operation_id).unwrap();
         assert_eq!(current_rows, expected);
-        if scenario != "receipt" {
+        if scenario == "receipt" {
+            // Only state and the three receipt columns may change at commitment. Pin every
+            // frozen fact and original grant to the row captured before spawning the child.
+            assert_eq!(current_row[9], Value::Text("finalized".into()));
+            for fields in [0..9, 10..32, 35..current_row.len()] {
+                assert_eq!(current_row[fields.clone()], original_row[fields]);
+            }
+        } else {
             assert_eq!(current_row, original_row);
         }
 
@@ -963,10 +949,7 @@ async fn pinned_owned_write_plans_have_no_extra_tree_mutation_pass() {
 fn rollback_journal_records_each_original_page_once_without_spilling() {
     let path = database_path("rollback-unique-original-pages");
     let gateway = Gateway::open_for_test(&path).unwrap();
-    gateway
-        .submit_exact_for_test(&request(), &authorization(&request()))
-        .unwrap();
-
+    History::kube("rollback-page").insert(&gateway.journal.connection, "authorized");
     drop(gateway);
     fragmented_maximum_page_count(&path);
     let gateway = Gateway::open_for_test(&path).unwrap();
@@ -1005,7 +988,7 @@ fn rollback_journal_records_each_original_page_once_without_spilling() {
                     "UPDATE kubernetes_image_operations SET target_read_failures = ?1 ",
                     "WHERE operation_id = ?2",
                 ),
-                params![value, request().operation_id],
+                params![value, "rollback-page"],
             )
             .unwrap();
         let current_rollback_bytes = fs::metadata(&rollback).unwrap().len();

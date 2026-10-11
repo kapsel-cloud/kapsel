@@ -9,7 +9,11 @@ use std::{
 use rusqlite::{params, Connection};
 
 use super::{
-    journal::{self, LoadedOperation},
+    journal::{
+        self,
+        test_history::{stored_rows, History},
+        LoadedOperation,
+    },
     *,
 };
 

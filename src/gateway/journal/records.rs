@@ -754,19 +754,15 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::journal::test_history::{open_scratch, History};
 
     fn record() -> Record {
-        let mut original = Record::empty("atomic-binding");
-        for (field, value) in [
-            ("namespace", "demo"),
-            ("deployment", "api"),
-            ("container", "original"),
-            ("immutable_image_digest", "image"),
-            ("state", "authorized"),
-        ] {
-            original.set(field, value.to_owned());
-        }
-        original
+        let scratch = Scratch::new();
+        let journal = open_scratch(&scratch);
+        History::kube("atomic-binding").insert(&journal.connection, "authorized");
+        read(&journal.connection, "atomic-binding")
+            .unwrap()
+            .unwrap()
     }
 
     fn binding_law(

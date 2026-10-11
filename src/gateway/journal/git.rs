@@ -495,144 +495,191 @@ fn decode_phase(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+    use super::*;
+    use crate::gateway::{
+        journal::{
+            capacity, records,
+            test_history::{digest, git_binding, open_scratch, trust, History, Scratch},
+        },
+        tests::storage::copy_closed_journal,
     };
 
-    use super::*;
-    use crate::gateway::journal::capacity;
-
-    struct Fixture(PathBuf);
-    impl Fixture {
-        fn new() -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let root = std::env::temp_dir().join(format!(
-                "kapsel-git-journal-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&root).unwrap();
-            fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-            Self(root)
-        }
-        fn open(&self) -> Journal {
-            Journal::open(self.0.join("journal")).unwrap()
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn binding(id: &str) -> GitBinding {
-        binding_with_commit(id, "b".repeat(40))
-    }
-
-    fn binding_with_commit(id: &str, new_commit: String) -> GitBinding {
-        let approval = GitRefAuthorization {
-            authorization_id: "approval".into(),
-            operation_id: id.into(),
-            repository_id: "repository".into(),
-            reference: kapsel_authority::APPROVED_GIT_REF.into(),
-            old_commit: "a".repeat(40),
-            new_commit,
-        };
-        let bytes = kapsel_authority::sign_git_ref_grant(&approval, &[7; 32], "owner").unwrap();
-        let trust = AuthorizationTrust {
-            key_id: "owner".into(),
-            public_key: ed25519_dalek::SigningKey::from_bytes(&[7; 32])
-                .verifying_key()
-                .to_bytes(),
-        };
-        GitBinding::verify(&bytes, &[trust]).unwrap()
-    }
-
     #[test]
-    fn original_git_binding_survives_restart_and_rejects_changed_payload() {
-        let fixture = Fixture::new();
-        let original = binding("operation");
-        {
-            let journal = fixture.open();
-            let worker = journal.try_lock_worker().unwrap().unwrap();
-            assert_eq!(
-                journal.insert_git(&original, &worker).unwrap(),
-                GitPhase::Authorized
-            );
-        }
-        let journal = fixture.open();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one SQL history pins phase, custody and receipt binding"
+    )]
+    fn git_rows_bind_authority_phase_and_receipt_to_independent_sql_fields() {
+        let scratch = Scratch::new();
+        let journal = open_scratch(&scratch);
+        let binding = git_binding("operation");
+        let a = binding.authorization();
+        // The fixture bypasses production record writes, including their field ordering.
+        journal
+            .connection
+            .execute(
+                "INSERT INTO git_ref_operations (operation_id, repository_id, ref_name, old_commit,
+             new_commit, authorization_id, authorization_signer_key_id, authorization_grant_digest,
+             signed_authorization_grant, state)
+             VALUES (?1, 'repository', 'refs/heads/approved', ?2, ?3, 'approval',
+                'snapshot-signer', ?4, ?5, 'authorized')",
+                rusqlite::params![
+                    a.operation_id,
+                    "a".repeat(40),
+                    "b".repeat(40),
+                    digest(binding.signed_grant()),
+                    binding.signed_grant()
+                ],
+            )
+            .unwrap();
         let worker = journal.try_lock_worker().unwrap().unwrap();
-        assert_eq!(
-            journal.insert_git(&original, &worker).unwrap(),
-            GitPhase::Authorized
-        );
-        let changed = binding_with_commit("operation", "c".repeat(40));
-        assert!(matches!(
-            journal.insert_git(&changed, &worker),
-            Err(GatewayError::OperationIdentityConflict)
-        ));
-        assert!(matches!(
-            journal.reject_git(&changed, GitRejection::StaleRef, &worker),
-            Err(GatewayError::OperationIdentityConflict)
-        ));
-        assert_eq!(
-            journal.git_operation(&original).unwrap(),
-            Some(GitPhase::Authorized)
-        );
-    }
-
-    #[test]
-    fn lost_acknowledgement_freezes_unknown_even_when_present_ref_is_b() {
-        let fixture = Fixture::new();
-        let original = binding("operation");
-        {
-            let journal = fixture.open();
-            let worker = journal.try_lock_worker().unwrap().unwrap();
-            journal.insert_git(&original, &worker).unwrap();
-            // Crash fixture: durable attempted history carries no fresh dispatch permission.
+        for (phase, facts, expected) in [
+            ("authorized", "", GitPhase::Authorized),
+            (
+                "not_attempted",
+                ", target_rejection = 'stale_ref'",
+                GitPhase::NotAttempted(GitRejection::StaleRef),
+            ),
+            (
+                "not_attempted",
+                ", target_rejection = 'invalid_objects'",
+                GitPhase::NotAttempted(GitRejection::InvalidObjects),
+            ),
+            ("apply_started", "", GitPhase::Attempted(None)),
+            (
+                "apply_started",
+                ", acknowledgement = 'updated'",
+                GitPhase::Attempted(Some(Acknowledgement::Updated)),
+            ),
+            (
+                "receiver_observed",
+                ", acknowledgement = 'unknown', observed_ref_kind = 'missing'",
+                GitPhase::Observed {
+                    acknowledgement: Acknowledgement::Unknown,
+                    observed: ObservedRef::Missing,
+                },
+            ),
+        ] {
             journal
                 .connection
-                .execute("UPDATE git_ref_operations SET state = 'apply_started'", [])
+                .execute_batch(&format!(
+                    "UPDATE git_ref_operations SET state = '{phase}', target_rejection = NULL,
+                 acknowledgement = NULL, observed_ref_kind = NULL{facts}"
+                ))
                 .unwrap();
-        }
-        let journal = fixture.open();
-        let worker = journal.try_lock_worker().unwrap().unwrap();
-        let observed = ObservedRef::Commit(original.authorization.new_commit.clone());
-        journal
-            .freeze_git_observation(&original, &observed, &worker)
+            assert_eq!(
+                journal.git_operation(&binding).unwrap(),
+                Some(expected.clone())
+            );
+            assert_eq!(
+                journal
+                    .retained_git("operation", &[trust()])
+                    .unwrap()
+                    .unwrap()
+                    .1,
+                expected
+            );
+            if expected != GitPhase::Attempted(None) {
+                let before = records::read_git(&journal.connection, "operation").unwrap();
+                assert!(matches!(
+                    journal.record_git_acknowledgement(&binding, Acknowledgement::Updated, &worker),
+                    Err(GatewayError::InvalidTransition)
+                ));
+                assert_eq!(
+                    records::read_git(&journal.connection, "operation").unwrap(),
+                    before
+                );
+            }
+            if matches!(expected, GitPhase::Observed { .. }) {
+                assert!(matches!(
+                    journal.freeze_git_observation(&binding, &ObservedRef::Unknown, &worker),
+                    Err(GatewayError::InvalidTransition)
+                ));
+            }
+            Journal::validate_mixed_replacement(
+                &scratch.0.join("journal.sqlite3"),
+                &[],
+                &[git_binding("operation")],
+            )
             .unwrap();
-        let frozen = GitPhase::Observed {
+        }
+        let statement = evidence::GitStatement {
+            authorization: a.clone(),
+            authorization_signer: "snapshot-signer".into(),
+            authorization_digest: digest(binding.signed_grant()),
             acknowledgement: Acknowledgement::Unknown,
-            observed,
+            observed: ObservedRef::Missing,
         };
-        assert_eq!(
-            journal.git_operation(&original).unwrap(),
-            Some(frozen.clone())
-        );
-        assert!(journal
-            .record_git_acknowledgement(&original, Acknowledgement::Updated, &worker)
-            .is_err());
-        assert!(journal
-            .freeze_git_observation(&original, &ObservedRef::Missing, &worker)
-            .is_err());
-
+        let mut foreign = statement.clone();
+        foreign.observed = ObservedRef::Unknown;
+        let bytes = evidence::sign(&foreign, &[9; 32], "receipt-key").unwrap();
+        assert!(matches!(
+            journal.commit_git_receipt(&binding, &bytes, &worker),
+            Err(GatewayError::InvalidPersistedState)
+        ));
+        let bytes = evidence::sign(&statement, &[9; 32], "receipt-key").unwrap();
+        journal
+            .commit_git_receipt(&binding, &bytes, &worker)
+            .unwrap();
+        let expected = GitPhase::Finalized {
+            statement: Box::new(statement),
+            receipt: FrozenReceipt {
+                operation_id: "operation".into(),
+                digest: digest(&bytes),
+                bytes,
+                key_id: "receipt-key".into(),
+            },
+        };
+        assert_eq!(journal.git_operation(&binding).unwrap(), Some(expected));
         drop(worker);
         drop(journal);
-        assert_eq!(
-            fixture.open().git_operation(&original).unwrap(),
-            Some(frozen)
-        );
+        let baseline = scratch.0.join("journal.sqlite3");
+        for assignment in [
+            "repository_id = 'other'",
+            "ref_name = 'refs/heads/other'",
+            "old_commit = 'c'",
+            "new_commit = 'd'",
+            "authorization_id = 'other'",
+            "authorization_signer_key_id = 'other'",
+            "authorization_grant_digest = '00'",
+            "signed_authorization_grant = X'00'",
+            "receipt_bytes = NULL",
+            "receipt_digest = '00'",
+            "receipt_key_id = 'other'",
+            "acknowledgement = 'updated'",
+            "observed_ref_kind = 'commit'",
+            "target_rejection = 'stale_ref'",
+            "state = 'requested'",
+        ] {
+            let corrupt = Scratch::new();
+            let path = corrupt.0.join("journal.sqlite3");
+            copy_closed_journal(&baseline, &path);
+            let journal = open_scratch(&corrupt);
+            journal
+                .connection
+                .execute_batch(&format!("UPDATE git_ref_operations SET {assignment}"))
+                .unwrap();
+            assert!(journal.git_operation(&binding).is_err(), "{assignment}");
+            assert!(
+                journal.retained_git("operation", &[trust()]).is_err(),
+                "{assignment}"
+            );
+            let before = std::fs::read(&path).unwrap();
+            assert!(
+                Journal::validate_mixed_replacement(&path, &[], &[git_binding("operation")])
+                    .is_err(),
+                "{assignment}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
     }
 
     #[test]
     fn acknowledgement_and_not_attempted_are_phase_guarded() {
-        let fixture = Fixture::new();
-        let journal = fixture.open();
+        let scratch = Scratch::new();
+        let journal = open_scratch(&scratch);
         let worker = journal.try_lock_worker().unwrap().unwrap();
-        let original = binding("operation");
+        let original = git_binding("operation");
         journal.insert_git(&original, &worker).unwrap();
         assert!(journal
             .record_git_acknowledgement(&original, Acknowledgement::Updated, &worker)
@@ -656,41 +703,32 @@ mod tests {
 
     #[test]
     fn both_capabilities_share_capacity_and_identity_namespace() {
-        let fixture = Fixture::new();
-        let journal = fixture.open();
+        let scratch = Scratch::new();
+        let journal = open_scratch(&scratch);
         let worker = journal.try_lock_worker().unwrap().unwrap();
-        journal
-            .connection
-            .execute(
-                "INSERT INTO kubernetes_image_operations
-             (operation_id, namespace, deployment, container, immutable_image_digest, state)
-             VALUES ('shared', 'ns', 'app', 'app', 'fixture-only', 'authorized')",
-                [],
-            )
-            .unwrap();
+        History::kube("shared").insert(&journal.connection, "authorized");
         assert!(matches!(
-            journal.insert_git(&binding("shared"), &worker),
+            journal.insert_git(&git_binding("shared"), &worker),
             Err(GatewayError::OperationIdentityConflict)
         ));
         for index in 0..31 {
             journal
-                .insert_git(&binding(&format!("git-{index}")), &worker)
+                .insert_git(&git_binding(&format!("git-{index}")), &worker)
                 .unwrap();
         }
         assert_eq!(capacity::counts(&journal.connection).unwrap(), (32, 32));
         assert!(matches!(
-            journal.insert_git(&binding("full"), &worker),
+            journal.insert_git(&git_binding("full"), &worker),
             Err(GatewayError::JournalFull)
         ));
         assert_eq!(
-            journal.insert_git(&binding("git-0"), &worker).unwrap(),
+            journal.insert_git(&git_binding("git-0"), &worker).unwrap(),
             GitPhase::Authorized
         );
-
         drop(worker);
         drop(journal);
         assert_eq!(
-            capacity::counts(&fixture.open().connection).unwrap(),
+            capacity::counts(&open_scratch(&scratch).connection).unwrap(),
             (32, 32)
         );
     }

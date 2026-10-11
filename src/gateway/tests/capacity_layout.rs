@@ -40,27 +40,14 @@ fn layout_live_pages(path: &Path) -> i64 {
 }
 
 fn layout_request() -> SetDeploymentImageRequest {
-    SetDeploymentImageRequest {
-        operation_id: "o".repeat(128),
-        namespace: "n".repeat(63),
-        deployment: format!(
-            "{}.{}.{}.{}",
-            "a".repeat(63),
-            "b".repeat(63),
-            "c".repeat(63),
-            "d".repeat(61)
-        ),
-        container: "c".repeat(63),
-        immutable_image_digest: format!("{}@sha256:{}", "i".repeat(440), "0".repeat(64)),
-    }
+    let mut request = super::storage::maximal_request(0);
+    request.operation_id = "o".repeat(128);
+    request
 }
 
 fn create_padded_layout(path: &Path, padding: usize) {
-    let gateway = Gateway::open_for_test(path).unwrap();
-    gateway
-        .submit_exact_for_test(&layout_request(), &authorization(&layout_request()))
-        .unwrap();
-
+    let gateway = Gateway::open(path, journal::test_history::trust()).unwrap();
+    History::new(layout_request(), None).insert(&gateway.journal.connection, "authorized");
     drop(gateway);
     let connection = Connection::open(path).unwrap();
     assert_eq!(rusqlite::version(), "3.53.2");
@@ -108,10 +95,11 @@ fn insert_long_retained_rows(path: &Path, count: usize) {
 async fn complete_layout_operation(path: &Path, request: &SetDeploymentImageRequest) {
     // Shared read-only snapshot acceptance is separate from logical selection of the valid row.
     Journal::validate_replacement(path, &[]).unwrap();
-    let mut gateway = Gateway::open_for_test(path).unwrap();
+    let mut gateway = Gateway::open(path, journal::test_history::trust()).unwrap();
+    let history = History::new(request.clone(), None);
     assert_eq!(
         gateway
-            .submit_exact_for_test(request, &authorization(request))
+            .submit_authorized(request, &history.authorized.authorization().signed_grant)
             .unwrap(),
         SubmissionResult::Existing(OperationState::Authorized)
     );

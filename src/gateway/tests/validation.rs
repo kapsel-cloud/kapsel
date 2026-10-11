@@ -23,7 +23,7 @@ fn every_authority_field_is_bound_before_first_or_requested_admission() {
                 Err(GatewayError::InjectedFault)
             ));
         }
-        let original = super::storage::stored_rows(&gateway.journal.connection);
+        let original = stored_rows(&gateway.journal.connection);
         for field in 0..5 {
             let mut changed = exact.clone();
             let value = match field {
@@ -42,18 +42,12 @@ fn every_authority_field_is_bound_before_first_or_requested_admission() {
                 gateway.submit_exact_for_test(&request, &changed),
                 Err(GatewayError::AuthorizationMismatch)
             ));
-            assert_eq!(
-                super::storage::stored_rows(&gateway.journal.connection),
-                original
-            );
+            assert_eq!(stored_rows(&gateway.journal.connection), original);
         }
         let grant = sign_authorization_grant(&exact, &[99; 32], "unappointed").unwrap();
         for bytes in [grant, b"malformed".to_vec()] {
             assert!(gateway.submit_authorized(&request, &bytes).is_err());
-            assert_eq!(
-                super::storage::stored_rows(&gateway.journal.connection),
-                original
-            );
+            assert_eq!(stored_rows(&gateway.journal.connection), original);
         }
         drop(gateway);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -85,7 +79,7 @@ fn malformed_requests_preserve_field_errors_and_do_not_insert() {
         value.clear();
         assert!(matches!(gateway.submit_exact_for_test(&invalid, &exact),
             Err(GatewayError::InvalidInput(actual)) if actual == field));
-        assert!(super::storage::stored_rows(&gateway.journal.connection).is_empty());
+        assert!(stored_rows(&gateway.journal.connection).is_empty());
     }
     let mut mutable = request();
     mutable.immutable_image_digest = "example/api:latest".into();
@@ -157,7 +151,7 @@ fn both_capacity_limits_serialize_the_last_slot_and_preserve_existing_identity()
                     .unwrap();
             }
         }
-        let original = super::storage::stored_rows(&setup.journal.connection);
+        let original = stored_rows(&setup.journal.connection);
         drop(setup);
         let barrier = Barrier::new(2);
         let results = std::thread::scope(|scope| {
@@ -193,7 +187,7 @@ fn both_capacity_limits_serialize_the_last_slot_and_preserve_existing_identity()
             1
         );
         let gateway = Gateway::open_for_test(&path).unwrap();
-        let retained = super::storage::stored_rows(&gateway.journal.connection);
+        let retained = stored_rows(&gateway.journal.connection);
         assert_eq!(retained.len(), usize::try_from(limit).unwrap());
         for (id, row) in original {
             assert_eq!(retained.get(&id), Some(&row));
