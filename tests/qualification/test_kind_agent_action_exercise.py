@@ -10,7 +10,12 @@ import time
 import unittest
 
 from kind_agent_action_exercise import finalized_evidence, retained_row
-from run_kind_agent_action_workflow import CODEX_OUTPUT_LIMIT, run, run_bounded_process
+from run_kind_agent_action_workflow import (
+    CODEX_OUTPUT_LIMIT,
+    run,
+    run_agent_process,
+    run_bounded_process,
+)
 
 
 class RetainedEvidenceTests(unittest.TestCase):
@@ -127,14 +132,13 @@ class BoundedSubprocessTests(unittest.TestCase):
                     )
 
     def test_codex_capture_keeps_256_kib_limit(self) -> None:
-        script = f"import sys; sys.stdout.buffer.write(b'x' * {CODEX_OUTPUT_LIMIT + 1})"
-        with self.assertRaisesRegex(RuntimeError, "confined Codex output exceeded"):
-            run_bounded_process(
-                [sys.executable, "-c", script],
-                timeout=5,
-                output_limit=CODEX_OUTPUT_LIMIT,
-                overflow_message="confined Codex output exceeded its byte bound",
-            )
+        for stream in (1, 2):
+            script = f"import os; os.write({stream}, b'x' * {CODEX_OUTPUT_LIMIT + 1})"
+            with (
+                self.subTest(stream=stream),
+                self.assertRaisesRegex(RuntimeError, "confined Codex output exceeded"),
+            ):
+                run_agent_process([sys.executable, "-I", "-c", script], timeout=5)
 
     def test_deadline_includes_eof_then_child_wait_and_reaps_process(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -33,6 +33,15 @@ recovery invokes its disposition-gated `resume` through MCP after process loss, 
 reference bytes. The retained process trace also covers death after receipt commitment, original
 byte export and signer rotation; the separate caller-loss check owns undelivered acknowledgement.
 
+Artifact composition delegates bounded format validation to the standalone verifier. Its offline
+regressions use one independently authored archive/SBOM fixture with pinned layout and metadata,
+hostile-member vectors, sidecar tampering and exclusive extraction under an isolated interpreter.
+The assembled-artifact check adds exact source/asset correspondence, ELF identity and execution of
+the checksum-bound companion. The bundled operator-guide trace owns the default installed service
+checks, including custody and MCP, rather than repeating a successful operation/restart journey. The
+standalone verifier's explicit container and native-systemd modes remain available; packaged
+crash/live receiver lanes remain separate.
+
 The whole-suite working budget is 17,400 charged lines, including all replacement support:
 
 | Owner                                                    | After-budget |

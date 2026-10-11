@@ -5,28 +5,18 @@ from __future__ import annotations
 
 import argparse
 import ast
-import contextlib
-import gzip
 import hashlib
 import importlib.util
-import io
 import json
 import os
 import pathlib
-import posixpath
 import re
-import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import tomllib
 import unittest
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from _typeshed import WriteableBuffer
 from unittest import mock
 
 import assemble_artifact as ASSEMBLY
@@ -35,7 +25,6 @@ import verify_artifact as SMOKE
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ASSEMBLER = pathlib.Path(__file__).with_name("assemble_artifact.py")
 TARGET = "x86_64-unknown-linux-gnu"
-BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 RELEASE_ARCHIVE: pathlib.Path | None = None
 EXAMPLE_REVISION: str | None = None
@@ -62,166 +51,6 @@ if JOURNEY_SPEC is None or JOURNEY_SPEC.loader is None:
     raise RuntimeError("could not load the live journey runner")
 JOURNEY = importlib.util.module_from_spec(JOURNEY_SPEC)
 JOURNEY_SPEC.loader.exec_module(JOURNEY)
-
-
-class ZeroReader(io.RawIOBase):
-    def __init__(self, remaining: int) -> None:
-        self.remaining = remaining
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer: WriteableBuffer) -> int:
-        view = memoryview(buffer).cast("B")
-        count = min(len(view), self.remaining)
-        if count == 0:
-            return 0
-        view[:count] = b"\0" * count
-        self.remaining -= count
-        return count
-
-
-def synthetic_archive(
-    archive: pathlib.Path,
-    *,
-    mutate: str | None = None,
-) -> bytes:
-    basename = archive.name.removesuffix(".tar.gz")
-    ordinary = b"ordinary"
-    service = b"service"
-    client = b"client"
-    mcp_bridge = b"mcp-bridge"
-    metadata = {
-        "artifact_schema": "kapsel.release-artifact.v3",
-        "package_version": "0.2.0",
-        "rust_target": TARGET,
-        "source_revision": "1" * 40,
-        "source_tree": "2" * 40,
-        "source_dirty": False,
-        "cargo_lock_sha256": "3" * 64,
-        "cargo_graph_sha256": "4" * 64,
-        "cargo_package_count": 1,
-        "cargo_relationship_count": 1,
-        "license": "Apache-2.0",
-        "license_sha256": hashlib.sha256(b"license").hexdigest(),
-        "builder_image": BUILDER_IMAGE,
-        "smoke_image": SMOKE_IMAGE,
-        "ordinary_binary_bytes": len(ordinary),
-        "ordinary_binary_sha256": hashlib.sha256(ordinary).hexdigest(),
-        "service_binary_bytes": len(service),
-        "service_binary_sha256": hashlib.sha256(service).hexdigest(),
-        "client_binary_bytes": len(client),
-        "client_binary_sha256": hashlib.sha256(client).hexdigest(),
-        "mcp_bridge_binary_bytes": len(mcp_bridge),
-        "mcp_bridge_binary_sha256": hashlib.sha256(mcp_bridge).hexdigest(),
-        "non_claims": "service-preview;not-production;no-public-rust-api;no-other-targets",
-    }
-    files: dict[str, bytes | int] = {
-        f"{basename}/bin/kapsel": ordinary,
-        f"{basename}/libexec/kapsel/kapseld": service,
-        f"{basename}/bin/kapsel-service-client": client,
-        f"{basename}/bin/kapsel-service-mcp": mcp_bridge,
-        f"{basename}/share/kapsel/kapseld.service": b"unit\n",
-        f"{basename}/share/kapsel/kapseld.conf": b"sysusers\n",
-        f"{basename}/share/kapsel/kapseld-rbac.yaml": b"rbac\n",
-        f"{basename}/share/doc/kapsel/COMMANDS.md": b"commands\n",
-        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md": b"operator\n",
-        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE.md": b"service\n",
-        f"{basename}/share/doc/kapsel/PRIVACY.md": b"privacy\n",
-        f"{basename}/share/doc/kapsel/RELEASE.md": b"release\n",
-        f"{basename}/share/doc/kapsel/SECURITY.md": b"security\n",
-        f"{basename}/share/doc/kapsel/UPGRADE.md": b"upgrade\n",
-        f"{basename}/CHANGELOG.md": b"changelog\n",
-        f"{basename}/LICENSE": b"license",
-        f"{basename}/RELEASE-METADATA.json": (
-            json.dumps(metadata, indent=2, separators=(",", ": ")) + "\n"
-        ).encode(),
-    }
-    if mutate == "service-digest":
-        files[f"{basename}/libexec/kapsel/kapseld"] = b"changed"
-    if mutate == "client-digest":
-        files[f"{basename}/bin/kapsel-service-client"] = b"changed"
-    if mutate == "old-schema":
-        metadata["artifact_schema"] = "kapsel.release-artifact.v2"
-        files[f"{basename}/RELEASE-METADATA.json"] = (json.dumps(metadata) + "\n").encode()
-    if mutate == "oversized-file":
-        files[f"{basename}/CHANGELOG.md"] = 32 * 1024 * 1024 + 1
-    if mutate == "oversized-expanded":
-        for name in ["COMMANDS.md", "KAPSEL_SERVICE_OPERATOR.md", "KAPSEL_SERVICE.md"]:
-            files[f"{basename}/share/doc/kapsel/{name}"] = 22 * 1024 * 1024
-
-    directories = {
-        f"{basename}/",
-        f"{basename}/bin/",
-        f"{basename}/libexec/",
-        f"{basename}/libexec/kapsel/",
-        f"{basename}/share/",
-        f"{basename}/share/kapsel/",
-        f"{basename}/share/doc/",
-        f"{basename}/share/doc/kapsel/",
-    }
-    entries = sorted([*directories, *files])
-    if mutate in {"extra", "traversal", "absolute", "duplicate"}:
-        added = {
-            "extra": f"{basename}/EXTRA",
-            "traversal": f"{basename}/../escape",
-            "absolute": "/escape",
-            "duplicate": f"{basename}/CHANGELOG.md",
-        }[mutate]
-        entries.append(added)
-        entries.sort()
-
-    output = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
-        archive_format = {
-            "pax": tarfile.PAX_FORMAT,
-            "gnu": tarfile.GNU_FORMAT,
-        }.get(mutate or "", tarfile.USTAR_FORMAT)
-        with tarfile.open(fileobj=compressed, mode="w", format=archive_format) as release:
-            for name in entries:
-                is_directory = name.endswith("/")
-                information = tarfile.TarInfo(name)
-                information.uid = 0
-                information.gid = 0
-                information.uname = ""
-                information.gname = ""
-                information.mtime = 0
-                information.mode = (
-                    0o755
-                    if is_directory
-                    or name.endswith(
-                        ("/kapsel", "/kapseld", "/kapsel-service-client", "/kapsel-service-mcp")
-                    )
-                    else 0o644
-                )
-                if mutate == "unsafe-mode" and name.endswith("/CHANGELOG.md"):
-                    information.mode = 0o666
-                if mutate == "executable-unit" and name.endswith("/kapseld.service"):
-                    information.mode = 0o755
-                if mutate == "pax" and name.endswith("/CHANGELOG.md"):
-                    information.pax_headers = {"comment": "hidden extension"}
-                if is_directory:
-                    information.type = tarfile.DIRTYPE
-                    release.addfile(information)
-                    continue
-                value = files.get(name, b"extra\n")
-                if mutate in {"symlink", "hardlink", "special"} and name.endswith("/CHANGELOG.md"):
-                    information.type = {
-                        "symlink": tarfile.SYMTYPE,
-                        "hardlink": tarfile.LNKTYPE,
-                        "special": tarfile.CHRTYPE,
-                    }[mutate]
-                    information.linkname = "LICENSE"
-                    release.addfile(information)
-                    continue
-                information.type = tarfile.REGTYPE
-                if isinstance(value, int):
-                    information.size = value
-                    release.addfile(information, ZeroReader(value))
-                else:
-                    information.size = len(value)
-                    release.addfile(information, io.BytesIO(value))
-    return output.getvalue()
 
 
 class ReleaseVerifierTests(unittest.TestCase):
@@ -276,23 +105,6 @@ class ReleaseVerifierTests(unittest.TestCase):
         ):
             with self.subTest(document=document), self.assertRaises(RuntimeError):
                 ASSEMBLY.cargo_graph_records(document)
-
-    def test_kind_caller_probe_compiles_in_the_isolated_interpreter(self) -> None:
-        source = JOURNEY.CUSTODY_PROBE_SOURCE.read_text()
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                "import sys; compile(sys.stdin.read(), '<caller-probe>', 'exec')",
-            ],
-            input=source,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_extracted_fixture_imports_do_not_execute_the_journeys(self) -> None:
         fixtures = (
@@ -373,27 +185,6 @@ class ReleaseVerifierTests(unittest.TestCase):
             self.assertRaises(AssertionError),
         ):
             JOURNEY.collect_patch_counts("fixture")
-
-    def test_agent_output_streams_are_bounded_before_completion(self) -> None:
-        for stream in (1, 2):
-            with self.subTest(stream=stream):
-                with self.assertRaisesRegex(RuntimeError, "byte bound"):
-                    JOURNEY.run_agent_process(
-                        [
-                            sys.executable,
-                            "-I",
-                            "-c",
-                            f"import os; os.write({stream}, b'x' * (256 * 1024 + 1))",
-                        ]
-                    )
-        with self.assertRaises(subprocess.TimeoutExpired):
-            JOURNEY.run_agent_process(
-                [sys.executable, "-I", "-c", "import time; time.sleep(10)"], timeout=0.1
-            )
-        result = JOURNEY.run_agent_process(
-            [sys.executable, "-I", "-c", "import os; os.write(1, b'out'); os.write(2, b'err')"]
-        )
-        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"out", b"err"))
 
     def test_journey_python_calls_exclude_caller_writable_imports(self) -> None:
         tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
@@ -781,37 +572,6 @@ class ReleaseVerifierTests(unittest.TestCase):
         self.assertEqual(len(edges), 2)
         self.assertEqual(root, "SPDXRef-Package-kapsel-source")
 
-    def test_canonical_synthetic_archive_is_accepted(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="kapsel-release-canonical-") as temporary:
-            archive = pathlib.Path(temporary) / "kapsel-0.2.0-x86_64-unknown-linux-gnu.tar.gz"
-            metadata = SMOKE.validate_archive(archive, synthetic_archive(archive))
-        self.assertEqual(metadata["package_version"], "0.2.0")
-
-    def test_safe_extraction_negative_matrix(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="kapsel-release-negative-") as temporary:
-            archive = pathlib.Path(temporary) / "kapsel-0.2.0-x86_64-unknown-linux-gnu.tar.gz"
-            for mutation in [
-                "service-digest",
-                "client-digest",
-                "old-schema",
-                "executable-unit",
-                "extra",
-                "traversal",
-                "absolute",
-                "duplicate",
-                "symlink",
-                "hardlink",
-                "special",
-                "unsafe-mode",
-                "oversized-file",
-                "oversized-expanded",
-                "pax",
-                "gnu",
-            ]:
-                with self.subTest(mutation=mutation):
-                    with self.assertRaises(RuntimeError):
-                        SMOKE.validate_archive(archive, synthetic_archive(archive, mutate=mutation))
-
     def test_compressed_archive_size_excess_is_rejected_before_read(self) -> None:
         with tempfile.TemporaryDirectory(prefix="kapsel-release-compressed-") as temporary:
             path = pathlib.Path(temporary) / "oversized.tar.gz"
@@ -900,8 +660,6 @@ class ReleaseArtifactTests(unittest.TestCase):
                     f"{root}:/artifact:ro",
                     "--volume",
                     f"{archive}.verify.py:/fixture.py:ro",
-                    "--volume",
-                    f"{ROOT / 'docs/guides/operator.md'}:/guide.md:ro",
                     SMOKE_IMAGE,
                     "python3",
                     "-I",
@@ -937,314 +695,101 @@ class ReleaseArtifactTests(unittest.TestCase):
         finally:
             sentinel.unlink(missing_ok=True)
 
-    def test_extraction_companion_needs_no_checkout_or_executable_invocation(self) -> None:
+    def test_reference_archive_has_verified_exact_layout_and_smoke(self) -> None:
         archive = release_archive()
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip()
-        with tempfile.TemporaryDirectory(prefix="kapsel-extraction-only-") as temporary:
-            private = pathlib.Path(temporary)
-            destination = private / "extracted"
-            command = [
-                "python3",
-                str(archive) + ".verify.py",
-                "--archive",
-                str(archive),
-                "--expected-revision",
-                revision,
-                "--extract-to",
-                str(destination),
-            ]
-            result = subprocess.run(
-                command, cwd=private, capture_output=True, text=True, timeout=30, check=True
-            )
-            extracted = destination / archive.name.removesuffix(".tar.gz")
-            self.assertEqual(result.stdout.strip(), str(extracted))
-            self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
-            self.assertTrue((extracted / "share/kapsel/kapseld.service").is_file())
-            before = (extracted / "RELEASE-METADATA.json").read_bytes()
-            refused = subprocess.run(
-                command, cwd=private, capture_output=True, timeout=30, check=False
-            )
-            self.assertNotEqual(refused.returncode, 0)
-            self.assertEqual((extracted / "RELEASE-METADATA.json").read_bytes(), before)
-            # A bad revision must fail before creating any destination.
-            wrong = private / "wrong"
-            command[-1] = str(wrong)
-            command[command.index("--expected-revision") + 1] = "0" * 40
-            refused = subprocess.run(
-                command, cwd=private, capture_output=True, timeout=30, check=False
-            )
-            self.assertNotEqual(refused.returncode, 0)
-            self.assertFalse(wrong.exists())
-            # Even a dangling destination symlink is not an empty extraction root.
-            link = private / "link"
-            link.symlink_to(private / "absent")
-            with self.assertRaises(FileExistsError):
-                SMOKE.extract_release(
-                    archive, archive.with_name(archive.name + ".sha256"), revision, link
-                )
-            self.assertFalse((private / "absent").exists())
-
-    def test_verifier_companion_is_digest_bound(self) -> None:
-        archive = release_archive()
-        with tempfile.TemporaryDirectory(prefix="kapsel-verifier-tamper-") as temporary:
-            copied = pathlib.Path(temporary) / archive.name
-            for suffix in ("", ".sha256", ".spdx.json", ".SHA256SUMS", ".verify.py"):
-                shutil.copyfile(str(archive) + suffix, str(copied) + suffix)
-            with pathlib.Path(str(copied) + ".verify.py").open("ab") as verifier:
-                verifier.write(b"\n# altered\n")
-            destination = pathlib.Path(temporary) / "extracted"
-            with self.assertRaisesRegex(RuntimeError, "digest manifest mismatch"):
-                SMOKE.extract_release(
-                    copied, pathlib.Path(str(copied) + ".sha256"), "0" * 40, destination
-                )
-            self.assertFalse(destination.exists())
-
-    def test_reference_archive_has_verified_exact_layout_and_smoke(self) -> None:
-        expected_dirty = bool(
-            subprocess.run(
-                ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-                cwd=ROOT,
-                check=True,
-                stdout=subprocess.PIPE,
-            ).stdout
+        _, metadata = SMOKE.verified_release(
+            archive, archive.with_name(archive.name + ".sha256"), revision
         )
-        archive = release_archive()
-        SMOKE.read_bounded_regular(archive, 32 * 1024 * 1024)
-        with contextlib.nullcontext(archive.parent) as output:
-            version = tomllib.loads(ROOT.joinpath("Cargo.toml").read_text())["workspace"][
-                "package"
-            ]["version"]
-            basename = f"kapsel-{version}-{TARGET}"
-            self.assertEqual(archive.name, f"{basename}.tar.gz")
-            checksum = output / f"{archive.name}.sha256"
-            sbom = output / f"{archive.name}.spdx.json"
-            manifest = output / f"{archive.name}.SHA256SUMS"
-            verifier = output / f"{archive.name}.verify.py"
-            self.assertEqual(
-                SMOKE.read_bounded_regular(verifier, 64 * 1024),
-                ROOT.joinpath("tools/release/verify_artifact.py").read_bytes(),
-            )
-            checksum_bytes = SMOKE.read_bounded_regular(checksum, 1024)
-            sbom_bytes = SMOKE.read_bounded_regular(sbom, 2 * 1024 * 1024)
-            manifest_bytes = SMOKE.read_bounded_regular(manifest, 1024)
-            self.assertEqual(checksum_bytes.decode(), f"{sha256(archive)}  {archive.name}\n")
-            expected_manifest = "".join(
-                f"{sha256(path)}  {path.name}\n"
-                for path in sorted([archive, checksum, sbom, verifier], key=lambda path: path.name)
-            )
-            self.assertEqual(manifest_bytes.decode(), expected_manifest)
+        package = tomllib.loads(ROOT.joinpath("Cargo.toml").read_text())["workspace"]["package"]
+        self.assertEqual(archive.name, f"kapsel-{package['version']}-{TARGET}.tar.gz")
+        self.assertFalse(metadata["source_dirty"], "artifact qualification needs clean source")
+        self.assertEqual(
+            metadata["source_tree"],
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD^{tree}"], cwd=ROOT, text=True
+            ).strip(),
+        )
+        self.assertEqual(metadata["cargo_lock_sha256"], sha256(ROOT / "Cargo.lock"))
+        self.assertEqual(metadata["license"], package["license"])
+        verifier = archive.with_name(archive.name + ".verify.py")
+        self.assertEqual(
+            SMOKE.read_bounded_regular(verifier, 64 * 1024),
+            ROOT.joinpath("tools/release/verify_artifact.py").read_bytes(),
+        )
 
-            expected = {
-                f"{basename}/",
-                f"{basename}/bin/",
-                f"{basename}/bin/kapsel",
-                f"{basename}/libexec/",
-                f"{basename}/libexec/kapsel/",
-                f"{basename}/libexec/kapsel/kapseld",
-                f"{basename}/bin/kapsel-service-client",
-                f"{basename}/bin/kapsel-service-mcp",
-                f"{basename}/share/",
-                f"{basename}/share/kapsel/",
-                f"{basename}/share/kapsel/kapseld.service",
-                f"{basename}/share/kapsel/kapseld.conf",
-                f"{basename}/share/kapsel/kapseld-rbac.yaml",
-                f"{basename}/share/doc/",
-                f"{basename}/share/doc/kapsel/",
-                f"{basename}/share/doc/kapsel/COMMANDS.md",
-                f"{basename}/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md",
-                f"{basename}/share/doc/kapsel/KAPSEL_SERVICE.md",
-                f"{basename}/share/doc/kapsel/PRIVACY.md",
-                f"{basename}/share/doc/kapsel/RELEASE.md",
-                f"{basename}/share/doc/kapsel/SECURITY.md",
-                f"{basename}/share/doc/kapsel/UPGRADE.md",
-                f"{basename}/CHANGELOG.md",
-                f"{basename}/LICENSE",
-                f"{basename}/RELEASE-METADATA.json",
-            }
-            with tarfile.open(archive, "r:gz") as release:
-                members = release.getmembers()
-                names = {member.name + ("/" if member.isdir() else "") for member in members}
-                self.assertEqual(names, expected)
-                ordered_names = [member.name for member in members]
-                self.assertEqual(ordered_names, sorted(ordered_names))
-                for member in members:
-                    identity = (
-                        member.uid,
-                        member.gid,
-                        member.uname,
-                        member.gname,
-                        member.mtime,
-                    )
-                    self.assertEqual(identity, (0, 0, "", "", 0))
-                    executable = member.isdir() or member.name.endswith(
-                        ("/kapsel", "/kapseld", "/kapsel-service-client", "/kapsel-service-mcp")
-                    )
-                    expected_mode = 0o755 if executable else 0o644
-                    self.assertEqual(member.mode, expected_mode, member.name)
-
-                for asset in ("kapseld.service", "kapseld.conf", "kapseld-rbac.yaml"):
-                    asset_file = release.extractfile(f"{basename}/share/kapsel/{asset}")
-                    assert asset_file is not None
-                    self.assertEqual(
-                        asset_file.read(),
-                        ROOT.joinpath("crates/kapsel-daemon/deploy", asset).read_bytes(),
-                    )
-
-                for document_name in [
-                    "COMMANDS.md",
-                    "KAPSEL_SERVICE_OPERATOR.md",
-                    "KAPSEL_SERVICE.md",
-                    "PRIVACY.md",
-                    "RELEASE.md",
-                    "SECURITY.md",
-                    "UPGRADE.md",
-                ]:
-                    document_file = release.extractfile(
-                        f"{basename}/share/doc/kapsel/{document_name}"
-                    )
-                    assert document_file is not None
-                    document = document_file.read().decode()
-                    for link in re.findall(
-                        r"]\((?!https?://|#|mailto:)([^)\s]+[.]md)(?:#[^)]+)?\)", document
-                    ):
-                        target = posixpath.normpath(f"{basename}/share/doc/kapsel/{link}")
-                        self.assertTrue(target.startswith(f"{basename}/"))
-                        self.assertIn(target, names, document_name)
-
-                metadata_file = release.extractfile(f"{basename}/RELEASE-METADATA.json")
-                assert metadata_file is not None
-                metadata_bytes = metadata_file.read()
-                self.assertTrue(metadata_bytes.endswith(b"\n"))
-                metadata = json.loads(metadata_bytes)
-                self.assertEqual(metadata["artifact_schema"], "kapsel.release-artifact.v3")
-                self.assertEqual(metadata["package_version"], version)
-                self.assertEqual(metadata["rust_target"], TARGET)
-                revision = subprocess.run(
-                    ["git", "rev-parse", "HEAD"],
-                    cwd=ROOT,
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    text=True,
-                ).stdout.strip()
-                self.assertEqual(metadata["source_revision"], revision)
-                tree = subprocess.run(
-                    ["git", "rev-parse", "HEAD^{tree}"],
-                    cwd=ROOT,
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    text=True,
-                ).stdout.strip()
-                self.assertEqual(metadata["source_tree"], tree)
-                self.assertEqual(metadata["source_dirty"], expected_dirty)
-                self.assertEqual(metadata["cargo_lock_sha256"], sha256(ROOT / "Cargo.lock"))
-                self.assertEqual(metadata["license"], "Apache-2.0")
-                manifest = tomllib.loads(ROOT.joinpath("Cargo.toml").read_text())
-                self.assertEqual(metadata["license"], manifest["workspace"]["package"]["license"])
-                license_file = release.extractfile(f"{basename}/LICENSE")
-                assert license_file is not None
-                license_bytes = license_file.read()
-                self.assertEqual(license_bytes, ROOT.joinpath("LICENSE").read_bytes())
-                self.assertEqual(
-                    hashlib.sha256(license_bytes).hexdigest(),
-                    metadata["license_sha256"],
-                )
-                self.assertEqual(metadata["builder_image"], BUILDER_IMAGE)
-                self.assertEqual(metadata["smoke_image"], SMOKE_IMAGE)
-                self.assertEqual(
-                    metadata["non_claims"],
-                    "service-preview;not-production;no-public-rust-api;no-other-targets",
-                )
-                self.assertEqual(
-                    list(metadata),
-                    [
-                        "artifact_schema",
-                        "package_version",
-                        "rust_target",
-                        "source_revision",
-                        "source_tree",
-                        "source_dirty",
-                        "cargo_lock_sha256",
-                        "cargo_graph_sha256",
-                        "cargo_package_count",
-                        "cargo_relationship_count",
-                        "license",
-                        "license_sha256",
-                        "builder_image",
-                        "smoke_image",
-                        "ordinary_binary_bytes",
-                        "ordinary_binary_sha256",
-                        "service_binary_bytes",
-                        "service_binary_sha256",
-                        "client_binary_bytes",
-                        "client_binary_sha256",
-                        "mcp_bridge_binary_bytes",
-                        "mcp_bridge_binary_sha256",
-                        "non_claims",
-                    ],
-                )
-
-                for name, path in {
-                    "ordinary": "bin/kapsel",
-                    "service": "libexec/kapsel/kapseld",
-                    "client": "bin/kapsel-service-client",
-                    "mcp_bridge": "bin/kapsel-service-mcp",
-                }.items():
-                    binary_file = release.extractfile(f"{basename}/{path}")
-                    assert binary_file is not None
-                    binary = binary_file.read()
-                    self.assertEqual(len(binary), metadata[f"{name}_binary_bytes"])
-                    self.assertEqual(
-                        hashlib.sha256(binary).hexdigest(), metadata[f"{name}_binary_sha256"]
-                    )
-                    self.assertEqual(binary[:4], b"\x7fELF")
-                    self.assertEqual(binary[4:6], b"\x02\x01")
-                    self.assertEqual(int.from_bytes(binary[18:20], "little"), 62)
-
-            sbom_document = json.loads(sbom_bytes)
-            self.assertEqual(sbom_document["spdxVersion"], "SPDX-2.3")
-            self.assertEqual(
-                sbom_document["documentNamespace"],
-                f"https://github.com/kapsel-cloud/kapsel/sbom/{revision}/{sha256(archive)}",
-            )
-            self.assertEqual(
-                sbom_document["creationInfo"]["creators"],
-                ["Tool: kapsel-release-sbom/1"],
-            )
-            self.assertIn(
-                "SPDXRef-Package-kapsel-archive",
-                {package["SPDXID"] for package in sbom_document["packages"]},
-            )
-            self.assertIn(
-                "SPDXRef-Package-kapsel-source",
-                {package["SPDXID"] for package in sbom_document["packages"]},
-            )
-
-            subprocess.run(
+        # The verifier's independent hostile vectors own format, layout and digest rules.
+        # This artifact adds source correspondence and actual executable/installed observations.
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = pathlib.Path(temporary) / "extracted"
+            extracted = subprocess.run(
                 [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--platform",
-                    "linux/amd64",
-                    "--volume",
-                    f"{output}:/input:ro",
-                    "--volume",
-                    f"{ROOT / 'tools/release/verify_artifact.py'}:/smoke.py:ro",
-                    SMOKE_IMAGE,
-                    "python3",
-                    "/smoke.py",
+                    sys.executable,
+                    "-I",
+                    str(verifier),
                     "--archive",
-                    f"/input/{archive.name}",
+                    str(archive),
                     "--expected-revision",
                     revision,
-                    "--service-container",
+                    "--extract-to",
+                    str(destination),
                 ],
-                cwd=ROOT,
+                cwd=temporary,
+                capture_output=True,
+                timeout=30,
                 check=True,
-                timeout=180,
             )
+            root = destination / archive.name.removesuffix(".tar.gz")
+            self.assertEqual(extracted.stdout.decode().strip(), str(root))
+            self.assertEqual(extracted.stderr, b"")
+            self.assertEqual((root / "LICENSE").read_bytes(), ROOT.joinpath("LICENSE").read_bytes())
+            for asset in ("kapseld.service", "kapseld.conf", "kapseld-rbac.yaml"):
+                self.assertEqual(
+                    root.joinpath("share/kapsel", asset).read_bytes(),
+                    ROOT.joinpath("crates/kapsel-daemon/deploy", asset).read_bytes(),
+                )
+            for document in root.joinpath("share/doc/kapsel").glob("*.md"):
+                for link in re.findall(
+                    r"]\((?!https?://|#|mailto:)([^)\s]+[.]md)(?:#[^)]+)?\)", document.read_text()
+                ):
+                    target = (document.parent / link).resolve()
+                    self.assertTrue(target.is_relative_to(root.resolve()))
+                    self.assertTrue(target.is_file(), link)
+            for relative in (
+                "bin/kapsel",
+                "libexec/kapsel/kapseld",
+                "bin/kapsel-service-client",
+                "bin/kapsel-service-mcp",
+            ):
+                with root.joinpath(relative).open("rb") as source:
+                    header = source.read(20)
+                self.assertEqual(header[:6], b"\x7fELF\x02\x01")
+                self.assertEqual(int.from_bytes(header[18:20], "little"), 62)
+
+        # Execute the checksum-bound companion, not a verifier mounted from the checkout.
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--platform",
+                "linux/amd64",
+                "--volume",
+                f"{archive.parent}:/input:ro",
+                SMOKE_IMAGE,
+                "python3",
+                "-I",
+                f"/input/{verifier.name}",
+                "--archive",
+                f"/input/{archive.name}",
+                "--expected-revision",
+                revision,
+            ],
+            check=True,
+            timeout=180,
+        )
 
 
 if __name__ == "__main__":

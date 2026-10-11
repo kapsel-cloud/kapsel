@@ -278,10 +278,13 @@ outside caller input and production binaries. Finite traces are not exhaustive r
 ### Release artifact
 
 Artifact checks consume extracted production binaries. Two isolated assemblies must match archive,
-checksum, SBOM, digest-manifest and verifier bytes. Hostile validation precedes extraction. Smoke
-checks identity, grant provisioning, execution, read-first restart, offline inspection and MCP.
-Service-container checks add fixed paths, separate identities, original receipts and mutation
-counts, not native systemd or interrupted-attempt qualification.
+checksum, SBOM, digest-manifest and verifier bytes. The verifier's independent fixture owns hostile
+layouts, source/SBOM binding, sidecar tampering and exclusive extraction. The artifact check adds
+source/asset correspondence, ELF identity and checksum-bound companion execution. The bundled
+operator-guide trace checks installed fixed paths, separate identities, socket/private-file custody,
+grant provisioning, signing repair, read-first restart, original receipts, offline inspection and
+MCP, with independent receiver counts. These checks do not qualify native systemd or interrupted
+attempts.
 
 There is no demonstration binary or pause feature in the archive. Packaged crash/live lanes remain
 separate. Sigstore bundles receive identity/failure checks, not a reproducibility requirement.

@@ -659,11 +659,12 @@ python3 tools/release/test_artifact.py --archive "$archive_a"
 python3 tools/release/test_reproducibility.py --reference-archive "$archive_a"
 ```
 
-The artifact test first exercises the companion's extraction-only command outside the checkout,
-including refusal of an existing/symlink destination and wrong revision. It then includes a fresh
-disposable-container service exercise with fixed installed paths, separate numeric identities, cold
-publication, selection and read-first restart. It is deliberately not a systemd test. On an ARM
-host, `linux/amd64` is emulated and cannot qualify the native target. The
+The artifact test exercises the checksum-bound companion's extraction-only command outside the
+checkout, then runs its ordinary-binary smoke. The documented operator example owns the installed
+service trace: fixed executable paths, separate numeric identities, socket/private-file custody,
+cold publication, selection, read-first restart, original receipts and MCP. Both the guide and
+verifier come from the selected artifact, not a checkout bind. This is deliberately not a systemd
+test. On an ARM host, `linux/amd64` is emulated and cannot qualify the native target. The
 [extracted operator path](../guides/operator.md) must separately run on native x86-64 Linux/systemd
 without repository source. Interrupted execution, ambiguity and recovery against the packaged
 service belong to the full operator/agent journey and final combined-candidate qualification.
@@ -674,6 +675,7 @@ merely to obtain missing test evidence.
 For a quick hostile-layout and dependency-graph regression without building:
 
 ```sh
+python3 tools/release/test_verify_artifact.py
 python3 tools/release/test_artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
 ```
 
@@ -693,12 +695,14 @@ python3 tools/release/test_artifact.py --archive "$archive" \
   ReleaseArtifactTests.test_documented_operator_example
 ```
 
-The test uses a disposable container and loopback receiver, with separate numeric service/caller
-identities. Direct process start/stop replaces systemd/sudo. It withholds the receipt signer,
-restores it after graceful retirement, and checks same-ID completion and original receipt retention.
-It also exercises missing receiver material, a stopped HTTP listener, withdrawn historical trust,
-and an unsupported journal-version fixture. Restoration must preserve original authority and
-history. No recovery step edits a database. A version edit is test preparation only.
+The test uses the bundled guide, a disposable container and loopback receiver, with separate numeric
+service/caller identities. It installs all four extracted executables at their fixed paths, checks
+socket and private-file custody, and reads the completed action through MCP without receiver I/O.
+Direct process start/stop replaces systemd/sudo. It withholds the receipt signer, restores it after
+graceful retirement, and checks same-ID completion and original receipt retention. It also exercises
+missing receiver material, a stopped HTTP listener, withdrawn historical trust, and an unsupported
+journal-version fixture. Restoration must preserve original authority and history. No recovery step
+edits a database. A version edit is test preparation only.
 
 These adaptations check the executable preparation and response blocks, not the native installation
 commands. They do not replace packaged interrupted-execution, live receiver, genuine ENOSPC, native

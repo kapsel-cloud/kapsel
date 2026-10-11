@@ -289,19 +289,22 @@ python3 tools/release/verify_artifact.py \
   --expected-revision <40-lowercase-hex Git revision>
 ```
 
-`tools/release/test_artifact.py --archive <A>` validates one already assembled A and then runs only
-extracted files in the pinned clean container. It proves safe extraction, installed identity,
-retired-direct-command refusal and bounded output. The separate service-container lane checks
-snapshot provisioning, operation/restart, offline inspection and installed ID-only MCP
-initialization/list/call/EOF. Hostile extraction and ordinary-binary removal remain independent. Its
-explicit `--service-container` lane uses fresh fixed paths and separate numeric service/caller
-identities inside a disposable root Docker container. It exercises exact-snapshot provisioning, cold
-publication, ID selection, caller disconnect, read-first restart and identical receipt retrieval,
-with independent receiver mutation counts. It retains private state until container destruction.
-This is not a systemd or native-host qualification lane. It proves successful completion followed by
-graceful restart, not interrupted execution, crash ambiguity or recovery from an unfinished attempt.
-The packaged receiver journeys must separately exercise interrupted execution and independently
-count mutations. The synthetic hostile-archive matrix remains independent of the producer.
+`tools/release/test_artifact.py --archive <A>` validates one already assembled clean A and runs its
+checksum-bound companion outside the checkout and in the pinned clean container. It checks safe
+extraction, installed identity, retired-direct-command refusal and ordinary-binary removal. The
+bundled operator-guide exercise installs all four executables at fixed paths under separate numeric
+service/caller identities. It checks socket/private-file custody, snapshot provisioning, cold
+publication, signing repair, read-first restart, identical receipts, offline inspection and ID-only
+MCP initialization/list/call/EOF, with independent receiver counts. No checkout guide or verifier
+enters that operating environment. The independent verifier regressions own hostile archive/SBOM
+vectors, sidecar tampering and exclusive extraction; they do not call the producer to construct
+expected bytes.
+
+The companion's explicit `--service-container` mode remains available for a fresh disposable root
+Docker container. It checks a successful operation and graceful read-first restart, not interrupted
+execution or crash ambiguity. Neither container route qualifies systemd or a native host. Both
+retain private state until container destruction. Packaged receiver journeys must separately
+exercise interrupted execution and independently count mutations.
 `tools/release/test_reproducibility.py --reference-archive <A>` performs the one independent strict
 assembly B and compares all five deterministic outputs byte-for-byte. Neither verifier hides another
 A assembly.

@@ -134,7 +134,7 @@ def main() -> None:
     assert spec is not None and spec.loader is not None, "artifact fixture unavailable"
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
-    guide = pathlib.Path("/guide.md").read_text()
+    guide = pathlib.Path("/artifact/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md").read_text()
 
     started = time.monotonic()
     os.umask(0o077)
@@ -143,8 +143,21 @@ def main() -> None:
     binary = pathlib.Path("/usr/bin/kapsel")
     shutil.copyfile("/artifact/bin/kapsel", binary)
     binary.chmod(0o755)
-    client = pathlib.Path("/artifact/bin/kapsel-service-client")
-    service = pathlib.Path("/artifact/libexec/kapsel/kapseld")
+    client = pathlib.Path("/usr/bin/kapsel-service-client")
+    bridge = pathlib.Path("/usr/bin/kapsel-service-mcp")
+    service = pathlib.Path("/usr/libexec/kapsel/kapseld")
+    for directory in (service.parent.parent, service.parent):
+        directory.mkdir(mode=0o755, exist_ok=True)
+        directory.chmod(0o755)
+    for source, destination in (
+        ("bin/kapsel-service-client", client),
+        ("bin/kapsel-service-mcp", bridge),
+        ("libexec/kapsel/kapseld", service),
+    ):
+        shutil.copyfile(pathlib.Path("/artifact") / source, destination)
+        destination.chmod(0o755)
+    metadata = json.loads(pathlib.Path("/artifact/RELEASE-METADATA.json").read_bytes())
+    fixture.exercise_version(binary, metadata["package_version"])
     example = OperatorExample(fixture, guide, client, service)
     prepare_example_authority(example)
 
@@ -197,6 +210,18 @@ def main() -> None:
         )
         assert example.read(["history"])["entries"] == []
         assert fixture.KubernetesFixture.requests == 1
+        socket = pathlib.Path("/run/kapsel/kapseld.sock").stat()
+        assert (socket.st_mode & 0o777, socket.st_uid, socket.st_gid) == (0o660, 61000, 61000)
+        denied = fixture.run_bounded(
+            ["python3", "-I", "-c", "open('/etc/kapsel/operator.json', 'rb')"],
+            user=61001,
+            group=61000,
+            extra_groups=[],
+            stdout_max=1024,
+            stderr_max=4096,
+            timeout=5,
+        )
+        assert denied.returncode != 0 and b"PermissionError" in denied.stderr
 
         admitted = example.read(["submit", fixture.OPERATION])
         assert admitted == json.loads(example.block("admitted", "json"))
@@ -292,6 +317,8 @@ def main() -> None:
             "completion acquired new receiver facts"
         )
         print("Completed:", json.dumps(complete), flush=True)
+        fixture.exercise_mcp(bridge, metadata["package_version"], 61001, 61000)
+        assert fixture.KubernetesFixture.requests == recovery_request_baseline
         receipt = pathlib.Path("/tmp/documented-example.receipt")
         print(
             "Receipt:",
