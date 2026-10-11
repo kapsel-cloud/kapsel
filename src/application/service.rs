@@ -735,6 +735,16 @@ impl ServiceApplication {
     ) -> Result<(OperationStatus, OperationTargets, ExecutionDisposition), ServiceError> {
         let (status, targets) = self.status(operation_id)?;
         let disposition = ExecutionDisposition::project(status, observation);
+        #[cfg(test)]
+        let disposition = if status == OperationStatus::InProgress
+            && self
+                .gateway
+                .exercise_defect(Defect::DispositionProjectionSwap)
+        {
+            ExecutionDisposition::Complete
+        } else {
+            disposition
+        };
         Ok((status, targets, disposition))
     }
 

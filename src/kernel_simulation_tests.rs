@@ -23,9 +23,9 @@ use tokio::sync::Notify;
 
 use crate::{
     application::{
-        ExecutionCondition, OperationReceipt, OperationStatus, ServiceAdmission,
-        ServiceApplication, ServiceApproval, ServiceConfiguration, ServiceError, ServiceExecution,
-        ServiceStop,
+        ExecutionCondition, ExecutionDisposition, ExecutionObservation, HistoryEntry,
+        OperationReceipt, OperationStatus, ServiceAdmission, ServiceApplication, ServiceApproval,
+        ServiceConfiguration, ServiceError, ServiceExecution, ServiceStop,
     },
     gateway::{
         git::{
@@ -1283,6 +1283,10 @@ async fn replay_with_control(trace: &Trace, virtualized: bool, control: StorageC
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep all-peer authenticated projections inside one read-only snapshot boundary"
+)]
 fn check_reads(
     app: &ServiceApplication,
     peers: &[Peer],
@@ -1331,6 +1335,15 @@ fn check_reads(
                 app.status(id) == Ok((OperationStatus::NotFound, OperationTargets::default()))
                     && app.receipt(id) == Ok(OperationReceipt::NotFound),
                 "original_intent",
+            )?;
+            require(
+                disposition_reads_match(
+                    app,
+                    id,
+                    &Ok((OperationStatus::NotFound, OperationTargets::default())),
+                    None,
+                ),
+                "execution_disposition_projection",
             )?;
             continue;
         }
@@ -1381,12 +1394,87 @@ fn check_reads(
                 "stored_read_projection",
             )?;
         }
+        let expected = if accessible {
+            stored_projection(peer, raw)
+                .map(|(_, status, targets)| (status, targets))
+                .ok_or(ServiceError::OperationFailure)
+        } else {
+            Err(ServiceError::AuthorityUnavailable)
+        };
+        require(
+            disposition_reads_match(
+                app,
+                id,
+                &expected,
+                history
+                    .entries
+                    .iter()
+                    .find(|entry| &entry.operation_id == id),
+            ),
+            "execution_disposition_projection",
+        )?;
     }
     require(
         before == peers.iter().map(Peer::snapshot).collect::<Vec<_>>()
             && writes_before == control.reached().len(),
         "stored_reads_are_read_only",
     )
+}
+
+// Observation/disposition pairs come from the caller guidance contract, not its projector.
+fn disposition_reads_match(
+    app: &ServiceApplication,
+    id: &str,
+    status: &Result<(OperationStatus, OperationTargets), ServiceError>,
+    history: Option<&HistoryEntry>,
+) -> bool {
+    use ExecutionCondition as Condition;
+    use ExecutionDisposition as Disposition;
+    use ExecutionObservation as Observation;
+    let observations = [
+        (Observation::Unknown, Disposition::ResumeRequired(None)),
+        (Observation::Active, Disposition::Active),
+        (Observation::OtherWorker, Disposition::WaitingForWorker),
+        (
+            Observation::Stopped(Condition::PreflightUnavailable),
+            Disposition::ResumeRequired(Some(Condition::PreflightUnavailable)),
+        ),
+        (
+            Observation::Stopped(Condition::WorkerContention),
+            Disposition::ResumeRequired(Some(Condition::WorkerContention)),
+        ),
+        (
+            Observation::Stopped(Condition::ReceiverUnavailable),
+            Disposition::OperatorRequired(Condition::ReceiverUnavailable),
+        ),
+        (
+            Observation::Stopped(Condition::SigningUnavailable),
+            Disposition::OperatorRequired(Condition::SigningUnavailable),
+        ),
+        (
+            Observation::Stopped(Condition::CompletionBlocked),
+            Disposition::OperatorRequired(Condition::CompletionBlocked),
+        ),
+        (
+            Observation::Stopped(Condition::OperationBlocked),
+            Disposition::OperatorRequired(Condition::OperationBlocked),
+        ),
+    ];
+    observations.into_iter().all(|(observation, unfinished)| {
+        let expected = status.clone().map(|(status, targets)| {
+            let disposition = match status {
+                OperationStatus::NotFound => Disposition::AdmissionUnconfirmed,
+                OperationStatus::InProgress => unfinished,
+                OperationStatus::Succeeded
+                | OperationStatus::Failed
+                | OperationStatus::Unknown
+                | OperationStatus::NotAttempted(_) => Disposition::Complete,
+            };
+            (status, targets, disposition)
+        });
+        app.execution_status(id, observation) == expected
+            && history.is_none_or(|entry| entry.clone().execution_status(observation) == expected)
+    })
 }
 
 // Project already retained facts, not a predicted next lifecycle phase or production classifier.
@@ -3273,6 +3361,11 @@ fn defect_cases() -> Vec<(Defect, &'static str, Vec<Action>)> {
             vec![select(None, Cut::Frozen, false, false)],
         ),
         (
+            Defect::DispositionProjectionSwap,
+            "execution_disposition_projection",
+            vec![select(None, Cut::BeforeAttempt, false, false)],
+        ),
+        (
             Defect::TargetProjectionSwap,
             "stored_read_projection",
             vec![select(None, Cut::BeforeAttempt, false, false)],
@@ -3330,6 +3423,7 @@ fn defect_inputs() -> Vec<Trace> {
                 Defect::WrongSigner
                 | Defect::StatusProjectionSwap
                 | Defect::TargetProjectionSwap
+                | Defect::DispositionProjectionSwap
                 | Defect::CatalogConflictAccepted
                 | Defect::StaleTrust
                 | Defect::CustodyIgnored => vec![
@@ -3347,6 +3441,7 @@ fn defect_inputs() -> Vec<Trace> {
                     Defect::WrongSigner
                         | Defect::StatusProjectionSwap
                         | Defect::TargetProjectionSwap
+                        | Defect::DispositionProjectionSwap
                         | Defect::CatalogConflictAccepted
                         | Defect::StaleTrust
                         | Defect::CustodyIgnored
@@ -3405,6 +3500,7 @@ fn defect_law(defect: Defect) -> &'static str {
         Defect::ReplicaSwap | Defect::GitObservationSubstitution => "frozen_io_binding",
         Defect::ReceiptRewrite => "original_receipt_bytes",
         Defect::StatusProjectionSwap | Defect::TargetProjectionSwap => "stored_read_projection",
+        Defect::DispositionProjectionSwap => "execution_disposition_projection",
         Defect::WrongSigner => "original_signer",
         Defect::WrongPeerRead => "original_intent",
         Defect::ReceiptProjectionSwap => "receipt_binding",

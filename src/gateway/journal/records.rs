@@ -653,6 +653,7 @@ pub(crate) enum Defect {
     ReceiptRewrite,
     StatusProjectionSwap,
     TargetProjectionSwap,
+    DispositionProjectionSwap,
     CatalogConflictAccepted,
     StaleTrust,
     CustodyIgnored,

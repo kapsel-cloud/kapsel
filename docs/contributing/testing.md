@@ -116,17 +116,22 @@ changing any peer's retained facts or receiver counts. Withdrawn trust must perm
 retained fact changes. Substituting a different public key under the original key ID must disclose
 neither targets nor receipt bytes. After raw-history and receiver laws pass, every peer checks exact
 stored status, admitted phase, original targets and receipt readiness/bytes. Unadmitted identities
-must return absence without catalog target disclosure. Real SQLite additionally checks the ordered
-history identities and their authenticated projections. Unaffected peers remain readable. Reads must
-change neither retained rows, receiver counts nor durable-write counts. These traces contain at most
-four identities; full-page pagination and wire/process readers retain their direct owners. Restoring
-trust does not substitute current catalog authority for history. Signer rotation before receipt
-commitment may choose the new signer. Rotation after commitment must return the original bytes and
-signer. Invalid signing material at frozen history must change no facts or receiver counts.
-Production journal policy validates authority, transitions and frozen facts. Its private record-I/O
-owner reads complete bounded rows from either typed table and conditionally commits against the
-original row. SQLite updates only changed columns. The test-only virtual store implements atomic
-records, not lifecycle policy. Neither backend selection nor fault controls are caller inputs.
+must return absence without catalog target disclosure. Execution-status reads check every process
+observation against independently specified disposition pairs. Unfinished history distinguishes
+operator remediation from explicit same-ID resumption; terminal history supersedes stale
+observations. Unknown process knowledge never supplies a historical stop cause, including after
+reopen. Both point reads and authenticated SQLite history entries preserve access failures and
+original status/targets. Real SQLite additionally checks the ordered history identities and their
+authenticated projections. Unaffected peers remain readable. Reads must change neither retained
+rows, receiver counts nor durable-write counts. These traces contain at most four identities;
+full-page pagination and wire/process readers retain their direct owners. Restoring trust does not
+substitute current catalog authority for history. Signer rotation before receipt commitment may
+choose the new signer. Rotation after commitment must return the original bytes and signer. Invalid
+signing material at frozen history must change no facts or receiver counts. Production journal
+policy validates authority, transitions and frozen facts. Its private record-I/O owner reads
+complete bounded rows from either typed table and conditionally commits against the original row.
+SQLite updates only changed columns. The test-only virtual store implements atomic records, not
+lifecycle policy. Neither backend selection nor fault controls are caller inputs.
 
 The slice checks original intent, confirmed dispatch provenance, initial classification, complete
 receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt
@@ -146,14 +151,17 @@ must violate their intended law and report the reached faulty branch. Stale-trus
 ignored-custody controls separately establish original-key non-disclosure and post-I/O binding.
 Status and target projection controls alter the real application's read output without changing
 retained facts. They must fail `stored_read_projection` under Kubernetes, Git and mixed assignments,
-including full/minimized witnesses on both stores and passing defect-free counterparts. Wrong-peer
-lookup deliberately misroutes the selected identity before grant binding; a wrong lower-layer row
-alone is refused by the existing identity guard. An unrelated bounded refusal does not qualify as
-detection. Generated schedules record their actions and retain an explicit healthy suffix. Progress
-requires a restored receiver, healthy storage, original trust and an available signer for every
-identity. Minimized progress witnesses must preserve eligibility for every peer, not only the first
-peer checked. Minimized safety witnesses need not finish the operation; correct code must pass those
-same prefixes on both stores.
+including full/minimized witnesses on both stores and passing defect-free counterparts. The
+disposition control falsely marks unfinished history complete and must fail
+`execution_disposition_projection` under the same effect assignments, stores and replay
+requirements. These read laws do not establish physical job ownership, outcome-cache invalidation or
+socket rendering. Wrong-peer lookup deliberately misroutes the selected identity before grant
+binding; a wrong lower-layer row alone is refused by the existing identity guard. An unrelated
+bounded refusal does not qualify as detection. Generated schedules record their actions and retain
+an explicit healthy suffix. Progress requires a restored receiver, healthy storage, original trust
+and an available signer for every identity. Minimized progress witnesses must preserve eligibility
+for every peer, not only the first peer checked. Minimized safety witnesses need not finish the
+operation; correct code must pass those same prefixes on both stores.
 
 Run the deterministic slice:
 
@@ -212,7 +220,7 @@ cargo test --locked -p kapsel --lib \
 ```
 
 Set `KAPSEL_KERNEL_DELIBERATE=1` to retain the 24 deliberate inputs for direct replay. Set
-`KAPSEL_KERNEL_DEFECTS=1` to retain twenty-nine inputs for fifteen lifecycle defects and their
+`KAPSEL_KERNEL_DEFECTS=1` to retain thirty-two inputs for sixteen lifecycle defects and their
 minimized findings. Catalog-conflict, wrong-signer, stale-trust and ignored-custody controls include
 Kubernetes, Git and mixed assignments. The atomic-record binding control has its separate
 deterministic owner. Each document is created exclusively before execution and records
