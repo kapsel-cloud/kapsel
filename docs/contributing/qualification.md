@@ -733,7 +733,9 @@ With cargo-llvm-cov 0.8.7, matching CI:
 cargo llvm-cov --locked --workspace --codecov --output-path codecov.json
 ```
 
-Coverage is informational and non-blocking, not correctness evidence.
+Coverage is informational and non-blocking, not correctness evidence. CI keeps its ten-minute
+generation budget. Missing reports and upload failures fail the informational job visibly without
+failing the Default gate.
 
 ## Toolchain ownership
 

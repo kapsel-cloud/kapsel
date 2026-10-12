@@ -67,7 +67,8 @@ jobs:
             status=$?
             rm -f codecov.json
             echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Coverage unavailable::Coverage generation failed or exceeded its 10-minute bound (status $status); correctness remains owned by the default gate."
+            echo "::error title=Coverage unavailable::Coverage generation failed or exceeded its 10-minute bound (status $status); correctness remains owned by the default gate."
+            exit 1
           fi
       - name: Upload informational coverage
         if: steps.coverage.outputs.available == 'true'
@@ -76,7 +77,7 @@ jobs:
           use_oidc: true
           files: codecov.json
           disable_search: true
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           flags: rust-deterministic
           name: rust-deterministic
 

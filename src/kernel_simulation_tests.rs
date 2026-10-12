@@ -3554,10 +3554,17 @@ async fn seeded_defects_fail_intended_laws_and_minimized_replay_reaches_the_bran
     for input in defect_inputs() {
         let defect = input.defect.unwrap();
         let law = defect_law(defect);
+        let mut correct = input.clone();
+        correct.defect = None;
         for virtualized in [true, false] {
             let finding = replay(&input, virtualized).await.unwrap_err();
             assert_eq!(finding.law, law);
             assert!(finding.defect_reached.contains(&defect));
+            assert_eq!(
+                replay(&correct, virtualized).await,
+                Ok(()),
+                "correct SUT must pass full witness"
+            );
         }
         let minimized = minimize(input, law).await;
         let document = serde_json::to_vec(&minimized).unwrap();

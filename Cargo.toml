@@ -145,6 +145,17 @@ unused_async = "deny"
 [profile.test.package.sha2]
 opt-level = 3
 
+# Repeated authenticated history reads need real crypto without unoptimized curve arithmetic.
+[profile.test.package.curve25519-dalek]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true
+
+[profile.test.package.ed25519-dalek]
+opt-level = 3
+debug-assertions = true
+overflow-checks = true
+
 [profile.release]
 opt-level = 3
 lto = "thin"

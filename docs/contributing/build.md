@@ -49,6 +49,11 @@ apply lint fixes. The deterministic gate checks formatting, Python lint/types, M
 tooling regressions, Rust line width, Clippy, rustdoc, deterministic tests, and doctests. It does
 not start Docker or a cluster.
 
+The workspace test profile optimizes `sha2`, `curve25519-dalek`, and `ed25519-dalek`. The Dalek
+overrides retain debug assertions and overflow checks. Repeated authenticated reads use real
+cryptography without unoptimized curve arithmetic dominating simulation time. These overrides do not
+change production profiles or authentication policy.
+
 For a smaller iteration:
 
 ```sh
