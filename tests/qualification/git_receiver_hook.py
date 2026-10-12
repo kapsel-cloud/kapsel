@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def main() -> None:
-    hook_name = Path(sys.argv[0]).name
+    hook_name = Path(sys.argv[0]).stem
     # Installed hooks live in receiver.git/hooks. Read controls from receiver.git's sibling directory.
     control = Path(__file__).resolve().parents[2] / "fixture-control"
     case = json.loads((control / "hook-settings.json").read_text())["case"]

@@ -27,7 +27,7 @@ Receipt checks therefore cross completion, application reads, service retrieval 
 
 | Guarantee                                                          | Maintained check                                                                                 | Evidence limit                                                 |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| Signing failure leaves frozen observations unchanged               | [Atomic-record simulator](../../src/kernel_simulation_tests.rs)                                  | Fixture signing, not key-management qualification              |
+| Signing failure leaves frozen observations unchanged               | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                              | Fixture signing, not key-management qualification              |
 | Completion rejects another statement for the same ID               | `receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changing_history` in that suite | Checks the current row, not only the builder's call convention |
 | Lost commit acknowledgement resolves to original bytes             | Atomic receipt-delivery laws; process-exit and application retry/snapshot suites                 | Process exit is not power loss                                 |
 | Retrieval survives changed signing settings and unavailable export | [Linux process lane](qualification.md#kapsel-service-candidate)                                  | Source harness, not installed production bytes                 |
@@ -50,17 +50,22 @@ receiver packets, ref state and hook invocation so those facts cannot substitute
 | Real receiver                 | [Git 2.55.0 matrix](qualification.md#git-transition-service)                                       | Fresh transition, stale competitor and ambiguity without resend                 |
 | Service composition           | Mixed-effect application suites and [Git process fixture](qualification.md#git-transition-service) | Selection, signing-only resumption, detached inspection and identical retrieval |
 
-The real-Git matrix covers transfer to another receiver, loss before and after the ref update,
-dropped permission with A→B→A, onward movement, and reopening without receiver or signing material.
-In the unsent-present-B case, another sender establishes B after the original sender's permission is
-dropped. Recovery must remain `UNKNOWN` with zero original update packets. Fixture-owned intervening
-writes are identified separately. Hook counts establish invocation, not downstream completion.
+Compact real-Git witnesses cover transfer to another receiver, loss before and after the ref update,
+dropped permission with A→B→A and onward movement. They compare actual update packets, exact hook
+inputs and the independently read final ref. One application composition witness freezes the
+original acknowledgement without a signer, then signs after receiver withdrawal. Shared simulator
+laws own reopen, no-resend, immutable evidence and progress reasoning. In the unsent-present-B case,
+another sender establishes B after the original sender's permission is dropped. Recovery must remain
+`UNKNOWN` with zero original update packets. Fixture-owned intervening writes are identified
+separately. Hook counts establish invocation, not downstream completion.
 
 The Linux fixture adds CLI provisioning, startup material, process loss, the fresh-session caller
 and MCP bridge. It covers send/receipt-commit and pre/post-receive loss, then reads the same history
 after catalog and material withdrawal. Source process evidence does not qualify native systemd,
-power loss or the extracted production artifact. The separate artifact journey is required for
-release qualification.
+power loss or the extracted production artifact. The installed-artifact launch profile uses the same
+maintained procedure but retains separate identities, private-material denial, read-only
+retained-row checks and cold binary replacement. Its four-case matrix does not replace the source
+profile's six-case commitment windows. Both routes are required for Git qualification.
 
 ## Receiver-recovery evidence
 
@@ -100,19 +105,19 @@ can describe an intervening writer or recreated Deployment.
 Use the [gateway contract](../reference/effect_gateway.md) for the definitions in this table. Names
 below identify suites, not separate release gates.
 
-| Boundary                         | Maintained checks                                                                                                         | Obligation                                                                                                                               |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                   | Bounds and exact signed authority; reject before persistence                                                                             |
-| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests.rs); compact admission, snapshot and physical dispatch checks | Enumerate fresh durable windows and recovery interactions; permission only from a confirmed fresh attempt commit                         |
-| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                     | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                                  |
-| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                           | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                         |
-| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                          | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                                |
-| Export                           | Fixed-client and command-interface tests                                                                                  | Exclusive copy of committed bytes; export failure cannot reopen completion                                                               |
-| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests.rs)                                                           | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                       |
-| Stored read projections          | Atomic-record simulator                                                                                                   | Exact status, admitted phase, original targets and receipt bytes/readiness; ordered history entries on SQLite; no writes or receiver I/O |
-| Original-key disclosure          | Atomic-record simulator                                                                                                   | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite    |
-| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                           | Older journals remain untouched, without migration                                                                                       |
-| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                            | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                                  |
+| Boundary                         | Maintained checks                                                                                                             | Obligation                                                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Request and authority            | `kapsel-authority::grammar_tests`; gateway `validation`                                                                       | Bounds and exact signed authority; reject before persistence                                                                             |
+| Journal transitions and dispatch | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs); compact admission, snapshot and physical dispatch checks | Enumerate fresh durable windows and recovery interactions; permission only from a confirmed fresh attempt commit                         |
+| Target disposition               | Snapshot/target-read tests; adapter/classifier tables                                                                         | Permanent rejection is `NOT_ATTEMPTED`; transient reads remain authorized without PATCH                                                  |
+| Observation and classification   | `gateway::kubernetes`; receiver-recovery matrix                                                                               | Acceptance, timeout, transport and rollout facts stay distinct; unresolved evidence is `UNKNOWN`                                         |
+| Receipt and inspection           | Kubernetes/Git receipt suites; authority vectors                                                                              | Freeze before signing; commit exact bytes/digest/signer with terminal state; inspect under explicit trust                                |
+| Export                           | Fixed-client and command-interface tests                                                                                      | Exclusive copy of committed bytes; export failure cannot reopen completion                                                               |
+| Original authority after I/O     | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                                                           | Suspended preflight, mutation and observation reject changed grant bytes before advancing; both stores and effects                       |
+| Stored read projections          | Atomic-record simulator                                                                                                       | Exact status, admitted phase, original targets and receipt bytes/readiness; ordered history entries on SQLite; no writes or receiver I/O |
+| Original-key disclosure          | Atomic-record simulator                                                                                                       | Substituted public keys cannot disclose retained targets or receipts; unaffected peers remain readable; history pages use real SQLite    |
+| Journal format                   | [Version rejection](qualification.md#journal-version-rejection)                                                               | Older journals remain untouched, without migration                                                                                       |
+| Disclosure and hostile input     | [Defensive checks](#defensive-boundary-checks)                                                                                | Reject malformed records; keep secrets and unbounded bodies out of retained/output data                                                  |
 
 The same simulator owns fresh interruption enumeration, deliberate joins and suspended service
 contention. Its [window mapping](testing.md#consolidated-crash-matrix-obligations) connects safe

@@ -19,7 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 CASES = ("healthy", "pre-receive", "post-receive", "service-loss")
-EXERCISE_SOURCE = Path(__file__).with_name("git_artifact_exercise.py")
+EXERCISE_SOURCE = Path(__file__).with_name("git_service_exercise.py")
+CALLER_SOURCE = ROOT / "examples/fresh_session_caller.py"
 HOOK_SOURCE = Path(__file__).with_name("git_receiver_hook.py")
 
 
@@ -81,8 +82,21 @@ def exercise_case(
         if result.returncode != 0:
             raise RuntimeError(f"{case} failed; inspect the private exercise.log")
         summary = json.loads((evidence / "summary.json").read_bytes())
-        if not isinstance(summary, dict) or summary.get("case") != case:
-            raise RuntimeError("packaged Git exercise returned the wrong case evidence")
+        if (
+            not isinstance(summary, dict)
+            or summary.get("case") != case
+            or summary.get("result") != ("SUCCEEDED" if case == "healthy" else "UNKNOWN")
+            or summary.get("inspection") != "INSPECTED"
+            or summary.get("identical_retained_receipt") is not True
+            or summary.get("caller_private_access_denied") is not True
+            or summary.get("finalized_submission")
+            != {"version": 1, "status": "ADMITTED", "phase": "finalized"}
+            or (case == "healthy" and summary.get("signing_repair_without_receiver") is not True)
+            or not isinstance(summary.get("receipt_sha256"), str)
+            or len(summary["receipt_sha256"]) != 64
+            or any(char not in "0123456789abcdef" for char in summary["receipt_sha256"])
+        ):
+            raise RuntimeError("packaged Git exercise returned malformed or incomplete evidence")
         return summary
     finally:
         if owned:
@@ -133,6 +147,7 @@ def qualify(
         raise RuntimeError("retained revision requires an archive")
     inputs = workspace / "inputs"
     inputs.mkdir(mode=0o700)
+    shutil.copyfile(CALLER_SOURCE, inputs / CALLER_SOURCE.name)
     shutil.copyfile(git, inputs / "git")
     (inputs / "git").chmod(0o700)
     # Snapshot once: every case executes the same bytes, retained for independent replay.
@@ -158,6 +173,9 @@ def qualify(
             else None
         ),
         "exercise_sha256": hashlib.sha256(source).hexdigest(),
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "caller_sha256": hashlib.sha256((inputs / CALLER_SOURCE.name).read_bytes()).hexdigest(),
+        "hook_sha256": hook_digest,
         "runner": RUNNER,
         "cases": summaries,
         "limits": "container process/socket and hook-input proof; not packet counts, native systemd, power loss or publication",

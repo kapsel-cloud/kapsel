@@ -56,6 +56,9 @@ fn harness_only() {}
     def test_file_classification(self) -> None:
         for path in (
             "src/kernel_simulation_tests.rs",
+            "src/kernel_simulation_tests/world.rs",
+            "src/kernel_simulation_tests/laws.rs",
+            "src/test_scratch.rs",
             "tests/qualification/run_git_service.py",
             "src/gateway/tests/format5-before-direct-create.sql",
             "fuzz/examples/replay.rs",

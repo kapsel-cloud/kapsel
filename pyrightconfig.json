@@ -7,7 +7,7 @@
     "examples/test_fresh_session_caller.py",
     "examples/mcp_bridge_fixture.py",
     "tests/qualification/run_git_artifact.py",
-    "tests/qualification/git_artifact_exercise.py",
+    "tests/qualification/git_service_exercise.py",
     "tests/qualification/git_receiver_hook.py",
     "tests/qualification/test_git_artifact.py",
     "tests/qualification/run_git_service.py",

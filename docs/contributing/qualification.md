@@ -253,15 +253,31 @@ python3 tests/qualification/run_git_artifact.py \
   --archive "$archive" --revision "$revision" --git /absolute/path/to/git
 ```
 
-This lane creates one isolated, network-disabled container per case. Only extracted production
-binaries and the selected Git executable enter the operating environment. Separate service and
-caller identities enforce private-material custody. Receiver hooks supply acknowledgement-loss and
-service-crash windows without a product test hook. The cases check exact ref and hook inputs,
-observation-only same-ID recovery, original receipt retrieval after catalog/material withdrawal, and
-detached inspection. Hook inputs are not packet counts or proof of complete hook delivery. The
-runner removes the containers and retains the printed private evidence workspace. This is not native
-systemd, power-loss, or live-repository qualification. Current-release restart/reconnect evidence is
-required. A prior-artifact replacement matrix is not a release gate.
+Both launchers use `git_service_exercise.py` for provisioning, public selection, terminal evidence,
+withdrawal, reconnect and offline inspection. Healthy execution first freezes a real acknowledgement
+without a signer. The operator withdraws receiver material and the catalog, restores only the
+signer, and resumes the original ID through the fresh-session MCP caller. Both profiles inspect
+those original signed facts and compare retained receipt bytes after cold reconnect.
+
+The source profile uses current-user identities and fixed-root test-feature binaries without root or
+Docker. Its six cases include `after_apply`, `before_receipt_commit` and `after_receipt_commit`.
+These establish loss before acknowledgement retention, before receipt SQL and after receipt
+commitment, respectively.
+
+The artifact profile has four cases: healthy, pre/post-receive loss and service loss while the
+post-receive hook is parked. It does not establish the source profile's receipt-commit placements.
+Source checkpoints remain confined to test-feature executables; the installed profile supplies no
+product pause environment and never writes product history.
+
+This lane creates one isolated, network-disabled container per case. Extracted production binaries,
+the selected Git executable and exact trusted caller/hook helpers enter the operating environment.
+Separate service and caller identities enforce private-material custody. Receiver hooks supply
+acknowledgement-loss and service-crash windows without a product test hook. The cases check exact
+ref and hook inputs, observation-only same-ID recovery, original receipt retrieval after
+catalog/material withdrawal, and detached inspection. Hook inputs are not packet counts or proof of
+complete hook delivery. The runner removes the containers and retains the printed private evidence
+workspace. This is not native systemd, power-loss, or live-repository qualification. Current-release
+restart/reconnect evidence is required. A prior-artifact replacement matrix is not a release gate.
 
 See the [Git service example](../guides/git_transition.md) for material, semantics and evidence
 limits. Run `cargo xtask ci` as the deterministic gate. Service startup or protocol composition

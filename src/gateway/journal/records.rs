@@ -9,7 +9,7 @@ use rusqlite::{
 
 use super::{changed_one, schema, GatewayError, LoadedOperation};
 #[cfg(test)]
-use crate::kernel_simulation_tests::Scratch;
+use crate::test_scratch::Scratch;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Table {

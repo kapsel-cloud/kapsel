@@ -984,19 +984,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::{
-        application::{
-            provision_git_ref_grant, ExecutionCondition, OperationReceipt, OperationStatus,
-            ServiceAdmission, ServiceApplication, ServiceApproval, ServiceConfiguration,
-            ServiceExecution, ServiceStop,
+    use crate::gateway::{
+        journal::{
+            git::{GitDispatchPermission, GitPhase},
+            Journal,
         },
-        gateway::{
-            journal::{
-                git::{GitDispatchPermission, GitPhase},
-                Journal,
-            },
-            OperationResult, OperationState,
-        },
+        OperationResult,
     };
 
     fn approval() -> GitRefAuthorization {
@@ -1261,10 +1254,9 @@ mod tests {
         fs::create_dir_all(receiver.receiver.join("hooks")).unwrap();
         for name in ["pre-receive", "post-receive"] {
             let script = format!(
-                r"#!/bin/sh
-printf 'invoked\n' >> '{}'
-while read -r line; do :; done
-{}",
+                r#"#!/bin/sh
+while read -r line; do printf '%s\n' "$line" >> '{}'; done
+{}"#,
                 fixture.0.join(name).display(),
                 if name == kill_at {
                     r#"kill -KILL "$PPID"
@@ -1315,11 +1307,10 @@ while read -r line; do :; done
     #[ignore = "requires operator-selected Git 2.55.0; KAPSEL_TEST_GIT is an absolute executable"]
     #[allow(
         clippy::too_many_lines,
-        reason = "one cross-boundary failure and recovery matrix"
+        reason = "keep packets, hook inputs and external writes in one concrete receiver witness"
     )]
-    async fn real_git_journal_recovery_freezes_evidence_without_replay() {
+    async fn real_git_packets_hooks_and_refs_distinguish_original_acknowledgement() {
         for case in [
-            "healthy",
             "pre-receive",
             "post-receive",
             "unsent-aba",
@@ -1334,12 +1325,12 @@ while read -r line; do :; done
             let journal = Journal::open(&path).unwrap();
             let worker = journal.try_lock_worker().unwrap().unwrap();
             journal.insert_git(&binding, &worker).unwrap();
+            let prepared = receiver.prepare(&approval).await.unwrap();
+            let permission = journal
+                .begin_git_attempt(&binding, prepared, &worker)
+                .unwrap();
             let mut expected_observed = approval.new_commit.clone();
             if matches!(case, "unsent-aba" | "unsent-present-b" | "onward") {
-                let prepared = receiver.prepare(&approval).await.unwrap();
-                let permission = journal
-                    .begin_git_attempt(&binding, prepared, &worker)
-                    .unwrap();
                 if matches!(case, "unsent-aba" | "unsent-present-b") {
                     drop(permission);
                     operator_push(&receiver, &approval.new_commit);
@@ -1384,41 +1375,71 @@ while read -r line; do :; done
                     operator_push(&receiver, &onward);
                     expected_observed = onward;
                 }
-            } else if case == "pre-receive" {
-                expected_observed.clone_from(&approval.old_commit);
+            } else {
+                let ack = receiver.send(permission).await;
+                journal
+                    .record_git_acknowledgement(&binding, ack, &worker)
+                    .unwrap();
+                if case == "pre-receive" {
+                    expected_observed.clone_from(&approval.old_commit);
+                }
             }
-
-            drop(worker);
-            drop(journal);
-            let mut journal = Journal::open(&path).unwrap();
-            let worker = journal.try_lock_worker().unwrap().unwrap();
-            let signing = ReceiptSettings {
-                signing_seed: &[9; 32],
-                key_id: "receipt-owner",
-            };
-            let frozen = advance(
-                &mut journal,
-                &binding,
-                Some(&receiver),
-                Some(&signing),
-                &worker,
-            )
-            .await
-            .unwrap();
-            let GitPhase::Finalized { statement, receipt } = &frozen else {
-                unreachable!("advance did not finalize {case}")
-            };
+            // The real receiver supplies the facts; shared histories own subsequent recovery.
+            let observed = receiver.observe().await;
+            let raw_ref = git(
+                &receiver.executable,
+                &fixture.0,
+                &[
+                    "--git-dir",
+                    receiver.receiver.to_str().unwrap(),
+                    "rev-parse",
+                    APPROVED_GIT_REF,
+                ],
+            );
             assert_eq!(
-                statement.observed,
-                ObservedRef::Commit(expected_observed),
+                String::from_utf8(raw_ref).unwrap().trim(),
+                expected_observed,
                 "{case}"
             );
-            let expected_ack = if matches!(case, "healthy" | "onward") {
+            assert_eq!(
+                observed,
+                ObservedRef::Commit(expected_observed.clone()),
+                "{case}"
+            );
+            journal
+                .freeze_git_observation(&binding, &observed, &worker)
+                .unwrap();
+            let phase = journal.git_operation(&binding).unwrap().unwrap();
+            let statement = phase.statement(&binding).unwrap();
+            let expected_ack = if case == "onward" {
                 Acknowledgement::Updated
             } else {
                 Acknowledgement::Unknown
             };
             assert_eq!(statement.acknowledgement, expected_ack, "{case}");
+            let mut expected_inputs = vec![format!(
+                "{} {} {}",
+                approval.old_commit, approval.new_commit, APPROVED_GIT_REF
+            )];
+            if case == "onward" {
+                expected_inputs.push(format!(
+                    "{} {} {}",
+                    approval.new_commit, expected_observed, APPROVED_GIT_REF
+                ));
+            }
+            for hook in ["pre-receive", "post-receive"] {
+                let inputs = fs::read_to_string(fixture.0.join(hook)).unwrap_or_default();
+                let expected = if case == "pre-receive" && hook == "post-receive" {
+                    vec![]
+                } else {
+                    expected_inputs.clone()
+                };
+                assert_eq!(
+                    inputs.lines().collect::<Vec<_>>(),
+                    expected,
+                    "{case}/{hook}"
+                );
+            }
             assert_eq!(
                 statement.result(),
                 if expected_ack == Acknowledgement::Updated {
@@ -1433,7 +1454,7 @@ while read -r line; do :; done
             assert_eq!(
                 counts,
                 match case {
-                    "healthy" | "post-receive" => (1, 1, 1),
+                    "post-receive" => (1, 1, 1),
                     "pre-receive" => (1, 1, 0),
                     "unsent-aba" | "unsent-present-b" => (0, 1, 1),
                     "onward" => (1, 2, 2),
@@ -1441,118 +1462,15 @@ while read -r line; do :; done
                 },
                 "{case}"
             );
-            assert_eq!(
-                &evidence::decode(&receipt.bytes).unwrap().1,
-                statement.as_ref()
-            );
-
-            drop(worker);
-            drop(journal);
-            let mut journal = Journal::open(&path).unwrap();
-            let worker = journal.try_lock_worker().unwrap().unwrap();
-            assert_eq!(
-                advance(&mut journal, &binding, None, None, &worker)
-                    .await
-                    .unwrap(),
-                frozen
-            );
-            assert_eq!(receiver_counts(&fixture, &approval), counts, "{case}");
+            // Operator pushes above run without the product packet trace. They are hook inputs,
+            // not original operation packets; unsent history has zero product update packets.
+            assert_eq!(journal.git_operation(&binding).unwrap(), Some(phase));
         }
     }
 
     #[tokio::test]
     #[ignore = "requires operator-selected Git 2.55.0; KAPSEL_TEST_GIT is an absolute executable"]
-    async fn real_git_service_reconnects_and_signs_frozen_evidence_without_receiver() {
-        for case in ["healthy", "post-receive"] {
-            let (fixture, receiver, approval, _) = receiver_fixture();
-            install_hooks(&fixture, &receiver, case);
-            let material = GitReceiverConfiguration {
-                executable: receiver.executable.clone(),
-                sender: receiver.sender.clone(),
-                receiver: receiver.receiver.clone(),
-                repository_id: receiver.repository_id.clone(),
-            };
-            let grant = provision_git_ref_grant(&approval, &material, &[7; 32], "owner")
-                .await
-                .unwrap();
-            assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
-            let mut configuration = ServiceConfiguration {
-                journal_path: fixture.0.join("service-journal"),
-                authorization_trust: vec![AuthorizationTrust {
-                    key_id: "owner".into(),
-                    public_key: SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes(),
-                }],
-                approvals: vec![ServiceApproval {
-                    signed_grant: grant,
-                    label: "Approved Git".into(),
-                }],
-            };
-            let mut service = ServiceApplication::open(configuration.clone()).unwrap();
-            let stopped = service
-                .select(
-                    &approval.operation_id,
-                    ServiceExecution {
-                        kubernetes_client: None,
-                        git_receiver: Some(material),
-                        receipt_signing: None,
-                    },
-                    |admission| {
-                        assert_eq!(
-                            admission,
-                            ServiceAdmission::Admitted(OperationState::Authorized)
-                        );
-                        assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
-                    },
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                stopped,
-                ServiceStop::Blocked(ExecutionCondition::SigningUnavailable)
-            );
-            assert_eq!(
-                service.status(&approval.operation_id).unwrap().0,
-                OperationStatus::InProgress
-            );
-            assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
-
-            drop(service);
-            fs::remove_dir_all(&receiver.receiver).unwrap();
-            fs::remove_file(&receiver.executable).unwrap();
-            configuration.approvals.clear();
-            let mut service = ServiceApplication::open(configuration).unwrap();
-            assert_eq!(
-                service
-                    .select(
-                        &approval.operation_id,
-                        ServiceExecution {
-                            kubernetes_client: None,
-                            git_receiver: None,
-                            receipt_signing: Some(([9; 32], "receipt-owner".into())),
-                        },
-                        |_| {},
-                    )
-                    .await
-                    .unwrap(),
-                ServiceStop::Finished
-            );
-            let expected = if case == "healthy" {
-                OperationStatus::Succeeded
-            } else {
-                OperationStatus::Unknown
-            };
-            assert_eq!(service.status(&approval.operation_id).unwrap().0, expected);
-            assert!(matches!(
-                service.receipt(&approval.operation_id).unwrap(),
-                OperationReceipt::Ready { .. }
-            ));
-            assert_eq!(receiver_counts(&fixture, &approval), (0, 1, 1));
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires operator-selected Git 2.55.0; KAPSEL_TEST_GIT is an absolute executable"]
-    async fn real_git_preflight_read_failures_remain_authorized_and_resumable() {
+    async fn real_git_preflight_read_errors_preserve_authorized_history_until_prepare_repair() {
         for case in ["object-read", "ancestry-read"] {
             let (fixture, mut receiver, mut approval, _) = receiver_fixture();
             receiver.packet_trace = Some(fixture.0.join("packets"));
@@ -1603,29 +1521,13 @@ while read -r line; do :; done
             );
             assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
 
-            drop(worker);
-            drop(journal);
             fs::rename(saved, object).unwrap();
-            let mut journal = Journal::open(&path).unwrap();
-            let worker = journal.try_lock_worker().unwrap().unwrap();
-            let signing = ReceiptSettings {
-                signing_seed: &[9; 32],
-                key_id: "receipt-owner",
-            };
-            let phase = advance(
-                &mut journal,
-                &binding,
-                Some(&receiver),
-                Some(&signing),
-                &worker,
-            )
-            .await
-            .unwrap();
-            let GitPhase::Finalized { statement, .. } = phase else {
-                unreachable!()
-            };
-            assert_eq!(statement.acknowledgement, Acknowledgement::Updated);
-            assert_eq!(receiver_counts(&fixture, &approval), (1, 1, 1));
+            assert!(receiver.prepare(&approval).await.is_ok(), "{case}");
+            assert_eq!(
+                journal.git_operation(&binding).unwrap(),
+                Some(GitPhase::Authorized)
+            );
+            assert_eq!(receiver_counts(&fixture, &approval), (0, 0, 0));
         }
     }
 

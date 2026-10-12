@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Offline checks for packaged Git qualification orchestration and failure handling."""
+"""Offline artifact custody, evidence and owned-container retirement checks."""
 
-import ast
 import hashlib
 import json
-import os
-import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -13,108 +10,24 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import git_artifact_exercise as EXERCISE
 import run_git_artifact as JOURNEY
 
 
+def summary(case: str) -> dict[str, object]:
+    return {
+        "case": case,
+        "result": "SUCCEEDED" if case == "healthy" else "UNKNOWN",
+        "inspection": "INSPECTED",
+        "receipt_sha256": "a" * 64,
+        "identical_retained_receipt": True,
+        "finalized_submission": {"version": 1, "status": "ADMITTED", "phase": "finalized"},
+        "caller_private_access_denied": True,
+        "signing_repair_without_receiver": case == "healthy",
+    }
+
+
 class GitArtifactTests(unittest.TestCase):
-    def test_exercise_is_valid_python_without_product_test_hooks(self):
-        source = JOURNEY.EXERCISE_SOURCE.read_bytes()
-        ast.parse(source)
-        self.assertNotIn(b"KAPSELD_TEST", source)
-        self.assertNotIn(b"KAPSEL_DEMO", source)
-        self.assertEqual(JOURNEY.CASES, ("healthy", "pre-receive", "post-receive", "service-loss"))
-
-    def test_retained_snapshot_is_read_only_and_requires_format6(self):
-        for version in (5, 6):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as temporary:
-                journal = Path(temporary) / "journal.sqlite3"
-                connection = sqlite3.connect(journal)
-                connection.execute(f"PRAGMA user_version = {version}")
-                connection.execute(
-                    "CREATE TABLE git_ref_operations (operation_id TEXT PRIMARY KEY, grant BLOB)"
-                )
-                connection.execute(
-                    "INSERT INTO git_ref_operations VALUES ('git-example', ?)", (b"original",)
-                )
-                connection.commit()
-                connection.close()
-                before = journal.read_bytes()
-                if version == 6:
-                    self.assertEqual(EXERCISE.retained_row(journal), ("git-example", b"original"))
-                else:
-                    with self.assertRaises(AssertionError):
-                        EXERCISE.retained_row(journal)
-                self.assertEqual(journal.read_bytes(), before)
-
-    def test_fixture_subcommands_use_the_selected_git(self):
-        tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
-        helper = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef) and node.name == "git"
-        )
-        command = mock.Mock(return_value=b"selected\n")
-        namespace = {
-            "git_binary": Path("/private/git"),
-            "command": command,
-            "environment": {},
-            "Path": Path,
-        }
-        exec(compile(ast.Module(body=[helper], type_ignores=[]), "fixture", "exec"), namespace)
-        self.assertEqual(namespace["git"]("--version"), "selected")
-        self.assertEqual(
-            command.call_args.args[0], ["/private/git", "--exec-path=/private", "--version"]
-        )
-        bootstrap = next(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and any(
-                isinstance(arg, ast.Constant) and arg.value == "push" for arg in node.value.args
-            )
-        )
-        invoke = mock.Mock()
-        exec(
-            compile(ast.Module(body=[bootstrap], type_ignores=[]), "fixture", "exec"),
-            {
-                "git": invoke,
-                "git_binary": Path("/private/git"),
-                "sender": "sender",
-                "receiver": "receiver",
-                "old": "a" * 40,
-                "reference": "refs/heads/approved",
-            },
-        )
-        self.assertIn("--receive-pack=/private/git receive-pack", invoke.call_args.args)
-
-    def test_runtime_custody_mode_survives_private_umask(self):
-        tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
-        main = next(
-            node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"
-        )
-        setup = next(node for node in main.body if isinstance(node, ast.For))
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            namespace = {
-                "state": root / "state",
-                "config": root / "config",
-                "Path": lambda path: root / "runtime",
-                "service_uid": 61000,
-                "os": SimpleNamespace(chown=lambda *args: None),
-            }
-            previous = os.umask(0o077)
-            try:
-                exec(
-                    compile(ast.Module(body=[setup], type_ignores=[]), "fixture", "exec"), namespace
-                )
-            finally:
-                os.umask(previous)
-            self.assertEqual((root / "runtime").stat().st_mode & 0o777, 0o750)
-            self.assertEqual((root / "state").stat().st_mode & 0o777, 0o700)
-
-    def fixture(self, root, *, dirty=False):
+    def fixture(self, root: Path, *, dirty: bool = False):
         workspace = root / "workspace"
         workspace.mkdir()
         extracted = workspace / "extracted"
@@ -145,40 +58,44 @@ class GitArtifactTests(unittest.TestCase):
                 transport.assert_not_called()
                 self.assertEqual(module.extract_release.call_args.args[2], "a" * 40)
 
-    def test_owned_container_is_removed_after_timeout(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            workspace, extracted, archive, git, spec, module = self.fixture(Path(temporary))
-            with (
-                mock.patch.object(JOURNEY.tempfile, "mkdtemp", return_value=str(workspace)),
-                mock.patch.object(
-                    JOURNEY.importlib.util, "spec_from_file_location", return_value=spec
-                ),
-                mock.patch.object(JOURNEY.importlib.util, "module_from_spec", return_value=module),
-                mock.patch.object(JOURNEY, "run", return_value=b"") as transport,
-                mock.patch.object(
-                    JOURNEY.subprocess, "run", side_effect=subprocess.TimeoutExpired("docker", 180)
-                ),
-            ):
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    JOURNEY.qualify(archive, "a" * 40, git)
-                create = transport.call_args_list[0].args[0]
+    def test_owned_container_is_removed_after_timeout_and_reports_cleanup_failure(self):
+        for cleanup_fails in (False, True):
+            with self.subTest(cleanup=cleanup_fails), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                arguments = []
+
+                def transport(argv, arguments=arguments, cleanup_fails=cleanup_fails):
+                    arguments.append(argv)
+                    if cleanup_fails and argv[1] == "rm":
+                        raise RuntimeError("owned cleanup failed")
+                    return b""
+
+                with (
+                    mock.patch.object(JOURNEY, "run", side_effect=transport),
+                    mock.patch.object(
+                        JOURNEY.subprocess,
+                        "run",
+                        side_effect=subprocess.TimeoutExpired("docker", 180),
+                    ),
+                ):
+                    expected = RuntimeError if cleanup_fails else subprocess.TimeoutExpired
+                    with self.assertRaises(expected):
+                        JOURNEY.exercise_case("healthy", root, root, root / "evidence", b"source")
+                create = arguments[0]
                 name = create[create.index("--name") + 1]
-                self.assertIn(f"{extracted}:/artifact:ro", create)
-                self.assertIn("--network", create)
                 self.assertIn("none", create)
                 self.assertIn("--security-opt=no-new-privileges", create)
-                self.assertEqual(transport.call_args_list[-1].args[0], ["docker", "rm", "-f", name])
+                self.assertIn(f"{root}:/artifact:ro", create)
+                self.assertEqual(arguments[-1], ["docker", "rm", "-f", name])
 
-    def test_success_binds_all_cases_and_selected_bytes(self):
+    def test_success_binds_all_cases_and_exact_transferred_sources(self):
         with tempfile.TemporaryDirectory() as temporary:
-            workspace, _, archive, git, spec, module = self.fixture(Path(temporary))
+            workspace, extracted, archive, git, spec, module = self.fixture(Path(temporary))
 
             def transport(arguments):
                 if arguments[:2] == ["docker", "cp"] and ":/evidence/." in arguments[2]:
                     destination = Path(arguments[3])
-                    (destination / "summary.json").write_text(
-                        json.dumps({"case": destination.name})
-                    )
+                    (destination / "summary.json").write_text(json.dumps(summary(destination.name)))
                 return b""
 
             with (
@@ -195,35 +112,71 @@ class GitArtifactTests(unittest.TestCase):
                 self.assertEqual(
                     JOURNEY.qualify(archive, "a" * 40, git, archive, "b" * 40), workspace
                 )
-                summary = json.loads((workspace / "summary.json").read_bytes())
-                self.assertEqual(summary["source_revision"], "a" * 40)
-                self.assertEqual(summary["retained_source_revision"], "b" * 40)
-                self.assertEqual(module.extract_release.call_args.args[2], "b" * 40)
+                result = json.loads((workspace / "summary.json").read_bytes())
+                self.assertEqual(result["source_revision"], "a" * 40)
+                self.assertEqual(result["retained_source_revision"], "b" * 40)
                 self.assertIn(
-                    f"{module.extract_release.return_value}:/retained-artifact:ro",
-                    docker.call_args_list[0].args[0],
+                    f"{extracted}:/retained-artifact:ro", docker.call_args_list[0].args[0]
+                )
+                for key, path in (
+                    ("archive", archive),
+                    ("git", git),
+                    ("exercise", JOURNEY.EXERCISE_SOURCE),
+                    ("caller", JOURNEY.CALLER_SOURCE),
+                    ("hook", JOURNEY.HOOK_SOURCE),
+                ):
+                    self.assertEqual(
+                        result[key + "_sha256"], hashlib.sha256(path.read_bytes()).hexdigest()
+                    )
+                self.assertEqual(
+                    (workspace / JOURNEY.EXERCISE_SOURCE.name).read_bytes(),
+                    JOURNEY.EXERCISE_SOURCE.read_bytes(),
                 )
                 self.assertEqual(
-                    summary["retained_archive_sha256"],
-                    hashlib.sha256(archive.read_bytes()).hexdigest(),
+                    (workspace / "inputs" / JOURNEY.HOOK_SOURCE.name).read_bytes(),
+                    JOURNEY.HOOK_SOURCE.read_bytes(),
                 )
                 self.assertEqual(
-                    summary["archive_sha256"], hashlib.sha256(archive.read_bytes()).hexdigest()
+                    (workspace / "inputs" / JOURNEY.CALLER_SOURCE.name).read_bytes(),
+                    JOURNEY.CALLER_SOURCE.read_bytes(),
                 )
-                self.assertEqual(
-                    summary["git_sha256"], hashlib.sha256(git.read_bytes()).hexdigest()
-                )
-                source = JOURNEY.EXERCISE_SOURCE.read_bytes()
-                self.assertEqual(summary["exercise_sha256"], hashlib.sha256(source).hexdigest())
-                self.assertEqual((workspace / JOURNEY.EXERCISE_SOURCE.name).read_bytes(), source)
                 self.assertEqual(len(execution.call_args_list), len(JOURNEY.CASES))
                 for call in execution.call_args_list:
-                    self.assertEqual(call.kwargs["input"], source)
-                self.assertEqual(tuple(case["case"] for case in summary["cases"]), JOURNEY.CASES)
-                removals = [
-                    call.args[0] for call in docker.call_args_list if call.args[0][1] == "rm"
-                ]
-                self.assertEqual(len(removals), len(JOURNEY.CASES))
+                    self.assertEqual(call.kwargs["input"], JOURNEY.EXERCISE_SOURCE.read_bytes())
+                self.assertEqual(tuple(case["case"] for case in result["cases"]), JOURNEY.CASES)
+                self.assertEqual(
+                    sum(call.args[0][1] == "rm" for call in docker.call_args_list),
+                    len(JOURNEY.CASES),
+                )
+
+    def test_empty_malformed_or_false_completion_evidence_never_passes(self):
+        for record in (
+            {},
+            [],
+            {**summary("healthy"), "receipt_sha256": ""},
+            {**summary("healthy"), "identical_retained_receipt": False},
+            {**summary("healthy"), "finalized_submission": {"status": "NO_SELECTION"}},
+            {
+                **summary("healthy"),
+                "finalized_submission": {"status": "ADMITTED", "phase": "authorized"},
+            },
+        ):
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+
+                def transport(arguments, root=root, record=record):
+                    if arguments[:2] == ["docker", "cp"] and ":/evidence/." in arguments[2]:
+                        (root / "evidence/summary.json").write_text(json.dumps(record))
+                    return b""
+
+                with (
+                    mock.patch.object(JOURNEY, "run", side_effect=transport),
+                    mock.patch.object(
+                        JOURNEY.subprocess, "run", return_value=SimpleNamespace(returncode=0)
+                    ),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "incomplete evidence"):
+                        JOURNEY.exercise_case("healthy", root, root, root / "evidence", b"source")
 
 
 if __name__ == "__main__":

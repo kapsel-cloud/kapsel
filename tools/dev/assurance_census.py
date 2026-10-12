@@ -32,6 +32,7 @@ SUPPORT_FILES = {
     "src/gateway/receiver_recovery_tests/receiver.rs",
     "src/gateway/kubernetes_composition_tests/receiver.rs",
     "src/gateway/git/exploration.rs",
+    "src/test_scratch.rs",
 }
 LITERAL = re.compile(r"""(?:b|c)?"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\\n])' """.strip(), re.DOTALL)
 RAW_STRING = re.compile(r'(?:b|c)?r(\#*)"')
@@ -147,7 +148,7 @@ def whole_support(path: str) -> bool:
     return (
         path in SUPPORT_FILES
         or "tests" in parts
-        or path.startswith("fuzz/")
+        or path.startswith(("fuzz/", "src/kernel_simulation_tests/"))
         or Path(path).name.startswith("test_")
         or Path(path).stem.endswith("_tests")
     )

@@ -108,7 +108,7 @@ class ReleaseVerifierTests(unittest.TestCase):
 
     def test_extracted_fixture_imports_do_not_execute_the_journeys(self) -> None:
         fixtures = (
-            ROOT / "tests/qualification/git_artifact_exercise.py",
+            ROOT / "tests/qualification/git_service_exercise.py",
             JOURNEY.EXERCISE_SOURCE,
             pathlib.Path(__file__).with_name("operator_example_exercise.py"),
             pathlib.Path(__file__).with_name("caller_custody_exercise.py"),

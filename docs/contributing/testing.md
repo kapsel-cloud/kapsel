@@ -172,34 +172,51 @@ remains charged separately; relocation, forecasts and fewer test names do not es
 
 ## Atomic record-I/O simulation
 
-`src/kernel_simulation_tests.rs` drives one to four Kubernetes or Git identities through one real
-service application and shared journal. Each identity has distinct intent, target, authority and
-receipt signing material. Every event checks every peer's raw facts and independently counted
-receiver I/O. Every selection also requires all nonselected peers' complete rows and I/O counters to
-remain unchanged, including the first receipt commitment. Generated three-identity schedules use
-Kubernetes-only, Git-only and mixed assignments. They interleave selections, receiver changes,
-catalog removal, trust withdrawal and restored prerequisites. Conflicting catalog replacement must
-fail application construction without changing any peer's retained facts or receiver counts.
-Withdrawn trust must permit neither I/O nor retained fact changes. Substituting a different public
-key under the original key ID must disclose neither targets nor receipt bytes. After raw-history and
-receiver laws pass, every peer checks exact stored status, admitted phase, original targets and
-receipt readiness/bytes. Unadmitted identities must return absence without catalog target
-disclosure. Execution-status reads check every process observation against independently specified
-disposition pairs. Unfinished history distinguishes operator remediation from explicit same-ID
-resumption; terminal history supersedes stale observations. Unknown process knowledge never supplies
-a historical stop cause, including after reopen. Both point reads and authenticated SQLite history
-entries preserve access failures and original status/targets. Real SQLite additionally checks the
-ordered history identities and their authenticated projections. Unaffected peers remain readable.
-Reads must change neither retained rows, receiver counts nor durable-write counts. These traces
-contain at most four identities; full-page pagination and wire/process readers retain their direct
-owners. Restoring trust does not substitute current catalog authority for history. Signer rotation
-before receipt commitment may choose the new signer. Rotation after commitment must return the
-original bytes and signer. Invalid signing material at frozen history must change no facts or
-receiver counts. Production journal policy validates authority, transitions and frozen facts. Its
-private record-I/O owner reads complete bounded rows from either typed table and conditionally
-commits against the original row. SQLite updates only changed columns. The test-only virtual store
-implements atomic records, not lifecycle policy. Neither backend selection nor fault controls are
-caller inputs.
+`src/kernel_simulation_tests/` drives one to four Kubernetes or Git identities through one real
+service application and shared journal. Its private test-only owners are:
+
+| Module           | Responsibility                                                                 |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `mod.rs`         | Stable root replay selector and narrow executed-SQL probe re-export            |
+| `trace.rs`       | Serialized actions, effect/cut enums, findings and unchanged defaults          |
+| `world.rs`       | Concrete peers, original material and raw record-store fixtures                |
+| `run.rs`         | Real selections, cancellation, reopen and operating faults                     |
+| `laws.rs`        | Independent original-intent, I/O, retained-fact, byte and progress comparisons |
+| `cases.rs`       | Deterministic witnesses and reached defect controls on both stores             |
+| `exploration.rs` | Generation, minimization, exclusive persistence and replay                     |
+
+`src/test_scratch.rs` owns private temporary-directory custody and cleanup for journal tests and
+simulation. Journal tests do not depend on the simulator. The Python supervisor still selects
+exactly `kernel_simulation_tests::kernel_trace_exploration_or_replay`; deterministic cases now have
+the `kernel_simulation_tests::cases::` prefix. All modules and neutral support remain charged
+assurance.
+
+Each identity has distinct intent, target, authority and receipt signing material. Every event
+checks every peer's raw facts and independently counted receiver I/O. Every selection also requires
+all nonselected peers' complete rows and I/O counters to remain unchanged, including the first
+receipt commitment. Generated three-identity schedules use Kubernetes-only, Git-only and mixed
+assignments. They interleave selections, receiver changes, catalog removal, trust withdrawal and
+restored prerequisites. Conflicting catalog replacement must fail application construction without
+changing any peer's retained facts or receiver counts. Withdrawn trust must permit neither I/O nor
+retained fact changes. Substituting a different public key under the original key ID must disclose
+neither targets nor receipt bytes. After raw-history and receiver laws pass, every peer checks exact
+stored status, admitted phase, original targets and receipt readiness/bytes. Unadmitted identities
+must return absence without catalog target disclosure. Execution-status reads check every process
+observation against independently specified disposition pairs. Unfinished history distinguishes
+operator remediation from explicit same-ID resumption; terminal history supersedes stale
+observations. Unknown process knowledge never supplies a historical stop cause, including after
+reopen. Both point reads and authenticated SQLite history entries preserve access failures and
+original status/targets. Real SQLite additionally checks the ordered history identities and their
+authenticated projections. Unaffected peers remain readable. Reads must change neither retained
+rows, receiver counts nor durable-write counts. These traces contain at most four identities;
+full-page pagination and wire/process readers retain their direct owners. Restoring trust does not
+substitute current catalog authority for history. Signer rotation before receipt commitment may
+choose the new signer. Rotation after commitment must return the original bytes and signer. Invalid
+signing material at frozen history must change no facts or receiver counts. Production journal
+policy validates authority, transitions and frozen facts. Its private record-I/O owner reads
+complete bounded rows from either typed table and conditionally commits against the original row.
+SQLite updates only changed columns. The test-only virtual store implements atomic records, not
+lifecycle policy. Neither backend selection nor fault controls are caller inputs.
 
 The slice checks original intent, confirmed dispatch provenance, initial classification, complete
 receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt

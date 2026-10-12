@@ -13,7 +13,7 @@ use crate::gateway::{
     AuthorizedRequest, ExactAuthorization, FrozenReceipt, OperationResult,
     SetDeploymentImageRequest, ValidatedRequest,
 };
-pub(in crate::gateway) use crate::kernel_simulation_tests::Scratch;
+pub(in crate::gateway) use crate::test_scratch::Scratch;
 
 pub(in crate::gateway) struct History {
     pub request: SetDeploymentImageRequest,
