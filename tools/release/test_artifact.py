@@ -173,18 +173,20 @@ class ReleaseVerifierTests(unittest.TestCase):
             "auditID": "first",
             "user": {"username": "system:serviceaccount:demo:journey"},
             "objectRef": {"name": "agent-healthy"},
+            "requestReceivedTimestamp": "2026-10-11T00:00:00Z",
         }
         fixture_write = dict(event, auditID="fixture", userAgent="kapsel-journey-fixture")
         audit = b"\n".join(json.dumps(item).encode() for item in (fixture_write, event))
         with mock.patch.object(JOURNEY, "run", return_value=audit):
-            counts = JOURNEY.collect_patch_counts("fixture")
+            counts, events = JOURNEY.collect_receiver_counts("fixture")
         self.assertEqual(counts, {case: int(case == "healthy") for case in JOURNEY.CASES})
+        self.assertEqual(events["healthy"], [("patch", 1791676800.0)])
         duplicate = b"\n".join([json.dumps(event).encode()] * 2)
         with (
             mock.patch.object(JOURNEY, "run", return_value=duplicate),
             self.assertRaises(AssertionError),
         ):
-            JOURNEY.collect_patch_counts("fixture")
+            JOURNEY.collect_receiver_counts("fixture")
 
     def test_journey_python_calls_exclude_caller_writable_imports(self) -> None:
         tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
@@ -195,7 +197,7 @@ class ReleaseVerifierTests(unittest.TestCase):
             and node.elts
             and ast.unparse(node.elts[0]) == "sys.executable"
         ]
-        self.assertEqual(len(invocations), 2)
+        self.assertEqual(len(invocations), 3)
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             (root / "socket.py").write_text("raise SystemExit(99)\n")
@@ -210,8 +212,11 @@ class ReleaseVerifierTests(unittest.TestCase):
                     ),
                     {"sys": sys},
                 )
-                self.assertEqual(prefix, [sys.executable, "-I", "-"])
-                subprocess.run(prefix, input=b"import socket\n", cwd=root, check=True, timeout=5)
+                self.assertEqual(prefix[:2], [sys.executable, "-I"])
+                self.assertIn(prefix[2], ("-", "/inputs/kind_receiver_barrier.py"))
+                subprocess.run(
+                    prefix[:2] + ["-c", "import socket"], cwd=root, check=True, timeout=5
+                )
 
     def test_journey_receipt_binds_action_and_result(self) -> None:
         function = next(
@@ -225,13 +230,21 @@ class ReleaseVerifierTests(unittest.TestCase):
             ("caller-loss", "SUCCEEDED"),
         ):
             with self.subTest(operation=operation, result=result):
-                report = {"status": "INSPECTED", "operation_id": operation, "result": result}
+                report = {
+                    "status": "INSPECTED",
+                    "operation_id": operation,
+                    "result": result,
+                    "target_uid": "original",
+                    "target_resource_version": "opaque",
+                }
                 path = mock.Mock()
                 path.read_text.return_value = "1"
                 path.read_bytes.return_value = b"frozen"
                 scope = {
                     "pathlib": SimpleNamespace(Path=lambda _, path=path: path),
                     "json": json,
+                    "EXPECTED": {"caller-loss": "UNKNOWN"},
+                    "targets": {"caller-loss": {"uid": "original", "resourceVersion": "opaque"}},
                     "read": lambda *args: {"status": "READY"},
                     "command": lambda *args, report=report: json.dumps(report),
                 }

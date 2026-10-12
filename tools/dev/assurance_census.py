@@ -30,6 +30,7 @@ SUPPORT_FILES = {
     "crates/kapsel-daemon/src/server/linux_tests.rs",
     "src/gateway/receiver_recovery_tests.rs",
     "src/gateway/receiver_recovery_tests/receiver.rs",
+    "src/gateway/kubernetes_composition_tests/receiver.rs",
     "src/gateway/git/exploration.rs",
 }
 LITERAL = re.compile(r"""(?:b|c)?"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\\n])' """.strip(), re.DOTALL)

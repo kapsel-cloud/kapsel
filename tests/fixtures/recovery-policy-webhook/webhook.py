@@ -40,7 +40,7 @@ class AdmissionHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def log_message(self, _format, *_args):
+    def log_message(self, format, *args):
         return
 
 

@@ -1,21 +1,233 @@
 """Offline checks for the packaged journey's independent retained-evidence reader."""
 
+import http.server
+import json
 import os
 import pathlib
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 from kind_agent_action_exercise import finalized_evidence, retained_row
+from kind_receiver_barrier import LIMIT, send_reply, upstream
 from run_kind_agent_action_workflow import (
     CODEX_OUTPUT_LIMIT,
+    observation_read_counts,
     run,
     run_agent_process,
     run_bounded_process,
 )
+
+
+class ReceiverBarrierTests(unittest.TestCase):
+    def test_service_loss_can_close_headers_or_body_without_fixture_failure(self) -> None:
+        for exception in (BrokenPipeError, ConnectionResetError):
+            for closed_at in ("headers", "body"):
+                with self.subTest(exception=exception, closed_at=closed_at):
+                    handler = mock.Mock()
+                    write = handler.end_headers if closed_at == "headers" else handler.wfile.write
+                    write.side_effect = exception()
+                    send_reply(handler, 200, b"{}")
+                    handler.send_response.assert_called_once_with(200)
+        handler = mock.Mock()
+        handler.end_headers.side_effect = ValueError("invalid header")
+        with self.assertRaises(ValueError):
+            send_reply(handler, 200, b"{}")
+
+    def test_real_forwarding_keeps_conditional_patch_authentication_and_conflict(self) -> None:
+        requests = []
+
+        class Api(http.server.BaseHTTPRequestHandler):
+            def do_PATCH(self):  # noqa: N802 - stdlib handler API
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                requests.append(
+                    (self.headers["Authorization"], self.headers["User-Agent"], json.loads(body))
+                )
+                response = b'{"kind":"Status","code":409}'
+                self.send_response(
+                    200 if self.headers["Authorization"] == "Bearer fixture" else 409
+                )
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, format, *args):
+                return
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "kubeconfig.json").write_text(
+                json.dumps(
+                    {
+                        "clusters": [{"cluster": {"server": "unused"}}],
+                        "users": [{"user": {"token": "product"}}],
+                    }
+                )
+            )
+            (root / "fixture-token").write_text("fixture")
+            (root / "settings.json").write_text(json.dumps({"cases": {"race": 0}}))
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Api)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                config = json.loads((root / "kubeconfig.json").read_text())
+                config["clusters"][0]["cluster"]["server"] = (
+                    f"http://127.0.0.1:{server.server_port}"
+                )
+                (root / "kubeconfig.json").write_text(json.dumps(config))
+                script = pathlib.Path(__file__).with_name("kind_receiver_barrier.py")
+                with subprocess.Popen(
+                    [sys.executable, "-I", str(script), str(root), str(root), str(root)],
+                    stderr=subprocess.DEVNULL,
+                ) as process:
+                    try:
+                        deadline = time.monotonic() + 5
+                        while not (root / "barrier.ready").exists():
+                            self.assertIsNone(process.poll())
+                            self.assertLess(time.monotonic(), deadline)
+                            time.sleep(0.01)
+                        port = int((root / "barrier.ready").read_text())
+                        patch = {"metadata": {"uid": "original", "resourceVersion": "opaque"}}
+                        request = urllib.request.Request(
+                            f"http://127.0.0.1:{port}/apis/apps/v1/namespaces/demo/deployments/agent-race?fieldManager=kapsel",
+                            data=json.dumps(patch).encode(),
+                            method="PATCH",
+                            headers={
+                                "Authorization": "Bearer product",
+                                "User-Agent": "original-client",
+                                "Content-Type": "application/strategic-merge-patch+json",
+                            },
+                        )
+                        with self.assertRaises(urllib.error.HTTPError) as conflict:
+                            urllib.request.urlopen(request, timeout=5)
+                        self.assertEqual(conflict.exception.code, 409)
+                        conflict.exception.close()
+                        self.assertEqual(
+                            requests,
+                            [
+                                (
+                                    "Bearer fixture",
+                                    "kapsel-journey-fixture",
+                                    {"metadata": {"annotations": {"journey-fixture/race": "true"}}},
+                                ),
+                                ("Bearer product", "original-client", patch),
+                            ],
+                        )
+                        record = json.loads((root / "race.patch.json").read_text())
+                        self.assertEqual(record["request"], patch)
+                        self.assertEqual(record["status"], 409)
+                        self.assertNotIn("Bearer", (root / "race.patch.json").read_text())
+                        with self.assertRaises(urllib.error.HTTPError) as repeated:
+                            urllib.request.urlopen(request, timeout=5)
+                        repeated.exception.close()
+                        self.assertEqual(len(requests), 3)
+                        self.assertEqual(requests[-1], ("Bearer product", "original-client", patch))
+                        self.assertEqual(
+                            (root / "barrier.violation").read_text(),
+                            "duplicate product PATCH: race",
+                        )
+                        (root / "race.patch.request.json").unlink()
+                        (root / "barrier.violation").unlink()
+
+                        def concurrent_send():
+                            try:
+                                urllib.request.urlopen(request, timeout=5)
+                            except urllib.error.HTTPError as error:
+                                with error:
+                                    return error.code
+                            self.fail("conditional request unexpectedly accepted")
+
+                        with ThreadPoolExecutor(max_workers=2) as callers:
+                            results = list(callers.map(lambda _: concurrent_send(), range(2)))
+                        self.assertEqual(results, [409, 409])
+                        self.assertEqual(len(requests), 6)
+                        self.assertEqual(
+                            sum(auth == "Bearer product" for auth, _, _ in requests), 4
+                        )
+                        self.assertTrue((root / "barrier.violation").exists())
+                    finally:
+                        process.terminate()
+                        process.wait(timeout=5)
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+                server.server_close()
+
+    def test_upstream_bounds_actual_response_reads(self) -> None:
+        class Api(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib handler API
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"x" * (LIMIT + 1))
+
+            def log_message(self, format, *args):
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Api)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaisesRegex(AssertionError, "response bound"):
+                upstream(f"http://127.0.0.1:{server.server_port}", None, "fixture", "/")
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
+
+
+class ObservationAuditTests(unittest.TestCase):
+    def test_terminal_timing_and_each_recovery_pass_have_independent_bounds(self) -> None:
+        slow = {"case": "caller-loss", "started_unix_s": 0, "finished_unix_s": 179}
+        self.assertEqual(
+            observation_read_counts([slow], {"caller-loss": [("get", 1), ("get", 2)]}),
+            {"caller-loss": 2},
+        )
+        for stopped_at in (100, 210):
+            with self.subTest(stopped_at=stopped_at), self.assertRaises(AssertionError):
+                observation_read_counts(
+                    [dict(slow, finished_unix_s=stopped_at)],
+                    {"caller-loss": [("get", 1), ("get", 2)]},
+                )
+        interrupted = {
+            "case": "service-loss",
+            "started_unix_s": 0,
+            "finished_unix_s": 60,
+            "interrupted_unix_s": 5,
+            "resumed_unix_s": 10,
+        }
+        original = [("get", 1.0), ("patch", 2.0), ("get", 3.0), ("get", 11.0)]
+        self.assertEqual(
+            observation_read_counts([interrupted], {"service-loss": original}), {"service-loss": 3}
+        )
+        # Read counts alone must not admit a recovery lasting 390 seconds.
+        with self.assertRaises(AssertionError):
+            observation_read_counts(
+                [dict(interrupted, finished_unix_s=400)], {"service-loss": original}
+            )
+        self.assertEqual(
+            observation_read_counts(
+                [dict(interrupted, finished_unix_s=215)], {"service-loss": original}
+            ),
+            {"service-loss": 3},
+        )
+        with self.assertRaises(AssertionError):
+            observation_read_counts([interrupted], {"service-loss": original + [("get", 61.0)]})
+        # Aggregate reads still fit 361, but the recovery pass has exceeded its own 180 ceiling.
+        excessive = original + [("get", 12 + index / 1000) for index in range(180)]
+        with self.assertRaises(AssertionError):
+            observation_read_counts([interrupted], {"service-loss": excessive})
+        with self.assertRaises(AssertionError):
+            observation_read_counts(
+                [dict(interrupted, interrupted_unix_s=2.5)], {"service-loss": original}
+            )
 
 
 class RetainedEvidenceTests(unittest.TestCase):

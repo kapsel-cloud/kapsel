@@ -57,11 +57,6 @@ pub(crate) struct DispatchPermission {
 }
 
 impl DispatchPermission {
-    #[cfg(test)]
-    pub(crate) fn request_for_test(&self) -> SetDeploymentImageRequest {
-        self.request.to_adapter_request()
-    }
-
     // The adapter consumes permission when building its mutation request. Consumption alone cannot
     // prevent transport retries. The I/O implementation must send at most one mutation request.
     pub(crate) fn into_payload(self) -> (SetDeploymentImageRequest, TargetIdentity) {

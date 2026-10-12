@@ -51,24 +51,23 @@ env KAPSEL_TEST_BRIDGE="$PWD/target/debug/kapsel-service-mcp" \
 
 ## Live Kubernetes gate
 
-Requires Docker, kind 0.32+, kubectl 1.30+, Python 3.11+, and OpenSSL:
+Requires Docker, kind 0.32+, kubectl 1.30+, Python 3.11+, and OpenSSL. Set `archive` and `revision`
+to the accepted clean artifact and its exact source identity as specified below:
 
 ```sh
-./tests/qualification/run-kind-effect-gateway.sh
+./tests/qualification/run-kind-effect-gateway.sh --archive "$archive" --revision "$revision"
 ```
 
-The script creates and removes its own uniquely named cluster and exports failure logs. It records
-the base revision and working-tree diff digest, and refuses untracked files that cannot be included
-in that evidence. This lane is separate from deterministic CI. See
-[Live Kubernetes and demonstration](evidence.md#live-kubernetes-and-demonstration) for the gateway,
-strategic-patch admission, exact-snapshot and service observation cases.
+This entry point delegates to the packaged-service workflow; it does not compile a separate
+source/test-hook suite. The runner creates and removes its own uniquely named cluster and retains
+private evidence. See [the evidence map](evidence.md#live-kubernetes-and-demonstration).
 
 ## Packaged-service live workflow
 
 Use this lane to check production binaries against a real Kubernetes receiver, including caller
 loss, service loss and same-ID recovery. The model-driven healthy action is an optional addition.
 
-1. Prepare Docker, kind 0.32+, kubectl 1.30+ and Python 3.11+.
+1. Prepare Docker, kind 0.32+, kubectl 1.30+, Python 3.11+ and OpenSSL.
 2. Select an exact accepted clean release archive, matching sidecars and source revision. Set
    `archive` and `revision` to those identities.
 3. Run the scripted workflow below, or add the [model lane](#model-driven-healthy-action).
@@ -92,16 +91,28 @@ and selection. The caller selects approved IDs from one catalog, with no per-act
 switching. The fixture operator owns the disposable Deployments' desired state. No existing
 reconciler is disabled.
 
-The cases cover a healthy action, deliberately stale snapshot, service SIGKILL after the live image
-change followed by explicit same-ID resumption, and caller loss before acknowledgement during a
-rollout that exceeds the observation window. Independent B remains selectable after A's frozen
-`UNKNOWN`. A conflicting follow-on ID was never provisioned and must remain unavailable to a hostile
-caller before and after cold replacement. The service-loss case also kills the service after
-terminal status but before the caller's first receipt export. It compares independently read
-format-6 grant/receipt/signer bytes through cold signing-key rotation, original-byte export and
-repeated same-ID selection. Original receipts remain retrievable after catalog withdrawal.
-API-server audit independently counts product PATCH requests, excluding explicitly identified
-fixture writes used to prepare the faults.
+The cases cover healthy and failed rollouts, stale and recreated snapshots, a conditional-update
+race, deletion after accepted mutation, service SIGKILL during observation with explicit same-ID
+resumption, and caller loss before acknowledgement during a rollout beyond the observation window.
+Independent B remains selectable after A's frozen `UNKNOWN`. A conflicting follow-on ID was never
+provisioned and must remain unavailable to a hostile caller before and after cold replacement. The
+service-loss case also kills the service after terminal status but before the caller's first receipt
+export. It compares independently read format-6 grant/receipt/signer bytes through cold signing-key
+rotation, original-byte export and repeated same-ID selection. Original receipts remain retrievable
+after catalog withdrawal. API-server audit independently counts product PATCH requests and
+execution-window GETs, excluding fixture writes. An operator-owned, authenticated loopback barrier
+forwards requests to the real API server. It changes the version before the race PATCH, and parks
+accepted failed/deleted PATCH responses until service loss. It does not supply receiver observations
+or product lifecycle hooks. Repeated product PATCHes still reach the API server and record a
+qualification failure. Independent B runs directly against the HTTPS API server using its CA bundle,
+without the loopback barrier, so the product's TLS client remains part of live success evidence.
+
+The healthy case checks the unchanged sidecar, one generation and ReplicaSet increase, then replays
+the original conditional patch as a fixture write. The API server must return 409 with unchanged
+persisted spec, version and controller effects. A scoped, deliberately side-effecting admission
+webhook records two distinct admission requests despite only one persisted change. Never install
+that webhook in an existing cluster. The fixture operator has separate namespace-scoped credentials
+for its writes and observations; the service retains only its named Deployment read/patch scope.
 
 The runner probes private-file and executable custody under the caller identity before submission.
 Private fixture credentials and evidence are copied into container-owned directories, not exposed
@@ -172,43 +183,40 @@ not run broad Docker or kind cleanup. The native example separately retains its 
 
 ## Receiver-recovery regressions
 
-These eight deterministic Kapsel scenarios need only the repository Rust toolchain, not Docker or
-credentials. Run the complete matrix without a reduced-case selection:
+The deterministic adapter composition check needs only the repository Rust toolchain, not Docker or
+credentials:
 
 ```sh
-unset KAPSEL_RECEIVER_ONLY
-cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests -- --nocapture
+cargo test --locked -p kapsel --lib gateway::kubernetes_composition_tests
 ```
 
-For a reduced pre-send replay:
-
-```sh
-KAPSEL_RECEIVER_ONLY=pre-send cargo test --locked -p kapsel --lib \
-  gateway::receiver_recovery_tests::receiver_recovery_scenarios -- --exact --nocapture
-```
-
-Kapsel runs against an independent HTTP service fixture with exact PATCH assertions, real process
-exits and frozen-evidence reconnect checks. The full matrix is included in the default gate. These
-regressions check current Kapsel behavior. They do not show equivalence with another tool.
+An independent HTTP fixture supplies exact PATCH assertions and receiver facts for signed receipt
+comparisons. Healthy, failed, response-loss, conflict, budget-exhaustion and post-acceptance writer
+changes run in the default gate. The shared simulator owns interruption and frozen-recovery laws;
+process suites retain actual process-loss evidence. These checks do not show equivalence with
+another tool.
 
 ### Initial observation policy
 
-The live gate also runs `kind_tests::observation_experiment::kind_service_observation_policy`. It
-creates two healthy original Deployments with 60- and 210-second minimum readiness periods, then
-selects exact approvals through `ServiceApplication`. It exercises an interrupted observation and
-explicit same-ID resumption, reconnects stored reads while the worker survives, verifies B is
-`BUSY`, and preserves the frozen `UNKNOWN` after the slower rollout eventually becomes available.
-API-server audit independently counts PATCHes and execution-window GETs. The log records readiness,
-elapsed time, worker occupancy and stored-read latency. This is the actual service application with
-a live receiver, not installed-socket or native-host qualification. Linux process tests separately
-own socket and process-loss evidence.
+The packaged workflow uses 60- and 210-second minimum readiness periods. The service-loss case
+requires a completed live observation before SIGKILL and explicit same-ID resumption. The slower
+caller-loss case checks unfinished status, unavailable receipt and `BUSY` refusal while the worker
+survives. After terminal `UNKNOWN`, it waits for independently observed rollout availability and
+checks unchanged status and original receipt bytes.
+
+API-server audit bounds execution-window GETs to 181 on the initial pass and 180 on recovery.
+Recovery must finish within 205 seconds of explicit resumption, allowing tolerance above the
+180-second product ceiling. Caller-loss terminal evidence must arrive between 175 and 205 seconds.
+Both readiness cases must run for more than 30 seconds. Evidence records observation reach, worker
+occupancy, stored-read latency and original bytes. This lane uses extracted production binaries and
+the actual socket; it does not qualify native systemd or power-loss durability.
 
 Focused deterministic observation checks:
 
 ```sh
 cargo test --locked -p kapsel gateway::kubernetes
 cargo test --locked -p kapsel gateway::kubernetes::adapter::tests::production_policy
-cargo test --locked -p kapsel --lib gateway::receiver_recovery_tests::receiver_recovery_scenarios
+cargo test --locked -p kapsel --lib gateway::kubernetes_composition_tests
 ```
 
 Paused-clock tests distinguish the read ceiling (180 instantaneous reads over 179 one-second waits)

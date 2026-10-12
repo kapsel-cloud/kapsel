@@ -52,6 +52,13 @@ histories, competing-writer read views, rollback records, process commitment win
 full-capacity process trace owns the before-SQL, SQL-executed/precommit and committed-receipt
 observations without a second small receipt process journey.
 
+Kubernetes live qualification uses one packaged-binary workflow rather than source/test-hook
+journeys. Its operator-owned HTTP barriers establish actual conditional conflicts and process-loss
+placement; API-server audit, receiver/controller reads and admission logs supply independent facts.
+Compact adapter composition binds exact HTTP requests and receiver facts to signed receipts. Shared
+histories retain interruption, original authority and frozen recovery laws. Live audit controls must
+reject duplicate product requests, shortened observation windows and per-pass read overruns.
+
 The whole-suite working budget is 17,400 charged lines, including all replacement support:
 
 | Owner                                                    | After-budget |

@@ -9,9 +9,9 @@ mod demo_control;
 pub(crate) mod git;
 mod journal;
 mod kubernetes;
-mod receipt;
 #[cfg(test)]
-mod receiver_recovery_tests;
+mod kubernetes_composition_tests;
+mod receipt;
 
 use std::{error::Error, fmt, future::Future, path::Path};
 
@@ -27,15 +27,11 @@ use journal::{AuthorizedOperation, Journal, WorkerLock};
 #[cfg(test)]
 pub(crate) use journal::{Defect, Delivery, StorageControl, StorageWrite};
 pub(crate) use journal::{DispatchPermission, LoadedOperation};
-#[cfg(test)]
-use kube::Client;
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
 #[cfg(test)]
 pub(crate) use kubernetes::{
-    deployment_patch_document_for_test as test_deployment_patch_document,
-    ApplyOutcome as TestApplyOutcome,
-    KubernetesDeploymentImageAdapter as TestKubernetesDeploymentImageAdapter,
-    ReceiverObservation as TestReceiverObservation, TargetIdentity as TestTargetIdentity,
+    ApplyOutcome as TestApplyOutcome, ReceiverObservation as TestReceiverObservation,
+    TargetIdentity as TestTargetIdentity,
 };
 use kubernetes::{ApplyOutcome, ReceiverObservation, TargetIdentity, ValidatedTargetIdentity};
 pub use receipt::{
@@ -888,17 +884,6 @@ impl Gateway {
         };
         let receipt = operation.receipt();
         Ok((receipt.bytes.clone(), receipt.digest.clone()))
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn run_operation_once(
-        &mut self,
-        operation_id: &str,
-        client: Client,
-    ) -> Result<Option<OperationState>, GatewayError> {
-        let mut adapter = KubernetesDeploymentImageAdapter::new(client);
-        self.run_operation_once_with_adapter_and_fault(operation_id, &mut adapter, None)
-            .await
     }
 
     #[cfg(test)]

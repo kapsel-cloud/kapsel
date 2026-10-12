@@ -6,6 +6,8 @@ The old source/test-hook experiment is reproducible at its recorded historical r
 """
 
 import argparse
+import base64
+import datetime
 import hashlib
 import importlib.util
 import json
@@ -29,7 +31,18 @@ INITIAL = (
 DESIRED = (
     "registry.k8s.io/pause@sha256:278fb9dbcca9518083ad1e11276933a2e96f23de604a3a08cc3c80002767d24c"
 )
-CASES = {"healthy": 0, "stale": 0, "service-loss": 60, "caller-loss": 210, "independent": 0}
+FAILED = "registry.example.invalid/kapsel/unhealthy@sha256:" + "1" * 64
+CASES = {
+    "healthy": 0,
+    "stale": 0,
+    "recreated": 0,
+    "race": 0,
+    "failed": 0,
+    "deleted": 60,
+    "service-loss": 60,
+    "caller-loss": 210,
+    "independent": 0,
+}
 
 RETIRE_SOURCE = pathlib.Path(__file__).with_name("retire_callers.py")
 SNAPSHOT_SOURCE = pathlib.Path(__file__).with_name("snapshot_receipt.py")
@@ -41,6 +54,8 @@ RECEIPT_SNAPSHOT = SNAPSHOT_SOURCE.read_bytes().decode("utf-8")
 # Only the artifact, public procedure and scoped fixture authority enter the operating container.
 # No product source, test-feature binary, private database edit or lifecycle hook is used.
 EXERCISE_SOURCE = pathlib.Path(__file__).with_name("kind_agent_action_exercise.py")
+BARRIER_SOURCE = pathlib.Path(__file__).with_name("kind_receiver_barrier.py")
+WEBHOOK_SOURCE = ROOT / "tests/fixtures/recovery-policy-webhook/webhook.py"
 
 
 # Current ordinary tool callers retain an 8 MiB audit head plus small command output/config input.
@@ -389,7 +404,7 @@ def execute_journey_container(
             process.stdin.close()
             if agent_binary is not None:
                 agent_evidence = run_agent(name, workspace, agent_binary, agent_auth)
-            exercise_exit = process.wait(timeout=450)
+            exercise_exit = process.wait(timeout=750)
         finally:
             if process.poll() is None:
                 process.kill()
@@ -397,7 +412,7 @@ def execute_journey_container(
     return exercise_exit, agent_evidence
 
 
-def collect_patch_counts(name: str) -> dict[str, int]:
+def collect_receiver_counts(name: str) -> tuple[dict[str, int], dict[str, list[tuple[str, float]]]]:
     """Read bounded, unrotated API-server audit evidence, independently of product counters."""
     audit = run(
         [
@@ -411,12 +426,13 @@ def collect_patch_counts(name: str) -> dict[str, int]:
     )
     assert len(audit) <= 8388608, "audit exceeded evidence bound"
     counts = {case: 0 for case in CASES}
+    events: dict[str, list[tuple[str, float]]] = {case: [] for case in CASES}
     seen_audit_ids = set()
     for line in audit.splitlines():
         event = json.loads(line)
-        is_patch = event.get("verb") == "patch"
+        verb = event.get("verb")
         is_fixture_write = event.get("userAgent") == "kapsel-journey-fixture"
-        if not is_patch or is_fixture_write:
+        if verb not in ("get", "patch") or is_fixture_write:
             continue
 
         username = event.get("user", {}).get("username")
@@ -425,8 +441,199 @@ def collect_patch_counts(name: str) -> dict[str, int]:
         assert event["auditID"] not in seen_audit_ids
         seen_audit_ids.add(event["auditID"])
         case = event["objectRef"]["name"].removeprefix("agent-")
-        counts[case] += 1
+        counts[case] += int(verb == "patch")
+        timestamp = datetime.datetime.fromisoformat(
+            event["requestReceivedTimestamp"].replace("Z", "+00:00")
+        ).timestamp()
+        events[case].append((verb, timestamp))
+    return counts, events
+
+
+def observation_read_counts(reports, events: dict[str, list[tuple[str, float]]]) -> dict[str, int]:
+    """Bind each live observation pass to independent API audit times and read bounds."""
+    counts = {}
+    for report in reports:
+        case = report["case"]
+        reads = [
+            at
+            for verb, at in events[case]
+            if verb == "get" and report["started_unix_s"] <= at <= report["finished_unix_s"]
+        ]
+        counts[case] = len(reads)
+        assert not any(
+            verb == "get" and at > report["finished_unix_s"] for verb, at in events[case]
+        ), case
+        if case == "caller-loss":
+            assert 1 < len(reads) <= 181, (case, reads)
+            # 180 reads with 179 one-second waits, or the 180-second elapsed ceiling.
+            # Allow client startup and status polling, not a materially shorter observation pass.
+            assert 175 <= report["finished_unix_s"] - report["started_unix_s"] <= 205
+        if case == "service-loss":
+            first_pass = [at for at in reads if at < report["resumed_unix_s"]]
+            recovery_pass = [at for at in reads if at >= report["resumed_unix_s"]]
+            assert 1 < len(first_pass) <= 181, first_pass
+            assert 0 < len(recovery_pass) <= 180, recovery_pass
+            recovery_seconds = report["finished_unix_s"] - report["resumed_unix_s"]
+            assert 0 <= recovery_seconds <= 205, (case, recovery_seconds)
+            assert report["finished_unix_s"] - report["started_unix_s"] > 30
+            patch_time = next(at for verb, at in events[case] if verb == "patch")
+            assert any(patch_time < at < report["interrupted_unix_s"] for at in first_pass)
     return counts
+
+
+def install_admission_fixture(kubectl: list[str], workspace: pathlib.Path) -> None:
+    """Install the deliberately side-effecting webhook only in this newly owned cluster."""
+    cert = workspace / "webhook.crt"
+    key = workspace / "webhook.key"
+    run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-keyout",
+            str(key),
+            "-out",
+            str(cert),
+            "-subj",
+            "/CN=receiver-admission.demo.svc",
+            "-addext",
+            "subjectAltName=DNS:receiver-admission.demo.svc",
+        ]
+    )
+    run(
+        [
+            *kubectl,
+            "-n",
+            "demo",
+            "create",
+            "secret",
+            "tls",
+            "receiver-admission",
+            "--cert=" + str(cert),
+            "--key=" + str(key),
+        ]
+    )
+    run(
+        [
+            *kubectl,
+            "-n",
+            "demo",
+            "create",
+            "configmap",
+            "receiver-admission",
+            "--from-file=webhook.py=" + str(workspace / WEBHOOK_SOURCE.name),
+        ]
+    )
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "List",
+        "items": [
+            {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": "receiver-admission", "namespace": "demo"},
+                "spec": {
+                    "replicas": 1,
+                    "selector": {"matchLabels": {"app": "receiver-admission"}},
+                    "template": {
+                        "metadata": {"labels": {"app": "receiver-admission"}},
+                        "spec": {
+                            "automountServiceAccountToken": False,
+                            "securityContext": {
+                                "runAsNonRoot": True,
+                                "runAsUser": 65532,
+                                "runAsGroup": 65532,
+                            },
+                            "containers": [
+                                {
+                                    "name": "webhook",
+                                    "securityContext": {
+                                        "allowPrivilegeEscalation": False,
+                                        "capabilities": {"drop": ["ALL"]},
+                                    },
+                                    "image": RUNNER,
+                                    "command": ["python3", "-I", "/program/webhook.py"],
+                                    "readinessProbe": {"tcpSocket": {"port": 8443}},
+                                    "volumeMounts": [
+                                        {
+                                            "name": "program",
+                                            "mountPath": "/program",
+                                            "readOnly": True,
+                                        },
+                                        {"name": "tls", "mountPath": "/tls", "readOnly": True},
+                                    ],
+                                }
+                            ],
+                            "volumes": [
+                                {"name": "program", "configMap": {"name": "receiver-admission"}},
+                                {"name": "tls", "secret": {"secretName": "receiver-admission"}},
+                            ],
+                        },
+                    },
+                },
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "Service",
+                "metadata": {"name": "receiver-admission", "namespace": "demo"},
+                "spec": {
+                    "selector": {"app": "receiver-admission"},
+                    "ports": [{"port": 443, "targetPort": 8443}],
+                },
+            },
+        ],
+    }
+    run([*kubectl, "apply", "-f", "-"], data=json.dumps(manifest).encode())
+    run(
+        [
+            *kubectl,
+            "-n",
+            "demo",
+            "rollout",
+            "status",
+            "deployment/receiver-admission",
+            "--timeout=90s",
+        ],
+        timeout=100,
+    )
+    webhook = {
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "MutatingWebhookConfiguration",
+        "metadata": {"name": "receiver-admission"},
+        "webhooks": [
+            {
+                "name": "receiver-admission.kapsel.dev",
+                "admissionReviewVersions": ["v1"],
+                "sideEffects": "NoneOnDryRun",
+                "failurePolicy": "Fail",
+                "timeoutSeconds": 10,
+                "objectSelector": {"matchLabels": {"app": "healthy"}},
+                "clientConfig": {
+                    "service": {
+                        "namespace": "demo",
+                        "name": "receiver-admission",
+                        "path": "/admit",
+                    },
+                    "caBundle": base64.b64encode(cert.read_bytes()).decode(),
+                },
+                "rules": [
+                    {
+                        "apiGroups": ["apps"],
+                        "apiVersions": ["v1"],
+                        "operations": ["UPDATE"],
+                        "resources": ["deployments"],
+                        "scope": "Namespaced",
+                    }
+                ],
+            }
+        ],
+    }
+    run([*kubectl, "apply", "-f", "-"], data=json.dumps(webhook).encode())
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -478,10 +685,15 @@ def main() -> None:
     workspace = pathlib.Path(tempfile.mkdtemp(prefix="kapsel-live-artifact-"))
     print(f"Private evidence workspace: {workspace}", flush=True)
     exercise_source = EXERCISE_SOURCE.read_bytes()
+    barrier_source = BARRIER_SOURCE.read_bytes()
+    webhook_source = WEBHOOK_SOURCE.read_bytes()
+    runner_sha256 = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
     (workspace / EXERCISE_SOURCE.name).write_bytes(exercise_source)
     custody_probe = CUSTODY_PROBE_SOURCE.read_bytes()
     lost_ack_source = LOST_ACK_SOURCE.read_bytes()
     for source_path, source_bytes in (
+        (BARRIER_SOURCE, barrier_source),
+        (WEBHOOK_SOURCE, webhook_source),
         (LOST_ACK_SOURCE, lost_ack_source),
         (CUSTODY_PROBE_SOURCE, custody_probe),
         (RETIRE_SOURCE, RETIRE_CALLERS.encode("utf-8")),
@@ -522,6 +734,7 @@ def main() -> None:
     kubeconfig = workspace / "admin.yaml"
     inputs = workspace / "inputs"
     inputs.mkdir(mode=0o700)
+    (inputs / BARRIER_SOURCE.name).write_bytes(barrier_source)
     (inputs / CUSTODY_PROBE_SOURCE.name).write_bytes(custody_probe)
     (inputs / LOST_ACK_SOURCE.name).write_bytes(lost_ack_source)
 
@@ -600,21 +813,25 @@ nodes:
             run(["docker", "exec", name + "-control-plane", "crictl", "pull", image], timeout=120)
 
         run([*kubectl, "create", "namespace", "demo"])
+        install_admission_fixture(kubectl, workspace)
         for case in CASES:
             deployment = {
                 "apiVersion": "apps/v1",
                 "kind": "Deployment",
-                "metadata": {"name": "agent-" + case, "namespace": "demo"},
+                "metadata": {"name": "agent-" + case, "namespace": "demo", "labels": {"app": case}},
                 "spec": {
                     "replicas": 1,
                     "minReadySeconds": CASES[case],
-                    "progressDeadlineSeconds": 600,
+                    "progressDeadlineSeconds": 15 if case == "failed" else 600,
                     "selector": {"matchLabels": {"app": case}},
                     "template": {
                         "metadata": {"labels": {"app": case}},
                         "spec": {
                             "automountServiceAccountToken": False,
-                            "containers": [{"name": "api", "image": INITIAL}],
+                            "containers": [
+                                {"name": "api", "image": INITIAL},
+                                {"name": "untouched", "image": INITIAL},
+                            ],
                         },
                     },
                 },
@@ -699,9 +916,46 @@ nodes:
             "contexts": [{"name": "journey", "context": {"cluster": "journey", "user": "journey"}}],
         }
 
+        run([*kubectl, "-n", "demo", "create", "serviceaccount", "fixture"])
+        fixture_role = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "metadata": {"name": "fixture", "namespace": "demo"},
+            "rules": [
+                {
+                    "apiGroups": ["apps"],
+                    "resources": ["deployments"],
+                    "verbs": ["get", "patch", "delete", "create"],
+                },
+                {"apiGroups": ["apps"], "resources": ["replicasets"], "verbs": ["get", "list"]},
+                {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list"]},
+                {"apiGroups": [""], "resources": ["pods/log"], "verbs": ["get"]},
+            ],
+        }
+        run([*kubectl, "apply", "-f", "-"], data=json.dumps(fixture_role).encode())
+        run(
+            [
+                *kubectl,
+                "-n",
+                "demo",
+                "create",
+                "rolebinding",
+                "fixture",
+                "--role=fixture",
+                "--serviceaccount=demo:fixture",
+            ]
+        )
+        fixture_token = (
+            run([*kubectl, "-n", "demo", "create", "token", "fixture", "--duration=1h"])
+            .decode()
+            .strip()
+        )
+        (inputs / "fixture-token").write_text(fixture_token)
         (inputs / "kubeconfig.json").write_text(json.dumps(scoped))
         (inputs / "settings.json").write_text(
-            json.dumps({"cases": CASES, "desired": DESIRED, "agent": args.agent})
+            json.dumps(
+                {"cases": CASES, "desired": DESIRED, "failed_image": FAILED, "agent": args.agent}
+            )
         )
         run(
             [
@@ -742,7 +996,12 @@ nodes:
         )
         run(["docker", "cp", name + ":/evidence/.", str(evidence)])
 
-        counts = collect_patch_counts(name)
+        counts, events = collect_receiver_counts(name)
+        (evidence / "receiver-events.json").write_text(json.dumps(events))
+        execution_reads = {}
+        if exercise_exit == 0:
+            reports = json.loads((evidence / "results.json").read_bytes())
+            execution_reads = observation_read_counts(reports, events)
         summary = {
             "source_revision": args.revision,
             "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
@@ -753,9 +1012,13 @@ nodes:
                 else None
             ),
             "exercise_sha256": hashlib.sha256(exercise_source).hexdigest(),
+            "barrier_sha256": hashlib.sha256(barrier_source).hexdigest(),
+            "webhook_sha256": hashlib.sha256(webhook_source).hexdigest(),
+            "runner_sha256": runner_sha256,
             "node": NODE,
             "runner": RUNNER,
             "http_patch_counts": counts,
+            "execution_get_counts": execution_reads,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "exercise_exit": exercise_exit,
             "representative_agent": agent_evidence,
@@ -764,7 +1027,7 @@ nodes:
         (evidence / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary, indent=2), flush=True)
         assert exercise_exit == 0, "exercise failed; inspect private exercise.log"
-        assert counts == {case: int(case != "stale") for case in CASES}, counts
+        assert counts == {case: int(case not in ("stale", "recreated")) for case in CASES}, counts
     finally:
         try:
             if container_owned:

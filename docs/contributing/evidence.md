@@ -64,24 +64,21 @@ release qualification.
 
 ## Receiver-recovery evidence
 
-[`gateway::receiver_recovery_tests`](../../src/gateway/receiver_recovery_tests.rs) runs the real
-Kubernetes adapter, journal and receipt path against an independent HTTP fixture. The fixture
-supplies expected results, exact PATCH assertions, receiver state and GET/PATCH/persistence counts.
-It does not import the gateway classifier. `assert_retained_facts` compares receipt inputs with that
-state.
+[`gateway::kubernetes_composition_tests`](../../src/gateway/kubernetes_composition_tests.rs) binds
+real Kubernetes adapter HTTP facts to signed receipts. Its independent in-memory receiver asserts
+exact PATCH bytes and counts GETs, PATCHes and persisted changes. Receipt comparisons cover original
+approval, target, generation, image, marker, replica counts and rollout conditions.
 
-| Failure window or receiver change                                   | Required check                                               |
-| ------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Process exit after attempt commit, before send                      | Recovery observes; it does not use a new send opportunity    |
-| Persisted PATCH loses its response                                  | Recovery adds no PATCH                                       |
-| Replacement UID, changed image, or later generation with the marker | Classification uses the original target and generation rules |
-| Version changes between preflight and PATCH                         | Attempt is recorded even though no patch persists            |
-| Rollout completes after the observation budget                      | Frozen `UNKNOWN` does not improve on reconnect               |
-| Defined failed rollout                                              | Failure survives the complete adapter-to-receipt path        |
+Eight variations cover healthy and failed rollouts, accepted mutation with response loss,
+conditional-update conflict and observation-budget exhaustion. After response loss, independent
+writer changes cover a replaced UID, a changed image and a later generation retaining the marker.
+The fixture does not import the production classifier or observation decoder. These checks establish
+adapter composition, not live admission, process death or power-loss durability.
 
-The eight scenarios reopen in a fresh process and check identical evidence with zero receiver I/O.
-They exercise a service fixture, not live admission or power-loss durability. Run the
-[full matrix](qualification.md#receiver-recovery-regressions). A reduced replay is not equivalent.
+The shared simulator owns interruption, observation-only recovery and frozen no-I/O reconnect laws,
+with reached remint and receipt-binding controls. Existing process suites own actual death after
+mutation and receipt commitment. Run the
+[adapter composition check](qualification.md#receiver-recovery-regressions).
 
 Related checks stay at the interfaces that own them:
 
@@ -261,19 +258,30 @@ case count, not case semantics.
 
 ### Live Kubernetes and demonstration
 
-The live-kind gate checks success, defined failed rollout, bounded `UNKNOWN` and process loss in an
-owned disposable cluster. It must count mutations independently and clean up or export bounded
-failure evidence. The recovery-policy webhook distinguishes PATCH requests and admission effects
-from persisted Deployment/controller effects when an identical stale patch is replayed.
+The [packaged workflow](../../tests/qualification/run_kind_agent_action_workflow.py) owns live
+Kubernetes qualification in one disposable, audited cluster. Extracted production binaries acquire
+exact snapshots, select approved IDs through the socket and inspect original signed receipts.
+Independent API reads check the unchanged sidecar, generation and ReplicaSet increase. Stale
+versions and recreated UIDs reject without a product PATCH. A version change after preflight causes
+an actual 409 while the journal retains `apply_started`, not pre-attempt rejection.
 
-Exact-snapshot cases acquire the target through the production adapter. They check one matching
-PATCH, stale-version and same-name-recreation rejection without PATCH, and a preflight-to-PATCH
-version conflict. That conflict remains `apply_started`, not pre-attempt rejection. Deterministic
-fault tests own the restart/receipt matrix around it.
+An operator-owned HTTP barrier forwards requests to the real API server. It parks accepted replies
+for failed/deleted-rollout process loss without writing product history. Recovery adds no PATCH;
+receipts retain the live failed condition or honest missing-receiver `UNKNOWN`. API-server audit
+counts product requests independently of fixture writes. Repeated product sends still reach the
+receiver and fail qualification. A reached concurrent-duplicate control checks that the barrier
+cannot hide them.
 
-Packaged journeys add mutation-loss and receipt-commit-loss using production binaries. Live checks
-retain healthy/failed rollout and untargeted-container assertions. Private process checkpoints stay
-outside caller input and production binaries. Finite traces are not exhaustive recovery proof.
+The retained admission webhook distinguishes two requests with distinct admission UIDs from one
+persisted Deployment/controller change when the fixture replays the original stale patch. The 60-
+and 210-second readiness cases retain interrupted observation, same-ID resumption, in-flight stored
+reads and worker exclusion. After late availability, frozen `UNKNOWN` and original bytes remain
+unchanged. Audit timestamps bound each pass separately and require no GET after terminal evidence;
+compact negative controls reject early/late terminal timing and excessive recovery reads.
+
+Mutation-loss, receipt-commit-loss, cold signer rotation and catalog withdrawal use these same
+packaged service journeys. The shared simulator owns lifecycle laws; these finite live traces do not
+establish exhaustive recovery or power-loss durability.
 
 ### Release artifact
 

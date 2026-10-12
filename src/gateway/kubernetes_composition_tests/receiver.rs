@@ -1,11 +1,6 @@
 //! Independent receiver facts and HTTP request accounting. No gateway or classifier imports.
 
-use std::{
-    fs::{self, OpenOptions},
-    io::Write,
-    os::unix::fs::OpenOptionsExt,
-    path::Path,
-};
+use std::sync::{Arc, Mutex};
 
 use http_body_util::BodyExt;
 use kube::{client::Body, Client};
@@ -21,25 +16,7 @@ pub(super) const OTHER: &str = concat!(
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 );
 
-pub(super) fn read(root: &Path) -> Value {
-    serde_json::from_slice(&fs::read(root.join("receiver.json")).unwrap()).unwrap()
-}
-
-pub(super) fn save(root: &Path, evidence: &Value) {
-    let bytes = serde_json::to_vec(evidence).unwrap();
-    assert!(bytes.len() <= 128 * 1024);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(root.join("receiver.json"))
-        .unwrap();
-    file.write_all(&bytes).unwrap();
-    file.sync_all().unwrap();
-}
-
-pub(super) fn initialize(root: &Path) {
+pub(super) fn initial_evidence() -> Value {
     let object = json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -68,50 +45,16 @@ pub(super) fn initialize(root: &Path) {
             }]
         }
     });
-    save(
-        root,
-        &json!({
-            "object": object,
-            "requests": [],
-            "persisted_patches": 0,
-            "writer_changes": 0
-        }),
-    );
-}
-
-pub(super) fn intervene(root: &Path, case: &str) {
-    let mut evidence = read(root);
-    let object = &mut evidence["object"];
-    match case {
-        "target-replacement" => object["metadata"]["uid"] = json!("replacement"),
-        "intervening-writer" => {
-            object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(OTHER);
-        },
-        "retained-marker" => object["metadata"]["generation"] = json!(3),
-        "slow-rollout" => {
-            object["status"]["observedGeneration"] = json!(2);
-            object["status"]["updatedReplicas"] = json!(1);
-            object["status"]["availableReplicas"] = json!(1);
-            object["status"]["unavailableReplicas"] = json!(0);
-        },
-        _ => panic!("unknown intervention"),
-    }
-    if case == "retained-marker" {
-        object["status"]["observedGeneration"] = json!(3);
-    }
-    object["metadata"]["resourceVersion"] = json!("opaque-writer");
-    evidence["writer_changes"] = json!(evidence["writer_changes"].as_u64().unwrap() + 1);
-    save(root, &evidence);
+    json!({"object": object, "requests": [], "persisted_patches": 0, "writer_changes": 0})
 }
 
 pub(super) fn client(
-    root: &Path,
+    evidence: Arc<Mutex<Value>>,
     case: &str,
     lose_response: bool,
 ) -> (Client, tokio::task::JoinHandle<()>) {
     let (service, mut handle) = mock::pair::<http::Request<Body>, http::Response<Body>>();
     let client = Client::new(service, "demo");
-    let root = root.to_owned();
     let case = case.to_owned();
     let task = tokio::spawn(async move {
         while let Some((request, send)) = handle.next_request().await {
@@ -128,7 +71,7 @@ pub(super) fn client(
             } else {
                 serde_json::from_slice(&bytes).unwrap()
             };
-            let mut evidence = read(&root);
+            let mut evidence = evidence.lock().unwrap();
             let requests = evidence["requests"].as_array_mut().unwrap();
             requests.push(json!({"method":method,"body":patch}));
             assert!(requests.len() <= 182);
@@ -175,8 +118,6 @@ pub(super) fn client(
                 assert_eq!(method, "GET");
             }
 
-            save(&root, &evidence);
-
             if method == "PATCH" && lose_response {
                 send.send_error(std::io::Error::other("accepted response discarded"));
             } else {
@@ -206,6 +147,25 @@ fn apply_accepted_patch(evidence: &mut Value, patch: &Value, case: &str) {
     object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(IMAGE);
     object["status"]["observedGeneration"] = json!(2);
 
+    // Independent writers act after acceptance but before the caller receives its response.
+    match case {
+        "intervening-writer" => {
+            object["spec"]["template"]["spec"]["containers"][0]["image"] = json!(OTHER);
+        },
+        "retained-marker" => {
+            object["metadata"]["generation"] = json!(3);
+            object["status"]["observedGeneration"] = json!(3);
+        },
+        "target-replacement" => object["metadata"]["uid"] = json!("replacement"),
+        _ => {},
+    }
+    if matches!(
+        case,
+        "intervening-writer" | "retained-marker" | "target-replacement"
+    ) {
+        object["metadata"]["resourceVersion"] = json!("opaque-writer");
+    }
+
     if case == "slow-rollout" {
         object["status"]["observedGeneration"] = json!(1);
         object["status"]["updatedReplicas"] = json!(0);
@@ -213,9 +173,17 @@ fn apply_accepted_patch(evidence: &mut Value, patch: &Value, case: &str) {
         object["status"]["unavailableReplicas"] = json!(1);
     }
     if case == "failed" {
+        object["spec"]["replicas"] = json!(5);
+        object["status"]["updatedReplicas"] = json!(3);
+        object["status"]["availableReplicas"] = json!(2);
+        object["status"]["unavailableReplicas"] = json!(4);
         object["status"]["conditions"] = json!([{"type":"Progressing",
             "status":"False", "reason":"ProgressDeadlineExceeded"}]);
     }
 
+    evidence["writer_changes"] = json!(usize::from(matches!(
+        case,
+        "intervening-writer" | "retained-marker" | "target-replacement"
+    )));
     evidence["persisted_patches"] = json!(evidence["persisted_patches"].as_u64().unwrap() + 1);
 }
