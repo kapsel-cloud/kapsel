@@ -562,10 +562,15 @@ retained-state budget or below 128 MiB free space, and checks retained storage d
 execution. This is not a filesystem reservation or hard allocation ceiling. Infrastructure must
 supply bounded scratch and evidence storage, CPU/memory ceilings, credential-free execution, and
 whole-job supervision. Keep source read-only during execution and provide writable Cargo caches and
-simulation build output outside source. Use a credential-free home, with no personal home mounts,
-SSH agents, signing material, service state, or Docker socket. The provisional sweep budget is two
-logical CPUs and approximately 4 GiB host memory. Useful throughput and compilation peaks still need
-measurement.
+simulation build output outside source. Command failure records retain the failed child's status and
+bounded, drained output. EOF alone is not completion; final child statuses are reconciled before the
+runner accepts output. Fuzz setup errors remain `INCOMPLETE`; only runtime failure diagnostics can
+establish a fuzz `FINDING`. Retained result metadata is opaque except for validated lane and status.
+It never supplies execution or cleanup paths.
+
+Use a credential-free home, with no personal home mounts, SSH agents, signing material, service
+state, or Docker socket. The provisional sweep budget is two logical CPUs and approximately 4 GiB
+host memory. Useful throughput and compilation peaks still need measurement.
 
 | Runner status | Exit | Meaning                                                                 |
 | ------------- | ---- | ----------------------------------------------------------------------- |

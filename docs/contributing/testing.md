@@ -407,6 +407,19 @@ Independent HTTP counts, actual Git transport, SQLite OS-failure, Linux process,
 ENOSPC and packaged-artifact evidence remain separate. A failed or unrun required negative control
 blocks retirement even when deterministic checks pass.
 
+## Robustness runner ownership
+
+`tools/dev/run_robustness.py` owns command launching, bounded output, evidence custody, completion,
+and explicit triage. Direct protocol cases cover build records, exact generation/replay markers,
+trace header custody and fuzz outcomes. One wiring witness per controller checks source/binary and
+corpus retention without reconstructing simulation worlds. The Rust directory replay owns action
+interpretation and the simulation laws; successful headers and markers cannot substitute for it.
+
+Real process fixtures retain separate witnesses for EOF/exit ordering, first failed peers,
+descendants, inherited locks, FIFO refusal and cancellation at spawn, retirement and finalization.
+Retained metadata does not authorize cleanup. Only successful completion removes the freshly owned
+scratch directory; failed or interrupted evidence requires explicit triage.
+
 ## Commands and detailed mappings
 
 Use [Build and test](build.md#focused-gates) for the ordinary loop and

@@ -24,7 +24,6 @@ from pathlib import Path
 from types import FrameType
 from typing import BinaryIO, Literal, NotRequired, TypedDict, cast
 
-RunStatus = Literal["RUNNING", "PASSED", "FINDING", "INCOMPLETE", "CANCELLED", "TRIAGED"]
 Lane = Literal["simulation", "fuzz", "unclassified"]
 
 
@@ -43,30 +42,8 @@ class SourceIdentity(TypedDict):
     cargo: str
 
 
-class ResultRecord(TypedDict):
-    status: RunStatus
-    lane: Lane
-    mode: NotRequired[str]
-    seeds: NotRequired[list[int]]
-    cases: NotRequired[int]
-    shards: NotRequired[int]
-    scratch: NotRequired[str]
-    started: NotRequired[float]
-    timeout: NotRequired[int]
-    revision: NotRequired[str]
-    rustc: NotRequired[str]
-    cargo: NotRequired[str]
-    error: NotRequired[str]
-    prior_status: NotRequired[RunStatus]
-    regression: NotRequired[str]
-    cancellation_requested: NotRequired[str]
-    finished: NotRequired[float]
-    exit_status: NotRequired[int]
-
-
 ROOT = Path(__file__).resolve().parents[2]
 KERNEL_TEST = "kernel_simulation_tests::kernel_trace_exploration_or_replay"
-SimulationEngine = Literal["kernel"]
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
 STATE_LIMIT = 1024 * 1024 * 1024
@@ -91,6 +68,13 @@ class Finding(RuntimeError):
 
 class Cancelled(RuntimeError):
     pass
+
+
+class CommandFailed(Incomplete):
+    def __init__(self, status: int, output: str) -> None:
+        super().__init__(f"command exited {status}")
+        self.status = status
+        self.output = output
 
 
 def private_root(value: str) -> Path:
@@ -163,7 +147,7 @@ def check_storage(state: Path, enforce_budget: bool = True) -> None:
             raise Incomplete("insufficient evidence storage")
 
 
-def read_result(path: Path) -> ResultRecord:
+def read_result(path: Path) -> dict[str, object]:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
@@ -184,35 +168,9 @@ def read_result(path: Path) -> ResultRecord:
         or result.get("lane") not in {"simulation", "fuzz", "unclassified"}
     ):
         raise Incomplete("invalid result record")
-    # Legacy interrupted records can be partial. Validate each optional field before typing it.
-    for field in (
-        "mode",
-        "scratch",
-        "revision",
-        "rustc",
-        "cargo",
-        "error",
-        "regression",
-        "cancellation_requested",
-    ):
-        if field in result and not isinstance(result[field], str):
-            raise Incomplete("invalid result record")
-    for field in ("cases", "shards", "timeout", "exit_status"):
-        if field in result and type(result[field]) is not int:
-            raise Incomplete("invalid result record")
-    for field in ("started", "finished"):
-        if field in result and type(result[field]) not in (int, float):
-            raise Incomplete("invalid result record")
-    if "prior_status" in result and (
-        not isinstance(result["prior_status"], str) or result["prior_status"] not in statuses
-    ):
-        raise Incomplete("invalid result record")
-    if "seeds" in result and (
-        not isinstance(result["seeds"], list)
-        or any(type(seed) is not int for seed in result["seeds"])
-    ):
-        raise Incomplete("invalid result record")
-    return cast(ResultRecord, result)
+    # Only lane/status drive decisions. Other fields are opaque retained evidence, never paths
+    # or authority for cleanup/execution; legacy interrupted records may contain partial metadata.
+    return cast(dict[str, object], result)
 
 
 def unresolved(state: Path, lane: str) -> list[Path]:
@@ -276,7 +234,6 @@ class Supervisor:
         self,
         commands: list[list[str]],
         environments: list[dict[str, str]] | None = None,
-        finding: bool = False,
     ) -> list[str]:
         if not commands:
             raise Incomplete("empty command selection")
@@ -325,7 +282,7 @@ class Supervisor:
                 check_cancellation()
 
             next_storage_check = 0.0
-            failure = None
+            failure: tuple[int, int] | None = None
             while selector.get_map() or any(child.poll() is None for child in children):
                 check_cancellation()
                 if time.monotonic() >= next_storage_check:
@@ -349,33 +306,30 @@ class Supervisor:
                         )
 
                 if failure is None:
-                    for process in children:
+                    for index, process in enumerate(children):
                         status = process.poll()
                         if status == 0 and process.pid not in retired:
                             retire(process)
                             retired.add(process.pid)
                         if status not in (None, 0):
-                            failure_type = Finding if finding and status > 0 else Incomplete
-                            failure = failure_type(f"command exited {process.returncode}")
+                            failure = (index, status)
                             # Stop peers immediately, but drain bounded output before classifying.
                             pending = [child for child in children if child.pid not in retired]
                             retire_all(pending)
                             retired.update(child.pid for child in pending)
                             break
             check_cancellation()
+            # EOF and process exit are separate events. The terminating condition can observe
+            # a nonzero status after the last body poll; reconcile it before returning output.
+            if failure is None:
+                for index, process in enumerate(children):
+                    status = process.wait(timeout=max(0.01, self.deadline - time.monotonic()))
+                    if status:
+                        failure = (index, status)
+                        break
             if failure is not None:
-                raise failure
-
-            for process in children:
-                remaining = max(0.01, self.deadline - time.monotonic())
-                try:
-                    status = process.wait(timeout=remaining)
-                except subprocess.TimeoutExpired as error:
-                    raise Incomplete("overall timeout") from error
-                if status:
-                    raise (Finding if finding and status > 0 else Incomplete)(
-                        f"command exited {status}"
-                    )
+                index, status = failure
+                raise CommandFailed(status, outputs[index].decode("utf-8", errors="replace"))
             return [output.decode("utf-8", errors="replace") for output in outputs]
         finally:
             retirement_error = None
@@ -445,16 +399,66 @@ def retained_exploration(
     atomic_json(traces.parent / (traces.name + ".json"), manifest)
 
 
+def simulation_executable(output: str, build_root: Path) -> Path:
+    executables = []
+    for line in output.splitlines():
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        target, profile = message.get("target"), message.get("profile")
+        if (
+            message.get("reason") == "compiler-artifact"
+            and isinstance(target, dict)
+            and target.get("name") == "kapsel"
+            and isinstance(profile, dict)
+            and profile.get("test") is True
+            and isinstance(message.get("executable"), str)
+        ):
+            executables.append(Path(message["executable"]))
+    if len(executables) != 1:
+        raise Incomplete("missing or ambiguous simulation test executable")
+    path = executables[0]
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or not path.resolve().is_relative_to(build_root.resolve())
+    ):
+        raise Incomplete("simulation executable is outside owned build output")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+        raise Incomplete("unsafe simulation executable")
+    return path
+
+
+def require_test_completion(output: str, marker: str) -> None:
+    if output.splitlines().count(marker) != 1 or not re.search(
+        r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
+    ):
+        raise Incomplete(f"missing execution evidence: {marker}")
+
+
+def simulation_commands(
+    supervisor: Supervisor, commands: list[list[str]], environments: list[dict[str, str]]
+) -> list[str]:
+    try:
+        return supervisor.run(commands, environments)
+    except CommandFailed as error:
+        if error.status > 0:
+            raise Finding(str(error)) from error
+        raise
+
+
 def simulation(
     supervisor: Supervisor,
     seeds: list[int],
     cases: int,
     shards: int,
-    engine: SimulationEngine = "kernel",
     source_revision: str | None = None,
 ) -> None:
     prefix = "KAPSEL_KERNEL"
-    selected_test = KERNEL_TEST
     source_archive = None
     if source_revision is not None:
         archive = supervisor.evidence / "source.tar"
@@ -482,23 +486,9 @@ def simulation(
             ]
         ]
     )[0]
-    executables = []
-    for line in output.splitlines():
-        try:
-            message = json.loads(line)
-        except ValueError:
-            continue
-        if (
-            message.get("reason") == "compiler-artifact"
-            and message.get("executable")
-            and message.get("target", {}).get("name") == "kapsel"
-            and message.get("profile", {}).get("test")
-        ):
-            executables.append(message["executable"])
-    if len(executables) != 1:
-        raise Incomplete("missing or ambiguous simulation test executable")
+    built = simulation_executable(output, supervisor.scratch / "simulation-build")
     retained = supervisor.evidence / "simulation-tests"
-    with Path(executables[0]).open("rb") as source, retained.open("xb") as destination:
+    with built.open("rb") as source, retained.open("xb") as destination:
         shutil.copyfileobj(source, destination)
         destination.flush()
         os.fsync(destination.fileno())
@@ -511,12 +501,13 @@ def simulation(
             "seeds": seeds,
             "cases": cases,
             "shards": shards,
-            "engine": engine,
+            "engine": "kernel",
             "source_archive": source_archive,
             "executable": executable,
             "sha256": digest,
         },
     )
+    command = [executable, KERNEL_TEST, "--ignored", "--exact", "--nocapture"]
     for seed in seeds:
         environments = []
         for index in range(shards):
@@ -532,27 +523,11 @@ def simulation(
                     f"{prefix}_EVIDENCE": str(traces),
                 }
             )
-        outputs = supervisor.run(
-            [
-                [
-                    executable,
-                    selected_test,
-                    "--ignored",
-                    "--exact",
-                    "--nocapture",
-                ]
-                for _ in range(shards)
-            ],
-            environments,
-            finding=True,
-        )
+        outputs = simulation_commands(supervisor, [command for _ in range(shards)], environments)
         for index, output in enumerate(outputs):
             count = len(range(index, cases, shards))
             marker = f"{prefix}_COMPLETED seed={seed} shard={index}/{shards} cases={count} steps=48"
-            if output.splitlines().count(marker) != 1 or not re.search(
-                r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
-            ):
-                raise Incomplete(f"missing execution evidence for seed={seed} shard={index}")
+            require_test_completion(output, marker)
             retained_exploration(
                 supervisor.evidence / f"traces-{seed}-{index}",
                 seed,
@@ -563,23 +538,17 @@ def simulation(
             )
         # The owning Rust parser and oracle must accept every retained document. Header hashes
         # and a generation marker alone cannot establish that a trace is replayable.
-        replayed = supervisor.run(
-            [
-                [executable, selected_test, "--ignored", "--exact", "--nocapture"]
-                for _ in range(shards)
-            ],
+        replayed = simulation_commands(
+            supervisor,
+            [command for _ in range(shards)],
             [
                 {f"{prefix}_REPLAY_DIRECTORY": str(supervisor.evidence / f"traces-{seed}-{index}")}
                 for index in range(shards)
             ],
-            finding=True,
         )
         for index, output in enumerate(replayed):
             marker = f"{prefix}_REPLAYED cases={len(range(index, cases, shards))}"
-            if output.splitlines().count(marker) != 1 or not re.search(
-                r"^test result: ok\. 1 passed; 0 failed; 0 ignored;", output, re.MULTILINE
-            ):
-                raise Incomplete("missing retained-trace replay evidence")
+            require_test_completion(output, marker)
 
 
 def corpus_identity(path: Path) -> dict[str, str]:
@@ -596,6 +565,35 @@ def corpus_identity(path: Path) -> dict[str, str]:
     if not entries:
         raise Incomplete("empty corpus")
     return entries
+
+
+def fuzz_command(
+    executable: Path, corpus: Path, artifacts: Path, seed: int, seconds: int, runs: str, target: str
+) -> list[str]:
+    return [
+        str(executable),
+        str(corpus),
+        f"-runs={runs}",
+        f"-seed={seed}",
+        f"-max_total_time={seconds}",
+        f"-max_len={FUZZ_TARGETS[target]}",
+        "-timeout=10",
+        "-rss_limit_mb=2048",
+        f"-artifact_prefix={artifacts}/",
+    ]
+
+
+def fuzz_completion(status: int, output: str) -> None:
+    if status:
+        diagnostic = any(
+            marker in output
+            for marker in ("ERROR: libFuzzer:", "ERROR: AddressSanitizer:", "panicked at")
+        )
+        failure = Finding if diagnostic else Incomplete
+        raise failure(f"fuzz command exited {status}")
+    completed = re.findall(r"^Done (\d+) runs in ", output, re.MULTILINE)
+    if len(completed) != 1 or int(completed[0]) <= 0:
+        raise Incomplete("missing fuzz execution evidence")
 
 
 def fuzz(
@@ -630,6 +628,7 @@ def fuzz(
         supervisor.evidence / "fuzz.json",
         {"target": target, "seed": seed, "seconds": seconds, "corpus_before": before},
     )
+    # cargo-fuzz has no --locked build option: preflight the graph before it can update source.
     identities = supervisor.run(
         [
             ["rustup", "run", NIGHTLY, "rustc", "-vV"],
@@ -660,7 +659,6 @@ def fuzz(
     runs = str(int(os.environ.get("KAPSEL_FUZZ_RUNS", "10000"))) if smoke else "-1"
     if smoke and int(runs) <= 0:
         raise Incomplete("smoke requires a positive run count")
-    runtime_started = False
     try:
         supervisor.run(
             [
@@ -702,41 +700,18 @@ def fuzz(
         # Launch the built libFuzzer binary directly, with cargo-fuzz's ASan default.
         asan = os.environ.get("ASAN_OPTIONS", "")
         asan = (asan + ":" if asan else "") + "detect_odr_violation=0"
-        runtime_started = True
-        output = supervisor.run(
-            [
-                [
-                    str(executable),
-                    str(corpus),
-                    f"-runs={runs}",
-                    f"-seed={seed}",
-                    f"-max_total_time={seconds}",
-                    f"-max_len={FUZZ_TARGETS[target]}",
-                    "-timeout=10",
-                    "-rss_limit_mb=2048",
-                    f"-artifact_prefix={artifacts}/",
-                ]
-            ],
-            [{"ASAN_OPTIONS": asan}],
-            finding=True,
-        )[0]
-    except (Finding, Incomplete) as error:
-        if not runtime_started or not str(error).startswith("command exited"):
+        try:
+            output = supervisor.run(
+                [fuzz_command(executable, corpus, artifacts, seed, seconds, runs, target)],
+                [{"ASAN_OPTIONS": asan}],
+            )[0]
+        except CommandFailed as error:
+            fuzz_completion(error.status, error.output)
             raise
-        output = (supervisor.evidence / supervisor.commands[-1]["log"]).read_text(errors="replace")
-        if any(
-            marker in output
-            for marker in ("ERROR: libFuzzer:", "ERROR: AddressSanitizer:", "panicked at")
-        ):
-            raise Finding(str(error)) from error
-        raise Incomplete("fuzz command failed without a discovered-failure diagnostic") from error
+        fuzz_completion(0, output)
     finally:
         if lock.read_bytes() != before_lock:
             raise Incomplete("fuzz lockfile changed")
-
-    completed = re.search(r"Done (\d+) runs in ", output)
-    if completed is None or int(completed[1]) <= 0:
-        raise Incomplete("missing fuzz execution evidence")
     atomic_json(supervisor.evidence / "corpus-after.json", corpus_identity(corpus))
 
 
@@ -768,7 +743,7 @@ def triage_run(state: Path, run_name: str | None, regression: str | None) -> Non
         raise Incomplete("triage requires --run basename and --regression reference")
 
     result_path = state / run_name / "result.json"
-    result: ResultRecord = (
+    result: dict[str, object] = (
         read_result(result_path)
         if result_path.exists()
         else {
@@ -858,7 +833,7 @@ def main() -> int:
         evidence = Path(tempfile.mkdtemp(prefix="run-", dir=state))
         scratch = Path(tempfile.mkdtemp(prefix="run-", dir=scratch_root))
         scratch_identity = scratch.stat()
-        result: ResultRecord = {
+        result: dict[str, object] = {
             "status": "RUNNING",
             "lane": lane,
             "mode": args.mode,
@@ -886,7 +861,6 @@ def main() -> int:
                     seeds,
                     args.cases,
                     args.shards,
-                    args.simulation_engine,
                     identity["revision"],
                 )
             else:
