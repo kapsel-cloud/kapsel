@@ -51,6 +51,14 @@ snapshots. They do not construct a receiver to prove that the receipt directory 
 Diagnostic tests own suppression and sink mechanics; one protocol binding checks shared suppression
 across status/history/receipt reads and its separation from explicit-selection diagnostics.
 
+Operator commands keep one public provisioning/configuration trace in `e2e_operator_commands`.
+Actual snapshot HTTP reads, authenticated grant fields, private output files and static validation
+bind the executable to its application. Command-local tests own intent objects, option grammar,
+failure classes, bounded regular-file descriptors and exclusive publication. Static approval
+partitions own independent trust and unique snapshot IDs without opening history. Offline inspection
+keeps one exact machine-record vector and a rejected signature; receipt suites own authentication,
+trust, classification and hostile-byte partitions. There is no CLI lifecycle simulator.
+
 Artifact composition delegates bounded format validation to the standalone verifier. Its offline
 regressions use one independently authored archive/SBOM fixture with pinned layout and metadata,
 hostile-member vectors, sidecar tampering and exclusive extraction under an isolated interpreter.

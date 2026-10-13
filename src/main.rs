@@ -1,6 +1,8 @@
 //! Operator provisioning and offline inspection executable for Kapsel.
 
 mod command;
+#[cfg(test)]
+mod test_scratch;
 
 use std::{io::Write as _, process::ExitCode};
 

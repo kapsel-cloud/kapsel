@@ -4,6 +4,8 @@ Notable changes are recorded here. Release tags retain their matching documentat
 
 ## Unreleased
 
+- Kubernetes grant provisioning now rejects positional authorization arrays, matching the CLI's
+  named-field contract. Valid object inputs and signed grant formats are unchanged.
 - Kubernetes preflight now rechecks retained grant custody before recording an attempt or rejection.
   Changed grant bytes during receiver identification fail closed without advancing retained facts.
 - Git journal transitions now use the shared bounded atomic record-I/O owner. Format-6 bytes, phase

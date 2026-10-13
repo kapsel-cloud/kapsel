@@ -146,7 +146,7 @@ placement, rejection and disclosure.
 | Receipt/trust inspection   | Kubernetes/Git receipt tests; `InspectionLimits::validate`; trust parser tests                                                                  | Parsing beyond supplied limits or accepting key/purpose/time                         |
 | Service operator document  | [`document`](../../src/application/service/document.rs) parser and `BoundedVec` tests                                                           | JSON decoding of excess bytes or an extra array element; hex output allocation       |
 | Receiver material          | Git configuration, kubeconfig loader and service snapshot tests                                                                                 | Construction from unsafe or excessive input; ambient fallback                        |
-| Operator and receipt files | Command `read_bounded`; daemon startup file tests                                                                                               | Allocation/read, symlink following or waiting for a special-file peer                |
+| Operator and receipt files | Command `input_descriptors_are_regular_bounded_and_not_reopened_by_name`; daemon startup file tests                                             | Allocation/read, symlink following or waiting for a special-file peer                |
 | Kubernetes HTTP            | Adapter/client tests                                                                                                                            | Aggregate body collection and JSON decoding; a retry of mutation                     |
 | Socket requests            | Protocol/runtime tests                                                                                                                          | Frame allocation, application access or unbounded connection/job creation            |
 | Fixed-client responses     | Client-transport tests                                                                                                                          | Reply allocation or accepting trailing bytes                                         |
@@ -180,6 +180,22 @@ Keep these distinctions when interpreting a pass:
 restrictions and typed operating failures. Fault controls belong to `cfg(test)` or explicit
 `demo-harness`/`test-harness` features. Default features are empty. Release assembly excludes those
 features. A test-feature pass cannot qualify installed production bytes.
+
+## Operator command composition
+
+[`e2e_operator_commands`](../../tests/e2e_operator_commands.rs) owns one actual snapshot GET,
+authenticated original grant fields, private output modes, exclusive configuration preparation,
+static-validation output and non-disclosing refusal before creating an unauthenticated document.
+Command-local tests bind the same publication owner to all three provisioning labels, including
+output failures. They also own descriptor replacement/growth, special-file refusal, exact seed
+lengths, option grammar and named intent objects. Those partitions do not need receiver processes.
+
+[`service_operator_document`](../../tests/service_operator_document.rs) separates bounded structural
+parsing from authenticated static approval checks. Duplicate identities, absent/substituted keys and
+legacy grants cannot become selectable snapshot authority. Static validation does not open history.
+[`e2e_inspection_command`](../../tests/e2e_inspection_command.rs) pins exact output bytes and real
+signature-rejection binding. Receipt suites own the remaining authentication/classifier partitions;
+this wire witness does not establish receiver truth or crash recovery.
 
 ## Determinism and crash proof
 

@@ -2,7 +2,11 @@
 #![allow(clippy::unwrap_used, reason = "bounded fixture construction")]
 use std::path::PathBuf;
 
-use kapsel::parse_service_operator_document;
+use kapsel::{
+    parse_service_operator_document, provision_exact_grant, ApprovedTarget, AuthorizationTrust,
+    ExactAuthorization, GrantProvisioning, ServiceApplication, ServiceApproval,
+    ServiceConfiguration,
+};
 use serde_json::{json, Value};
 
 fn parse(bytes: &[u8]) -> bool {
@@ -76,4 +80,64 @@ fn named_bounded_objects_never_accept_caller_authority_or_ambiguous_fields() {
             .as_bytes()
     ));
     assert!(!parse(&vec![b' '; 160 * 1024 + 1]));
+}
+
+#[test]
+fn static_approval_validation_requires_independent_trust_and_unique_snapshot_ids() {
+    let seed = [41; 32];
+    let mut authorization = ExactAuthorization {
+        authorization_id: "auth-1".into(),
+        operation_id: "op-1".into(),
+        namespace: "demo".into(),
+        deployment: "agent-api".into(),
+        container: "api".into(),
+        immutable_image_digest: format!("registry.example/api@sha256:{}", "a".repeat(64)),
+        approved_target: Some(ApprovedTarget {
+            uid: "uid-1".into(),
+            resource_version: "1".into(),
+        }),
+    };
+    let sign = |authorization: &ExactAuthorization| {
+        provision_exact_grant(&GrantProvisioning {
+            authorization,
+            signing_seed: &seed,
+            signing_key_id: "key-1",
+        })
+        .unwrap()
+    };
+    let valid = ServiceConfiguration {
+        journal_path: PathBuf::from("/not-created/journal"),
+        authorization_trust: vec![AuthorizationTrust {
+            key_id: "key-1".into(),
+            public_key: ed25519_dalek::SigningKey::from_bytes(&seed)
+                .verifying_key()
+                .to_bytes(),
+        }],
+        approvals: vec![ServiceApproval {
+            label: "Approved".into(),
+            signed_grant: sign(&authorization),
+        }],
+    };
+    assert!(ServiceApplication::validate_static_configuration(&valid).is_ok());
+    authorization.approved_target = None;
+    for defect in 0..5 {
+        let mut configuration = valid.clone();
+        match defect {
+            0 => configuration.authorization_trust.clear(),
+            1 => configuration
+                .authorization_trust
+                .push(configuration.authorization_trust[0].clone()),
+            2 => configuration
+                .approvals
+                .push(configuration.approvals[0].clone()),
+            3 => configuration.approvals[0].signed_grant = sign(&authorization),
+            _ => {
+                configuration.authorization_trust[0].public_key =
+                    ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                        .verifying_key()
+                        .to_bytes();
+            },
+        }
+        assert!(ServiceApplication::validate_static_configuration(&configuration).is_err());
+    }
 }

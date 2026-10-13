@@ -207,10 +207,7 @@ fn provision(mut options: BTreeMap<String, OsString>, snapshot: bool) -> Command
     }
     .map_err(|error| application_error_to_command(command, &error))?;
 
-    write_new_private(&output_path, &grant).map_err(|_| CommandError::configuration(command))?;
-    Ok(format!(
-        "{{\"command\":\"{command}\",\"status\":\"PROVISIONED\"}}"
-    ))
+    publish_grant(command, &output_path, &grant)
 }
 
 #[derive(Deserialize)]
@@ -234,11 +231,7 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
     finish_options(&options, COMMAND)?;
 
     let bytes = read_bounded(&authorization_path, 4096, COMMAND, ErrorClass::CommandInput)?;
-    if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
-        return Err(CommandError::input(COMMAND));
-    }
-    let document: GitAuthorizationDocument =
-        serde_json::from_slice(&bytes).map_err(|_| CommandError::input(COMMAND))?;
+    let document: GitAuthorizationDocument = decode_object(&bytes, COMMAND)?;
     let receiver_document = read_bounded(
         &receiver_path,
         4096,
@@ -271,9 +264,13 @@ fn provision_git(mut options: BTreeMap<String, OsString>) -> CommandResult {
         ))
         .map_err(|error| application_error_to_command(COMMAND, &error))?;
 
-    write_new_private(&output_path, &grant).map_err(|_| CommandError::configuration(COMMAND))?;
+    publish_grant(COMMAND, &output_path, &grant)
+}
+
+fn publish_grant(command: &'static str, path: &Path, grant: &[u8]) -> CommandResult {
+    write_new_private(path, grant).map_err(|_| CommandError::configuration(command))?;
     Ok(format!(
-        "{{\"command\":\"{COMMAND}\",\"status\":\"PROVISIONED\"}}"
+        "{{\"command\":\"{command}\",\"status\":\"PROVISIONED\"}}"
     ))
 }
 
@@ -393,16 +390,20 @@ fn read_json<T: for<'de> Deserialize<'de>>(
     path: &Path,
     command: &'static str,
 ) -> Result<T, CommandError> {
-    read_json_classified(path, command, ErrorClass::CommandInput)
+    let bytes = read_bounded(path, JSON_BYTES_MAX, command, ErrorClass::CommandInput)?;
+    decode_object(&bytes, command)
 }
 
-fn read_json_classified<T: for<'de> Deserialize<'de>>(
-    path: &Path,
+fn decode_object<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
     command: &'static str,
-    class: ErrorClass,
 ) -> Result<T, CommandError> {
-    let bytes = read_bounded(path, JSON_BYTES_MAX, command, class)?;
-    serde_json::from_slice(&bytes).map_err(|_| CommandError { command, class })
+    // Derived struct decoding also accepts positional arrays.
+    // Operator intent requires named fields.
+    if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+        return Err(CommandError::input(command));
+    }
+    serde_json::from_slice(bytes).map_err(|_| CommandError::input(command))
 }
 
 fn read_exact_32(
@@ -750,7 +751,8 @@ const fn inspection_status(value: InspectionStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{target_field_json, TargetProjection};
+    use super::*;
+    use crate::test_scratch::Scratch;
 
     #[test]
     fn target_projection_matches_previous_json_shape_for_meaningful_targets() {
@@ -783,6 +785,358 @@ mod tests {
         ] {
             assert_eq!(target_field_json(projection), previous.to_string());
         }
+    }
+
+    #[test]
+    fn authorization_objects_reject_ambiguous_shapes_before_material_access() {
+        let valid = serde_json::json!({
+            "authorization_id":"auth-1", "operation_id":"op-1", "namespace":"demo",
+            "deployment":"agent-api", "container":"api",
+            "immutable_image_digest":format!("registry.example/api@sha256:{}", "a".repeat(64)),
+        });
+        assert!(decode_object::<AuthorizationDocument>(
+            &serde_json::to_vec(&valid).unwrap(),
+            "provision-grant"
+        )
+        .is_ok());
+        assert!(decode_object::<GitAuthorizationDocument>(
+            br#"{
+            "operation_id":"op-1", "authorization_id":"auth-1", "repository_id":"repo-1",
+            "reference":"refs/heads/main", "old_commit":"a", "new_commit":"b"
+        }"#,
+            "provision-git-grant"
+        )
+        .is_ok());
+        for hostile in [
+            serde_json::json!(["auth-1", "op-1", "demo", "agent-api", "api", "image"]),
+            serde_json::Value::Null,
+            {
+                let mut value = valid.clone();
+                value["namespace"] = serde_json::json!(1);
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value["journal_path"] = serde_json::json!("SECRET");
+                value
+            },
+            {
+                let mut value = valid.clone();
+                value.as_object_mut().unwrap().remove("operation_id");
+                value
+            },
+        ] {
+            assert!(decode_object::<AuthorizationDocument>(
+                &serde_json::to_vec(&hostile).unwrap(),
+                "provision-grant"
+            )
+            .is_err());
+        }
+        let text = serde_json::to_string(&valid).unwrap();
+        for hostile in [
+            text.replacen('{', "{\"operation_id\":\"duplicate\",", 1),
+            text + " {}",
+        ] {
+            assert!(
+                decode_object::<AuthorizationDocument>(hostile.as_bytes(), "provision-grant")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn command_grammar_and_failure_records_are_fixed_before_io() {
+        for arguments in [
+            vec!["--x"],
+            vec!["--x", "--y"],
+            vec!["x", "value"],
+            vec!["--x", "a", "--x", "b"],
+            vec!["--", "value"],
+        ] {
+            assert!(parse_options("inspect", arguments.into_iter().map(OsString::from)).is_err());
+        }
+        for arguments in [
+            vec![],
+            vec!["operate", "--operator-config", "SECRET"],
+            vec!["mcp"],
+            vec!["--help", "SECRET"],
+            vec!["--version", "SECRET"],
+            vec!["provision-grant", "--extra", "SECRET"],
+        ] {
+            assert_eq!(
+                run(arguments.into_iter().map(OsString::from))
+                    .err()
+                    .unwrap()
+                    .exit_code(),
+                2
+            );
+        }
+        for (error, code, class) in [
+            (CommandError::input("inspect"), 2, "command_input"),
+            (
+                CommandError::configuration("inspect"),
+                3,
+                "operator_configuration",
+            ),
+            (CommandError::operation("inspect"), 4, "operation_failure"),
+        ] {
+            assert_eq!(error.exit_code(), code);
+            assert_eq!(
+                error.machine_output(),
+                format!(
+                    "{{\"command\":\"inspect\",\"status\":\"ERROR\",\"error_class\":\"{class}\"}}"
+                )
+            );
+            assert_eq!(
+                error.diagnostic(),
+                format!("Kapsel command failure: {class}")
+            );
+        }
+        assert_eq!(
+            run([OsString::from("--version")].into_iter()).ok().unwrap(),
+            format!("kapsel {}", env!("CARGO_PKG_VERSION"))
+        );
+        let help = run([OsString::from("--help")].into_iter()).ok().unwrap();
+        assert!(
+            help.contains("prepare-service-config") && help.contains("validate-service-config")
+        );
+        assert!(help.contains("kapseld") && help.contains("kapsel inspect"));
+        assert!(!help.contains("kapsel operate") && !help.contains("kapsel mcp --"));
+    }
+
+    #[test]
+    fn snapshot_failures_keep_input_and_operator_material_distinct() {
+        let root = Scratch::new();
+        let valid = format!(
+            r#"{{"authorization_id":"auth-1", "operation_id":"op-1",
+            "namespace":"demo", "deployment":"agent-api", "container":"api",
+            "immutable_image_digest":"registry.example/api@sha256:{}"}}"#,
+            "a".repeat(64)
+        );
+        let options = BTreeMap::from([
+            (
+                "--authorization".into(),
+                root.0.join("intent").into_os_string(),
+            ),
+            (
+                "--signing-seed".into(),
+                root.0.join("seed").into_os_string(),
+            ),
+            (
+                "--kubeconfig".into(),
+                root.0.join("kubeconfig").into_os_string(),
+            ),
+            ("--signing-key-id".into(), OsString::from("key-1")),
+            ("--output".into(), root.0.join("grant").into_os_string()),
+        ]);
+        for (intent, seed, code, class) in [
+            ("SECRET_INVALID_INTENT", vec![7; 32], 2, "command_input"),
+            (valid.as_str(), vec![7; 31], 3, "operator_configuration"),
+            (valid.as_str(), vec![7; 32], 3, "operator_configuration"),
+        ] {
+            fs::write(root.0.join("intent"), intent).unwrap();
+            fs::write(root.0.join("seed"), seed).unwrap();
+            fs::write(root.0.join("kubeconfig"), "SECRET: [invalid").unwrap();
+            let error = provision(options.clone(), true).err().unwrap();
+            assert_eq!(error.exit_code(), code);
+            assert_eq!(
+                error.machine_output(),
+                format!(
+                    concat!(
+                        "{{\"command\":\"provision-snapshot-grant\",\"status\":\"ERROR\",",
+                        "\"error_class\":\"{}\"}}",
+                    ),
+                    class
+                )
+            );
+            assert!(!root.0.join("grant").exists());
+        }
+    }
+
+    #[test]
+    fn input_descriptors_are_regular_bounded_and_not_reopened_by_name() {
+        let root = Scratch::new();
+        let path = root.0.join("input");
+        for length in [31, 32, 33] {
+            fs::write(&path, vec![7; length]).unwrap();
+            assert_eq!(
+                read_exact_32(&path, "inspect", ErrorClass::CommandInput).is_ok(),
+                length == 32
+            );
+        }
+        fs::write(&path, b"original").unwrap();
+        assert!(
+            open_within_limit(&path, 7, "inspect", ErrorClass::CommandInput)
+                .ok()
+                .unwrap()
+                .is_none()
+        );
+        let file = open_regular(&path, "inspect", ErrorClass::CommandInput)
+            .ok()
+            .unwrap();
+        fs::rename(&path, root.0.join("old-input")).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        assert_eq!(
+            read_opened_bounded(file, 8, "inspect", ErrorClass::CommandInput)
+                .ok()
+                .unwrap(),
+            b"original"
+        );
+        let file = open_regular(&path, "inspect", ErrorClass::CommandInput)
+            .ok()
+            .unwrap();
+        fs::write(&path, b"grown beyond the original bound").unwrap();
+        assert!(read_opened_bounded(file, 11, "inspect", ErrorClass::CommandInput).is_err());
+        std::os::unix::fs::symlink(&path, root.0.join("link")).unwrap();
+        assert!(std::process::Command::new("mkfifo")
+            .arg(root.0.join("fifo"))
+            .status()
+            .unwrap()
+            .success());
+        for path in [
+            root.0.clone(),
+            root.0.join("missing"),
+            root.0.join("link"),
+            root.0.join("fifo"),
+        ] {
+            assert!(open_regular(&path, "inspect", ErrorClass::CommandInput).is_err());
+        }
+    }
+
+    #[test]
+    fn new_output_is_private_and_existing_files_or_links_cannot_be_replaced() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = Scratch::new();
+        let output = root.0.join("output");
+        assert_eq!(
+            publish_grant("provision-grant", &output, b"original")
+                .ok()
+                .unwrap(),
+            "{\"command\":\"provision-grant\",\"status\":\"PROVISIONED\"}"
+        );
+        assert_eq!(
+            fs::metadata(&output).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::os::unix::fs::symlink(&output, root.0.join("link")).unwrap();
+        for command in [
+            "provision-grant",
+            "provision-snapshot-grant",
+            "provision-git-grant",
+        ] {
+            for path in [&output, &root.0.join("link")] {
+                let error = publish_grant(command, path, b"replacement").err().unwrap();
+                assert_eq!(error.exit_code(), 3);
+                assert_eq!(
+                    error.machine_output(),
+                    format!(
+                        concat!(
+                            "{{\"command\":\"{}\",\"status\":\"ERROR\",",
+                            "\"error_class\":\"operator_configuration\"}}",
+                        ),
+                        command
+                    )
+                );
+            }
+        }
+        assert_eq!(fs::read(&output).unwrap(), b"original");
+    }
+
+    #[test]
+    fn inspection_dispatch_binds_lower_limits_and_untrusted_authenticated_facts() {
+        let root = Scratch::new();
+        let decode = |text: &str| {
+            text.trim()
+                .as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        fs::write(
+            root.0.join("receipt"),
+            decode(include_str!("../../vectors/effect-gateway-receipt.hex")),
+        )
+        .unwrap();
+        fs::write(
+            root.0.join("trust"),
+            decode(include_str!("../../vectors/effect-gateway-trust.hex")),
+        )
+        .unwrap();
+        let options = BTreeMap::from([
+            ("--receipt".into(), root.0.join("receipt").into_os_string()),
+            ("--trust".into(), root.0.join("trust").into_os_string()),
+            ("--evaluation-time-unix-s".into(), OsString::from("150")),
+        ]);
+        let baseline: serde_json::Value =
+            serde_json::from_str(&inspect(options.clone()).ok().unwrap()).unwrap();
+        assert_eq!(baseline["status"], "INSPECTED");
+        let mut limited = options.clone();
+        limited.insert("--statement-bytes-max".into(), OsString::from("1"));
+        let record: serde_json::Value =
+            serde_json::from_str(&inspect(limited).ok().unwrap()).unwrap();
+        assert_eq!(record["status"], "STRUCTURE_REJECTED");
+        assert!(record["operation_id"].is_null());
+        fs::write(
+            root.0.join("trust"),
+            kapsel::ReceiptTrust {
+                key_id: "different-key".into(),
+                public_key: ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v2".into(),
+                not_before_unix_s: 100,
+                not_after_unix_s: 200,
+            }
+            .encode()
+            .unwrap(),
+        )
+        .unwrap();
+        let record: serde_json::Value =
+            serde_json::from_str(&inspect(options).ok().unwrap()).unwrap();
+        let mut expected = baseline;
+        expected["status"] = serde_json::json!("UNTRUSTED_SIGNER");
+        assert_eq!(record, expected);
+    }
+
+    #[test]
+    fn inspection_status_and_limit_partitions_do_not_appoint_trust_or_expand_bounds() {
+        for (status, expected) in [
+            (InspectionStatus::StructureRejected, "STRUCTURE_REJECTED"),
+            (InspectionStatus::SignatureRejected, "SIGNATURE_REJECTED"),
+            (InspectionStatus::UntrustedSigner, "UNTRUSTED_SIGNER"),
+            (InspectionStatus::Inspected, "INSPECTED"),
+        ] {
+            assert_eq!(inspection_status(status), expected);
+        }
+        let maximum = InspectionLimits::default();
+        let maxima = [
+            maximum.receipt_bytes_max,
+            maximum.statement_bytes_max,
+            maximum.trust_bytes_max,
+            maximum.text_bytes_max,
+        ];
+        for field in 0..4 {
+            for value in [0, 1, maxima[field], maxima[field] + 1] {
+                let mut values = maxima;
+                values[field] = value;
+                let limits = InspectionLimits {
+                    receipt_bytes_max: values[0],
+                    statement_bytes_max: values[1],
+                    trust_bytes_max: values[2],
+                    text_bytes_max: values[3],
+                };
+                assert_eq!(
+                    inspection_limits_are_valid(limits, maximum),
+                    value > 0 && value <= maxima[field]
+                );
+            }
+        }
+        let output: serde_json::Value = serde_json::from_str(&structure_rejected_output()).unwrap();
+        assert_eq!(output["status"], "STRUCTURE_REJECTED");
+        assert!(output["operation_id"].is_null() && output["non_claims"].is_null());
     }
 }
 
