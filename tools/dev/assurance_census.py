@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -24,6 +25,7 @@ SUPPORT_FILES = {
     "tools/release/background_caller_fixture.py",
     "tools/release/caller_custody_exercise.py",
     "tools/release/operator_example_exercise.py",
+    "tools/release/qualification.py",
     "tools/release/trivy_fixture.py",
     "src/gateway/demo_control.rs",
     "crates/kapsel-daemon/src/server/harness.rs",
@@ -143,6 +145,72 @@ def gated_ranges(source: str) -> list[list[int]]:
     return ranges
 
 
+def release_qualification_ranges(source: str) -> list[list[int]]:
+    """Charge historical execution machinery without reclassifying the consumer format core."""
+    procedures = {
+        "sha256",
+        "run_bounded",
+        "ServiceStderrDrain",
+        "deployment",
+        "KubernetesFixture",
+        "reset_kubernetes_fixture",
+        "write_private",
+        "run_binary",
+        "prepare_inputs",
+        "inspect_receipt",
+        "exercise_mcp",
+        "exercise_version",
+        "smoke",
+        "systemctl",
+        "refuse_systemd_references",
+        "require_disabled_unit",
+        "install_systemd_assets",
+        "exercise_journald_failure",
+        "prepare_service_candidate",
+        "exercise_service",
+        "service_client",
+        "fixture_receipt_trust",
+    }
+    constants = {
+        "IMAGE",
+        "OLD_IMAGE",
+        "OPERATION",
+        "SERVICE_DIAGNOSTIC_BYTES_MAX",
+        "AUTHORIZATION_PUBLIC_KEY",
+        "FORBIDDEN",
+    }
+    execution_imports = {
+        "grp",
+        "http.server",
+        "pwd",
+        "selectors",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "threading",
+        "time",
+        "collections.abc",
+    }
+    ranges = []
+    for node in ast.parse(source).body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            selected = node.name in procedures
+        elif isinstance(node, ast.Assign):
+            selected = any(
+                isinstance(target, ast.Name) and target.id in constants for target in node.targets
+            )
+        elif isinstance(node, ast.Import):
+            selected = all(alias.name in execution_imports for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            selected = node.module in execution_imports
+        else:
+            selected = False
+        if selected:
+            assert node.end_lineno is not None
+            ranges.append([node.lineno, node.end_lineno])
+    return ranges
+
+
 def whole_support(path: str) -> bool:
     parts = Path(path).parts
     return (
@@ -193,7 +261,10 @@ def census(revision: str) -> Snapshot:
             ranges = [[1, count]] if count else []
         else:
             try:
-                ranges = gated_ranges(source) if path.endswith(".rs") else []
+                if path == "tools/release/verify_artifact.py":
+                    ranges = release_qualification_ranges(source)
+                else:
+                    ranges = gated_ranges(source) if path.endswith(".rs") else []
             except ValueError as error:
                 raise ValueError(f"{revision}:{path}: {error}") from error
         assurance = sum(last - first + 1 for first, last in ranges)

@@ -98,9 +98,18 @@ jobs:
           archive=$(python3 tools/release/assemble_artifact.py \
             --output-directory "$RUNNER_TEMP/kapsel-release-a")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
-      - name: Verify and smoke-test exact artifact A
+      - name: Verify source correspondence of exact artifact A
         run:
           python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+          ReleaseArtifactTests.test_source_and_extracted_identity
+      - name: Smoke extracted executable bytes
+        run:
+          python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+          ReleaseArtifactTests.test_extracted_executable_smoke
+      - name: Qualify extracted installed guide
+        run:
+          python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+          ReleaseArtifactTests.test_installed_guide
       - name: Assemble B and compare deterministic bytes
         run:
           python3 tools/release/test_reproducibility.py --reference-archive "${{

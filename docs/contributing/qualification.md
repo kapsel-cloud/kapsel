@@ -694,24 +694,23 @@ python3 tools/release/test_artifact.py --archive "$archive_a"
 python3 tools/release/test_reproducibility.py --reference-archive "$archive_a"
 ```
 
-The artifact test exercises the checksum-bound companion's extraction-only command outside the
-checkout, then runs its ordinary-binary smoke. The documented operator example owns the installed
-service trace: fixed executable paths, separate numeric identities, socket/private-file custody,
-cold publication, selection, read-first restart, original receipts and MCP. Both the guide and
-verifier come from the selected artifact, not a checkout bind. This is deliberately not a systemd
-test. On an ARM host, `linux/amd64` is emulated and cannot qualify the native target. The
-[extracted operator path](../guides/operator.md) must separately run on native x86-64 Linux/systemd
-without repository source. Interrupted execution, ambiguity and recovery against the packaged
-service belong to the full operator/agent journey and final combined-candidate qualification.
-Successful completion followed by graceful restart is not a replacement for those tests. Live
-receiver qualification remains separate. Do not dispatch the signing/publication-effect workflow
-merely to obtain missing test evidence.
+The artifact test invokes the copied companion outside the checkout for inert extraction, then
+explicitly runs the extracted `qualification.py` smoke and direct installed-guide profiles. The
+single installed procedure checks fixed executable paths, separate service/caller identities,
+socket/private-file custody, actual staged-guide key/preparation/publication commands, selection,
+client/MCP reads, inspected receipts and cold read-first restart. All operating programs and the
+guide come from the selected archive, not a checkout bind. On ARM, `linux/amd64` is emulated and
+cannot qualify the native target. Run the [native profile](#native-installed-systemd-qualification)
+separately. Packaged Git/Kubernetes own interrupted execution and real receiver evidence. Graceful
+restart does not replace those gates. Do not dispatch signing/publication to obtain test evidence.
 
 For a quick hostile-layout and dependency-graph regression without building:
 
 ```sh
 python3 tools/release/test_verify_artifact.py
-python3 tools/release/test_artifact.py --archive /tmp/unused.tar.gz ReleaseVerifierTests
+python3 tools/release/test_artifact.py --archive /tmp/unused.tar.gz SourceCorrespondenceTests
+python3 tools/release/test_qualification.py
+python3 tools/release/test_assemble_artifact.py
 ```
 
 Remove `"$a_dir"` when its evidence is no longer needed.
@@ -726,31 +725,36 @@ revision:
 
 ```sh
 python3 tools/release/test_artifact.py --archive "$archive" \
-  --example-revision "$revision" \
-  ReleaseArtifactTests.test_documented_operator_example
+  ReleaseArtifactTests.test_installed_guide
 ```
 
-The test uses the bundled guide, a disposable container and loopback receiver, with separate numeric
-service/caller identities. It installs all four extracted executables at their fixed paths, checks
-socket and private-file custody, and reads the completed action through MCP without receiver I/O.
-Direct process start/stop replaces systemd/sudo. It withholds the receipt signer, restores it after
-graceful retirement, and checks same-ID completion and original receipt retention. It also exercises
-missing receiver material, a stopped HTTP listener, withdrawn historical trust, and an unsupported
-journal-version fixture. Restoration must preserve original authority and history. No recovery step
-edits a database. A version edit is test preparation only.
+The source revision must match the current clean checkout. The procedure executes the bundled
+key-generation, snapshot preparation and cold-publication blocks with separate identities. One
+successful selection checks the configured signer through independently appointed inspection trust,
+exclusive receipt export and MCP stored reads. A cold label replacement and read-first restart
+return the original receipt with no receiver I/O. Direct process start/stop replaces systemd, not
+the preparation commands. Shared source laws and packaged Git/Kubernetes retain signer repair, trust
+withdrawal, uncertainty and interruption obligations; the installed procedure is not another
+semantic regression matrix. It does not edit history.
 
-These adaptations check the executable preparation and response blocks, not the native installation
-commands. They do not replace packaged interrupted-execution, live receiver, genuine ENOSPC, native
-systemd, or power-loss evidence.
+Optional model supervision/custody has its own offline checks in the live runner suite. Its real
+process/receipt probes are a separate Docker lane:
+
+```sh
+python3 tools/release/test_qualification.py CallerContainerTests
+```
+
+These checks do not qualify useful autonomous selection or replace deterministic caller acceptance.
 
 ### Native installed-systemd qualification
 
-The checksum-bound verifier also provides the explicit fresh-host `--service-systemd` qualification
-mode. Its
+The authenticated archive carries `share/kapsel/qualification.py --profile systemd` for no-checkout
+fresh-host execution. Its
 [command, prerequisites and retained-host footprint](../reference/release.md#native-installed-systemd-qualification)
-ship inside the archive's release guide. It uses the actual unit, identities, socket custody,
-journald and cold replacement, but only a loopback receiver fixture. It requires a clean-source
-artifact and separate operator authorization. It is not an installer or live/crash qualification.
+ship in the release guide. This profile adds actual unit, identities, journald, stopped/disabled
+state and cold replacement to the same installed procedure. It requires clean selected bytes and
+separate root authorization. It uses a loopback fixture, not a live receiver or product crash hook.
+Consumer verification never performs these actions.
 
 ## Coverage
 

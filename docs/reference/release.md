@@ -16,11 +16,12 @@ is `64e204f0b5bdca9c31cc617d5d822cbfb3541597`. For a local candidate, transfer t
 exact bytes through your trusted operator channel. An unsigned local candidate has no publisher
 authentication.
 
-The `.verify.py` companion is a byte-for-byte copy of the existing
-`tools/release/verify_artifact.py` verification owner, at most 64 KiB. It is covered by the signed
-digest manifest. Authenticate the manifest using the exact issuer, identity and source revision
+The `.verify.py` companion is covered by the signed digest manifest and bounded to 64 KiB.
+Authenticate the manifest using the exact issuer, identity and source revision
 [below](#publisher-authentication-and-provenance), then check its files **before executing this
-Python file**. Do not substitute a script from another revision or a moving branch.
+Python file**. Its own checks cannot authenticate code already running. Do not substitute a script
+from another revision or a moving branch. Published v0.3.0 retains its original companion semantics;
+the current source companion only validates or extracts.
 
 In a private, caller-owned download directory containing only those files:
 
@@ -38,7 +39,7 @@ cosign verify-blob \
   --certificate-github-workflow-trigger workflow_dispatch \
   "$archive.SHA256SUMS" &&
 sha256sum --check --strict "$archive.SHA256SUMS" &&
-python3 "$archive.verify.py" --archive "$archive" \
+python3 -I "$archive.verify.py" --archive "$archive" \
   --expected-revision "$revision" --extract-to ./extracted
 ```
 
@@ -123,7 +124,8 @@ reviewed-source, or builder-integrity guarantee.
 
 ## Exact archive
 
-The archive has one top-level directory and exactly this layout:
+Current source assemblies have one top-level directory and exactly this layout. The qualification
+asset and schema v4 below are candidate procedures, not additions to published v0.3.0 bytes:
 
 ```text
 kapsel-<version>-x86_64-unknown-linux-gnu/
@@ -134,6 +136,7 @@ kapsel-<version>-x86_64-unknown-linux-gnu/
   share/kapsel/kapseld.service
   share/kapsel/kapseld.conf
   share/kapsel/kapseld-rbac.yaml
+  share/kapsel/qualification.py
   share/doc/kapsel/COMMANDS.md
   share/doc/kapsel/KAPSEL_SERVICE.md
   share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md
@@ -162,18 +165,22 @@ delegating path handling to `tar`.
 
 The archive contains no credential, provider authority, grant, private trust decision, signing seed,
 kubeconfig, journal, receipt, report, evaluator output, private path, sandbox asset, or customer
-data. No demonstration executable, test pause surface or public fixture trust is bundled.
+data. No demonstration executable, product test pause surface or preprovisioned fixture authority is
+bundled. `qualification.py` is maintainer assurance. Its explicit invocation creates disposable
+fixture inputs; it does not supply default product authority.
 
 ## Release metadata
 
 `RELEASE-METADATA.json` is canonical UTF-8 JSON with fixed field order and a trailing newline.
-Schema `kapsel.release-artifact.v3` binds:
+Current schema `kapsel.release-artifact.v4` binds:
 
 - package version, target, source revision, Git tree, and clean/dirty state;
 - Cargo lockfile SHA-256 plus canonical reachable-package/relationship graph digest and counts;
 - license identifier and digest;
 - exact build and smoke image identities;
-- CLI, service, client and MCP bridge binary byte lengths and SHA-256 digests; and
+- CLI, service, client and MCP bridge binary byte lengths and SHA-256 digests;
+- exact unit, sysusers, RBAC, qualification-program and staged operator-guide paths, byte lengths
+  and SHA-256 digests; and
 - fixed non-claims.
 
 Metadata is an input to the authenticated digest manifest through the archive. It does not
@@ -186,8 +193,9 @@ under generator identity `kapsel-release-sbom/1`. It is at most 2 MiB and binds 
 digest, bundled binary paths and digests, package version, source revision and tree, target, builder
 image, Cargo lockfile digest, and the complete locked Rust package graph reachable from the root and
 service packages, including build and target-conditioned dependencies. Presence in that conservative
-graph is dependency identity evidence, not a runtime-reachability claim. The archive package sets
-SPDX `filesAnalyzed` to false and explicitly relates only the four digest-bound binary records. It
+graph is dependency identity evidence, not a runtime-reachability claim. Current assemblies also
+bind the unit, sysusers, RBAC, qualification program and staged operator guide. The archive package
+sets SPDX `filesAnalyzed` to false and explicitly relates these nine digest-bound file records. It
 does not claim that every bundled document or asset received file analysis. Metadata independently
 binds the canonical reachable package/relationship graph digest and counts, and artifact smoke
 rejects a deleted or changed graph.
@@ -197,6 +205,9 @@ field is normalized to the source commit time so isolated assemblies serialize i
 document comment states this normalization and the source/build identities. Packages without
 owner-supplied license or download facts use SPDX `NOASSERTION`. The generator does not invent
 license conclusions.
+
+Published v0.3.0 uses schema v3 and its original four-file SBOM inventory. New source does not
+change that release's format or companion.
 
 The SBOM is not a vulnerability result, dependency-safety proof, malicious-package detector, or
 complete account of compiler, OS, firmware, or hosted workflow components. Candidate review records
@@ -281,46 +292,58 @@ prepares snapshot grants and inspects receipts. The daemon executes operations a
 history. The client supplies the caller's fixed ID-only interface. The systemd unit manages process
 lifecycle. No custom installer is supplied.
 
-From the repository, deterministic artifact-only smoke is:
+For a current candidate, validate without execution, or extract with the existing interface:
 
 ```sh
-python3 tools/release/verify_artifact.py \
-  --archive dist/kapsel-<version>-x86_64-unknown-linux-gnu.tar.gz \
-  --expected-revision <40-lowercase-hex Git revision>
+python3 -I "$archive.verify.py" --archive "$archive" \
+  --expected-revision "$revision" --verify-only
+python3 -I "$archive.verify.py" --archive "$archive" \
+  --expected-revision "$revision" --extract-to ./extracted
 ```
 
-`tools/release/test_artifact.py --archive <A>` validates one already assembled clean A and runs its
-checksum-bound companion outside the checkout and in the pinned clean container. It checks safe
-extraction, installed identity, retired-direct-command refusal and ordinary-binary removal. The
-bundled operator-guide exercise installs all four executables at fixed paths under separate numeric
-service/caller identities. It checks socket/private-file custody, snapshot provisioning, cold
-publication, signing repair, read-first restart, identical receipts, offline inspection and ID-only
-MCP initialization/list/call/EOF, with independent receiver counts. No checkout guide or verifier
-enters that operating environment. The independent verifier regressions own hostile archive/SBOM
-vectors, sidecar tampering and exclusive extraction; they do not call the producer to construct
-expected bytes.
+Both commands are consumer verification, not smoke. They require no Docker, root, receiver or
+maintainer imports. After authentication and extraction, set `artifact` to the absolute extracted
+root and run executable smoke on the supported target:
 
-The companion's explicit `--service-container` mode remains available for a fresh disposable root
-Docker container. It checks a successful operation and graceful read-first restart, not interrupted
-execution or crash ambiguity. Neither container route qualifies systemd or a native host. Both
-retain private state until container destruction. Packaged receiver journeys must separately
-exercise interrupted execution and independently count mutations.
-`tools/release/test_reproducibility.py --reference-archive <A>` performs the one independent strict
-assembly B and compares all five deterministic outputs byte-for-byte. Neither verifier hides another
-A assembly.
+```sh
+python3 -I "$artifact/share/kapsel/qualification.py" \
+  --artifact "$artifact" --expected-revision "$revision" --profile smoke
+```
 
-Native installed-systemd and live receiver exercises must consume the exact extracted candidate
-bytes. Emulated container smoke does not establish either qualification.
+This maintainer profile checks selected bytes, version/help, retired-direct-command refusal and
+removal of its temporary executable copy. It does not install a service or contact a receiver.
+
+`tools/release/test_artifact.py --archive <A>` adds source/asset correspondence and ELF identity,
+executes the copied companion outside the checkout, and explicitly runs the extracted smoke and
+installed-guide profiles in the pinned clean container. `qualification.py --profile direct` requires
+a fresh disposable root Docker container. It uses the same installed procedure as the native
+profile, with fixed direct-process launch/stop and numeric identities instead of systemd. The actual
+staged guide creates keys, reads one approval snapshot and cold-publishes configuration. One ID
+selection binds the client/MCP, socket/private-file custody and inspected receipt to the shipped
+configuration. A cold catalog-label replacement and read-first restart preserve original history and
+receipt bytes with exactly one PATCH. No checkout helper or guide enters that environment.
+
+The independent verifier regressions own hostile archive/SBOM vectors, sidecar tampering and
+exclusive extraction. `tools/release/test_reproducibility.py --reference-archive <A>` performs
+strict assembly B and compares all five deterministic outputs. Qualification assets are inside the
+archive, so changing them changes A/B identity. Neither command hides another A assembly. Upload
+exact A.
+
+Container execution does not qualify native systemd, live receivers or interrupted execution.
+Packaged Git/Kubernetes journeys retain those separate receiver and process-loss obligations.
 
 ## Native installed-systemd qualification
 
-On an explicitly authorized fresh native x86-64 Debian host with systemd as PID 1, the same
-checksum-bound verifier companion runs the [disposable service example](../getting_started.md) and
-exercises the shipped unit. This is a **privileged test**, not an installer or production setup
-command. It uses only a loopback HTTP receiver and deterministic disposable test keys. It never
-consumes real cluster credentials or applies the example RBAC to a cluster. The build baseline
-remains Debian 12. Record the actual native host's OS and systemd version separately, including when
-qualifying on a newer Debian host.
+For a current clean candidate, the authenticated archive's `share/kapsel/qualification.py` exercises
+the shipped unit on an explicitly authorized fresh native x86-64 Debian host with systemd as PID 1.
+This is a **privileged test**, not an installer or production setup command. It runs the staged
+operator guide with fresh disposable keys and a loopback HTTP receiver. It never consumes real
+cluster credentials or applies RBAC to a cluster. The build baseline remains Debian 12. Record the
+actual host's OS and systemd version, including when qualifying on newer Debian.
+
+Published v0.3.0's separate [getting-started example](../getting_started.md) retains its original
+companion service mode and fixed-time fixture. Do not substitute that older procedure to qualify new
+candidate assets.
 
 Prerequisites are Python 3.11+, root operator access, systemd/systemd-sysusers, systemd-analyze,
 journalctl, useradd, GNU coreutils, and a fresh host with no Kapsel accounts, groups, unit,
@@ -330,15 +353,19 @@ links are refused unchanged. First follow the
 candidate, use separately recorded exact digests and a trusted transfer. This does not authenticate
 the publisher. Dirty-source artifacts are refused for this mode.
 
-From the private directory holding the already authenticated and checksum-verified artifact files:
+Authenticate and extract as the operator before entering root execution. Keep the extracted root
+under operator-only custody; do not execute a helper from a caller-owned directory. Select
+`artifact` and `revision` for that exact current candidate, not the published v0.3.0 archive:
 
 ```sh
-archive=kapsel-0.3.0-x86_64-unknown-linux-gnu.tar.gz
-revision=64e204f0b5bdca9c31cc617d5d822cbfb3541597
-sha256sum --check --strict "$archive.SHA256SUMS" &&
-sudo python3 "$archive.verify.py" --archive "$archive" \
-  --expected-revision "$revision" --service-systemd
+sudo python3 -I "$artifact/share/kapsel/qualification.py" \
+  --artifact "$artifact" --expected-revision "$revision" --profile systemd
 ```
+
+The program is standalone and imports only the standard library. It checks selected binary, program
+and installed-asset identities before host commands. It does not import a sibling verifier or
+discover helpers through the working directory or `PYTHONPATH`. Authentication precedes executing
+this program; these identity checks cannot authenticate the program already running.
 
 The test checks fail-closed startup and the fixed journald provisioning diagnostic before approval,
 then uses the installed binaries for snapshot provisioning and cold publication. The shipped unit
@@ -350,11 +377,11 @@ to claim retirement.
 
 Success leaves the unit **stopped**, not enabled, and retains the installed test binaries, unit,
 sysusers/RBAC assets, documentation, service/caller accounts, `/etc/kapsel`, `/var/lib/kapsel`,
-lifecycle lock, fixture authority, `/etc/kapsel/example-receipt.trust` and two caller-owned
-`/tmp/kapsel-artifact-receipt-*` exports. Do not restart this test installation as a production
-service. Failure may leave a partial installation or an incomplete stop. Preserve and inspect it, do
-not rerun by deleting history or assume matching names are safe to adopt. There is no automatic host
-cleanup or rollback.
+lifecycle lock, fixture authority, `/etc/kapsel/example-receipt.trust`, its recorded
+`example-evaluation-time.txt` and two caller-owned `/tmp/kapsel-artifact-receipt-*` exports. Do not
+restart this test installation as a production service. Failure may leave a partial installation or
+an incomplete stop. Preserve and inspect it, do not rerun by deleting history or assume matching
+names are safe to adopt. There is no automatic host cleanup or rollback.
 
 Capture the command, exact artifact/source digests, OS release, systemd version, exit and output.
 This gate still does not establish live Kubernetes behavior, interrupted execution or ambiguity

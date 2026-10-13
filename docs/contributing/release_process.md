@@ -42,12 +42,19 @@ source/artifact digests without publishing private fixture material.
 | Native service   | Authenticated extraction and shipped systemd unit on a fresh native x86-64 Linux host                                                                                  | [Native qualification](../reference/release.md#native-installed-systemd-qualification)                                                  |
 | Kubernetes       | Live receiver gate and packaged workflow: caller loss, service crash, same-ID recovery, frozen uncertainty, independent mutation counts                                | [Live gate](qualification.md#live-kubernetes-gate), [packaged workflow](qualification.md#packaged-service-live-workflow)                |
 | Git              | Core recovery matrix, Linux process recovery, extracted production-artifact journey: acknowledgement loss, same-ID recovery, ref/hook observations, identical receipts | [Git qualification](qualification.md#git-transition-service)                                                                            |
-| Caller           | Fresh-session identity retention through real Linux MCP bridge and one representative model-driven packaged healthy action                                             | [Process check](qualification.md#kapsel-service-candidate), [agent workflow](qualification.md#packaged-service-live-workflow)           |
+| Caller           | Fresh-session identity retention through real Linux MCP bridge and deterministic scripted packaged caller/MCP paths                                                    | [Process check](qualification.md#kapsel-service-candidate), [agent workflow](qualification.md#packaged-service-live-workflow)           |
 | Release identity | Version agreement across binaries, MCP, archive, metadata and SBOM; current format/support limits; publisher authentication and downloaded-byte verification           | [Metadata](../reference/release.md#release-metadata), [authentication](../reference/release.md#publisher-authentication-and-provenance) |
 
 The packaged Git journey must run separately from the source harness. Source tests alone cannot
 satisfy that gate. The candidate-signing workflow does not run every native, live, Git, or agent
-lane; a successful workflow run is not complete release acceptance.
+lane; a successful workflow run is not complete release acceptance. Model/client runs are optional
+dogfooding and interoperability evidence, never required deterministic caller acceptance.
+
+Route changes to their owners while iterating: format/sidecar edits need verifier vectors; assembly
+or staged assets need source correspondence, extracted smoke/guide and A/B proof; native launch
+changes need the fresh-host profile. Changed packaged receiver/caller bindings need those
+selected-byte lanes. Final release acceptance still binds every required gate to the actual clean
+candidate bytes.
 
 ## Interrupted execution
 

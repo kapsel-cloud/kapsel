@@ -311,10 +311,13 @@ Artifact checks consume extracted production binaries. Two isolated assemblies m
 checksum, SBOM, digest-manifest and verifier bytes. The verifier's independent fixture owns hostile
 layouts, source/SBOM binding, sidecar tampering and exclusive extraction. The artifact check adds
 source/asset correspondence, ELF identity and checksum-bound companion execution. The bundled
-operator-guide trace checks installed fixed paths, separate identities, socket/private-file custody,
-grant provisioning, signing repair, read-first restart, original receipts, offline inspection and
-MCP, with independent receiver counts. These checks do not qualify native systemd or interrupted
-attempts.
+operator-guide procedure executes actual staged preparation/publication commands and checks fixed
+paths, separate identities, socket/private-file custody, one selected ID, client/MCP stored reads,
+exclusive export, configured signer/inspection trust, cold label replacement and original receipts
+through read-first restart. Independent loopback counts require one PATCH. One maintainer owner has
+concrete direct-process/systemd launch profiles; the latter separately adds native unit/journald,
+fresh-host refusal and stopped/disabled retirement. Format checks never launch those profiles.
+Neither procedure qualifies interrupted attempts or real receiver behavior.
 
 There is no demonstration binary or pause feature in the archive. Packaged crash/live lanes remain
 separate. Sigstore bundles receive identity/failure checks, not a reproducibility requirement.

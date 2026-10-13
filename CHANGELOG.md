@@ -4,6 +4,12 @@ Notable changes are recorded here. Release tags retain their matching documentat
 
 ## Unreleased
 
+- Candidate artifact schema v4 binds the installed assets, standalone maintainer qualification
+  program and staged operator guide in metadata and the SBOM. The companion now requires explicit
+  `--verify-only` or `--extract-to` and never executes binaries or changes the host. Smoke and
+  direct/systemd qualification run from the authenticated archive. Published v0.3.0 is unchanged.
+- Artifact verification rejects mismatched SBOM file identifiers and checksum-algorithm labels,
+  rather than accepting only their digest text.
 - Kubernetes grant provisioning now rejects positional authorization arrays, matching the CLI's
   named-field contract. Valid object inputs and signed grant formats are unchanged.
 - Kubernetes preflight now rechecks retained grant custody before recording an attempt or rejection.

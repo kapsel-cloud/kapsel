@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 import unittest
 from unittest import mock
 
@@ -24,6 +23,13 @@ TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
 NON_CLAIMS = "service-preview;not-production;no-public-rust-api;no-other-targets"
+ASSETS = {
+    "share/kapsel/qualification.py": b"raise SystemExit('qualification must not execute')\n",
+    "share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md": b"operator\n",
+    "share/kapsel/kapseld.service": b"unit\n",
+    "share/kapsel/kapseld.conf": b"sysusers\n",
+    "share/kapsel/kapseld-rbac.yaml": b"rbac\n",
+}
 BINARIES = {
     "ordinary": "bin/kapsel",
     "service": "libexec/kapsel/kapseld",
@@ -99,7 +105,7 @@ def write_complete_artifact(root: pathlib.Path) -> pathlib.Path:
         "root_package_id": "SPDXRef-Package-kapsel-source",
     }
     metadata = {
-        "artifact_schema": "kapsel.release-artifact.v3",
+        "artifact_schema": "kapsel.release-artifact.v4",
         "package_version": "0.2.0",
         "rust_target": TARGET,
         "source_revision": "1" * 40,
@@ -119,17 +125,17 @@ def write_complete_artifact(root: pathlib.Path) -> pathlib.Path:
     for name, value in binaries.items():
         metadata[f"{name}_binary_bytes"] = len(value)
         metadata[f"{name}_binary_sha256"] = digest(value)
+    metadata["asset_files"] = {
+        path: {"bytes": len(value), "sha256": digest(value)} for path, value in ASSETS.items()
+    }
     metadata["non_claims"] = NON_CLAIMS
     files = {
         f"{basename}/bin/kapsel": binaries["ordinary"],
         f"{basename}/libexec/kapsel/kapseld": binaries["service"],
         f"{basename}/bin/kapsel-service-client": binaries["client"],
         f"{basename}/bin/kapsel-service-mcp": binaries["mcp_bridge"],
-        f"{basename}/share/kapsel/kapseld.service": b"unit\n",
-        f"{basename}/share/kapsel/kapseld.conf": b"sysusers\n",
-        f"{basename}/share/kapsel/kapseld-rbac.yaml": b"rbac\n",
         f"{basename}/share/doc/kapsel/COMMANDS.md": b"commands\n",
-        f"{basename}/share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md": b"operator\n",
+        **{f"{basename}/{path}": value for path, value in ASSETS.items()},
         f"{basename}/share/doc/kapsel/KAPSEL_SERVICE.md": b"service\n",
         f"{basename}/share/doc/kapsel/PRIVACY.md": b"privacy\n",
         f"{basename}/share/doc/kapsel/RELEASE.md": b"release\n",
@@ -199,13 +205,14 @@ def write_complete_artifact(root: pathlib.Path) -> pathlib.Path:
             {
                 "SPDXID": "SPDXRef-File-" + path.replace("/", "-"),
                 "fileName": f"./{path}",
-                "checksums": [
-                    {"algorithm": "SHA256", "checksumValue": metadata[f"{name}_binary_sha256"]}
-                ],
+                "checksums": [{"algorithm": "SHA256", "checksumValue": file_digest}],
                 "licenseConcluded": "NOASSERTION",
                 "copyrightText": "NOASSERTION",
             }
-            for name, path in BINARIES.items()
+            for path, file_digest in [
+                *((path, digest(binaries[name])) for name, path in BINARIES.items()),
+                *((path, digest(value)) for path, value in ASSETS.items()),
+            ]
         ],
         "relationships": [
             {
@@ -224,7 +231,7 @@ def write_complete_artifact(root: pathlib.Path) -> pathlib.Path:
                     "relationshipType": "CONTAINS",
                     "relatedSpdxElement": "SPDXRef-File-" + path.replace("/", "-"),
                 }
-                for path in BINARIES.values()
+                for path in (*BINARIES.values(), *ASSETS)
             ],
             *cargo_relationships,
         ],
@@ -256,7 +263,12 @@ def hostile_archive(archive: pathlib.Path, mutation: str) -> bytes:
     basename = archive.name.removesuffix(".tar.gz")
     selected = f"{basename}/CHANGELOG.md"
     if mutation.endswith("-digest"):
-        selected = f"{basename}/{BINARIES[mutation.removesuffix('-digest')]}"
+        relative = {
+            **BINARIES,
+            "qualification": "share/kapsel/qualification.py",
+            "guide": "share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md",
+        }[mutation.removesuffix("-digest")]
+        selected = f"{basename}/{relative}"
     if mutation == "executable-unit":
         selected = f"{basename}/share/kapsel/kapseld.service"
     if mutation == "old-schema" or mutation.startswith("metadata-"):
@@ -291,7 +303,7 @@ def hostile_archive(archive: pathlib.Path, mutation: str) -> bytes:
                         value = b"x" + value[1:]
                     elif mutation == "old-schema":
                         value = value.replace(
-                            b"kapsel.release-artifact.v3", b"kapsel.release-artifact.v2"
+                            b"kapsel.release-artifact.v4", b"kapsel.release-artifact.v3"
                         )
                     elif mutation.startswith("metadata-"):
                         metadata = json.loads(value)
@@ -323,129 +335,6 @@ def hostile_archive(archive: pathlib.Path, mutation: str) -> bytes:
     return output.getvalue()
 
 
-class BoundedProcessTests(unittest.TestCase):
-    def test_output_overflow_is_rejected_before_waiting_for_completion(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "byte bound"):
-            VERIFY.run_bounded(
-                [
-                    sys.executable,
-                    "-I",
-                    "-c",
-                    "import os,time; os.write(1, b'x' * 65536); time.sleep(5)",
-                ],
-                stdout_max=1024,
-                stderr_max=1024,
-                timeout=10,
-            )
-
-    def test_hanging_command_is_killed_at_the_deadline(self) -> None:
-        with self.assertRaises(subprocess.TimeoutExpired):
-            VERIFY.run_bounded(
-                [sys.executable, "-I", "-c", "import time; time.sleep(5)"],
-                stdout_max=1024,
-                stderr_max=1024,
-                timeout=0.1,
-            )
-
-    def test_closed_output_fds_do_not_end_the_deadline(self) -> None:
-        with self.assertRaises(subprocess.TimeoutExpired):
-            VERIFY.run_bounded(
-                [
-                    sys.executable,
-                    "-I",
-                    "-c",
-                    "import os,time; os.close(1); os.close(2); time.sleep(5)",
-                ],
-                stdout_max=1024,
-                stderr_max=1024,
-                timeout=0.1,
-            )
-
-    def test_closed_stdin_pipe_does_not_hang(self) -> None:
-        result = VERIFY.run_bounded(
-            [sys.executable, "-I", "-c", "import sys; sys.exit(0)"],
-            input_bytes=b"x" * 1024 * 1024,
-            stdout_max=1024,
-            stderr_max=1024,
-            timeout=5,
-        )
-        self.assertEqual(result.returncode, 0)
-
-    def test_failed_checked_command_hides_raw_tool_output(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "command failed") as failure:
-            VERIFY.run_bounded(
-                [sys.executable, "-I", "-c", "import sys; sys.stderr.write('SECRET'); sys.exit(7)"],
-                stdout_max=1024,
-                stderr_max=1024,
-                timeout=5,
-                check=True,
-            )
-        self.assertNotIn("SECRET", str(failure.exception))
-
-
-class ServiceDiagnosticDrainTests(unittest.TestCase):
-    def test_service_stderr_overflow_fails_without_blocking_cleanup(self) -> None:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-I",
-                "-c",
-                "import os,time; os.write(2, b'x' * 8192); time.sleep(5)",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        assert process.stderr is not None
-        drain = VERIFY.ServiceStderrDrain(process)
-        drain.start()
-        try:
-            process.wait(timeout=5)
-            drain.finish()
-            self.assertTrue(drain.overflow)
-            self.assertNotEqual(process.returncode, 0)
-            self.assertTrue(drain.failed())
-            self.assertLessEqual(len(drain.diagnostic), VERIFY.SERVICE_DIAGNOSTIC_BYTES_MAX)
-        finally:
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
-            drain.finish()
-
-    def test_service_stderr_graceful_cleanup_preserves_bounded_evidence(self) -> None:
-        process = subprocess.Popen(
-            [sys.executable, "-I", "-c", "import os; os.write(2, b'bounded diagnostic')"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        assert process.stderr is not None
-        drain = VERIFY.ServiceStderrDrain(process)
-        drain.start()
-        process.wait(timeout=5)
-        drain.finish()
-        self.assertEqual(process.returncode, 0)
-        self.assertFalse(drain.failed())
-        self.assertEqual(bytes(drain.diagnostic), b"bounded diagnostic")
-
-    def test_finish_closes_the_reader_even_if_another_writer_keeps_the_pipe_open(self) -> None:
-        reader, writer = os.pipe()
-        source = os.fdopen(reader, "rb")
-        process = mock.Mock(stderr=source)
-        drain = VERIFY.ServiceStderrDrain(process)
-        drain.start()
-        started = time.monotonic()
-        try:
-            drain.finish()
-            self.assertLess(time.monotonic() - started, 3)
-            self.assertFalse(drain.thread.is_alive())
-            self.assertTrue(source.closed)
-            self.assertTrue(drain.failed())
-        finally:
-            os.close(writer)
-            drain.finish()
-
-
 class CompleteArtifactTests(unittest.TestCase):
     def test_complete_artifact_sidecars_are_verified(self) -> None:
         with tempfile.TemporaryDirectory(prefix="kapsel-complete-artifact-") as temporary:
@@ -475,6 +364,15 @@ class CompleteArtifactTests(unittest.TestCase):
                 "--extract-to",
                 str(destination),
             ]
+            validated = subprocess.run(
+                command[:-2] + ["--verify-only"],
+                cwd=root,
+                capture_output=True,
+                timeout=10,
+                check=True,
+            )
+            self.assertEqual(validated.stdout, b"Kapsel release artifact validation: ok\n")
+            self.assertFalse(destination.exists())
             result = subprocess.run(command, cwd=root, capture_output=True, timeout=10, check=True)
             extracted = destination / archive.name.removesuffix(".tar.gz")
             self.assertEqual(result.stderr, b"")
@@ -514,6 +412,8 @@ class CompleteArtifactTests(unittest.TestCase):
     def test_hostile_layouts_and_binary_changes_fail_their_own_validation(self) -> None:
         cases = {
             **{name + "-digest": "binary digest disagrees" for name in BINARIES},
+            "qualification-digest": "asset digest",
+            "guide-digest": "asset digest",
             "old-schema": "metadata schema changed",
             "metadata-extra": "metadata fields or order",
             "metadata-order": "metadata fields or order",
@@ -566,11 +466,35 @@ class CompleteArtifactTests(unittest.TestCase):
                 ("comment", "wrong", "source or builder binding"),
                 ("packages", [], "package inventory"),
                 ("relationships", [], "Cargo graph"),
-                ("files", [], "binary inventory"),
+                ("files", [], "file inventory"),
             ):
                 changed = json.loads(sbom_bytes)
                 changed[field] = value
                 with self.subTest(field=field), self.assertRaisesRegex(RuntimeError, diagnostic):
+                    VERIFY.validate_sbom(
+                        archive, archive_bytes, (json.dumps(changed) + "\n").encode(), metadata
+                    )
+
+    def test_sbom_file_identifiers_and_digest_algorithms_are_not_interchangeable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = write_complete_artifact(pathlib.Path(temporary))
+            archive_bytes, metadata = VERIFY.verified_release(
+                archive, pathlib.Path(str(archive) + ".sha256"), "1" * 40
+            )
+            original = pathlib.Path(str(archive) + ".spdx.json").read_bytes()
+            for field in ("SPDXID", "algorithm", "digest"):
+                changed = json.loads(original)
+                entry = changed["files"][-1]
+                if field == "SPDXID":
+                    entry[field] = "SPDXRef-File-unrelated"
+                else:
+                    entry["checksums"][0][
+                        "algorithm" if field == "algorithm" else "checksumValue"
+                    ] = "SHA1" if field == "algorithm" else "0" * 64
+                with (
+                    self.subTest(field=field),
+                    self.assertRaisesRegex(RuntimeError, "file identity"),
+                ):
                     VERIFY.validate_sbom(
                         archive, archive_bytes, (json.dumps(changed) + "\n").encode(), metadata
                     )
@@ -590,6 +514,51 @@ class CompleteArtifactTests(unittest.TestCase):
                     )
                 self.assertFalse(destination.exists())
                 path.write_bytes(original)
+
+
+class DescriptorAndSnapshotTests(unittest.TestCase):
+    def test_regular_descriptor_bounds_and_special_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            regular = root / "regular"
+            regular.write_bytes(b"bounded")
+            self.assertEqual(VERIFY.read_bounded_regular(regular, 7), b"bounded")
+            with self.assertRaisesRegex(RuntimeError, "bounded regular"):
+                VERIFY.read_bounded_regular(regular, 6)
+            link = root / "link"
+            link.symlink_to(regular)
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
+            for path in (link, fifo, root):
+                with self.subTest(path=path.name):
+                    code = (
+                        "import runpy, pathlib, sys; "
+                        "owner=runpy.run_path(sys.argv[1]); "
+                        "owner['read_bounded_regular'](pathlib.Path(sys.argv[2]), 256)"
+                    )
+                    result = subprocess.run(
+                        [sys.executable, "-I", "-c", code, VERIFY.__file__, str(path)],
+                        capture_output=True,
+                        timeout=5,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_extraction_keeps_the_validated_archive_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archive = write_complete_artifact(root)
+            create = pathlib.Path.mkdir
+
+            def replace_after_validation(path, *args, **kwargs):
+                if path == root / "extracted":
+                    archive.write_bytes(b"changed after validation")
+                return create(path, *args, **kwargs)
+
+            with mock.patch.object(pathlib.Path, "mkdir", replace_after_validation):
+                extracted = VERIFY.extract_release(
+                    archive, pathlib.Path(str(archive) + ".sha256"), "1" * 40, root / "extracted"
+                )
+            self.assertEqual((extracted / "bin/kapsel").read_bytes(), b"ordinary")
 
 
 if __name__ == "__main__":

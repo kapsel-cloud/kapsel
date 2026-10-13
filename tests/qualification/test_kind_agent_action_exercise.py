@@ -1,5 +1,7 @@
 """Offline checks for the packaged journey's independent retained-evidence reader."""
 
+import ast
+import hashlib
 import http.server
 import json
 import os
@@ -14,8 +16,10 @@ import unittest
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest import mock
 
+import run_kind_agent_action_workflow as JOURNEY
 from kind_agent_action_exercise import finalized_evidence, retained_row
 from kind_receiver_barrier import LIMIT, send_reply, upstream
 from run_kind_agent_action_workflow import (
@@ -391,6 +395,241 @@ class BoundedSubprocessTests(unittest.TestCase):
         self.assertEqual(message, "command exited 7")
         self.assertNotIn("SECRET_ARGV", message)
         self.assertNotIn("SECRET_STDERR", message)
+
+
+class PackagedRunnerTests(unittest.TestCase):
+    def test_journey_streams_exact_fixture_bytes_through_a_real_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            docker = root / "docker"
+            docker.write_text(
+                f"#!{sys.executable}\n"
+                "import hashlib, sys\n"
+                "assert sys.argv[1:] == ['start', '--attach', '--interactive', 'fixture']\n"
+                "source = sys.stdin.buffer.read()\n"
+                "compile(source, '<transferred-fixture>', 'exec')\n"
+                "print(hashlib.sha256(source).hexdigest())\n"
+            )
+            docker.chmod(0o700)
+            source = JOURNEY.EXERCISE_SOURCE.read_bytes()
+            with mock.patch.dict(os.environ, PATH=str(root)):
+                code, agent = JOURNEY.execute_journey_container(
+                    "fixture", root, source, root, None, root / "unused-auth"
+                )
+            self.assertEqual(code, 0)
+            self.assertIsNone(agent)
+            self.assertEqual(
+                (root / "exercise.log").read_text().strip(), hashlib.sha256(source).hexdigest()
+            )
+
+    def test_audit_collection_distinguishes_fixture_writes_and_duplicate_observations(self) -> None:
+        event = {
+            "verb": "patch",
+            "userAgent": "kapsel",
+            "auditID": "first",
+            "user": {"username": "system:serviceaccount:demo:journey"},
+            "objectRef": {"name": "agent-healthy"},
+            "requestReceivedTimestamp": "2026-10-11T00:00:00Z",
+        }
+        fixture_write = dict(event, auditID="fixture", userAgent="kapsel-journey-fixture")
+        audit = b"\n".join(json.dumps(item).encode() for item in (fixture_write, event))
+        with mock.patch.object(JOURNEY, "run", return_value=audit):
+            counts, events = JOURNEY.collect_receiver_counts("fixture")
+        self.assertEqual(counts, {case: int(case == "healthy") for case in JOURNEY.CASES})
+        self.assertEqual(events["healthy"], [("patch", 1791676800.0)])
+        duplicate = b"\n".join([json.dumps(event).encode()] * 2)
+        with (
+            mock.patch.object(JOURNEY, "run", return_value=duplicate),
+            self.assertRaises(AssertionError),
+        ):
+            JOURNEY.collect_receiver_counts("fixture")
+
+    def test_journey_python_calls_exclude_caller_writable_imports(self) -> None:
+        tree = ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes())
+        invocations = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.List)
+            and node.elts
+            and ast.unparse(node.elts[0]) == "sys.executable"
+        ]
+        self.assertEqual(len(invocations), 3)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            (root / "socket.py").write_text("raise SystemExit(99)\n")
+            for invocation in invocations:
+                prefix = eval(
+                    compile(
+                        ast.fix_missing_locations(
+                            ast.Expression(ast.List(elts=invocation.elts[:3], ctx=ast.Load()))
+                        ),
+                        "<caller-prefix>",
+                        "eval",
+                    ),
+                    {"sys": sys},
+                )
+                self.assertEqual(prefix[:2], [sys.executable, "-I"])
+                self.assertIn(prefix[2], ("-", "/inputs/kind_receiver_barrier.py"))
+                subprocess.run(
+                    prefix[:2] + ["-c", "import socket"], cwd=root, check=True, timeout=5
+                )
+
+    def test_journey_receipt_binds_action_and_result(self) -> None:
+        function = next(
+            node
+            for node in ast.walk(ast.parse(JOURNEY.EXERCISE_SOURCE.read_bytes()))
+            if isinstance(node, ast.FunctionDef) and node.name == "receipt"
+        )
+        for operation, result in (
+            ("caller-loss", "UNKNOWN"),
+            ("healthy", "UNKNOWN"),
+            ("caller-loss", "SUCCEEDED"),
+        ):
+            with self.subTest(operation=operation, result=result):
+                report = {
+                    "status": "INSPECTED",
+                    "operation_id": operation,
+                    "result": result,
+                    "target_uid": "original",
+                    "target_resource_version": "opaque",
+                }
+                path = mock.Mock()
+                path.read_text.return_value = "1"
+                path.read_bytes.return_value = b"frozen"
+                scope = {
+                    "pathlib": SimpleNamespace(Path=lambda _, path=path: path),
+                    "json": json,
+                    "EXPECTED": {"caller-loss": "UNKNOWN"},
+                    "targets": {"caller-loss": {"uid": "original", "resourceVersion": "opaque"}},
+                    "read": lambda *args: {"status": "READY"},
+                    "command": lambda *args, report=report: json.dumps(report),
+                }
+                exec(
+                    compile(ast.Module(body=[function], type_ignores=[]), "<receipt>", "exec"),
+                    scope,
+                )
+                if operation == "caller-loss" and result == "UNKNOWN":
+                    self.assertEqual(scope["receipt"]("caller-loss", "restart"), b"frozen")
+                else:
+                    with self.assertRaises(AssertionError):
+                        scope["receipt"]("caller-loss", "restart")
+
+    def test_agent_execution_is_unprivileged_and_completion_requires_product_evidence(self) -> None:
+        for case in (
+            "valid",
+            "model-failure",
+            "model-prose-only",
+            "unintended-action",
+            "receipt-mismatch",
+            "retirement-incomplete",
+            "runtime-error",
+            "timeout",
+            "output-overflow",
+        ):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                workspace = pathlib.Path(temporary)
+                binary = workspace / "codex"
+                binary.write_bytes(b"fixture binary")
+                binary.with_name("codex-code-mode-host").write_bytes(b"fixture helper")
+                responses: list[subprocess.CompletedProcess[bytes] | Exception] = [
+                    subprocess.CompletedProcess([], 0, b"", b""),
+                    subprocess.CompletedProcess(
+                        [],
+                        int(case == "model-failure"),
+                        b'{"type":"turn.completed","usage":{}}\n',
+                        b"",
+                    ),
+                ]
+
+                if case == "runtime-error":
+                    response = responses[1]
+                    assert isinstance(response, subprocess.CompletedProcess)
+                    response.stdout += b'{"type":"item.completed","item":{"type":"error"}}\n'
+                if case == "timeout":
+                    responses[1] = subprocess.TimeoutExpired("docker exec", 120)
+                if case == "output-overflow":
+                    responses[1] = RuntimeError("confined Codex output exceeded its byte bound")
+
+                def product(arguments, case=case, **_kwargs):
+                    if JOURNEY.RETIRE_CALLERS in arguments:
+                        return b"" if case == "retirement-incomplete" else b"CALLERS_RETIRED\n"
+                    if JOURNEY.RECEIPT_SNAPSHOT in arguments:
+                        return (
+                            b"wrong"
+                            if case == "receipt-mismatch"
+                            and arguments[-1].endswith("repeated.receipt")
+                            else b"frozen receipt"
+                        )
+                    if arguments[-1] == "--version":
+                        return b"codex fixture\n"
+                    if "/usr/bin/kapsel-service-client" in arguments:
+                        if "receipt" in arguments:
+                            return json.dumps(
+                                {"version": 1, "status": "READY", "receipt_sha256": "1" * 64}
+                            ).encode()
+                        state = "NOT_FOUND"
+                        if arguments[-1] == "healthy" and case != "model-prose-only":
+                            state = "SUCCEEDED"
+                        if arguments[-1] == "stale" and case == "unintended-action":
+                            state = "IN_PROGRESS"
+                        return json.dumps({"version": 1, "status": state}).encode()
+                    return b""
+
+                with (
+                    mock.patch.object(
+                        JOURNEY.subprocess, "run", return_value=responses[0]
+                    ) as direct,
+                    mock.patch.object(
+                        JOURNEY, "run_agent_process", side_effect=responses[1:]
+                    ) as cli,
+                    mock.patch.object(JOURNEY, "run", side_effect=product) as transport,
+                ):
+                    if case == "valid":
+                        evidence = JOURNEY.run_agent(
+                            "owned-container", workspace, binary, workspace / "auth.json"
+                        )
+                        self.assertEqual(evidence["uid"], 61001)
+                        self.assertEqual(evidence["status"], "SUCCEEDED")
+                        self.assertEqual(
+                            json.loads((workspace / "selection.json").read_text()),
+                            {"operation_id": "healthy"},
+                        )
+                    else:
+                        with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)):
+                            JOURNEY.run_agent(
+                                "owned-container", workspace, binary, workspace / "auth.json"
+                            )
+                        self.assertFalse((workspace / "selection.json").exists())
+                    for invocation in transport.call_args_list:
+                        argv = invocation.args[0]
+                        if "/usr/bin/kapsel-service-client" in argv:
+                            self.assertEqual(
+                                argv[argv.index("owned-container") + 1],
+                                "/usr/bin/kapsel-service-client",
+                            )
+                    arguments = cli.call_args.args[0]
+                    self.assertEqual(
+                        arguments[:5], ["docker", "exec", "--user", "61001:61000", "--workdir"]
+                    )
+                    self.assertNotIn("--ignore-user-config", arguments)
+                    config_calls = [call for call in direct.call_args_list if "tee" in call.args[0]]
+                    self.assertEqual(len(config_calls), 1)
+                    self.assertIn(
+                        b'command = "/usr/bin/kapsel-service-mcp"', config_calls[0].kwargs["input"]
+                    )
+                    self.assertIn("--ignore-rules", arguments)
+                    self.assertIn("--ephemeral", arguments)
+                    self.assertEqual(
+                        transport.call_args.args[0],
+                        [
+                            "docker",
+                            "exec",
+                            "owned-container",
+                            "rm",
+                            "-f",
+                            "/home/caller/.codex/auth.json",
+                        ],
+                    )
 
 
 if __name__ == "__main__":

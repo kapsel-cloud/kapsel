@@ -39,12 +39,17 @@ Keep these variables in the shell holding the authenticated files. An unsigned l
 independently accepted source and archive digests and trusted transfer. It has no publisher
 authentication.
 
-## 2. Run the example
+## 2. Run the published v0.3.0 example
 
-From that directory:
+This command belongs only to the immutable published v0.3.0 companion. Current source candidates
+separate consumer extraction from the archive's maintainer program; use their
+[native qualification procedure](reference/release.md#native-installed-systemd-qualification)
+instead. Do not qualify changed candidate tooling with this older archive.
+
+From the directory holding authenticated v0.3.0 files:
 
 ```sh
-sudo python3 "$archive.verify.py" --archive "$archive" --expected-revision "$revision" --service-systemd
+sudo python3 -I "$archive.verify.py" --archive "$archive" --expected-revision "$revision" --service-systemd
 ```
 
 The verifier performs the preparation and caller steps using the shipped production binaries. It

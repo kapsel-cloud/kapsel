@@ -1,29 +1,19 @@
 #!/usr/bin/env python3
-"""Check and extract Kapsel release files, or run Linux smoke qualification."""
+"""Validate or exclusively extract Kapsel artifacts; never execute bundled code."""
 
 from __future__ import annotations
 
 import argparse
-import grp
 import gzip
 import hashlib
-import http.server
 import io
 import json
 import os
 import pathlib
-import pwd
-import selectors
 import shutil
 import stat
-import subprocess
-import sys
 import tarfile
-import tempfile
-import threading
-import time
-from collections.abc import Mapping, Sequence
-from typing import BinaryIO, TypedDict, cast
+from typing import TypedDict, cast
 
 
 class ReleaseMetadata(TypedDict):
@@ -49,18 +39,10 @@ class ReleaseMetadata(TypedDict):
     client_binary_sha256: str
     mcp_bridge_binary_bytes: int
     mcp_bridge_binary_sha256: str
+    asset_files: dict[str, dict[str, int | str]]
     non_claims: str
 
 
-IMAGE = (
-    "registry.example/kapsel/agent-api@sha256:"
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-)
-OLD_IMAGE = (
-    "registry.example/kapsel/agent-api@sha256:"
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-)
-OPERATION = "artifact-op-1"
 TARGET = "x86_64-unknown-linux-gnu"
 BUILDER_IMAGE = "rust@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922"
 SMOKE_IMAGE = "python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1"
@@ -72,182 +54,20 @@ BINARIES = {
     "mcp_bridge": "bin/kapsel-service-mcp",
 }
 SBOM_GENERATOR = "kapsel-release-sbom/1"
+ASSETS = (
+    "share/kapsel/qualification.py",
+    "share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md",
+    "share/kapsel/kapseld.service",
+    "share/kapsel/kapseld.conf",
+    "share/kapsel/kapseld-rbac.yaml",
+)
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
 EXPANDED_BYTES_MAX = 64 * 1024 * 1024
 FILE_BYTES_MAX = 32 * 1024 * 1024
 SBOM_BYTES_MAX = 2 * 1024 * 1024
 MANIFEST_BYTES_MAX = 1024
 VERIFIER_BYTES_MAX = 64 * 1024
-SERVICE_DIAGNOSTIC_BYTES_MAX = 4 * 1024
 TAR_STREAM_BYTES_MAX = EXPANDED_BYTES_MAX + 64 * 1024
-AUTHORIZATION_PUBLIC_KEY = bytes.fromhex(
-    "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
-)
-FORBIDDEN = [
-    b"SECRET_PROVIDER_CANARY",
-    bytes([9]) * 32,
-    b"KUBECONFIG_AMBIENT_CANARY",
-]
-
-
-def run_bounded(
-    arguments: Sequence[str | pathlib.Path],
-    *,
-    input_bytes: bytes | None = None,
-    stdout_max: int,
-    stderr_max: int,
-    timeout: float,
-    check: bool = False,
-    env: Mapping[str, str] | None = None,
-    cwd: pathlib.Path | None = None,
-    user: int | None = None,
-    group: int | None = None,
-    extra_groups: Sequence[int] | None = None,
-    umask: int = -1,
-) -> subprocess.CompletedProcess[bytes]:
-    command = [str(argument) for argument in arguments]
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-        cwd=cwd,
-        user=user,
-        group=group,
-        extra_groups=extra_groups,
-        umask=umask,
-    )
-    assert process.stdout is not None
-    assert process.stderr is not None
-    stdout_fd = process.stdout.fileno()
-    stderr_fd = process.stderr.fileno()
-    output = {stdout_fd: bytearray(), stderr_fd: bytearray()}
-    limits = {stdout_fd: stdout_max, stderr_fd: stderr_max}
-    input_view = memoryview(input_bytes or b"")
-    input_offset = 0
-    deadline = time.monotonic() + timeout
-    selector = selectors.DefaultSelector()
-    try:
-        for stream in (process.stdout, process.stderr):
-            os.set_blocking(stream.fileno(), False)
-            selector.register(stream, selectors.EVENT_READ)
-        if process.stdin is not None:
-            os.set_blocking(process.stdin.fileno(), False)
-            selector.register(process.stdin, selectors.EVENT_WRITE)
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(command, timeout)
-            events = selector.select(remaining)
-            if not events:
-                continue
-            for key, mask in events:
-                stream = cast(BinaryIO, key.fileobj)
-                file_descriptor = stream.fileno()
-                if mask & selectors.EVENT_WRITE:
-                    try:
-                        written = os.write(file_descriptor, input_view[input_offset:])
-                    except BrokenPipeError:
-                        written = 0
-                        input_offset = len(input_view)
-                    else:
-                        input_offset += written
-                    if input_offset == len(input_view) or written == 0:
-                        selector.unregister(stream)
-                        stream.close()
-                    continue
-
-                data = output[file_descriptor]
-                allowance = limits[file_descriptor] - len(data) + 1
-                chunk = os.read(file_descriptor, min(8192, max(1, allowance)))
-                if not chunk:
-                    selector.unregister(stream)
-                    stream.close()
-                    continue
-                if len(data) + len(chunk) > limits[file_descriptor]:
-                    raise RuntimeError("subprocess output exceeded its byte bound")
-                data.extend(chunk)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(command, timeout)
-        returncode = process.wait(timeout=remaining)
-    except BaseException:
-        process.kill()
-        process.wait()
-        raise
-    finally:
-        selector.close()
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None and not stream.closed:
-                stream.close()
-    result = subprocess.CompletedProcess(
-        command, returncode, bytes(output[stdout_fd]), bytes(output[stderr_fd])
-    )
-    if check and returncode != 0:
-        raise RuntimeError("subprocess command failed")
-    return result
-
-
-def sha256(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-class ServiceStderrDrain:
-    def __init__(self, process: subprocess.Popen[bytes]) -> None:
-        assert process.stderr is not None
-        self.process = process
-        self.source = process.stderr
-        self.diagnostic = bytearray()
-        self.overflow = False
-        self.read_failed = False
-        self.stopping = threading.Event()
-        self.thread = threading.Thread(target=self._drain, daemon=True)
-
-    def start(self) -> None:
-        try:
-            self.thread.start()
-        except BaseException:
-            self.source.close()
-            raise
-
-    def _drain(self) -> None:
-        try:
-            os.set_blocking(self.source.fileno(), False)
-            with selectors.DefaultSelector() as selector:
-                selector.register(self.source, selectors.EVENT_READ)
-                while not self.stopping.is_set():
-                    if not selector.select(0.1):
-                        continue
-                    remaining = SERVICE_DIAGNOSTIC_BYTES_MAX - len(self.diagnostic)
-                    chunk = os.read(self.source.fileno(), min(1024, remaining + 1))
-                    if not chunk:
-                        return
-                    self.diagnostic.extend(chunk[:remaining])
-                    if len(chunk) > remaining:
-                        self.overflow = True
-                        self.process.kill()
-                        return
-        except OSError:
-            self.read_failed = True
-        finally:
-            self.source.close()
-
-    def finish(self) -> None:
-        if self.thread.ident is None:
-            return
-        self.thread.join(timeout=1)
-        if self.thread.is_alive():
-            self.read_failed = True
-            self.stopping.set()
-            self.thread.join(timeout=1)
-
-    def failed(self) -> bool:
-        return self.overflow or self.read_failed
 
 
 def read_bounded_regular(path: pathlib.Path, maximum: int) -> bytes:
@@ -400,19 +220,27 @@ def validate_sbom(
     expected_files = {
         f"./{path}": metadata[f"{name}_binary_sha256"] for name, path in BINARIES.items()
     }
+    expected_files.update({f"./{path}": metadata["asset_files"][path]["sha256"] for path in ASSETS})
     actual_files = {}
     if isinstance(files, list):
         for entry in files:
-            if isinstance(entry, dict):
-                checksums = entry.get("checksums")
-                if isinstance(checksums, list) and len(checksums) == 1:
-                    actual_files[entry.get("fileName")] = checksums[0].get("checksumValue")
+            if not isinstance(entry, dict):
+                raise RuntimeError("release SBOM file record is invalid")
+            path = entry.get("fileName")
+            if not isinstance(path, str) or path not in expected_files:
+                raise RuntimeError("release SBOM file path is invalid")
+            identifier = "SPDXRef-File-" + path.removeprefix("./").replace("/", "-")
+            if entry.get("SPDXID") != identifier or entry.get("checksums") != [
+                {"algorithm": "SHA256", "checksumValue": expected_files[path]}
+            ]:
+                raise RuntimeError("release SBOM file identity or checksum disagrees")
+            actual_files[path] = expected_files[path]
     if (
         not isinstance(files, list)
         or len(files) != len(expected_files)
         or actual_files != expected_files
     ):
-        raise RuntimeError("release SBOM binary inventory disagrees")
+        raise RuntimeError("release SBOM file inventory disagrees")
 
     contains = {
         relationship.get("relatedSpdxElement")
@@ -421,8 +249,10 @@ def validate_sbom(
         and relationship.get("spdxElementId") == "SPDXRef-Package-kapsel-archive"
         and relationship.get("relationshipType") == "CONTAINS"
     }
-    if contains != {"SPDXRef-File-" + path.replace("/", "-") for path in BINARIES.values()}:
-        raise RuntimeError("release SBOM binary containment relationships changed")
+    if contains != {
+        "SPDXRef-File-" + path.replace("/", "-") for path in (*BINARIES.values(), *ASSETS)
+    }:
+        raise RuntimeError("release SBOM file containment relationships changed")
     if not any(
         relationship.get("spdxElementId") == "SPDXRef-DOCUMENT"
         and relationship.get("relationshipType") == "DESCRIBES"
@@ -495,6 +325,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> ReleaseMeta
         f"{basename}/share/kapsel/kapseld.service",
         f"{basename}/share/kapsel/kapseld.conf",
         f"{basename}/share/kapsel/kapseld-rbac.yaml",
+        f"{basename}/share/kapsel/qualification.py",
         f"{basename}/share/doc/",
         f"{basename}/share/doc/kapsel/",
         f"{basename}/share/doc/kapsel/COMMANDS.md",
@@ -514,6 +345,7 @@ def validate_archive(archive: pathlib.Path, archive_bytes: bytes) -> ReleaseMeta
         f"{basename}/RELEASE-METADATA.json": "metadata",
         f"{basename}/LICENSE": "license",
         **{f"{basename}/{path}": name for name, path in BINARIES.items()},
+        **{f"{basename}/{path}": path for path in ASSETS},
     }
     executable_paths = {f"{basename}/{path}" for path in BINARIES.values()}
     evidence: dict[str, bytes] = {}
@@ -589,11 +421,12 @@ def validate_metadata(version: str, evidence: dict[str, bytes]) -> ReleaseMetada
         "client_binary_sha256",
         "mcp_bridge_binary_bytes",
         "mcp_bridge_binary_sha256",
+        "asset_files",
         "non_claims",
     ]
     if list(metadata) != expected_keys:
         raise RuntimeError("release metadata fields or order changed")
-    if metadata["artifact_schema"] != "kapsel.release-artifact.v3":
+    if metadata["artifact_schema"] != "kapsel.release-artifact.v4":
         raise RuntimeError("release metadata schema changed")
     if metadata["package_version"] != version or metadata["rust_target"] != TARGET:
         raise RuntimeError("release metadata disagrees with archive identity")
@@ -653,6 +486,20 @@ def validate_metadata(version: str, evidence: dict[str, bytes]) -> ReleaseMetada
             raise RuntimeError("release binary size disagrees")
         if declared_digest != hashlib.sha256(binary_bytes).hexdigest():
             raise RuntimeError("release binary digest disagrees")
+    assets = metadata["asset_files"]
+    if not isinstance(assets, dict) or list(assets) != list(ASSETS):
+        raise RuntimeError("release asset inventory disagrees")
+    for path in ASSETS:
+        identity = assets[path]
+        value = evidence[path]
+        if (
+            not isinstance(identity, dict)
+            or list(identity) != ["bytes", "sha256"]
+            or type(identity["bytes"]) is not int
+            or identity["bytes"] != len(value)
+            or identity["sha256"] != hashlib.sha256(value).hexdigest()
+        ):
+            raise RuntimeError("release asset digest or size disagrees")
     # Every field above has its independent shape and artifact binding checked before exposure.
     return cast(ReleaseMetadata, metadata)
 
@@ -689,249 +536,6 @@ def extract_exact_archive(
     return destination / top_level
 
 
-def deployment(resource_version: str, generation: int, observed: bool) -> bytes:
-    metadata: dict[str, object] = {
-        "name": "agent-api",
-        "namespace": "demo",
-        "uid": "artifact-deployment-uid",
-        "resourceVersion": resource_version,
-        "generation": generation,
-    }
-    value: dict[str, object] = {
-        "apiVersion": "apps/v1",
-        "kind": "Deployment",
-        "metadata": metadata,
-        "spec": {
-            "replicas": 1,
-            "selector": {"matchLabels": {"app": "agent-api"}},
-            "template": {
-                "metadata": {"labels": {"app": "agent-api"}},
-                "spec": {
-                    "containers": [
-                        {
-                            "name": "api",
-                            "image": OLD_IMAGE if generation == 1 else IMAGE,
-                        }
-                    ]
-                },
-            },
-        },
-    }
-    if observed:
-        metadata["annotations"] = {"kapsel.dev/kap0038-operation-id": OPERATION}
-        value["status"] = {
-            "observedGeneration": 2,
-            "updatedReplicas": 1,
-            "availableReplicas": 1,
-            "unavailableReplicas": 0,
-            "conditions": [
-                {
-                    "type": "Available",
-                    "status": "True",
-                    "reason": "MinimumReplicasAvailable",
-                }
-            ],
-        }
-    return json.dumps(value, separators=(",", ":")).encode()
-
-
-class KubernetesFixture(http.server.BaseHTTPRequestHandler):
-    receiver_responses: list[bytes] = []
-    requests = 0
-    mutations = 0
-
-    def log_message(self, format: str, *arguments: object) -> None:
-        del format, arguments
-
-    def respond(self) -> None:
-        type(self).requests += 1
-        if not type(self).receiver_responses:
-            self.send_error(500)
-            return
-        body = type(self).receiver_responses.pop(0)
-        self.send_response(200)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    do_GET = respond
-
-    def do_PATCH(self) -> None:
-        type(self).mutations += 1
-        self.rfile.read(int(self.headers.get("content-length", "0")))
-        self.respond()
-
-
-def reset_kubernetes_fixture() -> None:
-    KubernetesFixture.receiver_responses = [
-        deployment("1", 1, False),
-        deployment("2", 2, False),
-        deployment("3", 2, True),
-    ]
-    KubernetesFixture.requests = 0
-    KubernetesFixture.mutations = 0
-
-
-def write_private(path: pathlib.Path, data: bytes) -> None:
-    path.write_bytes(data)
-    path.chmod(0o600)
-
-
-def run_binary(binary: pathlib.Path, arguments: list[str]) -> subprocess.CompletedProcess[bytes]:
-    result = run_bounded(
-        [binary, *arguments],
-        stdout_max=64 * 1024,
-        stderr_max=4 * 1024,
-        timeout=60,
-        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "KUBECONFIG": "KUBECONFIG_AMBIENT_CANARY"},
-    )
-    for canary in FORBIDDEN:
-        if canary in result.stdout or canary in result.stderr:
-            raise RuntimeError("installed binary disclosed a canary")
-    return result
-
-
-def prepare_inputs(root: pathlib.Path, server_address: tuple[str, int]) -> dict[str, pathlib.Path]:
-    authorization = root / "authorization.json"
-    write_private(
-        authorization,
-        json.dumps(
-            {
-                "authorization_id": "artifact-auth-1",
-                "operation_id": OPERATION,
-                "namespace": "demo",
-                "deployment": "agent-api",
-                "container": "api",
-                "immutable_image_digest": IMAGE,
-            },
-            separators=(",", ":"),
-        ).encode(),
-    )
-    write_private(root / "authorization.seed", bytes([9]) * 32)
-    write_private(root / "authorization.pub", AUTHORIZATION_PUBLIC_KEY)
-    write_private(root / "receipt.seed", bytes([9]) * 32)
-    host, port = server_address
-    write_private(
-        root / "kubeconfig.yaml",
-        (
-            "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n"
-            f"  cluster:\n    server: http://{host}:{port}\n"
-            "contexts:\n- name: fixture\n  context:\n"
-            "    cluster: fixture\n    user: fixture\ncurrent-context: fixture\n"
-            "users:\n- name: fixture\n  user: {}\n"
-        ).encode(),
-    )
-    return {"authorization": authorization}
-
-
-def inspect_receipt(binary: pathlib.Path, receipt: pathlib.Path, trust: pathlib.Path) -> None:
-    inspection = run_binary(
-        binary,
-        [
-            "inspect",
-            "--receipt",
-            str(receipt),
-            "--trust",
-            str(trust),
-            "--evaluation-time-unix-s",
-            "150",
-        ],
-    )
-    if inspection.returncode != 0:
-        raise RuntimeError("installed offline inspection failed")
-    report = json.loads(inspection.stdout)
-    if report["status"] != "INSPECTED" or report["result"] != "SUCCEEDED":
-        raise RuntimeError("installed offline inspection returned the wrong result")
-    if b"VERIFIED" in inspection.stdout:
-        raise RuntimeError("installed offline inspection emitted forbidden vocabulary")
-
-
-def exercise_mcp(binary: pathlib.Path, version: str, caller_uid: int, caller_gid: int) -> None:
-    """Cross the installed ID-only bridge without acquiring new receiver facts."""
-    messages = [
-        {
-            "jsonrpc": "2.0",
-            "id": "initialize",
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-11-25",
-                "capabilities": {},
-                "clientInfo": {"name": "artifact-smoke", "version": "1"},
-            },
-        },
-        {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        {
-            "jsonrpc": "2.0",
-            "id": "call",
-            "method": "tools/call",
-            "params": {
-                "name": "kapsel.get_status",
-                "arguments": {"operation_id": OPERATION},
-            },
-        },
-    ]
-    process = run_bounded(
-        [binary],
-        input_bytes=b"".join(
-            json.dumps(message, separators=(",", ":")).encode() + b"\n" for message in messages
-        ),
-        stdout_max=3 * 96 * 1024,
-        stderr_max=1,
-        timeout=30,
-        user=caller_uid,
-        group=caller_gid,
-        extra_groups=[],
-        env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
-    )
-    if process.returncode or process.stderr:
-        raise RuntimeError("installed service MCP lifecycle failed")
-    responses = [json.loads(line) for line in process.stdout.splitlines()]
-    if len(responses) != 3 or responses[0]["result"]["serverInfo"] != {
-        "name": "kapsel-service",
-        "version": version,
-    }:
-        raise RuntimeError("installed bridge version disagrees with artifact metadata")
-    tools = responses[1]["result"]["tools"]
-    expected = {
-        "kapsel.list_approved_actions",
-        "kapsel.list_operation_history",
-        "kapsel.get_status",
-        "kapsel.get_receipt",
-        "kapsel.submit",
-    }
-    if len(tools) != 5 or {tool["name"] for tool in tools} != expected:
-        raise RuntimeError("installed bridge tool list is not fixed")
-    for tool in tools:
-        properties = set(tool["inputSchema"]["properties"])
-        if properties != (
-            {"after"} if tool["name"].startswith("kapsel.list_") else {"operation_id"}
-        ):
-            raise RuntimeError("installed bridge schema exposed authority fields")
-    call = responses[2]["result"]
-    if (
-        call["isError"]
-        or json.loads(call["content"][0]["text"])["service"]["status"] != "SUCCEEDED"
-    ):
-        raise RuntimeError("installed bridge changed the stored outcome")
-
-
-def exercise_version(binary: pathlib.Path, expected_version: object) -> None:
-    if not isinstance(expected_version, str):
-        raise RuntimeError("release metadata package version is invalid")
-    result = run_bounded(
-        [binary, "--version"],
-        check=True,
-        stdout_max=128,
-        stderr_max=1,
-        timeout=10,
-        env={},
-    )
-    if result.stdout != f"kapsel {expected_version}\n".encode() or result.stderr:
-        raise RuntimeError("installed executable version identity disagrees")
-
-
 def verified_release(
     archive: pathlib.Path,
     checksum: pathlib.Path,
@@ -962,628 +566,14 @@ def extract_release(
     return extract_exact_archive(archive, archive_bytes, destination)
 
 
-def smoke(
-    archive: pathlib.Path,
-    checksum: pathlib.Path,
-    expected_revision: str | None = None,
-    service_container: bool = False,
-    service_systemd: bool = False,
-) -> None:
-    archive_bytes, metadata = verified_release(archive, checksum, expected_revision)
-    if service_systemd and metadata["source_dirty"]:
-        raise RuntimeError("native qualification requires a clean committed-source artifact")
-    with tempfile.TemporaryDirectory(prefix="kapsel-clean-smoke-") as temporary:
-        root = extract_exact_archive(archive, archive_bytes, pathlib.Path(temporary))
-        extracted_binary = root / "bin" / "kapsel"
-        installation = pathlib.Path(temporary) / "installation"
-        installation.mkdir(mode=0o755)
-        binary = installation / "kapsel"
-        shutil.copyfile(extracted_binary, binary)
-        binary.chmod(0o755)
-        if sha256(binary) != metadata["ordinary_binary_sha256"]:
-            raise RuntimeError("installed ordinary binary digest mismatch")
-        for name, relative in BINARIES.items():
-            if sha256(root / relative) != metadata[f"{name}_binary_sha256"]:
-                raise RuntimeError("extracted binary digest mismatch")
-        exercise_version(binary, metadata["package_version"])
-
-        help_result = run_binary(binary, ["--help"])
-        if (
-            help_result.returncode
-            or b"kapsel operate" in help_result.stdout
-            or b"kapsel mcp --" in help_result.stdout
-        ):
-            raise RuntimeError("artifact help advertises retired execution")
-        for command in ("operate", "mcp"):
-            retired = run_binary(
-                binary, [command, "--operator-config", "/unavailable/operator.json"]
-            )
-            if retired.returncode != 2:
-                raise RuntimeError("artifact still accepts direct execution")
-
-        if service_container or service_systemd:
-            exercise_service(root, pathlib.Path(temporary), service_systemd)
-        binary.unlink()
-        installation.rmdir()
-        if installation.exists():
-            raise RuntimeError("artifact smoke did not uninstall the ordinary binary")
-
-
-def systemctl(*arguments: str) -> str:
-    result = run_bounded(
-        ["systemctl", *arguments],
-        check=True,
-        stdout_max=64 * 1024,
-        stderr_max=16 * 1024,
-        timeout=60,
-    )
-    return result.stdout.decode().strip()
-
-
-def refuse_systemd_references(parent: pathlib.Path) -> None:
-    # Include dangling enablement links and aliases, without adopting or deleting them.
-    for name in ("kapseld.service", "kapseld.service.d"):
-        if os.path.lexists(parent / name):
-            raise RuntimeError("native qualification refuses an existing unit or override")
-    for path in [*parent.glob("*"), *parent.glob("*/*")]:
-        if path.name == "kapseld.service" or (
-            path.is_symlink() and path.resolve().name == "kapseld.service"
-        ):
-            raise RuntimeError("native qualification refuses existing service references")
-
-
-def require_disabled_unit() -> None:
-    result = run_bounded(
-        ["systemctl", "is-enabled", "kapseld.service"],
-        stdout_max=1024,
-        stderr_max=1024,
-        timeout=10,
-    )
-    if result.returncode != 1 or result.stdout.decode().strip() != "disabled":
-        raise RuntimeError("qualification unit is not disabled")
-
-
-def install_systemd_assets(root: pathlib.Path) -> tuple[int, int, int]:
-    if (
-        os.uname().machine != "x86_64"
-        or pathlib.Path("/proc/1/comm").read_text().strip() != "systemd"
-    ):
-        raise RuntimeError("native qualification requires x86-64 Linux with systemd as PID 1")
-    if pathlib.Path("/.dockerenv").exists():
-        raise RuntimeError("native qualification refuses a Docker container")
-    print("native architecture:", os.uname().machine)
-    print(pathlib.Path("/etc/os-release").read_text().strip())
-    print(systemctl("--version"))
-    for name in ("kapsel", "kapsel-service-caller"):
-        try:
-            pwd.getpwnam(name)
-        except KeyError:
-            pass
-        else:
-            raise RuntimeError("native qualification refuses existing identities")
-    for name in ("kapsel", "kapsel-service-callers"):
-        try:
-            grp.getgrnam(name)
-        except KeyError:
-            pass
-        else:
-            raise RuntimeError("native qualification refuses existing groups")
-    unit_paths = (
-        run_bounded(
-            ["systemd-analyze", "--system", "unit-paths"],
-            check=True,
-            stdout_max=64 * 1024,
-            stderr_max=16 * 1024,
-            timeout=10,
-        )
-        .stdout.decode()
-        .splitlines()
-    )
-    if not unit_paths or any(not pathlib.Path(path).is_absolute() for path in unit_paths):
-        raise RuntimeError("systemd unit search paths are unavailable")
-    for parent in unit_paths:
-        refuse_systemd_references(pathlib.Path(parent))
-    if systemctl("show", "kapseld.service", "-p", "LoadState", "--value") != "not-found":
-        raise RuntimeError("native qualification refuses a loaded service")
-    subprocess.run(
-        ["install", "-d", "-m", "0755", "/usr/share/kapsel", "/usr/share/doc/kapsel"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=True,
-        timeout=10,
-    )
-    for document in (root / "share/doc/kapsel").iterdir():
-        destination = pathlib.Path("/usr/share/doc/kapsel") / document.name
-        with destination.open("xb") as output:
-            output.write(document.read_bytes())
-        destination.chmod(0o644)
-    for asset, destination in (
-        ("kapseld.service", "/usr/lib/systemd/system/kapseld.service"),
-        ("kapseld.conf", "/usr/lib/sysusers.d/kapseld.conf"),
-        ("kapseld-rbac.yaml", "/usr/share/kapsel/kapseld-rbac.yaml"),
-    ):
-        path = pathlib.Path(destination)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("xb") as output:
-            output.write((root / "share/kapsel" / asset).read_bytes())
-        path.chmod(0o644)
-    subprocess.run(
-        ["systemd-sysusers", "/usr/lib/sysusers.d/kapseld.conf"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=True,
-        timeout=30,
-    )
-    subprocess.run(
-        [
-            "useradd",
-            "--system",
-            "--no-create-home",
-            "--gid",
-            "kapsel-service-callers",
-            "--shell",
-            "/usr/sbin/nologin",
-            "kapsel-service-caller",
-        ],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=True,
-        timeout=30,
-    )
-    systemctl("daemon-reload")
-    require_disabled_unit()
-    return (
-        pwd.getpwnam("kapsel").pw_uid,
-        pwd.getpwnam("kapsel-service-caller").pw_uid,
-        grp.getgrnam("kapsel-service-callers").gr_gid,
-    )
-
-
-def exercise_journald_failure() -> None:
-    # No operator document exists yet. This must fail closed and emit only the fixed category.
-    subprocess.run(
-        ["systemctl", "start", "kapseld.service"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=30,
-    )
-    deadline = time.monotonic() + 10
-    while systemctl("show", "kapseld.service", "-p", "ActiveState", "--value") != "failed":
-        if time.monotonic() >= deadline:
-            raise RuntimeError("unprovisioned native service did not fail closed")
-        time.sleep(0.05)
-    invocation = systemctl("show", "kapseld.service", "-p", "InvocationID", "--value")
-    if len(invocation) != 32 or any(value not in "0123456789abcdef" for value in invocation):
-        raise RuntimeError("native service invocation identity is unavailable")
-    subprocess.run(
-        ["journalctl", "--sync"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=True,
-        timeout=30,
-    )
-    diagnostic = run_bounded(
-        ["journalctl", f"_SYSTEMD_INVOCATION_ID={invocation}", "--output=cat", "--no-pager"],
-        check=True,
-        stdout_max=64 * 1024,
-        stderr_max=16 * 1024,
-        timeout=30,
-    ).stdout
-    if b"provisioning_unavailable" not in diagnostic or any(
-        value in diagnostic for value in FORBIDDEN
-    ):
-        raise RuntimeError("native journald provisioning diagnostic missing or unsafe")
-    systemctl("stop", "kapseld.service")
-    print("Broken setup: startup failed with provisioning_unavailable (operator document absent).")
-    print("Diagnosis: systemctl status kapseld.service; journalctl -u kapseld.service")
-    print("Next: prepare and publish the explicit approval, then start the service.")
-
-
-def prepare_service_candidate(
-    binary: pathlib.Path, evaluation: pathlib.Path, server_port: int
-) -> bytes:
-    """Read the receiver once for snapshot approval, then prepare and validate the candidate offline."""
-    paths = prepare_inputs(evaluation, ("127.0.0.1", server_port))
-    grant = evaluation / "snapshot.grant"
-    provision = run_binary(
-        binary,
-        [
-            "provision-snapshot-grant",
-            "--authorization",
-            str(paths["authorization"]),
-            "--kubeconfig",
-            str(evaluation / "kubeconfig.yaml"),
-            "--signing-seed",
-            str(evaluation / "authorization.seed"),
-            "--signing-key-id",
-            "artifact-authorization-key",
-            "--output",
-            str(grant),
-        ],
-    )
-    if provision.returncode != 0 or KubernetesFixture.requests != 1:
-        raise RuntimeError("artifact snapshot provisioning failed")
-    print("Snapshot approval:", paths["authorization"].read_text())
-
-    candidate = evaluation / "operator.candidate.json"
-    prepared = run_binary(
-        binary,
-        [
-            "prepare-service-config",
-            "--authorization-key",
-            "artifact-authorization-key",
-            str(evaluation / "authorization.pub"),
-            "--approval",
-            "Artifact smoke",
-            str(grant),
-            "--receipt-signing-key-id",
-            "kap0038-test-key",
-            "--output",
-            str(candidate),
-        ],
-    )
-    if prepared.returncode != 0:
-        raise RuntimeError("artifact configuration preparation failed")
-
-    document = read_bounded_regular(candidate, 160 * 1024)
-    validated = run_binary(binary, ["validate-service-config", "--operator-config", str(candidate)])
-    if (
-        validated.returncode != 0
-        or json.loads(validated.stdout).get("status") != "VALIDATED_STATIC"
-        or candidate.read_bytes() != document
-        or KubernetesFixture.requests != 1
-    ):
-        raise RuntimeError("artifact static configuration validation failed")
-    return document
-
-
-def exercise_service(root: pathlib.Path, temporary: pathlib.Path, native: bool = False) -> None:
-    """Explicit fresh-host qualification only. Never adopts or removes retained state."""
-    if os.geteuid() != 0 or (not native and not pathlib.Path("/.dockerenv").is_file()):
-        raise RuntimeError("service smoke requires root and an explicit disposable-host mode")
-    private_roots = [
-        pathlib.Path(path) for path in ("/etc/kapsel", "/var/lib/kapsel", "/run/kapsel")
-    ]
-    destinations = {
-        "ordinary": pathlib.Path("/usr/bin/kapsel"),
-        "service": pathlib.Path("/usr/libexec/kapsel/kapseld"),
-        "client": pathlib.Path("/usr/bin/kapsel-service-client"),
-        "mcp_bridge": pathlib.Path("/usr/bin/kapsel-service-mcp"),
-    }
-    fresh_paths = [
-        *private_roots,
-        *destinations.values(),
-        "/usr/libexec/kapsel",
-        "/usr/share/kapsel",
-        "/usr/share/doc/kapsel",
-        "/usr/lib/sysusers.d/kapseld.conf",
-        "/var/lib/kapsel-installer",
-        "/run/lock/kapsel-installer.lock",
-        "/tmp/kapsel-artifact-receipt-0",
-        "/tmp/kapsel-artifact-receipt-1",
-    ]
-    if any(os.path.lexists(path) for path in fresh_paths):
-        raise RuntimeError("service smoke refuses existing installation or state")
-
-    metadata = json.loads(read_bounded_regular(root / "RELEASE-METADATA.json", 16 * 1024))
-    service_uid, caller_uid, caller_gid = (
-        install_systemd_assets(root) if native else (61000, 61001, 61000)
-    )
-    if service_uid == caller_uid or service_uid == 0 or caller_uid == 0:
-        raise RuntimeError("qualification requires distinct unprivileged identities")
-    subprocess.run(
-        ["install", "-d", "-m", "0755", "/usr/libexec/kapsel"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=True,
-        timeout=10,
-    )
-    for name, destination in destinations.items():
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("xb") as output:
-            output.write((root / BINARIES[name]).read_bytes())
-        destination.chmod(0o755)
-
-    for directory in private_roots:
-        mode = 0o750 if directory == private_roots[2] else 0o700
-        directory.mkdir(mode=mode)
-        directory.chmod(mode)
-        os.chown(directory, service_uid, caller_gid)
-    if native:
-        print(
-            "Disposable service example: production binaries and systemd; loopback receiver only."
-        )
-        print("Installed the extracted assets with separate service and caller identities.")
-        exercise_journald_failure()
-
-    # Neither service nor caller can traverse the operator's fixture directory.
-    evaluation = temporary / "service-evaluation"
-    evaluation.mkdir(mode=0o700)
-    reset_kubernetes_fixture()
-    KubernetesFixture.receiver_responses.insert(0, deployment("1", 1, False))
-    fixture = http.server.ThreadingHTTPServer(("127.0.0.1", 0), KubernetesFixture)
-    thread = threading.Thread(target=fixture.serve_forever, daemon=True)
-    thread.start()
-    process: subprocess.Popen[bytes] | None = None
-    service_diagnostic: ServiceStderrDrain | None = None
-    frozen: bytes | None = None
-    try:
-        document = prepare_service_candidate(
-            destinations["ordinary"], evaluation, fixture.server_port
-        )
-        for name in ("kubeconfig.yaml", "receipt.seed"):
-            destination = private_roots[0] / name
-            write_private(destination, (evaluation / name).read_bytes())
-            os.chown(destination, service_uid, caller_gid)
-
-        publication = run_bounded(
-            [destinations["service"], "--replace-operator-config"],
-            input_bytes=document,
-            stdout_max=64,
-            stderr_max=4 * 1024,
-            user=service_uid,
-            group=caller_gid,
-            extra_groups=[],
-            timeout=30,
-        )
-        if (
-            publication.returncode != 0
-            or publication.stdout != b"PUBLISHED\n"
-            or publication.stderr
-        ):
-            raise RuntimeError("artifact initial cold publication failed")
-        print("Configuration: PREPARED, then PUBLISHED. Static checks are not execution readiness.")
-
-        trust = private_roots[0] / "example-receipt.trust"
-        write_private(trust, fixture_receipt_trust(snapshot=True))
-        os.chown(trust, service_uid, caller_gid)
-
-        for restart in range(2):
-            requests_before_start = KubernetesFixture.requests
-            if native:
-                print(
-                    "Start:" if restart == 0 else "Read-first restart:",
-                    "systemctl start kapseld.service",
-                )
-                systemctl("start", "kapseld.service")
-            else:
-                process = subprocess.Popen(
-                    [
-                        str(destinations["service"]),
-                        "--operator-config",
-                        "/etc/kapsel/operator.json",
-                        "--socket",
-                        "/run/kapsel/kapseld.sock",
-                    ],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    user=service_uid,
-                    group=caller_gid,
-                    extra_groups=[],
-                    umask=0o077,
-                )
-                assert process.stderr is not None
-                service_diagnostic = ServiceStderrDrain(process)
-                service_diagnostic.start()
-
-            deadline = time.monotonic() + 20
-            # A stale socket pathname is not readiness. Retry only the offline read.
-            while True:
-                if (
-                    process is not None and process.poll() is not None
-                ) or time.monotonic() >= deadline:
-                    raise RuntimeError("artifact service startup failed")
-                try:
-                    catalog = service_client(
-                        destinations["client"], ["list"], caller_uid, caller_gid
-                    )
-                    if (
-                        native
-                        and restart == 1
-                        and "After cold replacement" not in json.dumps(catalog)
-                    ):
-                        raise RuntimeError("native restart did not load the replaced catalog")
-                    break
-                except RuntimeError:
-                    time.sleep(0.02)
-
-            socket_metadata = pathlib.Path("/run/kapsel/kapseld.sock").stat()
-            socket_custody = (
-                socket_metadata.st_mode & 0o777,
-                socket_metadata.st_uid,
-                socket_metadata.st_gid,
-            )
-            if socket_custody != (
-                0o660,
-                service_uid,
-                caller_gid,
-            ):
-                raise RuntimeError("installed service socket custody differs")
-            denied = run_bounded(
-                [sys.executable, "-c", "open('/etc/kapsel/operator.json', 'rb')"],
-                user=caller_uid,
-                group=caller_gid,
-                extra_groups=[],
-                stdout_max=1024,
-                stderr_max=4 * 1024,
-                timeout=5,
-            )
-            if denied.returncode == 0 or b"PermissionError" not in denied.stderr:
-                raise RuntimeError("caller private-file confinement not established")
-
-            # Startup and offline reads must not contact the receiver.
-            service_client(destinations["client"], ["history"], caller_uid, caller_gid)
-            if KubernetesFixture.requests != requests_before_start:
-                raise RuntimeError("artifact startup or reads contacted the receiver")
-
-            if restart == 0:
-                admitted = service_client(
-                    destinations["client"], ["submit", OPERATION], caller_uid, caller_gid
-                )
-                if admitted.get("status") != "ADMITTED":
-                    raise RuntimeError("artifact did not admit the selected approval")
-                print("Submit:", json.dumps(admitted, sort_keys=True))
-
-            while True:
-                status = service_client(
-                    destinations["client"], ["status", OPERATION], caller_uid, caller_gid
-                )
-                if status.get("status") == "SUCCEEDED":
-                    break
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("artifact selection failed to complete")
-                time.sleep(0.02)
-            print("Stored status:", json.dumps(status, sort_keys=True))
-            before_bridge = KubernetesFixture.requests
-            exercise_mcp(
-                destinations["mcp_bridge"], metadata["package_version"], caller_uid, caller_gid
-            )
-            if KubernetesFixture.requests != before_bridge:
-                raise RuntimeError("installed bridge stored read contacted the receiver")
-
-            receipt = pathlib.Path(f"/tmp/kapsel-artifact-receipt-{restart}")
-            exported = service_client(
-                destinations["client"], ["receipt", OPERATION, str(receipt)], caller_uid, caller_gid
-            )
-            print("Receipt:", json.dumps(exported, sort_keys=True))
-            inspect_receipt(destinations["ordinary"], receipt, trust)
-            print(
-                "Offline inspection: INSPECTED under separately appointed disposable fixture trust."
-            )
-            if restart == 0:
-                frozen = receipt.read_bytes()
-            elif receipt.read_bytes() != frozen:
-                raise RuntimeError("artifact restart changed receipt bytes")
-
-            if native:
-                systemctl("stop", "kapseld.service")
-                print("Stop: systemctl stop kapseld.service")
-                if (
-                    systemctl("show", "kapseld.service", "-p", "MainPID", "--value") != "0"
-                    or systemctl("show", "kapseld.service", "-p", "ActiveState", "--value")
-                    != "inactive"
-                ):
-                    raise RuntimeError("native service did not retire")
-                changed = json.loads(document)
-                changed["approvals"][0]["label"] = "After cold replacement"
-                document = json.dumps(changed).encode()
-                replacement = run_bounded(
-                    [destinations["service"], "--replace-operator-config"],
-                    input_bytes=document,
-                    stdout_max=64,
-                    stderr_max=4 * 1024,
-                    user=service_uid,
-                    group=caller_gid,
-                    extra_groups=[],
-                    timeout=30,
-                )
-                if pathlib.Path("/etc/kapsel/operator.json").read_bytes() != document:
-                    raise RuntimeError("native configuration replacement bytes differ")
-                if (
-                    replacement.returncode != 0
-                    or replacement.stdout != b"PUBLISHED\n"
-                    or replacement.stderr
-                ):
-                    raise RuntimeError("native cold replacement against retained history failed")
-            else:
-                if process is None:
-                    raise RuntimeError("artifact service process was not started")
-                process.terminate()
-                process.wait(timeout=30)
-                if service_diagnostic is not None:
-                    service_diagnostic.finish()
-                if (
-                    process.returncode != 0
-                    or service_diagnostic is None
-                    or service_diagnostic.failed()
-                ):
-                    raise RuntimeError("artifact graceful retirement failed")
-                process = None
-                service_diagnostic = None
-            if KubernetesFixture.mutations != 1 or KubernetesFixture.requests != 4:
-                raise RuntimeError("artifact repeated receiver work")
-        if native:
-            require_disabled_unit()
-        # Native hosts retain installation, identities, fixture authority and history, stopped.
-        print(
-            "service qualification: one PATCH, read-first restart, identical receipt; retained state preserved"
-        )
-    finally:
-        if native:
-            systemctl("stop", "kapseld.service")
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        if service_diagnostic is not None:
-            service_diagnostic.finish()
-        fixture.shutdown()
-        fixture.server_close()
-        thread.join(timeout=5)
-
-
-def service_client(binary: pathlib.Path, arguments: list[str], uid: int, gid: int) -> dict:
-    result = run_bounded(
-        [binary, *arguments],
-        stdout_max=64 * 1024,
-        stderr_max=1,
-        user=uid,
-        group=gid,
-        extra_groups=[],
-        timeout=10,
-    )
-    if result.returncode != 0 or result.stderr:
-        raise RuntimeError("artifact service client failed")
-    if any(canary in result.stdout for canary in FORBIDDEN):
-        raise RuntimeError("artifact service client disclosed private material")
-    response = json.loads(result.stdout)
-    if response.get("version") != 1:
-        raise RuntimeError("artifact service protocol identity changed")
-    return response
-
-
-def fixture_receipt_trust(*, snapshot: bool = False) -> bytes:
-    """Public smoke fixture only. Never included as operator trust in the archive."""
-    purpose = (
-        b"kapsel.kap0038.kubernetes-effect-receipt.v3"
-        if snapshot
-        else b"kapsel.kap0038.kubernetes-effect-receipt.v2"
-    )
-    fields = [
-        b"kap0038-test-key",
-        AUTHORIZATION_PUBLIC_KEY,
-        purpose,
-        (100).to_bytes(8, "big"),
-        (200).to_bytes(8, "big"),
-    ]
-    return b"KAPSEL-KAP0038-K8S-TRUST-V2\0" + b"".join(
-        bytes([index]) + len(value).to_bytes(4, "big") + value
-        for index, value in enumerate(fields, 1)
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=pathlib.Path)
     parser.add_argument("--expected-revision")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--service-container", action="store_true")
-    mode.add_argument(
-        "--service-systemd",
-        action="store_true",
-        help="root-only fresh native host qualification with loopback fixture; leaves stopped test installation/state",
-    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--verify-only", action="store_true")
     mode.add_argument("--extract-to", type=pathlib.Path)
     arguments = parser.parse_args()
-    if arguments.service_systemd and arguments.expected_revision is None:
-        parser.error("--service-systemd requires --expected-revision")
     archive = pathlib.Path(os.path.abspath(arguments.archive))
     checksum = archive.with_name(archive.name + ".sha256")
     if arguments.extract_to is not None:
@@ -1592,14 +582,8 @@ def main() -> int:
         destination = pathlib.Path(os.path.abspath(arguments.extract_to))
         print(extract_release(archive, checksum, arguments.expected_revision, destination))
     else:
-        smoke(
-            archive,
-            checksum,
-            arguments.expected_revision,
-            arguments.service_container,
-            arguments.service_systemd,
-        )
-        print("Kapsel release artifact smoke: ok")
+        verified_release(archive, checksum, arguments.expected_revision)
+        print("Kapsel release artifact validation: ok")
     return 0
 
 

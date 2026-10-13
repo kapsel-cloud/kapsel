@@ -65,8 +65,11 @@ hostile-member vectors, sidecar tampering and exclusive extraction under an isol
 The assembled-artifact check adds exact source/asset correspondence, ELF identity and execution of
 the checksum-bound companion. The bundled operator-guide trace owns the default installed service
 checks, including custody and MCP, rather than repeating a successful operation/restart journey. The
-standalone verifier's explicit container and native-systemd modes remain available; packaged
-crash/live receiver lanes remain separate.
+standalone verifier never executes binaries or changes the host. The archive's explicit maintainer
+qualification program owns smoke and one installed procedure with direct-process/systemd profiles;
+packaged crash/live receiver lanes remain separate. Signer repair, trust withdrawal and unsupported
+history partitions stay with shared laws, command/startup checks and packaged receiver owners, not
+another installed lifecycle matrix.
 
 Journal decoder checks use a concrete independently authored SQLite history builder. Expected
 request, authority, attempt, receiver and receipt fields do not come from production row writers.
@@ -181,10 +184,14 @@ product source. The scanner masks comments and literals; it does not expand macr
 conditional compilation. Audit the emitted ranges when adding a new gating form or relocating
 support, and update the explicit support classification for new nonstandard owners.
 
-General setup, formatting, release assembly and standalone artifact-verifier implementations remain
-tooling, not removable assurance. The census and its regressions count as replacement assurance.
-Generated files, binaries, corpus data and documentation are outside this source denominator; moving
-maintained code into data or generated output cannot establish savings.
+General setup, formatting, release assembly and the standalone artifact-verifier format core remain
+tooling, not removable assurance. The classifier charges historical receiver/process/installed
+procedures inside that verifier and the entire separated qualification program as assurance. Apply
+that same classifier to baseline, start and end; relocation earns no savings. The accepted baseline
+and threshold below do not change when correcting this historical classification. Report the revised
+baseline census separately for comparison. The census and its regressions count as replacement
+assurance. Generated files, binaries, corpus data and documentation are outside this source
+denominator; moving maintained code into data or generated output cannot establish savings.
 
 Charge the after-assurance count plus any positive net product-source increase. Product source
 includes non-assurance Rust and the maintained fresh-session caller, including its production

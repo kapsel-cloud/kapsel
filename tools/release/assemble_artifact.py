@@ -120,6 +120,13 @@ BINARIES = {
     "mcp_bridge": "bin/kapsel-service-mcp",
 }
 SBOM_GENERATOR = "kapsel-release-sbom/1"
+ASSETS = (
+    "share/kapsel/qualification.py",
+    "share/doc/kapsel/KAPSEL_SERVICE_OPERATOR.md",
+    "share/kapsel/kapseld.service",
+    "share/kapsel/kapseld.conf",
+    "share/kapsel/kapseld-rbac.yaml",
+)
 ARCHIVE_BYTES_MAX = 32 * 1024 * 1024
 EXPANDED_BYTES_MAX = 64 * 1024 * 1024
 SBOM_BYTES_MAX = 2 * 1024 * 1024
@@ -391,6 +398,7 @@ def stage_release(
             shutil.rmtree(target_directory)
 
     assets = {
+        ROOT / "tools/release/qualification.py": (staging / "share/kapsel/qualification.py", 0o644),
         ROOT / "crates" / "kapsel-daemon" / "deploy" / "kapseld.service": (
             staging / "share" / "kapsel" / "kapseld.service",
             0o644,
@@ -464,7 +472,7 @@ def stage_release(
         binary_metadata[f"{name}_binary_sha256"] = file_sha256(staged_binary)
 
     metadata = {
-        "artifact_schema": "kapsel.release-artifact.v3",
+        "artifact_schema": "kapsel.release-artifact.v4",
         "package_version": package_version(),
         "rust_target": TARGET,
         "source_revision": revision,
@@ -479,6 +487,10 @@ def stage_release(
         "builder_image": BUILDER_IMAGE,
         "smoke_image": SMOKE_IMAGE,
         **binary_metadata,
+        "asset_files": {
+            path: {"bytes": (staging / path).stat().st_size, "sha256": file_sha256(staging / path)}
+            for path in ASSETS
+        },
         "non_claims": NON_CLAIMS,
     }
     staging.joinpath("RELEASE-METADATA.json").write_text(
@@ -637,7 +649,11 @@ def create_sbom(
 
     cargo_packages, cargo_relationships, root_package_id = cargo_graph(cargo_metadata)
     archive_id = "SPDXRef-Package-kapsel-archive"
-    binary_ids = {name: "SPDXRef-File-" + path.replace("/", "-") for name, path in BINARIES.items()}
+    file_digests = {path: metadata[f"{name}_binary_sha256"] for name, path in BINARIES.items()}
+    file_digests.update(
+        {path: identity["sha256"] for path, identity in metadata["asset_files"].items()}
+    )
+    file_ids = {path: "SPDXRef-File-" + path.replace("/", "-") for path in file_digests}
     archive_digest = file_sha256(archive)
     packages: list[dict[str, object]] = [
         {
@@ -666,7 +682,7 @@ def create_sbom(
             "relatedSpdxElement": root_package_id,
         },
     ]
-    for identifier in binary_ids.values():
+    for identifier in file_ids.values():
         relationships.append(
             {
                 "spdxElementId": archive_id,
@@ -697,15 +713,13 @@ def create_sbom(
         "packages": packages,
         "files": [
             {
-                "SPDXID": binary_ids[name],
+                "SPDXID": file_ids[path],
                 "fileName": f"./{path}",
-                "checksums": [
-                    {"algorithm": "SHA256", "checksumValue": metadata[f"{name}_binary_sha256"]}
-                ],
+                "checksums": [{"algorithm": "SHA256", "checksumValue": digest}],
                 "licenseConcluded": "NOASSERTION",
                 "copyrightText": "NOASSERTION",
             }
-            for name, path in BINARIES.items()
+            for path, digest in file_digests.items()
         ],
         "relationships": relationships,
     }

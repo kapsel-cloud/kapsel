@@ -31,9 +31,18 @@ jobs:
           archive=$(python3 tools/release/assemble_artifact.py \
             --output-directory "$RUNNER_TEMP/kapsel-release-a")
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
-      - name: Verify and smoke-test exact candidate A
+      - name: Verify source correspondence of exact candidate A
         run:
           python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+          ReleaseArtifactTests.test_source_and_extracted_identity
+      - name: Smoke extracted executable bytes
+        run:
+          python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+          ReleaseArtifactTests.test_extracted_executable_smoke
+      - name: Qualify extracted installed guide
+        run:
+          python3 tools/release/test_artifact.py --archive "${{ steps.artifact-a.outputs.archive }}"
+          ReleaseArtifactTests.test_installed_guide
       - name: Assemble B and compare deterministic bytes
         run:
           python3 tools/release/test_reproducibility.py --reference-archive "${{
@@ -288,13 +297,18 @@ jobs:
         run: |
           set -eu
           archive=$(find downloaded -maxdepth 1 -type f -name '*.tar.gz')
-          docker run --rm --platform linux/amd64 \
+          docker run --rm --platform linux/amd64 --network none \
+            --security-opt=no-new-privileges --pids-limit=128 --memory=512m \
             --volume "$PWD/downloaded:/input:ro" \
-            --volume "$PWD/tools/release/verify_artifact.py:/smoke.py:ro" \
             python@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1 \
-            python3 /smoke.py \
-              --archive "/input/$(basename "$archive")" \
-              --expected-revision "$GITHUB_SHA" \
-              --service-container
+            sh -eu -c '
+              python3 -I "/input/$1.verify.py" --archive "/input/$1" \
+                --expected-revision "$2" --extract-to /tmp/extracted
+              artifact="/tmp/extracted/${1%.tar.gz}"
+              python3 -I "$artifact/share/kapsel/qualification.py" \
+                --artifact "$artifact" --expected-revision "$2" --profile smoke
+              python3 -I "$artifact/share/kapsel/qualification.py" \
+                --artifact "$artifact" --expected-revision "$2" --profile direct
+            ' qualification "$(basename "$archive")" "$GITHUB_SHA"
       # This container proof is not native installed-systemd or live receiver qualification.
       # The v0.2 demo remains reproducible from its tag, not this preview archive.

@@ -53,6 +53,14 @@ fn harness_only() {}
 """
         self.assertEqual(census.gated_ranges(source), [[5, 8]])
 
+    def test_historical_qualification_does_not_reclassify_consumer_validation(self) -> None:
+        source = (
+            "import subprocess\nimport hashlib\n"
+            "def validate_archive(value):\n    return hashlib.sha256(value)\n"
+            "def exercise_service(root):\n    subprocess.run([root])\n"
+        )
+        self.assertEqual(census.release_qualification_ranges(source), [[1, 1], [5, 6]])
+
     def test_file_classification(self) -> None:
         for path in (
             "src/kernel_simulation_tests.rs",
@@ -63,6 +71,7 @@ fn harness_only() {}
             "src/gateway/tests/format5-before-direct-create.sql",
             "fuzz/examples/replay.rs",
             "tools/dev/assurance_census.py",
+            "tools/release/qualification.py",
         ):
             self.assertTrue(census.whole_support(path), path)
         for path in (

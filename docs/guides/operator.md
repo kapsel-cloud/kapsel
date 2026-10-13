@@ -184,7 +184,7 @@ partial failure, inspect and use a new workspace. Do not rerun over existing aut
 
 ```sh
 umask 077
-python3 - <<'PY'
+python3 -I - <<'PY'
 import os
 import pathlib
 import subprocess
@@ -227,8 +227,7 @@ PY
 
 The recorded time is an explicit trust-evaluation input, not a receipt timestamp or proof of when
 Kubernetes changed. The [receipt contract](../reference/evidence_formats.md#receipt-and-inspection)
-defines trust framing and explains how evaluation time is used. The fixture's separate fixed-time
-trust is not the appointment above.
+defines trust framing and explains how evaluation time is used.
 
 ### Read the snapshot, sign and assemble configuration
 
@@ -267,6 +266,8 @@ paths or cluster credentials. The
 actual generated document private instead of publishing reusable approval bytes.
 
 After successful preparation, install execution material and cold-publish the candidate:
+
+<!-- example-publish -->
 
 ```sh
 install -o kapsel -g kapsel-service-callers -m 0600 kubeconfig.yaml /etc/kapsel/kubeconfig.yaml
@@ -597,61 +598,15 @@ unavailable. Already exported receipts remain inspectable offline. Database loss
 retrieval, and losing or rolling back action history defeats continuity assumptions. No automatic
 backup, HA, credential renewal, installer recovery or destructive cleanup is supplied by this guide.
 
-## Example: restore a missing receipt signer
+## Executable preparation example
 
-This captured fixture transcript shows completion after signing material is restored. It is not a
-live Kubernetes rollout. Do not withhold material or kill a service that owns real work merely to
-reproduce a failure. The
-[qualification procedure](../contributing/qualification.md#documented-operator-example) checks these
-blocks against the production binaries.
+The
+[installed qualification procedure](../contributing/qualification.md#documented-operator-example)
+executes the packaged key-generation, preparation and publication blocks above. It selects one ID,
+checks the client and MCP stored reads, exports and inspects the receipt, then cold-replaces the
+catalog label and reads the original bytes after restart. Its loopback receiver counts one PATCH.
+This is command and installation evidence, not a live Kubernetes rollout or a repair matrix.
 
-After the preparation steps above, `list` shows `artifact-op-1` and initial `history` is empty.
-Submission returns:
-
-<!-- example-admitted -->
-
-```json
-{ "version": 1, "status": "ADMITTED", "phase": "requested" }
-```
-
-After one PATCH and frozen rollout observations, status remains `IN_PROGRESS` with:
-
-<!-- example-signing -->
-
-```json
-{
-  "action_owner": "operator",
-  "condition": "signing_unavailable",
-  "disposition": "operator_required",
-  "next_action": "contact_operator"
-}
-```
-
-The operator stops gracefully, restores the intended `receipt.seed` under its original custody, and
-restarts. Reading the same ID before submission returns `IN_PROGRESS` with:
-
-<!-- example-resume -->
-
-```json
-{
-  "action_owner": "caller",
-  "condition": null,
-  "disposition": "resume_required",
-  "next_action": "select_same_id"
-}
-```
-
-Restart does not contact the receiver. `submit artifact-op-1` returns:
-
-<!-- example-readmitted -->
-
-```json
-{ "version": 1, "status": "ADMITTED", "phase": "receiver_observed" }
-```
-
-Status then becomes `SUCCEEDED`, with `execution.next_action: "inspect_result"`. Export returns
-`READY` with a SHA-256 and new caller-owned path. Inspection under separately appointed fixture
-trust returns `INSPECTED` for `artifact-op-1` with `result: "SUCCEEDED"`.
-
-The fixture counts one PATCH. Restoring the signer completes already frozen evidence without new
-receiver requests. Random keys make grant and receipt digests differ between runs.
+Signer repair and interrupted recovery follow [diagnose and resume](#diagnose-and-resume). Shared
+source laws and packaged receiver qualification check those semantics separately. Do not withhold
+material or kill a service owning real work to reproduce a test condition.
