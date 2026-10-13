@@ -19,7 +19,7 @@ use std::{
 
 #[cfg(test)]
 use kapsel::ExecutionCondition;
-use kapsel::{ExecutionObservation, ServiceAdmission, ServiceError, ServiceStop};
+use kapsel::{ExecutionObservation, OperationState, ServiceAdmission, ServiceError, ServiceStop};
 #[cfg(test)]
 use tokio::runtime::Builder;
 use tokio::{
@@ -426,10 +426,27 @@ fn record_stop(
     }
 }
 
+// Absence is useful only with a pinned nonmatching generation and a successful current-owner read.
+// The caller must retain the pin through this decision; these facts alone cannot keep exclusion.
+fn contended_admission(
+    retained: Result<Option<OperationState>, ServiceError>,
+    pinned_matches: Option<bool>,
+    current_matches: Result<bool, ()>,
+) -> SubmissionAdmission {
+    match (retained, pinned_matches, current_matches) {
+        (Ok(Some(phase)), _, _) => SubmissionAdmission::Decided(ServiceAdmission::Admitted(phase)),
+        (Err(error), _, _) => SubmissionAdmission::Error(error),
+        (Ok(None), None, _) | (Ok(None), Some(true), Ok(_)) | (Ok(None), Some(false), Ok(true)) => {
+            SubmissionAdmission::Indeterminate
+        },
+        (Ok(None), Some(false), Ok(false)) => SubmissionAdmission::Decided(ServiceAdmission::Busy),
+        (Ok(None), Some(_), Err(())) => SubmissionAdmission::Error(ServiceError::OperationFailure),
+    }
+}
+
 #[allow(
     clippy::significant_drop_tightening,
-    clippy::too_many_lines,
-    reason = "selection leases and admission replies stay in one physical-job custody trace"
+    reason = "selection leases stay held through the admission decision"
 )]
 async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution + 'static>(
     state: &ServerState<R, E>,
@@ -507,35 +524,18 @@ async fn admit_submission<R: ApplicationReads + 'static, E: ApplicationExecution
                         .map_err(|_| ServiceError::OperationFailure)
                         .and_then(|reads| reads.admitted_state(&operation_id))
                         .inspect_err(|error| read_failures.report(*error));
-                    let current = selected.lock().map(|selected| selected.upgrade());
-                    let decision = match (result, current) {
-                        (Ok(Some(phase)), _) => {
-                            SubmissionAdmission::Decided(ServiceAdmission::Admitted(phase))
-                        },
-                        (Err(error), _) => SubmissionAdmission::Error(error),
-                        // The original job can retire between failed acquisition and weak upgrade.
-                        // A matching successor can then admit and retire during this absence read.
-                        // Without an original pin, absence cannot establish a definite refusal.
-                        (Ok(None), _) if pinned_selection.is_none() => {
-                            SubmissionAdmission::Indeterminate
-                        },
-                        (Ok(None), Ok(current)) => {
-                            let matching_selection = pinned_selection
-                                .as_ref()
+                    let current_matches = selected
+                        .lock()
+                        .map(|selected| {
+                            selected
+                                .upgrade()
                                 .is_some_and(|owner| owner.operation_id == operation_id)
-                                || current
-                                    .as_ref()
-                                    .is_some_and(|owner| owner.operation_id == operation_id);
-                            if matching_selection {
-                                SubmissionAdmission::Indeterminate
-                            } else {
-                                SubmissionAdmission::Decided(ServiceAdmission::Busy)
-                            }
-                        },
-                        (Ok(None), Err(_)) => {
-                            SubmissionAdmission::Error(ServiceError::OperationFailure)
-                        },
-                    };
+                        })
+                        .map_err(|_| ());
+                    let pinned_matches = pinned_selection
+                        .as_ref()
+                        .map(|owner| owner.operation_id == operation_id);
+                    let decision = contended_admission(result, pinned_matches, current_matches);
                     let _ = admission_sender.send(decision);
                     drop(pinned_selection);
                 })
@@ -558,6 +558,40 @@ mod tests {
 
     use super::*;
     use crate::server::protocol::{ReadRequest, REQUEST_BYTES_MAX};
+
+    #[test]
+    fn contention_decisions_distinguish_retained_facts_from_ownership() {
+        for pinned in [None, Some(false), Some(true)] {
+            for current in [Err(()), Ok(false), Ok(true)] {
+                let admitted =
+                    contended_admission(Ok(Some(OperationState::Requested)), pinned, current);
+                assert_eq!(
+                    render_submission(admitted),
+                    br#"{"version":1,"status":"ADMITTED","phase":"requested"}"#
+                );
+                let error =
+                    contended_admission(Err(ServiceError::AuthorityUnavailable), pinned, current);
+                assert_eq!(
+                    render_submission(error),
+                    br#"{"version":1,"status":"ERROR","error_class":"authority_unavailable"}"#
+                );
+                let expected = match (pinned, current) {
+                    (Some(false), Ok(false)) => {
+                        br#"{"version":1,"status":"NOT_ADMITTED","reason":"BUSY"}"#.as_slice()
+                    },
+                    (Some(_), Err(())) => {
+                        br#"{"version":1,"status":"ERROR","error_class":"operation_failure"}"#
+                            .as_slice()
+                    },
+                    _ => br#"{"version":1,"status":"INDETERMINATE"}"#.as_slice(),
+                };
+                assert_eq!(
+                    render_submission(contended_admission(Ok(None), pinned, current)),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn invalid_requests_are_rejected_before_application_access() {
@@ -592,52 +626,16 @@ mod tests {
                 ApplicationAccess(calls.clone()),
                 ApplicationAccess(calls.clone()),
             );
-            let valid = serde_json::json!({
-                "request": "submit_set_deployment_image",
-                "operation_id": "op-1",
-                "namespace": "demo",
-                "deployment": "agent-api",
-                "container": "api",
-                "immutable_image_digest": format!("image@sha256:{}", "0".repeat(64)),
-            });
-            for field in [
-                "operation_id",
-                "namespace",
-                "deployment",
-                "container",
-                "immutable_image_digest",
-            ] {
-                let mut invalid = valid.clone();
-                invalid[field] = "".into();
-                let (response, _) =
-                    dispatch_with_state(invalid.to_string().as_bytes(), &state).await;
-                assert_eq!(response, invalid_request(), "{field}");
-                assert_eq!(state.submission.available_permits(), 1);
-            }
-            for request in [
-                "get_set_deployment_image_status",
-                "get_set_deployment_image_receipt",
-            ] {
-                let invalid = serde_json::json!({"request": request, "operation_id": ""});
-                let (response, _) =
-                    dispatch_with_state(invalid.to_string().as_bytes(), &state).await;
-                assert_eq!(response, invalid_request());
-            }
-            let valid_body = valid.to_string();
-            for duplicate in [
-                r#""request":"submit_set_deployment_image""#,
-                r#""\u006fperation_id":"op-1""#,
-            ] {
-                let invalid = format!("{{{duplicate},{}", &valid_body[1..]);
-                let (response, class) = dispatch_with_state(invalid.as_bytes(), &state).await;
-                assert_eq!(
-                    response,
-                    br#"{"version":1,"status":"ERROR","error_class":"invalid_request"}"#
-                );
-                assert!(matches!(class, ResponseClass::Ordinary));
-                assert_eq!(state.submission.available_permits(), 1);
-                assert_eq!(calls.load(Ordering::SeqCst), 0);
-            }
+            // Protocol partitions own the grammar. This witness only establishes dispatch ordering.
+            let invalid = concat!(
+                r#"{"version":1,"request":"submit_set_deployment_image","operation_id":"op-1","#,
+                r#""grant":"caller-appointed"}"#,
+            )
+            .as_bytes();
+            let (response, class) = dispatch_with_state(invalid, &state).await;
+            assert_eq!(response, invalid_request());
+            assert!(matches!(class, ResponseClass::Ordinary));
+            assert_eq!(state.submission.available_permits(), 1);
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             let valid =
                 br#"{"version":1,"request":"submit_set_deployment_image","operation_id":"op-1"}"#;
