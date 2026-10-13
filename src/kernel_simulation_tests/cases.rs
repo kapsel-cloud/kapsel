@@ -1,6 +1,10 @@
 //! Deterministic boundary witnesses and reached defects, including minimized counterparts.
 
-use super::{exploration::*, run::replay, trace::*};
+use super::{
+    exploration::*,
+    run::{replay, replay_report},
+    trace::*,
+};
 use crate::gateway::{Defect, Delivery, StorageWrite};
 
 #[tokio::test(start_paused = true)]
@@ -41,28 +45,7 @@ pub(super) async fn authorized_reopen_rejects_single_field_drift_and_keeps_rejec
 
 #[tokio::test(start_paused = true)]
 pub(super) async fn atomic_delivery_and_receiver_faults_preserve_laws_and_progress() {
-    for write in [
-        StorageWrite::Admission,
-        StorageWrite::Authorization,
-        StorageWrite::Attempt,
-        StorageWrite::Response,
-        StorageWrite::Observation,
-        StorageWrite::Receipt,
-    ] {
-        for delivery in [Delivery::NoCommit, Delivery::LostAcknowledgement] {
-            let input = trace(
-                0,
-                vec![select(Some((write, delivery)), Cut::None, false, true)],
-            );
-            for virtualized in [true, false] {
-                assert_eq!(
-                    replay(&input, virtualized).await,
-                    Ok(()),
-                    "{write:?}/{delivery:?}"
-                );
-            }
-        }
-    }
+    check_deliveries(Effect::Kubernetes).await;
     for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
         let input = trace(
             1,
@@ -93,28 +76,7 @@ pub(super) async fn atomic_delivery_and_receiver_faults_preserve_laws_and_progre
 
 #[tokio::test(start_paused = true)]
 pub(super) async fn git_atomic_delivery_and_interruption_preserve_laws_and_progress() {
-    for write in [
-        StorageWrite::Admission,
-        StorageWrite::Attempt,
-        StorageWrite::Response,
-        StorageWrite::Observation,
-        StorageWrite::Receipt,
-    ] {
-        for delivery in [Delivery::NoCommit, Delivery::LostAcknowledgement] {
-            let mut input = trace(
-                0,
-                vec![select(Some((write, delivery)), Cut::None, false, true)],
-            );
-            input.effects = vec![Effect::Git];
-            for virtualized in [true, false] {
-                assert_eq!(
-                    replay(&input, virtualized).await,
-                    Ok(()),
-                    "{write:?}/{delivery:?}"
-                );
-            }
-        }
-    }
+    check_deliveries(Effect::Git).await;
     for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
         let mut input = trace(
             1,
@@ -130,6 +92,190 @@ pub(super) async fn git_atomic_delivery_and_interruption_preserve_laws_and_progr
             assert_eq!(replay(&input, virtualized).await, Ok(()));
         }
     }
+}
+
+async fn check_deliveries(effect: Effect) {
+    for virtualized in [true, false] {
+        let mut reached = RunReport::default();
+        for input in delivery_inputs()
+            .into_iter()
+            .filter(|input| input.effects[0] == effect)
+        {
+            let (result, report) = replay_report(&input, virtualized).await;
+            assert_eq!(result, Ok(()), "{:?}", input.actions);
+            assert_eq!(report.requested_deliveries, report.consumed_deliveries());
+            reached.merge(report);
+        }
+        println!("delivery matrix {effect:?} virtual={virtualized}");
+        reached.print();
+        for write in durable_writes(effect) {
+            for delivery in [
+                Delivery::Confirmed,
+                Delivery::NoCommit,
+                Delivery::LostAcknowledgement,
+            ] {
+                assert!(
+                    reached.writes.iter().any(|event| {
+                        event.write == write && event.delivery == delivery && event.consumed
+                    }),
+                    "missing {effect:?}/{write:?}/{delivery:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_missed_or_shadowed_delivery_is_incomplete_not_a_passing_witness() {
+    for prefix in [
+        vec![],
+        vec![Action::Writes(false)],
+        vec![
+            select(None, Cut::BeforeAttempt, false, false),
+            Action::Receiver(Receiver::StaleVersion),
+            Action::Writes(false),
+        ],
+    ] {
+        let mut actions = prefix;
+        actions.push(select(
+            Some((StorageWrite::Rejection, Delivery::NoCommit)),
+            Cut::None,
+            false,
+            true,
+        ));
+        let input = trace(0, actions);
+        for virtualized in [true, false] {
+            let (result, report) = replay_report(&input, virtualized).await;
+            assert_eq!(result.unwrap_err().law, "fault_not_reached");
+            assert_eq!(report.requested_deliveries, 1);
+            assert_eq!(report.consumed_deliveries(), 0);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn consumed_checkpoint_reporting_includes_recovery_without_reminting() {
+    for effect in [Effect::Kubernetes, Effect::Git] {
+        for (cut, consumed) in [(Cut::Frozen, 2), (Cut::ObservationLost, 1)] {
+            let mut input = trace(
+                0,
+                vec![
+                    select(None, Cut::Unsent, false, false),
+                    select(None, cut, false, false),
+                ],
+            );
+            input.effects = vec![effect];
+            for virtualized in [true, false] {
+                let (result, report) = replay_report(&input, virtualized).await;
+                assert_eq!(result, Ok(()));
+                assert_eq!(report.requested_cuts, 2);
+                assert_eq!(
+                    report.consumed_cuts, consumed,
+                    "ReceiverRead is fresh-only; Frozen is not"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn warm_repair_and_cold_recovery_progress_without_repairing_an_unrelated_peer() {
+    for effects in assignments(2) {
+        for cut in [Cut::BeforeAttempt, Cut::Unsent, Cut::Frozen] {
+            for cold in [false, true] {
+                let mut actions = vec![
+                    select(None, cut, false, false),
+                    Action::Peer(1),
+                    select(None, Cut::BeforeAttempt, false, false),
+                    Action::Receiver(Receiver::Unavailable),
+                    Action::SubstituteTrustKey,
+                    Action::Peer(0),
+                    Action::Writes(false),
+                    select(None, Cut::None, false, true),
+                    Action::Writes(true),
+                    Action::Signer(Signer::Invalid),
+                    select(None, Cut::None, false, true),
+                    Action::Signer(Signer::Original),
+                ];
+                if cold {
+                    actions.push(Action::Reopen { catalog: false });
+                }
+                actions.extend([select(None, Cut::None, false, true), Action::AssertProgress]);
+                let mut input = multi_trace(0, 2, actions);
+                input.effects = effects.clone();
+                for virtualized in [true, false] {
+                    assert_eq!(
+                        replay(&input, virtualized).await,
+                        Ok(()),
+                        "{effects:?}/{cut:?}/cold={cold}/virtual={virtualized}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn warm_progress_and_conclusive_results_detect_no_op_and_always_unknown() {
+    for (defect, law) in [
+        (Defect::NoOp, "healthy_progress"),
+        (Defect::InitialUnknown, "initial_result"),
+    ] {
+        let mut actions = vec![];
+        warm_finish(&mut actions, 2);
+        let mut input = multi_trace(0, 2, actions);
+        input.defect = Some(defect);
+        let effects = if defect == Defect::NoOp {
+            assignments(2).to_vec()
+        } else {
+            vec![vec![Effect::Kubernetes; 2]]
+        };
+        for effects in effects {
+            input.effects = effects;
+            for virtualized in [true, false] {
+                let finding = replay(&input, virtualized).await.unwrap_err();
+                assert_eq!(finding.law, law);
+                assert!(finding.defect_reached.contains(&defect));
+                assert!(
+                    input.actions[..finding.event].iter().all(|action| {
+                        !matches!(action, Action::Restore | Action::Reopen { .. })
+                    }),
+                    "detection must precede reopen"
+                );
+                let mut correct = input.clone();
+                correct.defect = None;
+                assert_eq!(replay(&correct, virtualized).await, Ok(()));
+            }
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn concrete_old_trace_keeps_original_identities_without_regenerating_the_seed() {
+    // Actual c302e2b generator output, seed 1 / 8 steps, with its original executable identity.
+    let original = include_str!("../../tests/fixtures/kernel_original_trace.json");
+    let input: Trace = serde_json::from_str(original).unwrap();
+    assert_eq!(input.peers, 3);
+    assert_eq!(input.effects, vec![Effect::Git; 3]);
+    let source = input.source_sha256.clone();
+    let executable = input.executable_sha256.clone();
+    assert_eq!(source.len(), 64);
+    assert_eq!(executable.len(), 64);
+    for virtualized in [true, false] {
+        assert_eq!(replay(&input, virtualized).await, Ok(()));
+    }
+    let encoded = serde_json::to_value(&input).unwrap();
+    assert_eq!(
+        encoded["actions"],
+        serde_json::from_str::<serde_json::Value>(original).unwrap()["actions"]
+    );
+    assert_ne!(
+        encoded["actions"],
+        serde_json::to_value(generated(input.seed, 8)).unwrap()["actions"]
+    );
+    let reduced = minimize(input, "healthy_progress").await;
+    assert_eq!(reduced.source_sha256, source);
+    assert_eq!(reduced.executable_sha256, executable);
 }
 
 pub(super) const FRESH_CUTS: [Cut; 7] = [
@@ -340,6 +486,17 @@ pub(super) async fn git_results_follow_acknowledgement_not_the_present_ref() {
         vec![
             select(None, Cut::Unsent, false, false),
             Action::GitRef { new: true },
+            select(None, Cut::None, false, true),
+        ],
+        vec![
+            select(
+                Some((StorageWrite::Attempt, Delivery::LostAcknowledgement)),
+                Cut::None,
+                false,
+                false,
+            ),
+            Action::GitRef { new: true },
+            Action::Reopen { catalog: false },
             select(None, Cut::None, false, true),
         ],
     ] {
@@ -633,23 +790,27 @@ pub(super) async fn progress_reduction_requires_every_remaining_peer_and_current
 
 #[tokio::test(start_paused = true)]
 pub(super) async fn generated_io_schedules_have_replayable_healthy_suffixes() {
+    let mut virtual_report = RunReport::default();
+    let mut sqlite_report = RunReport::default();
     for steps in [12, 48] {
         for seed in 0..32 {
             let input = generated(seed, steps);
             let document = serde_json::to_vec(&input).unwrap();
             let replayed = serde_json::from_slice(&document).unwrap();
-            assert_eq!(
-                replay(&replayed, true).await,
-                Ok(()),
-                "seed={seed}/steps={steps}"
-            );
-            if seed < 4 {
-                assert_eq!(
-                    replay(&replayed, false).await,
-                    Ok(()),
-                    "SQLite seed={seed}/steps={steps}"
-                );
+            let (result, report) = replay_report(&replayed, true).await;
+            assert_eq!(result, Ok(()), "seed={seed}/steps={steps}");
+            assert_eq!(report.requested_deliveries, report.consumed_deliveries());
+            assert!(report.progress_checks >= 3);
+            virtual_report.merge(report);
+            if [0, 4, 6, 7].contains(&seed) {
+                let (result, report) = replay_report(&replayed, false).await;
+                assert_eq!(result, Ok(()), "SQLite seed={seed}/steps={steps}");
+                sqlite_report.merge(report);
             }
         }
     }
+    println!("64 virtual generated scenarios");
+    virtual_report.print();
+    println!("8 SQLite generated scenarios");
+    sqlite_report.print();
 }

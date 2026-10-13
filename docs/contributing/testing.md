@@ -244,36 +244,51 @@ simulation. Journal tests do not depend on the simulator. The bounded Python job
 Each identity has distinct intent, target, authority and receipt signing material. Every event
 checks every peer's raw facts and independently counted receiver I/O. Every selection also requires
 all nonselected peers' complete rows and I/O counters to remain unchanged, including the first
-receipt commitment. Generated three-identity schedules use Kubernetes-only, Git-only and mixed
-assignments. They interleave selections, receiver changes, catalog removal, trust withdrawal and
-restored prerequisites. Conflicting catalog replacement must fail application construction without
-changing any peer's retained facts or receiver counts. Withdrawn trust must permit neither I/O nor
-retained fact changes. Substituting a different public key under the original key ID must disclose
-neither targets nor receipt bytes. After raw-history and receiver laws pass, every peer checks exact
-stored status, admitted phase, original targets and receipt readiness/bytes. Unadmitted identities
-must return absence without catalog target disclosure. Execution-status reads check every process
-observation against independently specified disposition pairs. Unfinished history distinguishes
-operator remediation from explicit same-ID resumption; terminal history supersedes stale
-observations. Unknown process knowledge never supplies a historical stop cause, including after
-reopen. Both point reads and authenticated SQLite history entries preserve access failures and
-original status/targets. Real SQLite additionally checks the ordered history identities and their
-authenticated projections. Unaffected peers remain readable. Reads must change neither retained
-rows, receiver counts nor durable-write counts. These traces contain at most four identities;
-full-page pagination and wire/process readers retain their direct owners. Restoring trust does not
-substitute current catalog authority for history. Signer rotation before receipt commitment may
-choose the new signer. Rotation after commitment must return the original bytes and signer. Invalid
-signing material at frozen history must change no facts or receiver counts. Production journal
-policy validates authority, transitions and frozen facts. Its private record-I/O owner reads
-complete bounded rows from either typed table and conditionally commits against the original row.
-SQLite updates only changed columns. The test-only virtual store implements atomic records, not
-lifecycle policy. Neither backend selection nor fault controls are caller inputs.
+receipt commitment. Generated four-identity schedules use Kubernetes-only, Git-only and mixed
+assignments. Short directed prefixes reach delivery boundaries, suspended interference or joined
+response/observation/receipt faults. A fourth identity retains fresh work for bounded unguided
+selections. Each scenario then ends instead of extending a terminal-selection tail. The default
+workload remains 64 virtual and 8 SQLite scenarios. They retain receiver changes, catalog removal,
+trust withdrawal, invalid selections and terminal reselection. Conflicting catalog replacement must
+fail application construction without changing any peer's retained facts or receiver counts.
+Withdrawn trust must permit neither I/O nor retained fact changes. Substituting a different public
+key under the original key ID must disclose neither targets nor receipt bytes. After raw-history and
+receiver laws pass, every peer checks exact stored status, admitted phase, original targets and
+receipt readiness/bytes. Unadmitted identities must return absence without catalog target
+disclosure. Execution-status reads check every process observation against independently specified
+disposition pairs. Unfinished history distinguishes operator remediation from explicit same-ID
+resumption; terminal history supersedes stale observations. Unknown process knowledge never supplies
+a historical stop cause, including after reopen. Both point reads and authenticated SQLite history
+entries preserve access failures and original status/targets. Real SQLite additionally checks the
+ordered history identities and their authenticated projections. Unaffected peers remain readable.
+Reads must change neither retained rows, receiver counts nor durable-write counts. These traces
+contain at most four identities; full-page pagination and wire/process readers retain their direct
+owners. Restoring trust does not substitute current catalog authority for history. Signer rotation
+before receipt commitment may choose the new signer. Rotation after commitment must return the
+original bytes and signer. Invalid signing material at frozen history must change no facts or
+receiver counts. Production journal policy validates authority, transitions and frozen facts. Its
+private record-I/O owner reads complete bounded rows from either typed table and conditionally
+commits against the original row. SQLite updates only changed columns. The test-only virtual store
+implements atomic records, not lifecycle policy. Neither backend selection nor fault controls are
+caller inputs.
 
 The slice checks original intent, confirmed dispatch provenance, initial classification, complete
 receiver-fact and inspected receipt-payload binding, frozen no-I/O continuation, original receipt
-bytes and healthy eligible progress. It injects no-commit and commit-with-lost-acknowledgement
-histories with the same returned error. Receiver response loss is separate. Both effects run the
-delivery laws on virtual records and real SQLite; named physical columns and executed write plans
-provide independent SQLite evidence.
+bytes and healthy eligible progress. The delivery matrix enumerates all seven Kubernetes and six Git
+durable writes, including rejection, under confirmed, no-commit and lost-acknowledgement outcomes.
+No-commit and committed-with-lost-acknowledgement return the same error. Each targeted selection
+must consume its requested delivery and match independent raw fields and receiver call counts.
+Stale-preflight rejection remains terminal without mutation after lost acknowledgement, repair and
+reopen. Git's externally established desired ref cannot acknowledge an unsent attempt. Receiver
+response loss is separate. Both stores run these laws; named physical columns and executed write
+plans provide independent SQLite evidence.
+
+`KAPSEL_KERNEL_REACHED` reports requested and consumed deliveries, checkpoint cuts and response
+losses, plus write, selection, unchanged-selection and explicit progress-check counts.
+`KAPSEL_KERNEL_INTERACTIONS` lists reached effect/pre-write-phase/write/delivery tuples. A requested
+write that is not consumed fails `fault_not_reached`, even when another fault shadows it. Unguided
+checkpoint selections may deliberately be ineligible; their unconsumed cuts remain visible. Retained
+failure reports include reached write events and requested-versus-consumed counts.
 
 Git checks exact original acknowledgement independently of the frozen ref. A seeded control that
 infers an acknowledgement from externally established B must fail `git_acknowledgement_binding`,
@@ -298,11 +313,20 @@ Configured-client tests own actual success/ambiguous-response request counts and
 preflight conflict. These read laws do not establish physical job ownership, outcome-cache
 invalidation or socket rendering. Wrong-peer lookup deliberately misroutes the selected identity
 before grant binding; a wrong lower-layer row alone is refused by the existing identity guard. An
-unrelated bounded refusal does not qualify as detection. Generated schedules record their actions
-and retain an explicit healthy suffix. Progress requires a restored receiver, healthy storage,
-original trust and an available signer for every identity. Minimized progress witnesses must
-preserve eligibility for every peer, not only the first peer checked. Minimized safety witnesses
-need not finish the operation; correct code must pass those same prefixes on both stores.
+unrelated bounded refusal does not qualify as detection. Generated schedules retain concrete
+actions, not just seeds. Older documents retain their original source/executable identities and
+replay their serialized actions without invoking the changed generator.
+
+`AssertProgress` requires terminal evidence immediately after eligible explicit selection. Warm
+receiver, write and signer repairs must pass this assertion before the final reopen. Separate cold
+recovery checks retain original authority without a catalog. An eligible peer must also finish while
+another remains unavailable and untrusted. These assertions require healthy shared storage, original
+trust, necessary signing material and retirement of the prior selection future; they make no promise
+while a physical worker remains parked. Default no-op controls for both effects fail
+`healthy_progress`; always-UNKNOWN Kubernetes classification fails `initial_result` before reopen.
+The final whole-trace progress check still requires current eligibility for every peer. Minimized
+progress witnesses preserve that requirement. Minimized safety witnesses need not finish the
+operation; correct code must pass those same prefixes on both stores.
 
 Run the deterministic slice:
 

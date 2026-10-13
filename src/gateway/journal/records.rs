@@ -403,7 +403,7 @@ impl Io {
         #[cfg(test)]
         {
             let mut control = self.control.0.lock().unwrap();
-            let delivery = control.take_delivery(write);
+            let delivery = control.take_delivery(write, expected, next);
             if let Some(store) = control.virtual_store.clone() {
                 let mut store = store.lock().unwrap();
                 if store
@@ -609,8 +609,8 @@ struct Controls {
     virtual_store: Option<Arc<Mutex<BTreeMap<String, Record>>>>,
     deliveries: VecDeque<(Write, Delivery)>,
     refuse_writes: bool,
-    reached: Vec<Write>,
-    deliveries_seen: Vec<(Write, Delivery)>,
+    events: Vec<WriteEvent>,
+    consumed_cuts: usize,
     defect: Option<Defect>,
     defect_reached: Vec<Defect>,
     sql: Vec<(Write, String)>,
@@ -618,21 +618,47 @@ struct Controls {
 }
 
 #[cfg(test)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub(crate) struct WriteEvent {
+    pub(crate) operation_id: String,
+    pub(crate) effect: &'static str,
+    pub(crate) phase: String,
+    pub(crate) write: Write,
+    pub(crate) delivery: Delivery,
+    pub(crate) consumed: bool,
+}
+
+#[cfg(test)]
 impl Controls {
-    fn take_delivery(&mut self, write: Write) -> Delivery {
-        self.reached.push(write);
+    fn take_delivery(
+        &mut self,
+        write: Write,
+        expected: Option<&Record>,
+        next: &Record,
+    ) -> Delivery {
+        let consumed = !self.refuse_writes
+            && self
+                .deliveries
+                .front()
+                .is_some_and(|(point, _)| *point == write);
         let delivery = if self.refuse_writes {
             Delivery::NoCommit
-        } else if self
-            .deliveries
-            .front()
-            .is_some_and(|(point, _)| *point == write)
-        {
+        } else if consumed {
             self.deliveries.pop_front().unwrap().1
         } else {
             Delivery::Confirmed
         };
-        self.deliveries_seen.push((write, delivery));
+        self.events.push(WriteEvent {
+            operation_id: next.get("operation_id").unwrap(),
+            effect: match next.table {
+                Table::Kubernetes => "Kubernetes",
+                Table::Git => "Git",
+            },
+            phase: expected.map_or_else(|| "absent".into(), |row| row.get("state").unwrap()),
+            write,
+            delivery,
+            consumed,
+        });
         delivery
     }
 }
@@ -704,11 +730,11 @@ impl Control {
         self.0
             .lock()
             .unwrap()
-            .deliveries_seen
+            .events
             .iter()
             .rev()
-            .find(|(point, _)| *point == write)
-            .map(|(_, delivery)| *delivery)
+            .find(|event| event.write == write)
+            .map(|event| event.delivery)
     }
 
     pub(crate) fn value(&self, id: &str, field: &str) -> Option<Value> {
@@ -747,7 +773,25 @@ impl Control {
     }
 
     pub(crate) fn reached(&self) -> Vec<Write> {
-        self.0.lock().unwrap().reached.clone()
+        self.0
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .map(|event| event.write)
+            .collect()
+    }
+
+    pub(crate) fn events(&self) -> Vec<WriteEvent> {
+        self.0.lock().unwrap().events.clone()
+    }
+
+    pub(crate) fn record_cut(&self) {
+        self.0.lock().unwrap().consumed_cuts += 1;
+    }
+
+    pub(crate) fn consumed_cuts(&self) -> usize {
+        self.0.lock().unwrap().consumed_cuts
     }
 }
 

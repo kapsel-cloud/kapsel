@@ -104,9 +104,14 @@ async fn wait_for_resume(state: &Mutex<State>) {
 
 impl GitReceiver {
     pub(super) fn exploration_fault(&self, point: FaultPoint) -> bool {
-        self.script
-            .as_ref()
-            .is_some_and(|script| script.lock().unwrap().fault == Some(point))
+        self.script.as_ref().is_some_and(|script| {
+            let state = script.lock().unwrap();
+            let reached = state.fault == Some(point);
+            if reached {
+                state.control.record_cut();
+            }
+            reached
+        })
     }
 
     pub(super) async fn scripted_prepare<'a>(

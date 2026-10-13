@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     cases::{assignments, FRESH_CUTS},
-    run::replay,
+    run::{replay, replay_report},
     trace::*,
     world::hex,
 };
@@ -489,51 +489,168 @@ pub(super) fn check_replay_result(input: &Trace, result: Checked) {
     }
 }
 
-pub(super) fn generated(seed: u64, steps: usize) -> Trace {
-    let writes = [
-        StorageWrite::Admission,
-        StorageWrite::Authorization,
+pub(super) fn durable_writes(effect: Effect) -> Vec<StorageWrite> {
+    let mut writes = vec![StorageWrite::Admission];
+    if matches!(effect, Effect::Kubernetes) {
+        writes.push(StorageWrite::Authorization);
+    }
+    writes.extend([
+        StorageWrite::Rejection,
         StorageWrite::Attempt,
         StorageWrite::Response,
         StorageWrite::Observation,
         StorageWrite::Receipt,
-    ];
-    let delivery = if seed & 1 == 0 {
-        Delivery::NoCommit
-    } else {
-        Delivery::LostAcknowledgement
-    };
-    let effects = match seed % 3 {
-        0 => vec![Effect::Kubernetes; 3],
-        1 => vec![Effect::Git; 3],
-        _ => vec![Effect::Kubernetes, Effect::Git, Effect::Git],
-    };
-    let mut write = writes[usize::try_from((seed / 2) % 6).unwrap()];
-    if matches!(effects[0], Effect::Git) && write == StorageWrite::Authorization {
-        write = StorageWrite::Admission;
-    }
-    let point = match (seed / 3) % 3 {
-        0 => IoPoint::Preflight,
-        1 => IoPoint::Mutation,
-        _ => IoPoint::Observation,
-    };
+    ]);
+    writes
+}
+
+fn delivery_prefix(write: StorageWrite, delivery: Delivery) -> Vec<Action> {
     let mut actions = vec![
         Action::Peer(1),
-        Action::CustodyDuringIo(point),
-        Action::Peer(2),
-        Action::CancelAtIo {
-            point,
-            contender: 0,
-        },
+        select(None, Cut::BeforeAttempt, false, false),
         Action::Peer(0),
-        select(Some((write, delivery)), Cut::None, false, true),
     ];
-    let mut random = seed.wrapping_add(1);
-    for _ in 0..steps {
+    match write {
+        StorageWrite::Admission => {},
+        StorageWrite::Authorization => actions.push(select(
+            Some((StorageWrite::Admission, Delivery::LostAcknowledgement)),
+            Cut::None,
+            false,
+            false,
+        )),
+        StorageWrite::Rejection | StorageWrite::Attempt | StorageWrite::Response => {
+            actions.push(select(None, Cut::BeforeAttempt, false, false));
+        },
+        StorageWrite::Observation => {
+            actions.push(select(None, Cut::ResponseRecorded, false, false));
+        },
+        StorageWrite::Receipt => actions.push(select(None, Cut::Frozen, false, false)),
+    }
+    if write == StorageWrite::Rejection {
+        actions.push(Action::Receiver(Receiver::StaleVersion));
+    }
+    actions.push(select(Some((write, delivery)), Cut::None, false, true));
+    actions
+}
+
+pub(super) fn warm_finish(actions: &mut Vec<Action>, peers: usize) {
+    actions.push(Action::Writes(true));
+    for peer in 0..peers {
+        actions.extend([
+            Action::Peer(peer),
+            Action::Receiver(Receiver::Healthy),
+            Action::Signer(Signer::Original),
+            select(None, Cut::None, false, true),
+            Action::AssertProgress,
+        ]);
+    }
+}
+
+pub(super) fn delivery_inputs() -> Vec<Trace> {
+    [Effect::Kubernetes, Effect::Git]
+        .into_iter()
+        .flat_map(|effect| {
+            durable_writes(effect).into_iter().flat_map(move |write| {
+                [
+                    Delivery::Confirmed,
+                    Delivery::NoCommit,
+                    Delivery::LostAcknowledgement,
+                ]
+                .into_iter()
+                .map(move |delivery| {
+                    let mut actions = delivery_prefix(write, delivery);
+                    warm_finish(&mut actions, 2);
+                    let mut input = multi_trace(0, 2, actions);
+                    input.effects = vec![effect; 2];
+                    input
+                })
+            })
+        })
+        .collect()
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep directed prefixes, bounded unguided actions and warm/cold repair in order"
+)]
+pub(super) fn generated(seed: u64, steps: usize) -> Trace {
+    let effects = assignments(4)[usize::try_from(seed % 3).unwrap()].clone();
+    let scenario = seed.wrapping_add(u64::try_from(steps).unwrap());
+    let mut actions = match (seed / 3) % 3 {
+        0 => {
+            let writes = durable_writes(effects[0]);
+            let index = usize::try_from(scenario / 9).unwrap();
+            delivery_prefix(
+                writes[index % writes.len()],
+                [
+                    Delivery::Confirmed,
+                    Delivery::NoCommit,
+                    Delivery::LostAcknowledgement,
+                ][index % 3],
+            )
+        },
+        1 => {
+            let point = [IoPoint::Preflight, IoPoint::Mutation, IoPoint::Observation]
+                [usize::try_from((scenario / 9) % 3).unwrap()];
+            vec![
+                Action::Peer(1),
+                Action::CustodyDuringIo(point),
+                Action::Peer(0),
+                Action::CancelAtIo {
+                    point,
+                    contender: usize::try_from((scenario / 9) % 2).unwrap(),
+                },
+                Action::ReplaceCatalog,
+                Action::Receiver(Receiver::Unavailable),
+                select(None, Cut::None, false, true),
+            ]
+        },
+        _ => vec![
+            Action::Peer(1),
+            select(None, Cut::BeforeAttempt, false, false),
+            Action::Peer(0),
+            select(
+                Some((StorageWrite::Response, Delivery::NoCommit)),
+                Cut::None,
+                matches!(effects[0], Effect::Git),
+                false,
+            ),
+            Action::Receiver(Receiver::Pending),
+            select(
+                Some((StorageWrite::Observation, Delivery::NoCommit)),
+                Cut::None,
+                false,
+                false,
+            ),
+            select(
+                Some((StorageWrite::Observation, Delivery::LostAcknowledgement)),
+                Cut::None,
+                false,
+                false,
+            ),
+            select(
+                Some((StorageWrite::Receipt, Delivery::NoCommit)),
+                Cut::None,
+                false,
+                true,
+            ),
+            Action::Signer(Signer::Rotated),
+            select(
+                Some((StorageWrite::Receipt, Delivery::LostAcknowledgement)),
+                Cut::None,
+                false,
+                true,
+            ),
+        ],
+    };
+    warm_finish(&mut actions, 3);
+    // Reserve an untouched identity for unguided selections after the directed scenario retires.
+    let mut random = scenario.wrapping_add(1);
+    for _ in 0..steps.min(4) {
         random ^= random << 13;
         random ^= random >> 7;
         random ^= random << 17;
-        actions.push(Action::Peer(usize::try_from((random / 8) % 3).unwrap()));
+        actions.push(Action::Peer(usize::try_from((random / 8) % 4).unwrap()));
         actions.push(match random % 11 {
             0 => Action::Receiver(Receiver::Unavailable),
             1 => Action::Receiver(Receiver::Pending),
@@ -547,10 +664,11 @@ pub(super) fn generated(seed: u64, steps: usize) -> Trace {
             7 => Action::ReplaceCatalog,
             8 => Action::SubstituteTrustKey,
             9 => Action::Signer(if random & 16 == 0 {
-                Signer::Rotated
+                Signer::Invalid
             } else {
-                Signer::Original
+                Signer::Rotated
             }),
+            _ if random & 16 == 0 => select(None, Cut::None, true, random & 8 == 0),
             _ => select(
                 None,
                 FRESH_CUTS[usize::try_from((random / 11) % 7).unwrap()],
@@ -559,7 +677,21 @@ pub(super) fn generated(seed: u64, steps: usize) -> Trace {
             ),
         });
     }
-    let mut input = multi_trace(seed, 3, actions);
+    actions.push(Action::Restore);
+    for peer in 0..4 {
+        actions.extend([Action::Peer(peer), Action::Signer(Signer::Original)]);
+    }
+    actions.extend([
+        Action::Peer(3),
+        select(None, Cut::None, false, true),
+        Action::AssertProgress,
+        Action::Reopen { catalog: false },
+        Action::Peer(usize::try_from(seed % 4).unwrap()),
+        select(None, Cut::None, false, true),
+    ]);
+    let mut input = trace(seed, vec![]);
+    input.peers = 4;
+    input.actions = actions;
     input.effects = effects;
     input
 }
@@ -603,7 +735,13 @@ fn check_job_result(result: &Checked) {
     assert_eq!(result, &Ok(()), "bounded job found a law violation");
 }
 
-async fn retain_finding(directory: &Path, case: usize, input: &Trace, finding: &Finding) {
+async fn retain_finding(
+    directory: &Path,
+    case: usize,
+    input: &Trace,
+    finding: &Finding,
+    reached: &RunReport,
+) {
     let minimized = minimize(input.clone(), finding.law).await;
     persist_document(
         &directory.join(format!("finding-{case}.json")),
@@ -614,7 +752,7 @@ async fn retain_finding(directory: &Path, case: usize, input: &Trace, finding: &
         let reduced = reduced.unwrap_err();
         assert_eq!(reduced.law, finding.law, "minimization changed the finding");
         let report = serde_json::json!({
-            "case": case, "finding": finding, "minimized_finding": reduced,
+            "case": case, "finding": finding, "minimized_finding": reduced, "reached": reached,
         });
         persist_document(
             &directory.join("failure.json"),
@@ -682,6 +820,7 @@ pub(super) async fn explore_or_replay() {
             .collect::<Vec<_>>()
     };
     let mut completed = 0;
+    let mut reached = RunReport::default();
     for (case, mut input) in inputs.into_iter().enumerate() {
         if case % shards != shard {
             continue;
@@ -692,10 +831,12 @@ pub(super) async fn explore_or_replay() {
             &directory.join(format!("case-{case}.json")),
             &serde_json::to_vec(&input).unwrap(),
         );
-        let result = replay(&input, true).await;
+        let (result, report) = replay_report(&input, true).await;
         if let Err(finding) = &result {
-            retain_finding(&directory, case, &input, finding).await;
+            report.print();
+            retain_finding(&directory, case, &input, finding, &report).await;
         }
+        reached.merge(report);
         if std::env::var_os("KAPSEL_KERNEL_JOB").is_some() {
             check_job_result(&result);
         } else {
@@ -703,6 +844,7 @@ pub(super) async fn explore_or_replay() {
         }
         completed += 1;
     }
+    reached.print();
     println!(
         "KAPSEL_KERNEL_COMPLETED seed={seed} shard={shard}/{shards} \
          cases={completed} steps={steps}"

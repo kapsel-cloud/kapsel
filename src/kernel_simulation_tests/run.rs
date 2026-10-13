@@ -36,22 +36,39 @@ pub(super) fn open(
 }
 
 pub(super) async fn replay(trace: &Trace, virtualized: bool) -> Checked {
+    replay_report(trace, virtualized).await.0
+}
+
+pub(super) async fn replay_report(trace: &Trace, virtualized: bool) -> (Checked, RunReport) {
     let control = if virtualized {
         StorageControl::virtualized()
     } else {
         StorageControl::default()
     };
-    replay_with_control(trace, virtualized, control).await
+    let mut report = RunReport::default();
+    let result = drive(trace, virtualized, control.clone(), &mut report).await;
+    report.writes = control.events();
+    report.consumed_cuts = control.consumed_cuts();
+    (result, report)
+}
+
+pub(super) async fn replay_with_control(
+    trace: &Trace,
+    virtualized: bool,
+    control: StorageControl,
+) -> Checked {
+    drive(trace, virtualized, control, &mut RunReport::default()).await
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "keep schedule execution, all-peer laws and progress prerequisites in one owner"
 )]
-pub(super) async fn replay_with_control(
+async fn drive(
     trace: &Trace,
     virtualized: bool,
     control: StorageControl,
+    report: &mut RunReport,
 ) -> Checked {
     let scratch = Scratch::new();
     if let Some(defect) = trace.defect {
@@ -120,12 +137,15 @@ pub(super) async fn replay_with_control(
     };
     let mut app = open(configuration.clone(), &control);
     let mut selected = 0;
-    let mut restored = false;
     let mut writing = true;
     let mut trusted = vec![true; peers.len()];
     for (event, action) in trace.actions.iter().enumerate() {
         match *action {
             Action::Select(selection) => {
+                report.selections += 1;
+                report.requested_deliveries += usize::from(selection.commit.is_some());
+                report.requested_cuts += usize::from(!matches!(selection.cut, Cut::None));
+                report.requested_response_losses += usize::from(selection.lose_response);
                 let peers_before = peers.iter().map(Peer::snapshot).collect::<Vec<_>>();
                 let write_refused_rows_before = (!writing).then(|| {
                     peers
@@ -153,8 +173,7 @@ pub(super) async fn replay_with_control(
                     adapter.intent.receipt_seed = signing.0;
                     adapter.intent.receipt_key.clone_from(&signing.1);
                 }
-                peer.eligible_progress |= restored
-                    && trusted[selected]
+                peer.eligible_progress |= trusted[selected]
                     && writing
                     && !matches!(peer.signer, Signer::Invalid)
                     && selection.sign
@@ -175,32 +194,18 @@ pub(super) async fn replay_with_control(
                         .execute(&mut app, adapter, &mut peer.checker, signing, event)
                         .await?;
                 }
-                if let Some((StorageWrite::Receipt, delivery)) = selection.commit {
-                    let raw =
-                        store.raw_effect(&adapter.intent.request.operation_id, peer.git.is_some());
-                    let committed = delivery != Delivery::NoCommit;
-                    let expected_state = if committed {
-                        "finalized"
-                    } else {
-                        "receiver_observed"
-                    };
-                    let receipt_columns_committed_together =
-                        ["receipt_bytes", "receipt_digest", "receipt_key_id"]
-                            .iter()
-                            .all(|field| {
-                                raw.get(*field).is_some_and(|value| *value != Value::Null)
-                                    == committed
-                            });
-                    if text(&raw, "state") != Some(expected_state)
-                        || !receipt_columns_committed_together
-                    {
-                        return Err(Finding {
-                            law: "receipt_delivery",
-                            event,
-                            defect_reached: control.defect_reached(),
-                        });
-                    }
-                }
+                let after = peers[selected].snapshot();
+                report.consumed_response_losses += usize::from(
+                    selection.lose_response && after.sends > peers_before[selected].sends,
+                );
+                report.no_op_selections += usize::from(after == peers_before[selected]);
+                selection.check_committed_delivery(
+                    &peers_before[selected],
+                    &after,
+                    peers[selected].git.is_some(),
+                    &control,
+                    event,
+                )?;
                 if peers.iter().enumerate().any(|(index, peer)| {
                     index != selected && peer.snapshot() != peers_before[index]
                 }) {
@@ -399,8 +404,31 @@ pub(super) async fn replay_with_control(
                 writing = enabled;
             },
             Action::Signer(signer) => peers[selected].signer = signer,
+            Action::AssertProgress => {
+                report.progress_checks += 1;
+                let peer = &mut peers[selected];
+                if !eligible(peer, trusted[selected], writing) {
+                    return Err(Finding {
+                        law: "ineligible_progress",
+                        event,
+                        defect_reached: control.defect_reached(),
+                    });
+                }
+                if let Some(git) = &peer.git {
+                    peer.checker
+                        .check_git(&app, &store, &peer.adapter.intent, git, event, true)?;
+                } else {
+                    check_terminal(
+                        &app,
+                        &store,
+                        &peer.adapter.io.lock().unwrap(),
+                        &peer.adapter.intent,
+                        event,
+                        true,
+                    )?;
+                }
+            },
             Action::Restore => {
-                restored = true;
                 writing = true;
                 trusted.fill(true);
                 drop(app);
@@ -425,9 +453,8 @@ pub(super) async fn replay_with_control(
                 app = open(configuration.clone(), &control);
             },
         }
-        if virtualized {
-            control.refuse_writes(!writing);
-        } else {
+        control.refuse_writes(!writing);
+        if !virtualized {
             app.exploration_write_failure(!writing).unwrap();
         }
         // External trust gates application disclosure, not the independent raw-history oracle.
@@ -452,13 +479,10 @@ pub(super) async fn replay_with_control(
         check_reads(&app, &peers, &trusted, &control, event)?;
     }
     if trace.require_progress
-        && peers.iter().enumerate().any(|(index, peer)| {
-            !peer.eligible_progress
-                || !trusted[index]
-                || !writing
-                || matches!(peer.signer, Signer::Invalid)
-                || !matches!(peer.adapter.receiver, Receiver::Healthy)
-        })
+        && peers
+            .iter()
+            .enumerate()
+            .any(|(index, peer)| !eligible(peer, trusted[index], writing))
     {
         return Err(Finding {
             law: "ineligible_progress",
@@ -489,6 +513,14 @@ pub(super) async fn replay_with_control(
         )?;
     }
     Ok(())
+}
+
+fn eligible(peer: &Peer, trusted: bool, writing: bool) -> bool {
+    peer.eligible_progress
+        && trusted
+        && writing
+        && !matches!(peer.signer, Signer::Invalid)
+        && matches!(peer.adapter.receiver, Receiver::Healthy)
 }
 
 impl Peer {
@@ -935,6 +967,109 @@ impl Selection {
         self.check_delivery(&control, writes_before, !acknowledgements.is_empty(), event)
     }
 
+    fn check_committed_delivery(
+        self,
+        before: &PeerSnapshot,
+        after: &PeerSnapshot,
+        git: bool,
+        control: &StorageControl,
+        event: usize,
+    ) -> Checked {
+        let Some((write, delivery)) = self.commit else {
+            return Ok(());
+        };
+        let phase = text(&before.record, "state");
+        let fresh = !matches!(phase, Some("apply_started" | "receiver_observed"));
+        let committed = delivery != Delivery::NoCommit;
+        let expected_state = if delivery == Delivery::Confirmed {
+            Some(if write == StorageWrite::Rejection {
+                "not_attempted"
+            } else if self.sign {
+                "finalized"
+            } else {
+                "receiver_observed"
+            })
+        } else {
+            match write {
+                StorageWrite::Admission if !committed => None,
+                StorageWrite::Admission if !git => Some("requested"),
+                StorageWrite::Admission => Some("authorized"),
+                StorageWrite::Authorization => {
+                    Some(if committed { "authorized" } else { "requested" })
+                },
+                StorageWrite::Rejection => Some(if committed {
+                    "not_attempted"
+                } else {
+                    "authorized"
+                }),
+                StorageWrite::Attempt => Some(if committed {
+                    "apply_started"
+                } else {
+                    "authorized"
+                }),
+                StorageWrite::Response => Some("apply_started"),
+                StorageWrite::Observation => Some(if committed {
+                    "receiver_observed"
+                } else {
+                    "apply_started"
+                }),
+                StorageWrite::Receipt => Some(if committed {
+                    "finalized"
+                } else {
+                    "receiver_observed"
+                }),
+            }
+        };
+        let completed_io = || match phase {
+            Some("receiver_observed") => (0, 0),
+            Some("apply_started") => (1, 0),
+            _ => (2, 1),
+        };
+        let expected_io = if delivery == Delivery::Confirmed && write != StorageWrite::Rejection {
+            completed_io()
+        } else {
+            match write {
+                StorageWrite::Admission | StorageWrite::Authorization => (0, 0),
+                StorageWrite::Rejection | StorageWrite::Attempt => (1, 0),
+                StorageWrite::Response => (1, 1),
+                StorageWrite::Observation => (1 + usize::from(fresh), usize::from(fresh)),
+                StorageWrite::Receipt => completed_io(),
+            }
+        };
+        let response_field = if git {
+            "acknowledgement"
+        } else {
+            "apply_accepted"
+        };
+        let observation_field = if git { "observed_ref_kind" } else { "result" };
+        let present = |field| {
+            after
+                .record
+                .get(field)
+                .is_some_and(|value| *value != Value::Null)
+        };
+        let delivered_fields = match write {
+            StorageWrite::Response => present(response_field) == committed,
+            StorageWrite::Observation => present(observation_field) == committed,
+            StorageWrite::Receipt => ["receipt_bytes", "receipt_digest", "receipt_key_id"]
+                .iter()
+                .all(|field| present(*field) == committed),
+            StorageWrite::Rejection => present("target_rejection") == committed,
+            StorageWrite::Admission | StorageWrite::Authorization | StorageWrite::Attempt => true,
+        };
+        if text(&after.record, "state") != expected_state
+            || !delivered_fields
+            || (after.reads - before.reads, after.sends - before.sends) != expected_io
+        {
+            return Err(Finding {
+                law: "committed_delivery_binding",
+                event,
+                defect_reached: control.defect_reached(),
+            });
+        }
+        Ok(())
+    }
+
     pub(super) fn check_delivery(
         self,
         control: &StorageControl,
@@ -945,9 +1080,9 @@ impl Selection {
         let Some((write, delivery)) = self.commit else {
             return Ok(());
         };
-        let law = if !control.reached()[writes_before..].contains(&write)
-            || control.last_delivery(write) != Some(delivery)
-        {
+        let law = if !control.events()[writes_before..].iter().any(|reached| {
+            reached.write == write && reached.delivery == delivery && reached.consumed
+        }) {
             Some("fault_not_reached")
         } else if write == StorageWrite::Admission
             && delivery != Delivery::Confirmed

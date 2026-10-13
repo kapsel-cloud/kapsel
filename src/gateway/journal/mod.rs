@@ -22,7 +22,7 @@ use std::{
 use records::Record;
 pub(crate) use records::Write as StorageWrite;
 #[cfg(test)]
-pub(crate) use records::{Control as StorageControl, Defect, Delivery};
+pub(crate) use records::{Control as StorageControl, Defect, Delivery, WriteEvent};
 #[cfg(test)]
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, Transaction, TransactionBehavior};
@@ -1034,6 +1034,11 @@ impl Journal {
     }
 
     #[cfg(test)]
+    pub(crate) fn record_cut(&self) {
+        self.records.control.record_cut();
+    }
+
+    #[cfg(test)]
     pub(crate) fn exercise_defect(&self, defect: Defect) -> bool {
         self.records.control.exercise(defect)
     }
@@ -1107,6 +1112,7 @@ impl Journal {
         self.mark_apply_started(operation, &target)?;
         #[cfg(test)]
         if fault == Some(FaultPoint::AttemptCommitAcknowledgementLost) {
+            self.record_cut();
             return Err(GatewayError::InjectedFault);
         }
 

@@ -521,6 +521,9 @@ impl Checker {
         }
         require(receipt_columns_match(&raw, intent), "receipt_columns")?;
         require(self.receipt_bytes_unchanged(&raw), "original_receipt_bytes")?;
+        if let Some(original) = &self.rejected {
+            require(original == &raw, "rejected_history_immutable")?;
+        }
         let approval = &git.authorization;
         let digest = hex(&Sha256::digest(&intent.grant));
         for (field, expected) in [
@@ -639,6 +642,7 @@ impl Checker {
                 text(&raw, "target_rejection") == Some("stale_ref") && io.sends == 0,
                 "rejection_binding",
             )?;
+            self.rejected.get_or_insert_with(|| raw.clone());
         } else {
             require(!require_progress, "healthy_progress")?;
         }

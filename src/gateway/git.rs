@@ -708,6 +708,10 @@ pub(super) async fn advance(
     }
 
     #[cfg(test)]
+    if journal.exercise_defect(Defect::NoOp) {
+        return Ok(phase);
+    }
+    #[cfg(test)]
     let fresh = phase == GitPhase::Authorized;
     if phase == GitPhase::Authorized {
         let receiver = receiver.ok_or(GatewayError::GitReceiverUnavailable)?;

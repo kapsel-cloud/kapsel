@@ -25,7 +25,7 @@ pub use git::{
 };
 use journal::{AuthorizedOperation, Journal, WorkerLock};
 #[cfg(test)]
-pub(crate) use journal::{Defect, Delivery, StorageControl, StorageWrite};
+pub(crate) use journal::{Defect, Delivery, StorageControl, StorageWrite, WriteEvent};
 pub(crate) use journal::{DispatchPermission, LoadedOperation};
 pub(crate) use kubernetes::KubernetesDeploymentImageAdapter;
 #[cfg(test)]
@@ -950,6 +950,8 @@ impl Gateway {
             },
         };
         if fault == Some(FaultPoint::TargetObserved) {
+            #[cfg(test)]
+            self.journal.record_cut();
             return Err(GatewayError::InjectedFault);
         }
 
@@ -986,6 +988,8 @@ impl Gateway {
                     return Ok(Some(OperationState::NotAttempted));
                 };
                 if fault == Some(FaultPoint::ApplyStartedCommitted) {
+                    #[cfg(test)]
+                    self.journal.record_cut();
                     return Err(GatewayError::InjectedFault);
                 }
                 let Some(LoadedOperation::ApplyStarted(started)) =
@@ -1002,6 +1006,8 @@ impl Gateway {
                 demo_control::checkpoint_after_apply()
                     .map_err(|()| GatewayError::KubernetesApply)?;
                 if fault == Some(FaultPoint::ApplyReturned) {
+                    #[cfg(test)]
+                    self.journal.record_cut();
                     return Err(GatewayError::InjectedFault);
                 }
 
@@ -1010,6 +1016,8 @@ impl Gateway {
                     .ok_or(GatewayError::InvalidPersistedState)?;
                 self.journal.record_apply_outcome(&started, &outcome)?;
                 if fault == Some(FaultPoint::ApplyOutcomeCommitted) {
+                    #[cfg(test)]
+                    self.journal.record_cut();
                     return Err(GatewayError::InjectedFault);
                 }
                 let Some(LoadedOperation::ApplyStarted(started)) =
@@ -1049,6 +1057,8 @@ impl Gateway {
             .await
             .map_err(|()| GatewayError::KubernetesReceiverObservation)?;
         if fault == Some(FaultPoint::ReceiverRead) {
+            #[cfg(test)]
+            self.journal.record_cut();
             return Err(GatewayError::InjectedFault);
         }
 
@@ -1057,6 +1067,8 @@ impl Gateway {
             .ok_or(GatewayError::InvalidPersistedState)?;
         self.journal.freeze_observation(&attempted, &observation)?;
         if fault == Some(FaultPoint::ReceiverObservedCommitted) {
+            #[cfg(test)]
+            self.journal.record_cut();
             return Err(GatewayError::InjectedFault);
         }
         Ok(Some(OperationState::ReceiverObserved))
