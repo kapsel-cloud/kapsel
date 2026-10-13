@@ -50,11 +50,11 @@ satisfy that gate. The candidate-signing workflow does not run every native, liv
 lane; a successful workflow run is not complete release acceptance. Model/client runs are optional
 dogfooding and interoperability evidence, never required deterministic caller acceptance.
 
-Route changes to their owners while iterating: format/sidecar edits need verifier vectors; assembly
-or staged assets need source correspondence, extracted smoke/guide and A/B proof; native launch
-changes need the fresh-host profile. Changed packaged receiver/caller bindings need those
-selected-byte lanes. Final release acceptance still binds every required gate to the actual clean
-candidate bytes.
+Use [iteration routing](build.md#route-qualification-during-iteration) to select evidence for the
+changed guarantee. Packaged receiver/caller bindings need affected selected-byte witnesses, not
+unrelated lifecycle cases. [Focused selections](qualification.md#focused-packaged-cases) retain
+prerequisites and independent observations, but do not satisfy the full receiver gates above. Final
+release acceptance still binds every required gate to the actual clean candidate bytes.
 
 ## Interrupted execution
 

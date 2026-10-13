@@ -101,7 +101,10 @@ def exercise_case(
             run(["docker", "rm", "-f", name])
 
 
-def qualify(archive: Path, revision: str, git: Path) -> Path:
+def qualify(archive: Path, revision: str, git: Path, cases: tuple[str, ...] = CASES) -> Path:
+    if not cases or any(case not in CASES for case in cases):
+        raise ValueError("select at least one known Git case")
+    selected = tuple(case for case in CASES if case in cases)
     os.umask(0o077)
     workspace = Path(tempfile.mkdtemp(prefix="kapsel-git-artifact-"))
     print(f"Private evidence workspace: {workspace}", flush=True)
@@ -136,8 +139,14 @@ def qualify(archive: Path, revision: str, git: Path) -> Path:
     hook_digest = hashlib.sha256(hook_source).hexdigest()
     (workspace / (HOOK_SOURCE.name + ".sha256")).write_text(hook_digest + "\n")
 
-    summaries = [exercise_case(case, extracted, inputs, workspace / case, source) for case in CASES]
+    summaries = [
+        exercise_case(case, extracted, inputs, workspace / case, source) for case in selected
+    ]
     summary = {
+        "qualification_scope": "full" if selected == CASES else "focused",
+        "requested_cases": selected,
+        "prerequisite_cases": [],
+        "executed_cases": [record["case"] for record in summaries],
         "source_revision": revision,
         "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
         "git_sha256": hashlib.sha256(git.read_bytes()).hexdigest(),
@@ -161,8 +170,11 @@ def main() -> None:
     parser.add_argument(
         "--git", required=True, type=Path, help="accepted Linux Git 2.55.0 executable"
     )
+    parser.add_argument(
+        "--case", action="append", choices=CASES, help="Run only these cases; repeat to select more"
+    )
     args = parser.parse_args()
-    qualify(args.archive, args.revision, args.git)
+    qualify(args.archive, args.revision, args.git, tuple(args.case) if args.case else CASES)
 
 
 if __name__ == "__main__":

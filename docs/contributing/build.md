@@ -70,16 +70,44 @@ Missing prerequisites mean missing evidence, not a passing substitute.
 
 ## Focused gates
 
-| Change                     | Command                                                                                                    |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Core effect or application | `cargo test --locked -p kapsel`                                                                            |
-| Shared authority           | `cargo test --locked -p kapsel-authority`                                                                  |
-| Service or private harness | `cargo test --locked -p kapsel-daemon --features test-harness`                                             |
-| Installed assets           | `cargo test --locked -p kapsel-daemon --test install_assets`                                               |
-| MCP bridge                 | `cargo test --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp --test service_mcp` |
-| Fresh-session caller       | `python3 examples/test_fresh_session_caller.py`                                                            |
-| Formatting pipeline        | `python3 tools/dev/test_format.py`                                                                         |
-| Python tooling             | `cargo xtask ci static`                                                                                    |
+| Change                         | Command                                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Core effect or application     | `cargo test --locked -p kapsel`                                                                            |
+| Shared authority               | `cargo test --locked -p kapsel-authority`                                                                  |
+| Service or private harness     | `cargo test --locked -p kapsel-daemon --features test-harness`                                             |
+| Installed assets               | `cargo test --locked -p kapsel-daemon --test install_assets`                                               |
+| MCP bridge                     | `cargo test --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp --test service_mcp` |
+| Fresh-session caller           | `python3 examples/test_fresh_session_caller.py`                                                            |
+| Formatting pipeline            | `python3 tools/dev/test_format.py`                                                                         |
+| Python tooling                 | `cargo xtask ci static`                                                                                    |
+| Packaged Git controller        | `python3 tests/qualification/test_git_artifact.py`                                                         |
+| Packaged Kubernetes controller | `python3 tests/qualification/test_kind_agent_action_exercise.py`                                           |
+
+## Route qualification during iteration
+
+Select additional evidence by the changed guarantee, not the filename or patch size. Use focused
+checks while editing. Run the owning broader gate on the finished snapshot, without repeating its
+included checks on unchanged inputs.
+
+| Changed guarantee                                            | Additional evidence                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------------------ |
+| Qualification argument grammar, bookkeeping or report fields | Controller regressions and the Python static gate                  |
+| Artifact selection, transfer, custody or caller binding      | One affected selected-byte packaged witness                        |
+| Recovery, receiver behavior or observation timing            | Affected physical cases with their prerequisites                   |
+| Archive format or sidecars                                   | Offline verifier vectors                                           |
+| Assembly or shipped assets                                   | Source correspondence, extracted smoke/guide and A/B proof         |
+| Native launch or service unit                                | Fresh-host native profile                                          |
+| Final release candidate                                      | Every required [release gate](release_process.md#graduation-gates) |
+
+The packaged [Kubernetes](qualification.md#focused-packaged-cases) and
+[Git](qualification.md#git-transition-service) runners accept repeatable `--case` selections.
+Focused success is not full-suite or release acceptance. Keep production deadlines, independent
+receiver observations and physical loss windows unchanged for each selected case.
+
+A controller-only change can reuse an accepted clean archive when its shipped inputs are unchanged.
+Record the archive's original revision and digest separately from current runner and fixture
+digests. Do not relabel those bytes as a new release candidate. Rebuild when shipped inputs change;
+final release acceptance still requires the actual clean candidate bytes.
 
 [Test strategy](testing.md) explains where tests belong. The [evidence map](evidence.md) connects
 guarantees to checks. [Qualification](qualification.md) contains Linux process, real Git, live

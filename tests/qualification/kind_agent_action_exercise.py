@@ -453,7 +453,7 @@ def main() -> None:
                 time.sleep(0.1)
             assert json.loads(selection.read_text()) == {"operation_id": "healthy"}
 
-        for case in settings["cases"]:
+        for case in settings["execution_cases"]:
             started = time.monotonic()
             started_unix_s = time.time()
             interrupted_unix_s = None

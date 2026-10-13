@@ -79,6 +79,30 @@ python3 tests/qualification/run_kind_agent_action_workflow.py \
   --archive "$archive" --revision "$revision"
 ```
 
+### Focused packaged cases
+
+Omit `--case` for the full nine-case Kubernetes suite. During iteration, select an affected case:
+
+```sh
+python3 tests/qualification/run_kind_agent_action_workflow.py \
+  --archive "$archive" --revision "$revision" --case service-loss
+```
+
+Repeat `--case` to select more. The runner deduplicates selections and preserves canonical order.
+Both `service-loss` and `caller-loss` first execute `healthy`, which supplies the original history
+and receipt. The optional model lane also adds `healthy`. `independent` remains approved but
+unexecuted for isolation probes; it executes last only when selected.
+
+The full catalog and disposable resources remain provisioned. Unselected Deployments use zero
+minimum readiness time; selected cases retain their original readiness periods and observation
+bounds. API audit requires zero product PATCHes for every unexecuted case. Reports require every
+planned case exactly once, with the existing per-pass read and timing checks.
+
+Summaries record `requested_cases`, added `prerequisite_cases`, actual `executed_cases`, and
+`qualification_scope` (`focused` or `full`). A focused pass does not satisfy the full receiver gate
+or release acceptance. Unknown, empty and missing case arguments fail before qualification setup.
+See [iteration routing](build.md#route-qualification-during-iteration) before choosing other lanes.
+
 ### Packaged workflow evidence
 
 Both packaged receiver lanes select one clean archive and exact revision. Cold binary replacement
@@ -254,6 +278,19 @@ accepted Linux Git 2.55.0 executable compatible with the pinned Debian 12 runner
 python3 tests/qualification/run_git_artifact.py \
   --archive "$archive" --revision "$revision" --git /absolute/path/to/git
 ```
+
+The packaged runner also accepts repeatable `--case` selections. Its four cases use separate
+containers and have no cross-case prerequisites:
+
+```sh
+python3 tests/qualification/run_git_artifact.py \
+  --archive "$archive" --revision "$revision" --git /absolute/path/to/git \
+  --case post-receive
+```
+
+Omit `--case` for the full suite. Focused summaries identify requested and executed cases and cannot
+replace full qualification. Each selected case retains its custody, hook/ref, recovery and receipt
+checks. Selection changes neither the source profile nor its six-case process matrix.
 
 Both launchers use `git_service_exercise.py` for provisioning, public selection, terminal evidence,
 withdrawal, reconnect and offline inspection. Healthy execution first freezes a real acknowledgement

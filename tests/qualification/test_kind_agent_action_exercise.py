@@ -32,6 +32,18 @@ from run_kind_agent_action_workflow import (
     run_bounded_process,
 )
 
+CASE_ORDER = (
+    "healthy",
+    "stale",
+    "recreated",
+    "race",
+    "failed",
+    "deleted",
+    "service-loss",
+    "caller-loss",
+    "independent",
+)
+
 
 class ReceiverBarrierTests(unittest.TestCase):
     def test_service_loss_can_close_headers_or_body_without_fixture_failure(self) -> None:
@@ -402,7 +414,14 @@ class BoundedSubprocessTests(unittest.TestCase):
 class PackagedRunnerTests(unittest.TestCase):
     def test_cli_rejects_retired_inputs_before_any_setup(self) -> None:
         arguments = ["runner", "--archive", "/selected", "--revision", "a" * 40]
-        for extra in ([], ["--retained-archive", "/other"], ["--retained-revision", "b" * 40]):
+        for extra in (
+            [],
+            ["--retained-archive", "/other"],
+            ["--retained-revision", "b" * 40],
+            ["--case", ""],
+            ["--case", "unknown"],
+            ["--case"],
+        ):
             with (
                 self.subTest(extra=extra),
                 mock.patch("sys.argv", arguments + extra),
@@ -418,7 +437,187 @@ class PackagedRunnerTests(unittest.TestCase):
                     self.assertEqual(selected.archive, pathlib.Path("/selected"))
                     self.assertEqual(selected.revision, "a" * 40)
                     self.assertFalse(selected.agent)
+                    self.assertEqual(selected.execution_cases, CASE_ORDER)
                 setup.assert_not_called()
+
+    def test_case_plan_separates_execution_from_approved_isolation_probes(self) -> None:
+        for requested, expected in (
+            (("service-loss",), ("healthy", "service-loss")),
+            (("caller-loss",), ("healthy", "caller-loss")),
+            (("independent",), ("independent",)),
+            (("stale", "race"), ("stale", "race")),
+            (
+                ("independent", "caller-loss", "service-loss", "caller-loss"),
+                ("healthy", "service-loss", "caller-loss", "independent"),
+            ),
+        ):
+            with self.subTest(requested=requested):
+                self.assertEqual(JOURNEY.execution_cases(requested), expected)
+        self.assertEqual(
+            JOURNEY.execution_cases(("independent",), agent=True), ("healthy", "independent")
+        )
+        for requested in ((), ("healthy", "unknown")):
+            with self.subTest(requested=requested), self.assertRaises(ValueError):
+                JOURNEY.execution_cases(requested)
+        with mock.patch(
+            "sys.argv",
+            ["runner", "--archive", "/selected", "--revision", "a" * 40, "--case", "service-loss"],
+        ):
+            args = JOURNEY.parse_arguments()
+        self.assertEqual(args.requested_cases, ("service-loss",))
+        self.assertEqual(args.execution_cases, ("healthy", "service-loss"))
+
+    def test_focused_results_require_all_planned_cases_and_zero_other_mutations(self) -> None:
+        reports = [
+            {"case": "healthy", "started_unix_s": -2, "finished_unix_s": -1},
+            {
+                "case": "service-loss",
+                "started_unix_s": 0,
+                "finished_unix_s": 60,
+                "interrupted_unix_s": 5,
+                "resumed_unix_s": 10,
+            },
+        ]
+        counts = dict.fromkeys(CASE_ORDER, 0) | {"healthy": 1, "service-loss": 1}
+        events = {
+            "healthy": [("get", -1.5)],
+            "service-loss": [("get", 1.0), ("patch", 2.0), ("get", 3.0), ("get", 11.0)],
+        }
+        selected = ("healthy", "service-loss")
+        self.assertEqual(
+            JOURNEY.validate_case_results(reports, selected, counts, events),
+            {"healthy": 1, "service-loss": 3},
+        )
+        for changed in (reports[:1], reports[1:], reports[::-1], reports + reports[:1]):
+            with self.subTest(reports=changed), self.assertRaises(AssertionError):
+                JOURNEY.validate_case_results(changed, selected, counts, events)
+        for changed in (
+            dict(counts, independent=1),
+            dict(counts, healthy=2),
+            dict(counts, **{"service-loss": 0}),
+        ):
+            with self.subTest(counts=changed), self.assertRaises(AssertionError):
+                JOURNEY.validate_case_results(reports, selected, changed, events)
+        with self.assertRaises(AssertionError):
+            JOURNEY.validate_case_results(
+                [reports[0], dict(reports[1], finished_unix_s=400)], selected, counts, events
+            )
+
+    def test_focused_runner_retains_catalog_and_binds_plan_to_fixture_and_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = pathlib.Path(temporary)
+            archive = workspace / "archive.tar.gz"
+            archive.write_bytes(b"selected archive")
+            extracted = workspace / "extracted"
+            extracted.mkdir()
+            (extracted / "RELEASE-METADATA.json").write_text('{"source_dirty":false}')
+            spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _: None))
+            artifact = SimpleNamespace(extract_release=mock.Mock(return_value=extracted))
+            deployments = []
+
+            def transport(arguments, *, data=None, **_kwargs):
+                if data is not None:
+                    record = json.loads(data)
+                    if record.get("kind") == "Deployment":
+                        deployments.append(record)
+                if "--raw" in arguments:
+                    return b'{"clusters":[{"cluster":{"certificate-authority-data":"fixture"}}]}'
+                if "inspect" in arguments:
+                    return b"127.0.0.1"
+                return b""
+
+            def execute(name, evidence, source, *args):
+                self.assertEqual(source, JOURNEY.EXERCISE_SOURCE.read_bytes())
+                (evidence / "results.json").write_text(
+                    json.dumps(
+                        [
+                            {"case": "healthy", "started_unix_s": 0, "finished_unix_s": 1},
+                            {
+                                "case": "service-loss",
+                                "started_unix_s": 2,
+                                "finished_unix_s": 62,
+                                "interrupted_unix_s": 7,
+                                "resumed_unix_s": 12,
+                            },
+                        ]
+                    )
+                )
+                return 0, None
+
+            counts = dict.fromkeys(CASE_ORDER, 0) | {"healthy": 1, "service-loss": 1}
+            with (
+                mock.patch(
+                    "sys.argv",
+                    [
+                        "runner",
+                        "--archive",
+                        str(archive),
+                        "--revision",
+                        "a" * 40,
+                        "--case",
+                        "service-loss",
+                    ],
+                ),
+                mock.patch.object(JOURNEY.tempfile, "mkdtemp", return_value=str(workspace)),
+                mock.patch.object(
+                    JOURNEY.importlib.util, "spec_from_file_location", return_value=spec
+                ),
+                mock.patch.object(
+                    JOURNEY.importlib.util, "module_from_spec", return_value=artifact
+                ),
+                mock.patch.object(JOURNEY, "run", side_effect=transport) as commands,
+                mock.patch.object(JOURNEY, "install_admission_fixture"),
+                mock.patch.object(JOURNEY, "execute_journey_container", side_effect=execute),
+                mock.patch.object(
+                    JOURNEY,
+                    "collect_receiver_counts",
+                    return_value=(
+                        counts,
+                        {
+                            "healthy": [],
+                            "service-loss": [
+                                ("get", 3.0),
+                                ("patch", 4.0),
+                                ("get", 5.0),
+                                ("get", 13.0),
+                            ],
+                        },
+                    ),
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                JOURNEY.main()
+            settings = json.loads((workspace / "inputs/settings.json").read_bytes())
+            self.assertEqual(tuple(settings["cases"]), CASE_ORDER)
+            self.assertEqual(settings["execution_cases"], ["healthy", "service-loss"])
+            self.assertEqual(
+                [item["metadata"]["name"] for item in deployments],
+                ["agent-" + case for case in CASE_ORDER],
+            )
+            self.assertEqual(
+                [item["spec"]["minReadySeconds"] for item in deployments],
+                [0, 0, 0, 0, 0, 0, 60, 0, 0],
+            )
+            result = json.loads((workspace / "evidence/summary.json").read_bytes())
+            self.assertEqual(result["qualification_scope"], "focused")
+            self.assertEqual(result["requested_cases"], ["service-loss"])
+            self.assertEqual(result["prerequisite_cases"], ["healthy"])
+            self.assertEqual(result["executed_cases"], ["healthy", "service-loss"])
+            self.assertEqual(result["http_patch_counts"], counts)
+            created = next(
+                call.args[0]
+                for call in commands.call_args_list
+                if call.args[0][:2] == ["docker", "create"]
+            )
+            self.assertEqual(
+                [arg for arg in created if arg.endswith(":ro")], [f"{extracted}:/artifact:ro"]
+            )
+            name = created[created.index("--name") + 1]
+            self.assertIn(mock.call(["docker", "rm", "-f", name]), commands.call_args_list)
+            self.assertEqual(
+                commands.call_args_list[-1],
+                mock.call(["kind", "delete", "cluster", "--name", name], timeout=120),
+            )
 
     def test_journey_streams_exact_fixture_bytes_through_a_real_process(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

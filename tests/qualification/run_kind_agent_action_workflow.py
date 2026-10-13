@@ -449,6 +449,30 @@ def collect_receiver_counts(name: str) -> tuple[dict[str, int], dict[str, list[t
     return counts, events
 
 
+def execution_cases(requested: tuple[str, ...], *, agent: bool = False) -> tuple[str, ...]:
+    """Plan executions, not approval provisioning; independent must remain unexecuted until last."""
+    if not requested or any(case not in CASES for case in requested):
+        raise ValueError("select at least one known Kubernetes case")
+    selected = set(requested)
+    if agent or selected.intersection(("service-loss", "caller-loss")):
+        selected.add("healthy")
+    return tuple(case for case in CASES if case in selected)
+
+
+def validate_case_results(
+    reports,
+    selected: tuple[str, ...],
+    counts: dict[str, int],
+    events: dict[str, list[tuple[str, float]]],
+) -> dict[str, int]:
+    """Require every planned execution and independent zero mutations for unexecuted cases."""
+    assert tuple(report["case"] for report in reports) == selected, "missing or extra case results"
+    assert counts == {
+        case: int(case in selected and case not in ("stale", "recreated")) for case in CASES
+    }, counts
+    return observation_read_counts(reports, events)
+
+
 def observation_read_counts(reports, events: dict[str, list[tuple[str, float]]]) -> dict[str, int]:
     """Bind each live observation pass to independent API audit times and read bounds."""
     counts = {}
@@ -641,6 +665,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--archive", required=True, type=pathlib.Path)
     parser.add_argument("--revision", required=True)
     parser.add_argument(
+        "--case",
+        action="append",
+        choices=tuple(CASES),
+        help="Run these cases and their prerequisites",
+    )
+    parser.add_argument(
         "--agent",
         action="store_true",
         help="Run Codex as the confined Linux caller for the first action",
@@ -652,6 +682,8 @@ def parse_arguments() -> argparse.Namespace:
         "--codex-auth", type=pathlib.Path, default=pathlib.Path.home() / ".codex/auth.json"
     )
     args = parser.parse_args()
+    args.requested_cases = tuple(case for case in CASES if args.case is None or case in args.case)
+    args.execution_cases = execution_cases(args.requested_cases, agent=args.agent)
     if args.agent:
         if args.codex_binary is None:
             parser.error("--agent requires --codex-binary with an accepted Linux executable")
@@ -803,7 +835,7 @@ nodes:
                 "metadata": {"name": "agent-" + case, "namespace": "demo", "labels": {"app": case}},
                 "spec": {
                     "replicas": 1,
-                    "minReadySeconds": CASES[case],
+                    "minReadySeconds": CASES[case] if case in args.execution_cases else 0,
                     "progressDeadlineSeconds": 15 if case == "failed" else 600,
                     "selector": {"matchLabels": {"app": case}},
                     "template": {
@@ -936,7 +968,13 @@ nodes:
         (inputs / "kubeconfig.json").write_text(json.dumps(scoped))
         (inputs / "settings.json").write_text(
             json.dumps(
-                {"cases": CASES, "desired": DESIRED, "failed_image": FAILED, "agent": args.agent}
+                {
+                    "cases": CASES,
+                    "execution_cases": args.execution_cases,
+                    "desired": DESIRED,
+                    "failed_image": FAILED,
+                    "agent": args.agent,
+                }
             )
         )
         run(
@@ -980,10 +1018,17 @@ nodes:
         counts, events = collect_receiver_counts(name)
         (evidence / "receiver-events.json").write_text(json.dumps(events))
         execution_reads = {}
+        reports = []
         if exercise_exit == 0:
             reports = json.loads((evidence / "results.json").read_bytes())
-            execution_reads = observation_read_counts(reports, events)
+            execution_reads = validate_case_results(reports, args.execution_cases, counts, events)
         summary = {
+            "qualification_scope": "full" if args.execution_cases == tuple(CASES) else "focused",
+            "requested_cases": args.requested_cases,
+            "prerequisite_cases": [
+                case for case in args.execution_cases if case not in args.requested_cases
+            ],
+            "executed_cases": [report["case"] for report in reports],
             "source_revision": args.revision,
             "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
             "exercise_sha256": hashlib.sha256(exercise_source).hexdigest(),
@@ -1002,7 +1047,6 @@ nodes:
         (evidence / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary, indent=2), flush=True)
         assert exercise_exit == 0, "exercise failed; inspect private exercise.log"
-        assert counts == {case: int(case not in ("stale", "recreated")) for case in CASES}, counts
     finally:
         try:
             if container_owned:

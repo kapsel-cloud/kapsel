@@ -47,7 +47,14 @@ class GitArtifactTests(unittest.TestCase):
 
     def test_cli_rejects_retired_inputs_before_qualification(self):
         arguments = ["runner", "--archive", "/selected", "--revision", "a" * 40, "--git", "/git"]
-        for extra in ([], ["--retained-archive", "/other"], ["--retained-revision", "b" * 40]):
+        for extra in (
+            [],
+            ["--retained-archive", "/other"],
+            ["--retained-revision", "b" * 40],
+            ["--case", ""],
+            ["--case", "unknown"],
+            ["--case"],
+        ):
             with (
                 self.subTest(extra=extra),
                 mock.patch("sys.argv", arguments + extra),
@@ -61,7 +68,39 @@ class GitArtifactTests(unittest.TestCase):
                     qualify.assert_not_called()
                 else:
                     JOURNEY.main()
-                    qualify.assert_called_once_with(Path("/selected"), "a" * 40, Path("/git"))
+                    qualify.assert_called_once_with(
+                        Path("/selected"), "a" * 40, Path("/git"), JOURNEY.CASES
+                    )
+
+    def test_focused_selection_runs_only_requested_cases_in_canonical_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace, _, archive, git, spec, module = self.fixture(Path(temporary))
+            with (
+                mock.patch.object(JOURNEY.tempfile, "mkdtemp", return_value=str(workspace)),
+                mock.patch.object(
+                    JOURNEY.importlib.util, "spec_from_file_location", return_value=spec
+                ),
+                mock.patch.object(JOURNEY.importlib.util, "module_from_spec", return_value=module),
+                mock.patch.object(
+                    JOURNEY, "exercise_case", side_effect=lambda case, *_: summary(case)
+                ) as exercise,
+            ):
+                JOURNEY.qualify(archive, "a" * 40, git, ("post-receive", "healthy", "post-receive"))
+            result = json.loads((workspace / "summary.json").read_bytes())
+            self.assertEqual(result["qualification_scope"], "focused")
+            self.assertEqual(result["requested_cases"], ["healthy", "post-receive"])
+            self.assertEqual(result["prerequisite_cases"], [])
+            self.assertEqual(result["executed_cases"], ["healthy", "post-receive"])
+            self.assertEqual(
+                [call.args[0] for call in exercise.call_args_list], ["healthy", "post-receive"]
+            )
+
+    def test_invalid_direct_selection_refuses_before_workspace_creation(self):
+        for cases in ((), ("healthy", "unknown")):
+            with self.subTest(cases=cases), mock.patch.object(JOURNEY.tempfile, "mkdtemp") as setup:
+                with self.assertRaises(ValueError):
+                    JOURNEY.qualify(Path("/missing"), "a" * 40, Path("/git"), cases)
+                setup.assert_not_called()
 
     def test_dirty_source_refuses_before_docker(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -133,6 +172,11 @@ class GitArtifactTests(unittest.TestCase):
                 self.assertEqual(JOURNEY.qualify(archive, "a" * 40, git), workspace)
                 result = json.loads((workspace / "summary.json").read_bytes())
                 self.assertEqual(result["source_revision"], "a" * 40)
+                self.assertEqual(result["qualification_scope"], "full")
+                self.assertEqual(
+                    result["executed_cases"],
+                    ["healthy", "pre-receive", "post-receive", "service-loss"],
+                )
                 module.extract_release.assert_called_once_with(
                     archive.resolve(),
                     Path(str(archive.resolve()) + ".sha256"),
