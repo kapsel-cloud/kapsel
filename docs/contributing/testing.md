@@ -40,8 +40,12 @@ receipt commitment, original-byte export, signer rotation and corrupt-receipt st
 `mcp_caller_loss_preserves_reference_and_service_admission` separately owns undelivered
 acknowledgement, without reconstructing completion. Fixed-client tests own exclusive export errors.
 Adapter clock tests and the packaged live workflow own observation ceilings and late availability;
-shared laws own frozen `UNKNOWN` and no-resend. The configured HTTP fixture owns success/error
-request counts and shared-target preflight, not separate cancellation/restart lifecycle worlds.
+shared laws own frozen `UNKNOWN` and no-resend. Adapter HTTP partitions share one finite
+request/reply fixture that rejects unused planned replies and additional requests. An independent
+PATCH wire vector and unequal generation/replica values bind request construction and all decoded
+receiver fields. Paused-clock checks retain the production deadlines, read ceilings and fresh
+invocation budgets. The configured HTTP fixture owns success/error request counts and shared-target
+preflight, not separate cancellation/restart lifecycle worlds.
 
 The runtime's production `contended_admission` decision uses retained admission and captured owner
 facts. Its finite table owns definite busy, access error and indeterminate partitions. The runtime

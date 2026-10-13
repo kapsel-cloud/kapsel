@@ -90,7 +90,7 @@ Related checks stay at the interfaces that own them:
 | Guarantee                              | Maintained check                                                                                                                                     |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Configured client sends once           | `application_retry::configured_client_sends_once_for_success_and_ambiguous_responses`: success, HTTP errors and response loss                        |
-| Missing zero-replica fields            | Adapter `omitted_zero_replica_counts_can_still_report_success`                                                                                       |
+| Missing zero-replica fields            | Adapter `observation_scripts_bind_fields_and_terminal_reads`                                                                                         |
 | Stale UID or version                   | Shared simulator: single-field drift after authorized reopen; terminal rejection, no mutation or receipt                                             |
 | Exact authority before persistence     | `gateway::tests::validation::every_authority_field_is_bound_before_first_or_requested_admission`: independent raw-row preservation                   |
 | Approval cannot refresh an existing ID | `each_snapshot_field_and_legacy_downgrade_preserve_original_history`: UID/version conflicts and downgrade before and after completion                |

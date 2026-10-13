@@ -50,39 +50,6 @@ impl KubernetesDeploymentImageAdapter {
         }
     }
 
-    #[cfg(test)]
-    fn with_observation_schedule(
-        client: Client,
-        observation_attempts: usize,
-        observation_interval: Duration,
-    ) -> Self {
-        Self::with_observation_limits(
-            client,
-            observation_attempts,
-            observation_interval,
-            Duration::from_secs(1),
-        )
-    }
-
-    #[cfg(test)]
-    fn with_observation_limits(
-        client: Client,
-        observation_attempts: usize,
-        observation_interval: Duration,
-        observation_deadline: Duration,
-    ) -> Self {
-        assert!(observation_attempts > 0);
-        assert!(observation_attempts <= OBSERVATION_ATTEMPTS_MAX);
-        assert!(!observation_deadline.is_zero());
-        Self {
-            client,
-            observation_attempts,
-            observation_interval,
-            observation_deadline,
-            provider_request_timeout: Duration::from_secs(1),
-        }
-    }
-
     fn deployments(&self, namespace: &str) -> Api<Deployment> {
         Api::namespaced(self.client.clone(), namespace)
     }
@@ -313,7 +280,11 @@ fn receiver_observation(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, future::pending, sync::atomic::Ordering};
+    use std::{
+        collections::BTreeMap,
+        future::{pending, Future},
+        sync::atomic::Ordering,
+    };
 
     use http::{Method, Request, Response, StatusCode};
     use kube::client::Body;
@@ -424,14 +395,92 @@ mod tests {
     ) {
         let (mock_service, handle) = mock::pair::<Request<Body>, Response<Body>>();
         let client = Client::new(mock_service, "default");
-        (
-            KubernetesDeploymentImageAdapter::with_observation_schedule(
-                client,
-                observation_attempts,
-                Duration::ZERO,
-            ),
-            handle,
-        )
+        let mut adapter = KubernetesDeploymentImageAdapter::new(client);
+        adapter.observation_attempts = observation_attempts;
+        adapter.observation_interval = Duration::ZERO;
+        adapter.observation_deadline = Duration::from_secs(1);
+        (adapter, handle)
+    }
+
+    // Drive the real kube client, retaining every request. An unused reply detects premature
+    // completion; an extra request detects retries or read-budget overruns. No lifecycle model.
+    async fn exchange<T>(
+        work: impl Future<Output = T>,
+        mut handle: mock::Handle<Request<Body>, Response<Body>>,
+        replies: Vec<(StatusCode, Value)>,
+    ) -> (T, Vec<Request<Body>>) {
+        tokio::pin!(work);
+        let mut replies = replies.into_iter();
+        let mut wires = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                tokio::select! {
+                    result = &mut work => {
+                        assert!(replies.next().is_none(), "completed before planned receiver I/O");
+                        return (result, wires);
+                    }
+                    next = handle.next_request() => {
+                        let (wire, send) = next.unwrap();
+                        assert_eq!(
+                            wire.uri().path(),
+                            "/apis/apps/v1/namespaces/demo/deployments/agent-api"
+                        );
+                        let (status, document) = replies
+                            .next()
+                            .expect("unexpected receiver request");
+                        wires.push(wire);
+                        send.send_response(
+                            Response::builder()
+                                .status(status)
+                                .body(Body::from(serde_json::to_vec(&document).unwrap()))
+                                .unwrap()
+                        );
+                    }
+                }
+            }
+        })
+        .await
+        .expect("bounded adapter exchange")
+    }
+
+    #[tokio::test]
+    async fn exchange_controls_detect_unused_replies_and_additional_reads() {
+        for extra_read in [false, true] {
+            let (mut adapter, handle) = test_adapter_with_attempts(2);
+            let checked = tokio::spawn(async move {
+                if extra_read {
+                    let _ = exchange(
+                        adapter.observe(&request(), &apply_outcome()),
+                        handle,
+                        vec![(StatusCode::OK, progressing_response())],
+                    )
+                    .await;
+                } else {
+                    let _ = exchange(
+                        adapter.identify(&request()),
+                        handle,
+                        vec![(StatusCode::OK, deployment_response(false)); 2],
+                    )
+                    .await;
+                }
+            });
+            let error = checked.await.unwrap_err();
+            assert!(error.is_panic());
+            let payload = error.into_panic();
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap();
+            assert!(
+                message.contains(if extra_read {
+                    "unexpected receiver request"
+                } else {
+                    "completed before planned receiver I/O"
+                }),
+                "{message}"
+            );
+        }
     }
 
     fn progressing_response() -> Value {
@@ -447,189 +496,136 @@ mod tests {
         response
     }
 
-    #[test]
-    fn patch_document_changes_only_the_exact_image_and_operation_annotation() {
+    #[tokio::test]
+    async fn identification_binds_one_get_to_target_and_error_partitions() {
         let request = request();
-
-        assert_eq!(
-            deployment_patch_document(&request, &target()),
-            json!({
-                "apiVersion": "apps/v1",
-                "kind": "Deployment",
-                "metadata": {
-                    "name": "agent-api",
-                    "namespace": "demo",
-                    "uid": "deployment-uid-1",
-                    "resourceVersion": "resource-version-1",
-                    "annotations": {
-                        "kapsel.dev/kap0038-operation-id": "op-001"
-                    }
+        for (pointer, value, rejection) in [
+            ("", Value::Null, None),
+            (
+                "/spec/template/spec/containers/0/name",
+                json!("other"),
+                Some(TargetRejection::ContainerNotFound),
+            ),
+            (
+                "/metadata/uid",
+                Value::Null,
+                Some(TargetRejection::InvalidTarget),
+            ),
+            (
+                "/metadata/resourceVersion",
+                Value::Null,
+                Some(TargetRejection::InvalidTarget),
+            ),
+        ] {
+            let (mut adapter, handle) = test_adapter();
+            let mut document = deployment_response(false);
+            if !pointer.is_empty() {
+                *document.pointer_mut(pointer).unwrap() = value;
+            }
+            let (result, wires) = exchange(
+                adapter.identify(&request),
+                handle,
+                vec![(StatusCode::OK, document)],
+            )
+            .await;
+            assert_eq!(wires.len(), 1);
+            assert_eq!(wires[0].method(), Method::GET);
+            let expected = rejection.map_or_else(
+                || {
+                    Ok(TargetIdentity {
+                        deployment_uid: "deployment-uid-1".into(),
+                        resource_version: "resource-version-2".into(),
+                    })
                 },
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [{
-                                "name": "api",
-                                "image": request.immutable_image_digest
-                            }]
-                        }
-                    }
-                }
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn target_identification_uses_one_bounded_deployment_get() {
-        let (mut adapter, mut handle) = test_adapter();
-        let responder = tokio::spawn(async move {
-            let (request, send) = handle.next_request().await.unwrap();
-            assert_eq!(request.method(), Method::GET);
-            assert_eq!(
-                request.uri().path(),
-                "/apis/apps/v1/namespaces/demo/deployments/agent-api"
+                |reason| Err(TargetReadError::Permanent(reason)),
             );
-            send.send_response(Response::new(Body::from(
-                serde_json::to_vec(&deployment_response(false)).unwrap(),
-            )));
-        });
-
-        let target = adapter.identify(&request()).await.unwrap();
-
-        assert_eq!(target.deployment_uid, "deployment-uid-1");
-        assert_eq!(target.resource_version, "resource-version-2");
-        responder.await.unwrap();
+            assert_eq!(result, expected, "{pointer}");
+        }
+        for (code, expected) in [
+            (
+                StatusCode::NOT_FOUND,
+                TargetReadError::Permanent(TargetRejection::DeploymentNotFound),
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                TargetReadError::Transient,
+            ),
+        ] {
+            let (mut adapter, handle) = test_adapter();
+            let document = json!({"kind": "Status", "status": "Failure", "reason": "NotFound",
+                "message": "fixture read failure", "code": code.as_u16()});
+            let (result, wires) =
+                exchange(adapter.identify(&request), handle, vec![(code, document)]).await;
+            assert_eq!(result, Err(expected));
+            assert_eq!(wires.len(), 1);
+            assert_eq!(wires[0].method(), Method::GET);
+        }
     }
 
-    #[tokio::test]
-    async fn identification_rejects_a_missing_container_before_apply() {
-        let (mut adapter, mut handle) = test_adapter();
-        let responder = tokio::spawn(async move {
-            let (_, send) = handle.next_request().await.unwrap();
-            let mut response = deployment_response(false);
-            response["spec"]["template"]["spec"]["containers"][0]["name"] = json!("other");
-            send.send_response(Response::new(Body::from(
-                serde_json::to_vec(&response).unwrap(),
-            )));
-        });
-
-        assert_eq!(
-            adapter.identify(&request()).await,
-            Err(TargetReadError::Permanent(
-                TargetRejection::ContainerNotFound
-            ))
-        );
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn missing_deployment_is_a_permanent_pre_attempt_rejection() {
-        let (mut adapter, mut handle) = test_adapter();
-        let responder = tokio::spawn(async move {
-            let (_, send) = handle.next_request().await.unwrap();
-            send.send_response(
-                Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .body(Body::from(
-                        serde_json::to_vec(&json!({
-                            "apiVersion": "v1",
-                            "kind": "Status",
-                            "status": "Failure",
-                            "message": "deployments.apps agent-api not found",
-                            "reason": "NotFound",
-                            "details": {
-                                "name": "agent-api",
-                                "group": "apps",
-                                "kind": "deployments"
-                            },
-                            "code": 404
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            );
-        });
-
-        assert_eq!(
-            adapter.identify(&request()).await,
-            Err(TargetReadError::Permanent(
-                TargetRejection::DeploymentNotFound
-            ))
-        );
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn identification_requires_uid_and_resource_version() {
-        for missing_field in ["uid", "resourceVersion"] {
+    #[tokio::test(start_paused = true)]
+    async fn target_and_apply_requests_each_have_a_deadline() {
+        for apply in [false, true] {
             let (mut adapter, mut handle) = test_adapter();
             let responder = tokio::spawn(async move {
-                let (_, send) = handle.next_request().await.unwrap();
-                let mut response = deployment_response(false);
-                response["metadata"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove(missing_field);
-                send.send_response(Response::new(Body::from(
-                    serde_json::to_vec(&response).unwrap(),
-                )));
+                let (wire, _send) = handle.next_request().await.unwrap();
+                assert_eq!(
+                    wire.method(),
+                    if apply { Method::PATCH } else { Method::GET }
+                );
+                pending::<()>().await;
             });
-
-            assert_eq!(
-                adapter.identify(&request()).await,
-                Err(TargetReadError::Permanent(TargetRejection::InvalidTarget))
-            );
-            responder.await.unwrap();
+            let start = Instant::now();
+            if apply {
+                assert_eq!(
+                    adapter
+                        .apply(crate::gateway::dispatch_permission_for_test(
+                            &request(),
+                            &target()
+                        ))
+                        .await,
+                    Err(())
+                );
+            } else {
+                assert_eq!(
+                    adapter.identify(&request()).await,
+                    Err(TargetReadError::Transient)
+                );
+            }
+            assert_eq!(start.elapsed(), Duration::from_secs(10));
+            responder.abort();
         }
     }
 
     #[tokio::test]
-    async fn target_and_apply_requests_each_have_a_deadline() {
-        let (mut identify_adapter, mut identify_handle) = test_adapter();
-        identify_adapter.provider_request_timeout = Duration::from_millis(10);
-        let identify_responder = tokio::spawn(async move {
-            let (_request, _send) = identify_handle.next_request().await.unwrap();
-            pending::<()>().await;
-        });
-        assert_eq!(
-            identify_adapter.identify(&request()).await,
-            Err(TargetReadError::Transient)
-        );
-        identify_responder.abort();
-
-        let (mut apply_adapter, mut apply_handle) = test_adapter();
-        apply_adapter.provider_request_timeout = Duration::from_millis(10);
-        let apply_responder = tokio::spawn(async move {
-            let (_request, _send) = apply_handle.next_request().await.unwrap();
-            pending::<()>().await;
-        });
-        assert_eq!(
-            apply_adapter
-                .apply(crate::gateway::dispatch_permission_for_test(
-                    &request(),
-                    &target()
-                ))
-                .await,
-            Err(())
-        );
-        apply_responder.abort();
-    }
-
-    #[tokio::test]
-    async fn apply_uses_conditional_strategic_patch_and_returns_acceptance_facts() {
-        let (mut adapter, mut handle) = test_adapter();
-        let expected_request = request();
-        let expected_target = target();
-        let responder_request = expected_request.clone();
-        let responder_target = expected_target.clone();
-        let responder = tokio::spawn(async move {
-            let (request, send) = handle.next_request().await.unwrap();
-            assert_eq!(request.method(), Method::PATCH);
-            assert_eq!(
-                request.uri().path(),
-                "/apis/apps/v1/namespaces/demo/deployments/agent-api"
-            );
-            let query: BTreeMap<_, _> = request
+    async fn conditional_patch_wire_and_response_binding_are_exact() {
+        let request = request();
+        for (pointer, value) in [
+            ("", Value::Null),
+            ("/metadata/uid", Value::Null),
+            ("/metadata/resourceVersion", Value::Null),
+            ("/metadata/uid", json!("replacement-uid")),
+        ] {
+            let (mut adapter, handle) = test_adapter();
+            let mut document = deployment_response(false);
+            if !pointer.is_empty() {
+                *document.pointer_mut(pointer).unwrap() = value;
+            }
+            let permission = crate::gateway::dispatch_permission_for_test(&request, &target());
+            let (result, mut wires) = exchange(
+                adapter.apply(permission),
+                handle,
+                vec![(StatusCode::OK, document)],
+            )
+            .await;
+            if pointer.is_empty() {
+                assert_eq!(result, Ok(apply_outcome()));
+            } else {
+                assert_eq!(result, Err(()), "{pointer}");
+            }
+            assert_eq!(wires.len(), 1);
+            let wire = wires.pop().unwrap();
+            assert_eq!(wire.method(), Method::PATCH);
+            let query: BTreeMap<_, _> = wire
                 .uri()
                 .query()
                 .unwrap()
@@ -639,296 +635,246 @@ mod tests {
             assert!(!query.contains_key("fieldManager"));
             assert!(!query.contains_key("force"));
             assert_eq!(
-                request.headers().get("content-type").unwrap(),
+                wire.headers().get("content-type").unwrap(),
                 "application/strategic-merge-patch+json"
             );
             let body: Value =
-                serde_json::from_slice(&request.into_body().collect_bytes().await.unwrap())
-                    .unwrap();
+                serde_json::from_slice(&wire.into_body().collect_bytes().await.unwrap()).unwrap();
+            // Independent wire vector, not the production patch-document constructor.
             assert_eq!(
                 body,
-                deployment_patch_document(&responder_request, &responder_target)
+                json!({
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "metadata": {
+                        "name": "agent-api",
+                        "namespace": "demo",
+                        "uid": "deployment-uid-1",
+                        "resourceVersion": "resource-version-1",
+                        "annotations": { "kapsel.dev/kap0038-operation-id": "op-001" }
+                    },
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [{
+                                "name": "api",
+                                "image": request.immutable_image_digest
+                            }]
+                            }
+                        }
+                    }
+                })
             );
-            send.send_response(Response::new(Body::from(
-                serde_json::to_vec(&deployment_response(false)).unwrap(),
-            )));
-        });
+        }
+    }
 
-        let outcome = adapter
-            .apply(crate::gateway::dispatch_permission_for_test(
-                &expected_request,
-                &expected_target,
-            ))
-            .await
-            .unwrap();
-
-        assert!(outcome.accepted);
-        assert_eq!(outcome.requested_generation, Some(2));
-        assert_eq!(outcome.deployment_uid.as_deref(), Some("deployment-uid-1"));
+    #[test]
+    fn deployment_decoding_preserves_selected_receiver_facts() {
+        let mut document = deployment_response(false);
+        document["metadata"]["uid"] = json!("decoded-uid");
+        document["metadata"]["resourceVersion"] = json!("opaque-version");
+        document["metadata"]["generation"] = json!(17);
+        document["metadata"]["annotations"][OPERATION_ANNOTATION] = json!("decoded-marker");
+        document["spec"]["replicas"] = json!(7);
+        document["spec"]["template"]["spec"]["containers"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                0,
+                json!({"name": "other", "image": "not-the-selected-image"}),
+            );
+        document["status"]["observedGeneration"] = json!(19);
+        document["status"]["updatedReplicas"] = json!(5);
+        document["status"]["availableReplicas"] = json!(3);
+        document["status"]["unavailableReplicas"] = json!(2);
+        document["status"]["conditions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded"
+            }));
+        let deployment = serde_json::from_value(document).unwrap();
         assert_eq!(
-            outcome.resource_version.as_deref(),
-            Some("resource-version-2")
+            receiver_observation(&request(), &deployment),
+            ReceiverObservation {
+                deployment_uid: Some("decoded-uid".into()),
+                resource_version: Some("opaque-version".into()),
+                current_generation: Some(17),
+                observed_generation: Some(19),
+                image: Some(request().immutable_image_digest),
+                operation_marker: Some("decoded-marker".into()),
+                desired_replicas: Some(7),
+                updated_replicas: Some(5),
+                available_replicas: Some(3),
+                unavailable_replicas: Some(2),
+                rollout_condition_type: Some("Progressing".into()),
+                rollout_condition_status: Some("False".into()),
+                rollout_condition_reason: Some("ProgressDeadlineExceeded".into()),
+            }
         );
-        responder.await.unwrap();
     }
 
     #[tokio::test]
-    async fn apply_response_requires_the_same_uid_and_a_resource_version() {
-        for (case, field, replacement) in [
-            ("missing deployment UID", "uid", None),
-            ("missing resource version", "resourceVersion", None),
-            ("changed deployment UID", "uid", Some("replacement-uid")),
+    async fn observation_scripts_bind_fields_and_terminal_reads() {
+        let request = request();
+        let outcome = apply_outcome();
+        let mut stale = deployment_response(false);
+        stale["status"]["observedGeneration"] = json!(1);
+        let mut reason = deployment_response(false);
+        reason["status"]["conditions"][0]["reason"] = json!("DifferentObservedReason");
+        let mut nonzero = deployment_response(false);
+        nonzero["status"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unavailableReplicas");
+        let mut omitted = deployment_response(false);
+        omitted["spec"]["replicas"] = json!(0);
+        for field in [
+            "updatedReplicas",
+            "availableReplicas",
+            "unavailableReplicas",
         ] {
-            let (mut adapter, mut handle) = test_adapter();
-            let responder = tokio::spawn(async move {
-                let (_, send) = handle.next_request().await.unwrap();
-                let mut response = deployment_response(false);
-                let metadata = response["metadata"].as_object_mut().unwrap();
-                if let Some(replacement) = replacement {
-                    metadata.insert(field.into(), json!(replacement));
-                } else {
-                    metadata.remove(field);
-                }
-                send.send_response(Response::new(Body::from(
-                    serde_json::to_vec(&response).unwrap(),
-                )));
-            });
-
+            omitted["status"].as_object_mut().unwrap().remove(field);
+        }
+        for (case, documents, expected) in [
+            (
+                "stale",
+                vec![stale, deployment_response(true)],
+                OperationResult::Failed,
+            ),
+            ("reason", vec![reason], OperationResult::Succeeded),
+            ("zeros", vec![omitted], OperationResult::Succeeded),
+            ("nonzero", vec![nonzero], OperationResult::Succeeded),
+            (
+                "settling",
+                vec![
+                    progressing_response(),
+                    progressing_response(),
+                    deployment_response(true),
+                ],
+                OperationResult::Failed,
+            ),
+            (
+                "budget",
+                vec![progressing_response(); 3],
+                OperationResult::Unknown,
+            ),
+        ] {
+            let attempts = documents.len() + usize::from(case != "budget");
+            let (mut adapter, handle) = test_adapter_with_attempts(attempts);
+            let replies = documents
+                .into_iter()
+                .map(|value| (StatusCode::OK, value))
+                .collect();
+            let (result, wires) =
+                exchange(adapter.observe(&request, &outcome), handle, replies).await;
+            let observation = result.unwrap();
+            assert!(wires.iter().all(|wire| wire.method() == Method::GET));
             assert_eq!(
-                adapter
-                    .apply(crate::gateway::dispatch_permission_for_test(
-                        &request(),
-                        &target()
-                    ))
-                    .await,
-                Err(()),
+                observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
+                expected,
                 "{case}"
             );
-            responder.await.unwrap();
+            assert_eq!(
+                observation.observation_is_complete(&request, &outcome),
+                case != "budget"
+            );
+            assert_eq!(observation.current_generation, Some(2));
+            assert_eq!(observation.observed_generation, Some(2));
+            if case == "reason" {
+                assert_eq!(
+                    observation.rollout_condition_type.as_deref(),
+                    Some("Available")
+                );
+                assert_eq!(
+                    observation.rollout_condition_status.as_deref(),
+                    Some("True")
+                );
+                assert_eq!(
+                    observation.rollout_condition_reason.as_deref(),
+                    Some("DifferentObservedReason")
+                );
+            } else if case == "zeros" {
+                assert_eq!(
+                    (
+                        observation.updated_replicas,
+                        observation.available_replicas,
+                        observation.unavailable_replicas
+                    ),
+                    (Some(0), Some(0), Some(0))
+                );
+            } else if case == "nonzero" {
+                assert_eq!(
+                    (
+                        observation.updated_replicas,
+                        observation.available_replicas,
+                        observation.unavailable_replicas
+                    ),
+                    (Some(1), Some(1), Some(0))
+                );
+            }
         }
     }
 
     #[tokio::test]
-    async fn observation_ignores_terminal_conditions_from_a_stale_generation() {
-        let (mut adapter, mut handle) = test_adapter_with_attempts(2);
-        let responder = tokio::spawn(async move {
-            let mut stale = deployment_response(false);
-            stale["status"]["observedGeneration"] = json!(1);
-            for response in [stale, deployment_response(true)] {
-                let (_, send) = handle.next_request().await.unwrap();
-                send.send_response(Response::new(Body::from(
-                    serde_json::to_vec(&response).unwrap(),
-                )));
-            }
-        });
-
-        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
-
-        assert_eq!(
-            observation.rollout_condition_reason.as_deref(),
-            Some("ProgressDeadlineExceeded")
-        );
-        assert_eq!(observation.observed_generation, Some(2));
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn observation_retains_the_exact_selected_available_condition_reason() {
-        let (mut adapter, mut handle) = test_adapter();
-        let responder = tokio::spawn(async move {
-            let (_, send) = handle.next_request().await.unwrap();
-            let mut response = deployment_response(false);
-            response["status"]["conditions"][0]["reason"] = json!("DifferentObservedReason");
-            send.send_response(Response::new(Body::from(
-                serde_json::to_vec(&response).unwrap(),
-            )));
-        });
-
-        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
-
-        assert_eq!(
-            observation.rollout_condition_type.as_deref(),
-            Some("Available")
-        );
-        assert_eq!(
-            observation.rollout_condition_status.as_deref(),
-            Some("True")
-        );
-        assert_eq!(
-            observation.rollout_condition_reason.as_deref(),
-            Some("DifferentObservedReason")
-        );
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn omitted_zero_replica_counts_can_still_report_success() {
-        let (mut adapter, mut handle) = test_adapter();
-        let responder = tokio::spawn(async move {
-            let (_, send) = handle.next_request().await.unwrap();
-            let mut response = deployment_response(false);
-            response["status"]
-                .as_object_mut()
-                .unwrap()
-                .remove("unavailableReplicas");
-            send.send_response(Response::new(Body::from(
-                serde_json::to_vec(&response).unwrap(),
-            )));
-        });
-
+    async fn missing_deployment_exhausts_read_budget_without_receiver_facts() {
         let request = request();
         let outcome = apply_outcome();
-        let observation = adapter.observe(&request, &outcome).await.unwrap();
-
-        assert_eq!(observation.unavailable_replicas, Some(0));
-        assert_eq!(
-            observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
-            OperationResult::Succeeded
-        );
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn observation_is_bounded_and_stops_on_progress_deadline() {
-        let (mut adapter, mut handle) = test_adapter_with_attempts(3);
-        let responder = tokio::spawn(async move {
-            for response in [
-                progressing_response(),
-                progressing_response(),
-                deployment_response(true),
-            ] {
-                let (request, send) = handle.next_request().await.unwrap();
-                assert_eq!(request.method(), Method::GET);
-                send.send_response(Response::new(Body::from(
-                    serde_json::to_vec(&response).unwrap(),
-                )));
-            }
-        });
-
-        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
-
-        assert_eq!(
-            observation.rollout_condition_reason.as_deref(),
-            Some("ProgressDeadlineExceeded")
-        );
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn observation_budget_exhaustion_remains_unknown() {
-        let (mut adapter, mut handle) = test_adapter_with_attempts(3);
-        let responder = tokio::spawn(async move {
-            for _ in 0..3 {
-                let (_, send) = handle.next_request().await.unwrap();
-                send.send_response(Response::new(Body::from(
-                    serde_json::to_vec(&progressing_response()).unwrap(),
-                )));
-            }
-        });
-
-        let request = request();
-        let outcome = apply_outcome();
-        let observation = adapter.observe(&request, &outcome).await.unwrap();
-
-        assert!(!observation.observation_is_complete(&request, &outcome));
-        assert_eq!(
-            observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
-            OperationResult::Unknown
-        );
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn missing_deployment_exhausts_observation_reads_without_a_patch() {
-        let (mut adapter, mut handle) = test_adapter_with_attempts(OBSERVATION_ATTEMPTS_MAX);
-        let responder = tokio::spawn(async move {
-            for _ in 0..OBSERVATION_ATTEMPTS_MAX {
-                let (request, send) = handle.next_request().await.unwrap();
-                assert_eq!(request.method(), Method::GET);
-                send.send_response(
-                    Response::builder()
-                        .status(404)
-                        .body(Body::from(
-                            concat!(
-                                r#"{"kind":"Status","status":"Failure","#,
-                                r#""reason":"NotFound","code":404}"#,
-                            )
-                            .as_bytes()
-                            .to_vec(),
-                        ))
-                        .unwrap(),
-                );
-            }
-        });
-
-        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
-
-        assert_eq!(observation, ReceiverObservation::unknown());
-        responder.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn stalled_deployment_read_is_stopped_by_the_observation_deadline() {
-        let (mock_service, mut handle) = mock::pair::<Request<Body>, Response<Body>>();
-        let client = Client::new(mock_service, "default");
-        let mut adapter = KubernetesDeploymentImageAdapter::with_observation_limits(
-            client,
-            OBSERVATION_ATTEMPTS_MAX,
-            Duration::ZERO,
-            Duration::from_millis(10),
-        );
-        let responder = tokio::spawn(async move {
-            let (_request, _send) = handle.next_request().await.unwrap();
-            pending::<()>().await;
-        });
-
-        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
-
-        assert_eq!(observation, ReceiverObservation::unknown());
-        responder.abort();
+        let (mut adapter, handle) = test_adapter_with_attempts(180);
+        let missing =
+            json!({"kind": "Status", "status": "Failure", "reason": "NotFound", "code": 404});
+        let (result, wires) = exchange(
+            adapter.observe(&request, &outcome),
+            handle,
+            vec![(StatusCode::NOT_FOUND, missing); 180],
+        )
+        .await;
+        assert_eq!(result.unwrap(), ReceiverObservation::unknown());
+        assert_eq!(wires.len(), 180);
+        assert!(wires.iter().all(|wire| wire.method() == Method::GET));
     }
 
     #[tokio::test]
     async fn provisional_signals_do_not_preempt_sufficient_classifier_evidence() {
-        for case in ["replicas", "uid", "generation", "marker", "image"] {
-            let (mut adapter, mut handle) = test_adapter_with_attempts(2);
+        let request = request();
+        let outcome = apply_outcome();
+        for (pointer, value) in [
+            ("/status/unavailableReplicas", json!(1)),
+            ("/metadata/uid", json!("replacement")),
+            ("/metadata/generation", json!(3)),
+            (
+                "/metadata/annotations/kapsel.dev~1kap0038-operation-id",
+                json!("other"),
+            ),
+            (
+                "/spec/template/spec/containers/0/image",
+                json!(format!("registry.example/api@sha256:{}", "a".repeat(64))),
+            ),
+        ] {
+            let (mut adapter, handle) = test_adapter_with_attempts(3);
             let mut provisional = deployment_response(false);
-            match case {
-                "replicas" => provisional["status"]["unavailableReplicas"] = json!(1),
-                "uid" => provisional["metadata"]["uid"] = json!("replacement"),
-                "generation" => {
-                    provisional["metadata"]["generation"] = json!(3);
-                    provisional["status"]["observedGeneration"] = json!(3);
-                },
-                "marker" => {
-                    provisional["metadata"]["annotations"][OPERATION_ANNOTATION] = json!("other");
-                },
-                "image" => {
-                    provisional["spec"]["template"]["spec"]["containers"][0]["image"] =
-                        json!(format!("registry.example/api@sha256:{}", "a".repeat(64)));
-                },
-                _ => unreachable!(),
+            *provisional.pointer_mut(pointer).unwrap() = value;
+            if pointer == "/metadata/generation" {
+                provisional["status"]["observedGeneration"] = json!(3);
             }
-            let responder = tokio::spawn(async move {
-                for response in [provisional, deployment_response(false)] {
-                    let (request, send) = handle.next_request().await.unwrap();
-                    assert_eq!(request.method(), Method::GET);
-                    send.send_response(Response::new(Body::from(
-                        serde_json::to_vec(&response).unwrap(),
-                    )));
-                }
-            });
-
-            let request = request();
-            let outcome = apply_outcome();
-            let observation = adapter.observe(&request, &outcome).await.unwrap();
-
+            let (result, wires) = exchange(
+                adapter.observe(&request, &outcome),
+                handle,
+                vec![
+                    (StatusCode::OK, provisional),
+                    (StatusCode::OK, deployment_response(false)),
+                ],
+            )
+            .await;
+            assert_eq!(wires.len(), 2);
+            assert!(wires.iter().all(|wire| wire.method() == Method::GET));
             assert_eq!(
-                observation.classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
+                result
+                    .unwrap()
+                    .classify(&ValidatedRequest::try_from(&request).unwrap(), &outcome),
                 OperationResult::Succeeded,
-                "{case}"
+                "{pointer}"
             );
-            responder.await.unwrap();
         }
     }
 
@@ -1064,27 +1010,5 @@ mod tests {
 
         drop(adapter);
         assert_eq!(responder.await.unwrap(), 17);
-    }
-
-    #[tokio::test]
-    async fn observation_maps_progress_deadline_without_treating_acceptance_as_success() {
-        let (mut adapter, mut handle) = test_adapter();
-        let responder = tokio::spawn(async move {
-            let (request, send) = handle.next_request().await.unwrap();
-            assert_eq!(request.method(), Method::GET);
-            send.send_response(Response::new(Body::from(
-                serde_json::to_vec(&deployment_response(true)).unwrap(),
-            )));
-        });
-
-        let observation = adapter.observe(&request(), &apply_outcome()).await.unwrap();
-
-        assert_eq!(
-            observation.rollout_condition_reason.as_deref(),
-            Some("ProgressDeadlineExceeded")
-        );
-        assert_eq!(observation.observed_generation, Some(2));
-        assert_eq!(observation.operation_marker.as_deref(), Some("op-001"));
-        responder.await.unwrap();
     }
 }
