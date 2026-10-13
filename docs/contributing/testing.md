@@ -237,10 +237,9 @@ service application and shared journal. Its private test-only owners are:
 | `exploration.rs` | Generation, minimization, exclusive persistence and replay                     |
 
 `src/test_scratch.rs` owns private temporary-directory custody and cleanup for journal tests and
-simulation. Journal tests do not depend on the simulator. The Python supervisor still selects
-exactly `kernel_simulation_tests::kernel_trace_exploration_or_replay`; deterministic cases now have
-the `kernel_simulation_tests::cases::` prefix. All modules and neutral support remain charged
-assurance.
+simulation. Journal tests do not depend on the simulator. The bounded Python job selects exactly
+`kernel_simulation_tests::kernel_trace_exploration_or_replay`; deterministic cases now have the
+`kernel_simulation_tests::cases::` prefix. All modules and neutral support remain charged assurance.
 
 Each identity has distinct intent, target, authority and receipt signing material. Every event
 checks every peer's raw facts and independently counted receiver I/O. Every selection also requires
@@ -375,7 +374,7 @@ KAPSEL_KERNEL_REPLAY=/absolute/retained/finding-0.json cargo test --locked -p ka
 ```
 
 Use the retained executable for original-binary reproduction. Rebuilding runs the same actions
-against new code. This local route does not replace supervised exploration custody, physical worker
+against new code. This local route does not replace bounded-job evidence retention, physical worker
 lifetime, capacity/ENOSPC, configured-client HTTP, actual Git transport, live-receiver or
 installed-artifact evidence. Those owners remain separate.
 
@@ -388,12 +387,13 @@ all peers' original authority, raw history and independently counted I/O, includ
 external trust is unavailable. Application reads must still refuse disclosure under unavailable
 original trust.
 
-`exploration`, `simulation` and `soak` use this same owner through the existing robustness
-supervisor. The local `KAPSEL_KERNEL_*` commands above accept uncommitted source. Supervised runs
-require clean committed source, bounded resources and retained evidence. See
-[supervised exploration](qualification.md#background-sweep-and-retained-evidence). Retained older
-inputs require their original test executable; rebuilding does not recreate that executable
-identity.
+The independent `simulation` job uses this owner and accepts dirty development source. It reuses
+normal build output and retains exact source and executable bytes in a new output directory. See
+[bounded exploration](qualification.md#background-sweep-and-retained-evidence). Each shard must
+complete its selected cases and retain their traces; a passing generated trace is not replayed
+again. Failures retain reached-event details and minimized inputs, then replay both original and
+reduced inputs with the retained binary. Rebuilding is a separate candidate comparison, not
+reproduction of that executable identity. Previous findings never gate a new job.
 
 The runtime's `enumerated_lifecycle_physical_retirement_barriers` separately exercises tracked jobs.
 It parks work before or after admission acknowledgement, disconnects the caller and aborts the
@@ -429,7 +429,7 @@ inert `target_read_failures` checks remain in gateway lifecycle/storage tests.
 | Frozen history survives reopen and changed receiver facts       | All-peer raw-fact and no-I/O laws; Git observation substitution changes the ref without changing acknowledgement/result; receipt rewrite replaces bytes and digest under withdrawn trust |
 | Receipt loss and signer rotation preserve original evidence     | Atomic delivery and material-replacement laws; actual process-exit checkpoints remain separate                                                                                           |
 | Shared history retains facts and completion headroom            | One shared simulator journal; full-capacity/layout and storage-failure owners remain                                                                                                     |
-| Seed/shard accounting and evidence custody                      | Existing supervisor, exclusive full-input retention, reached-defect reduction and Rust-owned replay of every document                                                                    |
+| Seed/shard accounting and evidence custody                      | Independent bounded jobs, exclusive full-input retention, exact completion counts and original-binary replay of findings                                                                 |
 
 The simulator also replaces the procedural authorized-reopen, writer/decoder phase, target-read
 interruption and post-apply recovery traces in gateway `lifecycle` and `recovery`. Fresh
@@ -460,16 +460,17 @@ blocks retirement even when deterministic checks pass.
 
 ## Robustness runner ownership
 
-`tools/dev/run_robustness.py` owns command launching, bounded output, evidence custody, completion,
-and explicit triage. Direct protocol cases cover build records, exact generation/replay markers,
-trace header custody and fuzz outcomes. One wiring witness per controller checks source/binary and
-corpus retention without reconstructing simulation worlds. The Rust directory replay owns action
-interpretation and the simulation laws; successful headers and markers cannot substitute for it.
+`tools/dev/run_robustness.py` owns independent simulation and fuzz jobs, bounded process output,
+exact source/executable retention and completion accounting. Direct protocol cases cover build
+records, generation/replay counts, missing evidence, dirty-source snapshots and fuzz outcomes.
+Controller witnesses check all five targets' read-only input snapshots and separate discoveries
+without reconstructing simulation worlds. Rust owns action interpretation, laws and minimization.
+Default corpus and reached negative controls remain mandatory.
 
-Real process fixtures retain separate witnesses for EOF/exit ordering, first failed peers,
-descendants, inherited locks, FIFO refusal and cancellation at spawn, retirement and finalization.
-Retained metadata does not authorize cleanup. Only successful completion removes the freshly owned
-scratch directory; failed or interrupted evidence requires explicit triage.
+Real process fixtures retain EOF/exit ordering, first failed peers, descendant termination, FIFO
+refusal and cancellation at spawn, retirement and finalization. No shared lock, prior-result scan or
+triage state grants permission to run. Every job exclusively creates its output directory and leaves
+old evidence untouched. Timeout, truncation, source changes and failed retention cannot pass.
 
 ## Commands and detailed mappings
 

@@ -4,6 +4,11 @@ Notable changes are recorded here. Release tags retain their matching documentat
 
 ## Unreleased
 
+- Exploration jobs now use independent output directories, explicit workload limits and reusable
+  development builds. Simulation and all five fuzz targets retain exact source, executable and input
+  evidence, including dirty source. Cross-run triage, lane locks and dual-root state are removed;
+  existing retained evidence is unchanged.
+
 - Candidate artifact schema v4 binds the installed assets, standalone maintainer qualification
   program and staged operator guide in metadata and the SBOM. The companion now requires explicit
   `--verify-only` or `--extract-to` and never executes binaries or changes the host. Smoke and

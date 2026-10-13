@@ -117,7 +117,9 @@ Those lanes are separate from the everyday loop; run the ones required by the ch
 The `fuzz` crate is outside the workspace for cargo-fuzz and does not inherit workspace settings.
 The deterministic Rust gate checks its locked dependency graph, Clippy diagnostics, and maintained
 corpus through explicit fuzz-manifest commands. Formatting includes its source. Exploratory fuzzing
-remains a separate qualification lane.
+remains a separate [bounded-job lane](qualification.md#robustness-lanes). Simulation and fuzz jobs
+reuse development build output and retain evidence in an explicitly selected new directory. Their
+command records separate setup, build and execution time.
 
 ## Optional hooks
 

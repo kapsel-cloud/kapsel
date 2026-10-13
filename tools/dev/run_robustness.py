@@ -1,52 +1,45 @@
 #!/usr/bin/env python3
-"""Supervise lifecycle simulations and authority/receipt fuzzing.
+"""Run one bounded simulation or fuzz job in a new evidence directory.
 
-Incomplete runs retain their evidence and never count as passes.
+Jobs never consult previous results or modify input corpora. Hard resource isolation belongs
+to the invoking CI/container owner, not this process-group launcher.
 """
 
 import argparse
-import fcntl
 import hashlib
+import io
 import json
 import os
 import re
-import secrets
 import selectors
-import shutil
 import signal
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO, Literal, NotRequired, TypedDict, cast
-
-Lane = Literal["simulation", "fuzz", "unclassified"]
-
-
-class CommandRecord(TypedDict):
-    command: list[str]
-    cwd: str
-    environment: dict[str, str]
-    status: Literal["RUNNING", "EXITED", "RETIREMENT_UNCONFIRMED"]
-    log: str
-    exit_status: NotRequired[int | None]
-
-
-class SourceIdentity(TypedDict):
-    revision: str
-    rustc: str
-    cargo: str
-
+from typing import BinaryIO, Literal, NotRequired, TypedDict
 
 ROOT = Path(__file__).resolve().parents[2]
 KERNEL_TEST = "kernel_simulation_tests::kernel_trace_exploration_or_replay"
 NIGHTLY = "nightly-2026-07-03"
 LOG_LIMIT = 8 * 1024 * 1024
-STATE_LIMIT = 1024 * 1024 * 1024
+SOURCE_LIMIT = 64 * 1024 * 1024
+CORPUS_FILES = 10000
+BUILD_ENVIRONMENT = (
+    "CARGO_TARGET_DIR",
+    "CARGO_BUILD_TARGET",
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTC",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTUP_TOOLCHAIN",
+)
 FUZZ_TARGETS = {
     "inspect_receipt": 17 * 1024 + 5,
     "inspect_git_receipt": 17 * 1024 + 5,
@@ -77,31 +70,24 @@ class CommandFailed(Incomplete):
         self.output = output
 
 
-def private_root(value: str) -> Path:
-    path = Path(value)
-    if not path.is_absolute() or ".." in path.parts:
-        raise Incomplete("roots must be absolute, existing private directories")
-    for component in [*reversed(path.parents), path]:
-        if component.is_symlink():
-            raise Incomplete(f"symlink component: {component}")
-    info = path.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise Incomplete(f"root must be owned by this user and mode 0700: {path}")
-    if path == ROOT or path in ROOT.parents or ROOT in path.parents:
-        raise Incomplete("roots must be outside the source checkout")
-    return path
+class CommandRecord(TypedDict):
+    command: list[str]
+    environment: dict[str, str]
+    phase: str
+    status: Literal["RUNNING", "EXITED", "RETIREMENT_UNCONFIRMED"]
+    log: str
+    seconds: NotRequired[float]
+    exit_status: NotRequired[int | None]
 
 
 def atomic_json(path: Path, value: Mapping[str, object]) -> None:
     fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".new", dir=path.parent)
-    temporary = Path(name)
     with os.fdopen(fd, "w") as output:
         json.dump(value, output, indent=2)
         output.write("\n")
         output.flush()
         os.fsync(output.fileno())
-    os.replace(temporary, path)
-
+    os.replace(name, path)
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(fd)
@@ -109,84 +95,23 @@ def atomic_json(path: Path, value: Mapping[str, object]) -> None:
         os.close(fd)
 
 
-def acquire_lock(state: Path) -> int:
-    fd = os.open(state / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    info = os.fstat(fd)
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid != os.getuid()
-        or info.st_nlink != 1
-        or info.st_mode & 0o077
-    ):
-        os.close(fd)
-        raise Incomplete("unsafe lock file")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as error:
-        os.close(fd)
-        raise Incomplete("another run owns the lock") from error
-    return fd
-
-
-def check_storage(state: Path, enforce_budget: bool = True) -> None:
-    total = 0
-    for directory, directories, files in os.walk(state, followlinks=False):
-        for name in directories + files:
-            info = (Path(directory) / name).lstat()
-            if (
-                not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
-                or info.st_uid != os.getuid()
-            ):
-                raise Incomplete("unsafe entry in retained state")
-            if stat.S_ISREG(info.st_mode):
-                total += info.st_size
-    if enforce_budget:
-        if total > STATE_LIMIT - 64 * 1024 * 1024:
-            raise Incomplete("retained evidence budget exhausted; triage and archive explicitly")
-        if shutil.disk_usage(state).free < 128 * 1024 * 1024:
-            raise Incomplete("insufficient evidence storage")
-
-
-def read_result(path: Path) -> dict[str, object]:
+def bounded_bytes(path: Path, limit: int) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
-            raise Incomplete("unsafe result record")
-        if info.st_size > 1024 * 1024:
-            raise Incomplete("oversized result record")
-        data = source.read(1024 * 1024 + 1)
-        if len(data) > 1024 * 1024:
-            raise Incomplete("oversized result record")
-    result = json.loads(data)
-    statuses = {"RUNNING", "PASSED", "FINDING", "INCOMPLETE", "CANCELLED", "TRIAGED"}
-    if (
-        not isinstance(result, dict)
-        or not isinstance(result.get("status"), str)
-        or result.get("status") not in statuses
-        or not isinstance(result.get("lane"), str)
-        or result.get("lane") not in {"simulation", "fuzz", "unclassified"}
-    ):
-        raise Incomplete("invalid result record")
-    # Only lane/status drive decisions. Other fields are opaque retained evidence, never paths
-    # or authority for cleanup/execution; legacy interrupted records may contain partial metadata.
-    return cast(dict[str, object], result)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise Incomplete(f"not a bounded regular file: {path}")
+        data = source.read(limit + 1)
+        if len(data) > limit:
+            raise Incomplete(f"file grew beyond limit: {path}")
+        return data
 
 
-def unresolved(state: Path, lane: str) -> list[Path]:
-    pending = []
-    for path in sorted(state.glob("run-*/result.json")):
-        result = read_result(path)
-        if result["lane"] in (lane, "unclassified") and result["status"] not in (
-            "PASSED",
-            "TRIAGED",
-        ):
-            pending.append(path.parent)
-    # A directory without a result may be a crash before publication, never a pass.
-    for path in state.glob("run-*"):
-        if not (path / "result.json").is_file():
-            pending.append(path)
-    return pending
+def read_json(path: Path) -> dict:
+    value = json.loads(bounded_bytes(path, 256 * 1024))
+    if not isinstance(value, dict):
+        raise Incomplete(f"expected an object: {path}")
+    return value
 
 
 def check_cancellation() -> None:
@@ -198,7 +123,7 @@ def check_cancellation() -> None:
 
 
 def retire_all(processes: list[subprocess.Popen[bytes]]) -> None:
-    # Kill every owned group before waiting on any leader. A stuck leader must not spare peers.
+    # Kill all owned groups before waiting on any leader. A stuck leader must not spare peers.
     error = None
     for process in processes:
         try:
@@ -221,19 +146,23 @@ def retire(process: subprocess.Popen[bytes]) -> None:
     retire_all([process])
 
 
-class Supervisor:
-    def __init__(self, evidence: Path, scratch: Path, lock: int, seconds: int) -> None:
+class Job:
+    def __init__(self, evidence: Path, seconds: int) -> None:
         self.evidence = evidence
-        self.scratch = scratch
-        self.lock = lock
         self.deadline = time.monotonic() + seconds
-        self.counter = 0
         self.commands: list[CommandRecord] = []
+        self.phase = "setup"
+        self.timings: dict[str, float] = {}
+        self.temporary = evidence / "tmp"
+        self.temporary.mkdir(mode=0o700)
+
+    def checkpoint(self) -> None:
+        check_cancellation()
+        if time.monotonic() >= self.deadline:
+            raise Incomplete("overall timeout")
 
     def run(
-        self,
-        commands: list[list[str]],
-        environments: list[dict[str, str]] | None = None,
+        self, commands: list[list[str]], environments: list[dict[str, str]] | None = None
     ) -> list[str]:
         if not commands:
             raise Incomplete("empty command selection")
@@ -243,29 +172,32 @@ class Supervisor:
         records: list[CommandRecord] = []
         outputs = [bytearray() for _ in commands]
         retired: set[int] = set()
+        started = time.monotonic()
         try:
             for index, command in enumerate(commands):
-                if time.monotonic() >= self.deadline:
-                    raise Incomplete("overall timeout")
-                self.counter += 1
-                name = f"command-{self.counter:03}"
-                selected_environment = dict(environments[index]) if environments else {}
-                selected_environment.update(TMPDIR=str(self.scratch))
+                self.checkpoint()
+                name = f"command-{len(self.commands) + 1:03}"
+                selected = {
+                    name: os.environ[name] for name in BUILD_ENVIRONMENT if name in os.environ
+                }
+                if environments:
+                    selected.update(environments[index])
+                selected.update(TMPDIR=str(self.temporary))
                 record: CommandRecord = {
                     "command": command,
-                    "cwd": str(ROOT),
-                    "environment": selected_environment,
+                    "environment": selected,
+                    "phase": self.phase,
                     "status": "RUNNING",
                     "log": name + ".log",
                 }
                 records.append(record)
                 self.commands.append(record)
                 atomic_json(self.evidence / "commands.json", {"commands": self.commands})
-                log = (self.evidence / (name + ".log")).open("xb")
+                log = (self.evidence / record["log"]).open("xb")
                 logs.append(log)
-                env = os.environ.copy()
-                env.update(record["environment"])
-                check_cancellation()
+                # Ambient replay/control variables must not replace the selected workload.
+                env = {k: v for k, v in os.environ.items() if not k.startswith("KAPSEL_KERNEL_")}
+                env.update(selected)
                 process = subprocess.Popen(
                     command,
                     cwd=ROOT,
@@ -273,23 +205,16 @@ class Supervisor:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
-                    pass_fds=(self.lock,),
                 )
                 children.append(process)
                 if process.stdout is None:
                     raise Incomplete("command output pipe was not created")
                 selector.register(process.stdout, selectors.EVENT_READ, index)
-                check_cancellation()
+                self.checkpoint()
 
-            next_storage_check = 0.0
             failure: tuple[int, int] | None = None
             while selector.get_map() or any(child.poll() is None for child in children):
-                check_cancellation()
-                if time.monotonic() >= next_storage_check:
-                    check_storage(self.evidence.parent)
-                    next_storage_check = time.monotonic() + 1
-                if time.monotonic() >= self.deadline:
-                    raise Incomplete("overall timeout")
+                self.checkpoint()
                 for key, _ in selector.select(timeout=0.1):
                     index = key.data
                     data = os.read(key.fd, 65536)
@@ -304,7 +229,6 @@ class Supervisor:
                         raise Incomplete(
                             "log limit exceeded; execution stopped, evidence incomplete"
                         )
-
                 if failure is None:
                     for index, process in enumerate(children):
                         status = process.poll()
@@ -313,14 +237,12 @@ class Supervisor:
                             retired.add(process.pid)
                         if status not in (None, 0):
                             failure = (index, status)
-                            # Stop peers immediately, but drain bounded output before classifying.
                             pending = [child for child in children if child.pid not in retired]
                             retire_all(pending)
                             retired.update(child.pid for child in pending)
                             break
-            check_cancellation()
-            # EOF and process exit are separate events. The terminating condition can observe
-            # a nonzero status after the last body poll; reconcile it before returning output.
+            self.checkpoint()
+            # EOF and exit are separate events; reconcile late failures before accepting output.
             if failure is None:
                 for index, process in enumerate(children):
                     status = process.wait(timeout=max(0.01, self.deadline - time.monotonic()))
@@ -339,6 +261,7 @@ class Supervisor:
                 retirement_error = error
             for process, record in zip(children, records, strict=False):
                 record["exit_status"] = process.returncode
+                record["seconds"] = time.monotonic() - started
                 record["status"] = (
                     "EXITED" if process.returncode is not None else "RETIREMENT_UNCONFIRMED"
                 )
@@ -349,57 +272,53 @@ class Supervisor:
                 os.fsync(log.fileno())
                 log.close()
             selector.close()
+            elapsed = time.monotonic() - started
+            self.timings[self.phase] = self.timings.get(self.phase, 0.0) + elapsed
             atomic_json(self.evidence / "commands.json", {"commands": self.commands})
             if retirement_error is not None:
                 raise retirement_error
             check_cancellation()
 
 
-def source_identity(supervisor: Supervisor) -> SourceIdentity:
-    revision, dirty, compiler, cargo = supervisor.run(
-        [
-            ["git", "rev-parse", "HEAD"],
-            ["git", "status", "--porcelain", "--untracked-files=all"],
-            ["rustc", "-vV"],
-            ["cargo", "-V"],
-        ]
-    )
-    if dirty.strip() or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", revision.strip()):
-        raise Incomplete("clean committed source required; no automatic update")
-    return {"revision": revision.strip(), "rustc": compiler.strip(), "cargo": cargo.strip()}
+def source_snapshot(job: Job, retain: bool) -> str:
+    names = job.run([["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"]])[0]
+    digest = hashlib.sha256()
+    total = 0
+    archive = tarfile.open(job.evidence / "source.tar", "x") if retain else None
+    try:
+        for name in sorted(set(names.split("\0")) - {""}):
+            job.checkpoint()
+            path = ROOT / name
+            if not path.exists() and not path.is_symlink():
+                continue  # Git's index still lists unstaged deletions.
+            data = bounded_bytes(path, SOURCE_LIMIT - total)
+            total += len(data)
+            encoded = name.encode()
+            digest.update(len(encoded).to_bytes(8, "little") + encoded)
+            digest.update(len(data).to_bytes(8, "little") + data)
+            if archive is not None:
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                member.mode = stat.S_IMODE(path.stat().st_mode)
+                archive.addfile(member, io.BytesIO(data))
+    finally:
+        if archive is not None:
+            archive.close()
+    return digest.hexdigest()
 
 
-def retained_exploration(
-    traces: Path, seed: int, cases: int, shards: int, index: int, digest: str
-) -> None:
-    expected = {f"case-{case}.json" for case in range(index, cases, shards)}
-    if {path.name for path in traces.iterdir()} != expected:
-        raise Incomplete("missing or unexpected exploration traces")
-    manifest = {}
-    sources = set()
-    for case in range(index, cases, shards):
-        path = traces / f"case-{case}.json"
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 256 * 1024:
-            raise Incomplete("unsafe exploration trace")
-        payload = path.read_bytes()
-        data = json.loads(payload)
-        if (
-            not isinstance(data, dict)
-            or data.get("executable_sha256") != digest
-            or data.get("seed") != (seed + case) % 2**64
-            or not isinstance(data.get("source_sha256"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", data["source_sha256"])
-        ):
-            raise Incomplete("exploration trace identity mismatch")
-        sources.add(data["source_sha256"])
-        manifest[path.name] = hashlib.sha256(payload).hexdigest()
-    if len(sources) != 1:
-        raise Incomplete("exploration source identity changed")
-    atomic_json(traces.parent / (traces.name + ".json"), manifest)
+def retain_executable(job: Job, built: Path) -> tuple[Path, str]:
+    data = bounded_bytes(built, 512 * 1024 * 1024)
+    retained = job.evidence / "executable"
+    with retained.open("xb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    retained.chmod(0o700)
+    return retained, hashlib.sha256(data).hexdigest()
 
 
-def simulation_executable(output: str, build_root: Path) -> Path:
+def simulation_executable(output: str) -> Path:
     executables = []
     for line in output.splitlines():
         try:
@@ -418,19 +337,9 @@ def simulation_executable(output: str, build_root: Path) -> Path:
             and isinstance(message.get("executable"), str)
         ):
             executables.append(Path(message["executable"]))
-    if len(executables) != 1:
+    if len(executables) != 1 or not executables[0].is_absolute():
         raise Incomplete("missing or ambiguous simulation test executable")
-    path = executables[0]
-    if (
-        not path.is_absolute()
-        or ".." in path.parts
-        or not path.resolve().is_relative_to(build_root.resolve())
-    ):
-        raise Incomplete("simulation executable is outside owned build output")
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
-        raise Incomplete("unsafe simulation executable")
-    return path
+    return executables[0]
 
 
 def require_test_completion(output: str, marker: str) -> None:
@@ -440,196 +349,227 @@ def require_test_completion(output: str, marker: str) -> None:
         raise Incomplete(f"missing execution evidence: {marker}")
 
 
-def simulation_commands(
-    supervisor: Supervisor, commands: list[list[str]], environments: list[dict[str, str]]
-) -> list[str]:
+def finding_marker(error: CommandFailed) -> dict:
+    matches = re.findall(r"^KAPSEL_KERNEL_FINDING (.+)$", error.output, re.MULTILINE)
+    if error.status != 101 or len(matches) != 1:
+        raise Incomplete("simulation failed without a complete law finding") from error
+    value = json.loads(matches[0])
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("law"), str)
+        or not isinstance(value.get("event"), int)
+        or value["event"] < 0
+        or not isinstance(value.get("defect_reached"), list)
+    ):
+        raise Incomplete("invalid law finding")
+    return value
+
+
+def replay_trace(job: Job, command: list[str], path: Path) -> dict | None:
     try:
-        return supervisor.run(commands, environments)
+        output = job.run(
+            [command], [{"KAPSEL_KERNEL_REPLAY": str(path), "KAPSEL_KERNEL_JOB": "1"}]
+        )[0]
     except CommandFailed as error:
-        if error.status > 0:
-            raise Finding(str(error)) from error
-        raise
+        return finding_marker(error)
+    require_test_completion(output, "KAPSEL_KERNEL_REPLAYED cases=1")
+    return None
 
 
-def simulation(
-    supervisor: Supervisor,
-    seeds: list[int],
-    cases: int,
-    shards: int,
-    source_revision: str | None = None,
+def retained_traces(
+    directory: Path, seed: int, cases: int, shards: int, index: int, digest: str, source: str
 ) -> None:
-    prefix = "KAPSEL_KERNEL"
-    source_archive = None
-    if source_revision is not None:
-        archive = supervisor.evidence / "source.tar"
-        supervisor.run(
-            [["git", "archive", "--format=tar", "--output", str(archive), source_revision]]
-        )
-        source_archive = {
-            "path": str(archive),
-            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
-        }
-    output = supervisor.run(
-        [
+    expected = {f"case-{case}.json" for case in range(index, cases, shards)}
+    if {path.name for path in directory.iterdir()} != expected:
+        raise Incomplete("missing or unexpected exploration traces")
+    hashes = {}
+    for case in range(index, cases, shards):
+        path = directory / f"case-{case}.json"
+        data = read_json(path)
+        if (
+            data.get("seed") != (seed + case) % 2**64
+            or data.get("executable_sha256") != digest
+            or data.get("source_sha256") != source
+        ):
+            raise Incomplete("exploration trace identity mismatch")
+        hashes[path.name] = hashlib.sha256(bounded_bytes(path, 64 * 1024)).hexdigest()
+    atomic_json(directory.with_suffix(".json"), hashes)
+
+
+def simulation(job: Job, args: argparse.Namespace, source: str) -> None:
+    job.phase = "build"
+    if args.executable:
+        built = args.executable
+    else:
+        output = job.run(
             [
-                "cargo",
-                "test",
-                "--release",
-                "--locked",
-                "-p",
-                "kapsel",
-                "--lib",
-                "--no-run",
-                "--message-format=json",
-                "--target-dir",
-                str(supervisor.scratch / "simulation-build"),
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "-p",
+                    "kapsel",
+                    "--lib",
+                    "--no-run",
+                    "--message-format=json",
+                ]
             ]
-        ]
-    )[0]
-    built = simulation_executable(output, supervisor.scratch / "simulation-build")
-    retained = supervisor.evidence / "simulation-tests"
-    with built.open("rb") as source, retained.open("xb") as destination:
-        shutil.copyfileobj(source, destination)
-        destination.flush()
-        os.fsync(destination.fileno())
-    retained.chmod(0o700)
-    executable = str(retained)
-    digest = hashlib.sha256(retained.read_bytes()).hexdigest()
+        )[0]
+        built = simulation_executable(output)
+    executable, digest = retain_executable(job, built)
     atomic_json(
-        supervisor.evidence / "exploration.json",
+        job.evidence / "simulation.json",
         {
-            "seeds": seeds,
-            "cases": cases,
-            "shards": shards,
-            "engine": "kernel",
-            "source_archive": source_archive,
-            "executable": executable,
-            "sha256": digest,
+            "executable_sha256": digest,
+            "source_sha256": source,
+            "cargo_build_requested": not bool(args.executable),
         },
     )
-    command = [executable, KERNEL_TEST, "--ignored", "--exact", "--nocapture"]
-    for seed in seeds:
+    command = [str(executable), KERNEL_TEST, "--ignored", "--exact", "--nocapture"]
+    job.phase = "execution"
+    if args.replay:
+        retained = job.evidence / "replay.json"
+        retained.write_bytes(bounded_bytes(args.replay, 64 * 1024))
+        if args.executable and read_json(retained).get("executable_sha256") != digest:
+            raise Incomplete("original replay executable does not match trace identity")
+        finding = replay_trace(job, command, retained)
+        if finding is not None:
+            atomic_json(job.evidence / "finding.json", finding)
+            raise Finding(f"replayed {finding['law']}")
+        return
+
+    for seed in args.seed:
         environments = []
-        for index in range(shards):
-            traces = supervisor.evidence / f"traces-{seed}-{index}"
-            traces.mkdir(mode=0o700)
+        for index in range(args.shards):
+            directory = job.evidence / f"traces-{seed}-{index}"
+            directory.mkdir(mode=0o700)
             environments.append(
                 {
-                    f"{prefix}_SEED": str(seed),
-                    f"{prefix}_CASES": str(cases),
-                    f"{prefix}_SHARDS": str(shards),
-                    f"{prefix}_SHARD_INDEX": str(index),
-                    f"{prefix}_STEPS": "48",
-                    f"{prefix}_EVIDENCE": str(traces),
+                    "KAPSEL_KERNEL_SEED": str(seed),
+                    "KAPSEL_KERNEL_CASES": str(args.cases),
+                    "KAPSEL_KERNEL_STEPS": str(args.steps),
+                    "KAPSEL_KERNEL_SHARDS": str(args.shards),
+                    "KAPSEL_KERNEL_SHARD_INDEX": str(index),
+                    "KAPSEL_KERNEL_EVIDENCE": str(directory),
+                    "KAPSEL_KERNEL_JOB": "1",
                 }
             )
-        outputs = simulation_commands(supervisor, [command for _ in range(shards)], environments)
+        try:
+            outputs = job.run([command] * args.shards, environments)
+        except CommandFailed as error:
+            finding = finding_marker(error)
+            # A diagnostic alone cannot establish custody or successful minimization/replay.
+            failures = list(job.evidence.glob(f"traces-{seed}-*/failure.json"))
+            if not failures:
+                raise Incomplete("missing retained finding") from error
+            for failure in failures:
+                report = read_json(failure)
+                case = report.get("case")
+                if (
+                    type(case) is not int
+                    or not 0 <= case < args.cases
+                    or report.get("finding") != finding
+                ):
+                    raise Incomplete("finding record mismatch") from error
+                for name in (f"case-{case}.json", f"finding-{case}.json"):
+                    path = failure.parent / name
+                    trace = read_json(path)
+                    if (
+                        trace.get("executable_sha256") != digest
+                        or trace.get("source_sha256") != source
+                    ):
+                        raise Incomplete("finding trace identity mismatch") from error
+                    replayed = replay_trace(job, command, path)
+                    if replayed is None or replayed["law"] != finding["law"]:
+                        raise Incomplete("retained finding did not reproduce") from error
+            raise Finding(finding["law"]) from error
         for index, output in enumerate(outputs):
-            count = len(range(index, cases, shards))
-            marker = f"{prefix}_COMPLETED seed={seed} shard={index}/{shards} cases={count} steps=48"
+            count = len(range(index, args.cases, args.shards))
+            marker = f"KAPSEL_KERNEL_COMPLETED seed={seed} shard={index}/{args.shards} cases={count} steps={args.steps}"
             require_test_completion(output, marker)
-            retained_exploration(
-                supervisor.evidence / f"traces-{seed}-{index}",
+            retained_traces(
+                job.evidence / f"traces-{seed}-{index}",
                 seed,
-                cases,
-                shards,
+                args.cases,
+                args.shards,
                 index,
                 digest,
+                source,
             )
-        # The owning Rust parser and oracle must accept every retained document. Header hashes
-        # and a generation marker alone cannot establish that a trace is replayable.
-        replayed = simulation_commands(
-            supervisor,
-            [command for _ in range(shards)],
-            [
-                {f"{prefix}_REPLAY_DIRECTORY": str(supervisor.evidence / f"traces-{seed}-{index}")}
-                for index in range(shards)
-            ],
-        )
-        for index, output in enumerate(replayed):
-            marker = f"{prefix}_REPLAYED cases={len(range(index, cases, shards))}"
-            require_test_completion(output, marker)
 
 
-def corpus_identity(path: Path) -> dict[str, str]:
+def corpus_identity(path: Path, job: Job | None = None) -> dict[str, str]:
     entries = {}
     total = 0
-    for item in sorted(path.iterdir()):
-        info = item.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise Incomplete("unsafe corpus entry")
-        total += info.st_size
-        if info.st_size > LOG_LIMIT or total > 64 * 1024 * 1024:
-            raise Incomplete("corpus replay budget exceeded")
-        entries[item.name] = hashlib.sha256(item.read_bytes()).hexdigest()
-    if not entries:
-        raise Incomplete("empty corpus")
-    return entries
+    with os.scandir(path) as directory:
+        for index, item in enumerate(directory):
+            if index >= CORPUS_FILES:
+                raise Incomplete("corpus entry limit exceeded")
+            if job is not None:
+                job.checkpoint()
+            data = bounded_bytes(Path(item.path), min(LOG_LIMIT, SOURCE_LIMIT - total))
+            total += len(data)
+            entries[item.name] = hashlib.sha256(data).hexdigest()
+    return dict(sorted(entries.items()))
 
 
-def fuzz_command(
-    executable: Path, corpus: Path, artifacts: Path, seed: int, seconds: int, runs: str, target: str
-) -> list[str]:
-    return [
-        str(executable),
-        str(corpus),
-        f"-runs={runs}",
-        f"-seed={seed}",
-        f"-max_total_time={seconds}",
-        f"-max_len={FUZZ_TARGETS[target]}",
-        "-timeout=10",
-        "-rss_limit_mb=2048",
-        f"-artifact_prefix={artifacts}/",
-    ]
-
-
-def fuzz_completion(status: int, output: str) -> None:
+def fuzz_completion(status: int, output: str, runs: int, artifacts: Path) -> None:
     if status:
+        if any(
+            marker in output
+            for marker in (
+                "ERROR: libFuzzer: timeout",
+                "ERROR: libFuzzer: out-of-memory",
+                "ERROR: libFuzzer: file size exceeded",
+                "ERROR: AddressSanitizer: out-of-memory",
+                "ERROR: AddressSanitizer: allocator is out of memory",
+            )
+        ):
+            raise Incomplete("fuzz execution exceeded a resource limit")
         diagnostic = any(
             marker in output
             for marker in ("ERROR: libFuzzer:", "ERROR: AddressSanitizer:", "panicked at")
         )
-        failure = Finding if diagnostic else Incomplete
-        raise failure(f"fuzz command exited {status}")
+        if diagnostic and corpus_identity(artifacts):
+            raise Finding(f"fuzz command exited {status}; crash input retained")
+        raise Incomplete(f"fuzz command exited {status} without retained finding evidence")
     completed = re.findall(r"^Done (\d+) runs in ", output, re.MULTILINE)
-    if len(completed) != 1 or int(completed[0]) <= 0:
-        raise Incomplete("missing fuzz execution evidence")
+    if len(completed) != 1 or int(completed[0]) != runs:
+        raise Incomplete("missing or mismatched fuzz execution count")
 
 
-def fuzz(
-    supervisor: Supervisor,
-    state: Path,
-    seed: int,
-    seconds: int,
-    smoke: bool,
-    target: str = "inspect_receipt",
-) -> None:
-    if target not in FUZZ_TARGETS:
-        raise Incomplete("unknown fuzz target")
-    # Preserve the original Kubernetes retained corpus; distinct decoders never share corpus state.
-    corpus_name = "corpus" if target == "inspect_receipt" else "corpus-" + target
-    corpus = (supervisor.scratch if smoke else state) / corpus_name
-    seeds = ROOT / "fuzz/corpus" / target
-    seed_identity = corpus_identity(seeds)
-    if not corpus.exists():
-        shutil.copytree(seeds, corpus)
-        corpus.chmod(0o700)
-    else:
-        # Add new maintained seeds without replacing or pruning discovered inputs.
-        for name, digest in seed_identity.items():
-            destination = corpus / ("seed-" + digest)
-            if not destination.exists():
-                shutil.copyfile(seeds / name, destination)
-    before = corpus_identity(corpus)
-    # Keep the exact starting corpus, not only names or hashes after mutation.
-    replay = supervisor.evidence / "corpus-before"
-    shutil.copytree(corpus, replay)
-    atomic_json(
-        supervisor.evidence / "fuzz.json",
-        {"target": target, "seed": seed, "seconds": seconds, "corpus_before": before},
-    )
-    # cargo-fuzz has no --locked build option: preflight the graph before it can update source.
-    identities = supervisor.run(
+def fuzz(job: Job, args: argparse.Namespace, source: str) -> None:
+    before = job.evidence / "corpus-before"
+    before.mkdir(mode=0o700)
+    inputs = {}
+    total = 0
+    files = 0
+    for index, path in enumerate(args.corpus):
+        identity = corpus_identity(path, job)
+        if not identity:
+            raise Incomplete("empty input corpus")
+        inputs[str(path)] = identity
+        for name in identity:
+            job.checkpoint()
+            files += 1
+            if files > CORPUS_FILES:
+                raise Incomplete("combined corpus entry limit exceeded")
+            data = bounded_bytes(path / name, min(LOG_LIMIT, SOURCE_LIMIT - total))
+            total += len(data)
+            if hashlib.sha256(data).hexdigest() != identity[name]:
+                raise Incomplete("input corpus changed during snapshot")
+            retained = before / f"{index}-{name}"
+            retained.write_bytes(data)
+            retained.chmod(0o400)
+    discoveries = job.evidence / "discoveries" / args.fuzz_target
+    discoveries.mkdir(mode=0o700, parents=True)
+    artifacts = job.evidence / "artifacts"
+    artifacts.mkdir(mode=0o700)
+    snapshot = corpus_identity(before, job)
+    if args.runs <= len(snapshot):
+        raise Incomplete("run limit must exceed corpus initialization count")
+    atomic_json(job.evidence / "corpora.json", {"inputs": inputs, "snapshot": snapshot})
+    identities = job.run(
         [
             ["rustup", "run", NIGHTLY, "rustc", "-vV"],
             ["rustup", "run", NIGHTLY, "cargo", "fuzz", "--version"],
@@ -644,75 +584,96 @@ def fuzz(
                 "fuzz/Cargo.toml",
                 "--format-version",
                 "1",
+                "--no-deps",
             ],
         ]
     )
-
     host = re.search(r"^host: ([a-zA-Z0-9_.-]+)$", identities[0], re.MULTILINE)
     if host is None:
         raise Incomplete("missing nightly target identity")
-    build_root = supervisor.scratch / "fuzz-build"
-    lock = ROOT / "fuzz/Cargo.lock"
-    before_lock = lock.read_bytes()
-    artifacts = supervisor.evidence / "artifacts"
-    artifacts.mkdir(mode=0o700)
-    runs = str(int(os.environ.get("KAPSEL_FUZZ_RUNS", "10000"))) if smoke else "-1"
-    if smoke and int(runs) <= 0:
-        raise Incomplete("smoke requires a positive run count")
-    try:
-        supervisor.run(
+    build_root = Path(json.loads(identities[2])["target_directory"])
+    job.phase = "build"
+    job.run(
+        [
             [
-                [
-                    "rustup",
-                    "run",
-                    NIGHTLY,
-                    "cargo",
-                    "fuzz",
-                    "build",
-                    "--dev",
-                    "--fuzz-dir",
-                    "fuzz",
-                    "--target",
-                    host[1],
-                    "--target-dir",
-                    str(build_root),
-                    target,
-                ]
+                "rustup",
+                "run",
+                NIGHTLY,
+                "cargo",
+                "fuzz",
+                "build",
+                "--dev",
+                "--fuzz-dir",
+                "fuzz",
+                "--target",
+                host[1],
+                "--target-dir",
+                str(build_root),
+                args.fuzz_target,
             ]
-        )
-        executable = build_root / host[1] / "debug" / target
-        if not executable.is_file():
-            raise Incomplete("missing built fuzz executable")
-        atomic_json(
-            supervisor.evidence / "fuzz.json",
-            {
-                "target": target,
-                "seed": seed,
-                "seconds": seconds,
-                "corpus_before": before,
-                "nightly": identities[0],
-                "cargo_fuzz": identities[1],
-                "executable": str(executable),
-                "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-            },
-        )
-        # cargo-fuzz run creates a default artifact directory in source even with an override.
-        # Launch the built libFuzzer binary directly, with cargo-fuzz's ASan default.
-        asan = os.environ.get("ASAN_OPTIONS", "")
-        asan = (asan + ":" if asan else "") + "detect_odr_violation=0"
-        try:
-            output = supervisor.run(
-                [fuzz_command(executable, corpus, artifacts, seed, seconds, runs, target)],
-                [{"ASAN_OPTIONS": asan}],
-            )[0]
-        except CommandFailed as error:
-            fuzz_completion(error.status, error.output)
-            raise
-        fuzz_completion(0, output)
+        ]
+    )
+    executable, digest = retain_executable(job, build_root / host[1] / "debug" / args.fuzz_target)
+    atomic_json(
+        job.evidence / "fuzz.json",
+        {
+            "target": args.fuzz_target,
+            "seed": args.seed[0],
+            "runs": args.runs,
+            "nightly": identities[0],
+            "cargo_fuzz": identities[1],
+            "executable_sha256": digest,
+            "source_sha256": source,
+        },
+    )
+    command = [
+        str(executable),
+        str(discoveries),
+        str(before),
+        f"-runs={args.runs}",
+        f"-seed={args.seed[0]}",
+        f"-max_len={FUZZ_TARGETS[args.fuzz_target]}",
+        "-timeout=10",
+        "-rss_limit_mb=2048",
+        f"-artifact_prefix={artifacts}/",
+    ]
+    job.phase = "execution"
+    status = 0
+    try:
+        output = job.run([command], [{"ASAN_OPTIONS": "detect_odr_violation=0"}])[0]
+    except CommandFailed as error:
+        status, output = error.status, error.output
     finally:
-        if lock.read_bytes() != before_lock:
-            raise Incomplete("fuzz lockfile changed")
-    atomic_json(supervisor.evidence / "corpus-after.json", corpus_identity(corpus))
+        atomic_json(job.evidence / "discoveries.json", corpus_identity(discoveries, job))
+        atomic_json(job.evidence / "artifacts.json", corpus_identity(artifacts, job))
+        for path, identity in inputs.items():
+            if corpus_identity(Path(path), job) != identity:
+                raise Incomplete("read-only input corpus changed")
+        if corpus_identity(before, job) != snapshot:
+            raise Incomplete("input snapshot changed")
+    fuzz_completion(status, output, args.runs, artifacts)
+
+
+def seal_evidence(job: Job) -> None:
+    hashes = {}
+    for path in sorted(job.evidence.rglob("*")):
+        job.checkpoint()
+        if path.is_dir() and not path.is_symlink():
+            continue
+        data = bounded_bytes(path, 512 * 1024 * 1024)
+        hashes[str(path.relative_to(job.evidence))] = hashlib.sha256(data).hexdigest()
+        with path.open("rb") as retained:
+            os.fsync(retained.fileno())
+    source = read_json(job.evidence / "source.json")
+    if hashes.get("source.tar") != source["archive_sha256"]:
+        raise Incomplete("retained source archive changed")
+    for name in ("simulation.json", "fuzz.json"):
+        if (job.evidence / name).exists():
+            if hashes.get("executable") != read_json(job.evidence / name)["executable_sha256"]:
+                raise Incomplete("retained executable changed")
+    # result.json is published last and is deliberately not covered by this manifest.
+    hashes.pop("result.json", None)
+    atomic_json(job.evidence / "evidence.json", hashes)
 
 
 def positive(value: str) -> int:
@@ -726,200 +687,123 @@ def cancel(signum: int, _frame: FrameType | None) -> None:
     global _pending_signal
     if _terminal_decided:
         return
-    # Further termination requests cannot interrupt retirement or result publication.
     for name in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(name, signal.SIG_IGN)
-    # Never raise asynchronously: spawning and cleanup must finish registering/retiring children.
+    # Register/retire children at safe checkpoints, never raise inside Popen or cleanup.
     _pending_signal = signum
-
-
-def triage_run(state: Path, run_name: str | None, regression: str | None) -> None:
-    if (
-        not run_name
-        or not run_name.startswith("run-")
-        or Path(run_name).name != run_name
-        or not regression
-    ):
-        raise Incomplete("triage requires --run basename and --regression reference")
-
-    result_path = state / run_name / "result.json"
-    result: dict[str, object] = (
-        read_result(result_path)
-        if result_path.exists()
-        else {
-            "status": "INCOMPLETE",
-            "lane": "unclassified",
-            "error": "interrupted before initial result publication",
-        }
-    )
-    if result["status"] in ("PASSED", "TRIAGED"):
-        raise Incomplete("run does not need triage")
-
-    result.update(status="TRIAGED", prior_status=result["status"], regression=regression)
-    atomic_json(result_path, result)
-
-
-def select_seeds(lane: Lane, mode: str, explicit: list[int] | None) -> list[int]:
-    seeds = explicit
-    seed_bits = 64 if lane == "simulation" else 32
-    if not seeds:
-        environment_key = "KAPSEL_SIMULATION_SEED" if lane == "simulation" else "KAPSEL_FUZZ_SEED"
-        environment_seed = os.environ.get(environment_key)
-        if environment_seed:
-            seeds = [int(environment_seed)]
-        else:
-            seed_count = 3 if mode == "soak" else 1
-            seeds = [secrets.randbits(seed_bits) or 1 for _ in range(seed_count)]
-
-    if any(not 0 < seed < 2**seed_bits for seed in seeds):
-        raise Incomplete(f"seeds must be nonzero u{seed_bits} values")
-    if lane == "fuzz" and len(seeds) != 1:
-        raise Incomplete("fuzz requires exactly one seed")
-    return seeds
 
 
 def main() -> int:
     global _terminal_decided
     _terminal_decided = False
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("mode", choices=("simulation", "fuzz"))
     parser.add_argument(
-        "mode", choices=("simulation", "exploration", "soak", "fuzz", "fuzz-smoke", "triage")
+        "--output", type=Path, required=True, help="new absolute evidence directory"
     )
-    parser.add_argument("--state", default=os.environ.get("KAPSEL_SOAK_STATE_DIR"))
-    parser.add_argument("--scratch", default=os.environ.get("KAPSEL_SCRATCH_ROOT"))
     parser.add_argument("--timeout", type=positive, default=3600)
-    parser.add_argument(
-        "--cases", type=positive, default=os.environ.get("KAPSEL_SIMULATION_CASES", "1000")
-    )
-    parser.add_argument(
-        "--shards", type=positive, default=os.environ.get("KAPSEL_SIMULATION_SHARDS", "2")
-    )
     parser.add_argument("--seed", type=int, action="append")
-    parser.add_argument("--simulation-engine", choices=("kernel",), default="kernel")
+    parser.add_argument("--cases", type=positive, default=1000)
+    parser.add_argument("--steps", type=positive, default=48)
+    parser.add_argument("--shards", type=positive, default=2)
     parser.add_argument(
-        "--fuzz-seconds", type=positive, default=os.environ.get("KAPSEL_FUZZ_MAX_TIME", "1800")
+        "--replay", type=Path, help="exact simulation trace, not a regenerated seed"
     )
+    parser.add_argument("--executable", type=Path, help="trusted original simulation replay binary")
     parser.add_argument("--fuzz-target", choices=tuple(FUZZ_TARGETS), default="inspect_receipt")
-    parser.add_argument("--run")
-    parser.add_argument("--regression", help="committed regression reference and passing check")
+    parser.add_argument(
+        "--corpus", type=Path, action="append", help="explicit read-only input corpus"
+    )
+    parser.add_argument("--runs", type=positive, default=10000)
     args = parser.parse_args()
-    if not args.state or (args.mode != "triage" and not args.scratch):
-        parser.error("select existing private --state and --scratch roots")
+    if not args.output.is_absolute() or args.output.parent.resolve() != args.output.parent:
+        parser.error("output requires an absolute path without symlink components")
+    if args.output == ROOT or ROOT in args.output.parents:
+        parser.error("retain job output outside the source checkout")
+    if args.executable and not args.replay:
+        parser.error("an existing executable is only accepted for explicit replay")
+    if args.mode == "fuzz" and (not args.corpus or args.replay or args.executable):
+        parser.error("fuzz requires --corpus and does not accept simulation replay options")
+    bits = 64 if args.mode == "simulation" else 32
+    if not args.replay and (not args.seed or any(not 0 < seed < 2**bits for seed in args.seed)):
+        parser.error(f"select explicit nonzero u{bits} --seed values")
+    if args.seed and len(set(args.seed)) != len(args.seed):
+        parser.error("duplicate seeds")
+    if args.mode == "fuzz" and len(args.seed) != 1:
+        parser.error("fuzz requires one seed")
+    if not (
+        args.cases <= 10000 and 8 <= args.steps <= 48 and 1 <= args.shards <= min(128, args.cases)
+    ):
+        parser.error("simulation requires <=10000 cases, 8..48 steps and 1..128 nonempty shards")
     os.umask(0o077)
-    if os.environ.get("KAPSEL_SOAK_AUTO_UPDATE", "0") != "0":
-        raise Incomplete("automatic source updates are not supported")
-    state = private_root(args.state)
-    lock_descriptor = acquire_lock(state)
+    args.output.mkdir(mode=0o700)
+    print(f"evidence: {args.output}", flush=True)
+    result: dict[str, object] = {
+        "status": "RUNNING",
+        "started": time.time(),
+        "cwd": str(ROOT),
+        "arguments": {k: str(v) for k, v in vars(args).items()},
+    }
+    atomic_json(args.output / "result.json", result)
+    job = Job(args.output, args.timeout)
+    code = 2
     try:
-        check_storage(state, enforce_budget=args.mode != "triage")
-        if args.mode == "triage":
-            triage_run(state, args.run, args.regression)
-            return 0
-
-        scratch_root = private_root(args.scratch)
-        if state == scratch_root or state in scratch_root.parents or scratch_root in state.parents:
-            raise Incomplete("state and scratch roots must be disjoint")
-        lane: Lane = "simulation" if args.mode in ("simulation", "exploration", "soak") else "fuzz"
-        if lane == "simulation" and args.cases > 10_000:
-            raise Incomplete("exploration requires at most 10000 cases per seed")
-        blocked = unresolved(state, lane)
-        if blocked:
-            raise Incomplete(f"lane stopped pending explicit triage: {blocked[0]}")
-        if args.shards > 128 or args.shards > args.cases:
-            raise Incomplete("simulation requires 1..128 nonempty shards")
-
-        seeds = select_seeds(lane, args.mode, args.seed)
-
-        evidence = Path(tempfile.mkdtemp(prefix="run-", dir=state))
-        scratch = Path(tempfile.mkdtemp(prefix="run-", dir=scratch_root))
-        scratch_identity = scratch.stat()
-        result: dict[str, object] = {
-            "status": "RUNNING",
-            "lane": lane,
-            "mode": args.mode,
-            "seeds": seeds,
-            "cases": args.cases,
-            "shards": args.shards,
-            "scratch": str(scratch),
-            "started": time.time(),
-            "timeout": args.timeout,
-        }
-        atomic_json(evidence / "result.json", result)
-        print(f"evidence: {evidence}", flush=True)
-
-        supervisor = Supervisor(evidence, scratch, lock_descriptor, args.timeout)
-        code = 2
+        revision, compiler, cargo = job.run(
+            [["git", "rev-parse", "HEAD"], ["rustc", "-vV"], ["cargo", "-V"]]
+        )
+        source = source_snapshot(job, retain=True)
+        atomic_json(
+            args.output / "source.json",
+            {
+                "revision": revision.strip(),
+                "source_sha256": source,
+                "rustc": compiler,
+                "cargo": cargo,
+                "archive_sha256": hashlib.sha256(
+                    bounded_bytes(args.output / "source.tar", SOURCE_LIMIT * 2)
+                ).hexdigest(),
+            },
+        )
         try:
-            identity = source_identity(supervisor)
-            result.update(
-                revision=identity["revision"], rustc=identity["rustc"], cargo=identity["cargo"]
-            )
-            atomic_json(evidence / "result.json", result)
-            if lane == "simulation":
-                simulation(
-                    supervisor,
-                    seeds,
-                    args.cases,
-                    args.shards,
-                    identity["revision"],
-                )
+            if args.mode == "simulation":
+                simulation(job, args, source)
             else:
-                fuzz(
-                    supervisor,
-                    state,
-                    seeds[0],
-                    args.fuzz_seconds,
-                    args.mode == "fuzz-smoke",
-                    args.fuzz_target,
-                )
-            # Refuse a pass if source changed during execution.
-            if source_identity(supervisor)["revision"] != identity["revision"]:
-                raise Incomplete("source changed during run")
-            check_cancellation()
-            private_root(str(scratch_root))
-            current = scratch.lstat()
-            if (current.st_dev, current.st_ino) != (
-                scratch_identity.st_dev,
-                scratch_identity.st_ino,
-            ):
-                raise Incomplete("scratch identity changed; refusing cleanup")
-            check_cancellation()
-            shutil.rmtree(scratch)
-            check_cancellation()
-            result["status"] = "PASSED"
-            code = 0
-        except Finding as error:
-            result.update(status="FINDING", error=str(error))
-            code = 1
-        except Cancelled as error:
-            result.update(status="CANCELLED", error=str(error))
-            code = 130
-        except (OSError, ValueError, Incomplete) as error:
-            result.update(status="INCOMPLETE", error=str(error))
+                fuzz(job, args, source)
         finally:
-            # All owned groups have been handled. Requests before this decision are classified;
-            # later signals cannot change an already selected terminal outcome.
-            _terminal_decided = True
-            try:
-                check_cancellation()
-            except Cancelled as error:
-                if result["status"] == "INCOMPLETE":
-                    result["cancellation_requested"] = str(error)
-                else:
-                    result.update(status="CANCELLED", error=str(error))
-                    code = 130
-            result.update(finished=time.time(), exit_status=code)
-            atomic_json(evidence / "result.json", result)
-        print(f"{result['status']}: {evidence}", flush=True)
-        return code
+            job.phase = "retention"
+            if source_snapshot(job, retain=False) != source:
+                raise Incomplete("source changed during build/execution")
+            seal_evidence(job)
+        job.checkpoint()
+        result["status"], code = "PASSED", 0
+    except Finding as error:
+        result.update(status="FINDING", error=str(error))
+        code = 1
+    except Cancelled as error:
+        result.update(status="CANCELLED", error=str(error))
+        code = 130
+    except (OSError, ValueError, KeyError, subprocess.TimeoutExpired, Incomplete) as error:
+        result.update(status="INCOMPLETE", error=str(error))
     finally:
-        os.close(lock_descriptor)
+        _terminal_decided = True
+        try:
+            check_cancellation()
+        except Cancelled as error:
+            if result["status"] == "INCOMPLETE":
+                result["cancellation_requested"] = str(error)
+            else:
+                result.update(status="CANCELLED", error=str(error))
+                code = 130
+        result.update(finished=time.time(), exit_status=code, command_seconds=job.timings)
+        # A failed terminal write leaves RUNNING, never an invented pass.
+        atomic_json(args.output / "result.json", result)
+    print(f"{result['status']}: {args.output}", flush=True)
+    return code
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, cancel)
-    signal.signal(signal.SIGINT, cancel)
-    signal.signal(signal.SIGHUP, cancel)
+    for selected_signal in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(selected_signal, cancel)
     try:
         sys.exit(main())
     except (OSError, ValueError, Incomplete, Cancelled) as error:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small, isolated process fixtures for robustness regressions, not exploration commands."""
+"""Isolated process fixtures for bounded-job regressions, not exploration commands."""
 
 import argparse
 import os
@@ -21,76 +21,51 @@ def request_cancellation() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-def cancel_during_spawn(evidence: str, scratch: str, lock: str) -> int:
-    supervisor = runner.Supervisor(Path(evidence), Path(scratch), int(lock), 5)
-    actual = subprocess.Popen
+def cancellation(evidence: str, phase: str) -> int:
+    job = runner.Job(Path(evidence), 5)
+    actual_spawn, actual_retire = subprocess.Popen, runner.retire_all
 
     def spawn(*args, **kwargs):
-        child = actual(*args, **kwargs)
-        request_cancellation()
+        child = actual_spawn(*args, **kwargs)
+        if phase == "spawn":
+            request_cancellation()
         return child
 
-    with patch.object(runner.subprocess, "Popen", side_effect=spawn):
-        try:
-            supervisor.run([sleeping_command()])
-        except runner.Cancelled:
-            return 0
-    return 99
-
-
-def cancel_during_retirement(evidence: str, scratch: str, lock: str) -> int:
-    supervisor = runner.Supervisor(Path(evidence), Path(scratch), int(lock), 5)
-    actual = runner.retire_all
-
     def retire(children):
-        request_cancellation()
-        actual(children)
+        if phase == "retirement":
+            request_cancellation()
+        actual_retire(children)
 
-    with patch.object(runner, "retire_all", side_effect=retire):
+    with (
+        patch.object(runner.subprocess, "Popen", side_effect=spawn),
+        patch.object(runner, "retire_all", side_effect=retire),
+    ):
         try:
-            supervisor.run(
-                [sleeping_command(), sleeping_command(), [str(Path(scratch) / "missing-command")]]
-            )
+            job.run([sleeping_command(), sleeping_command(), [str(Path(evidence) / "missing")]])
         except runner.Cancelled:
             return 0
     return 99
 
 
-def cancellation_at_finalization(state: str, scratch: str, phase: str) -> int:
-    actual_root = runner.private_root
-    actual_remove = runner.shutil.rmtree
+def finalization(output: str, phase: str) -> int:
     actual_publish = runner.atomic_json
-    root_calls = 0
-
-    def validate_root(value):
-        nonlocal root_calls
-        if value == scratch:
-            root_calls += 1
-            if phase == "validate" and root_calls == 2:
-                request_cancellation()
-        return actual_root(value)
-
-    def remove(path):
-        if phase == "remove":
-            request_cancellation()
-        actual_remove(path)
 
     def publish(path, value):
-        if phase == "terminal" and path.name == "result.json" and value.get("status") == "PASSED":
+        if phase == "terminal" and value.get("status") == "PASSED":
             request_cancellation()
         actual_publish(path, value)
 
-    arguments = ["runner", "simulation", "--state", state, "--scratch", scratch, "--seed", "1"]
+    def execute(*_args):
+        if phase == "execution":
+            request_cancellation()
+
     with (
-        patch.object(sys, "argv", arguments),
-        patch.object(
-            runner,
-            "source_identity",
-            return_value={"revision": "a" * 40, "rustc": "fixture rustc", "cargo": "fixture cargo"},
-        ),
-        patch.object(runner, "simulation"),
-        patch.object(runner, "private_root", side_effect=validate_root),
-        patch.object(runner.shutil, "rmtree", side_effect=remove),
+        patch.object(sys, "argv", ["runner", "simulation", "--output", output, "--seed", "1"]),
+        patch.object(runner.Job, "run", return_value=["revision", "rustc", "cargo"]),
+        patch.object(runner, "source_snapshot", return_value="a" * 64),
+        patch.object(runner, "bounded_bytes", return_value=b"archive"),
+        patch.object(runner, "simulation", side_effect=execute),
+        patch.object(runner, "seal_evidence"),
         patch.object(runner, "atomic_json", side_effect=publish),
     ):
         return runner.main()
@@ -98,15 +73,14 @@ def cancellation_at_finalization(state: str, scratch: str, phase: str) -> int:
 
 def reject_fifo(path: str) -> int:
     try:
-        runner.read_result(Path(path))
+        runner.bounded_bytes(Path(path), 100)
     except runner.Incomplete:
         return 0
     return 99
 
 
-def collect_until_cancelled(evidence: str, scratch: str, lock: str, marker: str) -> int:
-    supervisor = runner.Supervisor(Path(evidence), Path(scratch), int(lock), 30)
-    supervisor.run([[sys.executable, __file__, "ready-and-sleep", marker]])
+def collect_until_cancelled(evidence: str, marker: str) -> int:
+    runner.Job(Path(evidence), 30).run([[sys.executable, __file__, "ready-and-sleep", marker]])
     return 99
 
 
@@ -143,22 +117,16 @@ def spawn_sleeping_descendant() -> int:
     return 0
 
 
-def fuzz_signal(*arguments: str) -> int:
-    prefix = next(
-        argument.split("=", 1)[1]
-        for argument in arguments
-        if argument.startswith("-artifact_prefix=")
-    )
-    Path(prefix, "crash-fixture").write_bytes(b"replay")
+def fuzz_signal(artifacts: str) -> int:
+    Path(artifacts, "crash-fixture").write_bytes(b"replay")
     print("ERROR: libFuzzer: deadly signal", flush=True)
     os.kill(os.getpid(), signal.SIGKILL)
     return 99
 
 
 SCENARIOS = {
-    "cancel-during-spawn": cancel_during_spawn,
-    "cancel-during-retirement": cancel_during_retirement,
-    "finalization": cancellation_at_finalization,
+    "cancellation": cancellation,
+    "finalization": finalization,
     "reject-fifo": reject_fifo,
     "collect-until-cancelled": collect_until_cancelled,
     "ready-and-sleep": ready_and_sleep,

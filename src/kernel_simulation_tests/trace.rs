@@ -107,7 +107,7 @@ pub(super) struct Trace {
     pub(super) executable_sha256: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize)]
 pub(super) struct Finding {
     pub(super) law: &'static str,
     pub(super) event: usize,

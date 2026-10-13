@@ -2,6 +2,8 @@
 
 use std::{
     fs,
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -579,8 +581,51 @@ pub(super) fn read_trace(path: &Path) -> Trace {
     input
 }
 
+fn persist_document(path: &Path, bytes: &[u8]) {
+    assert!(bytes.len() <= 64 * 1024);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .unwrap();
+    file.write_all(bytes).unwrap();
+    file.sync_all().unwrap();
+}
+
+fn check_job_result(result: &Checked) {
+    if let Err(finding) = result {
+        println!(
+            "KAPSEL_KERNEL_FINDING {}",
+            serde_json::to_string(finding).unwrap()
+        );
+    }
+    assert_eq!(result, &Ok(()), "bounded job found a law violation");
+}
+
+async fn retain_finding(directory: &Path, case: usize, input: &Trace, finding: &Finding) {
+    let minimized = minimize(input.clone(), finding.law).await;
+    persist_document(
+        &directory.join(format!("finding-{case}.json")),
+        &serde_json::to_vec(&minimized).unwrap(),
+    );
+    let reduced = replay(&minimized, true).await;
+    if std::env::var_os("KAPSEL_KERNEL_JOB").is_some() {
+        let reduced = reduced.unwrap_err();
+        assert_eq!(reduced.law, finding.law, "minimization changed the finding");
+        let report = serde_json::json!({
+            "case": case, "finding": finding, "minimized_finding": reduced,
+        });
+        persist_document(
+            &directory.join("failure.json"),
+            &serde_json::to_vec(&report).unwrap(),
+        );
+    } else {
+        check_replay_result(&minimized, reduced);
+    }
+}
+
 pub(super) async fn explore_or_replay() {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
     if let Ok(directory) = std::env::var("KAPSEL_KERNEL_REPLAY_DIRECTORY") {
         let directory = PathBuf::from(directory);
         assert!(directory.is_absolute() && fs::symlink_metadata(&directory).unwrap().is_dir());
@@ -601,7 +646,13 @@ pub(super) async fn explore_or_replay() {
     if let Ok(path) = std::env::var("KAPSEL_KERNEL_REPLAY") {
         let path = PathBuf::from(path);
         let input = read_trace(&path);
-        check_replay_result(&input, replay(&input, true).await);
+        let result = replay(&input, true).await;
+        if std::env::var_os("KAPSEL_KERNEL_JOB").is_some() {
+            check_job_result(&result);
+        } else {
+            check_replay_result(&input, result);
+        }
+        println!("KAPSEL_KERNEL_REPLAYED cases=1");
         return;
     }
     let requested = PathBuf::from(std::env::var("KAPSEL_KERNEL_EVIDENCE").unwrap());
@@ -637,26 +688,19 @@ pub(super) async fn explore_or_replay() {
         }
         input.source_sha256.clone_from(&source);
         input.executable_sha256.clone_from(&executable_digest);
-        let persist = |name: &str, trace: &Trace| {
-            let bytes = serde_json::to_vec(trace).unwrap();
-            assert!(bytes.len() <= 64 * 1024);
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(directory.join(format!("{name}-{case}.json")))
-                .unwrap();
-            file.write_all(&bytes).unwrap();
-            file.sync_all().unwrap();
-        };
-        persist("case", &input);
+        persist_document(
+            &directory.join(format!("case-{case}.json")),
+            &serde_json::to_vec(&input).unwrap(),
+        );
         let result = replay(&input, true).await;
         if let Err(finding) = &result {
-            let minimized = minimize(input.clone(), finding.law).await;
-            persist("finding", &minimized);
-            check_replay_result(&minimized, replay(&minimized, true).await);
+            retain_finding(&directory, case, &input, finding).await;
         }
-        check_replay_result(&input, result);
+        if std::env::var_os("KAPSEL_KERNEL_JOB").is_some() {
+            check_job_result(&result);
+        } else {
+            check_replay_result(&input, result);
+        }
         completed += 1;
     }
     println!(

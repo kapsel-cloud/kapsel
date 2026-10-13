@@ -485,157 +485,124 @@ execution. `seed_corpus` regenerates maintained valid/invalid seeds only when in
 `--check`. The deterministic gate checks their exact bytes and acceptance through production entry
 points.
 
-The shell runners require Python 3.11+, a clean committed checkout, and two existing private (0700),
-user-owned directories outside the checkout. Select absolute paths without symlink components. State
-and scratch roots must be disjoint. Neither runner updates source. Ordinary contributor Cargo builds
-and deterministic tests still accept a dirty checkout.
+The job runner requires Python 3.11+ and a new absolute `--output` directory outside the checkout.
+Its parent must exist without symlink components. Each invocation creates private output and never
+reads previous runs to decide whether it can execute. Existing evidence is neither changed nor
+pruned. There is no triage command, shared lane lock, or second scratch root.
 
-Supply your owned roots before invoking smoke or simulation:
+Dirty development source is accepted. Keep source unchanged while a job runs. The runner archives
+tracked and non-ignored untracked files, including local edits and deletions, and hashes their exact
+bytes. Symlink and oversized source inputs are refused. Locked dependencies and recorded compiler
+versions identify the build inputs; the archive does not vendor dependencies or attest a build.
+Normal Cargo build output is reused, including an explicitly configured `CARGO_TARGET_DIR`. Keep
+separate build directories for different checkouts, especially temporary source mutations. Sharing a
+target directory can reuse another checkout's executable. Cargo's freshness decision and the
+recorded source digest do not establish source-to-binary correspondence.
 
-```sh
-export KAPSEL_SOAK_STATE_DIR=/absolute/owned/robustness-state
-export KAPSEL_SCRATCH_ROOT=/absolute/owned/robustness-scratch
-./fuzz/smoke.sh --fuzz-target inspect_receipt --fuzz-seconds 30
-./tests/qualification/run-simulation.sh --seed 21182435914953528 --cases 1000 --shards 2
-```
-
-Smoke defaults to 10,000 fuzz iterations and an ephemeral corpus. It removes scratch only on
-success. Failed scratch and libFuzzer artifacts remain available. `KAPSEL_FUZZ_RUNS` selects the
-smoke iteration maximum. `KAPSEL_FUZZ_MAX_TIME` or `--fuzz-seconds` selects its time maximum. A time
-maximum is not a promise to run for that duration.
-
-For persistent exploration, queue this separate lane instead of extending smoke:
+Select explicit seeds and a separate output for each target:
 
 ```sh
-python3 tools/dev/run_robustness.py fuzz --seed 2118243591 --fuzz-seconds 1800 --timeout 3600
-```
-
-Select another decoder with `--fuzz-target`. The default remains `inspect_receipt`. Run all five
-smokes or explorations explicitly, rather than treating one decoder's pass as coverage of the
-others:
-
-```sh
+jobs="$(mktemp -d)"
 for target in inspect_receipt inspect_git_receipt verify_kubernetes_grant verify_git_grant service_document; do
-  ./fuzz/smoke.sh --fuzz-target "$target" --seed 2118243591 --fuzz-seconds 10
-  python3 tools/dev/run_robustness.py fuzz --fuzz-target "$target" \
-    --seed 2118243591 --fuzz-seconds 300 --timeout 3600
+  ./fuzz/smoke.sh --output "$jobs/$target" --fuzz-target "$target" \
+    --corpus "fuzz/corpus/$target" --seed 2118243591 --runs 10000 --timeout 3600
 done
 ```
 
-Exploration uses `-runs=-1`. Kubernetes keeps the existing `state/corpus`. Other targets retain
-`state/corpus-TARGET`. Maintained seeds are added without replacing discoveries. Each invocation
-preserves its exact starting corpus, hashes, seed, command, and failure artifacts. It records the
-selected nightly compiler and cargo-fuzz versions. After compilation, the runner launches the built
-libFuzzer executable directly and records its digest. This avoids cargo-fuzz's default
-artifact-directory creation in the source checkout. Build output stays in the owned scratch root.
-Each target has a maximum input length at its production ceiling plus one sentinel byte (and receipt
-split framing). LibFuzzer uses a ten-second per-input timeout and a 2-GiB sampled RSS limit. These
-do not replace host isolation or storage supervision. The overall timeout includes compilation.
-Simulation explicitly selects `scratch/run-*/simulation-build` as its Cargo target directory,
-overriding ambient `CARGO_TARGET_DIR`. It builds once and directly invokes the resulting libtest
-executable per shard. A pass requires each shard's expected case-count marker and one passed test,
-not merely a zero process exit.
+`fuzz/smoke.sh` invokes the same `fuzz` job as a longer search. Increase `--runs` explicitly;
+`--timeout` bounds the whole invocation, including compilation. Completion requires the exact
+requested run count, not merely zero exit or elapsed time. Choose a count larger than the starting
+corpus so libFuzzer's initialization fits within it.
+
+Repeat `--corpus` to add reviewed, target-specific discoveries or a retained legacy corpus. Inputs
+are read-only: each job copies and hashes their exact bytes in `corpus-before/`. LibFuzzer writes
+only to `discoveries/TARGET/` and `artifacts/` in this job. Review and promote discoveries
+separately; never combine different targets' inputs. The runner retains the executed binary,
+compiler identity, crash inputs and corpus manifests even when execution fails. A runtime diagnostic
+without a retained crash input is incomplete evidence, not a finding. Build failures are always
+infrastructure failures.
+
+Each target keeps its production length ceiling plus one sentinel byte and receipt split framing.
+LibFuzzer retains its ten-second input timeout and sampled 2-GiB RSS limit. These are not hard
+resource containment.
 
 ### Background sweep and retained evidence
 
-For the shared atomic-record simulator, use the existing private state and scratch roots:
+Run the shared atomic-record simulator with explicit seed, case and step limits:
 
 ```sh
-python3 tools/dev/run_robustness.py exploration \
-  --seed 21182435931731969 --cases 1000 --shards 2 --timeout 1800
+jobs="$(mktemp -d)"
+./tests/qualification/run-simulation.sh --output "$jobs/simulation" \
+  --seed 21182435931731969 --cases 1000 --steps 48 --shards 2 --timeout 1800
 ```
 
-`exploration`, `simulation` and `soak` use the same simulator. Existing shell commands and
-`KAPSEL_SIMULATION_*` seed/case/shard defaults remain accepted; `--simulation-engine kernel` selects
-the same owner explicitly. The supervisor preserves source checks, storage budgets, locking, command
-retirement, shard accounting and Rust-owned directory replay.
+Repeat `--seed` for a sweep. [The nightly wrapper](../../tools/dev/run-nightly-soak.sh) invokes the
+same `simulation` job and requires the same explicit arguments. Cases are bounded to 10,000 per
+seed, steps to 8..48, and nonempty shards to 128. Suspended custody and cancellation events precede
+the generated steps; healthy suffixes are additional. These are application histories on virtual
+atomic records, not qualification of physical jobs, SQLite OS failures or actual receivers.
 
-Generated schedules interleave 48 steps across three distinct identities under Kubernetes-only,
-Git-only and mixed assignments. Suspended custody and cancellation events precede those steps;
-healthy suffixes are additional. Every event checks all peers through real service selection and
-virtual atomic records. Defect inputs use the separate local detection route, not this healthy
-sweep. Cases are bounded to 10,000 per seed. This lane does not qualify actual Git transport,
-physical jobs, SQLite OS failures, live receivers or installed artifacts.
+The runner reuses the development test build, copies its executable into output, and executes that
+copy. Rust records each concrete trace before execution. Completion requires each shard's exact
+case-count marker, a successful test result and all expected trace identities. Passing generated
+traces are not replayed a second time. Default corpus and reached negative controls remain in the
+deterministic gate. A novel finding retains the full input, minimized input, law and reached-event
+report. Both full and minimized inputs must reproduce the law with the original binary before the
+job reports `FINDING`. An unrelated panic or failed minimization is `INCOMPLETE`.
 
-These modes share the simulation lane's custody lock and unresolved-finding stop rule. The
-supervisor builds once in owned scratch and retains every full trace before execution. It checks
-each shard's completion count, trace identities and content hashes. Then the owning Rust parser and
-oracle deserialize and replay every retained document. Missing documents, failed replay or missing
-markers do not pass. The 1,800-second overall limit includes compilation and replay; completion need
-not take 30 minutes. Infrastructure must enforce the two-CPU/4-GiB ceilings described below. Clean
-committed source remains required.
+The output directory contains:
 
-[The soak runner](../../tools/dev/run-nightly-soak.sh) is simulation-only: three recorded random
-seeds, 1,000 total cases per seed, two concurrent shards, and a 3,600-second overall timeout
-including compilation. Repeat `--seed` to select an exact sweep. Each shard consumes the same
-generated case sequence and runs its assigned cases.
+- `result.json`, `commands.json`, `command-*.log`: selected arguments, timestamps, status, exact
+  command vectors, phase timings and process exits. Each command log is bounded to 8 MiB.
+- `source.json`, `source.tar`, `executable`, `evidence.json`: source and tool identities, exact
+  source archive, executed bytes and retained-file digests.
+- For simulation: `simulation.json`, `traces-SEED-SHARD/` and trace hash manifests. A finding also
+  has `failure.json` with the original and reduced reached-event reports.
+- For fuzz: `fuzz.json`, `corpora.json`, `corpus-before/`, target-specific `discoveries/`,
+  `artifacts/` and their hash manifests.
+
+Check retained hashes before selecting an original executable. Replay an exact simulation document
+in a new job; this does not regenerate it from its seed:
 
 ```sh
-./tools/dev/run-nightly-soak.sh --timeout 3600 --cases 1000 --shards 2
+python3 tools/dev/run_robustness.py simulation --output "$jobs/original-replay" \
+  --replay "$jobs/simulation/traces-21182435931731969-0/case-0.json" \
+  --executable "$jobs/simulation/executable"
+python3 tools/dev/run_robustness.py simulation --output "$jobs/candidate-replay" \
+  --replay "$jobs/simulation/traces-21182435931731969-0/case-0.json"
 ```
 
-[The runner](../../tools/dev/run_robustness.py) holds one nonblocking OS advisory lock in the state
-root. It never unlinks that lock or uses a PID file as identity. Launched commands inherit the lock
-descriptor. Each command owns a process group, which the runner kills on failure, timeout,
-cancellation, or command completion to retire leftover descendants. Host isolation must prevent
-process-group escape and supervise the entire job on supervisor SIGKILL or reboot. These process
-groups are not a hostile-code sandbox. Signal handlers request cancellation. Safe checkpoints handle
-it after child registration and retire the commands completely. Cancellation during final scratch
-cleanup is classified, but cleanup already in progress can finish. The runner chooses its terminal
-result after cleanup. Later signals do not change that result.
-
-The printed `state/run-*/` directory contains:
-
-- `result.json`: full source SHA, toolchain identity, selected workload, scratch path, status,
-  timestamps, and runner exit status;
-- `commands.json` and `command-*.log`: exact argument vectors, lane environment, process exit
-  statuses, and output (at most 8 MiB per command);
-- `exploration.json`, `simulation-tests`, `source.tar`, `traces-SEED-SHARD/`, and
-  `traces-SEED-SHARD.json`: selected engine, retained executed test binary, committed-source
-  archive, their digests, full/minimized event documents, and full-trace content hashes; or
-- `fuzz.json`, `corpus-before/`, `corpus-after.json`, and `artifacts/`: fuzz replay evidence.
-
-Simulation invokes the retained `simulation-tests` binary directly. Successful scratch cleanup does
-not remove that executable or `source.tar`. Replay a kernel shard with that exact executable:
-
-```sh
-KAPSEL_KERNEL_REPLAY_DIRECTORY=/absolute/owned/state/run-EXAMPLE/traces-SEED-SHARD \
-  /absolute/owned/state/run-EXAMPLE/simulation-tests \
-  kernel_simulation_tests::kernel_trace_exploration_or_replay --ignored --exact --nocapture
-```
-
-Check the paths and digests in `exploration.json` first. These identities and a source archive are
-not build attestations. Rebuilding exercises retained inputs against a new binary.
-
-The runner stops rather than silently truncating and passing. It refuses new runs near its 1 GiB
-retained-state budget or below 128 MiB free space, and checks retained storage during command
-execution. This is not a filesystem reservation or hard allocation ceiling. Infrastructure must
-supply bounded scratch and evidence storage, CPU/memory ceilings, credential-free execution, and
-whole-job supervision. Keep source read-only during execution and provide writable Cargo caches and
-simulation build output outside source. Command failure records retain the failed child's status and
-bounded, drained output. EOF alone is not completion; final child statuses are reconciled before the
-runner accepts output. Fuzz setup errors remain `INCOMPLETE`; only runtime failure diagnostics can
-establish a fuzz `FINDING`. Retained result metadata is opaque except for validated lane and status.
-It never supplies execution or cleanup paths.
-
-Use a credential-free home, with no personal home mounts, SSH agents, signing material, service
-state, or Docker socket. The provisional sweep budget is two logical CPUs and approximately 4 GiB
-host memory. Useful throughput and compilation peaks still need measurement.
+The second command requests a Cargo build against current code, reusing that checkout's cache. The
+copied replay document keeps its original source and binary identities. `simulation.json` identifies
+the executed binary; `cargo_build_requested` distinguishes Cargo selection from an explicitly
+supplied binary, not a cache hit from compilation. For a supplied binary, the current source archive
+identifies the launcher checkout, not that older binary's source. Keep the original job's source
+archive with it. Legacy evidence remains untouched; use its original executable and matching
+documented replay protocol rather than relabeling it as a new job.
 
 | Runner status | Exit | Meaning                                                                 |
 | ------------- | ---- | ----------------------------------------------------------------------- |
-| `PASSED`      | 0    | Every selected test and expected case completed; owned scratch removed  |
-| `FINDING`     | 1    | Test failure or fuzz failure diagnostic; replay evidence retained       |
-| `INCOMPLETE`  | 2    | Setup, timeout, missing execution, storage, or evidence failure         |
-| `CANCELLED`   | 130  | Handled cancellation; owned command groups retired                      |
-| `RUNNING`     | none | No terminal result; treat an abandoned run as interrupted, never passed |
+| `PASSED`      | 0    | Every requested case/run completed and required evidence was retained   |
+| `FINDING`     | 1    | A law or fuzz diagnostic failed with retained reproduction input        |
+| `INCOMPLETE`  | 2    | Setup, timeout, truncation, count mismatch, storage or evidence failure |
+| `CANCELLED`   | 130  | Handled cancellation after retiring owned commands                      |
+| `RUNNING`     | none | No terminal result; an abandoned job is interrupted, never passed       |
 
-A preflight failure exits 2 and may have no run directory. An interrupted write may leave temporary
-JSON files. They are not terminal results. No previous scratch directory is automatically removed.
-Failures stop the affected lane. An unclassified run directory without a result stops both lanes.
-There is no automatic replay, failure deduplication, or evidence pruning. A failure artifact is not
-a minimized input. In the same credential-free, bounded environment, select the retained executable
-from `fuzz.json` and explicitly minimize and replay a copy of the artifact:
+Argument errors can exit before output creation. Failed terminal publication leaves no passing
+result; temporary JSON files are not terminal records. A failed job does not prevent a new job.
+Reproduce findings, add regressions and diagnose infrastructure failures through ordinary
+maintenance, without changing old result records.
+
+Each command owns a process group. The launcher terminates remaining group members and reaps its
+direct child on completion, failure, timeout and handled cancellation. EOF alone is not completion.
+Signal handlers defer cancellation until safe registration/retirement checkpoints. Later signals do
+not alter an already selected terminal result. This is not a hostile-code sandbox: the CI/container
+owner must prevent process-group escape and handle launcher SIGKILL, reboot and whole-job cleanup.
+That owner also supplies CPU, memory and disk limits, a credential-free environment and bounded
+storage. Local logs, snapshots and deadlines are bounded; there is no shared retained-storage scan.
+
+A fuzz artifact is not automatically minimized. In the same bounded environment, explicitly select
+the retained executable and minimize a copy of its artifact:
 
 ```sh
 ASAN_OPTIONS=detect_odr_violation=0 "$executable" "$artifact" \
@@ -643,11 +610,10 @@ ASAN_OPTIONS=detect_odr_violation=0 "$executable" "$artifact" \
 ASAN_OPTIONS=detect_odr_violation=0 "$executable" "$minimized" -runs=1
 ```
 
-Keep the original, minimized bytes, hashes, both commands and bounded diagnostics. Require the same
-property failure on replay. A setup failure or different panic does not show that the failure was
-preserved. Minimization may find no smaller input. Retain that result rather than claiming every
-crash was already minimal. Do not overwrite an existing artifact path or mutate the baseline
-checkout.
+Keep original and minimized bytes, hashes, commands and bounded diagnostics. Require the same
+property failure, not a setup error or unrelated panic. Replay those exact bytes against a rebuilt
+candidate separately and record its identity. A reducer may find no smaller input; report that
+result. Do not overwrite an existing artifact or mutate the baseline checkout.
 
 For detection-strength checks, apply one negative control at a time in disposable source copies. The
 deterministic corpus driver must pass on baseline and fail for the named property on each copy:
@@ -663,20 +629,6 @@ against baseline. These are isolated test faults, not changes to maintained prod
 surviving required control blocks coverage retirement. No mutation-score threshold replaces owner,
 compatibility, transport or receiver checks.
 
-Before resuming a failed lane, reproduce the finding, commit a regression, and run its owning check.
-Then explicitly record that reference and passing command:
-
-```sh
-python3 tools/dev/run_robustness.py triage --run run-EXAMPLE \
-  --regression 'COMMIT:test-name; passing command'
-```
-
-Triage changes the result to `TRIAGED` and preserves the previous status and evidence. The reference
-is an operator attestation, not an automated proof that a regression exists. For interrupted or
-incomplete execution, record the diagnosed cause and recovery check in the same field. Triage never
-replays the old run or deletes retained scratch. Archive resolved evidence explicitly when needed.
-Never discard the first unresolved replay example to make space.
-
 Infrastructure should alert on nonzero exits, new findings, missing/stuck scheduled jobs, stale
 `RUNNING` records, and incomplete evidence. Passing runs need no alert. The infrastructure owner
 controls schedules, alert delivery, and activation. This runner neither installs a resident service
@@ -684,8 +636,9 @@ nor qualifies native systemd behavior. Public-PR execution remains on hosted CI 
 reviewed isolation design is approved.
 
 Run the small, offline harness regressions with `python3 tools/dev/test_robustness.py`. They cover
-exclusion, retained failures, interrupted runs, bounded output, unsafe paths, empty selection,
-timeout, and cancellation. They do not qualify isolation or reboot behavior on the deployment host.
+independent runs, retained failures, source/corpus snapshots, bounded output, unsafe inputs, exact
+completion counts, timeout and cancellation. They do not qualify isolation or reboot behavior on the
+deployment host.
 
 ## Source privacy and security
 
