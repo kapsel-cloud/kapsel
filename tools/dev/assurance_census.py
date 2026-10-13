@@ -197,7 +197,11 @@ def census(revision: str) -> Snapshot:
             except ValueError as error:
                 raise ValueError(f"{revision}:{path}: {error}") from error
         assurance = sum(last - first + 1 for first, last in ranges)
-        remainder = "product" if path.endswith(".rs") else "tooling"
+        remainder = (
+            "product"
+            if path.endswith(".rs") or path == "examples/fresh_session_caller.py"
+            else "tooling"
+        )
         totals["assurance"] += assurance
         totals[remainder] += count - assurance
         records.append(

@@ -81,6 +81,8 @@ fn harness_only() {}
             root = Path(temporary)
             subprocess.run(["git", "init", "-q", temporary], check=True, timeout=10)
             (root / "product.rs").write_text("fn product() {}\n", encoding="utf-8")
+            (root / "examples").mkdir()
+            (root / "examples/fresh_session_caller.py").write_text("# caller\n", encoding="utf-8")
             (root / "test_sample.py").write_text("# fixture\n\n", encoding="utf-8")
             (root / ".gitignore").write_text("generated.rs\n", encoding="utf-8")
             census.git("add", ".")
@@ -99,14 +101,17 @@ fn harness_only() {}
             (root / "generated.rs").write_text("// ignored\n", encoding="utf-8")
             (root / "test_sample.py").unlink()
             after = census.census("WORKTREE")
-            self.assertEqual(before["totals"], {"assurance": 2, "product": 1, "tooling": 0})
-            self.assertEqual(after["totals"], {"assurance": 1, "product": 2, "tooling": 0})
+            self.assertEqual(before["totals"], {"assurance": 2, "product": 2, "tooling": 0})
+            self.assertEqual(after["totals"], {"assurance": 1, "product": 3, "tooling": 0})
             # Report survives a round trip and accounts for every physical line once.
             report = json.loads(json.dumps(after))
             self.assertEqual(
                 sum(report["totals"].values()), sum(f["lines"] for f in report["files"])
             )
-            self.assertEqual([f["path"] for f in report["files"]], ["new_tests.rs", "product.rs"])
+            self.assertEqual(
+                [f["path"] for f in report["files"]],
+                ["examples/fresh_session_caller.py", "new_tests.rs", "product.rs"],
+            )
 
 
 if __name__ == "__main__":

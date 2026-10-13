@@ -160,10 +160,12 @@ tooling, not removable assurance. The census and its regressions count as replac
 Generated files, binaries, corpus data and documentation are outside this source denominator; moving
 maintained code into data or generated output cannot establish savings.
 
-Charge the after-assurance count plus any positive net product-source increase. A product-source
-decrease earns no deletion credit. This prevents relocated policy from inflating savings. Reports
-include all source ranges, not only changed files. General tooling growth remains visible
-separately; new assurance machinery belongs in assurance regardless of its directory.
+Charge the after-assurance count plus any positive net product-source increase. Product source
+includes non-assurance Rust and the maintained fresh-session caller, including its production
+policy. A product-source decrease earns no deletion credit. This prevents relocated policy from
+inflating savings. Reports include all source ranges, not only changed files. General tooling growth
+remains visible separately; new assurance machinery belongs in assurance regardless of its
+directory.
 
 Under this classification, the fixed baseline is **36,599 lines**: 27,452 Rust, 8,698 Python, 404
 shell and 45 SQL. At least 50% net retirement requires a final charged total of at most **18,299**.
