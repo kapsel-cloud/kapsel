@@ -25,14 +25,21 @@ points, not substitute test-feature binaries for installed production bytes.
 Linux socket checks keep one real application admission with parked preflight, same-ID contention
 and concurrent stored reads. Direct Unix fixtures own peer denial, aggregate frame deadlines,
 oversized replies, saturation and physical permit retirement. Protocol tests own the complete
-status/receipt vocabulary. MCP reply checks live at the bridge decoder: independently pinned wire
-tuples, effect-specific fields and exact receipt digest checks. Four black-box stdio/socket checks
-retain request framing, explicit submission, unchanged service facts, pre-I/O argument rejection and
-honest transport uncertainty. The Python caller tests its production `requires_resume` predicate and
-reply decoder directly. Finite partitions own malformed and contradictory guidance; reference and
-pipe tests own actual filesystem custody, byte limits and child retirement. One fresh-process
-exchange binds the caller to the real bridge, with lost acknowledgement and explicit same-ID resume.
-It does not model a receiver or durable lifecycle.
+status/receipt vocabulary. Request partitions start from accepted versioned objects, so a missing
+version cannot mask the intended malformed field. Independently authored service wire vectors have
+one test-only owner, `tests/fixtures/service_wire.rs` in the daemon package. Renderer and decoder
+checks share those expectations; the vectors do not calculate authority or lifecycle outcomes. MCP
+discovery schemas and call/reply partitions live at the bridge owner. They retain exact members,
+effect-specific fields, nullable observed facts and independently pinned receipt digests. One
+renderer witness binds execution fields to the complete decoder tuple table. Three black-box
+stdio/socket checks retain all five requests, fixed discovery, explicit submission, unchanged
+service facts, pre-I/O argument rejection and honest transport uncertainty. Transport header
+partitions call their decoder directly; compact socket witnesses retain actual framing, half-close,
+original bytes and failure classification. The Python caller tests its production `requires_resume`
+predicate and reply decoder directly. Finite partitions own malformed and contradictory guidance;
+reference and pipe tests own actual filesystem custody, byte limits and child retirement. One
+fresh-process exchange binds the caller to the real bridge, with lost acknowledgement and explicit
+same-ID resume. It does not model a receiver or durable lifecycle.
 
 Native public checks share the actual fresh-session caller. One daemon recovery trace invokes
 `resume` through MCP after process loss, retaining the reference bytes. It also covers death after
@@ -48,12 +55,13 @@ invocation budgets. The configured HTTP fixture owns success/error request count
 preflight, not separate cancellation/restart lifecycle worlds.
 
 The runtime's production `contended_admission` decision uses retained admission and captured owner
-facts. Its finite table owns definite busy, access error and indeterminate partitions. The runtime
-retains generation pins around those facts; scheduled tests still own completion during the absence
-probe and physical retirement. Startup tests own descriptors, socket inodes and optional-material
-snapshots. They do not construct a receiver to prove that the receipt directory is unused.
-Diagnostic tests own suppression and sink mechanics; one protocol binding checks shared suppression
-across status/history/receipt reads and its separation from explicit-selection diagnostics.
+facts. Its finite table compares typed admission decisions, not copied wire JSON. It owns definite
+busy, access error and indeterminate partitions. The runtime retains generation pins around those
+facts; scheduled tests still own completion during the absence probe and physical retirement.
+Startup tests own descriptors, socket inodes and optional-material snapshots. They do not construct
+a receiver to prove that the receipt directory is unused. Diagnostic tests own suppression and sink
+mechanics; one protocol binding checks shared suppression across status/history/receipt reads and
+its separation from explicit-selection diagnostics.
 
 Operator commands keep one public provisioning/configuration trace in `e2e_operator_commands`.
 Actual snapshot HTTP reads, authenticated grant fields, private output files and static validation

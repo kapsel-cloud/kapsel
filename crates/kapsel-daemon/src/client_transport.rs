@@ -135,7 +135,7 @@ mod tests {
         thread,
     };
 
-    use super::{exchange, Error, IO_DEADLINE, RESPONSE_BYTES_MAX};
+    use super::{exchange, validate_response_envelope, Error, IO_DEADLINE, RESPONSE_BYTES_MAX};
 
     const REQUEST: &[u8] =
         br#"{"version":1,"request":"submit_set_deployment_image","operation_id":"a"}"#;
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn exchange_preserves_bytes_and_recognizes_every_existing_status() {
+    fn envelope_recognizes_every_existing_status_without_socket_worlds() {
         for status in [
             "READY",
             "NOT_FOUND",
@@ -205,15 +205,12 @@ mod tests {
             "ERROR",
         ] {
             let bytes = format!(" {{\"status\":\"{status}\", \"version\":1}}\n").into_bytes();
-            let (original, recognized) = exchange_reply(frame(&bytes)).unwrap();
-
-            assert_eq!(original, bytes);
-            assert_eq!(recognized, status);
+            assert_eq!(validate_response_envelope(&bytes).unwrap(), status);
         }
     }
 
     #[test]
-    fn exchange_rejects_invalid_envelopes_without_a_caller_validation_step() {
+    fn invalid_envelope_partitions_are_owned_by_the_header_decoder() {
         for invalid in [
             r#"{"status":"ADMITTED"}"#,
             r#"{"version":2,"status":"ADMITTED"}"#,
@@ -231,22 +228,26 @@ mod tests {
             "not JSON",
         ] {
             assert!(matches!(
-                exchange_reply(frame(invalid.as_bytes())),
+                validate_response_envelope(invalid.as_bytes()),
                 Err(Error::Response)
             ));
         }
         assert!(matches!(
-            exchange_reply(frame(&[0xff])),
+            validate_response_envelope(&[0xff]),
             Err(Error::Response)
         ));
     }
 
     #[test]
-    fn envelope_acceptance_leaves_command_payload_checks_with_the_caller() {
-        let bytes = br#"{"version":1,"status":"READY","receipt_hex":false}"#;
+    fn exchange_binds_header_validation_and_preserves_bytes_without_payload_interpretation() {
+        let bytes = b" {\"version\":1,\"status\":\"READY\",\"receipt_hex\":false}\n";
         let (original, status) = exchange_reply(frame(bytes)).unwrap();
         assert_eq!(original, bytes);
         assert_eq!(status, "READY");
+        assert!(matches!(
+            exchange_reply(frame(br#"{"version":2,"status":"READY"}"#)),
+            Err(Error::Response)
+        ));
     }
 
     #[test]

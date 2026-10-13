@@ -20,6 +20,10 @@ const PROTOCOL: &str = "2025-11-25";
 const INPUT_MAX: u64 = 16 * 1024;
 const OUTPUT_MAX: usize = 96 * 1024;
 
+#[cfg(test)]
+#[path = "../../tests/fixtures/service_wire.rs"]
+mod wire_vectors;
+
 struct Unique(Value);
 
 impl<'de> Deserialize<'de> for Unique {
@@ -223,16 +227,18 @@ fn string_field(fields: &Map<String, Value>, key: &str) -> bool {
     fields.get(key).is_some_and(Value::is_string)
 }
 
-fn target_object(value: &Value) -> bool {
-    value.as_object().is_some_and(|target| {
-        exact(target, &["uid", "resource_version"])
-            && string_field(target, "uid")
-            && string_field(target, "resource_version")
+fn nullable_target(value: Option<&Value>, partial_observation: bool) -> bool {
+    value.is_some_and(|value| {
+        value.is_null()
+            || value.as_object().is_some_and(|target| {
+                exact(target, &["uid", "resource_version"])
+                    && ["uid", "resource_version"].iter().all(|field| {
+                        target.get(*field).is_some_and(|value| {
+                            value.is_string() || (partial_observation && value.is_null())
+                        })
+                    })
+            })
     })
-}
-
-fn nullable_target(value: Option<&Value>) -> bool {
-    value.is_some_and(|value| value.is_null() || target_object(value))
 }
 
 fn execution_disposition(fields: &Map<String, Value>) -> Option<ExecutionDisposition> {
@@ -420,9 +426,9 @@ fn status_shape(value: &Value, with_version: bool, with_operation_id: bool) -> b
                         "observed_target",
                     ]);
                     exact(fields, &base)
-                        && nullable_target(fields.get("approved_target"))
-                        && nullable_target(fields.get("attempt_target"))
-                        && nullable_target(fields.get("observed_target"))
+                        && nullable_target(fields.get("approved_target"), false)
+                        && nullable_target(fields.get("attempt_target"), false)
+                        && nullable_target(fields.get("observed_target"), true)
                 },
                 "git.transition_ref" => {
                     base.extend(["effect", "git"]);
@@ -523,17 +529,10 @@ fn response_shape(name: &str, value: &Value) -> bool {
     }
 }
 
-fn call(id: Value, params: Option<Value>) -> Value {
-    let Some(params) = params else {
-        return error(id, -32602, "Invalid params");
-    };
-    let Ok(call) = serde_json::from_value::<Call>(params) else {
-        return error(id, -32602, "Invalid params");
-    };
+fn decode_call(params: Option<Value>) -> Option<(String, Value)> {
+    let call = serde_json::from_value::<Call>(params?).ok()?;
     let _ = call.metadata;
-    let Some(arguments) = call.arguments.as_object() else {
-        return error(id, -32602, "Invalid params");
-    };
+    let arguments = call.arguments.as_object()?;
     let request = match call.name.as_str() {
         "kapsel.list_approved_actions" | "kapsel.list_operation_history"
             if arguments.len() == 1 =>
@@ -541,7 +540,7 @@ fn call(id: Value, params: Option<Value>) -> Value {
             let after = match arguments.get("after") {
                 Some(Value::Null) => Value::Null,
                 Some(cursor) if identity(cursor).is_some() => cursor.clone(),
-                _ => return error(id, -32602, "Invalid params"),
+                _ => return None,
             };
             let request_name = if call.name == "kapsel.list_approved_actions" {
                 "list_approved_actions"
@@ -551,9 +550,7 @@ fn call(id: Value, params: Option<Value>) -> Value {
             json!({"version":1,"request":request_name,"after":after})
         },
         "kapsel.get_status" | "kapsel.get_receipt" | "kapsel.submit" if arguments.len() == 1 => {
-            let Some(operation_id) = arguments.get("operation_id").and_then(identity) else {
-                return error(id, -32602, "Invalid params");
-            };
+            let operation_id = arguments.get("operation_id").and_then(identity)?;
             let request_name = match call.name.as_str() {
                 "kapsel.get_status" => "get_set_deployment_image_status",
                 "kapsel.get_receipt" => "get_set_deployment_image_receipt",
@@ -561,7 +558,14 @@ fn call(id: Value, params: Option<Value>) -> Value {
             };
             json!({"version":1,"request":request_name,"operation_id":operation_id})
         },
-        _ => return error(id, -32602, "Invalid params"),
+        _ => return None,
+    };
+    Some((call.name, request))
+}
+
+fn call(id: Value, params: Option<Value>) -> Value {
+    let Some((name, request)) = decode_call(params) else {
+        return error(id, -32602, "Invalid params");
     };
 
     #[cfg(feature = "test-harness")]
@@ -598,7 +602,7 @@ fn call(id: Value, params: Option<Value>) -> Value {
         );
     };
     let failed = value.get("status").and_then(Value::as_str) == Some("ERROR");
-    if !response_shape(&call.name, &value) {
+    if !response_shape(&name, &value) {
         return tool_result(
             id,
             &operation_id,
@@ -779,77 +783,105 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "keep literal wire tuples beside their independent grammar cross-product"
-    )]
-    fn execution_grammar_accepts_only_independently_pinned_tuples() {
-        // Literal wire tuples, not ExecutionDisposition's implementation or getters.
-        let guidance = [
-            ("active", None, "wait", "caller"),
-            (
-                "waiting_for_worker",
-                None,
-                "wait_then_select_same_id",
-                "caller",
-            ),
-            ("resume_required", None, "select_same_id", "caller"),
-            (
-                "resume_required",
-                Some("preflight_unavailable"),
-                "select_same_id",
-                "caller",
-            ),
-            (
-                "resume_required",
-                Some("worker_contention"),
-                "select_same_id",
-                "caller",
-            ),
-            (
-                "operator_required",
-                Some("receiver_unavailable"),
-                "contact_operator",
-                "operator",
-            ),
-            (
-                "operator_required",
-                Some("signing_unavailable"),
-                "contact_operator",
-                "operator",
-            ),
-            (
-                "operator_required",
-                Some("completion_blocked"),
-                "contact_operator",
-                "operator",
-            ),
-            (
-                "operator_required",
-                Some("operation_blocked"),
-                "contact_operator",
-                "operator",
-            ),
-        ];
-        let dispositions = [
-            "active",
-            "waiting_for_worker",
-            "resume_required",
-            "operator_required",
-            "complete",
-            "admission_unconfirmed",
-            "surprise",
-        ];
-        let conditions = [
-            None,
-            Some("preflight_unavailable"),
-            Some("worker_contention"),
-            Some("receiver_unavailable"),
-            Some("signing_unavailable"),
-            Some("completion_blocked"),
-            Some("operation_blocked"),
-            Some("surprise"),
-        ];
+    fn discovery_advertises_only_the_pinned_id_or_cursor_schemas() {
+        let value = tools();
+        assert_eq!(value.as_object().unwrap().len(), 1);
+        let advertised = value["tools"].as_array().unwrap();
+        assert_eq!(advertised.len(), wire_vectors::COMMANDS.len());
+        for (name, _, field) in wire_vectors::COMMANDS {
+            let tool = advertised.iter().find(|tool| tool["name"] == name).unwrap();
+            let schema = if field == "after" {
+                json!({"type":"object","properties":{"after":{"type":["string","null"],
+                    "maxLength":128}},"required":["after"],"additionalProperties":false})
+            } else {
+                json!({"type":"object","properties":{"operation_id":{"type":"string",
+                    "minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},
+                    "required":["operation_id"],"additionalProperties":false})
+            };
+            assert_eq!(tool["inputSchema"], schema, "{name}");
+        }
+    }
+
+    #[test]
+    fn call_partitions_bind_the_five_tools_without_transport() {
+        assert!(decode_call(None).is_none());
+        for (tool, command, field) in wire_vectors::COMMANDS {
+            for value in [json!("op-1"), json!("x".repeat(128)), Value::Null] {
+                let params = json!({"name":tool,"arguments":{field:value},"_meta":{}});
+                if field == "operation_id" && value.is_null() {
+                    assert!(decode_call(Some(params)).is_none());
+                } else {
+                    assert_eq!(
+                        decode_call(Some(params)),
+                        Some((
+                            tool.into(),
+                            json!({"version":1,"request":command,field:value})
+                        ))
+                    );
+                }
+            }
+            let valid = json!({"name":tool,"arguments":{field:"op-1"}});
+            assert!(decode_call(Some(valid.clone())).is_some());
+            for bad in [json!(true), json!("../outside"), json!("x".repeat(129))] {
+                let mut changed = valid.clone();
+                changed["arguments"][field] = bad;
+                assert!(decode_call(Some(changed)).is_none());
+            }
+            for pointer in ["", "/arguments"] {
+                let fields = valid.pointer(pointer).unwrap().as_object().unwrap();
+                for field in fields.keys() {
+                    let mut changed = valid.clone();
+                    changed
+                        .pointer_mut(pointer)
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .remove(field);
+                    assert!(decode_call(Some(changed)).is_none());
+                }
+                let mut changed = valid.clone();
+                changed.pointer_mut(pointer).unwrap()["grant"] = json!("caller-appointed");
+                assert!(decode_call(Some(changed)).is_none());
+            }
+            let mut changed = valid;
+            changed["name"] = json!("kapsel.execute");
+            assert!(decode_call(Some(changed)).is_none());
+        }
+    }
+
+    #[test]
+    fn unique_json_rejects_duplicates_at_each_depth_including_escaped_aliases() {
+        for bytes in [
+            br#"{"id":1,"id":2}"#.as_slice(),
+            br#"{"params":{"name":"a","\u006eame":"b"}}"#,
+            br#"{"params":{"arguments":{"operation_id":"a","operation_id":"b"}}}"#,
+            br#"{"entries":[{"uid":"a","uid":"b"}]}"#,
+        ] {
+            assert!(serde_json::from_slice::<Unique>(bytes).is_err());
+        }
+        assert!(serde_json::from_slice::<Unique>(
+            br#"{"id":1,"params":{"arguments":{"\u006fperation_id":"op-1"}}}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn execution_grammar_accepts_only_the_pinned_wire_partitions() {
+        let dispositions: BTreeSet<_> = wire_vectors::GUIDANCE
+            .iter()
+            .map(|v| v.0)
+            .chain(["surprise"])
+            .collect();
+        let conditions: BTreeSet<_> = wire_vectors::GUIDANCE
+            .iter()
+            .map(|v| v.1)
+            .chain([Some("surprise")])
+            .collect();
+        let actions: BTreeSet<_> = wire_vectors::GUIDANCE
+            .iter()
+            .map(|v| v.2)
+            .chain(["surprise"])
+            .collect();
         for status in [
             "NOT_FOUND",
             "IN_PROGRESS",
@@ -858,48 +890,22 @@ mod tests {
             "FAILED",
             "UNKNOWN",
         ] {
-            let mut allowed = Vec::new();
-            if status == "IN_PROGRESS" {
-                allowed.extend(guidance);
-            } else if status == "NOT_FOUND" {
-                allowed.push(("admission_unconfirmed", None, "read_same_id", "caller"));
-            } else {
-                allowed.push(("complete", None, "inspect_result", "caller"));
-            }
-            for disposition in dispositions {
-                for condition in conditions {
-                    for next_action in [
-                        "wait",
-                        "wait_then_select_same_id",
-                        "select_same_id",
-                        "contact_operator",
-                        "inspect_result",
-                        "read_same_id",
-                        "surprise",
-                    ] {
+            for &disposition in &dispositions {
+                for &condition in &conditions {
+                    for &action in &actions {
                         for owner in ["caller", "operator", "surprise"] {
-                            let tuple = (disposition, condition, next_action, owner);
+                            let tuple = (disposition, condition, action, owner);
+                            let allowed = match status {
+                                "NOT_FOUND" => tuple == wire_vectors::GUIDANCE[10],
+                                "IN_PROGRESS" => wire_vectors::GUIDANCE[..9].contains(&tuple),
+                                _ => tuple == wire_vectors::GUIDANCE[9],
+                            };
                             let value = json!({"disposition":disposition,"condition":condition,
-                                "next_action":next_action,"action_owner":owner});
-                            let mut reply = self::status("kubernetes.set_deployment_image");
-                            reply["status"] = json!(status);
-                            reply["execution"] = value;
-                            if status == "NOT_FOUND" {
-                                for field in [
-                                    "effect",
-                                    "approved_target",
-                                    "attempt_target",
-                                    "observed_target",
-                                ] {
-                                    reply.as_object_mut().unwrap().remove(field);
-                                }
-                            } else if status == "NOT_ATTEMPTED" {
-                                reply["target_rejection"] = json!("STALE_APPROVAL");
-                            }
+                                "next_action":action,"action_owner":owner});
                             assert_eq!(
-                                response_shape("kapsel.get_status", &reply),
-                                allowed.contains(&tuple),
-                                "{reply}"
+                                execution_shape(&value, status),
+                                allowed,
+                                "{status} {value}"
                             );
                         }
                     }
@@ -917,19 +923,16 @@ mod tests {
     }
 
     fn status(effect: &str) -> Value {
-        let mut value = json!({"version":1,"status":"UNKNOWN","effect":effect,
-            "execution":{"disposition":"complete","condition":null,
-                "next_action":"inspect_result","action_owner":"caller"}});
-        if effect == "git.transition_ref" {
-            value["git"] = json!({"repository_id":"repo-1","reference":"refs/heads/main",
-                "old_commit":"a".repeat(40),"new_commit":"b".repeat(40),"attempted":true,
-                "acknowledgement":"updated",
-                "observed_ref":{"kind":"commit","commit":"b".repeat(40)}});
-        } else {
-            value["approved_target"] = json!({"uid":"uid-1","resource_version":"10"});
-            value["attempt_target"] = Value::Null;
-            value["observed_target"] = Value::Null;
-        }
+        let history: Value = serde_json::from_str(wire_vectors::HISTORY).unwrap();
+        let mut value = history["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["effect"] == effect)
+            .unwrap()
+            .clone();
+        value.as_object_mut().unwrap().remove("operation_id");
+        value["version"] = json!(1);
         value
     }
 
@@ -969,14 +972,8 @@ mod tests {
             } else {
                 reject_missing_and_extra_members(&original, "/approved_target");
             }
-            let mut entry = original.clone();
-            entry.as_object_mut().unwrap().remove("version");
-            entry["operation_id"] = json!("op-1");
-            assert!(response_shape(
-                "kapsel.list_operation_history",
-                &json!({"version":1,
-                "status":"READY","entries":[entry],"next_cursor":null})
-            ));
+            let history: Value = serde_json::from_str(wire_vectors::HISTORY).unwrap();
+            assert!(response_shape("kapsel.list_operation_history", &history));
             for rejection in [
                 "STALE_APPROVAL",
                 "GIT_STALE_REF",
@@ -986,6 +983,8 @@ mod tests {
                 let mut rejected = original.clone();
                 rejected["status"] = json!("NOT_ATTEMPTED");
                 rejected["target_rejection"] = json!(rejection);
+                rejected["execution"] = json!({"disposition":"complete","condition":null,
+                    "next_action":"inspect_result","action_owner":"caller"});
                 let expected = if effect == "git.transition_ref" {
                     matches!(rejection, "GIT_STALE_REF" | "GIT_INVALID_OBJECTS")
                 } else {
@@ -1003,14 +1002,27 @@ mod tests {
             *changed.pointer_mut(pointer).unwrap() = bad;
             assert!(!response_shape("kapsel.get_status", &changed));
         }
-        for bad in [
-            json!({"uid":"uid-1"}),
-            json!(true),
-            json!({"uid":1,"resource_version":"10"}),
-        ] {
+        for field in ["approved_target", "attempt_target", "observed_target"] {
+            for uid in [Value::Null, json!("uid-1"), json!(true), json!(7)] {
+                for version in [Value::Null, json!("11"), json!([])] {
+                    let mut changed = status("kubernetes.set_deployment_image");
+                    changed[field] = json!({"uid":uid,"resource_version":version});
+                    let allowed = (uid.is_string()
+                        || (field == "observed_target" && uid.is_null()))
+                        && (version.is_string()
+                            || (field == "observed_target" && version.is_null()));
+                    assert_eq!(
+                        response_shape("kapsel.get_status", &changed),
+                        allowed,
+                        "{changed}"
+                    );
+                }
+            }
             let mut changed = status("kubernetes.set_deployment_image");
-            changed["approved_target"] = bad;
+            changed[field] = json!({"uid":"uid-1"});
             assert!(!response_shape("kapsel.get_status", &changed));
+            changed[field] = Value::Null;
+            assert!(response_shape("kapsel.get_status", &changed));
         }
     }
 
@@ -1051,9 +1063,7 @@ mod tests {
 
     #[test]
     fn receipt_reply_preserves_exact_hex_and_independently_pinned_digest() {
-        let original = json!({"version":1,"status":"READY","receipt_hex":"616263",
-            "receipt_sha256":concat!("ba7816bf8f01cfea414140de5dae2223",
-                "b00361a396177a9cb410ff61f20015ad")});
+        let original: Value = serde_json::from_str(wire_vectors::RECEIPT).unwrap();
         assert!(response_shape("kapsel.get_receipt", &original));
         for (field, bad) in [
             ("receipt_hex", json!("616264")),

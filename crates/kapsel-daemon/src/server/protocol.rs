@@ -1,6 +1,10 @@
 //! Pure fixed service grammar, validation projection, response bytes and frame limits.
 
 #[cfg(test)]
+#[path = "../../tests/fixtures/service_wire.rs"]
+mod wire_vectors;
+
+#[cfg(test)]
 use kapsel::HistoryEntry;
 use kapsel::{
     ApprovedAction, ApprovedTarget, ExecutionCondition, ExecutionDisposition, ExecutionObservation,
@@ -16,7 +20,7 @@ pub(super) const REQUEST_BYTES_MAX: usize = 16 * 1024;
 const ORDINARY_RESPONSE_BYTES_MAX: usize = 16 * 1024;
 const RECEIPT_RESPONSE_BYTES_MAX: usize = 40 * 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SubmissionAdmission {
     Decided(ServiceAdmission),
     Indeterminate,
@@ -391,83 +395,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_request_grammars_parse_and_hostile_shapes_fail() {
-        for valid in [
-            r#"{"version":1,"request":"get_set_deployment_image_status","operation_id":"op-1"}"#,
-            r#"{"version":1,"request":"get_set_deployment_image_receipt","operation_id":"op-1"}"#,
-            r#"{"version":1,"request":"submit_set_deployment_image","operation_id":"op-1"}"#,
-            r#"{"version":1,"request":"list_approved_actions","after":null}"#,
-            r#"{"version":1,"request":"list_operation_history","after":"op-1"}"#,
-        ] {
-            assert!(decode(valid.as_bytes()).is_some());
-        }
-        for invalid in [
-            r#"{"request":"get_set_deployment_image_status","operation_id":"a","unknown":1}"#,
-            r#"{"request":"get_set_deployment_image_status","operation_id":null}"#,
-            r#"{"request":"get_set_deployment_image_status","operation_id":1}"#,
-            r#"{"request":"get_set_deployment_image_status","namespace":"demo"}"#,
-            r#"{"request":"get_set_deployment_image_status"}"#,
-            r#"{"request":"unknown","operation_id":"a"}"#,
-            r#"{"request":"get_set_deployment_image_status"}{}"#,
-            r"[]",
-        ] {
-            assert!(decode(invalid.as_bytes()).is_none());
-        }
-        assert!(decode(&[0xff]).is_none());
-    }
-
-    #[test]
-    fn duplicate_members_and_escaped_aliases_fail_for_every_request_variant() {
-        for request in [
-            "get_set_deployment_image_status",
-            "get_set_deployment_image_receipt",
-            "submit_set_deployment_image",
-        ] {
-            let members = vec![
-                ("request", r"\u0072equest", request),
-                ("operation_id", r"\u006fperation_id", "op-1"),
-            ];
-            let body = format!(
-                "\"version\":1,{}",
-                members
-                    .iter()
-                    .map(|(name, _, value)| format!(r#""{name}":"{value}""#))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-            assert!(
-                decode(format!("{{{body}}}").as_bytes()).is_some(),
-                "{request}"
-            );
-            for (name, escaped, value) in &members {
-                let member = format!(r#""{name}":"{value}""#);
-                let alias = format!(r#""{escaped}":"{value}""#);
-                let unique_alias = body.replace(&member, &alias);
-                assert!(
-                    decode(format!("{{{unique_alias}}}").as_bytes()).is_some(),
-                    "unique alias: {request} {escaped}"
-                );
-                let other_value = match *name {
-                    "request" if request == "get_set_deployment_image_status" => {
-                        "get_set_deployment_image_receipt"
+    fn every_command_preserves_bounded_identity_and_cursor_values() {
+        for (_, name, field) in wire_vectors::COMMANDS {
+            for id in ["op-1".to_owned(), "A._:-z0".into(), "x".repeat(128)] {
+                let body = serde_json::json!({"version":1,"request":name,field:id});
+                let decoded = decode(body.to_string().as_bytes()).unwrap();
+                let actual = match decoded {
+                    Command::Read(ReadRequest::List(id)) => ("list_approved_actions", id),
+                    Command::Read(ReadRequest::History(id)) => ("list_operation_history", id),
+                    Command::Read(ReadRequest::Status(id)) => {
+                        ("get_set_deployment_image_status", Some(id))
                     },
-                    "request" => "get_set_deployment_image_status",
-                    _ => "other",
+                    Command::Read(ReadRequest::Receipt(id)) => {
+                        ("get_set_deployment_image_receipt", Some(id))
+                    },
+                    Command::Submit(id) => ("submit_set_deployment_image", Some(id)),
                 };
-                for duplicate_value in [*value, other_value] {
-                    for duplicate_name in [*name, *escaped] {
-                        let duplicate = format!(r#""{duplicate_name}":"{duplicate_value}""#);
-                        // Keep raw members: a JSON object map would erase the duplicates.
-                        for invalid in [
-                            format!("{{{body},{duplicate}}}"),
-                            format!("{{{duplicate},{body}}}"),
-                        ] {
-                            assert!(decode(invalid.as_bytes()).is_none(), "{invalid}");
-                        }
-                    }
+                assert_eq!(actual, (name, Some(id)), "{body}");
+            }
+            for invalid in [
+                Value::Null,
+                serde_json::json!(1),
+                serde_json::json!(true),
+                serde_json::json!([]),
+                serde_json::json!({}),
+                serde_json::json!(""),
+                serde_json::json!("../outside"),
+                serde_json::json!("é"),
+                serde_json::json!("a\0b"),
+                serde_json::json!("x".repeat(129)),
+            ] {
+                let body = serde_json::json!({"version":1,"request":name,field:invalid});
+                let decoded = decode(body.to_string().as_bytes());
+                if field == "after" && invalid.is_null() {
+                    assert!(matches!(
+                        decoded,
+                        Some(Command::Read(
+                            ReadRequest::List(None) | ReadRequest::History(None)
+                        ))
+                    ));
+                } else {
+                    assert!(decoded.is_none(), "{body}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn missing_unknown_and_duplicate_members_fail_from_valid_requests() {
+        for (_, name, field) in wire_vectors::COMMANDS {
+            let body = serde_json::json!({"version":1,"request":name,field:"op-1"});
+            let raw = body.to_string();
+            assert!(decode(raw.as_bytes()).is_some());
+            for (member, alias) in [
+                ("version", r"\u0076ersion"),
+                ("request", r"\u0072equest"),
+                (
+                    field,
+                    if field == "after" {
+                        r"\u0061fter"
+                    } else {
+                        r"\u006fperation_id"
+                    },
+                ),
+            ] {
+                let mut missing = body.clone();
+                missing.as_object_mut().unwrap().remove(member);
+                assert!(decode(missing.to_string().as_bytes()).is_none());
+                let unique_alias = raw.replace(&format!("\"{member}\":"), &format!("\"{alias}\":"));
+                assert!(decode(unique_alias.as_bytes()).is_some());
+                for key in [member, alias] {
+                    let duplicate = format!("\"{key}\":{}", body[member]);
+                    // Raw JSON retains duplicate keys, including aliases and either member order.
+                    for invalid in [
+                        format!("{{{},{} }}", &raw[1..raw.len() - 1], duplicate),
+                        format!("{{{},{} }}", duplicate, &raw[1..raw.len() - 1]),
+                    ] {
+                        assert!(decode(invalid.as_bytes()).is_none(), "{invalid}");
+                    }
+                }
+            }
+            for (key, value) in [
+                ("version", serde_json::json!(2)),
+                ("version", serde_json::json!(1.0)),
+                ("version", serde_json::json!("1")),
+                ("version", Value::Null),
+                ("version", serde_json::json!(true)),
+                ("version", serde_json::json!(-1)),
+                ("request", serde_json::json!("unknown")),
+                ("unknown", Value::Null),
+                ("grant", serde_json::json!("caller-appointed")),
+            ] {
+                let mut invalid = body.clone();
+                invalid[key] = value;
+                assert!(
+                    decode(invalid.to_string().as_bytes()).is_none(),
+                    "{invalid}"
+                );
+            }
+            for invalid in [
+                format!("[{raw}]"),
+                format!("{raw}{{}}"),
+                raw[..raw.len() - 1].into(),
+            ] {
+                assert!(decode(invalid.as_bytes()).is_none(), "{invalid}");
+            }
+        }
+        assert!(decode(&[0xff]).is_none());
     }
 
     #[test]
@@ -508,23 +542,12 @@ mod tests {
             render_receipt(Ok(OperationReceipt::NotReady)),
             br#"{"version":1,"status":"NOT_READY"}"#
         );
+        let receipt: Value = serde_json::from_str(wire_vectors::RECEIPT).unwrap();
         let ready = render_receipt(Ok(OperationReceipt::Ready {
-            bytes: vec![0x00, 0xab, 0xff],
-            sha256: concat!(
-                "0123456789abcdef0123456789abcdef",
-                "0123456789abcdef0123456789abcdef"
-            )
-            .into(),
+            bytes: b"abc".to_vec(),
+            sha256: receipt["receipt_sha256"].as_str().unwrap().into(),
         }));
-        assert_eq!(
-            ready,
-            concat!(
-                "{\"version\":1,\"status\":\"READY\",\"receipt_hex\":\"00abff\",",
-                "\"receipt_sha256\":\"",
-                r#"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}"#
-            )
-            .as_bytes()
-        );
+        assert_eq!(ready, wire_vectors::RECEIPT.as_bytes());
         assert_eq!(lowercase_hex(&[0x00, 0xab, 0xff]), "00abff");
         assert_eq!(
             render_submission(SubmissionAdmission::Decided(ServiceAdmission::Busy)),
@@ -541,66 +564,12 @@ mod tests {
     }
 
     #[test]
-    fn version_and_named_fields_are_mandatory_on_all_five_commands() {
-        for (name, fields) in [
-            ("list_approved_actions", r#""after":null"#),
-            ("list_operation_history", r#""after":"op-1""#),
-            (
-                "get_set_deployment_image_status",
-                r#""operation_id":"op-1""#,
-            ),
-            (
-                "get_set_deployment_image_receipt",
-                r#""operation_id":"op-1""#,
-            ),
-            ("submit_set_deployment_image", r#""operation_id":"op-1""#),
-        ] {
-            let body = format!(r#"{{"version":1,"request":"{name}",{fields}}}"#);
-            assert!(decode(body.as_bytes()).is_some());
-            for version in ["0", "2", "1.0", "\"1\"", "null", "true", "-1"] {
-                assert!(decode(
-                    body.replace("\"version\":1", &format!("\"version\":{version}"))
-                        .as_bytes()
-                )
-                .is_none());
-            }
-            for invalid in [
-                body.replace("\"version\":1,", ""),
-                body.replace("\"version\":1", "\"version\":1,\"version\":1"),
-                body.replace("\"version\":1", "\"version\":1,\"\\u0076ersion\":1"),
-                body.replace("\"version\":1", "\"version\":1,\"unknown\":null"),
-                format!("{body}{{}}"),
-                format!("[{body}]"),
-                format!("{{\"version\":1,\"request\":\"{name}\"}}"),
-                format!("{{\"version\":1,\"request\":\"{name}\",{fields},{fields}}}"),
-            ] {
-                assert!(decode(invalid.as_bytes()).is_none(), "{invalid}");
-            }
-        }
-        for value in ["[]", "{}", "true", "1", "\"\""] {
-            let body = format!(
-                "{{\"version\":1,\"request\":\"list_approved_actions\",\"after\":{value}}}"
-            );
-            assert!(decode(body.as_bytes()).is_none());
-        }
-        assert!(decode(
-            concat!(
-                r#"{"version":1,"request":"submit_set_deployment_image","operation_id":"op-1","#,
-                r#""namespace":"demo","deployment":"agent-api","container":"api","#,
-                r#""immutable_image_digest":"image"}"#,
-            )
-            .as_bytes()
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn both_effects_share_history_without_collapsing_receiver_facts() {
+    fn history_wire_vector_preserves_both_effects_partial_observations_and_access_errors() {
         let git = kapsel::GitOperationTargets {
             approval: kapsel_authority::GitRefAuthorization {
                 authorization_id: "approval".into(),
                 operation_id: "git-op".into(),
-                repository_id: "repository".into(),
+                repository_id: "repo-1".into(),
                 reference: "refs/heads/approved".into(),
                 old_commit: "a".repeat(40),
                 new_commit: "b".repeat(40),
@@ -620,118 +589,60 @@ mod tests {
                     status: Ok((OperationStatus::Unknown, targets.clone())),
                 },
                 HistoryEntry {
-                    operation_id: "k8s-op".into(),
-                    status: Ok((OperationStatus::InProgress, OperationTargets::default())),
+                    operation_id: "inaccessible".into(),
+                    status: Err(ServiceError::AuthorityUnavailable),
+                },
+                HistoryEntry {
+                    operation_id: "kube-op".into(),
+                    status: Ok((
+                        OperationStatus::InProgress,
+                        OperationTargets {
+                            approved_target: Some(ApprovedTarget {
+                                uid: "approved-uid".into(),
+                                resource_version: "7".into(),
+                            }),
+                            attempt_target: Some(ApprovedTarget {
+                                uid: "approved-uid".into(),
+                                resource_version: "9".into(),
+                            }),
+                            observed_target: Some(kapsel::ObservedTarget {
+                                uid: None,
+                                resource_version: Some("11".into()),
+                            }),
+                            git: None,
+                        },
+                    )),
                 },
             ],
-            next_cursor: None,
+            next_cursor: Some("kube-op".into()),
         });
-        let page: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(page["entries"][0]["effect"], "git.transition_ref");
-        assert_eq!(page["entries"][0]["status"], "UNKNOWN");
-        assert_eq!(page["entries"][0]["git"]["acknowledgement"], "unknown");
         assert_eq!(
-            page["entries"][0]["git"]["observed_ref"]["commit"],
-            "b".repeat(40)
+            serde_json::from_slice::<Value>(&bytes).unwrap(),
+            serde_json::from_str::<Value>(wire_vectors::HISTORY).unwrap()
         );
-        assert!(page["entries"][0].get("approved_target").is_none());
-        assert_eq!(
-            page["entries"][1]["effect"],
-            "kubernetes.set_deployment_image"
-        );
-        assert!(page["entries"][1].get("git").is_none());
         let absent = render_status_with_targets(Ok((OperationStatus::NotFound, targets)));
         assert_eq!(absent, br#"{"version":1,"status":"NOT_FOUND"}"#);
     }
 
     #[test]
-    fn execution_projection_is_bounded_and_contains_only_fixed_guidance() {
-        use kapsel::{ExecutionCondition as Condition, ExecutionDisposition as Disposition};
-        for disposition in [
-            Disposition::Active,
-            Disposition::WaitingForWorker,
-            Disposition::ResumeRequired(None),
-            Disposition::ResumeRequired(Some(Condition::PreflightUnavailable)),
-            Disposition::OperatorRequired(Condition::ReceiverUnavailable),
-            Disposition::OperatorRequired(Condition::SigningUnavailable),
-            Disposition::OperatorRequired(Condition::CompletionBlocked),
-        ] {
-            let bytes = render_execution_status(Ok((
-                OperationStatus::InProgress,
-                OperationTargets::default(),
-                disposition,
-            )));
-            assert!(response_length_allowed(
-                bytes.len(),
-                ResponseClass::Ordinary
-            ));
-            let value: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(
-                value,
-                serde_json::json!({"version":1, "status":"IN_PROGRESS",
-                    "effect":"kubernetes.set_deployment_image",
-                    "approved_target":null, "attempt_target":null, "observed_target":null,
-                    "execution": {"disposition":disposition.as_str(),
-                        "condition":disposition.condition().map(Condition::as_str),
-                        "next_action":disposition.next_action(),
-                        "action_owner":disposition.action_owner()},
-                })
-            );
-        }
-        let bytes = render_execution_status(Err(ServiceError::AuthorityUnavailable));
+    fn execution_renderer_binds_the_guidance_owner_without_repeating_its_partitions() {
+        let bytes = render_execution_status(Ok((
+            OperationStatus::InProgress,
+            OperationTargets::default(),
+            ExecutionDisposition::ResumeRequired(Some(ExecutionCondition::PreflightUnavailable)),
+        )));
+        assert!(response_length_allowed(
+            bytes.len(),
+            ResponseClass::Ordinary
+        ));
+        let (token, condition, action, owner) = wire_vectors::GUIDANCE[3];
         assert_eq!(
             serde_json::from_slice::<Value>(&bytes).unwrap(),
-            serde_json::json!({"version":1,"status":"ERROR",
-                "error_class":"authority_unavailable"})
-        );
-    }
-
-    #[test]
-    fn history_projection_keeps_authority_errors_per_id_and_without_action_facts() {
-        let bytes = render_history(HistoryPage {
-            entries: vec![
-                HistoryEntry {
-                    operation_id: "inaccessible".into(),
-                    status: Err(ServiceError::AuthorityUnavailable),
-                },
-                HistoryEntry {
-                    operation_id: "readable".into(),
-                    status: Ok((
-                        OperationStatus::InProgress,
-                        OperationTargets {
-                            approved_target: Some(ApprovedTarget {
-                                uid: "original-uid".into(),
-                                resource_version: "7".into(),
-                            }),
-                            ..OperationTargets::default()
-                        },
-                    )),
-                },
-            ],
-            next_cursor: Some("readable".into()),
-        });
-        let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["version"], 1);
-        assert_eq!(value["status"], "READY");
-        assert_eq!(value["next_cursor"], "readable");
-        assert_eq!(
-            value["entries"][0],
             serde_json::json!({
-                "operation_id":"inaccessible", "status":"ERROR",
-                "error_class":"authority_unavailable",
-            })
-        );
-        assert_eq!(value["entries"][1]["operation_id"], "readable");
-        assert_eq!(
-            value["entries"][1]["approved_target"]["uid"],
-            "original-uid"
-        );
-        assert!(value["entries"][1]["attempt_target"].is_null());
-        assert_eq!(
-            value["entries"][1]["execution"],
-            serde_json::json!({
-                "disposition":"resume_required", "condition":null,
-                "next_action":"select_same_id", "action_owner":"caller",
+                "version":1, "status":"IN_PROGRESS", "effect":"kubernetes.set_deployment_image",
+                "approved_target":null, "attempt_target":null, "observed_target":null,
+                "execution":{"disposition":token,"condition":condition,
+                    "next_action":action,"action_owner":owner},
             })
         );
     }

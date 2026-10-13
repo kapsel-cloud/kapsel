@@ -19,7 +19,8 @@ Notable changes are recorded here. Release tags retain their matching documentat
 - Snapshot grant provisioning classifies malformed operator kubeconfig as `operator_configuration`
   with exit 3; malformed grant input remains `invalid_input` with exit 2.
 - The service MCP bridge rejects malformed execution guidance and effect-specific target replies
-  without changing valid service values or inferring receiver outcomes.
+  without changing valid service values or inferring receiver outcomes. Partial observed targets now
+  preserve null UID or resource-version fields, matching the existing service contract.
 - Developer, qualification, and release tools bound subprocess capture and selected file reads
   before retention, including the child wait after pipe EOF.
 - Snapshot grant provisioning output-write failures now report the `provision-snapshot-grant`

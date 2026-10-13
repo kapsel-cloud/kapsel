@@ -563,32 +563,26 @@ mod tests {
     fn contention_decisions_distinguish_retained_facts_from_ownership() {
         for pinned in [None, Some(false), Some(true)] {
             for current in [Err(()), Ok(false), Ok(true)] {
-                let admitted =
-                    contended_admission(Ok(Some(OperationState::Requested)), pinned, current);
                 assert_eq!(
-                    render_submission(admitted),
-                    br#"{"version":1,"status":"ADMITTED","phase":"requested"}"#
+                    contended_admission(Ok(Some(OperationState::Requested)), pinned, current),
+                    SubmissionAdmission::Decided(ServiceAdmission::Admitted(
+                        OperationState::Requested
+                    ))
                 );
-                let error =
-                    contended_admission(Err(ServiceError::AuthorityUnavailable), pinned, current);
                 assert_eq!(
-                    render_submission(error),
-                    br#"{"version":1,"status":"ERROR","error_class":"authority_unavailable"}"#
+                    contended_admission(Err(ServiceError::AuthorityUnavailable), pinned, current),
+                    SubmissionAdmission::Error(ServiceError::AuthorityUnavailable)
                 );
                 let expected = match (pinned, current) {
                     (Some(false), Ok(false)) => {
-                        br#"{"version":1,"status":"NOT_ADMITTED","reason":"BUSY"}"#.as_slice()
+                        SubmissionAdmission::Decided(ServiceAdmission::Busy)
                     },
                     (Some(_), Err(())) => {
-                        br#"{"version":1,"status":"ERROR","error_class":"operation_failure"}"#
-                            .as_slice()
+                        SubmissionAdmission::Error(ServiceError::OperationFailure)
                     },
-                    _ => br#"{"version":1,"status":"INDETERMINATE"}"#.as_slice(),
+                    _ => SubmissionAdmission::Indeterminate,
                 };
-                assert_eq!(
-                    render_submission(contended_admission(Ok(None), pinned, current)),
-                    expected
-                );
+                assert_eq!(contended_admission(Ok(None), pinned, current), expected);
             }
         }
     }

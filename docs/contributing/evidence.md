@@ -245,10 +245,14 @@ The default suite contains local, package, binary and documentation tests needin
 service. It checks repeatable semantics and hostile input. Coverage percentages cannot establish
 crash safety, receiver semantics, release integrity or production readiness.
 
-MCP fixtures check five ID-only tools, exact socket requests/counts, zero requests for invalid
-input, protocol-only output and secret-free errors. The Linux caller-loss witness checks retained
-reference and admission. The public restart journey checks original-byte retrieval through MCP.
-Cancellation, EOF and transport completion cannot determine receiver outcome.
+Daemon request partitions and MCP call/reply partitions own grammar independently of transport.
+Shared literal wire vectors pin guidance, mixed-effect history with partial observations and access
+errors, and the published SHA-256 `abc` receipt example. Their complete source counts as assurance.
+Three MCP process checks bind all five ID-only requests, exact socket counts, unchanged service
+facts, distinct local failures, zero requests for invalid input and protocol-only output. The Linux
+caller-loss witness checks retained reference and admission. The public restart journey checks
+original-byte retrieval through MCP. Cancellation, EOF and transport completion cannot determine
+receiver outcome.
 
 ### Robustness
 

@@ -23,6 +23,13 @@ use std::{
 
 use serde_json::{json, Value};
 
+#[allow(
+    dead_code,
+    reason = "transport witness uses only the request, history and receipt vectors"
+)]
+#[path = "fixtures/service_wire.rs"]
+mod wire_vectors;
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 fn root() -> std::path::PathBuf {
@@ -139,116 +146,108 @@ fn tool(id: i32, name: &str, arguments: &Value) -> Value {
         "params":{"name":name,"arguments":arguments}})
 }
 
-fn request(name: &str, id: &str) -> Value {
-    json!({"version":1,"request":name,"operation_id":id})
-}
-
 fn service(response: &Value) -> Value {
     serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
 #[test]
-fn caller_reads_and_explicit_submission_preserve_exact_service_facts() {
+fn caller_binding_preserves_service_facts_and_distinguishes_local_reply_failure() {
     let mut lines = handshake();
-    lines.push(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}));
-    let calls = [
+    lines.push(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}));
+    let history: Value = serde_json::from_str(wire_vectors::HISTORY).unwrap();
+    let mut status = history["entries"][2].clone();
+    status.as_object_mut().unwrap().remove("operation_id");
+    status["version"] = json!(1);
+    let cases = [
         (
-            "kapsel.list_approved_actions",
-            json!({"after":null}),
-            json!({"version":1,"request":"list_approved_actions","after":null}),
+            0,
             json!({"version":1,"status":"READY","entries":[],"next_cursor":null}),
+            false,
+        ),
+        (1, history, false),
+        (2, status, false),
+        (
+            3,
+            serde_json::from_str(wire_vectors::RECEIPT).unwrap(),
+            false,
         ),
         (
-            "kapsel.get_status",
-            json!({"operation_id":"op-1"}),
-            request("get_set_deployment_image_status", "op-1"),
-            json!({"version":1,"status":"NOT_FOUND","execution":{
-                "disposition":"admission_unconfirmed","condition":null,
-                "next_action":"read_same_id","action_owner":"caller"}}),
-        ),
-        (
-            "kapsel.submit",
-            json!({"operation_id":"op-2"}),
-            request("submit_set_deployment_image", "op-2"),
+            4,
             json!({"version":1,"status":"ADMITTED","phase":"requested"}),
+            false,
         ),
         (
-            "kapsel.get_receipt",
-            json!({"operation_id":"op-2"}),
-            request("get_set_deployment_image_receipt", "op-2"),
-            json!({"version":1,"status":"NOT_READY"}),
+            2,
+            json!({"version":1,"status":"ERROR","error_class":"authority_unavailable"}),
+            false,
+        ),
+        (4, json!({"version":1,"status":"ADMITTED"}), true),
+        (
+            4,
+            json!({"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}),
+            false,
         ),
     ];
     let mut exchanges = Vec::new();
-    for (index, (name, args, request, response)) in calls.iter().enumerate() {
-        lines.push(tool(i32::try_from(index + 3).unwrap(), name, args));
-        exchanges.push((request.clone(), response.clone()));
+    for (index, (tool_index, reply, _)) in cases.iter().enumerate() {
+        let (name, command, field) = wire_vectors::COMMANDS[*tool_index];
+        let value = if field == "after" {
+            Value::Null
+        } else {
+            json!("op-2")
+        };
+        lines.push(tool(
+            i32::try_from(index + 3).unwrap(),
+            name,
+            &json!({field:value}),
+        ));
+        exchanges.push((
+            json!({"version":1,"request":command,field:value}),
+            reply.clone(),
+        ));
     }
     let responses = run(&lines, &exchanges);
-    assert_eq!(responses.len(), 6);
+    assert_eq!(responses.len(), cases.len() + 2);
+    assert_eq!(responses[1]["id"], 2);
     assert_eq!(responses[1]["result"]["tools"].as_array().unwrap().len(), 5);
-    for (response, (_, arguments, _, expected)) in responses[2..].iter().zip(&calls) {
-        assert_eq!(service(response)["service"], *expected);
-        assert_eq!(service(response)["operation_id"], arguments["operation_id"]);
-        assert_eq!(response["result"]["isError"], false);
-    }
-}
-
-#[test]
-fn authority_failure_invalid_reply_and_nonadmission_are_not_interchangeable() {
-    let mut lines = handshake();
-    let exchanges = [
-        (
-            request("get_set_deployment_image_status", "op-1"),
-            json!({"version":1,"status":"ERROR","error_class":"authority_unavailable"}),
-        ),
-        (
-            request("submit_set_deployment_image", "op-1"),
-            json!({"version":1,"status":"ADMITTED"}),
-        ),
-        (
-            request("submit_set_deployment_image", "op-1"),
-            json!({"version":1,"status":"NOT_ADMITTED","reason":"CAPACITY"}),
-        ),
-    ];
-    for (id, name) in [
-        (2, "kapsel.get_status"),
-        (3, "kapsel.submit"),
-        (4, "kapsel.submit"),
-    ] {
-        lines.push(tool(id, name, &json!({"operation_id":"op-1"})));
-    }
-    let responses = run(&lines, &exchanges);
     assert_eq!(
-        service(&responses[1])["service"]["error_class"],
-        "authority_unavailable"
+        responses[0],
+        json!({"jsonrpc":"2.0","id":1,"result":{
+        "protocolVersion":"2025-11-25","capabilities":{"tools":{}},
+        "serverInfo":{"name":"kapsel-service","version":env!("CARGO_PKG_VERSION")}}})
     );
-    assert_eq!(
-        service(&responses[2])["service"]["error_class"],
-        "response_invalid"
-    );
-    assert_eq!(service(&responses[3])["service"]["status"], "NOT_ADMITTED");
-    assert_eq!(service(&responses[3])["service"]["reason"], "CAPACITY");
-    assert_eq!(responses[1]["result"]["isError"], true);
-    assert_eq!(responses[2]["result"]["isError"], true);
-    assert_eq!(responses[3]["result"]["isError"], false);
+    for (index, (response, (tool_index, original, invalid))) in
+        responses[2..].iter().zip(cases).enumerate()
+    {
+        let expected = if invalid {
+            json!({"status":"ERROR","error_class":"response_invalid"})
+        } else {
+            original
+        };
+        assert_eq!(response["id"], index + 3);
+        assert_eq!(service(response)["service"], expected);
+        assert_eq!(
+            service(response)["operation_id"],
+            if tool_index < 2 {
+                Value::Null
+            } else {
+                json!("op-2")
+            }
+        );
+        assert_eq!(response["result"]["isError"], expected["status"] == "ERROR");
+    }
 }
 
 #[test]
 fn hostile_and_duplicate_arguments_are_rejected_before_any_socket_access() {
     let mut lines = handshake();
-    for arguments in [
-        json!({"operation_id":"op-1","grant":"SECRET"}),
-        json!({"operation_id":"../oops"}),
-        json!({"operation_id":1}),
-    ] {
-        lines.push(tool(2, "kapsel.submit", &arguments));
-    }
-    for response in &run(&lines, &[])[1..] {
-        assert_eq!(response["error"]["code"], -32602);
-    }
+    lines.push(tool(
+        2,
+        "kapsel.submit",
+        &json!({"operation_id":"op-1","grant":"SECRET"}),
+    ));
     let mut raw = Vec::new();
-    for line in handshake() {
+    for line in lines {
         writeln!(&mut raw, "{line}").unwrap();
     }
     raw.extend_from_slice(
@@ -260,7 +259,14 @@ fn hostile_and_duplicate_arguments_are_rejected_before_any_socket_access() {
         )
         .as_bytes(),
     );
-    assert_eq!(run_raw(&raw, &[])[1]["error"]["code"], -32700);
+    let responses = run_raw(&raw, &[]);
+    assert_eq!(responses.len(), 3);
+    assert_eq!(
+        responses[1],
+        json!({"jsonrpc":"2.0","id":2,
+        "error":{"code":-32602,"message":"Invalid params"}})
+    );
+    assert_eq!(responses[2]["error"]["code"], -32700);
 }
 
 #[test]
