@@ -29,7 +29,7 @@ Receipt checks therefore cross completion, application reads, service retrieval 
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
 | Signing failure leaves frozen observations unchanged               | [Atomic-record simulator](../../src/kernel_simulation_tests/mod.rs)                              | Fixture signing, not key-management qualification              |
 | Completion rejects another statement for the same ID               | `receipt_commit_rejects_wrong_facts_and_foreign_snapshot_without_changing_history` in that suite | Checks the current row, not only the builder's call convention |
-| Lost commit acknowledgement resolves to original bytes             | Atomic receipt-delivery laws; process-exit and application retry/snapshot suites                 | Process exit is not power loss                                 |
+| Lost commit acknowledgement resolves to original bytes             | Atomic receipt-delivery laws; process-exit and snapshot suites                                   | Process exit is not power loss                                 |
 | Retrieval survives changed signing settings and unavailable export | [Linux process lane](qualification.md#kapsel-service-candidate)                                  | Source harness, not installed production bytes                 |
 
 A valid signature is not enough for receipt completion: the statement must match the current row's
@@ -87,14 +87,14 @@ mutation and receipt commitment. Run the
 
 Related checks stay at the interfaces that own them:
 
-| Guarantee                              | Maintained check                                                                                                                        |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Healthy execution and reconnect        | `application_retry::healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt`: one PATCH, two GETs, original receipt |
-| Missing zero-replica fields            | Adapter `omitted_zero_replica_counts_can_still_report_success`                                                                          |
-| Stale UID or version                   | Shared simulator: single-field drift after authorized reopen; terminal rejection, no mutation or receipt                                |
-| Exact authority before persistence     | `gateway::tests::validation::every_authority_field_is_bound_before_first_or_requested_admission`: independent raw-row preservation      |
-| Approval cannot refresh an existing ID | `each_snapshot_field_and_legacy_downgrade_preserve_original_history`: UID/version conflicts and downgrade before and after completion   |
-| Worker exclusion                       | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity`; application contender during a pending HTTP PATCH       |
+| Guarantee                              | Maintained check                                                                                                                                     |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Configured client sends once           | `application_retry::configured_client_sends_once_for_success_and_ambiguous_responses`: success, HTTP errors and response loss                        |
+| Missing zero-replica fields            | Adapter `omitted_zero_replica_counts_can_still_report_success`                                                                                       |
+| Stale UID or version                   | Shared simulator: single-field drift after authorized reopen; terminal rejection, no mutation or receipt                                             |
+| Exact authority before persistence     | `gateway::tests::validation::every_authority_field_is_bound_before_first_or_requested_admission`: independent raw-row preservation                   |
+| Approval cannot refresh an existing ID | `each_snapshot_field_and_legacy_downgrade_preserve_original_history`: UID/version conflicts and downgrade before and after completion                |
+| Worker exclusion                       | `gateway::tests::recovery::worker_lock_prevents_overlapping_provider_activity`; simulator suspended selection at preflight, mutation and observation |
 
 Adapter identification tests check UID/version extraction. Classifier tables check generation and
 pending-rollout predicates. Image acceptance is not rollout completion. A new name/revision lookup
@@ -230,8 +230,9 @@ service. It checks repeatable semantics and hostile input. Coverage percentages 
 crash safety, receiver semantics, release integrity or production readiness.
 
 MCP fixtures check five ID-only tools, exact socket requests/counts, zero requests for invalid
-input, protocol-only output and secret-free errors. Linux bridge-loss tests preserve `UNKNOWN` and
-original bytes. Cancellation, EOF and transport completion cannot determine receiver outcome.
+input, protocol-only output and secret-free errors. The Linux caller-loss witness checks retained
+reference and admission. The public restart journey checks original-byte retrieval through MCP.
+Cancellation, EOF and transport completion cannot determine receiver outcome.
 
 ### Robustness
 

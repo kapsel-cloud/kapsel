@@ -34,10 +34,22 @@ pipe tests own actual filesystem custody, byte limits and child retirement. One 
 exchange binds the caller to the real bridge, with lost acknowledgement and explicit same-ID resume.
 It does not model a receiver or durable lifecycle.
 
-Native public checks share the actual fresh-session caller. Daemon recovery invokes its
-disposition-gated `resume` through MCP after process loss, retaining the same reference bytes. The
-retained process trace also covers death after receipt commitment, original byte export and signer
-rotation; the separate caller-loss check owns undelivered acknowledgement.
+Native public checks share the actual fresh-session caller. One daemon recovery trace invokes
+`resume` through MCP after process loss, retaining the reference bytes. It also covers death after
+receipt commitment, original-byte export, signer rotation and corrupt-receipt startup refusal.
+`mcp_caller_loss_preserves_reference_and_service_admission` separately owns undelivered
+acknowledgement, without reconstructing completion. Fixed-client tests own exclusive export errors.
+Adapter clock tests and the packaged live workflow own observation ceilings and late availability;
+shared laws own frozen `UNKNOWN` and no-resend. The configured HTTP fixture owns success/error
+request counts and shared-target preflight, not separate cancellation/restart lifecycle worlds.
+
+The runtime's production `contended_admission` decision uses retained admission and captured owner
+facts. Its finite table owns definite busy, access error and indeterminate partitions. The runtime
+retains generation pins around those facts; scheduled tests still own completion during the absence
+probe and physical retirement. Startup tests own descriptors, socket inodes and optional-material
+snapshots. They do not construct a receiver to prove that the receipt directory is unused.
+Diagnostic tests own suppression and sink mechanics; one protocol binding checks shared suppression
+across status/history/receipt reads and its separation from explicit-selection diagnostics.
 
 Artifact composition delegates bounded format validation to the standalone verifier. Its offline
 regressions use one independently authored archive/SBOM fixture with pinned layout and metadata,
@@ -252,15 +264,15 @@ projection checks in `application::service::disposition`, and procedural applica
 journeys. Local next-action/owner and error-to-stop classification checks remain. Compact
 application checks own missing-material admission, callback-time grant visibility and worker
 exclusion, full-page pagination, cold validation and SQLite file-byte preservation.
-Configured-client tests own actual request counts and shared-target preflight conflict. These read
-laws do not establish physical job ownership, outcome-cache invalidation or socket rendering.
-Wrong-peer lookup deliberately misroutes the selected identity before grant binding; a wrong
-lower-layer row alone is refused by the existing identity guard. An unrelated bounded refusal does
-not qualify as detection. Generated schedules record their actions and retain an explicit healthy
-suffix. Progress requires a restored receiver, healthy storage, original trust and an available
-signer for every identity. Minimized progress witnesses must preserve eligibility for every peer,
-not only the first peer checked. Minimized safety witnesses need not finish the operation; correct
-code must pass those same prefixes on both stores.
+Configured-client tests own actual success/ambiguous-response request counts and shared-target
+preflight conflict. These read laws do not establish physical job ownership, outcome-cache
+invalidation or socket rendering. Wrong-peer lookup deliberately misroutes the selected identity
+before grant binding; a wrong lower-layer row alone is refused by the existing identity guard. An
+unrelated bounded refusal does not qualify as detection. Generated schedules record their actions
+and retain an explicit healthy suffix. Progress requires a restored receiver, healthy storage,
+original trust and an available signer for every identity. Minimized progress witnesses must
+preserve eligibility for every peer, not only the first peer checked. Minimized safety witnesses
+need not finish the operation; correct code must pass those same prefixes on both stores.
 
 Run the deterministic slice:
 

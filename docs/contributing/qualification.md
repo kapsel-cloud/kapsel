@@ -290,14 +290,22 @@ tests:
 cargo test --locked -p kapsel-daemon --features test-harness --test linux_process
 ```
 
-For the fresh-session caller's retained-identity delta, run the real Linux bridge/service fixture
-with independent HTTP mutation counting and detached CLI inspection (no Kubernetes cluster):
+The Linux process suite separates caller loss from receiver completion. Run its retained-reference
+witness through the real bridge and daemon (no receiver):
+
+```sh
+cargo test --locked -p kapsel-daemon --features test-harness --test linux_process \
+  mcp_caller_loss_preserves_reference_and_service_admission -- --exact
+```
+
+For process loss after mutation and receipt commitment, original-byte export through the fixed
+client and detached CLI inspection, use the retained public composition journey:
 
 ```sh
 cargo build --locked --bin kapsel
 KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
   cargo test --locked -p kapsel-daemon --features test-harness --test linux_process \
-  mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation -- --exact
+  ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration -- --exact
 ```
 
 With `sg`, Python 3 and an existing `docker` group that the test user may activate through `sg`,

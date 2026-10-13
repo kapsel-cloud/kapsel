@@ -353,26 +353,18 @@ pub(crate) mod tests {
     use std::{
         fmt::Write as _,
         fs,
-        io::{Read as _, Write as _},
-        net::{TcpListener, TcpStream},
         os::unix::{
             fs::PermissionsExt as _,
             net::{UnixListener, UnixStream as StdUnixStream},
         },
         path::{Path, PathBuf},
-        thread,
-        time::Duration,
     };
 
     use ed25519_dalek::SigningKey;
-    use kapsel::{
-        provision_exact_grant, AgentRequest, ExactAuthorization, GrantProvisioning,
-        OperationReceipt, OperationStatus, ServiceAdmission,
-    };
+    use kapsel::{provision_exact_grant, ExactAuthorization, GrantProvisioning, OperationStatus};
     use tokio::runtime::Builder;
 
     use super::{InstallationInputs, OPERATOR_DOCUMENT_BYTES_MAX};
-    use crate::server::ApplicationExecution;
 
     pub(crate) fn hex(bytes: &[u8]) -> String {
         bytes.iter().fold(String::new(), |mut output, byte| {
@@ -408,10 +400,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn valid_root(name: &str) -> PathBuf {
-        valid_root_with_server(name, "http://127.0.0.1:1234")
-    }
-
-    fn valid_root_with_server(name: &str, server: &str) -> PathBuf {
+        let server = "http://127.0.0.1:1234";
         let root = root(name);
         let authorization_seed = [101_u8; 32];
         let authorization_key = SigningKey::from_bytes(&authorization_seed);
@@ -472,133 +461,6 @@ pub(crate) mod tests {
             .unwrap(),
         );
         root
-    }
-
-    fn request() -> AgentRequest {
-        AgentRequest {
-            operation_id: "service-op".into(),
-            namespace: "demo".into(),
-            deployment: "agent-api".into(),
-            container: "api".into(),
-            immutable_image_digest: concat!(
-                "registry.example/agent-api@sha256:",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            )
-            .into(),
-        }
-    }
-
-    fn deployment(resource_version: &str, generation: u64, updated: bool, ready: bool) -> String {
-        let old_image = concat!(
-            "registry.example/agent-api@sha256:",
-            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-        );
-        let image = if updated {
-            request().immutable_image_digest
-        } else {
-            old_image.into()
-        };
-        serde_json::json!({
-            "apiVersion": "apps/v1",
-            "kind": "Deployment",
-            "metadata": {
-                "name": "agent-api",
-                "namespace": "demo",
-                "uid": "uid-1",
-                "resourceVersion": resource_version,
-                "generation": generation,
-                "annotations": if updated {
-                    serde_json::json!({"kapsel.dev/kap0038-operation-id": "service-op"})
-                } else {
-                    serde_json::json!({})
-                }
-            },
-            "spec": {
-                "replicas": 1,
-                "selector": {"matchLabels": {"app": "agent-api"}},
-                "template": {
-                    "metadata": {"labels": {"app": "agent-api"}},
-                    "spec": {"containers": [{"name": "api", "image": image}]}
-                }
-            },
-            "status": if ready {
-                serde_json::json!({
-                    "observedGeneration": generation,
-                    "updatedReplicas": 1,
-                    "availableReplicas": 1,
-                    "unavailableReplicas": 0,
-                    "conditions": [{
-                        "type": "Available",
-                        "status": "True",
-                        "reason": "MinimumReplicasAvailable"
-                    }]
-                })
-            } else {
-                serde_json::json!({"observedGeneration": generation})
-            }
-        })
-        .to_string()
-    }
-
-    fn read_provider_request(stream: &mut TcpStream) -> String {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut bytes = Vec::new();
-        loop {
-            let mut chunk = [0_u8; 4096];
-            let read = stream.read(&mut chunk).unwrap();
-            assert!(read > 0, "provider request ended before framing completed");
-            bytes.extend_from_slice(&chunk[..read]);
-            assert!(bytes.len() <= 16 * 1024, "provider request exceeded bound");
-            let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
-                continue;
-            };
-            let header_end = header_end + 4;
-            let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
-            let content_length = headers
-                .lines()
-                .filter_map(|line| line.split_once(':'))
-                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
-                .map_or(0, |(_, value)| value.trim().parse::<usize>().unwrap());
-            if bytes.len() >= header_end + content_length {
-                return headers.lines().next().unwrap().to_owned();
-            }
-        }
-    }
-
-    fn write_provider_response(stream: &mut TcpStream, body: &str) {
-        write!(
-            stream,
-            concat!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n",
-                "content-length: {}\r\nconnection: close\r\n\r\n"
-            ),
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body.as_bytes()).unwrap();
-    }
-
-    fn success_server() -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let thread = thread::spawn(move || {
-            for (expected_method, response) in [
-                ("GET", deployment("1", 1, false, false)),
-                ("PATCH", deployment("2", 2, true, false)),
-                ("GET", deployment("3", 2, true, true)),
-            ] {
-                let (mut stream, _) = listener.accept().unwrap();
-                let request_line = read_provider_request(&mut stream);
-                assert!(request_line.starts_with(expected_method));
-                write_provider_response(&mut stream, &response);
-            }
-        });
-        (url, thread)
     }
 
     #[test]
@@ -668,48 +530,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn receipt_root_absence_and_replacement_do_not_affect_completion() {
+    fn receipt_directory_is_not_a_startup_input() {
         for replacement in [false, true] {
-            let (server, provider) = success_server();
-            let root = valid_root_with_server(
-                if replacement {
-                    "receipt-replacement"
-                } else {
-                    "receipt-rename"
-                },
-                &server,
-            );
+            let root = valid_root(if replacement {
+                "receipt-replacement"
+            } else {
+                "receipt-rename"
+            });
             let receipts = root.join("var/lib/kapsel/receipts");
             let retained = root.join("var/lib/kapsel/receipts.retained");
             fs::rename(&receipts, &retained).unwrap();
             if replacement {
                 std::os::unix::fs::symlink("/unavailable/receipt-root", &receipts).unwrap();
             }
-            let document_path = root.join("etc/kapsel/operator.json");
-            let mut document: serde_json::Value =
-                serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
-            document
-                .as_object_mut()
-                .unwrap()
-                .remove("receipt_directory");
-            fs::write(document_path, serde_json::to_vec(&document).unwrap()).unwrap();
             let inputs = InstallationInputs::open_at(&root).unwrap();
-            let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-
-            let mut execution = inputs.open_execution().unwrap();
-            runtime
-                .block_on(execution.execute(request().operation_id, |_| {}))
-                .unwrap();
             let application = inputs.open_application().unwrap();
-
-            assert_eq!(
-                application.status(&request().operation_id).unwrap().0,
-                OperationStatus::Succeeded
-            );
-            assert!(matches!(
-                application.receipt(&request().operation_id).unwrap(),
-                OperationReceipt::Ready { .. }
-            ));
+            let execution = inputs.open_execution().unwrap();
             assert_eq!(fs::read_dir(&retained).unwrap().count(), 0);
             if replacement {
                 assert!(fs::symlink_metadata(&receipts)
@@ -719,7 +555,7 @@ pub(crate) mod tests {
             } else {
                 assert!(!receipts.exists());
             }
-            provider.join().unwrap();
+            drop(execution);
             drop(application);
             fs::remove_dir_all(root).unwrap();
         }
@@ -882,25 +718,13 @@ pub(crate) mod tests {
                     reads.status("service-op").unwrap().0,
                     OperationStatus::NotFound
                 );
-                let mut execution = inputs.open_execution().unwrap();
-                let mut admitted = false;
-                let _ = execution
-                    .execute("service-op".into(), |decision| {
-                        assert!(matches!(decision, ServiceAdmission::Admitted(_)));
-                        admitted = true;
-                    })
-                    .await;
-                assert!(admitted);
-                drop(execution);
+                let snapshotted = (mutation == "malformed").then(|| b"invalid".to_vec());
+                assert_eq!(inputs.kubeconfig, snapshotted);
+                assert_eq!(inputs.receipt_seed, snapshotted);
+                // Safe but malformed bytes are interpreted only by the execution owner.
+                // Unsafe and missing files never supply execution bytes.
+                drop(inputs.open_execution().unwrap());
                 drop(listener);
-                assert_eq!(
-                    reads.status("service-op").unwrap().0,
-                    OperationStatus::InProgress
-                );
-                assert!(matches!(
-                    reads.receipt("service-op").unwrap(),
-                    OperationReceipt::NotReady
-                ));
             });
             drop(inputs);
             fs::remove_dir_all(root).unwrap();

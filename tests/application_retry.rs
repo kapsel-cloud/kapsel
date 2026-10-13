@@ -1,4 +1,4 @@
-//! Count real HTTP requests beneath the operator-document application path, including recovery.
+//! Configured HTTP composition: exact requests and disabled mutation retries, not lifecycle laws.
 
 #![allow(
     clippy::unwrap_used,
@@ -26,8 +26,8 @@ use std::{
 use ed25519_dalek::SigningKey;
 use kapsel::{
     provision_exact_grant, AgentRequest, ApprovedTarget, AuthorizationTrust, ExactAuthorization,
-    GrantProvisioning, OperationReceipt, OperationState, OperationStatus, ServiceApplication,
-    ServiceApproval, ServiceConfiguration, ServiceExecution,
+    GrantProvisioning, OperationReceipt, OperationStatus, ServiceApplication, ServiceApproval,
+    ServiceConfiguration, ServiceExecution,
 };
 use serde_json::{json, Value};
 
@@ -48,16 +48,10 @@ struct Fixture {
     kubeconfig: Vec<u8>,
     stop: mpsc::Sender<()>,
     server: Option<thread::JoinHandle<Vec<WireRequest>>>,
-    paused: mpsc::Receiver<()>,
-    resume: mpsc::Sender<()>,
 }
 
 impl Fixture {
     fn new(status: u16) -> Self {
-        Self::with_pause(status, false)
-    }
-
-    fn with_pause(status: u16, pause_first_patch: bool) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "kapsel-application-retry-{}-{}",
@@ -72,12 +66,7 @@ impl Fixture {
         let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let (stop, stopped) = mpsc::channel();
-        let (pause, paused) = mpsc::channel();
-        let (resume, resumed) = mpsc::channel();
-        let server = thread::spawn(move || {
-            let hold = pause_first_patch.then_some((pause, resumed));
-            serve(&listener, &stopped, status, hold)
-        });
+        let server = thread::spawn(move || serve(&listener, &stopped, status));
         let kubeconfig = format!(
             concat!(
                 "apiVersion: v1\nkind: Config\nclusters:\n- name: fixture\n",
@@ -93,8 +82,6 @@ impl Fixture {
             kubeconfig,
             stop,
             server: Some(server),
-            paused,
-            resume,
         }
     }
 
@@ -149,7 +136,6 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = self.resume.send(());
         let _ = self.stop.send(());
         if let Some(server) = self.server.take() {
             let _ = server.join();
@@ -189,12 +175,7 @@ fn deployment(changed: bool) -> Value {
     })
 }
 
-fn serve(
-    listener: &TcpListener,
-    stopped: &mpsc::Receiver<()>,
-    status: u16,
-    mut hold: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
-) -> Vec<WireRequest> {
+fn serve(listener: &TcpListener, stopped: &mpsc::Receiver<()>, status: u16) -> Vec<WireRequest> {
     let mut requests = Vec::new();
     let mut patch_count = 0;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -235,12 +216,6 @@ fn serve(
             method => panic!("unexpected method: {method}"),
         };
         requests.push(request);
-        if patch_count == 1 {
-            if let Some((pause, resumed)) = hold.take() {
-                pause.send(()).unwrap();
-                resumed.recv_timeout(Duration::from_secs(5)).unwrap();
-            }
-        }
         assert!(requests.len() <= 8, "unbounded client requests");
         if code == 0 {
             // Complete request received, response connection lost.
@@ -301,154 +276,21 @@ fn read_request(stream: &mut TcpStream) -> WireRequest {
 }
 
 #[tokio::test]
-async fn healthy_dispatch_and_restart_preserve_one_http_request_and_original_receipt() {
-    let mut fixture = Fixture::new(200);
-    let mut application = fixture.application();
-    assert_eq!(application.admitted_state("retry-op").unwrap(), None);
-    application
-        .select("retry-op", fixture.execution().await, |_| {})
-        .await
-        .unwrap();
-    assert_eq!(
-        application.status("retry-op").unwrap().0,
-        OperationStatus::Succeeded
-    );
-    let original_receipt = application.receipt("retry-op").unwrap();
-    let report = application.status("retry-op").unwrap();
-    drop(application);
-
-    let mut application = fixture.application();
-    assert_eq!(application.status("retry-op").unwrap(), report);
-    application
-        .select("retry-op", fixture.execution().await, |_| {})
-        .await
-        .unwrap();
-    assert_eq!(application.status("retry-op").unwrap(), report);
-    assert_eq!(application.receipt("retry-op").unwrap(), original_receipt);
-    drop(application);
-
-    let requests = fixture.finish();
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method == "PATCH")
-            .count(),
-        1
-    );
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method == "GET")
-            .count(),
-        2
-    );
-}
-
-#[tokio::test]
-async fn cancelled_application_dispatch_recovers_without_resending_to_available_receiver() {
-    let mut fixture = Fixture::with_pause(0, true);
-    let mut application = fixture.application();
-    let mut execution = Box::pin(application.select("retry-op", fixture.execution().await, |_| {}));
-    tokio::select! {
-        result = &mut execution => panic!("response must still be pending: {result:?}"),
-        () = async {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while fixture.paused.try_recv().is_err() {
-                assert!(Instant::now() < deadline, "PATCH not received");
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        } => {}
-    }
-    // The original worker still owns exclusion while its PATCH response is pending.
-    let mut contender = fixture.application();
-    contender
-        .select("retry-op", fixture.execution().await, |decision| {
-            assert_eq!(
-                decision,
-                kapsel::ServiceAdmission::Admitted(OperationState::ApplyStarted)
-            );
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        contender.admitted_state("retry-op").unwrap(),
-        Some(OperationState::ApplyStarted)
-    );
-    drop(contender);
-    drop(execution);
-    drop(application);
-    fixture.resume.send(()).unwrap();
-    let mut application = fixture.application();
-    application
-        .select("retry-op", fixture.execution().await, |_| {})
-        .await
-        .unwrap();
-    assert_eq!(
-        application.status("retry-op").unwrap().0,
-        OperationStatus::Succeeded
-    );
-    let original_receipt = application.receipt("retry-op").unwrap();
-    let report = application.status("retry-op").unwrap();
-    application
-        .select("retry-op", fixture.execution().await, |_| {})
-        .await
-        .unwrap();
-    assert_eq!(application.status("retry-op").unwrap(), report);
-    assert_eq!(application.receipt("retry-op").unwrap(), original_receipt);
-    drop(application);
-
-    let requests = fixture.finish();
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method == "PATCH")
-            .count(),
-        1
-    );
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method == "GET")
-            .count(),
-        2
-    );
-}
-
-#[tokio::test]
-async fn ambiguous_patch_responses_never_trigger_hidden_client_retries() {
+async fn configured_client_sends_once_for_success_and_ambiguous_responses() {
     let mut counts = Vec::new();
-    for status in [429, 503, 504, 0] {
+    for status in [200, 429, 503, 504, 0] {
         let mut fixture = Fixture::new(status);
         let mut application = fixture.application();
-        assert_eq!(
-            application
-                .select("retry-op", fixture.execution().await, |_| {})
-                .await
-                .unwrap(),
+        let stop = application
+            .select("retry-op", fixture.execution().await, |_| {})
+            .await
+            .unwrap();
+        let expected = if status == 200 {
+            kapsel::ServiceStop::Finished
+        } else {
             kapsel::ServiceStop::Blocked(kapsel::ExecutionCondition::ReceiverUnavailable)
-        );
-        drop(application);
-
-        let mut application = fixture.application();
-        application
-            .select("retry-op", fixture.execution().await, |_| {})
-            .await
-            .unwrap();
-        assert_eq!(
-            application.admitted_state("retry-op").unwrap(),
-            Some(OperationState::Finalized)
-        );
-        let report = application.status("retry-op").unwrap();
-        assert_eq!(report.0, OperationStatus::Succeeded);
-        assert_eq!(report.1.attempt_target, report.1.approved_target);
-        let original_receipt = application.receipt("retry-op").unwrap();
-        assert!(matches!(original_receipt, OperationReceipt::Ready { .. }));
-        application
-            .select("retry-op", fixture.execution().await, |_| {})
-            .await
-            .unwrap();
-        assert_eq!(application.status("retry-op").unwrap(), report);
-        assert_eq!(application.receipt("retry-op").unwrap(), original_receipt);
+        };
+        assert_eq!(stop, expected);
         drop(application);
 
         let requests = fixture.finish();
@@ -471,8 +313,8 @@ async fn ambiguous_patch_responses_never_trigger_hidden_client_retries() {
                 .iter()
                 .filter(|request| request.method == "GET")
                 .count(),
-            2
+            if status == 200 { 2 } else { 1 }
         );
     }
-    assert_eq!(counts, [(429, 1), (503, 1), (504, 1), (0, 1)]);
+    assert_eq!(counts, [(200, 1), (429, 1), (503, 1), (504, 1), (0, 1)]);
 }

@@ -190,33 +190,6 @@ fn installed_command(root: &Path, connections: usize, arguments: &[&str]) -> Com
     command
 }
 
-fn spawn_application(
-    socket: &Path,
-    root: &Path,
-    kubernetes_url: &str,
-    receipt_configuration: &str,
-    seam: Option<&str>,
-    connections: usize,
-) -> ChildGuard {
-    let mut command = Command::new(kapseld_executable());
-    command
-        .env("KAPSELD_TEST_SOCKET", socket)
-        .env("KAPSELD_TEST_EXPECTED_GID", effective_gid().to_string())
-        .env("KAPSELD_TEST_CONNECTIONS", connections.to_string())
-        .env("KAPSELD_TEST_APPLICATION_ROOT", root)
-        .env("KAPSELD_TEST_KUBERNETES_URL", kubernetes_url)
-        .env("KAPSELD_TEST_RECEIPT_CONFIGURATION", receipt_configuration)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(seam) = seam {
-        command
-            .env("KAPSEL_DEMO_CONTROL_DIRECTORY", root.join("control"))
-            .env("KAPSEL_DEMO_PAUSE", seam);
-    }
-    ChildGuard::new(command.spawn().unwrap())
-}
-
 fn connect(socket: &Path) -> UnixStream {
     connect_with_timeout(socket, Duration::from_secs(5))
 }
@@ -322,63 +295,6 @@ fn assert_admitted(stream: &mut UnixStream, phase: &str) {
     );
 }
 
-fn resume_after_read(socket: &Path) {
-    let mut status = connect(socket);
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    let status: Value = serde_json::from_slice(&read_frame(&mut status)).unwrap();
-    assert_eq!(status["status"], "IN_PROGRESS");
-    assert_eq!(status["execution"]["disposition"], "resume_required");
-    assert!(status["execution"]["condition"].is_null());
-    let mut selection = connect(socket);
-    write_frame(&mut selection, submit_request().as_bytes());
-    assert_admitted(&mut selection, "apply_started");
-}
-
-fn wait_for_finalized(journal: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(210);
-    loop {
-        let connection = Connection::open(journal).unwrap();
-        let phase: String = connection
-            .query_row("SELECT state FROM kubernetes_image_operations", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        if phase == "finalized" {
-            return;
-        }
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn assert_terminal_status(stream: &mut UnixStream, status: &str, has_approved_target: bool) {
-    let target = serde_json::json!({"uid": "uid-1", "resource_version": "1"});
-    let actual = serde_json::from_slice::<Value>(&read_frame(stream)).unwrap();
-    let expected = serde_json::json!({
-        "status": status,
-        "effect": "kubernetes.set_deployment_image",
-        "approved_target": has_approved_target.then_some(&target),
-        "attempt_target": target,
-        "observed_target": {"uid": "uid-1", "resource_version": "3"},
-        "execution": {"disposition":"complete", "condition":null,
-            "next_action":"inspect_result", "action_owner":"caller"}
-    });
-    if status == "UNKNOWN" {
-        // Read exhaustion retains the last snapshot; elapsed exhaustion retains no facts.
-        let mut elapsed = expected.clone();
-        elapsed["observed_target"] = serde_json::json!({"uid": null, "resource_version": null});
-        assert!(
-            actual == expected || actual == elapsed,
-            "unexpected status: {actual}"
-        );
-    } else {
-        assert_eq!(actual, expected);
-    }
-}
-
 fn lowercase_hex(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -475,17 +391,6 @@ fn installation_root_with_url(name: &str, kubernetes_url: &str) -> PathBuf {
     root
 }
 
-fn application_root(name: &str) -> PathBuf {
-    let root = root(name);
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    for directory in ["control", "receipts-a", "receipts-b"] {
-        let path = root.join(directory);
-        fs::create_dir(&path).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
-    }
-    fs::canonicalize(root).unwrap()
-}
-
 fn deployment(resource_version: &str, generation: i64, observed: bool) -> String {
     let mut value = serde_json::json!({
         "apiVersion": "apps/v1",
@@ -525,25 +430,6 @@ fn deployment(resource_version: &str, generation: i64, observed: bool) -> String
             }]
         });
     }
-    value.to_string()
-}
-
-fn progressing_deployment() -> String {
-    let mut value: Value = serde_json::from_str(&deployment("3", 2, false)).unwrap();
-    value["metadata"]["annotations"] = serde_json::json!({
-        "kapsel.dev/kap0038-operation-id": "process-op"
-    });
-    value["status"] = serde_json::json!({
-        "observedGeneration": 2,
-        "updatedReplicas": 0,
-        "availableReplicas": 0,
-        "unavailableReplicas": 1,
-        "conditions": [{
-            "type": "Progressing",
-            "status": "True",
-            "reason": "ReplicaSetUpdated"
-        }]
-    });
     value.to_string()
 }
 
@@ -775,67 +661,6 @@ fn success_server() -> SuccessServer {
     }
 }
 
-fn bounded_progressing_receiver() -> (
-    String,
-    Arc<AtomicUsize>,
-    mpsc::Sender<()>,
-    thread::JoinHandle<()>,
-) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let patch_count = Arc::new(AtomicUsize::new(0));
-    let server_patch_count = patch_count.clone();
-    let (stop, stopped) = mpsc::channel();
-    let thread = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(210);
-        let mut index = 0;
-        loop {
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if stopped.try_recv().is_ok() {
-                        break;
-                    }
-                    assert!(Instant::now() < deadline, "observation fixture deadline");
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                },
-                Err(error) => panic!("provider fixture accept failed: {error}"),
-            };
-            assert!(index < 182, "more than 180 observation reads");
-            let expected_method = if index == 1 { "PATCH" } else { "GET" };
-            let expected_path = if index == 1 {
-                PATCH_DEPLOYMENT_PATH
-            } else {
-                DEPLOYMENT_PATH
-            };
-            let response_body = match index {
-                0 => deployment("1", 1, false),
-                1 => deployment("2", 2, false),
-                _ => progressing_deployment(),
-            };
-            let (mut stream, method, path, request_body) = read_http_stream(stream);
-            assert_provider_request(
-                &method,
-                &path,
-                &request_body,
-                expected_method,
-                expected_path,
-            );
-            if expected_method == "PATCH" {
-                server_patch_count.fetch_add(1, Ordering::Relaxed);
-            }
-            write_http_response(&mut stream, &response_body);
-            index += 1;
-        }
-        // Real HTTP overhead may exhaust elapsed time before the maximum read count.
-        assert!((3..=182).contains(&index));
-    });
-    (url, patch_count, stop, thread)
-}
-
 fn kill(child: &mut ChildGuard) {
     child.kill().unwrap();
     assert!(!child.wait().unwrap().success());
@@ -909,22 +734,20 @@ impl FreshCaller {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one independent-process loss and reconnection transcript"
+    reason = "the proxy places actual caller loss after durable admission but before delivery"
 )]
-fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
-    use serde_json::json;
-
-    let root = application_root("mcp-bridge-loss");
-    let socket = root.join("kapseld.sock");
-    let server = success_server();
-    let service = spawn_application(&socket, &root, &server.url, "A", None, 6);
+fn mcp_caller_loss_preserves_reference_and_service_admission() {
+    let root = installation_root("mcp-caller-loss");
+    private_file(&root.join("etc/kapsel/kubeconfig.yaml"), b"unavailable");
+    let socket = root.join("run/kapsel/kapseld.sock");
+    let service = spawn_installed(&root, 3);
     wait_for_socket(&socket);
     let fresh = FreshCaller::new(&root, &socket);
     // Hold the service's durable acknowledgement outside the bridge. Kill the thin caller while
     // the acknowledgement is undelivered, without cancelling the service-owned worker.
     let proxy_socket = root.join("mcp-proxy.sock");
     let proxy_listener = StdUnixListener::bind(&proxy_socket).unwrap();
-    let service_socket = socket.clone();
+    let service_socket = socket;
     let (ack_tx, ack_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let proxy = thread::spawn(move || {
@@ -963,133 +786,10 @@ fn mcp_bridge_loss_at_admission_and_completion_retains_one_receiver_mutation() {
     assert_eq!(second_start.status.code(), Some(4));
     release_tx.send(()).unwrap();
     proxy.join().unwrap();
-    server
-        .observation_started
-        .recv_timeout(FIXTURE_TIMEOUT)
-        .unwrap();
+    let original = fs::read(&fresh.reference).unwrap();
     assert_eq!(fresh.run("read", &[])["service"]["status"], "IN_PROGRESS");
-    server.release_observation.send(()).unwrap();
-    wait_for_finalized(&root.join("journal.sqlite3"));
-    assert_eq!(fresh.run("read", &[])["service"]["status"], "SUCCEEDED");
-
-    let mut reconnect = ChildGuard::new(
-        Command::new(env!("CARGO_BIN_EXE_kapsel-service-mcp"))
-            .env("KAPSELD_TEST_CLIENT_SOCKET", &socket)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let mut input = reconnect.stdin.take().unwrap();
-    for message in [
-        json!({"jsonrpc":"2.0","id":3,"method":"initialize",
-            "params":{"protocolVersion":"2025-11-25","capabilities":{},
-                "clientInfo":{"name":"test","version":"1"}}}),
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
-            "params":{"name":"kapsel.get_status","arguments":{"operation_id":"process-op"}}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call",
-            "params":{"name":"kapsel.get_receipt","arguments":{"operation_id":"process-op"}}}),
-    ] {
-        writeln!(input, "{message}").unwrap();
-    }
-    drop(input);
-    let output = reconnect.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let responses: Vec<Value> = output
-        .stdout
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).unwrap())
-        .collect();
-    assert_eq!(responses.len(), 3);
-    let status: Value = serde_json::from_str(
-        responses[1]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(status["operation_id"], "process-op");
-    assert_eq!(status["service"]["status"], "SUCCEEDED");
-    let receipt: Value = serde_json::from_str(
-        responses[2]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(receipt["operation_id"], "process-op");
-    assert_eq!(receipt["service"]["status"], "READY");
-    assert_eq!(
-        receipt["service"]["receipt_sha256"].as_str().unwrap().len(),
-        64
-    );
-    let original_hex = receipt["service"]["receipt_hex"].as_str().unwrap();
-    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
+    assert_eq!(fs::read(&fresh.reference).unwrap(), original);
     assert!(service.wait_with_output().unwrap().status.success());
-
-    let restarted = spawn_application(&socket, &root, &server.url, "A", None, 3);
-    wait_for_socket(&socket);
-    assert_eq!(fresh.run("read", &[])["service"]["status"], "SUCCEEDED");
-    let repeated = fresh.run("receipt", &[]);
-    assert_eq!(repeated["service"]["receipt_hex"], original_hex);
-    assert_eq!(
-        repeated["service"]["receipt_sha256"],
-        receipt["service"]["receipt_sha256"]
-    );
-
-    let (pairs, remainder) = original_hex.as_bytes().as_chunks::<2>();
-    assert!(
-        remainder.is_empty(),
-        "receipt hex has an odd number of nibbles"
-    );
-    let frozen: Vec<u8> = pairs
-        .iter()
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-        .collect();
-    let trust = ReceiptTrust {
-        key_id: "process-receipt-key-a".into(),
-        public_key: SigningKey::from_bytes(&[42_u8; 32])
-            .verifying_key()
-            .to_bytes(),
-        accepted_purpose: "kapsel.kap0038.kubernetes-effect-receipt.v3".into(),
-        not_before_unix_s: 100,
-        not_after_unix_s: 200,
-    }
-    .encode()
-    .unwrap();
-    assert_eq!(
-        kapsel::inspect_receipt(&frozen, &trust, 150, InspectionLimits::default()).status(),
-        InspectionStatus::Inspected
-    );
-    if let Ok(inspector) = std::env::var("KAPSEL_TEST_INSPECT") {
-        let receipt_path = root.join("detached.receipt");
-        let trust_path = root.join("detached.trust");
-        fs::write(&receipt_path, &frozen).unwrap();
-        fs::write(&trust_path, &trust).unwrap();
-        let output = Command::new(inspector)
-            .args(["inspect", "--receipt"])
-            .arg(&receipt_path)
-            .arg("--trust")
-            .arg(&trust_path)
-            .args(["--evaluation-time-unix-s", "150"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(report["status"], "INSPECTED");
-    }
-    assert!(restarted.wait_with_output().unwrap().status.success());
-    assert_eq!(server.patch_count.load(Ordering::Relaxed), 1);
-    server.finish();
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1246,11 +946,6 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     fs::remove_dir(&receipts).unwrap();
     let document_path = root.join("etc/kapsel/operator.json");
     let mut document: Value = serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
-    document
-        .as_object_mut()
-        .unwrap()
-        .remove("receipt_directory");
-    private_file(&document_path, &serde_json::to_vec(&document).unwrap());
 
     let fresh = FreshCaller::new(&root, &socket);
     let mut first = spawn_installed_with_seam(&root, 10, "after_apply");
@@ -1270,12 +965,6 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     assert_eq!(
         current["service"]["execution"]["disposition"],
         "resume_required"
-    );
-    assert!(current["service"]["execution"]["condition"].is_null());
-    assert_eq!(current["service"]["execution"]["action_owner"], "caller");
-    assert_eq!(
-        current["service"]["execution"]["next_action"],
-        "select_same_id"
     );
     let resumed = fresh.run("resume", &[]);
     assert_eq!(resumed["reference"]["operation_id"], "process-op");
@@ -1308,19 +997,9 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
     private_file(&root.join("etc/kapsel/receipt.seed"), &[113_u8; 32]);
     document["receipt_signing_key_id"] = "rotated-receipt-key".into();
     private_file(&document_path, &serde_json::to_vec(&document).unwrap());
-    let child = spawn_installed(&root, 9);
-    let mut status = connect(&socket);
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_terminal_status(&mut status, "SUCCEEDED", true);
-    let mut receipt = UnixStream::connect(&socket).unwrap();
-    write_frame(
-        &mut receipt,
-        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
-    );
-    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
+    let child = spawn_installed(&root, 3);
+    wait_for_socket(&socket);
+    let response = fresh.run("receipt", &[])["service"].clone();
     let expected_hex = lowercase_hex(&frozen);
     let expected_digest = lowercase_hex(&sha2::Sha256::digest(&frozen));
     assert_eq!(response["status"], "READY");
@@ -1333,17 +1012,9 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
             .output()
             .unwrap()
     };
-    assert_eq!(
-        run_client(&root.join("unavailable/receipt")).status.code(),
-        Some(4)
-    );
     let exported = root.join("exported.receipt");
     assert!(run_client(&exported).status.success());
-    assert_eq!(run_client(&exported).status.code(), Some(4));
-    let repeated = root.join("repeated.receipt");
-    assert!(run_client(&repeated).status.success());
     assert_eq!(fs::read(&exported).unwrap(), frozen);
-    assert_eq!(fs::read(&repeated).unwrap(), frozen);
     let trust = ReceiptTrust {
         key_id: signer.clone(),
         public_key: SigningKey::from_bytes(&[112_u8; 32])
@@ -1359,24 +1030,25 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
         kapsel::inspect_receipt(&frozen, &trust, 150, InspectionLimits::default()).status(),
         InspectionStatus::Inspected
     );
-    let mut replay = connect(&socket);
-    write_frame(&mut replay, submit_request().as_bytes());
-    assert_admitted(&mut replay, "finalized");
-    let mut status = connect(&socket);
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_terminal_status(&mut status, "SUCCEEDED", true);
-    let mut receipt = connect(&socket);
-    write_frame(
-        &mut receipt,
-        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
-    );
-    assert_eq!(
-        serde_json::from_slice::<Value>(&read_frame(&mut receipt)).unwrap(),
-        response
-    );
+
+    if let Ok(inspector) = std::env::var("KAPSEL_TEST_INSPECT") {
+        let trust_path = root.join("detached.trust");
+        fs::write(&trust_path, trust).unwrap();
+        let output = Command::new(inspector)
+            .arg("inspect")
+            .arg("--receipt")
+            .arg(&exported)
+            .arg("--trust")
+            .arg(&trust_path)
+            .args(["--evaluation-time-unix-s", "150"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["status"],
+            "INSPECTED"
+        );
+    }
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
@@ -1392,45 +1064,9 @@ fn ordinary_restart_reuses_frozen_snapshot_receipt_under_rotated_configuration()
         )
         .unwrap();
     assert_eq!(retained, (frozen, signer));
-    server.finish();
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn corrupted_retained_receipt_fails_startup_without_reconciliation() {
-    let root = application_root("reconciliation-failure");
-    let socket = root.join("kapseld.sock");
-    let server = success_server();
-
-    let mut first = spawn_application(&socket, &root, &server.url, "A", Some("after_apply"), 10);
-    let mut submit = connect(&socket);
-    write_frame(&mut submit, submit_request().as_bytes());
-    assert_admitted(&mut submit, "requested");
-    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
-    kill(&mut first);
+    drop(connection);
     fs::remove_file(&socket).unwrap();
-
-    let mut publication = spawn_application(
-        &socket,
-        &root,
-        &server.url,
-        "A",
-        Some("after_receipt_commit"),
-        10,
-    );
-    resume_after_read(&socket);
-    server
-        .observation_started
-        .recv_timeout(FIXTURE_TIMEOUT)
-        .unwrap();
-    server.release_observation.send(()).unwrap();
-    wait_for_marker(
-        &mut publication,
-        &root.join("control/after-receipt-commit.ready"),
-    );
-    kill(&mut publication);
-    fs::remove_file(&socket).unwrap();
-    let connection = Connection::open(root.join("journal.sqlite3")).unwrap();
+    let connection = Connection::open(&journal).unwrap();
     connection
         .execute(
             "UPDATE kubernetes_image_operations SET receipt_bytes = ?1",
@@ -1439,66 +1075,13 @@ fn corrupted_retained_receipt_fails_startup_without_reconciliation() {
         .unwrap();
     drop(connection);
 
-    let child = spawn_application(&socket, &root, &server.url, "B", None, 1);
-    let output = child.wait_with_output().unwrap();
+    let corrupt = fs::read(&journal).unwrap();
+    let output = spawn_installed(&root, 1).wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
     assert!(!socket.exists());
+    assert_eq!(fs::read(&journal).unwrap(), corrupt);
     server.finish();
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn restart_preserves_unknown_after_bounded_observation_without_a_second_patch() {
-    let root = application_root("unknown-recovery");
-    let socket = root.join("kapseld.sock");
-    let (url, patch_count, stop, server) = bounded_progressing_receiver();
-
-    let mut first = spawn_application(&socket, &root, &url, "A", Some("after_apply"), 10);
-    let mut submit = connect(&socket);
-    write_frame(&mut submit, submit_request().as_bytes());
-    assert_admitted(&mut submit, "requested");
-    wait_for_marker(&mut first, &root.join("control/after-apply.ready"));
-    kill(&mut first);
-    fs::remove_file(&socket).unwrap();
-
-    let child = spawn_application(&socket, &root, &url, "A", None, 4);
-    resume_after_read(&socket);
-    wait_for_finalized(&root.join("journal.sqlite3"));
-    let mut status = connect_with_timeout(&socket, Duration::from_secs(40));
-    write_frame(
-        &mut status,
-        br#"{"request":"get_set_deployment_image_status","operation_id":"process-op"}"#,
-    );
-    assert_terminal_status(&mut status, "UNKNOWN", true);
-    let mut receipt = UnixStream::connect(&socket).unwrap();
-    write_frame(
-        &mut receipt,
-        br#"{"request":"get_set_deployment_image_receipt","operation_id":"process-op"}"#,
-    );
-    let response: Value = serde_json::from_slice(&read_frame(&mut receipt)).unwrap();
-    assert_eq!(response["status"], "READY");
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    stop.send(()).unwrap();
-    server.join().unwrap();
-    assert_eq!(patch_count.load(Ordering::Relaxed), 1);
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn startup_failure_is_silent_and_leaves_no_socket() {
-    let root = application_root("startup-failure");
-    let socket = root.join("kapseld.sock");
-    let child = spawn_application(&socket, &root, "http://example.com:1234", "A", None, 1);
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(4));
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    assert!(!socket.exists());
     fs::remove_dir_all(root).unwrap();
 }
 

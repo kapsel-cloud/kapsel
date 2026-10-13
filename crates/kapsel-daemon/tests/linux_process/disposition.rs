@@ -1,4 +1,4 @@
-//! Real daemon diagnostics remain bounded while admitted history stays available offline.
+//! Real daemon diagnostic wiring and nonblocking sink retirement; application laws own guidance.
 use super::*;
 
 #[test]
@@ -179,13 +179,8 @@ fn full_stderr_cannot_hold_execution_status_or_graceful_retirement() {
 }
 
 #[test]
-fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss() {
-    let receiver = TcpListener::bind("127.0.0.1:0").unwrap();
-    receiver.set_nonblocking(true).unwrap();
-    let root = installation_root_with_url(
-        "disposition",
-        &format!("http://{}", receiver.local_addr().unwrap()),
-    );
+fn read_failure_suppression_is_shared_across_protocol_paths_not_selection() {
+    let root = installation_root("read-diagnostics");
     private_file(
         &root.join("etc/kapsel/kubeconfig.yaml"),
         b"SECRET-CREDENTIAL /private/path",
@@ -194,34 +189,9 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
     let child = start_installed_daemon(&root);
     let mut selection = connect(&socket);
     write_frame(&mut selection, submit_request().as_bytes());
-    drop(selection);
-    let deadline = Instant::now() + FIXTURE_TIMEOUT;
-    loop {
-        let observed = read_execution_status(&socket);
-        if observed["execution"]["disposition"] == "operator_required" {
-            assert_eq!(observed["status"], "IN_PROGRESS");
-            assert_eq!(observed["execution"]["condition"], "receiver_unavailable");
-            assert_eq!(observed["execution"]["action_owner"], "operator");
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        thread::yield_now();
-    }
-    assert_eq!(
-        stop_installed_daemon(child).stderr,
-        b"kapseld: receiver_unavailable\n"
-    );
-
-    let frozen = fs::read(root.join("var/lib/kapsel/journal.sqlite3")).unwrap();
-    let child = start_installed_daemon(&root);
-    let observed = read_execution_status(&socket);
-    assert_eq!(observed["execution"]["disposition"], "resume_required");
-    assert!(observed["execution"]["condition"].is_null());
-    assert_eq!(stop_installed_daemon(child).stderr, b"");
-    assert_eq!(
-        fs::read(root.join("var/lib/kapsel/journal.sqlite3")).unwrap(),
-        frozen
-    );
+    assert_admitted(&mut selection, "requested");
+    // SIGTERM drains this admitted selection before the diagnostic-binding checks.
+    stop_installed_daemon(child);
 
     let path = root.join("etc/kapsel/operator.json");
     let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -243,14 +213,21 @@ fn admitted_without_credentials_survives_disconnect_restart_and_authority_loss()
         )
         .as_bytes()
     );
-    assert!(
-        matches!(receiver.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-    );
+    fs::remove_dir_all(root).unwrap();
+}
 
-    private_file(&path, b"SECRET-GRANT /private/configuration");
+#[test]
+fn malformed_operator_document_refuses_startup_with_a_fixed_code() {
+    let root = installation_root("invalid-document");
+    let socket = root.join("run/kapsel/kapseld.sock");
+    private_file(
+        &root.join("etc/kapsel/operator.json"),
+        b"SECRET-GRANT /private/configuration",
+    );
     let output = start_installed_daemon(&root).wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
     assert_eq!(output.stderr, b"kapseld: configuration_invalid\n");
+    assert!(!socket.exists());
     fs::remove_dir_all(root).unwrap();
 }
