@@ -28,10 +28,16 @@ oversized replies, saturation and physical permit retirement. Protocol tests own
 status/receipt vocabulary. MCP reply checks live at the bridge decoder: independently pinned wire
 tuples, effect-specific fields and exact receipt digest checks. Four black-box stdio/socket checks
 retain request framing, explicit submission, unchanged service facts, pre-I/O argument rejection and
-honest transport uncertainty. Native public checks share the actual fresh-session caller. Daemon
-recovery invokes its disposition-gated `resume` through MCP after process loss, retaining the same
-reference bytes. The retained process trace also covers death after receipt commitment, original
-byte export and signer rotation; the separate caller-loss check owns undelivered acknowledgement.
+honest transport uncertainty. The Python caller tests its production `requires_resume` predicate and
+reply decoder directly. Finite partitions own malformed and contradictory guidance; reference and
+pipe tests own actual filesystem custody, byte limits and child retirement. One fresh-process
+exchange binds the caller to the real bridge, with lost acknowledgement and explicit same-ID resume.
+It does not model a receiver or durable lifecycle.
+
+Native public checks share the actual fresh-session caller. Daemon recovery invokes its
+disposition-gated `resume` through MCP after process loss, retaining the same reference bytes. The
+retained process trace also covers death after receipt commitment, original byte export and signer
+rotation; the separate caller-loss check owns undelivered acknowledgement.
 
 Artifact composition delegates bounded format validation to the standalone verifier. Its offline
 regressions use one independently authored archive/SBOM fixture with pinned layout and metadata,

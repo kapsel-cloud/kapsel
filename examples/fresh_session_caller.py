@@ -123,6 +123,49 @@ def run_bridge(input_bytes: bytes) -> bytes:
             process.stdout.close()
 
 
+def decode_exchange(output: bytes, operation_id: str | None) -> ServiceResponse:
+    """Validate one handshake and tool reply before exposing service facts."""
+    lines = output.splitlines()
+    if len(lines) != 2:
+        raise ValueError("unexpected MCP response count")
+    init, reply = (json.loads(line) for line in lines)
+    if not isinstance(init, dict) or not isinstance(reply, dict):
+        raise ValueError("unexpected MCP response shape")
+    initialization = init.get("result")
+    if (
+        init.get("id") != 1
+        or not isinstance(initialization, dict)
+        or initialization.get("protocolVersion") != PROTOCOL
+        or reply.get("id") != 2
+    ):
+        raise ValueError("unexpected MCP handshake")
+
+    text = reply["result"]["content"][0]["text"]
+    body = json.loads(text)
+    service = service_response(body["service"])
+    if body.get("operation_id") != operation_id:
+        raise ValueError("wrong operation response")
+    if service.get("version") != 1 and service.get("status") != "ERROR":
+        raise ValueError("unexpected service version")
+    return service
+
+
+def requires_resume(value: object) -> bool:
+    """Only explicit caller-owned same-ID guidance permits a resume selection."""
+    try:
+        current = service_response(value)
+    except ValueError:
+        return False
+    execution = current.get("execution", {})
+    return (
+        current.get("version") == 1
+        and current["status"] == "IN_PROGRESS"
+        and execution.get("disposition") == "resume_required"
+        and execution.get("action_owner") == "caller"
+        and execution.get("next_action") == "select_same_id"
+    )
+
+
 def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
     messages = [
         {
@@ -145,31 +188,7 @@ def exchange(name: str, arguments: dict[str, str | None]) -> ServiceResponse:
     ]
     try:
         output = run_bridge(b"".join(json.dumps(m).encode() + b"\n" for m in messages))
-        lines = output.splitlines()
-        if len(lines) != 2:
-            raise ValueError("unexpected MCP response count")
-        init, reply = (json.loads(line) for line in lines)
-        if not isinstance(init, dict) or not isinstance(reply, dict):
-            raise ValueError("unexpected MCP response shape")
-        initialization = init.get("result")
-        if (
-            init.get("id") != 1
-            or not isinstance(initialization, dict)
-            or initialization.get("protocolVersion") != PROTOCOL
-            or reply.get("id") != 2
-        ):
-            raise ValueError("unexpected MCP handshake")
-
-        text = reply["result"]["content"][0]["text"]
-        body = json.loads(text)
-        service = service_response(body["service"])
-        if body.get("operation_id") != arguments.get("operation_id") or not isinstance(
-            service, dict
-        ):
-            raise ValueError("wrong operation response")
-        if service.get("version") != 1 and service.get("status") != "ERROR":
-            raise ValueError("unexpected service version")
-        return service
+        return decode_exchange(output, arguments.get("operation_id"))
     except (
         OSError,
         subprocess.SubprocessError,
@@ -311,14 +330,7 @@ def main() -> int:
                     raise ValueError("receipt digest mismatch")
         else:
             current = status(operation_id)
-            execution = current.get("execution", {})
-            requires_caller_selection = (
-                current.get("status") == "IN_PROGRESS"
-                and execution.get("disposition") == "resume_required"
-                and execution.get("action_owner") == "caller"
-                and execution.get("next_action") == "select_same_id"
-            )
-            if not requires_caller_selection:
+            if not requires_resume(current):
                 result = {"status": "NO_SELECTION", "current": current}
             else:
                 result = exchange("kapsel.submit", {"operation_id": operation_id})

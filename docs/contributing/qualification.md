@@ -43,9 +43,7 @@ the test-harness binary first:
 
 ```sh
 cargo build --locked -p kapsel-daemon --features test-harness --bin kapsel-service-mcp
-cargo build --locked --bin kapsel
 env KAPSEL_TEST_BRIDGE="$PWD/target/debug/kapsel-service-mcp" \
-  KAPSEL_TEST_INSPECT="$PWD/target/debug/kapsel" \
   python3 examples/test_fresh_session_caller.py
 ```
 
